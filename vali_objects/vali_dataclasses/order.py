@@ -2,9 +2,10 @@
 # Copyright © 2024 Taoshi Inc
 
 from time_util.time_util import TimeUtil
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 
 from vali_objects.enums.order_type_enum import OrderType
+from vali_objects.vali_config import ValiConfig
 from vali_objects.vali_dataclasses.order_signal import Signal
 from vali_objects.vali_dataclasses.price_source import PriceSource
 from enum import Enum, IntEnum, auto
@@ -34,16 +35,12 @@ class Order(Signal):
     price_sources: list = []
     src: int = ORDER_SRC_ORGANIC
 
-    @field_validator('price', 'processed_ms', 'leverage', mode='before')
+    @field_validator('price', 'processed_ms', mode='before')
     def validate_values(cls, v, info):
         if info.field_name == 'price' and v < 0:
             raise ValueError("Price must be greater than 0")
         if info.field_name == 'processed_ms' and v < 0:
             raise ValueError("processed_ms must be greater than 0")
-        if info.field_name == 'leverage':
-            order_type = info.data.get('order_type')
-            if order_type == OrderType.LONG and v < 0:
-                raise ValueError("Leverage must be positive for LONG orders.")
         return v
 
     @field_validator('order_uuid', mode='before')
@@ -57,6 +54,26 @@ class Order(Signal):
         if isinstance(v, list):
             return [PriceSource(**ps) if isinstance(ps, dict) else ps for ps in v]
         return v
+
+    @model_validator(mode='before')
+    def validate_size(cls, values):
+        """
+        Ensure that size meets min and maximum requirements
+        """
+        order_type = values['order_type']
+        is_flat_order = order_type == OrderType.FLAT or order_type == 'FLAT'
+        lev = values['leverage']
+        val = values.get('value')
+        if not is_flat_order and not (ValiConfig.ORDER_MIN_LEVERAGE <= abs(lev) <= ValiConfig.ORDER_MAX_LEVERAGE):
+            raise ValueError(
+                f"Order leverage must be between {ValiConfig.ORDER_MIN_LEVERAGE} and {ValiConfig.ORDER_MAX_LEVERAGE}, provided - lev [{lev}] and order_type [{order_type}] ({type(order_type)})")
+        if val is not None and not is_flat_order and not ValiConfig.ORDER_MIN_VALUE <= abs(val):
+            raise ValueError(f"Order value must be greater than {ValiConfig.ORDER_MIN_VALUE}, provided value is {abs(val)}")
+        return values
+
+    @model_validator(mode="before")
+    def check_exclusive_fields(cls, values):
+        return values
 
     # Using Pydantic's constructor instead of a custom from_dict method
     @classmethod
@@ -73,6 +90,8 @@ class Order(Signal):
         return {'trade_pair_id': trade_pair_id,
                     'order_type': self.order_type.name,
                     'leverage': self.leverage,
+                    'value': self.value,
+                    'volume': self.volume,
                     'price': self.price,
                     'bid': self.bid,
                     'ask': self.ask,

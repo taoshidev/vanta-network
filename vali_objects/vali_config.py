@@ -499,9 +499,12 @@ class TradePair(Enum):
         return self.trade_pair_category == TradePairCategory.INDICES
 
     @property
-    def is_blocked(self) -> bool:
-        """Check if this trade pair is blocked from trading"""
-        return self.trade_pair_id in ValiConfig.BLOCKED_TRADE_PAIR_IDS
+    def lot_size(self):
+        trade_pair_lot_size = {TradePairCategory.CRYPTO: 1,
+                               TradePairCategory.FOREX: 100_000,
+                               TradePairCategory.INDICES: 1,
+                               TradePairCategory.EQUITIES: 1}
+        return trade_pair_lot_size[self.trade_pair_category]
 
     @property
     def leverage_multiplier(self) -> int:

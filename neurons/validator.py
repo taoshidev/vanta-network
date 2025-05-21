@@ -1042,45 +1042,29 @@ class Validator:
             temp = str(uuid.uuid4())
         return temp
 
-    def _add_order_to_existing_position(self, existing_position, trade_pair, signal_order_type: OrderType,
-                                        signal_leverage: float, order_time_ms: int, miner_hotkey: str,
-                                        price_sources, miner_order_uuid: str, miner_repo_version: str, src:OrderSource,
-                                        account_size):
-        # Must be locked by caller
-        best_price_source = price_sources[0]
-        order = Order(
-            trade_pair=trade_pair,
-            order_type=signal_order_type,
-            leverage=signal_leverage,
-            price=best_price_source.parse_appropriate_price(order_time_ms, trade_pair.is_forex, signal_order_type,
-                                                            existing_position),
-            processed_ms=order_time_ms,
-            order_uuid=miner_order_uuid,
-            price_sources=price_sources,
-            bid=best_price_source.bid,
-            ask=best_price_source.ask,
-            src=src
-        )
-        self.price_slippage_model.refresh_features_daily(time_ms=order_time_ms)
-        order.slippage = PriceSlippageModel.calculate_slippage(order.bid, order.ask, order, account_size)
-        net_portfolio_leverage = self.position_manager.calculate_net_portfolio_leverage(miner_hotkey)
-        existing_position.add_order(order, self.live_price_fetcher, net_portfolio_leverage)
-        self.position_manager.save_miner_position(existing_position)
-        # Update cooldown cache after successful order processing
-        self.last_order_time_cache[(miner_hotkey, trade_pair.trade_pair_id)] = order_time_ms
-        self.uuid_tracker.add(miner_order_uuid)
+    def parse_order_size(self, signal, price, trade_pair, portfolio_value):
+        """
+        parses an order signal and calculates leverage, value, and volume
+        """
+        leverage = signal.get("leverage")
+        value = signal.get("value")
+        volume = signal.get("volume")
 
-        if self.config.serve:
-            # Add the position to the queue for broadcasting
-            self.shared_queue_websockets.put(existing_position.to_websocket_dict(miner_repo_version=miner_repo_version))
+        fields_set = [x is not None for x in (leverage, value, volume)]
+        if sum(fields_set) != 1:
+            raise ValueError("Exactly one of 'leverage', 'value', or 'volume' must be set")
 
-    def _get_account_size(self, miner_hotkey, now_ms):
-        account_size = self.contract_manager.get_miner_account_size(hotkey=miner_hotkey, timestamp_ms=now_ms)
-        if account_size is None:
-            account_size = ValiConfig.MIN_CAPITAL
-        else:
-            account_size = max(account_size, ValiConfig.MIN_CAPITAL)
-        return account_size
+        if leverage is not None:
+            value = leverage * portfolio_value
+            volume = value / (price * trade_pair.lot_size)
+        elif value is not None:
+            leverage = value / portfolio_value
+            volume = value / (price * trade_pair.lot_size)
+        elif volume is not None:
+            value = volume * (price * trade_pair.lot_size)
+            leverage = value / portfolio_value
+
+        return leverage, value, volume
 
     # This is the core validator function to receive a signal
     def receive_signal(self, synapse: template.protocol.SendSignal,
@@ -1115,7 +1099,6 @@ class Validator:
                 raise SignalException(
                     f"Ignoring order for [{miner_hotkey}] due to no live prices being found for trade_pair [{trade_pair}]. Please try again.")
 
-            signal_leverage = signal["leverage"]
             signal_order_type = OrderType.from_string(signal["order_type"])
 
             # Multiple threads can run receive_signal at once. Don't allow two threads to trample each other.
@@ -1133,11 +1116,35 @@ class Validator:
                 existing_position = self._get_or_create_open_position_from_new_order(trade_pair, signal_order_type,
                     now_ms, miner_hotkey, miner_order_uuid, now_ms, price_sources, miner_repo_version, account_size)
                 if existing_position:
-                    self._add_order_to_existing_position(existing_position, trade_pair, signal_order_type,
-                                                        signal_leverage, now_ms, miner_hotkey,
-                                                        price_sources, miner_order_uuid, miner_repo_version,
-                                                        OrderSource.ORGANIC, account_size)
-                    synapse.order_json = existing_position.orders[-1].__str__()
+                    price = best_price_source.parse_appropriate_price(now_ms, trade_pair.is_forex, signal_order_type, existing_position)
+                    leverage, value, volume = self.parse_order_size(signal, price, trade_pair, ValiConfig.CAPITAL)
+
+                    order = Order(
+                        trade_pair=trade_pair,
+                        order_type=signal_order_type,
+                        leverage=leverage,
+                        value=value,
+                        volume=volume,
+                        price=price,
+                        processed_ms=now_ms,
+                        order_uuid=miner_order_uuid,
+                        price_sources=price_sources,
+                        bid=best_price_source.bid,
+                        ask=best_price_source.ask,
+                    )
+                    self.price_slippage_model.refresh_features_daily()
+                    order.slippage = PriceSlippageModel.calculate_slippage(order.bid, order.ask, order, account_size)
+                    self._enforce_num_open_order_limit(trade_pair_to_open_position, order)
+                    net_portfolio_leverage = self.position_manager.calculate_net_portfolio_leverage(miner_hotkey)
+                    existing_position.add_order(order, self.live_price_fetcher, net_portfolio_leverage)
+                    self.position_manager.save_miner_position(existing_position)
+                    # Update cooldown cache after successful order processing
+                    self.last_order_time_cache[(miner_hotkey, trade_pair.trade_pair_id)] = now_ms
+                    if self.config.serve:
+                        # Add the position to the queue for broadcasting
+                        self.shared_queue_websockets.put(existing_position.to_websocket_dict(miner_repo_version=miner_repo_version))
+                    synapse.order_json = order.__str__()
+                    self.uuid_tracker.add(miner_order_uuid)
                 else:
                     # Happens if a FLAT is sent when no position exists
                     pass
