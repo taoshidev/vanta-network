@@ -392,12 +392,12 @@ class PolygonDataService(BaseDataService):
             raise ValueError(f"Unknown symbol: {symbol}")
         return tp
 
-    def get_closes_rest(self, pairs: List[TradePair]) -> dict:
+    def get_closes_rest(self, trade_pairs: List[TradePair], trade_pair_to_last_order_time_ms) -> dict:
         all_trade_pair_closes = {}
         # Multi-threaded fetching of REST data over all requested trade pairs. Max parallelism is 5.
         with ThreadPoolExecutor(max_workers=5) as executor:
             # Dictionary to keep track of futures
-            future_to_trade_pair = {executor.submit(self.get_close_rest, p): p for p in pairs}
+            future_to_trade_pair = {executor.submit(self.get_close_rest, p, trade_pair_to_last_order_time_ms[p]): p for p in trade_pairs}
 
             for future in as_completed(future_to_trade_pair):
                 tp = future_to_trade_pair[future]

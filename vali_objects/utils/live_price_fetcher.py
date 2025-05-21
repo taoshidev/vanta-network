@@ -52,7 +52,8 @@ class LivePriceFetcher:
 
     def dual_rest_get(
             self,
-            trade_pairs: List[TradePair]
+            trade_pairs: List[TradePair],
+            trade_pair_to_last_order_time_ms: Dict[TradePair, int]
     ) -> Tuple[Dict[TradePair, PriceSource], Dict[TradePair, PriceSource]]:
         """
         Fetch REST closes from both Polygon and Tiingo in parallel,
@@ -62,8 +63,8 @@ class LivePriceFetcher:
         tiingo_results = {}
         with ThreadPoolExecutor(max_workers=2) as executor:
             # Submit both REST calls to the executor
-            poly_fut = executor.submit(self.polygon_data_service.get_closes_rest, trade_pairs)
-            tiingo_fut = executor.submit(self.tiingo_data_service.get_closes_rest, trade_pairs)
+            poly_fut = executor.submit(self.polygon_data_service.get_closes_rest, trade_pairs, trade_pair_to_last_order_time_ms)
+            tiingo_fut = executor.submit(self.tiingo_data_service.get_closes_rest, trade_pairs, trade_pair_to_last_order_time_ms)
 
             try:
                 # Wait for both futures to complete with a 10s timeout
@@ -127,7 +128,7 @@ class LivePriceFetcher:
         if not trade_pairs_needing_rest_data:
             return results
 
-        rest_prices_polygon, rest_prices_tiingo_data = self.dual_rest_get(trade_pairs_needing_rest_data)
+        rest_prices_polygon, rest_prices_tiingo_data = self.dual_rest_get(trade_pairs_needing_rest_data, trade_pair_to_last_order_time_ms)
 
         for trade_pair in trade_pairs_needing_rest_data:
             current_time_ms = trade_pair_to_last_order_time_ms[trade_pair]

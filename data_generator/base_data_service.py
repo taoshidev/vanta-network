@@ -386,7 +386,7 @@ class BaseDataService():
 
         return events
 
-    def get_closes_rest(self, trade_pairs: List[TradePair]) -> dict[str: float]:
+    def get_closes_rest(self, trade_pairs: List[TradePair], trade_pair_to_last_order_time_ms) -> dict[str: float]:
         pass
 
     def get_websocket_lag_for_trade_pair_s(self, tp: str, now_ms: int) -> float | None:
