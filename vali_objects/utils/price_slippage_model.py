@@ -218,7 +218,7 @@ class PriceSlippageModel:
             try:
                 bars_df = cls.get_bars_with_features(trade_pair, processed_ms, adv_lookback_window, calc_vol_window)
                 row_selected = bars_df.iloc[-1]
-                annualized_volatility = row_selected['annualized_vol']
+                annualized_volatility = row_selected['annualized_vol'] # recalculate slippage false
                 avg_daily_volume = row_selected[f'adv_last_{adv_lookback_window}_days']
 
                 tp_to_vol[trade_pair.trade_pair_id] = annualized_volatility
@@ -305,6 +305,7 @@ class PriceSlippageModel:
                         break
 
                     bt.logging.info(f"updating order attributes {o}")
+
                     bid = o.bid
                     ask = o.ask
 

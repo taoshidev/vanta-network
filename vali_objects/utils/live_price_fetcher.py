@@ -41,6 +41,9 @@ class LivePriceFetcher:
         if not valid_events:
             return None
 
+        if not current_time_ms:
+            current_time_ms = TimeUtil.now_in_millis()
+
         best_event = PriceSource.get_winning_event(valid_events, current_time_ms)
         if not best_event:
             return None
@@ -50,11 +53,7 @@ class LivePriceFetcher:
 
         return PriceSource.non_null_events_sorted(valid_events, current_time_ms)
 
-    def dual_rest_get(
-            self,
-            trade_pairs: List[TradePair],
-            trade_pair_to_last_order_time_ms: Dict[TradePair, int]
-    ) -> Tuple[Dict[TradePair, PriceSource], Dict[TradePair, PriceSource]]:
+    def dual_rest_get(self, trade_pairs: List[TradePair], time_ms) -> Tuple[Dict[TradePair, PriceSource], Dict[TradePair, PriceSource]]:
         """
         Fetch REST closes from both Polygon and Tiingo in parallel,
         using ThreadPoolExecutor to run both calls concurrently.
@@ -63,8 +62,8 @@ class LivePriceFetcher:
         tiingo_results = {}
         with ThreadPoolExecutor(max_workers=2) as executor:
             # Submit both REST calls to the executor
-            poly_fut = executor.submit(self.polygon_data_service.get_closes_rest, trade_pairs, trade_pair_to_last_order_time_ms)
-            tiingo_fut = executor.submit(self.tiingo_data_service.get_closes_rest, trade_pairs, trade_pair_to_last_order_time_ms)
+            poly_fut = executor.submit(self.polygon_data_service.get_closes_rest, trade_pairs, time_ms)
+            tiingo_fut = executor.submit(self.tiingo_data_service.get_closes_rest, trade_pairs, time_ms)
 
             try:
                 # Wait for both futures to complete with a 10s timeout
@@ -88,37 +87,34 @@ class LivePriceFetcher:
         Gets the latest price for a single trade pair by utilizing WebSocket and possibly REST data sources.
         Tries to get the price as close to time_ms as possible.
         """
-        if not time_ms:
-            time_ms = TimeUtil.now_in_millis()
+        # if not time_ms:
+        #     time_ms = TimeUtil.now_in_millis()
         price_sources = self.get_sorted_price_sources_for_trade_pair(trade_pair, time_ms)
         winning_event = PriceSource.get_winning_event(price_sources, time_ms)
         return winning_event.parse_best_best_price_legacy(time_ms), price_sources
 
-    def get_sorted_price_sources_for_trade_pair(self, trade_pair: TradePair, time_ms:int) -> List[PriceSource] | None:
-        temp = self.get_tp_to_sorted_price_sources([trade_pair], {trade_pair: time_ms})
+    def get_sorted_price_sources_for_trade_pair(self, trade_pair: TradePair, time_ms:int=None) -> List[PriceSource] | None:
+        temp = self.get_tp_to_sorted_price_sources([trade_pair], time_ms)
         return temp.get(trade_pair)
 
-    def get_tp_to_sorted_price_sources(self, trade_pairs: List[TradePair],
-                                       trade_pair_to_last_order_time_ms: Dict[TradePair, int] = None) -> Dict[TradePair, List[PriceSource]]:
+    @timeme
+    def get_tp_to_sorted_price_sources(self, trade_pairs: List[TradePair], time_ms = None) -> Dict[TradePair, List[PriceSource]]:
         """
         Retrieves the latest prices for multiple trade pairs, leveraging both WebSocket and REST APIs as needed.
         """
-        if not trade_pair_to_last_order_time_ms:
-            current_time_ms = TimeUtil.now_in_millis()
-            trade_pair_to_last_order_time_ms = {tp: current_time_ms for tp in trade_pairs}
-        websocket_prices_polygon = self.polygon_data_service.get_closes_websocket(trade_pairs=trade_pairs,
-                                                                                  trade_pair_to_last_order_time_ms=trade_pair_to_last_order_time_ms)
-        websocket_prices_tiingo_data = self.tiingo_data_service.get_closes_websocket(trade_pairs=trade_pairs,
-                                                                                     trade_pair_to_last_order_time_ms=trade_pair_to_last_order_time_ms)
+        # if not time_ms:
+        #     time_ms = TimeUtil.now_in_millis()
+
+        websocket_prices_polygon = self.polygon_data_service.get_closes_websocket(trade_pairs, time_ms)
+        websocket_prices_tiingo_data = self.tiingo_data_service.get_closes_websocket(trade_pairs, time_ms)
         trade_pairs_needing_rest_data = []
 
         results = {}
 
         # Initial check using WebSocket data
         for trade_pair in trade_pairs:
-            current_time_ms = trade_pair_to_last_order_time_ms[trade_pair]
             events = [websocket_prices_polygon.get(trade_pair), websocket_prices_tiingo_data.get(trade_pair)]
-            sources = self.sorted_valid_price_sources(events, current_time_ms, filter_recent_only=True)
+            sources = self.sorted_valid_price_sources(events, time_ms, filter_recent_only=True)
             if sources:
                 results[trade_pair] = sources
             else:
@@ -128,16 +124,15 @@ class LivePriceFetcher:
         if not trade_pairs_needing_rest_data:
             return results
 
-        rest_prices_polygon, rest_prices_tiingo_data = self.dual_rest_get(trade_pairs_needing_rest_data, trade_pair_to_last_order_time_ms)
+        rest_prices_polygon, rest_prices_tiingo_data = self.dual_rest_get(trade_pairs_needing_rest_data, time_ms)
 
         for trade_pair in trade_pairs_needing_rest_data:
-            current_time_ms = trade_pair_to_last_order_time_ms[trade_pair]
             sources = self.sorted_valid_price_sources([
                 websocket_prices_polygon.get(trade_pair),
                 websocket_prices_tiingo_data.get(trade_pair),
                 rest_prices_polygon.get(trade_pair),
                 rest_prices_tiingo_data.get(trade_pair)
-            ], current_time_ms, filter_recent_only=False)
+            ], time_ms, filter_recent_only=False)
             results[trade_pair] = sources
 
         return results

@@ -330,27 +330,27 @@ class TiingoDataService(BaseDataService):
             raise ValueError(f"Unknown symbol: {symbol}")
         return tp
 
-    def get_closes_rest(self, pairs: List[TradePair], verbose=False) -> dict[TradePair: PriceSource]:
-        tp_equities = [tp for tp in pairs if tp.trade_pair_category == TradePairCategory.EQUITIES]
-        tp_crypto = [tp for tp in pairs if tp.trade_pair_category == TradePairCategory.CRYPTO]
-        tp_forex = [tp for tp in pairs if tp.trade_pair_category == TradePairCategory.FOREX]
+    def get_closes_rest(self, trade_pairs: List[TradePair], time_ms, verbose=False) -> dict[TradePair: PriceSource]:
+        tp_equities = [tp for tp in trade_pairs if tp.trade_pair_category == TradePairCategory.EQUITIES]
+        tp_crypto = [tp for tp in trade_pairs if tp.trade_pair_category == TradePairCategory.CRYPTO]
+        tp_forex = [tp for tp in trade_pairs if tp.trade_pair_category == TradePairCategory.FOREX]
 
         # Jobs to parallelize
         jobs = []
         if tp_equities:
-            jobs.append((self.get_closes_equities, tp_equities, verbose))
+            jobs.append((self.get_closes_equities, tp_equities, verbose, time_ms))
         if tp_crypto:
-            jobs.append((self.get_closes_crypto, tp_crypto, verbose))
+            jobs.append((self.get_closes_crypto, tp_crypto, verbose, time_ms))
         if tp_forex:
-            jobs.append((self.get_closes_forex, tp_forex, verbose))
+            jobs.append((self.get_closes_forex, tp_forex, verbose, time_ms))
 
         tp_to_price = {}
 
         if len(jobs) == 0:
             return tp_to_price
         elif len(jobs) == 1:
-            func, tp_list, verbose = jobs[0]
-            return func(tp_list, verbose)
+            func, tp_list, verbose, target_time_ms = jobs[0]
+            return func(tp_list, verbose, target_time_ms)
 
         # Use ThreadPoolExecutor for parallelization if there are multiple jobs
         with ThreadPoolExecutor() as executor:
