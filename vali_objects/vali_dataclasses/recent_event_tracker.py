@@ -80,7 +80,11 @@ class RecentEventTracker:
         #print(f"Looking for event at {TimeUtil.millis_to_formatted_date_str(timestamp_ms)}")
         if self.count_events() == 0:
             return None
+
         # Find the event closest to the given timestamp
+        if not timestamp_ms:
+            timestamp_ms = TimeUtil.now_in_millis()
+
         idx = self.events.bisect_left((timestamp_ms,))
         if idx == 0:
             return self.events[0][1]

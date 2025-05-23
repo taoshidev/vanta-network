@@ -746,7 +746,7 @@ if __name__ == "__main__":
 
     # forex_price = client.get_(ticker='USDJPY')# startDate='2021-01-01', endDate='2021-01-02', frequency='daily')
     #tds = TiingoDataService(secrets['tiingo_apikey'], disable_ws=True)
-    tp_to_prices = tds.get_closes_rest([TradePair.BTCUSD, TradePair.USDJPY, TradePair.NVDA], verbose=True)
+    tp_to_prices = tds.get_closes_rest([TradePair.BTCUSD, TradePair.USDJPY, TradePair.NVDA], None, verbose=True)
 
     assert 0, {x.trade_pair_id: y for x, y in tp_to_prices.items()}
 

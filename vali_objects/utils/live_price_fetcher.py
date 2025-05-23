@@ -87,8 +87,6 @@ class LivePriceFetcher:
         Gets the latest price for a single trade pair by utilizing WebSocket and possibly REST data sources.
         Tries to get the price as close to time_ms as possible.
         """
-        # if not time_ms:
-        #     time_ms = TimeUtil.now_in_millis()
         price_sources = self.get_sorted_price_sources_for_trade_pair(trade_pair, time_ms)
         winning_event = PriceSource.get_winning_event(price_sources, time_ms)
         return winning_event.parse_best_best_price_legacy(time_ms), price_sources
