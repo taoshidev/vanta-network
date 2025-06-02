@@ -62,7 +62,7 @@ class MDDChecker(CacheController):
                             required_trade_pairs_for_candles.add(tp)
 
             now = TimeUtil.now_in_millis()
-            trade_pair_to_price_sources = self.live_price_fetcher.get_tp_to_sorted_price_sources(list(required_trade_pairs_for_candles))
+            trade_pair_to_price_sources = self.live_price_fetcher.get_tp_to_sorted_price_sources(list(required_trade_pairs_for_candles), now)
             #bt.logging.info(f"Got candle data for {len(candle_data)} {candle_data}")
             for tp, sources in trade_pair_to_price_sources.items():
                 if sources and any(x and not x.websocket for x in sources):

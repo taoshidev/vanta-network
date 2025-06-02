@@ -53,7 +53,7 @@ class LivePriceFetcher:
 
         return PriceSource.non_null_events_sorted(valid_events, current_time_ms)
 
-    def dual_rest_get(self, trade_pairs: List[TradePair], time_ms) -> Tuple[Dict[TradePair, PriceSource], Dict[TradePair, PriceSource]]:
+    def dual_rest_get(self, trade_pairs: List[TradePair], time_ms, live) -> Tuple[Dict[TradePair, PriceSource], Dict[TradePair, PriceSource]]:
         """
         Fetch REST closes from both Polygon and Tiingo in parallel,
         using ThreadPoolExecutor to run both calls concurrently.
@@ -62,8 +62,8 @@ class LivePriceFetcher:
         tiingo_results = {}
         with ThreadPoolExecutor(max_workers=2) as executor:
             # Submit both REST calls to the executor
-            poly_fut = executor.submit(self.polygon_data_service.get_closes_rest, trade_pairs, time_ms)
-            tiingo_fut = executor.submit(self.tiingo_data_service.get_closes_rest, trade_pairs, time_ms)
+            poly_fut = executor.submit(self.polygon_data_service.get_closes_rest, trade_pairs, time_ms, live)
+            tiingo_fut = executor.submit(self.tiingo_data_service.get_closes_rest, trade_pairs, time_ms, live)
 
             try:
                 # Wait for both futures to complete with a 10s timeout
@@ -91,12 +91,12 @@ class LivePriceFetcher:
         winning_event = PriceSource.get_winning_event(price_sources, time_ms)
         return winning_event.parse_best_best_price_legacy(time_ms), price_sources
 
-    def get_sorted_price_sources_for_trade_pair(self, trade_pair: TradePair, time_ms:int=None) -> List[PriceSource] | None:
-        temp = self.get_tp_to_sorted_price_sources([trade_pair], time_ms)
+    def get_sorted_price_sources_for_trade_pair(self, trade_pair: TradePair, time_ms:int=None, live=True) -> List[PriceSource] | None:
+        temp = self.get_tp_to_sorted_price_sources([trade_pair], time_ms, live)
         return temp.get(trade_pair)
 
     @timeme
-    def get_tp_to_sorted_price_sources(self, trade_pairs: List[TradePair], time_ms = None) -> Dict[TradePair, List[PriceSource]]:
+    def get_tp_to_sorted_price_sources(self, trade_pairs: List[TradePair], time_ms = None, live=True) -> Dict[TradePair, List[PriceSource]]:
         """
         Retrieves the latest prices for multiple trade pairs, leveraging both WebSocket and REST APIs as needed.
         """
@@ -122,7 +122,7 @@ class LivePriceFetcher:
         if not trade_pairs_needing_rest_data:
             return results
 
-        rest_prices_polygon, rest_prices_tiingo_data = self.dual_rest_get(trade_pairs_needing_rest_data, time_ms)
+        rest_prices_polygon, rest_prices_tiingo_data = self.dual_rest_get(trade_pairs_needing_rest_data, time_ms, live)
 
         for trade_pair in trade_pairs_needing_rest_data:
             sources = self.sorted_valid_price_sources([
@@ -282,7 +282,7 @@ class LivePriceFetcher:
                     f"Fell back to Polygon get_date_minute_fallback for price of {trade_pair.trade_pair} at {TimeUtil.timestamp_ms_to_eastern_time_str(timestamp_ms)}, price_source: {price_source}")
 
         if price_source is None:
-            price_source = self.tiingo_data_service.get_close_rest(trade_pair=trade_pair, target_time_ms=timestamp_ms)
+            price_source = self.tiingo_data_service.get_close_rest(trade_pair=trade_pair, timestamp_ms=timestamp_ms, live=False)
             if verbose and price_source is not None:
                 bt.logging.warning(
                     f"Fell back to Tiingo get_date for price of {trade_pair.trade_pair} at {TimeUtil.timestamp_ms_to_eastern_time_str(timestamp_ms)}, ms: {timestamp_ms}")

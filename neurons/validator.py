@@ -1110,7 +1110,7 @@ class Validator:
                     f"miner [{miner_hotkey}] incorrectly sent trade pair. Raw signal: {signal}"
                 )
 
-            price_sources = self.live_price_fetcher.get_sorted_price_sources_for_trade_pair(trade_pair)
+            price_sources = self.live_price_fetcher.get_sorted_price_sources_for_trade_pair(trade_pair, now_ms)
             if not price_sources:
                 raise SignalException(
                     f"Ignoring order for [{miner_hotkey}] due to no live prices being found for trade_pair [{trade_pair}]. Please try again.")

@@ -764,7 +764,7 @@ class PositionManager(CacheController):
                 if position.is_closed_position:
                     continue
                 if position.trade_pair in tps_to_eliminate:
-                    price_sources = self.live_price_fetcher.get_sorted_price_sources_for_trade_pair(position.trade_pair, TARGET_MS)
+                    price_sources = self.live_price_fetcher.get_sorted_price_sources_for_trade_pair(position.trade_pair, time_ms=TARGET_MS, live=False)
                     live_price = price_sources[0].parse_appropriate_price(TARGET_MS, position.trade_pair.is_forex, OrderType.FLAT, position)
                     flat_order = Order(price=live_price,
                                        price_sources=price_sources,

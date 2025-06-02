@@ -311,7 +311,7 @@ class PriceSlippageModel:
 
                     if self.fetch_slippage_data:
 
-                        price_sources = self.live_price_fetcher.get_sorted_price_sources_for_trade_pair(trade_pair=o.trade_pair, time_ms=o.processed_ms)
+                        price_sources = self.live_price_fetcher.get_sorted_price_sources_for_trade_pair(trade_pair=o.trade_pair, time_ms=o.processed_ms, live=False)
                         if not price_sources:
                             raise ValueError(
                                 f"Ignoring order for [{hk}] due to no live prices being found for trade_pair [{o.trade_pair}]. Please try again.")
