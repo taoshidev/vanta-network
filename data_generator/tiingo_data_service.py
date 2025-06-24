@@ -366,7 +366,7 @@ class TiingoDataService(BaseDataService):
         return tp_to_price
 
     @exception_handler_decorator()
-    def get_closes_equities(self, trade_pairs: List[TradePair], target_time_ms, live=True, verbose=False) -> dict[TradePair: PriceSource]:
+    def get_closes_equities(self, trade_pairs: List[TradePair], target_time_ms: int, live: bool, verbose=False) -> dict[TradePair, PriceSource]:
         if not live:
             raise Exception('TODO')
         tp_to_price = {}
@@ -432,7 +432,7 @@ class TiingoDataService(BaseDataService):
         return start_day_formatted, end_day_formatted
 
     @exception_handler_decorator()
-    def get_closes_forex(self, trade_pairs: List[TradePair], target_time_ms: int, live=True, verbose=False) -> dict:
+    def get_closes_forex(self, trade_pairs: List[TradePair], target_time_ms: int, live: bool, verbose=False) -> dict:
 
         def tickers_to_tiingo_forex_url(tickers: List[str]) -> str:
             if not live:
@@ -523,11 +523,7 @@ class TiingoDataService(BaseDataService):
         return tp_to_price
 
     @exception_handler_decorator()
-    def get_closes_crypto(self, trade_pairs: List[TradePair], target_time_ms: int, live=True, verbose=False) -> dict:
-        tp_to_price = {}
-        if not trade_pairs:
-            return tp_to_price
-        assert all(tp.trade_pair_category == TradePairCategory.CRYPTO for tp in trade_pairs), trade_pairs
+    def get_closes_crypto(self, trade_pairs: List[TradePair], target_time_ms: int, live: bool, verbose=False) -> dict:
 
         def tickers_to_crypto_url(tickers: List[str]) -> str:
             if not live:
@@ -535,105 +531,67 @@ class TiingoDataService(BaseDataService):
                 start_day_formatted, end_day_formatted = self.target_ms_to_start_end_formatted(target_time_ms)
                 # "https://api.tiingo.com/tiingo/crypto/prices?tickers=btcusd&startDate=2019-01-02&resampleFreq=5min&token=ffb55f7fdd167d4b8047539e6b62d82b92b25f91"
                 return f"https://api.tiingo.com/tiingo/crypto/prices?tickers={','.join(tickers)}&startDate={start_day_formatted}&endDate={end_day_formatted}&resampleFreq=1min&token={self.config['api_key']}&exchanges={TIINGO_COINBASE_EXCHANGE_STR.upper()}"
-            return f"https://api.tiingo.com/tiingo/crypto/top?tickers={','.join(tickers)}&token={self.config['api_key']}&exchanges={TIINGO_COINBASE_EXCHANGE_STR.upper()}"
+            return f"https://api.tiingo.com/tiingo/crypto/prices?tickers={','.join(tickers)}&token={self.config['api_key']}&exchanges={TIINGO_COINBASE_EXCHANGE_STR.upper()}"
+
+        tp_to_price = {}
+        if not trade_pairs:
+            return tp_to_price
+
+        assert all(tp.trade_pair_category == TradePairCategory.CRYPTO for tp in trade_pairs), trade_pairs
 
         url = tickers_to_crypto_url([self.trade_pair_to_tiingo_ticker(x) for x in trade_pairs])
         if verbose:
             print('hitting url', url)
 
         requestResponse = requests.get(url, headers={'Content-Type': 'application/json'}, timeout=5)
+        if requestResponse.status_code != 200:
+            return {}
 
-        if requestResponse.status_code == 200:
-            response_data = requestResponse.json()
+        response_data = requestResponse.json()
+        timespan_ms = self.timespan_to_ms['minute']
 
-            if not live:
-                # Historical data has a different structure - the items are in data[0]['priceData']
-                if not response_data or len(response_data) == 0:
-                    return tp_to_price
-                for crypto_data in response_data:
-                    ticker = crypto_data['ticker']
+        for crypto_data in response_data:
+            ticker = crypto_data['ticker']
+            price_data = crypto_data.get('priceData', None)
+            if not price_data:
+                continue
 
-                    # Skip if no price data available
-                    if not crypto_data.get('priceData') or len(crypto_data['priceData']) == 0:
-                        continue
+            # Find the closest price data point to target_time_ms
+            # data time is start time, add timespan to match close price time
+            closest_data = min(price_data,
+                                    key=lambda x: abs(TimeUtil.parse_iso_to_ms(x['date']) + timespan_ms - target_time_ms))
 
-                    # Find the closest price data point to target_time_ms
-                    price_data = sorted(crypto_data['priceData'],
-                                        key=lambda x: TimeUtil.parse_iso_to_ms(x['date']))
+            data_time_ms = TimeUtil.parse_iso_to_ms(closest_data["date"]) + timespan_ms
+            price_close = float(closest_data['close'])
+            bid_price = ask_price = 0  # Bid/ask not provided in historical data
 
-                    closest_data = min(price_data,
-                                       key=lambda x: abs(TimeUtil.parse_iso_to_ms(x['date']) - target_time_ms))
+            tp = TradePair.get_latest_trade_pair_from_trade_pair_id(ticker.upper())
+            source_name = f'{TIINGO_PROVIDER_NAME}_{TIINGO_COINBASE_EXCHANGE_STR}'
+            exchange = TIINGO_COINBASE_EXCHANGE_STR
 
-                    data_time_ms = TimeUtil.parse_iso_to_ms(closest_data['date'])
-                    price = float(closest_data['close'])
-                    bid_price = ask_price = 0  # Bid/ask not provided in historical data
+            # Create PriceSource
+            tp_to_price[tp] = PriceSource(
+                source=source_name,
+                timespan_ms=timespan_ms,
+                open=float(closest_data['open']),
+                close=float(closest_data['close']),
+                vwap=price_close,
+                high=price_close,
+                low=float(closest_data['low']),
+                start_ms=data_time_ms,
+                websocket=False,
+                lag_ms=target_time_ms - data_time_ms,
+                bid=bid_price,
+                ask=ask_price,
+            )
 
-                    tp = TradePair.get_latest_trade_pair_from_trade_pair_id(ticker.upper())
-                    source_name = f'{TIINGO_PROVIDER_NAME}_{TIINGO_COINBASE_EXCHANGE_STR}_historical'
-                    exchange = TIINGO_COINBASE_EXCHANGE_STR
-
-                    # Create PriceSource
-                    tp_to_price[tp] = PriceSource(
-                        source=source_name,
-                        timespan_ms=self.timespan_to_ms['minute'],
-                        open=float(closest_data['open']),
-                        close=price,
-                        vwap=price,
-                        high=float(closest_data['high']),
-                        low=float(closest_data['low']),
-                        start_ms=data_time_ms,
-                        websocket=False,
-                        lag_ms=target_time_ms - data_time_ms,
-                        bid=bid_price,
-                        ask=ask_price
-                    )
-
-                    if verbose:
-                        self.log_price_info(tp, tp_to_price[tp], target_time_ms, data_time_ms,
-                                       closest_data['date'], price, exchange, closest_data)
-            else:
-                now_ms = TimeUtil.now_in_millis()
-                # Current data format (top endpoint)
-                for crypto_data in response_data:
-                    ticker = crypto_data['ticker']
-                    if len(crypto_data['topOfBookData']) != 1:
-                        print('Tiingo unexpected data', crypto_data)
-                        continue
-
-                    book_data = crypto_data['topOfBookData'][0]
-
-                    # Determine the data source and timestamp
-                    data_time_ms, price, exchange, bid_price, ask_price = self.get_best_crypto_price_info(
-                        book_data, now_ms, TIINGO_COINBASE_EXCHANGE_STR
-                    )
-
-                    # Create trade pair
-                    tp = TradePair.get_latest_trade_pair_from_trade_pair_id(ticker.upper())
-                    price = float(price)
-                    source_name = f'{TIINGO_PROVIDER_NAME}_{exchange}_rest'
-
-                    # Create PriceSource
-                    tp_to_price[tp] = PriceSource(
-                        source=source_name,
-                        timespan_ms=self.timespan_to_ms['minute'],
-                        open=price,
-                        close=price,
-                        vwap=price,
-                        high=price,
-                        low=price,
-                        start_ms=data_time_ms,
-                        websocket=False,
-                        lag_ms=now_ms - data_time_ms,
-                        bid=bid_price,
-                        ask=ask_price
-                    )
-
-                    if verbose:
-                        self.log_price_info(tp, tp_to_price[tp], now_ms, data_time_ms,
-                                       book_data['quoteTimestamp'], price, exchange, book_data)
+            if verbose:
+                self.log_price_info(tp, tp_to_price[tp], target_time_ms, data_time_ms,
+                                    closest_data["date"], price_close, exchange, closest_data)
 
         return tp_to_price
 
+    # Previously used for deprecated tiingo top-of-book rest endpoint - not used anymore (06/24/2025)
     def get_best_crypto_price_info(self, book_data, now_ms, preferred_exchange):
         """Helper function to determine the best price info from book data"""
         data_time_exchange_ms = TimeUtil.parse_iso_to_ms(book_data['lastSaleTimestamp'])

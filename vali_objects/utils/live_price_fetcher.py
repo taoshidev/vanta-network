@@ -91,17 +91,17 @@ class LivePriceFetcher:
         winning_event = PriceSource.get_winning_event(price_sources, time_ms)
         return winning_event.parse_best_best_price_legacy(time_ms), price_sources
 
-    def get_sorted_price_sources_for_trade_pair(self, trade_pair: TradePair, time_ms:int=None, live=True) -> List[PriceSource] | None:
+    def get_sorted_price_sources_for_trade_pair(self, trade_pair: TradePair, time_ms: int, live=True) -> List[PriceSource] | None:
         temp = self.get_tp_to_sorted_price_sources([trade_pair], time_ms, live)
         return temp.get(trade_pair)
 
     @timeme
-    def get_tp_to_sorted_price_sources(self, trade_pairs: List[TradePair], time_ms = None, live=True) -> Dict[TradePair, List[PriceSource]]:
+    def get_tp_to_sorted_price_sources(self, trade_pairs: List[TradePair], time_ms: int, live=True) -> Dict[TradePair, List[PriceSource]]:
         """
         Retrieves the latest prices for multiple trade pairs, leveraging both WebSocket and REST APIs as needed.
         """
-        # if not time_ms:
-        #     time_ms = TimeUtil.now_in_millis()
+        if not time_ms:
+            time_ms = TimeUtil.now_in_millis()
 
         websocket_prices_polygon = self.polygon_data_service.get_closes_websocket(trade_pairs, time_ms)
         websocket_prices_tiingo_data = self.tiingo_data_service.get_closes_websocket(trade_pairs, time_ms)
@@ -286,7 +286,6 @@ class LivePriceFetcher:
             if verbose and price_source is not None:
                 bt.logging.warning(
                     f"Fell back to Tiingo get_date for price of {trade_pair.trade_pair} at {TimeUtil.timestamp_ms_to_eastern_time_str(timestamp_ms)}, ms: {timestamp_ms}")
-
 
         """
         if price is None:
