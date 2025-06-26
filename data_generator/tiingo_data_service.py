@@ -71,7 +71,7 @@ class _TiingoPseudoClient:
                 # Get price data synchronously but don't block the event loop
                 loop = asyncio.get_event_loop()
                 price_sources = await loop.run_in_executor(
-                    None, self._svc.get_closes_rest, trade_pairs_to_query, False
+                    None, self._svc.get_closes_rest, trade_pairs_to_query, current_time * 1000
                 )
 
                 # Process each price source
