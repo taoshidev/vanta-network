@@ -95,7 +95,6 @@ class LivePriceFetcher:
         temp = self.get_tp_to_sorted_price_sources([trade_pair], time_ms, live)
         return temp.get(trade_pair)
 
-    @timeme
     def get_tp_to_sorted_price_sources(self, trade_pairs: List[TradePair], time_ms: int, live=True) -> Dict[TradePair, List[PriceSource]]:
         """
         Retrieves the latest prices for multiple trade pairs, leveraging both WebSocket and REST APIs as needed.
