@@ -12,7 +12,7 @@ from enum import Enum, IntEnum, auto
 
 class OrderSource(IntEnum):
     """Enum representing the source/origin of an order."""
-    ORGANIC = 0                         # order generated from a miner's signal
+    ORGANIC = 0                        # order generated from a miner's signal
     ELIMINATION_FLAT = 1               # order inserted when a miner is eliminated (0 used for price. DEPRECATED)
     DEPRECATION_FLAT = 2               # order inserted when a trade pair is removed (0 used for price)
     PRICE_FILLED_ELIMINATION_FLAT = 3  # order inserted when a miner is eliminated but we price fill it accurately.
@@ -73,6 +73,9 @@ class Order(Signal):
 
     @model_validator(mode="before")
     def check_exclusive_fields(cls, values):
+        """
+        Overrides inherited check_exclusive_fields from signal. When we populate the order we want to fill in all three leverage/value/volume fields.
+        """
         return values
 
     # Using Pydantic's constructor instead of a custom from_dict method

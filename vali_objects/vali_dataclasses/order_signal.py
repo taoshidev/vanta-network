@@ -9,9 +9,9 @@ from pydantic import BaseModel, model_validator
 class Signal(BaseModel):
     trade_pair: TradePair
     order_type: OrderType
-    leverage: Optional[float] = None
-    value: Optional[float] = None
-    volume: Optional[float] = None
+    leverage: Optional[float] = None    # multiplier of account size
+    value: Optional[float] = None       # USD value of order
+    volume: Optional[float] = None      # number of lots/coins/shares/etc.
 
     @model_validator(mode='before')
     def check_exclusive_fields(cls, values):
