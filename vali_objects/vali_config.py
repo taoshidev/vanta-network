@@ -93,6 +93,9 @@ def _TradePair_Lookup() -> dict[str, TradePairCategory]:
     return mapping
 
 class InterpolatedValueFromDate():
+    """
+    Dynamic value based on dates. Used for setting configs in the future.
+    """
     def __init__(self, start_date: str, *, low: int=None, high:int=None, interval: int, increment: int, target: int):
         self.start_date = datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
         self.low = low
