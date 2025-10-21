@@ -60,12 +60,8 @@ class PriceSlippageModel:
             if not trade_pair.is_crypto:  # For now, crypto does not have slippage
                 bt.logging.warning(f'Tried to calculate slippage with bid: {bid} and ask: {ask}. order: {order}. Returning 0')
             return 0  # Need valid bid and ask.
-        if order.processed_ms > SLIPPAGE_V2_TIME_MS:
-            if abs(order.value) > Order.trade_pair.subcategory.max_size:
-                raise ValueError(f"Order {order} with size {order.value} exceeds max order size for {order.trade_pair.subcategory}: {order.trade_pair.subcategory.max_size}")
-        else:
-            if abs(order.value) <= 1000:
-                return 0
+        if abs(order.value) <= 1000:
+            return 0
         if cls.is_backtesting:
             cls.refresh_features_daily(order.processed_ms, write_to_disk=False)
 
@@ -151,7 +147,9 @@ class PriceSlippageModel:
     @classmethod
     def calc_slippage_crypto(cls, order:Order) -> float:
         """
-        slippage values for crypto
+        V2: price slippage model
+
+        V1: 0.2 bps for majors, 2 bps for alts
         """
         if order.processed_ms > SLIPPAGE_V2_TIME_MS:
             side = "long" if order.leverage > 0 else "short"
@@ -318,7 +316,7 @@ class PriceSlippageModel:
                         bid = best_price_source.bid
                         ask = best_price_source.ask
 
-                    slippage = self.calculate_slippage(bid, ask, o, capital=self.capital)
+                    slippage = self.calculate_slippage(bid, ask, o)
                     o.bid = bid
                     o.ask = ask
                     o.slippage = slippage

@@ -1134,7 +1134,7 @@ class Validator:
                         ask=best_price_source.ask,
                     )
                     self.price_slippage_model.refresh_features_daily()
-                    order.slippage = PriceSlippageModel.calculate_slippage(order.bid, order.ask, order, account_size)
+                    order.slippage = PriceSlippageModel.calculate_slippage(order.bid, order.ask, order)
                     self._enforce_num_open_order_limit(trade_pair_to_open_position, order)
                     net_portfolio_leverage = self.position_manager.calculate_net_portfolio_leverage(miner_hotkey)
                     existing_position.add_order(order, self.live_price_fetcher, net_portfolio_leverage)
