@@ -1048,13 +1048,9 @@ class Validator:
         # Must be locked by caller
         best_price_source = price_sources[0]
         price = best_price_source.parse_appropriate_price(order_time_ms, trade_pair.is_forex, signal_order_type, existing_position)
-        value = quantity * (price * trade_pair.lot_size)
-        leverage = value / self._get_account_size(miner_hotkey, order_time_ms)
         order = Order(
             trade_pair=trade_pair,
             order_type=signal_order_type,
-            leverage=leverage,
-            value=value,
             quantity=quantity,
             price=price,
             processed_ms=order_time_ms,
@@ -1064,8 +1060,6 @@ class Validator:
             ask=best_price_source.ask,
             src=src
         )
-        self.price_slippage_model.refresh_features_daily(time_ms=order_time_ms)
-        order.slippage = PriceSlippageModel.calculate_slippage(order.bid, order.ask, order)
         net_portfolio_leverage = self.position_manager.calculate_net_portfolio_leverage(miner_hotkey)
         existing_position.add_order(order, self.live_price_fetcher, net_portfolio_leverage)
         self.position_manager.save_miner_position(existing_position)

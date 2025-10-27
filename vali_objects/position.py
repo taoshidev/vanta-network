@@ -5,6 +5,7 @@ from typing import Optional, List
 from pydantic import model_validator, BaseModel, Field
 
 from time_util.time_util import TimeUtil, MS_IN_8_HOURS, MS_IN_24_HOURS
+from vali_objects.utils.price_slippage_model import PriceSlippageModel
 from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.vali_dataclasses.order import Order, OrderSource
 from vali_objects.enums.order_type_enum import OrderType
@@ -18,7 +19,7 @@ FOREX_CARRY_FEE_PER_INTERVAL = math.exp(math.log(1 - .03) / 365.0)  # 3% per yea
 INDICES_CARRY_FEE_PER_INTERVAL = math.exp(math.log(1 - .0525) / 365.0)  # 5.25% per year for 1x leverage. Each interval is 24 hrs
 FEE_V6_TIME_MS = 1720843707000  # V6 PR merged
 SLIPPAGE_V1_TIME_MS = 1739937600000  # Slippage PR merged
-ALWAYS_USE_SLIPPAGE = None  # set as either True or False to control whether slippage is always or never applied
+ALWAYS_USE_SLIPPAGE = None  # set as either True or False to control whether slippage is always or never applied. if set as None, slippage will be applied based on SLIPPAGE_V1_TIME_MS time gate
 
 class Position(BaseModel):
     """Represents a position in a trading system.
@@ -48,6 +49,8 @@ class Position(BaseModel):
     current_return: float = 1.0  # excludes fees
     close_ms: Optional[int] = None
     net_leverage: float = 0.0
+    net_value: float = 0.0
+    net_quantity: float = 0.0
     return_at_close: float = 1.0  # includes all fees
     average_entry_price: float = 0.0
     cumulative_entry_value: float = 0.0
@@ -106,6 +109,10 @@ class Position(BaseModel):
 
 
     def get_spread_fee(self, timestamp_ms: int) -> float:
+        """
+        transaction fee
+        only applied to crypto
+        """
         if not self.trade_pair.is_crypto:
             return 1.0
         ans = 1.0 - (self.get_cumulative_leverage() * .001)
@@ -195,14 +202,14 @@ class Position(BaseModel):
             return 0.0
         first_order = self.orders[0]
         if ALWAYS_USE_SLIPPAGE or (ALWAYS_USE_SLIPPAGE is None and first_order.processed_ms >= SLIPPAGE_V1_TIME_MS):
-            return first_order.price * (1 + first_order.slippage) if first_order.leverage > 0 else first_order.price * (1 - first_order.slippage)
+            return first_order.price * (1 + first_order.slippage) if first_order.quantity > 0 else first_order.price * (1 - first_order.slippage)
         else:
             return first_order.price
 
     def __hash__(self):
         # Include specified fields in the hash, assuming trade_pair is accessible and immutable
         return hash((self.miner_hotkey, self.position_uuid, self.open_ms, self.current_return,
-                     self.net_leverage, self.initial_entry_price, self.trade_pair.trade_pair))
+                     self.net_quantity, self.net_value, self.initial_entry_price, self.trade_pair.trade_pair))
 
     def __eq__(self, other):
         if not isinstance(other, Position):
@@ -211,7 +218,8 @@ class Position(BaseModel):
                 self.position_uuid == other.position_uuid and
                 self.open_ms == other.open_ms and
                 self.current_return == other.current_return and
-                self.net_leverage == other.net_leverage and
+                self.net_quantity == other.net_quantity and
+                self.net_value == other.net_value and
                 self.initial_entry_price == other.initial_entry_price and
                 self.trade_pair.trade_pair == other.trade_pair.trade_pair)
 
@@ -309,7 +317,8 @@ class Position(BaseModel):
         self.current_return = 1.0
         self.close_ms = None
         self.return_at_close = 1.0
-        self.net_leverage = 0.0
+        self.net_quantity = 0.0
+        self.net_value = 0.0
         self.average_entry_price = 0.0
         self.cumulative_entry_value = 0.0
         self.realized_pnl = 0.0
@@ -324,14 +333,15 @@ class Position(BaseModel):
             f"position details: "
             f"close_ms [{self.close_ms}] "
             f"initial entry price [{self.initial_entry_price}] "
-            f"net leverage [{self.net_leverage}] "
+            f"net quantity [{self.net_quantity}] "
+            f"net value [{self.net_value}] "
             f"average entry price [{self.average_entry_price}] "
             f"return_at_close [{self.return_at_close}]"
         )
         order_info = [
             {
                 "order type": order.order_type.value,
-                "leverage": order.leverage,
+                "quantity": order.quantity,
                 "price": order,
             }
             for order in self.orders
@@ -340,7 +350,7 @@ class Position(BaseModel):
 
     def add_order(self, order: Order, live_price_fetcher, net_portfolio_leverage: float=0.0) -> bool:
         """
-        Add an order to a position, and adjust its leverage to stay within
+        Add an order to a position, and adjust its size to stay within
         the trade pair max and portfolio max.
         """
         if self.is_closed_position:
@@ -364,6 +374,11 @@ class Position(BaseModel):
                 else:
                     raise ValueError(
                         f"Miner {self.miner_hotkey} attempted to go below min leverage {self.trade_pair.min_leverage} for trade pair {self.trade_pair.trade_pair_id}. Ignoring order.")
+
+        # Set order value and leverage based on clamped quantity.
+        order.value = order.quantity * (order.price * self.trade_pair.lot_size)
+        order.leverage = order.value / account_size
+        order.slippage = PriceSlippageModel.calculate_slippage(order.bid, order.ask, order)
         self.orders.append(order)
         self._update_position(live_price_fetcher)
 
@@ -378,18 +393,18 @@ class Position(BaseModel):
         if ALWAYS_USE_SLIPPAGE or (ALWAYS_USE_SLIPPAGE is None and t_ms >= SLIPPAGE_V1_TIME_MS):
             if order:
                 # update realized pnl for orders that reduce the size of a position
-                if (order.order_type != self.position_type or self.position_type == OrderType.FLAT):
-                    exit_price = current_price * (1 + order.slippage) if order.leverage > 0 else current_price * (1 - order.slippage)
-                    self.realized_pnl += -1 * (exit_price - self.average_entry_price) * (order.quantity * order.trade_pair.lot_size)  # TODO: FIFO entry cost
-                unrealized_pnl = (current_price - self.average_entry_price) * min(self.net_leverage, self.net_leverage + order.leverage, key=abs)
+                if order.order_type != self.position_type or self.position_type == OrderType.FLAT:
+                    exit_price = current_price * (1 + order.slippage) if order.quantity > 0 else current_price * (1 - order.slippage)
+                    self.realized_pnl += -1 * (exit_price - self.average_entry_price) * (order.quantity * order.trade_pair.lot_size)
+                unrealized_pnl = (current_price - self.average_entry_price) * (min(self.net_quantity, self.net_quantity + order.quantity, key=abs) * order.trade_pair.lot_size)
             else:
-                unrealized_pnl = (current_price - self.average_entry_price) * self.net_leverage
+                unrealized_pnl = (current_price - self.average_entry_price) * (self.net_quantity * self.trade_pair.lot_size)
 
             gain = (self.realized_pnl + unrealized_pnl) / self.initial_entry_price
         else:
             gain = (
                 (current_price - self.average_entry_price)
-                * self.net_leverage
+                * (self.net_quantity * self.trade_pair.lot_size)
                 / self.initial_entry_price
             )
         # Check if liquidated
@@ -509,7 +524,7 @@ class Position(BaseModel):
                            order_uuid=position.position_uuid[::-1],  # deterministic across validators. Won't mess with p2p sync
                            trade_pair=position.trade_pair,
                            order_type=OrderType.FLAT,
-                           leverage=0,
+                           quantity=-position.net_quantity,
                            src=src,
                            price_sources=[x for x in (price_source, extra_price_source) if x is not None])
         return flat_order
@@ -555,7 +570,7 @@ class Position(BaseModel):
         if self.current_return == 0:
             self._handle_liquidation(TimeUtil.now_in_millis() if time_ms is None else time_ms, live_price_fetcher)
 
-    def update_position_state_for_new_order(self, order, delta_leverage, live_price_fetcher):
+    def update_position_state_for_new_order(self, order, delta_quantity, live_price_fetcher):
         """
         Must be called after every order to maintain accurate internal state. The variable average_entry_price has
         a name that can be a little confusing. Although it claims to be the average price, it really isn't.
@@ -564,9 +579,10 @@ class Position(BaseModel):
         """
         realtime_price = order.price
         assert self.initial_entry_price > 0, self.initial_entry_price
-        new_net_leverage = self.net_leverage + delta_leverage
+        new_net_quantity = self.net_quantity + delta_quantity
         if order.src in (OrderSource.ELIMINATION_FLAT, OrderSource.DEPRECATION_FLAT):
-            self.net_leverage = 0.0
+            self.net_quantity = 0.0
+            self.net_value = 0.0
             return  # Don't set returns since the price is zero'd out.
         self.set_returns(realtime_price, live_price_fetcher, time_ms=order.processed_ms, order=order)
 
@@ -577,40 +593,42 @@ class Position(BaseModel):
         self._position_log(f"closed return with fees [{self.return_at_close}]. Trade pair: {self.trade_pair.trade_pair_id}")
 
         if self.position_type == OrderType.FLAT:
-            self.net_leverage = 0.0
+            self.net_quantity = 0.0
+            self.net_value = 0.0
         else:
             if ALWAYS_USE_SLIPPAGE is False or (ALWAYS_USE_SLIPPAGE is None and order.processed_ms < SLIPPAGE_V1_TIME_MS):
                 self.average_entry_price = (
-                    self.average_entry_price * self.net_leverage
-                    + realtime_price * delta_leverage
-                ) / new_net_leverage
-                self.cumulative_entry_value += realtime_price * order.leverage
+                    self.average_entry_price * self.net_quantity
+                    + realtime_price * delta_quantity
+                ) / new_net_quantity
+                self.cumulative_entry_value += realtime_price * (order.quantity * order.trade_pair.lot_size)
             elif self.position_type == order.order_type:
                 # after SLIPPAGE_V1_TIME_MS, average entry price now reflects the average price
                 # average entry price only changes when an order is in the same direction as the position. reducing a position does not affect average entry price.
-                entry_price = order.price * (1 + order.slippage) if order.leverage > 0 else order.price * (1 - order.slippage)
+                entry_price = order.price * (1 + order.slippage) if order.quantity > 0 else order.price * (1 - order.slippage)
 
                 self.average_entry_price = (
-                    self.average_entry_price * self.net_leverage
-                    + entry_price * delta_leverage
-                ) / new_net_leverage
+                    self.average_entry_price * self.net_quantity
+                    + entry_price * delta_quantity
+                ) / new_net_quantity
 
                 self.cumulative_entry_value += entry_price * (order.quantity * order.trade_pair.lot_size)
-            self.net_leverage = new_net_leverage
+            self.net_quantity = new_net_quantity
+            self.net_value = self.net_quantity * realtime_price
 
     def initialize_position_from_first_order(self, order):
         self.open_ms = order.processed_ms
         if self.initial_entry_price <= 0:
             raise ValueError("Initial entry price must be > 0")
         # Initialize the position type. It will stay the same until the position is closed.
-        if order.leverage > 0:
+        if order.quantity > 0:
             self._position_log("setting new position type as LONG. Trade pair: " + str(self.trade_pair.trade_pair_id))
             self.position_type = OrderType.LONG
-        elif order.leverage < 0:
+        elif order.quantity < 0:
             self._position_log("setting new position type as SHORT. Trade pair: " + str(self.trade_pair.trade_pair_id))
             self.position_type = OrderType.SHORT
         else:
-            raise ValueError("leverage of 0 provided as initial order.")
+            raise ValueError("quantity of 0 provided as initial order.")
 
     def close_out_position(self, close_ms):
         self.position_type = OrderType.FLAT
@@ -638,7 +656,6 @@ class Position(BaseModel):
             order.leverage = -self.net_leverage
             order.value = -self.net_value
             order.quantity = -self.net_quantity
-            # self.set_order_lev_val_vol(order, leverage=-self.net_leverage)
             return should_ignore_order
 
         is_first_order = len(self.orders) == 0
@@ -663,9 +680,11 @@ class Position(BaseModel):
                     # take leverage up to the limit for position or portfolio, whichever is hit first
                     clamped_leverage = min(clamped_position_leverage, clamped_portfolio_leverage)
                     order.leverage = max(0.0, clamped_leverage)  # ensure leverage is always >= 0
+                    # TODO: set order.quantity here
 
                     if order.order_type == OrderType.SHORT:
                         order.leverage *= -1
+                        order.quantity *= -1
                     should_ignore_order = order.leverage == 0
                     if not should_ignore_order:
                         logging.warning(f"Miner {self.miner_hotkey} {self.trade_pair.trade_pair_id} order leverage clamped to {order.leverage}")
@@ -682,7 +701,7 @@ class Position(BaseModel):
                     pass  # We are trying to increase the leverage here so let it happen
         # attempting to flip position
         else:
-            order.leverage = -self.net_leverage
+            order.quantity = -self.net_quantity
             order.order_type = OrderType.FLAT
 
         if abs(order.leverage) < ValiConfig.ORDER_MIN_LEVERAGE and (should_ignore_order is False):
@@ -691,7 +710,8 @@ class Position(BaseModel):
         return should_ignore_order
 
     def _update_position(self, live_price_fetcher):
-        self.net_leverage = 0.0
+        self.net_quantity = 0.0
+        self.net_value = 0.0
         self.cumulative_entry_value = 0.0
         self.realized_pnl = 0.0
         bt.logging.trace(f"Updating position {self.trade_pair.trade_pair_id} with n orders: {len(self.orders)}")
@@ -703,11 +723,11 @@ class Position(BaseModel):
             if (
                 (
                     self.position_type == OrderType.LONG
-                    and self.net_leverage + order.leverage <= 0
+                    and self.net_quantity + order.quantity <= 0
                 )
                 or (
                     self.position_type == OrderType.SHORT
-                    and self.net_leverage + order.leverage >= 0
+                    and self.net_quantity + order.quantity >= 0
                 )
                 or order.order_type == OrderType.FLAT
             ):
@@ -717,13 +737,13 @@ class Position(BaseModel):
                 self.close_out_position(order.processed_ms)
 
             # Reflect the current order in the current position's return.
-            adjusted_leverage = (
-                0.0 if self.position_type == OrderType.FLAT else order.leverage
+            adjusted_quantity = (
+                0.0 if self.position_type == OrderType.FLAT else order.quantity
             )
             #bt.logging.info(
-            #    f"Updating position state for new order {order} with adjusted leverage {adjusted_leverage}"
+            #    f"Updating position state for new order {order} with adjusted leverage {adjusted_quantity}"
             #)
-            self.update_position_state_for_new_order(order, adjusted_leverage, live_price_fetcher)
+            self.update_position_state_for_new_order(order, adjusted_quantity, live_price_fetcher)
 
             # If the position is already closed, we don't need to process any more orders. break in case there are more orders.
             if self.position_type == OrderType.FLAT:
