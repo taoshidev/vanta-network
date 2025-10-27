@@ -872,7 +872,7 @@ class Validator:
                 self._add_order_to_existing_position(existing_open_pos, trade_pair, OrderType.FLAT,
                                                      0.0, force_close_order_time, miner_hotkey,
                                                      price_sources, force_close_order_uuid, miner_repo_version,
-                                                     OrderSource.MAX_ORDERS_PER_POSITION_CLOSE, account_size)
+                                                     OrderSource.MAX_ORDERS_PER_POSITION_CLOSE)
                 time.sleep(0.1)  # Put 100ms between two consecutive websocket writes for the same trade pair and hotkey. We need the new order to be seen after the FLAT.
             else:
                 # If the position is closed, raise an exception. This can happen if the miner is eliminated in the main
@@ -1043,18 +1043,20 @@ class Validator:
         return temp
 
     def _add_order_to_existing_position(self, existing_position, trade_pair, signal_order_type: OrderType,
-                                        leverage: float, value: float, volume: float, order_time_ms: int, miner_hotkey: str,
+                                        quantity: float, order_time_ms: int, miner_hotkey: str,
                                         price_sources, miner_order_uuid: str, miner_repo_version: str, src:OrderSource):
         # Must be locked by caller
         best_price_source = price_sources[0]
+        price = best_price_source.parse_appropriate_price(order_time_ms, trade_pair.is_forex, signal_order_type, existing_position)
+        value = quantity * (price * trade_pair.lot_size)
+        leverage = value / self._get_account_size(miner_hotkey, order_time_ms)
         order = Order(
             trade_pair=trade_pair,
             order_type=signal_order_type,
             leverage=leverage,
             value=value,
-            volume=volume,
-            price=best_price_source.parse_appropriate_price(order_time_ms, trade_pair.is_forex, signal_order_type,
-                                                            existing_position),
+            quantity=quantity,
+            price=price,
             processed_ms=order_time_ms,
             order_uuid=miner_order_uuid,
             price_sources=price_sources,
@@ -1083,29 +1085,27 @@ class Validator:
             account_size = max(account_size, ValiConfig.MIN_CAPITAL)
         return account_size
 
-    def parse_order_size(self, signal, price, trade_pair, portfolio_value):
+    def parse_order_quantity(self, signal, price, trade_pair, portfolio_value):
         """
-        parses an order signal and calculates leverage, value, and volume
+        parses an order signal and calculates leverage, value, and quantity
         """
         leverage = signal.get("leverage")
         value = signal.get("value")
-        volume = signal.get("volume")
+        quantity = signal.get("quantity")
 
-        fields_set = [x is not None for x in (leverage, value, volume)]
+        fields_set = [x is not None for x in (leverage, value, quantity)]
         if sum(fields_set) != 1:
-            raise ValueError("Exactly one of 'leverage', 'value', or 'volume' must be set")
+            raise ValueError("Exactly one of 'leverage', 'value', or 'quantity' must be set")
 
+        if quantity is not None:
+            return quantity
         if leverage is not None:
             value = leverage * portfolio_value
-            volume = value / (price * trade_pair.lot_size)
+            quantity = value / (price * trade_pair.lot_size)
         elif value is not None:
-            leverage = value / portfolio_value
-            volume = value / (price * trade_pair.lot_size)
-        elif volume is not None:
-            value = volume * (price * trade_pair.lot_size)
-            leverage = value / portfolio_value
+            quantity = value / (price * trade_pair.lot_size)
 
-        return leverage, value, volume
+        return quantity
 
     # This is the core validator function to receive a signal
     def receive_signal(self, synapse: template.protocol.SendSignal,
@@ -1160,10 +1160,10 @@ class Validator:
                     best_price_source = price_sources[0]
                     price = best_price_source.parse_appropriate_price(now_ms, trade_pair.is_forex, signal_order_type,existing_position)
                     miner_account_size = self._get_account_size(miner_hotkey, now_ms)
-                    leverage, value, volume = self.parse_order_size(signal, price, trade_pair, miner_account_size)
+                    quantity = self.parse_order_quantity(signal, price, trade_pair, miner_account_size)
 
                     self._add_order_to_existing_position(existing_position, trade_pair, signal_order_type,
-                                                        leverage, value, volume, now_ms, miner_hotkey,
+                                                        quantity, now_ms, miner_hotkey,
                                                         price_sources, miner_order_uuid, miner_repo_version,
                                                         OrderSource.ORGANIC)
                     synapse.order_json = existing_position.orders[-1].__str__()

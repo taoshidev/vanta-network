@@ -60,7 +60,7 @@ def handle_data():
         signal = Signal(trade_pair=TradePair.from_trade_pair_id(signal_trade_pair_str),
                         leverage=float(data["leverage"]) if data.get("leverage") is not None else None,
                         value=float(data["value"]) if data.get("value") is not None else None,
-                        volume=float(data["volume"]) if data.get("volume") is not None else None,
+                        quantity=float(data["quantity"]) if data.get("quantity") is not None else None,
                         order_type=OrderType.from_string(data["order_type"].upper()))
         # make miner received signals dir if doesnt exist
         ValiBkpUtils.make_dir(MinerConfig.get_miner_received_signals_dir())

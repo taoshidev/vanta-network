@@ -57,13 +57,12 @@ class PriceSlippageModel:
 
         trade_pair = order.trade_pair
         if bid * ask == 0:
-            if not trade_pair.is_crypto:  # For now, crypto does not have slippage
+            if not trade_pair.is_crypto:  # For now, crypto does not have bid/ask data
                 bt.logging.warning(f'Tried to calculate slippage with bid: {bid} and ask: {ask}. order: {order}. Returning 0')
             return 0  # Need valid bid and ask.
         if abs(order.value) <= 1000:
             return 0
-        if cls.is_backtesting:
-            cls.refresh_features_daily(order.processed_ms, write_to_disk=False)
+        cls.refresh_features_daily(order.processed_ms, write_to_disk=not cls.is_backtesting)
 
         if trade_pair.is_equities:
             slippage_percentage = cls.calc_slippage_equities(bid, ask, order)

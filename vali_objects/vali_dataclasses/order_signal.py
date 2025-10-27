@@ -11,14 +11,14 @@ class Signal(BaseModel):
     order_type: OrderType
     leverage: Optional[float] = None    # multiplier of account size
     value: Optional[float] = None       # USD value of order
-    volume: Optional[float] = None      # number of lots/coins/shares/etc.
+    quantity: Optional[float] = None      # number of lots/coins/shares/etc.
 
     @model_validator(mode='before')
     def check_exclusive_fields(cls, values):
         """
-        Ensure that only ONE of leverage, value, or volume is filled
+        Ensure that only ONE of leverage, value, or quantity is filled
         """
-        fields = ['leverage', 'value', 'volume']
+        fields = ['leverage', 'value', 'quantity']
         filled = [f for f in fields if values.get(f) is not None]
         if len(filled) != 1:
             raise ValueError(f"Exactly one of {fields} must be provided, got {filled}")
@@ -28,11 +28,11 @@ class Signal(BaseModel):
     def set_size(cls, values):
         """
         Ensure that long orders have positive size, and short orders have negative size,
-        applied to all non-None of leverage, value, and volume.
+        applied to all non-None of leverage, value, and quantity.
         """
         order_type = values['order_type']
 
-        for field in ['leverage', 'value', 'volume']:
+        for field in ['leverage', 'value', 'quantity']:
             size = values.get(field)
             if size is not None:
                 if order_type == OrderType.LONG and size < 0:
@@ -46,5 +46,5 @@ class Signal(BaseModel):
                     'order_type': str(self.order_type),
                     'leverage': self.leverage,
                     'value': self.value,
-                    'volume': self.volume
+                    'quantity': self.quantity
                     })

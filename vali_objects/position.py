@@ -380,7 +380,7 @@ class Position(BaseModel):
                 # update realized pnl for orders that reduce the size of a position
                 if (order.order_type != self.position_type or self.position_type == OrderType.FLAT):
                     exit_price = current_price * (1 + order.slippage) if order.leverage > 0 else current_price * (1 - order.slippage)
-                    self.realized_pnl += -1 * (exit_price - self.average_entry_price) * (order.volume * order.trade_pair.lot_size)  # TODO: FIFO entry cost
+                    self.realized_pnl += -1 * (exit_price - self.average_entry_price) * (order.quantity * order.trade_pair.lot_size)  # TODO: FIFO entry cost
                 unrealized_pnl = (current_price - self.average_entry_price) * min(self.net_leverage, self.net_leverage + order.leverage, key=abs)
             else:
                 unrealized_pnl = (current_price - self.average_entry_price) * self.net_leverage
@@ -506,7 +506,7 @@ class Position(BaseModel):
 
         flat_order = Order(price=price,
                            processed_ms=fake_flat_order_time,
-                           order_uuid=position.position_uuid[::-1],  # determinstic across validators. Won't mess with p2p sync
+                           order_uuid=position.position_uuid[::-1],  # deterministic across validators. Won't mess with p2p sync
                            trade_pair=position.trade_pair,
                            order_type=OrderType.FLAT,
                            leverage=0,
@@ -595,7 +595,7 @@ class Position(BaseModel):
                     + entry_price * delta_leverage
                 ) / new_net_leverage
 
-                self.cumulative_entry_value += entry_price * (order.volume * order.trade_pair.lot_size)
+                self.cumulative_entry_value += entry_price * (order.quantity * order.trade_pair.lot_size)
             self.net_leverage = new_net_leverage
 
     def initialize_position_from_first_order(self, order):
@@ -636,6 +636,9 @@ class Position(BaseModel):
         should_ignore_order = False
         if order.order_type == OrderType.FLAT:
             order.leverage = -self.net_leverage
+            order.value = -self.net_value
+            order.quantity = -self.net_quantity
+            # self.set_order_lev_val_vol(order, leverage=-self.net_leverage)
             return should_ignore_order
 
         is_first_order = len(self.orders) == 0
