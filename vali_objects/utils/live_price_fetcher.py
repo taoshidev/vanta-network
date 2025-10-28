@@ -52,6 +52,18 @@ class LivePriceFetcher:
         self.tiingo_data_service.stop_threads()
         self.polygon_data_service.stop_threads()
 
+    def is_market_open(self, trade_pair: TradePair) -> bool:
+        return self.polygon_data_service.is_market_open(trade_pair)
+
+    def get_unsupported_trade_pairs(self):
+        return self.polygon_data_service.UNSUPPORTED_TRADE_PAIRS
+
+    def get_currency_conversion(self, base: str, quote: str):
+        return self.polygon_data_service.get_currency_conversion(base=base, quote=quote)
+
+    def unified_candle_fetcher(self, trade_pair, start_date, order_date, timespan="day"):
+        return self.polygon_data_service.unified_candle_fetcher(trade_pair, start_date, order_date, timespan=timespan)
+
     def sorted_valid_price_sources(self, price_events: List[PriceSource | None], current_time_ms: int, filter_recent_only=True) -> List[PriceSource] | None:
         """
         Sorts a list of price events by their recency and validity.

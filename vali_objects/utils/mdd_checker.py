@@ -57,7 +57,7 @@ class MDDChecker(CacheController):
                     if self._position_is_candidate_for_price_correction(position, now_ms):
                         tp = position.trade_pair
                         if tp not in trade_pair_to_market_open:
-                            trade_pair_to_market_open[tp] = self.live_price_fetcher.polygon_data_service.is_market_open(tp)
+                            trade_pair_to_market_open[tp] = self.live_price_fetcher.is_market_open(tp)
                         if trade_pair_to_market_open[tp]:
                             required_trade_pairs_for_candles.add(tp)
 

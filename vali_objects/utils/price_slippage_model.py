@@ -130,7 +130,7 @@ class PriceSlippageModel:
 
         size = abs(order.value)
         base, _ = order.trade_pair.trade_pair.split("/")
-        base_to_usd_conversion = cls.live_price_fetcher.polygon_data_service.get_currency_conversion(base=base, quote="USD") if base != "USD" else 1  # TODO: fallback?
+        base_to_usd_conversion = cls.live_price_fetcher.get_currency_conversion(base=base, quote="USD") if base != "USD" else 1  # TODO: fallback?
         # print(base_to_usd_conversion)
         volume_standard_lots = size / (100_000 * base_to_usd_conversion)  # Volume expressed in terms of standard lots (1 std lot = 100,000 base currency)
 
@@ -231,7 +231,7 @@ class PriceSlippageModel:
         days_ago = max(adv_lookback_window, calc_vol_window) + 4  # +1 for last day, +1 because daily_returns is NaN for 1st day, +2 for padding (unexpected holidays)
         start_date = cls.holidays_nyse.get_nth_working_day(order_date, -days_ago).strftime("%Y-%m-%d")
 
-        price_info_raw = cls.live_price_fetcher.polygon_data_service.unified_candle_fetcher(trade_pair, start_date, order_date, timespan="day")
+        price_info_raw = cls.live_price_fetcher.unified_candle_fetcher(trade_pair, start_date, order_date, timespan="day")
         aggs = []
         try:
             for a in price_info_raw:

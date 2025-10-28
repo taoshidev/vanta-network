@@ -570,6 +570,10 @@ class PerfLedgerManager(CacheController):
             self.hotkey_to_perf_bundle = {}
         self.running_unit_tests = running_unit_tests
         self.position_manager = position_manager
+
+        self.contract_manager = contract_manager
+        self.cached_miner_account_sizes = {}  # Deepcopy of contract_manager.miner_account_sizes
+        self.cache_last_refreshed_date = None  # 'YYYY-MM-DD' format, refresh daily
         self.pds = live_price_fetcher.polygon_data_service if live_price_fetcher else None  # Load it later once the process starts so ipc works.
         self.live_price_fetcher = live_price_fetcher  # For unit tests only
 
