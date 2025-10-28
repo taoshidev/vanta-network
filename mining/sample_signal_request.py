@@ -42,7 +42,7 @@ if __name__ == "__main__":
         'order_type': OrderType.LONG,
         'leverage': 0.1,    # leverage
         # 'value': 10_000,  # USD value
-        # 'quantity': 0.1,    # base asset volume (lots, shares, coins, etc.)
+        # 'quantity': 0.1,  # base asset quantity (lots, shares, coins, etc.)
         'api_key': 'xxxx'
     }
 

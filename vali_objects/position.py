@@ -53,9 +53,13 @@ class Position(BaseModel):
     net_quantity: float = 0.0
     return_at_close: float = 1.0  # includes all fees
     average_entry_price: float = 0.0
-    cumulative_entry_value: float = 0.0
+    cumulative_entry_value: float = 0.0     # in base currency
+    cumulative_entry_value_usd: float = 0.0 # in USD
     account_size: float = 0.0
-    realized_pnl: float = 0.0
+    realized_pnl: float = 0.0       # in base currency
+    realized_pnl_usd: float = 0.0   # in USD
+    unrealized_pnl: float = 0.0     # in base currency
+    unrealized_pnl_usd: float = 0.0 # in USD
     position_type: Optional[OrderType] = None
     is_closed_position: bool = False
 
@@ -321,7 +325,11 @@ class Position(BaseModel):
         self.net_value = 0.0
         self.average_entry_price = 0.0
         self.cumulative_entry_value = 0.0
+        self.cumulative_entry_value_usd = 0.0
         self.realized_pnl = 0.0
+        self.realized_pnl_usd = 0.0
+        self.unrealized_pnl = 0.0
+        self.unrealized_pnl_usd = 0.0
         self.position_type = None
         self.is_closed_position = False
         self.position_type = None
@@ -382,7 +390,7 @@ class Position(BaseModel):
         self.orders.append(order)
         self._update_position(live_price_fetcher)
 
-    def calculate_pnl(self, current_price, t_ms=None, order=None):
+    def calculate_pnl(self, current_price, live_price_fetcher, t_ms=None, order=None):
         if self.initial_entry_price == 0 or self.average_entry_price is None:
             return 1
 
@@ -390,23 +398,33 @@ class Position(BaseModel):
             t_ms = TimeUtil.now_in_millis()
 
         # pnl with slippage
+        order_realized_pnl = 0
         if ALWAYS_USE_SLIPPAGE or (ALWAYS_USE_SLIPPAGE is None and t_ms >= SLIPPAGE_V1_TIME_MS):
             if order:
                 # update realized pnl for orders that reduce the size of a position
                 if order.order_type != self.position_type or self.position_type == OrderType.FLAT:
                     exit_price = current_price * (1 + order.slippage) if order.quantity > 0 else current_price * (1 - order.slippage)
-                    self.realized_pnl += -1 * (exit_price - self.average_entry_price) * (order.quantity * order.trade_pair.lot_size)
-                unrealized_pnl = (current_price - self.average_entry_price) * (min(self.net_quantity, self.net_quantity + order.quantity, key=abs) * order.trade_pair.lot_size)
+                    order_realized_pnl = -1 * (exit_price - self.average_entry_price) * (order.quantity * order.trade_pair.lot_size)
+                    self.realized_pnl += order_realized_pnl
+                self.unrealized_pnl = (current_price - self.average_entry_price) * (min(self.net_quantity, self.net_quantity + order.quantity, key=abs) * order.trade_pair.lot_size)
             else:
-                unrealized_pnl = (current_price - self.average_entry_price) * (self.net_quantity * self.trade_pair.lot_size)
+                self.unrealized_pnl = (current_price - self.average_entry_price) * (self.net_quantity * self.trade_pair.lot_size)
 
-            gain = (self.realized_pnl + unrealized_pnl) / self.initial_entry_price
+            gain = (self.realized_pnl + self.unrealized_pnl) / self.initial_entry_price
         else:
             gain = (
                 (current_price - self.average_entry_price)
                 * (self.net_quantity * self.trade_pair.lot_size)
                 / self.initial_entry_price
             )
+
+        # convert pnl to usd
+        order_type = order.order_type if order else self.orders[-1].order_type
+        quote_usd_conversion = live_price_fetcher.get_usd_conversion(self.trade_pair.quote, t_ms, order_type, self.position_type)
+        print(f"get_usd_conversion for {self.trade_pair}: {quote_usd_conversion}")
+        self.realized_pnl_usd += order_realized_pnl * quote_usd_conversion
+        self.unrealized_pnl_usd = self.unrealized_pnl * quote_usd_conversion
+
         # Check if liquidated
         if gain <= -1.0:
             return 0
@@ -508,7 +526,7 @@ class Position(BaseModel):
                 now_ms=elimination_time_ms,
                 is_forex=position.trade_pair.is_forex,
                 order_type=OrderType.FLAT,
-                position=position
+                position_type=position.orders[0].order_type
             )
             src = OrderSource.PRICE_FILLED_ELIMINATION_FLAT
         else:
@@ -544,9 +562,9 @@ class Position(BaseModel):
             fee = self.get_carry_fee(timestamp_ms)[0] * self.get_spread_fee(timestamp_ms)
         return current_return_no_fees * fee
 
-    def get_open_position_return_with_fees(self, realtime_price, time_ms):
-        current_return = self.calculate_pnl(realtime_price)
-        return self.calculate_return_with_fees(current_return, timestamp_ms=time_ms)
+    # def get_open_position_return_with_fees(self, realtime_price, time_ms):
+    #     current_return = self.calculate_pnl(realtime_price)
+    #     return self.calculate_return_with_fees(current_return, timestamp_ms=time_ms)
 
     def set_returns_with_updated_fees(self, total_fees, time_ms, live_price_fetcher):
         self.return_at_close = self.current_return * total_fees
@@ -557,7 +575,7 @@ class Position(BaseModel):
     def set_returns(self, realtime_price, live_price_fetcher, time_ms=None, total_fees=None, order=None):
         # We used to multiple trade_pair.fees by net_leverage. Eventually we will
         # Update this calculation to approximate actual exchange fees.
-        self.current_return = self.calculate_pnl(realtime_price, t_ms=time_ms, order=order)
+        self.current_return = self.calculate_pnl(realtime_price, live_price_fetcher, t_ms=time_ms, order=order)
         if total_fees is None:
             self.return_at_close = self.calculate_return_with_fees(self.current_return,
                                timestamp_ms=TimeUtil.now_in_millis() if time_ms is None else time_ms)
@@ -597,22 +615,31 @@ class Position(BaseModel):
             self.net_value = 0.0
         else:
             if ALWAYS_USE_SLIPPAGE is False or (ALWAYS_USE_SLIPPAGE is None and order.processed_ms < SLIPPAGE_V1_TIME_MS):
+                # no slippage
                 self.average_entry_price = (
                     self.average_entry_price * self.net_quantity
                     + realtime_price * delta_quantity
                 ) / new_net_quantity
-                self.cumulative_entry_value += realtime_price * (order.quantity * order.trade_pair.lot_size)
+
+                entry_value = realtime_price * (order.quantity * order.trade_pair.lot_size)
             elif self.position_type == order.order_type:
                 # after SLIPPAGE_V1_TIME_MS, average entry price now reflects the average price
                 # average entry price only changes when an order is in the same direction as the position. reducing a position does not affect average entry price.
                 entry_price = order.price * (1 + order.slippage) if order.quantity > 0 else order.price * (1 - order.slippage)
+                entry_value = entry_price * (order.quantity * order.trade_pair.lot_size)
 
                 self.average_entry_price = (
                     self.average_entry_price * self.net_quantity
                     + entry_price * delta_quantity
                 ) / new_net_quantity
+            else:
+                # order is reducing the size of a position, so there is no entry cost.
+                entry_value = 0
 
-                self.cumulative_entry_value += entry_price * (order.quantity * order.trade_pair.lot_size)
+            quote_usd_conversion = live_price_fetcher.get_usd_conversion(self.trade_pair.quote, order.processed_ms, order.order_type, self.position_type)
+            print(f"get_usd_conversion2 for {self.trade_pair}: {quote_usd_conversion}")
+            self.cumulative_entry_value += entry_value
+            self.cumulative_entry_value_usd += entry_value * quote_usd_conversion
             self.net_quantity = new_net_quantity
             self.net_value = self.net_quantity * realtime_price
 
@@ -653,8 +680,6 @@ class Position(BaseModel):
         """
         should_ignore_order = False
         if order.order_type == OrderType.FLAT:
-            order.leverage = -self.net_leverage
-            order.value = -self.net_value
             order.quantity = -self.net_quantity
             return should_ignore_order
 
@@ -713,7 +738,11 @@ class Position(BaseModel):
         self.net_quantity = 0.0
         self.net_value = 0.0
         self.cumulative_entry_value = 0.0
+        self.cumulative_entry_value_usd = 0.0
         self.realized_pnl = 0.0
+        self.realized_pnl_usd = 0.0
+        self.unrealized_pnl = 0.0
+        self.unrealized_pnl_usd = 0.0
         bt.logging.trace(f"Updating position {self.trade_pair.trade_pair_id} with n orders: {len(self.orders)}")
         for order in self.orders:
             if self.position_type is None:

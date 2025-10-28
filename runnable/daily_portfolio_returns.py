@@ -957,7 +957,7 @@ class ReturnCalculator:
             now_ms=target_date_ms,
             is_forex=position.trade_pair.is_forex,
             order_type=position.orders[0].order_type,
-            position=position_copy
+            position_type=position_copy.orders[0].order_type
         )
         
         position_copy.set_returns(price, live_price_fetcher, time_ms=target_date_ms)

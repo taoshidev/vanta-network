@@ -1047,7 +1047,7 @@ class Validator:
                                         price_sources, miner_order_uuid: str, miner_repo_version: str, src:OrderSource):
         # Must be locked by caller
         best_price_source = price_sources[0]
-        price = best_price_source.parse_appropriate_price(order_time_ms, trade_pair.is_forex, signal_order_type, existing_position)
+        price = best_price_source.parse_appropriate_price(order_time_ms, trade_pair.is_forex, signal_order_type, existing_position.orders[0].order_type)
         order = Order(
             trade_pair=trade_pair,
             order_type=signal_order_type,
@@ -1152,8 +1152,8 @@ class Validator:
                     now_ms, miner_hotkey, miner_order_uuid, now_ms, price_sources, miner_repo_version, account_size)
                 if existing_position:
                     best_price_source = price_sources[0]
-                    price = best_price_source.parse_appropriate_price(now_ms, trade_pair.is_forex, signal_order_type,existing_position)
                     miner_account_size = self._get_account_size(miner_hotkey, now_ms)
+                    price = best_price_source.parse_appropriate_price(now_ms, trade_pair.is_forex, signal_order_type, existing_position.orders[0].order_type)
                     quantity = self.parse_order_quantity(signal, price, trade_pair, miner_account_size)
 
                     self._add_order_to_existing_position(existing_position, trade_pair, signal_order_type,

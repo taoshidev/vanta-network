@@ -153,7 +153,7 @@ class MDDChecker(CacheController):
                 any_changes = True
 
         if any_changes:
-            order.price = winning_event.parse_appropriate_price(order_time_ms, trade_pair.is_forex, order.order_type, position)
+            order.price = winning_event.parse_appropriate_price(order_time_ms, trade_pair.is_forex, order.order_type, position.orders[0].order_type)
             order.bid = winning_event.bid
             order.ask = winning_event.ask
             order.slippage = PriceSlippageModel.calculate_slippage(winning_event.bid, winning_event.ask, order)

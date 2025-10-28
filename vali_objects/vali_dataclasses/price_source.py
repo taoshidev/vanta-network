@@ -71,7 +71,7 @@ class PriceSource(BaseModel):
             else:
                 return self.close
 
-    def parse_appropriate_price(self, now_ms: int, is_forex: bool, order_type: OrderType, position) -> float:
+    def parse_appropriate_price(self, now_ms: int, is_forex: bool, order_type: OrderType, position_type: OrderType) -> float:
         ans = None
         # Only secondly candles have bid/ask
         if is_forex and self.timespan_ms == 1000:
@@ -81,12 +81,12 @@ class PriceSource(BaseModel):
                 ans = self.bid
             elif order_type == OrderType.FLAT:
                 # Use the position's initial type to determine if the FLAT is increasing or decreasing leverage
-                if position.orders[0].order_type == OrderType.LONG:
+                if position_type == OrderType.LONG:
                     ans = self.bid
-                elif position.orders[0].order_type == OrderType.SHORT:
+                elif position_type == OrderType.SHORT:
                     ans = self.ask
                 else:
-                    bt.logging.error(f'Initial position order is FLAT. Unexpected. Position: {position}')
+                    bt.logging.error(f'Initial position order is FLAT. Unexpected. Position: {position_type}')
                     ans = self.vwap
             else:
                 raise Exception(f'Unexpected order type {order_type}')
