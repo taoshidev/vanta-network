@@ -1,3 +1,4 @@
+from multiprocessing.managers import BaseManager
 import time
 from typing import List, Tuple, Dict
 
@@ -15,6 +16,23 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeou
 from vali_objects.vali_dataclasses.order import OrderSource
 from vali_objects.vali_dataclasses.price_source import PriceSource
 from statistics import median
+
+class LivePriceFetcherClient(BaseManager): pass
+LivePriceFetcherClient.register('LivePriceFetcher')
+
+def get_live_price_client(address=('localhost', 50000), authkey=b'secret'):
+    manager = LivePriceFetcherClient(address=address, authkey=authkey)
+    manager.connect()
+    return manager.LivePriceFetcher()
+
+class LivePriceFetcherServer(BaseManager): pass
+
+def run_live_price_server(secrets, address=('localhost', 50000), authkey=b'secret', disable_ws=False, ipc_manager=None, is_backtesting=False):
+    live_price_fetcher = LivePriceFetcher(secrets, disable_ws, ipc_manager, is_backtesting)
+    LivePriceFetcherServer.register('LivePriceFetcher', callable=lambda: live_price_fetcher)
+    manager = LivePriceFetcherServer(address=address, authkey=authkey)
+    server = manager.get_server()
+    server.serve_forever()
 
 class LivePriceFetcher:
     def __init__(self, secrets, disable_ws=False, ipc_manager=None, is_backtesting=False):

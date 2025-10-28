@@ -28,6 +28,7 @@ import base64
 from runnable.generate_request_core import RequestCoreManager
 from runnable.generate_request_minerstatistics import MinerStatisticsManager
 from runnable.generate_request_outputs import RequestOutputGenerator
+from vali_objects.utils import live_price_fetcher
 from vali_objects.utils.auto_sync import PositionSyncer
 from vali_objects.utils.p2p_syncer import P2PSyncer
 from shared_objects.rate_limiter import RateLimiter
@@ -131,7 +132,17 @@ class Validator:
         self.ipc_manager = Manager()
         self.shared_queue_websockets = self.ipc_manager.Queue()
 
-        self.live_price_fetcher = LivePriceFetcher(secrets=self.secrets, disable_ws=False)
+        self.live_price_fetcher_process = Process(
+            target=live_price_fetcher.run_live_price_server,
+            args=(self.secrets,),
+            kwargs={'disable_ws': False},
+            daemon=True
+        )
+        self.live_price_fetcher_process.start()
+        time.sleep(2)  # Wait for the server to start up before connecting
+        self.live_price_fetcher = live_price_fetcher.get_live_price_client();
+        # self.live_price_fetcher = LivePriceFetcher(secrets=self.secrets, disable_ws=False)
+
         self.price_slippage_model = PriceSlippageModel(live_price_fetcher=self.live_price_fetcher)
         # Activating Bittensor's logging with the set configurations.
         bt.logging(config=self.config, logging_dir=self.config.full_path)
