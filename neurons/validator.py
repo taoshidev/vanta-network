@@ -139,7 +139,7 @@ class Validator:
             daemon=True
         )
         self.live_price_fetcher_process.start()
-        time.sleep(2)  # Wait for the server to start up before connecting
+        self._wait_for_live_price_server_ready()
         self.live_price_fetcher = live_price_fetcher.get_live_price_client();
         # self.live_price_fetcher = LivePriceFetcher(secrets=self.secrets, disable_ws=False)
 
@@ -652,6 +652,25 @@ class Validator:
                 self.position_syncer.sync_positions(
                     False, candidate_data=self.position_syncer.read_validator_checkpoint_from_gcloud_zip())
 
+    def _wait_for_live_price_server_ready(self, max_wait_time=10, min_wait_time=2, check_interval=0.5):
+        bt.logging.info("LivePriceFetcher server process started, waiting for it to be ready...")
+
+        waited = 0
+        while waited < max_wait_time:
+            if not self.live_price_fetcher_process.is_alive():
+                raise RuntimeError(
+                    f"LivePriceFetcher server process died during startup. "
+                    f"Exit code: {self.live_price_fetcher_process.exitcode}"
+                )
+            time.sleep(check_interval)
+            waited += check_interval
+            if waited >= min_wait_time:
+                break
+
+        if not self.live_price_fetcher_process.is_alive():
+            raise RuntimeError("LivePriceFetcher server process failed to start")
+
+        bt.logging.info(f"LivePriceFetcher server process ready")
 
     @staticmethod
     def blacklist_fn(synapse, metagraph) -> Tuple[bool, str]:
