@@ -20,19 +20,37 @@ from statistics import median
 class LivePriceFetcherClient(BaseManager): pass
 LivePriceFetcherClient.register('LivePriceFetcher')
 
-def get_live_price_client(address=('localhost', 50000), authkey=b'secret'):
-    manager = LivePriceFetcherClient(address=address, authkey=authkey)
-    manager.connect()
-    return manager.LivePriceFetcher()
+def get_live_price_client(address=('localhost', 50000), authkey=b'secret', max_retries = 5):
+    bt.logging.info(f"Attempting to connect to LivePriceFetcher server")
+    for attempt in range(max_retries):
+        try:
+            manager = LivePriceFetcherClient(address=address, authkey=authkey)
+            manager.connect()
+            bt.logging.success(f"Successfully connected to LivePriceFetcher server")
+            return manager.LivePriceFetcher()
+        except Exception as e:
+            if attempt < max_retries - 1:
+                bt.logging.warning(f"Failed to connect to LivePriceFetcher server (attempt {attempt + 1}/{max_retries}): {e}. Retrying in 1s...")
+                time.sleep(1)
+            else:
+                bt.logging.error(f"Failed to connect to LivePriceFetcher server after {max_retries} attempts: {e}")
+                raise
 
 class LivePriceFetcherServer(BaseManager): pass
 
 def run_live_price_server(secrets, address=('localhost', 50000), authkey=b'secret', disable_ws=False, ipc_manager=None, is_backtesting=False):
-    live_price_fetcher = LivePriceFetcher(secrets, disable_ws, ipc_manager, is_backtesting)
-    LivePriceFetcherServer.register('LivePriceFetcher', callable=lambda: live_price_fetcher)
-    manager = LivePriceFetcherServer(address=address, authkey=authkey)
-    server = manager.get_server()
-    server.serve_forever()
+    bt.logging.info(f"Starting LivePriceFetcher server ...")
+    try:
+        live_price_fetcher = LivePriceFetcher(secrets, disable_ws, ipc_manager, is_backtesting)
+        bt.logging.info(f"LivePriceFetcher instance created successfully")
+        LivePriceFetcherServer.register('LivePriceFetcher', callable=lambda: live_price_fetcher)
+        manager = LivePriceFetcherServer(address=address, authkey=authkey)
+        server = manager.get_server()
+        bt.logging.success(f"LivePriceFetcher server is now listening")
+        server.serve_forever()
+    except Exception as e:
+        bt.logging.error(f"Failed to start LivePriceFetcher server {e}")
+        raise
 
 class LivePriceFetcher:
     def __init__(self, secrets, disable_ws=False, ipc_manager=None, is_backtesting=False):
