@@ -1737,7 +1737,9 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
         mock_pds.unified_candle_fetcher.side_effect = mock_unified_candle_fetcher
         mock_pds.tp_to_mfs = {}
         mock_lpf.return_value.polygon_data_service = mock_pds
-        
+        # Also set up the LivePriceFetcher's unified_candle_fetcher to delegate to polygon_data_service
+        mock_lpf.return_value.unified_candle_fetcher.side_effect = mock_unified_candle_fetcher
+
         # Create PerfLedgerManager with mocked price fetcher
         # Set is_backtesting=True to avoid the ledger window cutoff
         plm = PerfLedgerManager(
