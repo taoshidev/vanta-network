@@ -996,12 +996,12 @@ class Validator:
                 )
                 synapse.error_message = msg
 
-            elif not self.live_price_fetcher.polygon_data_service.is_market_open(tp):
+            elif not self.live_price_fetcher.is_market_open(tp):
                 msg = (f"Market for trade pair [{tp.trade_pair_id}] is likely closed or this validator is"
                        f" having issues fetching live price. Please try again later.")
                 synapse.error_message = msg
 
-            elif tp in self.live_price_fetcher.polygon_data_service.UNSUPPORTED_TRADE_PAIRS:
+            elif tp in self.live_price_fetcher.get_unsupported_trade_pairs():
                 msg = (f"Trade pair [{tp.trade_pair_id}] has been temporarily halted. "
                        f"Please try again with a different trade pair.")
                 synapse.error_message = msg

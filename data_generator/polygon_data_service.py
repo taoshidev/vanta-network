@@ -809,12 +809,12 @@ class PolygonDataService(BaseDataService):
             elif timespan == 'minute':
                 ans = _get_filtered_forex_minute_data()
             elif timespan == 'day':
-                return _fetch_raw_polygon_aggs()
+                return list(_fetch_raw_polygon_aggs())
             else:
                 raise Exception(f'Invalid timespan {timespan}')
             return ans
         else:
-            return _fetch_raw_polygon_aggs()
+            return list(_fetch_raw_polygon_aggs())
 
     def get_candles_for_trade_pair(
         self,
