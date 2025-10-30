@@ -39,6 +39,7 @@ class PositionManager(CacheController):
                  is_mothership=False, perf_ledger_manager=None,
                  challengeperiod_manager=None,
                  elimination_manager=None,
+                 contract_manager=None,
                  secrets=None,
                  ipc_manager=None,
                  live_price_fetcher=None,
@@ -64,6 +65,12 @@ class PositionManager(CacheController):
 
         # Track splitting statistics
         self.split_stats = defaultdict(self._default_split_stats)
+
+        self.contract_manager = contract_manager
+        if contract_manager:
+            self.cached_miner_account_sizes = deepcopy(self.contract_manager.miner_account_sizes)
+        else:
+            self.cached_miner_account_sizes = {}
 
         if ipc_manager:
             self.hotkey_to_positions = ipc_manager.dict()
@@ -1170,6 +1177,46 @@ class PositionManager(CacheController):
             ans["positions"].append(position_dict)
         return ans
 
+    def _get_account_size_for_order(self, position, order):
+        """
+        temp method:
+        Get the miner's account size for an order
+        """
+        COLLATERAL_START_TIME_MS = 1755302399000
+        if order.processed_ms < COLLATERAL_START_TIME_MS:
+            return ValiConfig.DEFAULT_CAPITAL
+
+        if not self.contract_manager:
+            return ValiConfig.DEFAULT_CAPITAL
+
+        account_size = self.contract_manager.get_miner_account_size(
+                position.miner_hotkey, order.processed_ms, records_dict=self.cached_miner_account_sizes)
+        return account_size if account_size is not None else ValiConfig.MIN_CAPITAL
+
+    def _migrate_order_quantities(self, position: Position) -> int:
+        """
+        temp method:
+        Migrate old orders that only have leverage to include quantity.
+        Returns number of orders migrated.
+        """
+        migrated_count = 0
+
+        for order in position.orders:
+            if order.quantity is None and order.leverage is not None:
+                # Get account size at the time of this order
+                account_size = self._get_account_size_for_order(position, order)
+
+                order.value = order.leverage * account_size
+                order.quantity = order.value / (order.price * position.trade_pair.lot_size)
+
+                migrated_count += 1
+
+        if migrated_count > 0:
+            bt.logging.info(
+                f"Migrated {migrated_count} orders"
+            )
+
+        return migrated_count
 
     def _get_position_from_disk(self, file) -> Position:
         # wrapping here to allow simpler error handling & original for other error handling
@@ -1180,6 +1227,15 @@ class PositionManager(CacheController):
             ans = Position.model_validate_json(file_string)
             if not ans.orders:
                 bt.logging.warning(f"Anomalous position has no orders: {ans.to_dict()}")
+            else:
+                # temp logic:
+                # populate order quantity and value field for historical orders.
+                needs_migration = any(o.quantity is None and o.leverage is not None for o in ans.orders)
+                if needs_migration:
+                    self._migrate_order_quantities(ans)
+                    # Rebuild to recalculate all position-level fields
+                    ans.rebuild_position_with_updated_orders(self.live_price_fetcher)
+                    self.save_miner_position(ans, delete_open_position_if_exists=False)
             return ans
         except FileNotFoundError:
             raise ValiFileMissingException(f"Vali position file is missing {file}")

@@ -207,11 +207,11 @@ class Validator:
                                               signal_sync_condition=self.signal_sync_condition,
                                               n_orders_being_processed=self.n_orders_being_processed,
                                               ipc_manager=self.ipc_manager,
-                                              position_manager=None,
+                                              position_manager=None,     # Set after self.pm creation
                                               auto_sync_enabled=self.auto_sync,
                                               contract_manager=self.contract_manager,
                                               live_price_fetcher=self.live_price_fetcher,
-                                              asset_selection_manager=self.asset_selection_manager)  # Set after self.pm creation
+                                              asset_selection_manager=self.asset_selection_manager)
 
         self.p2p_syncer = P2PSyncer(wallet=self.wallet, metagraph=self.metagraph, is_testnet=not self.is_mainnet,
                                     shutdown_dict=shutdown_dict, signal_sync_lock=self.signal_sync_lock,
@@ -234,6 +234,7 @@ class Validator:
                                                 perf_ledger_manager=self.perf_ledger_manager,
                                                 elimination_manager=self.elimination_manager,
                                                 challengeperiod_manager=None,
+                                                contract_manager=self.contract_manager,
                                                 secrets=self.secrets,
                                                 shared_queue_websockets=self.shared_queue_websockets,
                                                 closed_position_daemon=True)

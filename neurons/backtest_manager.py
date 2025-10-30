@@ -155,6 +155,7 @@ class BacktestManager:
         self.position_manager = PositionManager(metagraph=self.metagraph,
                                                 perf_ledger_manager=self.perf_ledger_manager,
                                                 elimination_manager=self.elimination_manager,
+                                                contract_manager=self.contract_manager,
                                                 is_backtesting=True,
                                                 challengeperiod_manager=None)
 

@@ -641,7 +641,7 @@ class Position(BaseModel):
             self.cumulative_entry_value += entry_value
             self.cumulative_entry_value_usd += entry_value * quote_usd_conversion
             self.net_quantity = new_net_quantity
-            self.net_value = self.net_quantity * realtime_price
+            self.net_value = realtime_price * (self.net_quantity * self.trade_pair.lot_size)
 
     def initialize_position_from_first_order(self, order):
         self.open_ms = order.processed_ms
@@ -764,6 +764,8 @@ class Position(BaseModel):
                 #    f"Flattening {self.position_type.value} position from order {order}"
                 #)
                 self.close_out_position(order.processed_ms)
+                # Set the order quantity
+                order.quantity = -self.net_quantity
 
             # Reflect the current order in the current position's return.
             adjusted_quantity = (
