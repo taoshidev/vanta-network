@@ -55,7 +55,7 @@ class Position(BaseModel):
     average_entry_price: float = 0.0
     cumulative_entry_value: float = 0.0     # in base currency
     cumulative_entry_value_usd: float = 0.0 # in USD
-    account_size: float = 0.0
+    account_size: float = ValiConfig.MIN_CAPITAL
     realized_pnl: float = 0.0       # in base currency
     realized_pnl_usd: float = 0.0   # in USD
     unrealized_pnl: float = 0.0     # in base currency
@@ -321,6 +321,7 @@ class Position(BaseModel):
         self.current_return = 1.0
         self.close_ms = None
         self.return_at_close = 1.0
+        self.net_leverage = 0.0
         self.net_quantity = 0.0
         self.net_value = 0.0
         self.average_entry_price = 0.0
@@ -382,10 +383,12 @@ class Position(BaseModel):
                 else:
                     raise ValueError(
                         f"Miner {self.miner_hotkey} attempted to go below min leverage {self.trade_pair.min_leverage} for trade pair {self.trade_pair.trade_pair_id}. Ignoring order.")
-
-        # Set order value and leverage based on clamped quantity.
-        order.value = order.quantity * (order.price * self.trade_pair.lot_size)
-        order.leverage = order.value / account_size
+        # Set order quantity and value base on clamped leverage
+        order.value = order.leverage * self.account_size
+        order.quantity = order.value / (order.price * order.trade_pair.lot_size)
+        # # Set order value and leverage based on clamped quantity.
+        # order.value = order.quantity * (order.price * self.trade_pair.lot_size)
+        # order.leverage = order.value / self.account_size
         order.slippage = PriceSlippageModel.calculate_slippage(order.bid, order.ask, order)
         self.orders.append(order)
         self._update_position(live_price_fetcher)
@@ -599,6 +602,7 @@ class Position(BaseModel):
         assert self.initial_entry_price > 0, self.initial_entry_price
         new_net_quantity = self.net_quantity + delta_quantity
         if order.src in (OrderSource.ELIMINATION_FLAT, OrderSource.DEPRECATION_FLAT):
+            self.net_leverage = 0.0
             self.net_quantity = 0.0
             self.net_value = 0.0
             return  # Don't set returns since the price is zero'd out.
@@ -611,6 +615,7 @@ class Position(BaseModel):
         self._position_log(f"closed return with fees [{self.return_at_close}]. Trade pair: {self.trade_pair.trade_pair_id}")
 
         if self.position_type == OrderType.FLAT:
+            self.net_leverage = 0.0
             self.net_quantity = 0.0
             self.net_value = 0.0
         else:
@@ -642,6 +647,7 @@ class Position(BaseModel):
             self.cumulative_entry_value_usd += entry_value * quote_usd_conversion
             self.net_quantity = new_net_quantity
             self.net_value = realtime_price * (self.net_quantity * self.trade_pair.lot_size)
+            self.net_leverage = self.net_value / self.account_size
 
     def initialize_position_from_first_order(self, order):
         self.open_ms = order.processed_ms
@@ -680,7 +686,8 @@ class Position(BaseModel):
         """
         should_ignore_order = False
         if order.order_type == OrderType.FLAT:
-            order.quantity = -self.net_quantity
+            order.leverage = -self.net_leverage
+            # order.quantity = -self.net_quantity
             return should_ignore_order
 
         is_first_order = len(self.orders) == 0
@@ -709,7 +716,7 @@ class Position(BaseModel):
 
                     if order.order_type == OrderType.SHORT:
                         order.leverage *= -1
-                        order.quantity *= -1
+                        # order.quantity *= -1
                     should_ignore_order = order.leverage == 0
                     if not should_ignore_order:
                         logging.warning(f"Miner {self.miner_hotkey} {self.trade_pair.trade_pair_id} order leverage clamped to {order.leverage}")
@@ -726,7 +733,8 @@ class Position(BaseModel):
                     pass  # We are trying to increase the leverage here so let it happen
         # attempting to flip position
         else:
-            order.quantity = -self.net_quantity
+            order.leverage = -self.net_leverage
+            # order.quantity = -self.net_quantity
             order.order_type = OrderType.FLAT
 
         if abs(order.leverage) < ValiConfig.ORDER_MIN_LEVERAGE and (should_ignore_order is False):
@@ -735,6 +743,7 @@ class Position(BaseModel):
         return should_ignore_order
 
     def _update_position(self, live_price_fetcher):
+        self.net_leverage = 0.0
         self.net_quantity = 0.0
         self.net_value = 0.0
         self.cumulative_entry_value = 0.0

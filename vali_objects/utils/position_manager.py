@@ -1213,7 +1213,8 @@ class PositionManager(CacheController):
 
         if migrated_count > 0:
             bt.logging.info(
-                f"Migrated {migrated_count} orders"
+                f"Migrated order {position.orders[0].order_uuid}: "
+                f"leverage={position.orders[0].leverage} → quantity={position.orders[0].quantity}"
             )
 
         return migrated_count
@@ -1230,9 +1231,23 @@ class PositionManager(CacheController):
             else:
                 # temp logic:
                 # populate order quantity and value field for historical orders.
-                needs_migration = any(o.quantity is None and o.leverage is not None for o in ans.orders)
-                if needs_migration:
-                    self._migrate_order_quantities(ans)
+                needs_order_migration = any(o.quantity is None and o.leverage is not None for o in ans.orders)
+
+                # check if account_size needs migration
+                needs_account_size_migration = (ans.account_size == 0 or ans.account_size is None)
+
+                if needs_order_migration or needs_account_size_migration:
+                    # Fix account_size first (needed for order quantity calculation)
+                    if needs_account_size_migration and ans.orders:
+                        ans.account_size = self._get_account_size_for_order(ans, ans.orders[0])
+                        bt.logging.info(
+                            f"Migrated account_size for position {ans.position_uuid}: "
+                            f"0 → {ans.account_size}"
+                        )
+                    # migrate order quantities if needed
+                    if needs_order_migration:
+                        self._migrate_order_quantities(ans)
+
                     # Rebuild to recalculate all position-level fields
                     ans.rebuild_position_with_updated_orders(self.live_price_fetcher)
                     self.save_miner_position(ans, delete_open_position_if_exists=False)

@@ -109,6 +109,8 @@ class PerfCheckpoint:
         carry_fee_loss: float = 0.0,
         mdd: float = 1.0,
         mpv: float = 0.0,
+        pnl_gain: float = 0.0,
+        pnl_loss: float = 0.0,
         realized_pnl_gain: float = 0.0,
         realized_pnl_loss: float = 0.0,
         unrealized_pnl_gain: float = 0.0,
@@ -131,16 +133,18 @@ class PerfCheckpoint:
         self.carry_fee_loss = float(carry_fee_loss)
         self.mdd = float(mdd)
         self.mpv = float(mpv)
+        self.pnl_gain = float(pnl_gain)
+        self.pnl_loss = float(pnl_loss)
         self.realized_pnl_gain = float(realized_pnl_gain)
         self.realized_pnl_loss = float(realized_pnl_loss)
         self.unrealized_pnl_gain = float(unrealized_pnl_gain)
         self.unrealized_pnl_loss = float(unrealized_pnl_loss)
 
-        # migration from old pl. can remove afterwards.
-        if 'pnl_gain' in kwargs or 'pnl_loss' in kwargs:
-            bt.logging.debug(f"Loading old checkpoint with pnl_gain/pnl_loss. Migrating...")
-            kwargs.pop('pnl_gain', None)
-            kwargs.pop('pnl_loss', None)
+        # # migration from old pl. can remove afterwards.
+        # if 'pnl_gain' in kwargs or 'pnl_loss' in kwargs:
+        #     bt.logging.debug(f"Loading old checkpoint with pnl_gain/pnl_loss. Migrating...")
+        #     kwargs.pop('pnl_gain', None)
+        #     kwargs.pop('pnl_loss', None)
 
         # Store any extra fields (equivalent to model_config extra="allow")
         for key, value in kwargs.items():
