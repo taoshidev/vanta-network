@@ -15,8 +15,8 @@ from vali_objects.vali_config import ValiConfig
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 import template.protocol
 
-TARGET_MS = 1763643599000
-NOV_1_MS = 1761951599000
+TARGET_MS = 1759817759000
+GRACE_PERIOD_MS = 1763168399000
 
 class CollateralRecord:
     def __init__(self, account_size, account_size_theta, update_time_ms):
@@ -137,27 +137,6 @@ class ValidatorContractManager:
         miners_to_reinstate = {}
         for miner, amount in miners_to_reinstate.items():
             self.force_deposit(amount, miner)
-
-        # Update CPT
-        # update_thread = threading.Thread(target=self.refresh_miner_account_sizes, daemon=True)
-        # update_thread.start()
-        # bt.logging.info("COST_PER_THETA migration started in background thread")
-
-    def refresh_miner_account_sizes(self):
-        """
-        refresh miner account sizes for new CPT
-        """
-        update_count = 0
-        for hotkey in list(self.miner_account_sizes.keys()):
-            try:
-                prev_acct_size = self.get_miner_account_size(hotkey)
-                bt.logging.info(f"Current account size for {hotkey}: ${prev_acct_size:,.2f}")
-                self.set_miner_account_size(hotkey, NOV_1_MS)
-                update_count += 1
-                time.sleep(0.5)
-            except Exception as e:
-                bt.logging.error(f"Failed to update account size for {hotkey}: {e}")
-        bt.logging.info(f"COST_PER_THETA update completed for {update_count} miners")
 
     def load_contract_owner(self):
         """
@@ -472,7 +451,15 @@ class ValidatorContractManager:
 
             # Determine amount slashed and remaining amount eligible for withdrawal
             drawdown = self.position_manager.compute_realtime_drawdown(miner_hotkey)
-            withdrawal_proportion = amount / theta_current_balance
+
+            # temp grace period. penalty free withdrawals down to 300 theta until 11/14
+            if TimeUtil.now_in_millis() < GRACE_PERIOD_MS:
+                penalty_free_amount = max(0.0, theta_current_balance - 300)
+                penalty_amount = max(0.0, amount - penalty_free_amount)
+                withdrawal_proportion = penalty_amount / theta_current_balance if theta_current_balance > 0 else 0
+            else:
+                withdrawal_proportion = amount / theta_current_balance
+
             slashed_amount = self.compute_slash_amount(miner_hotkey, drawdown) * withdrawal_proportion
             withdrawal_amount = amount - slashed_amount
             new_balance = theta_current_balance - amount
@@ -523,7 +510,15 @@ class ValidatorContractManager:
 
             # Determine amount slashed and remaining amount eligible for withdrawal
             drawdown = self.position_manager.compute_realtime_drawdown(miner_hotkey)
-            withdrawal_proportion = amount / theta_current_balance
+
+            # temp grace period. penalty free withdrawals down to 300 theta until 11/14
+            if TimeUtil.now_in_millis() < GRACE_PERIOD_MS:
+                penalty_free_amount = max(0.0, theta_current_balance - 300)
+                penalty_amount = max(0.0, amount - penalty_free_amount)
+                withdrawal_proportion = penalty_amount / theta_current_balance if theta_current_balance > 0 else 0
+            else:
+                withdrawal_proportion = amount / theta_current_balance
+
             slashed_amount = self.compute_slash_amount(miner_hotkey, drawdown) * withdrawal_proportion
             withdrawal_amount = amount - slashed_amount
 
