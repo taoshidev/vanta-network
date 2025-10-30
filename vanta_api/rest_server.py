@@ -780,7 +780,7 @@ class VantaRestServer(APIKeyMixin):
             except Exception as e:
                 bt.logging.error(f"Error processing collateral deposit: {e}")
                 return jsonify({'error': 'Internal server error processing deposit'}), 500
-
+                
         @self.app.route("/collateral/query-withdraw", methods=["POST"])
         def query_withdraw_collateral():
             """Query collateral withdrawal request for potential slashed amount"""
@@ -797,47 +797,31 @@ class VantaRestServer(APIKeyMixin):
                 if not data:
                     return jsonify({'error': 'Invalid JSON body'}), 400
 
-                # Check vanta-cli version FIRST - reject outdated versions
-                vanta_cli_version = (
-                    data.get('version')
-                    or data.get('ptncli_version')
-                    or '0.0.0'
-                )
-                vanta_cli_error = self.check_vanta_cli_version(vanta_cli_version)
-                if vanta_cli_error:
-                    return jsonify({'error': vanta_cli_error}), 400
+                # Check PTNCLI version FIRST - reject outdated versions
+                ptncli_version = data.get('ptncli_version', '0.0.0')
+                ptncli_error = self.check_ptncli_version(ptncli_version)
+                if ptncli_error:
+                    bt.logging.warning(f"PTNCLI version {ptncli_version} rejected (withdraw endpoint): {ptncli_error}")
+                    return jsonify({
+                        'error': ptncli_error,
+                        'successfully_processed': False
+                    }), 400
 
-                # Validate required fields for withdrawal query
+                # Validate required fields for signed withdrawal
                 required_fields = ['amount', 'miner_hotkey']
                 for field in required_fields:
                     if field not in data:
                         return jsonify({'error': f'Missing required field: {field}'}), 400
 
-                # Validate amount is a positive number
-                try:
-                    amount = float(data['amount'])
-                    if amount <= 0:
-                        return jsonify({'error': 'Amount must be a positive number'}), 400
-                except (ValueError, TypeError):
-                    return jsonify({'error': 'Amount must be a valid number'}), 400
-
-                # Validate miner_hotkey is a valid SS58 address
-                miner_hotkey = data['miner_hotkey']
-                try:
-                    # Attempt to create a Keypair to validate SS58 format
-                    Keypair(ss58_address=miner_hotkey)
-                except Exception:
-                    return jsonify({'error': 'Invalid SS58 address format for miner_hotkey'}), 400
-
-                # Process the withdrawal query
+                # Process the withdrawal using verified data
                 result = self.contract_manager.query_withdrawal_request(
-                    amount=amount,
-                    miner_hotkey=miner_hotkey
+                    amount=data['amount'],
+                    miner_hotkey=data['miner_hotkey']
                 )
 
                 # Return response
                 return jsonify(result)
-
+                
             except Exception as e:
                 bt.logging.error(f"Error processing collateral withdrawal query: {e}")
                 return jsonify({'error': 'Internal server error processing withdrawal query'}), 500
@@ -857,16 +841,6 @@ class VantaRestServer(APIKeyMixin):
                 data = request.get_json()
                 if not data:
                     return jsonify({'error': 'Invalid JSON body'}), 400
-
-                # Check vanta-cli version FIRST - reject outdated versions
-                vanta_cli_version = (
-                    data.get('version')
-                    or data.get('ptncli_version')
-                    or '0.0.0'
-                )
-                vanta_cli_error = self.check_vanta_cli_version(vanta_cli_version)
-                if vanta_cli_error:
-                    return jsonify({'error': vanta_cli_error}), 400
 
                 # Validate required fields for signed withdrawal
                 required_fields = ['amount', 'miner_coldkey', 'miner_hotkey', 'nonce', 'timestamp', 'signature']
@@ -919,7 +893,7 @@ class VantaRestServer(APIKeyMixin):
 
                 # Return response
                 return jsonify(result)
-                
+
             except Exception as e:
                 bt.logging.error(f"Error processing collateral withdrawal: {e}")
                 return jsonify({'error': 'Internal server error processing withdrawal'}), 500

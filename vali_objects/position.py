@@ -562,9 +562,9 @@ class Position(BaseModel):
             fee = self.get_carry_fee(timestamp_ms)[0] * self.get_spread_fee(timestamp_ms)
         return current_return_no_fees * fee
 
-    # def get_open_position_return_with_fees(self, realtime_price, time_ms):
-    #     current_return = self.calculate_pnl(realtime_price)
-    #     return self.calculate_return_with_fees(current_return, timestamp_ms=time_ms)
+    def get_open_position_return_with_fees(self, realtime_price, live_price_fetcher, time_ms):
+        current_return = self.calculate_pnl(realtime_price, live_price_fetcher)
+        return self.calculate_return_with_fees(current_return, timestamp_ms=time_ms)
 
     def set_returns_with_updated_fees(self, total_fees, time_ms, live_price_fetcher):
         self.return_at_close = self.current_return * total_fees

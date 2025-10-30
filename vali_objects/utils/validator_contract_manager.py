@@ -441,7 +441,7 @@ class ValidatorContractManager:
     def query_withdrawal_request(self, amount: float, miner_hotkey: str) -> Dict[str, Any]:
         """
         Query for slashed amount when a withdrawal request is received.
-
+        
         Args:
             amount (float): Amount to withdraw in theta tokens
             miner_hotkey (str): Miner's SS58 hotkey
@@ -472,12 +472,7 @@ class ValidatorContractManager:
 
             # Determine amount slashed and remaining amount eligible for withdrawal
             drawdown = self.position_manager.compute_realtime_drawdown(miner_hotkey)
-
-            # penalty free withdrawals down to MAX_COLLATERAL_BALANCE_THETA
-            penalty_free_amount = max(0.0, theta_current_balance - self.max_theta)
-            penalty_amount = max(0.0, amount - penalty_free_amount)
-            withdrawal_proportion = penalty_amount / theta_current_balance if theta_current_balance > 0 else 0
-
+            withdrawal_proportion = amount / theta_current_balance
             slashed_amount = self.compute_slash_amount(miner_hotkey, drawdown) * withdrawal_proportion
             withdrawal_amount = amount - slashed_amount
             new_balance = theta_current_balance - amount
@@ -485,13 +480,10 @@ class ValidatorContractManager:
             return {
                 "successfully_processed": True,
                 "error_message": "",
-                "drawdown": drawdown,
-                "slashed_amount": slashed_amount,
-                "withdrawal_amount": withdrawal_amount,
-                "new_balance": new_balance
+                "success_message": f"Current drawdown: {(1-drawdown)*100:.2f}%. {slashed_amount} Theta will be slashed. {withdrawal_amount} Theta will be withdrawn. New account balance will be {new_balance}. Actual values may vary slightly."
             }
         except Exception as e:
-            error_msg = f"Withdrawal query error: {str(e)}"
+            error_msg = f"Withdrawal processing error: {str(e)}"
             bt.logging.error(error_msg)
             return {
                 "successfully_processed": False,
@@ -511,7 +503,6 @@ class ValidatorContractManager:
             Dict[str, Any]: Result of withdrawal operation
         """
         try:
-            bt.logging.info("Received withdrawal request")
             try:
                 current_balance = self.collateral_manager.balance_of(miner_hotkey)
                 theta_current_balance = self.to_theta(current_balance)
@@ -532,17 +523,11 @@ class ValidatorContractManager:
 
             # Determine amount slashed and remaining amount eligible for withdrawal
             drawdown = self.position_manager.compute_realtime_drawdown(miner_hotkey)
-
-            # penalty free withdrawals down to MAX_COLLATERAL_BALANCE_THETA
-            penalty_free_amount = max(0.0, theta_current_balance - self.max_theta)
-            penalty_amount = max(0.0, amount - penalty_free_amount)
-            withdrawal_proportion = penalty_amount / theta_current_balance if theta_current_balance > 0 else 0
-
+            withdrawal_proportion = amount / theta_current_balance
             slashed_amount = self.compute_slash_amount(miner_hotkey, drawdown) * withdrawal_proportion
             withdrawal_amount = amount - slashed_amount
 
-            bt.logging.info(
-                f"Processing withdrawal request from {miner_hotkey} for {amount} Theta. Current drawdown: {(1 - drawdown) * 100}%. {slashed_amount} Theta will be slashed. {withdrawal_amount} Theta will be withdrawn.")
+            bt.logging.info(f"Processing withdrawal request from {miner_hotkey} for {amount} Theta. Current drawdown: {(1-drawdown)*100:.2f}%. {slashed_amount} Theta will be slashed. {withdrawal_amount} Theta will be withdrawn.")
             self.slash_miner_collateral(miner_hotkey, slashed_amount)
 
             owner_address = self.get_secret("collateral_owner_address")
@@ -550,7 +535,7 @@ class ValidatorContractManager:
             vault_password = self.get_secret("gcp_vali_pw_name")
             try:
                 withdrawn_balance = self.collateral_manager.withdraw(
-                    amount=int(withdrawal_amount * 10 ** 9),  # convert theta to rao_theta
+                    amount=int(withdrawal_amount * 10**9), # convert theta to rao_theta
                     source_coldkey=miner_coldkey,
                     source_hotkey=miner_hotkey,
                     vault_stake=self.vault_wallet.hotkey.ss58_address,
@@ -584,7 +569,7 @@ class ValidatorContractManager:
                 "returned_to": ""
             }
 
-    def compute_slash_amount(self, miner_hotkey: str, drawdown: float = None) -> float:
+    def compute_slash_amount(self, miner_hotkey: str, drawdown:float=None) -> float:
         """
         Compute the amount of collateral balance to slash, depending on current drawdown.
 
@@ -612,14 +597,13 @@ class ValidatorContractManager:
                 return 0.0
 
             # Calculate slash amount (based on drawdown percentage)
-            drawdown_proportion = 1 - ((drawdown - ValiConfig.MAX_TOTAL_DRAWDOWN) / (
-                        1 - ValiConfig.MAX_TOTAL_DRAWDOWN))  # scales x% drawdown to 100% of collateral
-            slash_proportion = min(1.0, drawdown_proportion * ValiConfig.DRAWDOWN_SLASH_PROPORTION) # cap slashed proportion at 100%
+            drawdown_proportion = 1 - ((drawdown - ValiConfig.MAX_TOTAL_DRAWDOWN) / (1 - ValiConfig.MAX_TOTAL_DRAWDOWN))  # scales x% drawdown to 100% of collateral
+            slash_proportion = drawdown_proportion * ValiConfig.DRAWDOWN_SLASH_PROPORTION
             slash_amount = current_balance_theta * slash_proportion
 
             bt.logging.info(f"Computed slashing for {miner_hotkey}: "
-                            f"Drawdown: {drawdown}, "
-                            f"Slash: {slash_proportion} = {slash_amount} Theta")
+                            f"Drawdown: {drawdown:.2f}, "
+                            f"Slash: {slash_proportion:.2f} = {slash_amount:.2f} Theta")
 
             return slash_amount
 
@@ -627,7 +611,7 @@ class ValidatorContractManager:
             bt.logging.error(f"Failed to compute slash amount for {miner_hotkey}: {e}")
             return 0.0
 
-    def slash_miner_collateral_proportion(self, miner_hotkey: str, slash_proportion: float = None) -> bool:
+    def slash_miner_collateral_proportion(self, miner_hotkey: str, slash_proportion:float=None) -> bool:
         """
         Slash miner's collateral by a proportion
         """
@@ -640,7 +624,7 @@ class ValidatorContractManager:
 
         if slash_proportion is None:
             # slash based on current drawdown
-            slash_amount = self.compute_slash_amount(miner_hotkey)
+            slash_amount = None
         else:
             slash_amount = current_balance_theta * slash_proportion
         return self.slash_miner_collateral(miner_hotkey, slash_amount)

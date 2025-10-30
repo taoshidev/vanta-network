@@ -326,7 +326,7 @@ class ValiConfig:
     MIN_CAPITAL = 5_000   # USD minimum capital account size
     DEFAULT_CAPITAL = 100_000  # conversion of 1x leverage to $100K in capital
 
-    # 100% percent of collateral deposit is at risk of slashing based on drawdown
+    # Percent of collateral deposit at risk of slashing based on drawdown. 100%
     DRAWDOWN_SLASH_PROPORTION = 1.0
 
     BLOCKED_TRADE_PAIR_IDS = {
