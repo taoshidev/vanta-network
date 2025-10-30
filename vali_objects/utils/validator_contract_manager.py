@@ -112,7 +112,20 @@ class ValidatorContractManager:
     @property
     def min_theta(self) -> float:
         """
-        Get the current minimum collateral balance limit in theta tokens.
+        Get the current mininum collateral balance limit in theta tokens.
+
+        Returns:
+            float: minimum balance limit based on network type and current date
+        """
+        if self.is_testnet:
+            return ValiConfig.MIN_COLLATERAL_BALANCE_TESTNET
+        else:
+            return ValiConfig.MIN_COLLATERAL_BALANCE_THETA
+
+    @property
+    def min_theta(self) -> float:
+        """
+        Get the current maximum collateral balance limit in theta tokens.
 
         Returns:
             float: Minimum balance limit based on network type and current date
@@ -466,7 +479,7 @@ class ValidatorContractManager:
             # Grace period: penalty free withdrawals down to 300 theta until 11/14
             # After grace period: penalty free withdrawals down to MAX_COLLATERAL_BALANCE_THETA
             if TimeUtil.now_in_millis() < GRACE_PERIOD_MS:
-                protected_threshold = 300
+                protected_threshold = self.min_theta
             else:
                 protected_threshold = self.max_theta
 
@@ -528,7 +541,7 @@ class ValidatorContractManager:
             # Grace period: penalty free withdrawals down to 300 theta until 11/14
             # After grace period: penalty free withdrawals down to MAX_COLLATERAL_BALANCE_THETA
             if TimeUtil.now_in_millis() < GRACE_PERIOD_MS:
-                protected_threshold = 300
+                protected_threshold = self.min_theta
             else:
                 protected_threshold = self.max_theta
 
