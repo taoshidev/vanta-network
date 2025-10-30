@@ -420,7 +420,7 @@ class ValidatorContractManager:
     def query_withdrawal_request(self, amount: float, miner_hotkey: str) -> Dict[str, Any]:
         """
         Query for slashed amount when a withdrawal request is received.
-        
+
         Args:
             amount (float): Amount to withdraw in theta tokens
             miner_hotkey (str): Miner's SS58 hotkey
@@ -452,13 +452,16 @@ class ValidatorContractManager:
             # Determine amount slashed and remaining amount eligible for withdrawal
             drawdown = self.position_manager.compute_realtime_drawdown(miner_hotkey)
 
-            # temp grace period. penalty free withdrawals down to 300 theta until 11/14
+            # Grace period: penalty free withdrawals down to 300 theta until 11/14
+            # After grace period: penalty free withdrawals down to MAX_COLLATERAL_BALANCE_THETA
             if TimeUtil.now_in_millis() < GRACE_PERIOD_MS:
-                penalty_free_amount = max(0.0, theta_current_balance - 300)
-                penalty_amount = max(0.0, amount - penalty_free_amount)
-                withdrawal_proportion = penalty_amount / theta_current_balance if theta_current_balance > 0 else 0
+                protected_threshold = 300
             else:
-                withdrawal_proportion = amount / theta_current_balance
+                protected_threshold = self.max_theta
+
+            penalty_free_amount = max(0.0, theta_current_balance - protected_threshold)
+            penalty_amount = max(0.0, amount - penalty_free_amount)
+            withdrawal_proportion = penalty_amount / theta_current_balance if theta_current_balance > 0 else 0
 
             slashed_amount = self.compute_slash_amount(miner_hotkey, drawdown) * withdrawal_proportion
             withdrawal_amount = amount - slashed_amount
@@ -511,13 +514,16 @@ class ValidatorContractManager:
             # Determine amount slashed and remaining amount eligible for withdrawal
             drawdown = self.position_manager.compute_realtime_drawdown(miner_hotkey)
 
-            # temp grace period. penalty free withdrawals down to 300 theta until 11/14
+            # Grace period: penalty free withdrawals down to 300 theta until 11/14
+            # After grace period: penalty free withdrawals down to MAX_COLLATERAL_BALANCE_THETA
             if TimeUtil.now_in_millis() < GRACE_PERIOD_MS:
-                penalty_free_amount = max(0.0, theta_current_balance - 300)
-                penalty_amount = max(0.0, amount - penalty_free_amount)
-                withdrawal_proportion = penalty_amount / theta_current_balance if theta_current_balance > 0 else 0
+                protected_threshold = 300
             else:
-                withdrawal_proportion = amount / theta_current_balance
+                protected_threshold = self.max_theta
+
+            penalty_free_amount = max(0.0, theta_current_balance - protected_threshold)
+            penalty_amount = max(0.0, amount - penalty_free_amount)
+            withdrawal_proportion = penalty_amount / theta_current_balance if theta_current_balance > 0 else 0
 
             slashed_amount = self.compute_slash_amount(miner_hotkey, drawdown) * withdrawal_proportion
             withdrawal_amount = amount - slashed_amount
