@@ -1203,10 +1203,7 @@ class PositionManager(CacheController):
 
         for order in position.orders:
             if order.quantity is None and order.leverage is not None:
-                # Get account size at the time of this order
-                account_size = self._get_account_size_for_order(position, order)
-
-                order.value = order.leverage * account_size
+                order.value = order.leverage * position.account_size
                 order.quantity = order.value / (order.price * position.trade_pair.lot_size)
 
                 migrated_count += 1
@@ -1214,7 +1211,8 @@ class PositionManager(CacheController):
         if migrated_count > 0:
             bt.logging.info(
                 f"Migrated order {position.orders[0].order_uuid}: "
-                f"leverage={position.orders[0].leverage} → quantity={position.orders[0].quantity}"
+                f"leverage={position.orders[0].leverage} → quantity={position.orders[0].quantity}. "
+                f"Total order migrations for {position.position_uuid}: {migrated_count}"
             )
 
         return migrated_count

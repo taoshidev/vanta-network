@@ -1048,6 +1048,13 @@ class Validator:
         # Must be locked by caller
         best_price_source = price_sources[0]
         price = best_price_source.parse_appropriate_price(order_time_ms, trade_pair.is_forex, signal_order_type, existing_position.orders[0].order_type)
+
+        if existing_position.account_size <= 0:
+            bt.logging.warning(
+                f"Invalid account_size {existing_position.account_size} for position {existing_position.position_uuid}. "
+                f"Using MIN_CAPITAL as fallback."
+            )
+            existing_position.account_size = ValiConfig.MIN_CAPITAL
         # Calculate value and leverage
         value = price * (quantity * trade_pair.lot_size)
         leverage = value / existing_position.account_size

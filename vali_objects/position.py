@@ -55,7 +55,7 @@ class Position(BaseModel):
     average_entry_price: float = 0.0
     cumulative_entry_value: float = 0.0     # in base currency
     cumulative_entry_value_usd: float = 0.0 # in USD
-    account_size: float = ValiConfig.MIN_CAPITAL
+    account_size: float = 0.0       # in USD
     realized_pnl: float = 0.0       # in base currency
     realized_pnl_usd: float = 0.0   # in USD
     unrealized_pnl: float = 0.0     # in base currency
