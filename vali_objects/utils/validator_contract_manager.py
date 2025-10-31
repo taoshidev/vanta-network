@@ -481,7 +481,10 @@ class ValidatorContractManager:
             return {
                 "successfully_processed": True,
                 "error_message": "",
-                "success_message": f"Current drawdown: {(1-drawdown)*100:.2f}%. {slashed_amount} Theta will be slashed. {withdrawal_amount} Theta will be withdrawn. New account balance will be {new_balance}. Actual values may vary slightly."
+                "drawdown": drawdown,
+                "slashed_amount": slashed_amount,
+                "withdrawal_amount": withdrawal_amount,
+                "new_balance": new_balance
             }
         except Exception as e:
             error_msg = f"Withdrawal processing error: {str(e)}"

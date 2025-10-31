@@ -917,7 +917,8 @@ class PositionManager(CacheController):
     def verify_open_position_write(self, miner_dir, updated_position):
         all_files = ValiBkpUtils.get_all_files_in_dir(miner_dir)
         # Print all files found for dir
-        positions = [self._get_position_from_disk(file) for file in all_files]
+        # CRITICAL: Skip migration to avoid infinite recursion
+        positions = [self._get_position_from_disk(file, skip_migration=True) for file in all_files]
         if len(positions) == 0:
             return  # First time open position is being saved
         if len(positions) > 1:
@@ -938,7 +939,8 @@ class PositionManager(CacheController):
             return
 
         cdf = miner_dir[:-5] + 'closed/'
-        positions.extend([self._get_position_from_disk(file) for file in ValiBkpUtils.get_all_files_in_dir(cdf)])
+        # CRITICAL: Skip migration to avoid infinite recursion
+        positions.extend([self._get_position_from_disk(file, skip_migration=True) for file in ValiBkpUtils.get_all_files_in_dir(cdf)])
 
         temp = self.hotkey_to_positions.get(updated_position.miner_hotkey, [])
         positions_memory_by_position_uuid = {}
@@ -1217,7 +1219,7 @@ class PositionManager(CacheController):
 
         return migrated_count
 
-    def _get_position_from_disk(self, file) -> Position:
+    def _get_position_from_disk(self, file, skip_migration=False) -> Position:
         # wrapping here to allow simpler error handling & original for other error handling
         # Note one position always corresponds to one file.
         file_string = None
@@ -1234,7 +1236,7 @@ class PositionManager(CacheController):
                 # check if account_size needs migration
                 needs_account_size_migration = (ans.account_size == 0 or ans.account_size is None)
 
-                if needs_order_migration or needs_account_size_migration:
+                if not skip_migration and (needs_order_migration or needs_account_size_migration):
                     # Fix account_size first (needed for order quantity calculation)
                     if needs_account_size_migration and ans.orders:
                         ans.account_size = self._get_account_size_for_order(ans, ans.orders[0])
