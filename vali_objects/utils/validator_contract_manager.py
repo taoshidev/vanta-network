@@ -112,23 +112,10 @@ class ValidatorContractManager:
     @property
     def min_theta(self) -> float:
         """
-        Get the current mininum collateral balance limit in theta tokens.
+        Get the current minimum collateral balance limit in theta tokens.
 
         Returns:
             float: minimum balance limit based on network type and current date
-        """
-        if self.is_testnet:
-            return ValiConfig.MIN_COLLATERAL_BALANCE_TESTNET
-        else:
-            return ValiConfig.MIN_COLLATERAL_BALANCE_THETA
-
-    @property
-    def min_theta(self) -> float:
-        """
-        Get the current maximum collateral balance limit in theta tokens.
-
-        Returns:
-            float: Minimum balance limit based on network type and current date
         """
         if self.is_testnet:
             return ValiConfig.MIN_COLLATERAL_BALANCE_TESTNET

@@ -5,7 +5,6 @@ from typing import Optional, List
 from pydantic import model_validator, BaseModel, Field
 
 from time_util.time_util import TimeUtil, MS_IN_8_HOURS, MS_IN_24_HOURS
-from vali_objects.utils.price_slippage_model import PriceSlippageModel
 from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.vali_dataclasses.order import Order, OrderSource
 from vali_objects.enums.order_type_enum import OrderType
@@ -389,7 +388,7 @@ class Position(BaseModel):
         # # Set order value and leverage based on clamped quantity.
         # order.value = order.quantity * (order.price * self.trade_pair.lot_size)
         # order.leverage = order.value / self.account_size
-        order.slippage = PriceSlippageModel.calculate_slippage(order.bid, order.ask, order)
+        # order.slippage = PriceSlippageModel.calculate_slippage(order.bid, order.ask, order)
         self.orders.append(order)
         self._update_position(live_price_fetcher)
 

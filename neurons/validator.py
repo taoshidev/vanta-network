@@ -1073,6 +1073,7 @@ class Validator:
             src=src
         )
         net_portfolio_leverage = self.position_manager.calculate_net_portfolio_leverage(miner_hotkey)
+        order.slippage = PriceSlippageModel.calculate_slippage(order.bid, order.ask, order)
         existing_position.add_order(order, self.live_price_fetcher, net_portfolio_leverage)
         self.position_manager.save_miner_position(existing_position)
         # Update cooldown cache after successful order processing
