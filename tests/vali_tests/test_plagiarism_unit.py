@@ -2,7 +2,6 @@
 # Copyright © 2024 Taoshi Inc
 import uuid
 
-from aiofiles.os import access
 from tests.shared_objects.mock_classes import MockPlagiarismDetector, MockLivePriceFetcher
 from shared_objects.mock_metagraph import MockMetagraph
 from tests.vali_tests.base_objects.test_base import TestBase
