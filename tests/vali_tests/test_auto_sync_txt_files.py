@@ -95,6 +95,7 @@ class TestAutoSyncTxtFiles(TestBase):
         for pos_dict in positions_data:
             try:
                 position = Position(**pos_dict)
+                position.account_size = self.DEFAULT_ACCOUNT_SIZE   # hotfix to add account size
                 positions.append(position)
             except Exception as e:
                 print(f"Failed to create position {pos_dict.get('position_uuid', 'unknown')}: {e}")

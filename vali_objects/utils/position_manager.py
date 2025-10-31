@@ -1206,7 +1206,10 @@ class PositionManager(CacheController):
         for order in position.orders:
             if order.quantity is None and order.leverage is not None:
                 order.value = order.leverage * position.account_size
-                order.quantity = order.value / (order.price * position.trade_pair.lot_size)
+                if order.price == 0:
+                    order.quantity = 0
+                else:
+                    order.quantity = order.value / (order.price * position.trade_pair.lot_size)
 
                 migrated_count += 1
 

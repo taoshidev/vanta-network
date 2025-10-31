@@ -758,7 +758,7 @@ class ValidatorContractManager:
             last_record = self.miner_account_sizes[hotkey][-1]
             if (last_record.account_size == collateral_record.account_size and
                 last_record.account_size_theta == collateral_record.account_size_theta):
-                bt.logging.debug(f"Skipping save for {hotkey} - new record matches last record")
+                bt.logging.info(f"Skipping save for {hotkey} - new record matches last record")
                 return
 
         if hotkey not in self.miner_account_sizes:

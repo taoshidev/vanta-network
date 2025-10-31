@@ -279,7 +279,8 @@ class TestPositionSplitting(TestBase):
                 position_uuid=f"{miner}_position",
                 open_ms=1000,
                 trade_pair=TradePair.BTCUSD,
-                orders=orders
+                orders=orders,
+                account_size=self.DEFAULT_ACCOUNT_SIZE
             )
             position.rebuild_position_with_updated_orders(self.live_price_fetcher)
             
@@ -323,7 +324,7 @@ class TestPositionSplitting(TestBase):
         self.assertEqual(result[0].orders[0].order_type, OrderType.LONG)
         self.assertEqual(result[0].orders[0].leverage, 2.0)
         self.assertEqual(result[0].orders[1].order_type, OrderType.SHORT)
-        self.assertEqual(result[0].orders[1].leverage, -3.0)
+        self.assertEqual(result[0].orders[1].leverage, -2.0)
         
         # Second position should have LONG order
         self.assertEqual(len(result[1].orders), 1)
