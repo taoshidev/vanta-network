@@ -55,21 +55,21 @@ class Order(Signal):
             return [PriceSource(**ps) if isinstance(ps, dict) else ps for ps in v]
         return v
 
-    @model_validator(mode='before')
-    def validate_size(cls, values):
-        """
-        Ensure that size meets min and maximum requirements
-        """
-        order_type = values['order_type']
-        is_flat_order = order_type == OrderType.FLAT or order_type == 'FLAT'
-        lev = values['leverage']
-        val = values.get('value')
-        if not is_flat_order and not (ValiConfig.ORDER_MIN_LEVERAGE <= abs(lev) <= ValiConfig.ORDER_MAX_LEVERAGE):
-            raise ValueError(
-                f"Order leverage must be between {ValiConfig.ORDER_MIN_LEVERAGE} and {ValiConfig.ORDER_MAX_LEVERAGE}, provided - lev [{lev}] and order_type [{order_type}] ({type(order_type)})")
-        if val is not None and not is_flat_order and not ValiConfig.ORDER_MIN_VALUE <= abs(val):
-            raise ValueError(f"Order value must be greater than {ValiConfig.ORDER_MIN_VALUE}, provided value is {abs(val)}")
-        return values
+    # @model_validator(mode='before')
+    # def validate_size(cls, values):
+    #     """
+    #     Ensure that size meets min and maximum requirements
+    #     """
+    #     order_type = values['order_type']
+    #     is_flat_order = order_type == OrderType.FLAT or order_type == 'FLAT'
+    #     lev = values['leverage']
+    #     val = values.get('value')
+    #     if not is_flat_order and not (ValiConfig.ORDER_MIN_LEVERAGE <= abs(lev) <= ValiConfig.ORDER_MAX_LEVERAGE):
+    #         raise ValueError(
+    #             f"Order leverage must be between {ValiConfig.ORDER_MIN_LEVERAGE} and {ValiConfig.ORDER_MAX_LEVERAGE}, provided - lev [{lev}] and order_type [{order_type}] ({type(order_type)})")
+    #     if val is not None and not is_flat_order and not ValiConfig.ORDER_MIN_VALUE <= abs(val):
+    #         raise ValueError(f"Order value must be greater than {ValiConfig.ORDER_MIN_VALUE}, provided value is {abs(val)}")
+    #     return values
 
     @model_validator(mode="before")
     def check_exclusive_fields(cls, values):

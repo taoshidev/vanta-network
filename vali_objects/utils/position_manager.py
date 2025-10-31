@@ -1250,7 +1250,14 @@ class PositionManager(CacheController):
 
                     # Rebuild to recalculate all position-level fields
                     ans.rebuild_position_with_updated_orders(self.live_price_fetcher)
-                    self.save_miner_position(ans, delete_open_position_if_exists=False)
+                    if not self.is_backtesting:
+                        miner_dir = ValiBkpUtils.get_partitioned_miner_positions_dir(
+                            ans.miner_hotkey, ans.trade_pair.trade_pair_id,
+                            order_status=OrderStatus.OPEN if ans.is_open_position else OrderStatus.CLOSED,
+                            running_unit_tests=self.running_unit_tests
+                        )
+                        ValiBkpUtils.write_file(miner_dir + ans.position_uuid, ans)
+                    # self.save_miner_position(ans, delete_open_position_if_exists=False)
             return ans
         except FileNotFoundError:
             raise ValiFileMissingException(f"Vali position file is missing {file}")
@@ -1609,7 +1616,8 @@ class PositionManager(CacheController):
                                         position_uuid=order_group[0].order_uuid,
                                         open_ms=0,
                                         trade_pair=position.trade_pair,
-                                        orders=order_group)
+                                        orders=order_group,
+                                        account_size=position.account_size)
                 new_position.rebuild_position_with_updated_orders(self.live_price_fetcher)
                 positions.append(new_position)
 

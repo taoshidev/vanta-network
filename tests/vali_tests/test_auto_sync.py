@@ -12,6 +12,7 @@ from vali_objects.position import Position
 from vali_objects.utils.auto_sync import PositionSyncer
 from vali_objects.utils.elimination_manager import EliminationManager
 from vali_objects.utils.position_manager import PositionManager
+from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair
 from vali_objects.utils.validator_sync_base import AUTO_SYNC_ORDER_LAG_MS, PositionSyncResultException
@@ -25,11 +26,18 @@ class TestPositions(TestBase):
 
     def setUp(self):
         super().setUp()
+
+        # Clear ALL test miner positions BEFORE creating PositionManager
+        ValiBkpUtils.clear_directory(
+            ValiBkpUtils.get_miner_dir(running_unit_tests=True)
+        )
+
         self.DEFAULT_MINER_HOTKEY = "test_miner"
         self.DEFAULT_POSITION_UUID = "test_position"
         self.DEFAULT_ORDER_UUID = "test_order"
         self.DEFAULT_OPEN_MS = 1718071209000
         self.DEFAULT_TRADE_PAIR = TradePair.BTCUSD
+        self.DEFAULT_ACCOUNT_SIZE = 100_000
         self.default_order = Order(price=1, processed_ms=self.DEFAULT_OPEN_MS, order_uuid=self.DEFAULT_ORDER_UUID, trade_pair=self.DEFAULT_TRADE_PAIR,
                                      order_type=OrderType.LONG, leverage=1)
         self.default_position = Position(
@@ -39,6 +47,7 @@ class TestPositions(TestBase):
             trade_pair=self.DEFAULT_TRADE_PAIR,
             orders=[self.default_order],
             position_type=OrderType.LONG,
+            account_size=self.DEFAULT_ACCOUNT_SIZE,
         )
         self.mock_metagraph = MockMetagraph([self.DEFAULT_MINER_HOTKEY])
         self.elimination_manager = EliminationManager(self.mock_metagraph, None, None, running_unit_tests=True)
@@ -59,6 +68,7 @@ class TestPositions(TestBase):
             trade_pair=self.DEFAULT_TRADE_PAIR,
             orders=[self.default_order],
             position_type=OrderType.LONG,
+            account_size=self.DEFAULT_ACCOUNT_SIZE,
         )
 
         self.default_closed_position = Position(
@@ -68,10 +78,11 @@ class TestPositions(TestBase):
             trade_pair=self.DEFAULT_TRADE_PAIR,
             orders=[self.default_order],
             position_type=OrderType.FLAT,
+            account_size=self.DEFAULT_ACCOUNT_SIZE,
         )
         self.default_closed_position.close_out_position(self.DEFAULT_OPEN_MS + 1000 * 60 * 60 * 6)
 
-        self.position_syncer = PositionSyncer(running_unit_tests=True, position_manager=self.position_manager, enable_position_splitting=True)
+        self.position_syncer = PositionSyncer(running_unit_tests=True, position_manager=self.position_manager, enable_position_splitting=True, live_price_fetcher=self.live_price_fetcher)
 
     def validate_comprehensive_stats(self, stats, expected_miners=1, expected_eliminated=0, 
                                    expected_pos_updates=0, expected_pos_matches=0, expected_pos_insertions=0, 
@@ -252,7 +263,8 @@ class TestPositions(TestBase):
             open_ms=self.DEFAULT_OPEN_MS,
             trade_pair=self.DEFAULT_TRADE_PAIR,
             orders=[existing_order],
-            position_type=OrderType.LONG
+            position_type=OrderType.LONG,
+            account_size=self.DEFAULT_ACCOUNT_SIZE,
         )
         
         # Create candidate with additional order (should trigger order insertion)
@@ -269,7 +281,8 @@ class TestPositions(TestBase):
             open_ms=self.DEFAULT_OPEN_MS,
             trade_pair=self.DEFAULT_TRADE_PAIR,
             orders=[candidate_order1, candidate_order2],
-            position_type=OrderType.LONG
+            position_type=OrderType.LONG,
+            account_size=self.DEFAULT_ACCOUNT_SIZE,
         )
         
         candidate_data = self.positions_to_candidate_data([candidate_position])
@@ -2328,7 +2341,8 @@ class TestPositions(TestBase):
             open_ms=self.DEFAULT_OPEN_MS,
             trade_pair=TradePair.BTCUSD,
             orders=[],
-            position_type=OrderType.LONG
+            position_type=OrderType.LONG,
+            account_size=self.DEFAULT_ACCOUNT_SIZE
         )
         
         # Order sequence that should be 2 positions:
