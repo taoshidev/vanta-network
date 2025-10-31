@@ -22,6 +22,7 @@ from vali_objects.utils.leverage_utils import (
     get_position_leverage_bounds,
 )
 from vali_objects.utils.position_manager import PositionManager
+from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.vali_dataclasses.order import (
@@ -35,18 +36,25 @@ class TestPositions(TestBase):
 
     def setUp(self):
         super().setUp()
+
+        # Clear ALL test miner positions BEFORE creating PositionManager
+        ValiBkpUtils.clear_directory(
+            ValiBkpUtils.get_miner_dir(running_unit_tests=True)
+        )
+
         secrets = ValiUtils.get_secrets(running_unit_tests=True)
         self.live_price_fetcher = MockLivePriceFetcher(secrets=secrets, disable_ws=True)
         self.DEFAULT_MINER_HOTKEY = "test_miner"
         self.DEFAULT_POSITION_UUID = "test_position"
         self.DEFAULT_OPEN_MS = 1000
         self.DEFAULT_TRADE_PAIR = TradePair.BTCUSD
+        self.DEFAULT_ACCOUNT_SIZE = 100_000
         self.default_position = Position(
             miner_hotkey=self.DEFAULT_MINER_HOTKEY,
             position_uuid=self.DEFAULT_POSITION_UUID,
             open_ms=self.DEFAULT_OPEN_MS,
             trade_pair=self.DEFAULT_TRADE_PAIR,
-            account_size=ValiConfig.DEFAULT_CAPITAL
+            account_size=self.DEFAULT_ACCOUNT_SIZE,
         )
         self.mock_metagraph = MockMetagraph([self.DEFAULT_MINER_HOTKEY])
         self.elimination_manager = EliminationManager(self.mock_metagraph, None, None, running_unit_tests=True)

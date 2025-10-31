@@ -384,7 +384,10 @@ class Position(BaseModel):
                         f"Miner {self.miner_hotkey} attempted to go below min leverage {self.trade_pair.min_leverage} for trade pair {self.trade_pair.trade_pair_id}. Ignoring order.")
         # Set order quantity and value base on clamped leverage
         order.value = order.leverage * self.account_size
-        order.quantity = order.value / (order.price * order.trade_pair.lot_size)
+        if order.price == 0:
+            order.quantity = 0
+        else:
+            order.quantity = order.value / (order.price * order.trade_pair.lot_size)
         # # Set order value and leverage based on clamped quantity.
         # order.value = order.quantity * (order.price * self.trade_pair.lot_size)
         # order.leverage = order.value / self.account_size
@@ -412,9 +415,12 @@ class Position(BaseModel):
                 self.realized_pnl += order_realized_pnl
             self.unrealized_pnl = (current_price - self.average_entry_price) * (min(self.net_quantity, self.net_quantity + order.quantity, key=abs) * order.trade_pair.lot_size)
         else:
-            self.unrealized_pnl = (current_price - self.average_entry_price) * (self.net_quantity * self.trade_pair.lot_size)
+            self.unrealized_pnl = (current_price - self.average_entry_price) * (abs(self.net_quantity) * self.trade_pair.lot_size)
 
-        gain = (self.realized_pnl + self.unrealized_pnl) / self.initial_entry_price
+        if self.cumulative_entry_value == 0:
+            gain = 0
+        else:
+            gain = (self.realized_pnl + self.unrealized_pnl) / self.cumulative_entry_value
 
         # convert pnl to usd
         order_type = order.order_type if order else self.orders[-1].order_type
@@ -540,7 +546,7 @@ class Position(BaseModel):
                            order_uuid=position.position_uuid[::-1],  # deterministic across validators. Won't mess with p2p sync
                            trade_pair=position.trade_pair,
                            order_type=OrderType.FLAT,
-                           quantity=-position.net_quantity,
+                           leverage=-position.net_leverage,
                            src=src,
                            price_sources=[x for x in (price_source, extra_price_source) if x is not None])
         return flat_order
@@ -755,7 +761,10 @@ class Position(BaseModel):
         for order in self.orders:
             # set value and quantity
             order.value = order.leverage * self.account_size
-            order.quantity = order.value / (order.price * order.trade_pair.lot_size)
+            if order.price == 0:
+                order.quantity = 0
+            else:
+                order.quantity = order.value / (order.price * order.trade_pair.lot_size)
 
             if self.position_type is None:
                 self.initialize_position_from_first_order(order)

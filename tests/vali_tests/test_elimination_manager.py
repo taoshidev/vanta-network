@@ -26,9 +26,15 @@ from vali_objects.vali_dataclasses.perf_ledger import PerfLedgerManager
 class TestEliminationManager(TestBase):
     def setUp(self):
         super().setUp()
+        # Clear ALL test miner positions BEFORE creating PositionManager
+        ValiBkpUtils.clear_directory(
+            ValiBkpUtils.get_miner_dir(running_unit_tests=True)
+        )
+
 
         self.MDD_MINER = "miner_mdd"
         self.REGULAR_MINER = "miner_regular"
+        self.DEFAULT_ACCOUNT_SIZE = 100_000
 
         # Initialize system components
         self.mock_metagraph = MockMetagraph([self.MDD_MINER, self.REGULAR_MINER])
@@ -54,6 +60,7 @@ class TestEliminationManager(TestBase):
                 trade_pair=TradePair.BTCUSD,
                 is_closed_position=False,
                 return_at_close=1.00,
+                account_size=self.DEFAULT_ACCOUNT_SIZE,
                 orders=[Order(price=60000, processed_ms=1, order_uuid="initial_order",
                               trade_pair=TradePair.BTCUSD, order_type=OrderType.LONG, leverage=0.1)],
 

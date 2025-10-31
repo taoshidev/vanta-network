@@ -12,6 +12,7 @@ from vali_objects.utils.elimination_manager import EliminationManager
 from vali_objects.utils.live_price_fetcher import LivePriceFetcher
 from vali_objects.utils.p2p_syncer import P2PSyncer
 from vali_objects.utils.position_manager import PositionManager
+from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair
 from vali_objects.vali_dataclasses.order import Order
@@ -21,6 +22,11 @@ class TestPositions(TestBase):
 
     def setUp(self):
         super().setUp()
+        # Clear ALL test miner positions BEFORE creating PositionManager
+        ValiBkpUtils.clear_directory(
+            ValiBkpUtils.get_miner_dir(running_unit_tests=True)
+        )
+
         secrets = ValiUtils.get_secrets(running_unit_tests=True)
         self.live_price_fetcher = LivePriceFetcher(secrets=secrets, disable_ws=True)
         self.DEFAULT_MINER_HOTKEY = "test_miner"

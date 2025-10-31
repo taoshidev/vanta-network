@@ -92,7 +92,7 @@ class PriceSlippageModel:
 
         if order.processed_ms > 1735718400000:  # Use fitted BB+ for orders after jan 1, 2024, 08:00:00 UTC
             size_str = cls.get_order_size_bucket(size)
-            side = "buy" if order.quantity > 0 else "sell"
+            side = "buy" if order.leverage > 0 else "sell"
             model_config = cls.parameters["equity"][order.trade_pair.trade_pair_id][side][size_str]
             intercept, c1, c2, c3 = (model_config[key] for key in ["intercept", "spread/price", "annualized_vol", f"{side}_order_size/adv"])
             slippage_pct = intercept + (c1 * spread / mid_price) + (c2 * annualized_volatility) + (c3 * volume_shares / avg_daily_volume)
@@ -149,7 +149,7 @@ class PriceSlippageModel:
         V1: 0.2 bps for majors, 2 bps for alts
         """
         if order.processed_ms > SLIPPAGE_V2_TIME_MS:
-            side = "long" if order.quantity > 0 else "short"
+            side = "long" if order.leverage > 0 else "short"
             slippage_size_buckets = cls.slippage_estimates["crypto"][order.trade_pair.trade_pair_id+"C"][side]
             last_slippage = 0
             for bucket, slippage in slippage_size_buckets.items():

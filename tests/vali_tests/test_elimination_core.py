@@ -35,6 +35,11 @@ class TestEliminationCore(TestBase):
     
     def setUp(self):
         super().setUp()
+        # Clear ALL test miner positions BEFORE creating PositionManager
+        ValiBkpUtils.clear_directory(
+            ValiBkpUtils.get_miner_dir(running_unit_tests=True)
+        )
+
 
         # Create diverse set of test miners
         self.MDD_MINER = "miner_mdd"
@@ -43,6 +48,7 @@ class TestEliminationCore(TestBase):
         self.PLAGIARIST_MINER = "miner_plagiarist"
         self.CHALLENGE_FAIL_MINER = "miner_challenge_fail"
         self.LIQUIDATED_MINER = "miner_liquidated"
+        self.DEFAULT_ACCOUNT_SIZE = 100_000
         
         # Initialize system components with all miners
         self.all_miners = [
@@ -132,6 +138,7 @@ class TestEliminationCore(TestBase):
                 open_ms=base_time,
                 trade_pair=TradePair.BTCUSD,
                 is_closed_position=False,
+                account_size=self.DEFAULT_ACCOUNT_SIZE,
                 orders=[Order(
                     price=60000,
                     processed_ms=base_time,

@@ -28,11 +28,17 @@ from shared_objects.cache_controller import CacheController
 class TestEliminationPersistenceRecovery(TestBase):
     def setUp(self):
         super().setUp()
+        # Clear ALL test miner positions BEFORE creating PositionManager
+        ValiBkpUtils.clear_directory(
+            ValiBkpUtils.get_miner_dir(running_unit_tests=True)
+        )
+
         
         # Test miners
         self.PERSISTENT_MINER_1 = "persistent_miner_1"
         self.PERSISTENT_MINER_2 = "persistent_miner_2"
         self.RECOVERY_MINER = "recovery_miner"
+        self.DEFAULT_ACCOUNT_SIZE = 100_000
         
         self.all_miners = [
             self.PERSISTENT_MINER_1,
@@ -111,6 +117,7 @@ class TestEliminationPersistenceRecovery(TestBase):
                     open_ms=TimeUtil.now_in_millis() - MS_IN_24_HOURS,
                     trade_pair=trade_pair,
                     is_closed_position=False,
+                    account_size=self.DEFAULT_ACCOUNT_SIZE,
                     orders=[Order(
                         price=60000 if trade_pair == TradePair.BTCUSD else 3000,
                         processed_ms=TimeUtil.now_in_millis() - MS_IN_24_HOURS,

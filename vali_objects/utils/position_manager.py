@@ -780,7 +780,7 @@ class PositionManager(CacheController):
                                        order_uuid=position.position_uuid[::-1], # deterministic across validators. Won't mess with p2p sync
                                        trade_pair=position.trade_pair,
                                        order_type=OrderType.FLAT,
-                                       quantity=-position.net_quantity,
+                                       leverage=-position.net_leverage,
                                        src=OrderSource.DEPRECATION_FLAT)
 
                     position.add_order(flat_order, self.live_price_fetcher)

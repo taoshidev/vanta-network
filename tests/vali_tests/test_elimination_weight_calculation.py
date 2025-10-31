@@ -34,6 +34,7 @@ from vali_objects.utils.live_price_fetcher import LivePriceFetcher
 from vali_objects.utils.miner_bucket_enum import MinerBucket
 from vali_objects.utils.position_lock import PositionLocks
 from vali_objects.utils.subtensor_weight_setter import SubtensorWeightSetter
+from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.validator_contract_manager import ValidatorContractManager
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair, ValiConfig
@@ -52,7 +53,12 @@ class TestEliminationWeightCalculation(TestBase):
 
     def setUp(self):
         super().setUp()
+        # Clear ALL test miner positions BEFORE creating PositionManager
+        ValiBkpUtils.clear_directory(
+            ValiBkpUtils.get_miner_dir(running_unit_tests=True)
+        )
 
+        
         # Create test miners
         self.ELIMINATED_MINER = "eliminated_miner"
         self.HEALTHY_MINER_1 = "healthy_miner_1"
@@ -60,6 +66,7 @@ class TestEliminationWeightCalculation(TestBase):
         self.CHALLENGE_MINER = "challenge_miner"
         self.PROBATION_MINER = "probation_miner"
         self.ZOMBIE_MINER = "zombie_miner"
+        self.DEFAULT_ACCOUNT_SIZE = 100_000
         
         self.all_miners = [
             self.ELIMINATED_MINER,
@@ -167,6 +174,7 @@ class TestEliminationWeightCalculation(TestBase):
                 open_ms=position_time_ms,
                 trade_pair=TradePair.BTCUSD,
                 is_closed_position=False,
+                account_size=self.DEFAULT_ACCOUNT_SIZE,
                 orders=[Order(
                     price=60000,
                     processed_ms=position_time_ms,

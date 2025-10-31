@@ -28,6 +28,7 @@ class TestPriceSlippageModel(TestBase):
         self.DEFAULT_OPEN_MS = TimeUtil.now_in_millis()  # 1718071209000
         self.default_bid = 99
         self.default_ask = 100
+        self.DEFAULT_ACCOUNT_SIZE = 100_000
 
 
     def test_open_position_returns_with_slippage(self):
@@ -50,6 +51,7 @@ class TestPriceSlippageModel(TestBase):
             open_ms=self.DEFAULT_OPEN_MS,
             trade_pair=TradePair.EURUSD,
             orders=[],
+            account_size=self.DEFAULT_ACCOUNT_SIZE,
         )
 
         self.open_position.add_order(self.open_order, self.live_price_fetcher)
@@ -82,7 +84,7 @@ class TestPriceSlippageModel(TestBase):
             order_uuid=self.DEFAULT_ORDER_UUID+"_close",
             trade_pair=TradePair.EURUSD,
             order_type=OrderType.FLAT,
-            leverage=0,
+            leverage=-1,
         )
         self.closed_position = Position(
             miner_hotkey=self.DEFAULT_MINER_HOTKEY,
@@ -90,6 +92,7 @@ class TestPriceSlippageModel(TestBase):
             open_ms=self.DEFAULT_OPEN_MS,
             trade_pair=TradePair.EURUSD,
             orders=[],
+            account_size=self.DEFAULT_ACCOUNT_SIZE,
         )
         self.closed_position.add_order(self.open_order, self.live_price_fetcher)
         self.closed_position.add_order(self.close_order, self.live_price_fetcher)
@@ -140,14 +143,14 @@ class TestPriceSlippageModel(TestBase):
         self.forex_order_buy = Order(price=100, processed_ms=self.DEFAULT_OPEN_MS,
                                         order_uuid=self.DEFAULT_ORDER_UUID,
                                         trade_pair=TradePair.USDCAD,
-                                        order_type=OrderType.LONG, leverage=1)
+                                        order_type=OrderType.LONG, leverage=1, value=1*self.DEFAULT_ACCOUNT_SIZE)
         slippage_buy = PriceSlippageModel.calculate_slippage(self.default_bid, self.default_ask,
                                                              self.forex_order_buy)
 
         self.forex_order_sell = Order(price=100, processed_ms=self.DEFAULT_OPEN_MS,
                                          order_uuid=self.DEFAULT_ORDER_UUID,
                                          trade_pair=TradePair.USDCAD,
-                                         order_type=OrderType.SHORT, leverage=-3)
+                                         order_type=OrderType.SHORT, leverage=-3, value=-3*self.DEFAULT_ACCOUNT_SIZE)
         slippage_sell = PriceSlippageModel.calculate_slippage(self.default_bid, self.default_ask,
                                                               self.forex_order_sell)
 
@@ -155,7 +158,7 @@ class TestPriceSlippageModel(TestBase):
         self.forex_order_buy_large = Order(price=100, processed_ms=self.DEFAULT_OPEN_MS,
                                               order_uuid=self.DEFAULT_ORDER_UUID,
                                               trade_pair=TradePair.USDCAD,
-                                              order_type=OrderType.LONG, leverage=3)
+                                              order_type=OrderType.LONG, leverage=3, value=3*self.DEFAULT_ACCOUNT_SIZE)
         large_slippage_buy = PriceSlippageModel.calculate_slippage(self.default_bid, self.default_ask,
                                                                    self.forex_order_buy_large)
         # forex slippage does not depend on size
@@ -164,7 +167,7 @@ class TestPriceSlippageModel(TestBase):
         self.forex_order_sell_small = Order(price=100, processed_ms=self.DEFAULT_OPEN_MS,
                                                order_uuid=self.DEFAULT_ORDER_UUID,
                                                trade_pair=TradePair.USDCAD,
-                                               order_type=OrderType.SHORT, leverage=-1)
+                                               order_type=OrderType.SHORT, leverage=-1, value=-1*self.DEFAULT_ACCOUNT_SIZE)
         small_slippage_sell = PriceSlippageModel.calculate_slippage(self.default_bid, self.default_ask,
                                                                     self.forex_order_sell_small)
         assert small_slippage_sell == slippage_sell
@@ -176,14 +179,14 @@ class TestPriceSlippageModel(TestBase):
         self.crypto_order_buy = Order(price=100, processed_ms=self.DEFAULT_OPEN_MS,
                                      order_uuid=self.DEFAULT_ORDER_UUID,
                                      trade_pair=TradePair.BTCUSD,
-                                     order_type=OrderType.LONG, leverage=0.25)
+                                     order_type=OrderType.LONG, leverage=0.25, value=0.25*self.DEFAULT_ACCOUNT_SIZE)
         slippage_buy = PriceSlippageModel.calculate_slippage(self.default_bid, self.default_ask,
                                                              self.crypto_order_buy)
 
         self.crypto_order_sell = Order(price=100, processed_ms=self.DEFAULT_OPEN_MS,
                                       order_uuid=self.DEFAULT_ORDER_UUID,
                                       trade_pair=TradePair.SOLUSD,
-                                      order_type=OrderType.SHORT, leverage=-0.25)
+                                      order_type=OrderType.SHORT, leverage=-0.25, value=0.25*self.DEFAULT_ACCOUNT_SIZE)
         slippage_sell = PriceSlippageModel.calculate_slippage(self.default_bid, self.default_ask,
                                                               self.crypto_order_sell)
 
@@ -191,16 +194,16 @@ class TestPriceSlippageModel(TestBase):
         self.crypto_order_buy_large = Order(price=100, processed_ms=self.DEFAULT_OPEN_MS,
                                            order_uuid=self.DEFAULT_ORDER_UUID,
                                            trade_pair=TradePair.BTCUSD,
-                                           order_type=OrderType.LONG, leverage=0.5)
+                                           order_type=OrderType.LONG, leverage=0.5, value=0.5*self.DEFAULT_ACCOUNT_SIZE)
         large_slippage_buy = PriceSlippageModel.calculate_slippage(self.default_bid, self.default_ask,
                                                                    self.crypto_order_buy_large)
         ## crypto slippage depends on size
-        assert large_slippage_buy == slippage_buy
+        assert large_slippage_buy > slippage_buy
 
         self.crypto_order_sell_small = Order(price=100, processed_ms=self.DEFAULT_OPEN_MS,
                                             order_uuid=self.DEFAULT_ORDER_UUID,
                                             trade_pair=TradePair.SOLUSD,
-                                            order_type=OrderType.SHORT, leverage=-0.1)
+                                            order_type=OrderType.SHORT, leverage=-0.1, value=-0.1*self.DEFAULT_ACCOUNT_SIZE)
         small_slippage_sell = PriceSlippageModel.calculate_slippage(self.default_bid, self.default_ask,
                                                                     self.crypto_order_sell_small)
         assert small_slippage_sell < slippage_sell

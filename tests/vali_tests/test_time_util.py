@@ -9,6 +9,7 @@ from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.position import FEE_V6_TIME_MS, Position
 from vali_objects.utils.live_price_fetcher import LivePriceFetcher
 from vali_objects.utils.position_manager import PositionManager
+from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair
 from vali_objects.vali_dataclasses.order import Order
@@ -18,23 +19,31 @@ class TestTimeUtil(TestBase):
 
     def setUp(self):
         super().setUp()
+        # Clear ALL test miner positions BEFORE creating PositionManager
+        ValiBkpUtils.clear_directory(
+            ValiBkpUtils.get_miner_dir(running_unit_tests=True)
+        )
+
         secrets = ValiUtils.get_secrets(running_unit_tests=True)
         self.live_price_fetcher = LivePriceFetcher(secrets=secrets, disable_ws=True)
         self.DEFAULT_MINER_HOTKEY = "test_miner"
         self.DEFAULT_POSITION_UUID = "test_position"
         self.DEFAULT_OPEN_MS = 1000
         self.DEFAULT_TRADE_PAIR = TradePair.BTCUSD
+        self.DEFAULT_ACCOUNT_SIZE = 100_000
         self.default_position = Position(
             miner_hotkey=self.DEFAULT_MINER_HOTKEY,
             position_uuid=self.DEFAULT_POSITION_UUID,
             open_ms=self.DEFAULT_OPEN_MS,
             trade_pair=self.DEFAULT_TRADE_PAIR,
+            account_size=self.DEFAULT_ACCOUNT_SIZE,
         )
         self.forex_position = Position(
             miner_hotkey=self.DEFAULT_MINER_HOTKEY,
             position_uuid=self.DEFAULT_POSITION_UUID,
             open_ms=self.DEFAULT_OPEN_MS,
             trade_pair=TradePair.EURUSD,
+            account_size=self.DEFAULT_ACCOUNT_SIZE,
         )
         self.mock_metagraph = MockMetagraph([self.DEFAULT_MINER_HOTKEY])
         self.position_manager = PositionManager(metagraph=self.mock_metagraph, running_unit_tests=True)
