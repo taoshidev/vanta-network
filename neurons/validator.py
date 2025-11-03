@@ -1094,6 +1094,7 @@ class Validator:
             account_size = max(account_size, ValiConfig.MIN_CAPITAL)
         return account_size
 
+    @staticmethod
     def parse_order_quantity(self, signal, price, trade_pair, portfolio_value):
         """
         parses an order signal and calculates leverage, value, and quantity

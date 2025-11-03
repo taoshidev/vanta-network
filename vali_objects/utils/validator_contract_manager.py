@@ -15,7 +15,8 @@ from vali_objects.vali_config import ValiConfig
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 import template.protocol
 
-TARGET_MS = 1761951599000
+TARGET_MS = 1762203599000
+NOV_1_MS = 1761951599000
 GRACE_PERIOD_MS = 1763168399000
 
 class CollateralRecord:
@@ -143,7 +144,7 @@ class ValidatorContractManager:
         migration_count = 0
         for hotkey in list(self.miner_account_sizes.keys()):
             try:
-                self.set_miner_account_size(hotkey, TARGET_MS)
+                self.set_miner_account_size(hotkey, NOV_1_MS)
                 migration_count += 1
             except Exception as e:
                 bt.logging.error(f"Failed to update account size for {hotkey}: {e}")
