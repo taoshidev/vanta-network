@@ -132,16 +132,18 @@ class Validator:
         self.ipc_manager = Manager()
         self.shared_queue_websockets = self.ipc_manager.Queue()
 
+        # Generate runtime authentication key for live price fetcher RPC
+        runtime_authkey = str(uuid.uuid4()).encode()
+
         self.live_price_fetcher_process = Process(
             target=live_price_fetcher.run_live_price_server,
             args=(self.secrets,),
-            kwargs={'disable_ws': False},
+            kwargs={'disable_ws': False, 'authkey': runtime_authkey},
             daemon=True
         )
         self.live_price_fetcher_process.start()
         self._wait_for_live_price_server_ready()
-        self.live_price_fetcher = live_price_fetcher.get_live_price_client();
-        # self.live_price_fetcher = LivePriceFetcher(secrets=self.secrets, disable_ws=False)
+        self.live_price_fetcher = live_price_fetcher.get_live_price_client(authkey=runtime_authkey);
 
         self.price_slippage_model = PriceSlippageModel(live_price_fetcher=self.live_price_fetcher)
         # Activating Bittensor's logging with the set configurations.

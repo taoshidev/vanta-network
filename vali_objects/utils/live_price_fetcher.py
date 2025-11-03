@@ -20,7 +20,9 @@ from statistics import median
 class LivePriceFetcherClient(BaseManager): pass
 LivePriceFetcherClient.register('LivePriceFetcher')
 
-def get_live_price_client(address=('localhost', 50000), authkey=b'secret', max_retries = 5):
+def get_live_price_client(address=('localhost', 50000), authkey=None, max_retries = 5):
+    if authkey is None:
+        raise ValueError("authkey parameter is required for LivePriceFetcher client connection")
     bt.logging.info(f"Attempting to connect to LivePriceFetcher server")
     for attempt in range(max_retries):
         try:
@@ -38,7 +40,9 @@ def get_live_price_client(address=('localhost', 50000), authkey=b'secret', max_r
 
 class LivePriceFetcherServer(BaseManager): pass
 
-def run_live_price_server(secrets, address=('localhost', 50000), authkey=b'secret', disable_ws=False, ipc_manager=None, is_backtesting=False):
+def run_live_price_server(secrets, address=('localhost', 50000), authkey=None, disable_ws=False, ipc_manager=None, is_backtesting=False):
+    if authkey is None:
+        raise ValueError("authkey parameter is required for LivePriceFetcher server")
     bt.logging.info(f"Starting LivePriceFetcher server ...")
     try:
         live_price_fetcher = LivePriceFetcher(secrets, disable_ws, ipc_manager, is_backtesting)
