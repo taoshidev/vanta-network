@@ -27,8 +27,8 @@ Usage:
         chunk_emissions_usd=25.0,
         # Performance data
         portfolio_return=1.15,
-        pnl_gain=1000.0,
-        pnl_loss=-200.0,
+        realized_pnl=800.0,
+        unrealized_pnl=100.0,
         # ... other fields
     )
     ledger.add_checkpoint(checkpoint)
@@ -84,8 +84,8 @@ class DebtCheckpoint:
         # Note: Sourced from PerfCheckpoint attributes - some have different names:
         #   portfolio_return <- gain, max_drawdown <- mdd, max_portfolio_value <- mpv
         portfolio_return: Current portfolio return multiplier (1.0 = break-even)
-        pnl_gain: PnL gain during this checkpoint period (NOT cumulative across checkpoints)
-        pnl_loss: PnL loss during this checkpoint period (NOT cumulative across checkpoints)
+        realized_pnl: Net realized PnL during this checkpoint period (NOT cumulative across checkpoints)
+        unrealized_pnl: Net unrealized PnL during this checkpoint period (NOT cumulative across checkpoints)
         spread_fee_loss: Spread fee losses during this checkpoint period (NOT cumulative)
         carry_fee_loss: Carry fee losses during this checkpoint period (NOT cumulative)
         max_drawdown: Maximum drawdown (worst loss from peak, cumulative)
@@ -103,7 +103,8 @@ class DebtCheckpoint:
         challenge_period_status: Challenge period status (MAINCOMP/CHALLENGE/PROBATION/PLAGIARISM/UNKNOWN)
 
         # Derived/Computed Fields
-        net_pnl: Net PnL (gain + loss)
+        net_pnl: Payout PnL = realized_pnl + min(0, unrealized_pnl)
+                 (Penalizes unrealized losses, ignores unrealized gains)
         total_fees: Total fees paid (spread + carry)
         return_after_fees: Portfolio return after all fees
         weighted_score: Final score after applying all penalties
@@ -122,8 +123,8 @@ class DebtCheckpoint:
 
     # Performance Data
     portfolio_return: float = 1.0
-    pnl_gain: float = 0.0
-    pnl_loss: float = 0.0
+    realized_pnl: float = 0.0
+    unrealized_pnl: float = 0.0
     spread_fee_loss: float = 0.0
     carry_fee_loss: float = 0.0
     max_drawdown: float = 1.0
@@ -146,7 +147,7 @@ class DebtCheckpoint:
         if self.challenge_period_status is None:
             self.challenge_period_status = MinerBucket.UNKNOWN.value
         # Calculate derived financial fields
-        self.net_pnl = self.pnl_gain + self.pnl_loss
+        self.net_pnl = self.realized_pnl + min(0.0, self.unrealized_pnl)
         self.total_fees = self.spread_fee_loss + self.carry_fee_loss
         self.return_after_fees = self.portfolio_return
         self.weighted_score = self.portfolio_return * self.total_penalty
@@ -180,8 +181,8 @@ class DebtCheckpoint:
             # Performance
             'performance': {
                 'portfolio_return': self.portfolio_return,
-                'pnl_gain': self.pnl_gain,
-                'pnl_loss': self.pnl_loss,
+                'realized_pnl': self.realized_pnl,
+                'unrealized_pnl': self.unrealized_pnl,
                 'net_pnl': self.net_pnl,
                 'spread_fee_loss': self.spread_fee_loss,
                 'carry_fee_loss': self.carry_fee_loss,
@@ -443,8 +444,8 @@ class DebtLedger:
                     alpha_balance_snapshot=emissions.get('alpha_balance_snapshot', 0.0),
                     # Performance
                     portfolio_return=performance.get('portfolio_return', 1.0),
-                    pnl_gain=performance.get('pnl_gain', 0.0),
-                    pnl_loss=performance.get('pnl_loss', 0.0),
+                    realized_pnl=performance.get('realized_pnl', performance.get('pnl_gain', 0.0) + performance.get('pnl_loss', 0.0)),
+                    unrealized_pnl=performance.get('unrealized_pnl', 0.0),
                     spread_fee_loss=performance.get('spread_fee_loss', 0.0),
                     carry_fee_loss=performance.get('carry_fee_loss', 0.0),
                     max_drawdown=performance.get('max_drawdown', 1.0),
@@ -472,8 +473,8 @@ class DebtLedger:
                     tao_balance_snapshot=cp_dict.get('tao_balance_snapshot', 0.0),
                     alpha_balance_snapshot=cp_dict.get('alpha_balance_snapshot', 0.0),
                     portfolio_return=cp_dict.get('portfolio_return', 1.0),
-                    pnl_gain=cp_dict.get('pnl_gain', 0.0),
-                    pnl_loss=cp_dict.get('pnl_loss', 0.0),
+                    realized_pnl=cp_dict.get('realized_pnl', cp_dict.get('pnl_gain', 0.0) + cp_dict.get('pnl_loss', 0.0)),
+                    unrealized_pnl=cp_dict.get('unrealized_pnl', 0.0),
                     spread_fee_loss=cp_dict.get('spread_fee_loss', 0.0),
                     carry_fee_loss=cp_dict.get('carry_fee_loss', 0.0),
                     max_drawdown=cp_dict.get('max_drawdown', 1.0),
@@ -1043,8 +1044,8 @@ class DebtLedgerManager:
                     alpha_balance_snapshot=emissions_checkpoint.alpha_balance_snapshot,
                     # Performance data - access attributes directly from PerfCheckpoint
                     portfolio_return=perf_checkpoint.gain,  # Current portfolio multiplier
-                    pnl_gain=perf_checkpoint.pnl_gain,  # PnL gain during this checkpoint period
-                    pnl_loss=perf_checkpoint.pnl_loss,  # PnL loss during this checkpoint period
+                    realized_pnl=perf_checkpoint.realized_pnl,  # Net realized PnL during this checkpoint period
+                    unrealized_pnl=perf_checkpoint.unrealized_pnl,  # Net unrealized PnL during this checkpoint period
                     spread_fee_loss=perf_checkpoint.spread_fee_loss,  # Spread fees during this checkpoint
                     carry_fee_loss=perf_checkpoint.carry_fee_loss,  # Carry fees during this checkpoint
                     max_drawdown=perf_checkpoint.mdd,  # Max drawdown

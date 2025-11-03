@@ -157,10 +157,15 @@ def checkpoint_generator(
         n_updates: int = 0,
         gain: float = 0.0,
         loss: float = 0.0,
+        realized_pnl: float = 0.0,
+        unrealized_pnl: float = 0.0,
         pnl_gain: float = 0.0,
         pnl_loss: float = 0.0,
         mdd: float = 1.0,
 ):
+    if pnl_gain != 0.0 or pnl_loss != 0.0:
+        realized_pnl = pnl_gain + pnl_loss
+
     return PerfCheckpoint(
         last_update_ms=last_update_ms,
         prev_portfolio_ret=prev_portfolio_ret,
@@ -169,8 +174,8 @@ def checkpoint_generator(
         n_updates=n_updates,
         gain=gain,
         loss=loss,
-        pnl_gain=pnl_gain,
-        pnl_loss=pnl_loss,
+        realized_pnl=realized_pnl,
+        unrealized_pnl=unrealized_pnl,
         mdd=mdd,
     )
 

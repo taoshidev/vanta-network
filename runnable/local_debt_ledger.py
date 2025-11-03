@@ -135,8 +135,8 @@ def plot_pnl_performance(debt_checkpoints, hotkey):
     # Extract data
     timestamps = [datetime.fromtimestamp(cp.timestamp_ms / 1000, tz=timezone.utc)
                  for cp in debt_checkpoints]
-    pnl_gains = [cp.pnl_gain for cp in debt_checkpoints]
-    pnl_losses = [cp.pnl_loss for cp in debt_checkpoints]
+    realized_pnls = [cp.realized_pnl for cp in debt_checkpoints]
+    unrealized_pnls = [cp.unrealized_pnl for cp in debt_checkpoints]
     net_pnls = [cp.net_pnl for cp in debt_checkpoints]
 
     # Get time range
@@ -147,9 +147,9 @@ def plot_pnl_performance(debt_checkpoints, hotkey):
     fig, ax = plt.subplots(figsize=(16, 8))
 
     # Plot PnL components
-    ax.plot(timestamps, pnl_gains, 'g-', linewidth=2, label=f'PnL Gain (total: {sum(pnl_gains):.2f})')
-    ax.plot(timestamps, pnl_losses, 'r-', linewidth=2, label=f'PnL Loss (total: {sum(pnl_losses):.2f})')
-    ax.plot(timestamps, net_pnls, 'b-', linewidth=2.5, label=f'Net PnL (total: {sum(net_pnls):.2f})')
+    ax.plot(timestamps, realized_pnls, 'g-', linewidth=2, label=f'Realized PnL (total: {sum(realized_pnls):.2f})')
+    ax.plot(timestamps, unrealized_pnls, 'orange', linewidth=2, label=f'Unrealized PnL (total: {sum(unrealized_pnls):.2f})')
+    ax.plot(timestamps, net_pnls, 'b-', linewidth=2.5, label=f'Net PnL - Payout (total: {sum(net_pnls):.2f})')
 
     # Add zero line
     ax.axhline(y=0, color='black', linestyle='--', linewidth=1, alpha=0.3)

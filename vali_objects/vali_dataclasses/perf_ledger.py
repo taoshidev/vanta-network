@@ -109,12 +109,10 @@ class PerfCheckpoint:
         carry_fee_loss: float = 0.0,
         mdd: float = 1.0,
         mpv: float = 0.0,
+        realized_pnl: float = 0.0,
+        unrealized_pnl: float = 0.0,
         pnl_gain: float = 0.0,
         pnl_loss: float = 0.0,
-        realized_pnl_gain: float = 0.0,
-        realized_pnl_loss: float = 0.0,
-        unrealized_pnl_gain: float = 0.0,
-        unrealized_pnl_loss: float = 0.0,
         **kwargs  # Support extra fields like BaseModel's extra="allow"
     ):
         # Type coercion to match BaseModel behavior (handles numpy types and ensures correct types)
@@ -133,18 +131,8 @@ class PerfCheckpoint:
         self.carry_fee_loss = float(carry_fee_loss)
         self.mdd = float(mdd)
         self.mpv = float(mpv)
-        self.pnl_gain = float(pnl_gain)
-        self.pnl_loss = float(pnl_loss)
-        self.realized_pnl_gain = float(realized_pnl_gain)
-        self.realized_pnl_loss = float(realized_pnl_loss)
-        self.unrealized_pnl_gain = float(unrealized_pnl_gain)
-        self.unrealized_pnl_loss = float(unrealized_pnl_loss)
-
-        # # migration from old pl. can remove afterwards.
-        # if 'pnl_gain' in kwargs or 'pnl_loss' in kwargs:
-        #     bt.logging.debug(f"Loading old checkpoint with pnl_gain/pnl_loss. Migrating...")
-        #     kwargs.pop('pnl_gain', None)
-        #     kwargs.pop('pnl_loss', None)
+        self.realized_pnl = float(realized_pnl)
+        self.unrealized_pnl = float(unrealized_pnl)
 
         # Store any extra fields (equivalent to model_config extra="allow")
         for key, value in kwargs.items():
@@ -456,15 +444,8 @@ class PerfLedger():
         delta_realized = current_realized_pnl_usd - current_cp.prev_portfolio_realized_pnl
         delta_unrealized = current_unrealized_pnl_usd - current_cp.prev_portfolio_unrealized_pnl
 
-        if delta_realized > 0:
-            current_cp.realized_pnl_gain += delta_realized
-        elif delta_realized < 0:
-            current_cp.realized_pnl_loss += delta_realized
-
-        if delta_unrealized > 0:
-            current_cp.unrealized_pnl_gain += delta_unrealized
-        elif delta_unrealized < 0:
-            current_cp.unrealized_pnl_loss += delta_unrealized
+        current_cp.realized_pnl += delta_realized
+        current_cp.unrealized_pnl += delta_unrealized
 
         # Update fee losses
         if current_cp.prev_portfolio_carry_fee != current_portfolio_carry:
