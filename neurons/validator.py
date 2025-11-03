@@ -1072,6 +1072,8 @@ class Validator:
             ask=best_price_source.ask,
             src=src
         )
+        if trade_pair.is_forex and trade_pair.quote != "USD":
+            order.quote_usd_rate = self.live_price_fetcher.get_usd_conversion(trade_pair.quote, order_time_ms, signal_order_type, existing_position.position_type)
         net_portfolio_leverage = self.position_manager.calculate_net_portfolio_leverage(miner_hotkey)
         order.slippage = PriceSlippageModel.calculate_slippage(order.bid, order.ask, order)
         existing_position.add_order(order, self.live_price_fetcher, net_portfolio_leverage)

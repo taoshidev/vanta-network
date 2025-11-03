@@ -413,21 +413,18 @@ class Position(BaseModel):
                     exit_price = current_price
                 order_realized_pnl = -1 * (exit_price - self.average_entry_price) * (order.quantity * order.trade_pair.lot_size)
                 self.realized_pnl += order_realized_pnl
+                self.realized_pnl_usd += order_realized_pnl * order.quote_usd_rate
             self.unrealized_pnl = (current_price - self.average_entry_price) * (min(self.net_quantity, self.net_quantity + order.quantity, key=abs) * order.trade_pair.lot_size)
+            self.unrealized_pnl_usd = self.unrealized_pnl * order.quote_usd_rate
         else:
             self.unrealized_pnl = (current_price - self.average_entry_price) * (abs(self.net_quantity) * self.trade_pair.lot_size)
+            quote_usd_conversion = live_price_fetcher.get_usd_conversion(self.trade_pair.quote, t_ms, self.orders[-1].order_type, self.position_type)
+            self.unrealized_pnl_usd = self.unrealized_pnl * quote_usd_conversion
 
         if self.cumulative_entry_value == 0:
             gain = 0
         else:
             gain = (self.realized_pnl + self.unrealized_pnl) / self.cumulative_entry_value
-
-        # convert pnl to usd
-        order_type = order.order_type if order else self.orders[-1].order_type
-        quote_usd_conversion = live_price_fetcher.get_usd_conversion(self.trade_pair.quote, t_ms, order_type, self.position_type)
-        # print(f"get_usd_conversion for {self.trade_pair}: {quote_usd_conversion}")
-        self.realized_pnl_usd += order_realized_pnl * quote_usd_conversion
-        self.unrealized_pnl_usd = self.unrealized_pnl * quote_usd_conversion
 
         # Check if liquidated
         if gain <= -1.0:
@@ -549,6 +546,8 @@ class Position(BaseModel):
                            leverage=-position.net_leverage,
                            src=src,
                            price_sources=[x for x in (price_source, extra_price_source) if x is not None])
+        if position.trade_pair.is_forex and position.trade_pair.quote != "USD":
+            flat_order.quote_usd_rate = live_price_fetcher.get_usd_conversion(position.trade_pair.quote, fake_flat_order_time, OrderType.FLAT, position.position_type)
         return flat_order
 
     def calculate_return_with_fees(self, current_return_no_fees, timestamp_ms=None):
@@ -646,10 +645,8 @@ class Position(BaseModel):
                 # order is reducing the size of a position, so there is no entry cost.
                 entry_value = 0
 
-            quote_usd_conversion = live_price_fetcher.get_usd_conversion(self.trade_pair.quote, order.processed_ms, order.order_type, self.position_type)
-            # print(f"get_usd_conversion2 for {self.trade_pair}: {quote_usd_conversion}")
             self.cumulative_entry_value += entry_value
-            self.cumulative_entry_value_usd += entry_value * quote_usd_conversion
+            self.cumulative_entry_value_usd += entry_value * order.quote_usd_rate
             self.net_quantity = new_net_quantity
             self.net_value = realtime_price * (self.net_quantity * self.trade_pair.lot_size)
             self.net_leverage = self.net_value / self.account_size
