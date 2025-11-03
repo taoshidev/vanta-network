@@ -782,8 +782,7 @@ class PositionManager(CacheController):
                                        order_type=OrderType.FLAT,
                                        leverage=-position.net_leverage,
                                        src=OrderSource.DEPRECATION_FLAT)
-                    if position.trade_pair.is_forex and position.trade_pair.quote != "USD":
-                        flat_order.quote_usd_rate = self.live_price_fetcher.get_usd_conversion(position.trade_pair.quote, TARGET_MS, OrderType.FLAT, position.position_type)
+                    flat_order.quote_usd_rate = self.live_price_fetcher.get_quote_usd_conversion(flat_order, position.position_type)
 
                     position.add_order(flat_order, self.live_price_fetcher)
                     self.save_miner_position(position, delete_open_position_if_exists=True)
@@ -1215,8 +1214,8 @@ class PositionManager(CacheController):
 
                 migrated_count += 1
 
-            if order.trade_pair.is_forex and order.trade_pair.quote != "USD" and order.processed_ms > 1761955199000 and order.quote_usd_rate == 1:
-                order.quote_usd_rate = self.live_price_fetcher.get_usd_conversion(order.trade_pair.quote, order.processed_ms, order.order_type, position.orders[0].order_type)
+            if order.quote_usd_rate == 1:
+                order.quote_usd_rate = self.live_price_fetcher.get_quote_usd_conversion(order, position.orders[0].order_type)
 
         if migrated_count > 0:
             bt.logging.info(

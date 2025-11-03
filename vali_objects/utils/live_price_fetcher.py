@@ -310,24 +310,27 @@ class LivePriceFetcher:
         """
         return price_source
 
-    def get_usd_conversion(self, from_currency, time_ms, order_type, position_type):
+    def get_quote_usd_conversion(self, order, position_type):
         """
-        Return the conversion rate between another currency and USD
+        Return the conversion rate between an order's quote currency and USD
         """
-        if from_currency == "USD":
+        if not (order.trade_pair.is_forex and order.trade_pair.quote != "USD"):
             return 1.0
 
-        conversion_trade_pair = TradePair.from_trade_pair_id(f"{from_currency}USD")
+        if order.trade_pair.base == "USD":
+            return 1.0 / order.price
+
+        conversion_trade_pair = TradePair.from_trade_pair_id(f"{order.trade_pair.quote}USD")
         price_source = self.get_close_at_date(
             trade_pair=conversion_trade_pair,
-            timestamp_ms=time_ms,
+            timestamp_ms=order.processed_ms,
             verbose=False
         )
         if price_source:
             usd_conversion = price_source.parse_appropriate_price(
-                now_ms=time_ms,
+                now_ms=order.processed_ms,
                 is_forex=True,          # from_currency is USD for crypto and equities
-                order_type=order_type,
+                order_type=order.order_type,
                 position_type=position_type
             )
             return usd_conversion

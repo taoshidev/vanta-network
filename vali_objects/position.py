@@ -413,7 +413,7 @@ class Position(BaseModel):
             self.unrealized_pnl = unrealized_pnl_quote * order.quote_usd_rate
         else:
             unrealized_pnl_quote = (current_price - self.average_entry_price) * (abs(self.net_quantity) * self.trade_pair.lot_size)
-            quote_usd_conversion = live_price_fetcher.get_usd_conversion(self.trade_pair.quote, t_ms, self.orders[-1].order_type, self.position_type)
+            quote_usd_conversion = self.orders[-1].quote_usd_rate # live_price_fetcher.get_usd_conversion(self.trade_pair.quote, t_ms, self.orders[-1].order_type, self.position_type)
             self.unrealized_pnl = unrealized_pnl_quote * quote_usd_conversion
 
         if self.cumulative_entry_value == 0:
@@ -541,8 +541,7 @@ class Position(BaseModel):
                            leverage=-position.net_leverage,
                            src=src,
                            price_sources=[x for x in (price_source, extra_price_source) if x is not None])
-        if position.trade_pair.is_forex and position.trade_pair.quote != "USD":
-            flat_order.quote_usd_rate = live_price_fetcher.get_usd_conversion(position.trade_pair.quote, fake_flat_order_time, OrderType.FLAT, position.position_type)
+        flat_order.quote_usd_rate = live_price_fetcher.get_quote_usd_conversion(flat_order, position.position_type)
         return flat_order
 
     def calculate_return_with_fees(self, current_return_no_fees, timestamp_ms=None):
