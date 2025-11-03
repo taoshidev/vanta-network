@@ -209,7 +209,7 @@ class Position(BaseModel):
     def __hash__(self):
         # Include specified fields in the hash, assuming trade_pair is accessible and immutable
         return hash((self.miner_hotkey, self.position_uuid, self.open_ms, self.current_return,
-                     self.net_quantity, self.net_value, self.initial_entry_price, self.trade_pair.trade_pair))
+                     self.net_leverage, self.net_quantity, self.net_value, self.initial_entry_price, self.trade_pair.trade_pair))
 
     def __eq__(self, other):
         if not isinstance(other, Position):
@@ -218,6 +218,7 @@ class Position(BaseModel):
                 self.position_uuid == other.position_uuid and
                 self.open_ms == other.open_ms and
                 self.current_return == other.current_return and
+                self.net_leverage == other.net_leverage and
                 self.net_quantity == other.net_quantity and
                 self.net_value == other.net_value and
                 self.initial_entry_price == other.initial_entry_price and
@@ -335,6 +336,7 @@ class Position(BaseModel):
             f"position details: "
             f"close_ms [{self.close_ms}] "
             f"initial entry price [{self.initial_entry_price}] "
+            f"net leverage [{self.net_leverage}] "
             f"net quantity [{self.net_quantity}] "
             f"net value [{self.net_value}] "
             f"average entry price [{self.average_entry_price}] "
@@ -343,6 +345,7 @@ class Position(BaseModel):
         order_info = [
             {
                 "order type": order.order_type.value,
+                "leverage": order.leverage,
                 "quantity": order.quantity,
                 "price": order,
             }
@@ -637,8 +640,7 @@ class Position(BaseModel):
                 # order is reducing the size of a position, so there is no entry cost.
                 entry_value = 0
 
-            self.cumulative_entry_value += entry_value
-            self.cumulative_entry_value_usd += entry_value * order.quote_usd_rate
+            self.cumulative_entry_value += entry_value * order.quote_usd_rate
             self.net_quantity = new_net_quantity
             self.net_value = (realtime_price * order.quote_usd_rate) * (self.net_quantity * self.trade_pair.lot_size)
             self.net_leverage = self.net_value / self.account_size
