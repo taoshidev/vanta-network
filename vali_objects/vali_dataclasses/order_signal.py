@@ -11,7 +11,7 @@ class Signal(BaseModel):
     order_type: OrderType
     leverage: Optional[float] = None    # multiplier of account size
     value: Optional[float] = None       # USD value of order
-    quantity: Optional[float] = None      # number of lots/coins/shares/etc.
+    quantity: Optional[float] = None    # number of lots/coins/shares/etc.
 
     @model_validator(mode='before')
     def check_exclusive_fields(cls, values):

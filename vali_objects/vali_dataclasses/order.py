@@ -31,6 +31,7 @@ class Order(Signal):
     ask: float = 0
     slippage: float = 0
     quote_usd_rate: float = 1.0 # conversion rate from quote currency to USD
+    usd_base_rate: float = 1.0  # conversion rate from usd to base currency
     processed_ms: int
     order_uuid: str
     price_sources: list = []
@@ -101,6 +102,7 @@ class Order(Signal):
                     'ask': self.ask,
                     'slippage': self.slippage,
                     'quote_usd_rate': self.quote_usd_rate,
+                    'usd_base_rate': self.usd_base_rate,
                     'processed_ms': self.processed_ms,
                     'price_sources': self.price_sources,
                     'order_uuid': self.order_uuid,

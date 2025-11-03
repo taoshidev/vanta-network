@@ -783,6 +783,7 @@ class PositionManager(CacheController):
                                        leverage=-position.net_leverage,
                                        src=OrderSource.DEPRECATION_FLAT)
                     flat_order.quote_usd_rate = self.live_price_fetcher.get_quote_usd_conversion(flat_order, position.position_type)
+                    flat_order.usd_base_rate = self.live_price_fetcher.get_usd_base_conversion(position.trade_pair, TARGET_MS, live_price, OrderType.FLAT, position.position_type)
 
                     position.add_order(flat_order, self.live_price_fetcher)
                     self.save_miner_position(position, delete_open_position_if_exists=True)
@@ -1205,17 +1206,18 @@ class PositionManager(CacheController):
         migrated_count = 0
 
         for order in position.orders:
+            if order.quote_usd_rate == 1 or order.usd_base_rate == 1:
+                order.quote_usd_rate = self.live_price_fetcher.get_quote_usd_conversion(order, position.orders[0].order_type)
+                order.usd_base_rate = self.live_price_fetcher.get_usd_base_conversion(order.trade_pair, order.processed_ms, order.price, order.order_type, position.orders[0].order_type)
+
             if order.quantity is None and order.leverage is not None:
                 order.value = order.leverage * position.account_size
                 if order.price == 0:
                     order.quantity = 0
                 else:
-                    order.quantity = order.value / (order.price * position.trade_pair.lot_size)
+                    order.quantity = (order.value * order.usd_base_rate) / position.trade_pair.lot_size
 
                 migrated_count += 1
-
-            if order.quote_usd_rate == 1:
-                order.quote_usd_rate = self.live_price_fetcher.get_quote_usd_conversion(order, position.orders[0].order_type)
 
         if migrated_count > 0:
             bt.logging.info(

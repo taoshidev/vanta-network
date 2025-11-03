@@ -1044,7 +1044,8 @@ class Validator:
 
     def _add_order_to_existing_position(self, existing_position, trade_pair, signal_order_type: OrderType,
                                         quantity: float, order_time_ms: int, miner_hotkey: str,
-                                        price_sources, miner_order_uuid: str, miner_repo_version: str, src:OrderSource):
+                                        price_sources, miner_order_uuid: str, miner_repo_version: str, src:OrderSource,
+                                        usd_base_price=None):
         # Must be locked by caller
         best_price_source = price_sources[0]
         price = best_price_source.parse_appropriate_price(order_time_ms, trade_pair.is_forex, signal_order_type, existing_position.orders[0].order_type)
@@ -1056,7 +1057,9 @@ class Validator:
             )
             existing_position.account_size = ValiConfig.MIN_CAPITAL
         # Calculate value and leverage
-        value = price * (quantity * trade_pair.lot_size)
+        if usd_base_price is None:
+            usd_base_price = self.live_price_fetcher.get_usd_base_conversion(trade_pair, order_time_ms, price, signal_order_type, existing_position.position_type)
+        value = (1 / usd_base_price) * (quantity * trade_pair.lot_size)
         leverage = value / existing_position.account_size
         order = Order(
             trade_pair=trade_pair,
@@ -1072,6 +1075,7 @@ class Validator:
             ask=best_price_source.ask,
             src=src
         )
+        order.usd_base_rate = usd_base_price
         order.quote_usd_rate = self.live_price_fetcher.get_quote_usd_conversion(order, existing_position.position_type)
         net_portfolio_leverage = self.position_manager.calculate_net_portfolio_leverage(miner_hotkey)
         order.slippage = PriceSlippageModel.calculate_slippage(order.bid, order.ask, order)
@@ -1094,7 +1098,7 @@ class Validator:
         return account_size
 
     @staticmethod
-    def parse_order_quantity(self, signal, price, trade_pair, portfolio_value):
+    def parse_order_quantity(signal, usd_base_conversion, trade_pair, portfolio_value):
         """
         parses an order signal and calculates leverage, value, and quantity
         """
@@ -1110,9 +1114,9 @@ class Validator:
             return quantity
         if leverage is not None:
             value = leverage * portfolio_value
-            quantity = value / (price * trade_pair.lot_size)
+            quantity = (value * usd_base_conversion) / trade_pair.lot_size
         elif value is not None:
-            quantity = value / (price * trade_pair.lot_size)
+            quantity = (value * usd_base_conversion) / trade_pair.lot_size
 
         return quantity
 
@@ -1168,12 +1172,13 @@ class Validator:
                 if existing_position:
                     best_price_source = price_sources[0]
                     price = best_price_source.parse_appropriate_price(now_ms, trade_pair.is_forex, signal_order_type, existing_position.orders[0].order_type)
-                    quantity = self.parse_order_quantity(signal, price, trade_pair, existing_position.account_size)
+                    usd_base_price = self.live_price_fetcher.get_usd_base_conversion(trade_pair, now_ms, price, signal_order_type, existing_position.position_type)
+                    quantity = self.parse_order_quantity(signal, usd_base_price, trade_pair, existing_position.account_size)
 
                     self._add_order_to_existing_position(existing_position, trade_pair, signal_order_type,
                                                         quantity, now_ms, miner_hotkey,
                                                         price_sources, miner_order_uuid, miner_repo_version,
-                                                        OrderSource.ORGANIC)
+                                                        OrderSource.ORGANIC, usd_base_price)
                     synapse.order_json = existing_position.orders[-1].__str__()
                 else:
                     # Happens if a FLAT is sent when no position exists

@@ -384,7 +384,7 @@ class Position(BaseModel):
         if order.price == 0:
             order.quantity = 0
         else:
-            order.quantity = order.value / (order.price * order.trade_pair.lot_size)
+            order.quantity = (order.value * order.usd_base_rate) / order.trade_pair.lot_size
         # # Set order value and leverage based on clamped quantity.
         # order.value = order.quantity * (order.price * self.trade_pair.lot_size)
         # order.leverage = order.value / self.account_size
@@ -542,6 +542,7 @@ class Position(BaseModel):
                            src=src,
                            price_sources=[x for x in (price_source, extra_price_source) if x is not None])
         flat_order.quote_usd_rate = live_price_fetcher.get_quote_usd_conversion(flat_order, position.position_type)
+        flat_order.usd_base_rate = live_price_fetcher.get_usd_base_conversion(position.trade_pair, fake_flat_order_time, price, OrderType.FLAT, position.position_type)
         return flat_order
 
     def calculate_return_with_fees(self, current_return_no_fees, timestamp_ms=None):
@@ -751,7 +752,7 @@ class Position(BaseModel):
             if order.price == 0:
                 order.quantity = 0
             else:
-                order.quantity = order.value / (order.price * order.trade_pair.lot_size)
+                order.quantity = (order.value * order.usd_base_rate) / order.trade_pair.lot_size
 
             if self.position_type is None:
                 self.initialize_position_from_first_order(order)

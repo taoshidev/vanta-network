@@ -339,6 +339,34 @@ class LivePriceFetcher:
             return 1.0
             # TODO: raise Exception(f"Unable to fetch currency conversion from {from_currency} to USD at time {time_ms}.")
 
+    def get_usd_base_conversion(self, trade_pair, time_ms, price, order_type, position_type):
+        """
+        Return the conversion rate between USD and an order's base currency
+        """
+        if trade_pair.base == "USD":
+            return 1.0
+
+        if not trade_pair.is_forex or trade_pair.quote == "USD":
+            return 1.0 / price
+
+        conversion_trade_pair = TradePair.from_trade_pair_id(f"USD{trade_pair.base}")
+        price_source = self.get_close_at_date(
+            trade_pair=conversion_trade_pair,
+            timestamp_ms=time_ms,
+            verbose=False
+        )
+        if price_source:
+            usd_conversion = price_source.parse_appropriate_price(
+                now_ms=time_ms,
+                is_forex=True,          # from_currency is USD for crypto and equities
+                order_type=order_type,
+                position_type=position_type
+            )
+            return usd_conversion
+        else:
+            bt.logging.warning(f"Unable to fetch currency conversion from {from_currency} to USD at time {time_ms}. Defaulting to 1.0")
+            return 1.0
+
 if __name__ == "__main__":
     secrets = ValiUtils.get_secrets()
     live_price_fetcher = LivePriceFetcher(secrets, disable_ws=True)
