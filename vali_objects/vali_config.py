@@ -510,6 +510,17 @@ class TradePair(Enum):
         return self.trade_pair_category == TradePairCategory.INDICES
 
     @property
+    def is_blocked(self) -> bool:
+        """Check if this trade pair is blocked from trading"""
+        BLOCKED_TRADE_PAIR_IDS = {
+            'SPX', 'DJI', 'NDX', 'VIX', 'FTSE', 'GDAXI',  # Indices
+            'XAUUSD', 'XAGUSD',  # Commodities
+            'NVDA', 'AAPL', 'TSLA', 'AMZN', 'MSFT', 'GOOG', 'META',  # Equities
+            'AUDJPY', 'CADJPY', 'CHFJPY', 'EURJPY', 'NZDJPY', 'GBPJPY', 'USDJPY'  # Forex JPY pairs
+        }
+        return self.trade_pair_id in BLOCKED_TRADE_PAIR_IDS
+
+    @property
     def lot_size(self):
         trade_pair_lot_size = {TradePairCategory.CRYPTO: 1,
                                TradePairCategory.FOREX: 100_000,

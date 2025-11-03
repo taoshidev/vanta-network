@@ -58,7 +58,7 @@ class TestEliminationWeightCalculation(TestBase):
             ValiBkpUtils.get_miner_dir(running_unit_tests=True)
         )
 
-        
+
         # Create test miners
         self.ELIMINATED_MINER = "eliminated_miner"
         self.HEALTHY_MINER_1 = "healthy_miner_1"
@@ -67,7 +67,7 @@ class TestEliminationWeightCalculation(TestBase):
         self.PROBATION_MINER = "probation_miner"
         self.ZOMBIE_MINER = "zombie_miner"
         self.DEFAULT_ACCOUNT_SIZE = 100_000
-        
+
         self.all_miners = [
             self.ELIMINATED_MINER,
             self.HEALTHY_MINER_1,
