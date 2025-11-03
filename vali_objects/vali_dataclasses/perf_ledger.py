@@ -801,8 +801,8 @@ class PerfLedgerManager(CacheController):
                     ccf, _ = self.position_uuid_to_cache[historical_position.position_uuid].get_carry_fee(end_time_ms, historical_position)
                     tp_to_carry_fee[k] *= ccf
                     tp_to_return[k] *= historical_position.return_at_close
-                    tp_to_realized_pnl[k] += historical_position.realized_pnl_usd
-                    tp_to_unrealized_pnl[k] += historical_position.unrealized_pnl_usd
+                    tp_to_realized_pnl[k] += historical_position.realized_pnl
+                    tp_to_unrealized_pnl[k] += historical_position.unrealized_pnl
 
         for tp_id in list(tp_to_historical_positions.keys()) + [TP_ID_PORTFOLIO]:
             pl = perf_ledger_bundle.get(tp_id)
@@ -1003,8 +1003,8 @@ class PerfLedgerManager(CacheController):
                 if not self.market_calendar.is_market_open(historical_position.trade_pair, t_ms):
                     for x in tp_ids_to_build:
                         tp_to_return[x] *= historical_position.return_at_close
-                        tp_to_realized_pnl[x] += historical_position.realized_pnl_usd
-                        tp_to_unrealized_pnl[x] += historical_position.unrealized_pnl_usd
+                        tp_to_realized_pnl[x] += historical_position.realized_pnl
+                        tp_to_unrealized_pnl[x] += historical_position.unrealized_pnl
                         # Only update to MARKET_NOT_OPEN if we haven't seen any open positions yet
                         if tp_to_any_open[x] == TradePairReturnStatus.TP_NO_OPEN_POSITIONS:
                             tp_to_any_open[x] = TradePairReturnStatus.TP_MARKET_NOT_OPEN
@@ -1046,8 +1046,8 @@ class PerfLedgerManager(CacheController):
                 # Update returns for all relevant IDs
                 for x in tp_ids_to_build:
                     tp_to_return[x] *= historical_position.return_at_close
-                    tp_to_realized_pnl[x] += historical_position.realized_pnl_usd
-                    tp_to_unrealized_pnl[x] += historical_position.unrealized_pnl_usd
+                    tp_to_realized_pnl[x] += historical_position.realized_pnl
+                    tp_to_unrealized_pnl[x] += historical_position.unrealized_pnl
 
                 # Update status based on price change
                 # Use the enum ordering to ensure we keep the highest priority status
@@ -1127,7 +1127,7 @@ class PerfLedgerManager(CacheController):
                     tp_ids_to_build = [TP_ID_PORTFOLIO] if self.build_portfolio_ledgers_only else [tp_id, TP_ID_PORTFOLIO]
                     for x in tp_ids_to_build:
                         tp_to_initial_return[x] *= historical_position.return_at_close
-                        tp_to_initial_realized_pnl[x] += historical_position.realized_pnl_usd
+                        tp_to_initial_realized_pnl[x] += historical_position.realized_pnl
                         tp_to_initial_spread_fee[x] *= self.position_uuid_to_cache[historical_position.position_uuid].get_spread_fee(historical_position, historical_position.orders[-1].processed_ms)[0]
                         tp_to_initial_carry_fee[x] *= self.position_uuid_to_cache[historical_position.position_uuid].get_carry_fee(historical_position.orders[-1].processed_ms, historical_position)[0]
                 elif len(historical_position.orders) == 0:
