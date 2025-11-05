@@ -15,7 +15,7 @@ from vali_objects.vali_config import ValiConfig
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 import template.protocol
 
-TARGET_MS = 1762203599000
+TARGET_MS = 1762308000000
 NOV_1_MS = 1761951599000
 GRACE_PERIOD_MS = 1763168399000
 
@@ -116,7 +116,7 @@ class ValidatorContractManager:
         Get the current minimum collateral balance limit in theta tokens.
 
         Returns:
-            float: minimum balance limit based on network type and current date
+            float: Minimum balance limit based on network type and current date
         """
         if self.is_testnet:
             return ValiConfig.MIN_COLLATERAL_BALANCE_TESTNET
@@ -139,16 +139,25 @@ class ValidatorContractManager:
         # for miner, amount in miners_to_reinstate.items():
         #     self.force_deposit(amount, miner)
 
-        # update of all miner account sizes when COST_PER_THETA changes
-        bt.logging.info(f"Starting COST_PER_THETA update for all miners at {now_ms}...")
-        migration_count = 0
+        update_thread = threading.Thread(target=self.refresh_miner_account_sizes, daemon=True)
+        update_thread.start()
+        bt.logging.info("COST_PER_THETA migration started in background thread")
+
+    def refresh_miner_account_sizes(self):
+        """
+        refresh miner account sizes for new CPT
+        """
+        update_count = 0
         for hotkey in list(self.miner_account_sizes.keys()):
             try:
+                prev_acct_size = self.get_miner_account_size(hotkey)
+                bt.logging.info(f"Current account size for {hotkey}: ${prev_acct_size:,.2f}")
                 self.set_miner_account_size(hotkey, NOV_1_MS)
-                migration_count += 1
+                update_count += 1
+                time.sleep(0.5)
             except Exception as e:
                 bt.logging.error(f"Failed to update account size for {hotkey}: {e}")
-        bt.logging.info(f"COST_PER_THETA update completed for {migration_count} miners")
+        bt.logging.info(f"COST_PER_THETA update completed for {update_count} miners")
 
     def load_contract_owner(self):
         """
@@ -436,7 +445,7 @@ class ValidatorContractManager:
         Args:
             amount (float): Amount to withdraw in theta tokens
             miner_hotkey (str): Miner's SS58 hotkey
-
+            
         Returns:
             Dict[str, Any]: Result of withdrawal operation
         """
@@ -754,13 +763,13 @@ class ValidatorContractManager:
         account_size = min(ValiConfig.MAX_COLLATERAL_BALANCE_THETA, collateral_balance) * ValiConfig.COST_PER_THETA
         collateral_record = CollateralRecord(account_size, collateral_balance, timestamp_ms)
 
-        # Check if the new record matches the last existing record
+        # Skip if the new record matches the last existing record
         if hotkey in self.miner_account_sizes and self.miner_account_sizes[hotkey]:
             last_record = self.miner_account_sizes[hotkey][-1]
             if (last_record.account_size == collateral_record.account_size and
                 last_record.account_size_theta == collateral_record.account_size_theta):
                 bt.logging.info(f"Skipping save for {hotkey} - new record matches last record")
-                return
+                return True
 
         if hotkey not in self.miner_account_sizes:
             self.miner_account_sizes[hotkey] = []
