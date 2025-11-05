@@ -10,6 +10,7 @@ from vali_objects.position import Position
 import bittensor as bt
 
 from vali_objects.utils.challengeperiod_manager import ChallengePeriodManager
+from vali_objects.utils.live_price_fetcher import LivePriceFetcher
 from vali_objects.utils.miner_bucket_enum import MinerBucket
 from vali_objects.utils.position_manager import PositionManager
 from vali_objects.utils.vali_utils import ValiUtils
@@ -37,7 +38,8 @@ class ValidatorSyncBase():
                  live_price_fetcher=None, asset_selection_manager=None
 ):
         self.verbose = verbose
-        self.is_mothership = 'ms' in ValiUtils.get_secrets(running_unit_tests=running_unit_tests)
+        secrets = ValiUtils.get_secrets(running_unit_tests=running_unit_tests)
+        self.is_mothership = 'ms' in secrets
         self.SYNC_LOOK_AROUND_MS = 1000 * 60 * 3
         self.enable_position_splitting = enable_position_splitting
         self.position_manager = position_manager
@@ -48,7 +50,10 @@ class ValidatorSyncBase():
         self.signal_sync_lock = signal_sync_lock
         self.signal_sync_condition = signal_sync_condition
         self.n_orders_being_processed = n_orders_being_processed
-        self.live_price_fetcher = live_price_fetcher
+        if live_price_fetcher:
+            self.live_price_fetcher = live_price_fetcher
+        else:
+            self.live_price_fetcher = LivePriceFetcher(secrets, disable_ws=True)
         if ipc_manager:
             self.perf_ledger_hks_to_invalidate = ipc_manager.dict()
         else:
