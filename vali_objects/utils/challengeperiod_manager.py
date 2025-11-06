@@ -383,12 +383,15 @@ class ChallengePeriodManager(CacheController):
         probation_hotkeys: list[str],
         inspection_hotkeys: dict[str, int],
         current_time: int,
-        success_scores_dict: dict[TradePairCategory, dict] | None = None,
-        inspection_scores_dict: dict[TradePairCategory, dict] | None = None,
         hk_to_first_order_time: dict[str, int] | None = None,
+        combined_scores_dict: dict[TradePairCategory, dict] | None = None,
     ) -> tuple[list[str], list[str], dict[str, tuple[str, float]]]:
         """
         Runs a screening process to eliminate miners who didn't pass the challenge period. Does not modify the challenge period in memory.
+
+        Args:
+            combined_scores_dict (dict[TradePairCategory, dict] | None) - Optional pre-computed scores dict for testing.
+                If provided, skips score calculation. Useful for unit tests.
 
         Returns:
             hotkeys_to_promote - list of miners that should be promoted from challenge/probation to maincomp
@@ -408,7 +411,7 @@ class ChallengePeriodManager(CacheController):
         # Used for checking base cases
         #TODO revisit this
         portfolio_only_ledgers = {hotkey: asset_ledgers.get("portfolio") for hotkey, asset_ledgers in ledger.items() if asset_ledgers is not None}
-        valid_candidate_hotkeys = []
+        promotion_eligible_hotkeys = []
         for hotkey, bucket_start_time in inspection_hotkeys.items():
 
             if ChallengePeriodManager.is_recently_re_registered(portfolio_only_ledgers.get(hotkey), hotkey, hk_to_first_order_time):
@@ -454,7 +457,7 @@ class ChallengePeriodManager(CacheController):
                     # bt.logging.info(f'Hotkey {hotkey} has not selected an asset class. Skipping evaluation.')
                     continue
 
-            valid_candidate_hotkeys.append(hotkey)
+            promotion_eligible_hotkeys.append(hotkey)
 
         # Calculate dynamic minimum participation days for asset classes
         maincomp_ledger = {hotkey: ledger_data for hotkey, ledger_data in ledger.items() if hotkey in [*success_hotkeys, *probation_hotkeys]}   # ledger of all miners in maincomp, including probation
@@ -466,26 +469,28 @@ class ChallengePeriodManager(CacheController):
 
         all_miner_account_sizes = self.contract_manager.get_all_miner_account_sizes(timestamp_ms=current_time)
 
-        candidate_hotkeys = valid_candidate_hotkeys + success_hotkeys
-        candidate_ledgers = {hotkey: ledger for hotkey, ledger in ledger.items() if hotkey in candidate_hotkeys}
-        candidate_positions = {hotkey: pos_list for hotkey, pos_list in positions.items() if hotkey in candidate_hotkeys}
+        # Use provided scores dict if available (for testing), otherwise compute scores
+        if combined_scores_dict is None:
+            candidate_hotkeys = success_hotkeys + list(inspection_hotkeys.keys())
+            candidate_ledgers = {hotkey: ledger for hotkey, ledger in ledger.items() if hotkey in candidate_hotkeys}
+            candidate_positions = {hotkey: pos_list for hotkey, pos_list in positions.items() if hotkey in candidate_hotkeys}
 
-        combined_scores_dict = Scoring.score_miners(
-            ledger_dict=candidate_ledgers,
-            positions=candidate_positions,
-            asset_class_min_days=asset_class_min_days,
-            evaluation_time_ms=current_time,
-            weighting=True,
-            all_miner_account_sizes=all_miner_account_sizes
-        )
+            combined_scores_dict = Scoring.score_miners(
+                ledger_dict=candidate_ledgers,
+                positions=candidate_positions,
+                asset_class_min_days=asset_class_min_days,
+                evaluation_time_ms=current_time,
+                weighting=True,
+                all_miner_account_sizes=all_miner_account_sizes
+            )
 
         hotkeys_to_promote, hotkeys_to_demote = self.evaluate_promotions(
             success_hotkeys,
-            valid_candidate_hotkeys,
+            promotion_eligible_hotkeys,
             combined_scores_dict
         )
 
-        bt.logging.info(f"Challenge Period: evaluating {len(valid_candidate_hotkeys)}/{len(inspection_hotkeys)} miners eligible for promotion")
+        bt.logging.info(f"Challenge Period: evaluating {len(promotion_eligible_hotkeys)}/{len(inspection_hotkeys)} miners eligible for promotion")
         bt.logging.info(f"Challenge Period: evaluating {len(success_hotkeys)} miners eligible for demotion")
         bt.logging.info(f"Hotkeys to promote: {hotkeys_to_promote}")
         bt.logging.info(f"Hotkeys to demote: {hotkeys_to_demote}")
@@ -498,7 +503,7 @@ class ChallengePeriodManager(CacheController):
     def evaluate_promotions(
             self,
             success_hotkeys,
-            candidate_hotkeys,
+            promotion_eligible_hotkeys,
             combined_scores_dict
             ) -> tuple[list[str], list[str]]:
 
@@ -535,17 +540,20 @@ class ChallengePeriodManager(CacheController):
             top_miners = [(hotkey, score) for hotkey, score in sorted_scores[:promotion_threshold_rank] if score > 0]
             maincomp_hotkeys.update({hotkey for hotkey, _ in top_miners})
 
-            bt.logging.info(f"{asset_class}: {len(top_miners)} in MAINCOMP")
+            bt.logging.info(f"{asset_class}: {len(sorted_scores)} miners ranked for evaluation")
+            for h, s in top_miners:
+                bt.logging.info(f"{h}: {s}")
 
             # Logging for missing hotkeys
             for hotkey in success_hotkeys:
                 if hotkey not in asset_scores:
                     bt.logging.warning(f"Could not find MAINCOMP hotkey {hotkey} when scoring, miner will not be evaluated")
-            for hotkey in candidate_hotkeys:
+            for hotkey in promotion_eligible_hotkeys:
                 if hotkey not in asset_scores:
                     bt.logging.warning(f"Could not find CHALLENGE/PROBATION hotkey {hotkey} when scoring, miner will not be evaluated")
 
-        promote_hotkeys = maincomp_hotkeys - set(success_hotkeys)
+        # Only promote miners who are in top ranks AND are valid candidates (passed minimum days)
+        promote_hotkeys = (maincomp_hotkeys - set(success_hotkeys)) & set(promotion_eligible_hotkeys)
         demote_hotkeys = set(success_hotkeys) - maincomp_hotkeys
 
         return list(promote_hotkeys), list(demote_hotkeys)
