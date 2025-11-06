@@ -92,31 +92,6 @@ class TestChallengePeriodUnit(TestBase):
             mdd=0.99,
         )
 
-        self.TOP_SCORE = 1.0
-        self.MIN_SCORE = 0.2
-
-        # Set up successful scores for 4 miners
-        self.all_asset_classes = set(ValiConfig.ASSET_CLASS_BREAKDOWN.keys())
-
-        self.default_asset_class = vali_file.TradePairCategory.CRYPTO
-        #Use
-        self.success_scores_dict = {}
-        for asset_class in self.all_asset_classes:
-            self.success_scores_dict[asset_class]  = {"metrics": {}, "penalties": {}}
-
-            asset_class_dict = self.success_scores_dict[asset_class]
-
-            raw_scores = np.linspace(self.TOP_SCORE, self.MIN_SCORE, len(self.SUCCESS_MINER_NAMES))
-            success_scores = list(zip(self.SUCCESS_MINER_NAMES, raw_scores))
-
-            for config_name, config in Scoring.scoring_config.items():
-                asset_class_dict["metrics"][config_name] = {'scores': copy.deepcopy(success_scores),
-                                                            'weight': config['weight']}
-            raw_penalties = [1 for _ in self.SUCCESS_MINER_NAMES]
-            success_penalties = dict(zip(self.SUCCESS_MINER_NAMES, raw_penalties))
-
-            asset_class_dict["penalties"] = copy.deepcopy(success_penalties)
-
         # Initialize system components
         self.mock_metagraph = MockMetagraph(self.MINER_NAMES)
 
@@ -138,34 +113,6 @@ class TestChallengePeriodUnit(TestBase):
         self._populate_active_miners(maincomp=self.SUCCESS_MINER_NAMES,
                                      challenge=["miner"])
 
-    def get_trial_scores(self, high_performing=True, score=None):
-        """
-        Args:
-            high_performing: true means trial miner should be passing, false means they should be failing
-            score: specific score to use
-        """
-        trial_scores_dict = {self.default_asset_class: {"metrics": {}}}
-        asset_class_trial_scores = trial_scores_dict.get(self.default_asset_class)
-        trial_metrics = asset_class_trial_scores["metrics"]
-        if score is not None:
-            for config_name, config in Scoring.scoring_config.items():
-                trial_metrics[config_name] = {'scores': [("miner", score)],
-                                              'weight': config['weight'],
-            }
-        elif high_performing:
-            for config_name, config in Scoring.scoring_config.items():
-                trial_metrics[config_name] = {'scores': [("miner", self.TOP_SCORE)],
-                                              'weight': config['weight'],
-            }
-        else:
-            for config_name, config in Scoring.scoring_config.items():
-                trial_metrics[config_name] = {'scores': [("miner", self.MIN_SCORE)],
-                                              'weight': config['weight'],
-                                                  }
-        asset_class_trial_scores["penalties"] = {"miner": 1}
-        return trial_scores_dict
-
-
     def save_and_get_positions(self, base_positions, hotkeys):
 
         for p in base_positions:
@@ -176,6 +123,36 @@ class TestChallengePeriodUnit(TestBase):
         assert positions, positions
 
         return positions, hk_to_first_order_time
+
+    def get_combined_scores_dict(self, miner_scores: dict[str, float], asset_class=None):
+        """
+        Create a combined scores dict for testing.
+
+        Args:
+            miner_scores: dict mapping hotkey to score (0.0 to 1.0)
+            asset_class: TradePairCategory, defaults to CRYPTO
+
+        Returns:
+            combined_scores_dict in the format expected by inspect()
+        """
+        if asset_class is None:
+            asset_class = vali_file.TradePairCategory.CRYPTO
+
+        combined_scores_dict = {asset_class: {"metrics": {}, "penalties": {}}}
+        asset_class_dict = combined_scores_dict[asset_class]
+
+        # Create scores for each metric
+        for config_name, config in Scoring.scoring_config.items():
+            scores_list = [(hotkey, score) for hotkey, score in miner_scores.items()]
+            asset_class_dict["metrics"][config_name] = {
+                'scores': scores_list,
+                'weight': config['weight']
+            }
+
+        # All miners get penalty multiplier of 1 (no penalty)
+        asset_class_dict["penalties"] = {hotkey: 1.0 for hotkey in miner_scores.keys()}
+
+        return combined_scores_dict
 
     def _populate_active_miners(self, *, maincomp=[], challenge=[], probation=[]):
         miners = {}
@@ -212,7 +189,6 @@ class TestChallengePeriodUnit(TestBase):
     # ------ Time Constrained Tests (Inspect) ------
     def test_failing_remaining_time(self):
         """Miner is not passing, but there is time remaining"""
-        trial_scoring_dict = self.get_trial_scores(score=0.1)
         current_time = self.CURRENTLY_IN_CHALLENGE
 
         base_positions = deepcopy(self.DEFAULT_POSITIONS)
@@ -221,25 +197,32 @@ class TestChallengePeriodUnit(TestBase):
         inspection_ledger = {"miner": base_ledger}
         inspection_positions, hk_to_first_order_time = self.save_and_get_positions(base_positions, ["miner"])
 
-        # Check that the miner is screened as failing
+        # Create combined scores dict where miner ranks below PROMOTION_THRESHOLD_RANK (25)
+        # Miner gets low score (0.1), success miners fill top 25 ranks with higher scores
+        miner_scores = {"miner": 0.1}
+        for i in range(ValiConfig.PROMOTION_THRESHOLD_RANK):
+            if i < len(self.SUCCESS_MINER_NAMES):
+                # Top 25 success miners get scores from 1.0 down to 0.76 (25 miners)
+                miner_scores[self.SUCCESS_MINER_NAMES[i]] = 1.0 - (i * 0.01)
+
+        combined_scores_dict = self.get_combined_scores_dict(miner_scores)
+
+        # Check that the miner continues in challenge (time remaining, so not eliminated)
         passing, demoted, failing = self.challengeperiod_manager.inspect(
             positions=inspection_positions,
             ledger=inspection_ledger,
-            success_hotkeys=[],
+            success_hotkeys=self.SUCCESS_MINER_NAMES[:ValiConfig.PROMOTION_THRESHOLD_RANK],
             probation_hotkeys=[],
             inspection_hotkeys={"miner": current_time},
             current_time=current_time,
-            success_scores_dict=self.success_scores_dict,
-            inspection_scores_dict=trial_scoring_dict,
             hk_to_first_order_time=hk_to_first_order_time,
+            combined_scores_dict=combined_scores_dict,
         )
         self.assertNotIn("miner", passing)
         self.assertNotIn("miner", list(failing.keys()))
 
     def test_failing_no_remaining_time(self):
         """Miner is not passing, and there is no time remaining"""
-
-        trial_scoring_dict = self.get_trial_scores(high_performing=False)
 
         base_positions = deepcopy(self.DEFAULT_POSITIONS)
         base_ledger = deepcopy(self.DEFAULT_LEDGER)
@@ -258,8 +241,6 @@ class TestChallengePeriodUnit(TestBase):
             probation_hotkeys=[],
             inspection_hotkeys=inspection_hotkeys,
             current_time=current_time,
-            success_scores_dict=self.success_scores_dict,
-            inspection_scores_dict=trial_scoring_dict,
             hk_to_first_order_time=hk_to_first_order_time,
         )
 
@@ -269,8 +250,6 @@ class TestChallengePeriodUnit(TestBase):
     def test_passing_remaining_time(self):
         """Miner is passing and there is remaining time - they should be promoted"""
 
-        trial_scoring_dict = self.get_trial_scores(high_performing=True)
-
         base_positions = deepcopy(self.DEFAULT_POSITIONS)
         base_ledger = deepcopy(self.DEFAULT_LEDGER)
 
@@ -280,7 +259,7 @@ class TestChallengePeriodUnit(TestBase):
         inspection_hotkeys = {"miner": self.START_TIME}
         current_time = self.CURRENTLY_IN_CHALLENGE
 
-        # Check that the miner is screened as failing
+        # Check that the miner is screened as passing
         passing, demoted, failing = self.challengeperiod_manager.inspect(
             positions=inspection_positions,
             ledger=inspection_ledger,
@@ -288,8 +267,6 @@ class TestChallengePeriodUnit(TestBase):
             probation_hotkeys=[],
             inspection_hotkeys=inspection_hotkeys,
             current_time=current_time,
-            success_scores_dict=self.success_scores_dict,
-            inspection_scores_dict=trial_scoring_dict,
             hk_to_first_order_time=hk_to_first_order_time,
         )
 
@@ -298,7 +275,6 @@ class TestChallengePeriodUnit(TestBase):
 
     def test_passing_no_remaining_time(self):
         """Redemption, if they pass right before the challenge period ends and before the next evaluation cycle"""
-        trial_scoring_dict = self.get_trial_scores(high_performing=True)
 
         base_positions = deepcopy(self.DEFAULT_POSITIONS)
         base_ledger = deepcopy(self.DEFAULT_LEDGER)
@@ -309,7 +285,7 @@ class TestChallengePeriodUnit(TestBase):
         inspection_hotkeys = {"miner": self.START_TIME}
         current_time = self.CURRENTLY_IN_CHALLENGE
 
-        # Check that the miner is screened as failing
+        # Check that the miner is screened as passing
         passing, demoted, failing = self.challengeperiod_manager.inspect(
             positions=inspection_positions,
             ledger=inspection_ledger,
@@ -317,8 +293,6 @@ class TestChallengePeriodUnit(TestBase):
             probation_hotkeys=[],
             inspection_hotkeys=inspection_hotkeys,
             current_time=current_time,
-            success_scores_dict=self.success_scores_dict,
-            inspection_scores_dict=trial_scoring_dict,
             hk_to_first_order_time=hk_to_first_order_time,
         )
 
@@ -377,7 +351,6 @@ class TestChallengePeriodUnit(TestBase):
             probation_hotkeys=[],
             inspection_hotkeys=inspection_hotkeys,
             current_time=current_time,
-            success_scores_dict=self.success_scores_dict,
             hk_to_first_order_time=hk_to_first_order_time,
         )
 
@@ -414,7 +387,7 @@ class TestChallengePeriodUnit(TestBase):
     #     self.assertIn("miner", list(failing.keys()))
 
     def test_just_above_threshold(self):
-        """Miner performing 80th percentile should pass"""
+        """Miner ranking just inside PROMOTION_THRESHOLD_RANK should pass"""
 
         current_time = self.CURRENTLY_IN_CHALLENGE
 
@@ -424,26 +397,39 @@ class TestChallengePeriodUnit(TestBase):
         inspection_positions, hk_to_first_order_time = self.save_and_get_positions(base_positions, ["miner"])
         inspection_ledger = {"miner": base_ledger}
 
-        trial_scoring_dict = self.get_trial_scores(score=0.75)
+        # Create scores where miner ranks at position 24 (within top 25)
+        # 23 success miners score higher, miner at 0.77, and 2 success miners score lower
+        miner_scores = {}
+        for i in range(23):
+            if i < len(self.SUCCESS_MINER_NAMES):
+                miner_scores[self.SUCCESS_MINER_NAMES[i]] = 1.0 - (i * 0.01)
 
-        # Check that the miner is screened as passing
+        miner_scores["miner"] = 0.77  # Rank 24
+
+        # Add 2 more success miners with lower scores who will be demoted
+        miner_scores[self.SUCCESS_MINER_NAMES[23]] = 0.76
+        miner_scores[self.SUCCESS_MINER_NAMES[24]] = 0.75
+
+        combined_scores_dict = self.get_combined_scores_dict(miner_scores)
+
+        # Check that the miner is promoted (in top 25)
         passing, demoted, failing = self.challengeperiod_manager.inspect(
             positions=inspection_positions,
             ledger=inspection_ledger,
-            success_hotkeys=self.SUCCESS_MINER_NAMES,
+            success_hotkeys=self.SUCCESS_MINER_NAMES[:25],
             probation_hotkeys=[],
             inspection_hotkeys={"miner": current_time},
             current_time=current_time,
-            success_scores_dict=self.success_scores_dict,
-            inspection_scores_dict=trial_scoring_dict,
             hk_to_first_order_time=hk_to_first_order_time,
+            combined_scores_dict=combined_scores_dict,
         )
         self.assertIn("miner", passing)
         self.assertNotIn("miner", list(failing.keys()))
-        self.assertIn("miner25", demoted)
+        # miner25 (index 24) should be demoted as they're now rank 26
+        self.assertIn(self.SUCCESS_MINER_NAMES[24], demoted)
 
     def test_just_below_threshold(self):
-        """Miner performing 50th percentile should fail, but continue testing"""
+        """Miner ranking just outside PROMOTION_THRESHOLD_RANK should not be promoted"""
 
         current_time = self.CURRENTLY_IN_CHALLENGE
 
@@ -453,25 +439,33 @@ class TestChallengePeriodUnit(TestBase):
         inspection_positions, hk_to_first_order_time = self.save_and_get_positions(base_positions, ["miner"])
         inspection_ledger = {"miner": base_ledger}
 
-        trial_scoring_dict = self.get_trial_scores(score=0.1)
+        # Create scores where miner ranks at position 26 (just outside top 25)
+        # 25 success miners score higher than the test miner
+        miner_scores = {}
+        for i in range(ValiConfig.PROMOTION_THRESHOLD_RANK):
+            if i < len(self.SUCCESS_MINER_NAMES):
+                miner_scores[self.SUCCESS_MINER_NAMES[i]] = 1.0 - (i * 0.01)
 
-        # Check that the miner continues in challenge
+        miner_scores["miner"] = 0.74  # Rank 26 (just below rank 25's score of 0.76)
+
+        combined_scores_dict = self.get_combined_scores_dict(miner_scores)
+
+        # Check that the miner continues in challenge (not promoted, not eliminated)
         passing, demoted, failing = self.challengeperiod_manager.inspect(
             positions=inspection_positions,
             ledger=inspection_ledger,
-            success_hotkeys=[],
+            success_hotkeys=self.SUCCESS_MINER_NAMES[:ValiConfig.PROMOTION_THRESHOLD_RANK],
             probation_hotkeys=[],
             inspection_hotkeys={"miner": current_time},
             current_time=current_time,
-            success_scores_dict=self.success_scores_dict,
-            inspection_scores_dict=trial_scoring_dict,
             hk_to_first_order_time=hk_to_first_order_time,
+            combined_scores_dict=combined_scores_dict,
         )
         self.assertNotIn("miner", passing)
         self.assertNotIn("miner", list(failing.keys()))
 
     def test_at_threshold(self):
-        """Miner performing exactly at 75th percentile should pass"""
+        """Miner ranking exactly at PROMOTION_THRESHOLD_RANK (rank 25) should pass"""
 
         current_time = self.CURRENTLY_IN_CHALLENGE
 
@@ -481,45 +475,34 @@ class TestChallengePeriodUnit(TestBase):
         inspection_positions, hk_to_first_order_time = self.save_and_get_positions(base_positions, ["miner"])
         inspection_ledger = {"miner": base_ledger}
 
-        # Note that this score is not the percentile. The success miners dict has to be modified so that
-        # the miner ends up with a percentile at 0.75.
-        trial_scoring_dict = self.get_trial_scores(score=0.75)
+        # Create scores where miner ranks exactly at position 25 (the threshold)
+        # 24 success miners score higher, miner ties with rank 25 at 0.76, 1 miner scores lower
+        miner_scores = {}
+        for i in range(24):
+            if i < len(self.SUCCESS_MINER_NAMES):
+                miner_scores[self.SUCCESS_MINER_NAMES[i]] = 1.0 - (i * 0.01)
 
-        success_scores_dict = {self.default_asset_class: {"metrics": {}}}
-        asset_class_success_scores_dict = success_scores_dict.get(self.default_asset_class)
-        success_miner_names = self.SUCCESS_MINER_NAMES[1:]
-        raw_scores = np.linspace(self.TOP_SCORE, self.MIN_SCORE, len(success_miner_names))
-        success_scores = list(zip(success_miner_names, raw_scores))
+        miner_scores["miner"] = 0.76  # Ties for rank 25
+        miner_scores[self.SUCCESS_MINER_NAMES[24]] = 0.75  # Rank 26, will be demoted
 
-        self.challengeperiod_manager.active_miners["miner"] = (MinerBucket.CHALLENGE, 0)
-        self.challengeperiod_manager.active_miners["miner2"] = (MinerBucket.MAINCOMP, 0)
-        self.challengeperiod_manager.active_miners["miner3"] = (MinerBucket.MAINCOMP, 0)
-        self.challengeperiod_manager.active_miners["miner4"] = (MinerBucket.MAINCOMP, 0)
+        combined_scores_dict = self.get_combined_scores_dict(miner_scores)
 
-        for config_name, config in Scoring.scoring_config.items():
-            asset_class_success_scores_dict["metrics"][config_name] = {'scores': copy.deepcopy(success_scores),
-                                                           'weight': config['weight']
-                                                          }
-        raw_penalties = [1 for _ in success_miner_names]
-        success_penalties = dict(zip(success_miner_names, raw_penalties))
-
-        asset_class_success_scores_dict["penalties"] = copy.deepcopy(success_penalties)
-
-        # Check that the miner is screened as passing
+        # Check that the miner is promoted (at threshold rank 25)
         passing, demoted, failing = self.challengeperiod_manager.inspect(
             positions=inspection_positions,
             ledger=inspection_ledger,
-            success_hotkeys=[],
+            success_hotkeys=self.SUCCESS_MINER_NAMES[:25],
             probation_hotkeys=[],
             inspection_hotkeys={"miner": current_time},
             current_time=current_time,
-            success_scores_dict=success_scores_dict,
-            inspection_scores_dict=trial_scoring_dict,
             hk_to_first_order_time=hk_to_first_order_time,
+            combined_scores_dict=combined_scores_dict,
         )
 
         self.assertIn("miner", passing)
         self.assertNotIn("miner", list(failing.keys()))
+        # Verify the 26th ranked miner gets demoted
+        self.assertIn(self.SUCCESS_MINER_NAMES[24], demoted)
 
     def test_screen_minimum_interaction(self):
         """
@@ -539,7 +522,6 @@ class TestChallengePeriodUnit(TestBase):
 
         current_time = self.MIN_PROMOTION_TIME
 
-        trial_scoring_dict = self.get_trial_scores(score=0.75)
         portfolio_cps = [cp for cp in base_ledger_portfolio.cps if cp.last_update_ms < current_time]
         base_ledger_portfolio.cps = portfolio_cps
 
@@ -551,8 +533,6 @@ class TestChallengePeriodUnit(TestBase):
             probation_hotkeys=[],
             inspection_hotkeys={"miner": current_time},
             current_time=current_time,
-            success_scores_dict=self.success_scores_dict,
-            inspection_scores_dict=trial_scoring_dict,
             hk_to_first_order_time=hk_to_first_order_time,
         )
 
@@ -582,7 +562,6 @@ class TestChallengePeriodUnit(TestBase):
 
         portfolio_cps = [cp for cp in base_ledger_portfolio.cps if cp.last_update_ms < current_time]
         base_ledger_portfolio.cps = portfolio_cps
-        trial_scoring_dict = self.get_trial_scores(score=0.75)
 
         passing, demoted, failing = self.challengeperiod_manager.inspect(
             positions=inspection_positions,
@@ -591,7 +570,6 @@ class TestChallengePeriodUnit(TestBase):
             probation_hotkeys=[],
             inspection_hotkeys={"miner": current_time},
             current_time=current_time,
-            success_scores_dict=self.success_scores_dict,
             hk_to_first_order_time=hk_to_first_order_time,
         )
 
