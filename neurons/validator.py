@@ -300,7 +300,8 @@ class Validator:
                                                               sync_in_progress=self.sync_in_progress,
                                                               slack_notifier=self.slack_notifier,
                                                               sync_epoch=self.sync_epoch,
-                                                              eliminations_lock=self.eliminations_lock)
+                                                              eliminations_lock=self.eliminations_lock,
+                                                              asset_selection_manager=self.asset_selection_manager)
 
         # Attach the position manager to the other objects that need it
         for idx, obj in enumerate([self.perf_ledger_manager, self.position_manager, self.position_syncer,

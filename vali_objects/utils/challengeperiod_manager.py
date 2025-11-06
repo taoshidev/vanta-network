@@ -10,6 +10,7 @@ from vali_objects.utils.asset_segmentation import AssetSegmentation
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePairCategory, ValiConfig
+from vali_objects.utils.asset_selection_manager import ASSET_CLASS_SELECTION_TIME_MS
 from shared_objects.cache_controller import CacheController
 from vali_objects.scoring.scoring import Scoring
 from time_util.time_util import TimeUtil
@@ -29,6 +30,7 @@ class ChallengePeriodManager(CacheController):
             ipc_manager=None,
             contract_manager=None,
             plagiarism_manager=None,
+            asset_selection_manager=None,
             *,
             running_unit_tests=False,
             is_backtesting=False,
@@ -59,6 +61,7 @@ class ChallengePeriodManager(CacheController):
         self.sync_in_progress = sync_in_progress
         self.slack_notifier = slack_notifier
         self.sync_epoch = sync_epoch
+        self.asset_selection_manager = asset_selection_manager
 
         self.CHALLENGE_FILE = ValiBkpUtils.get_challengeperiod_file_location(running_unit_tests=running_unit_tests)
 
@@ -380,8 +383,8 @@ class ChallengePeriodManager(CacheController):
         probation_hotkeys: list[str],
         inspection_hotkeys: dict[str, int],
         current_time: int,
-        success_scores_dict: dict[str, dict] | None = None,
-        inspection_scores_dict: dict[str, dict] | None = None,
+        success_scores_dict: dict[TradePairCategory, dict] | None = None,
+        inspection_scores_dict: dict[TradePairCategory, dict] | None = None,
         hk_to_first_order_time: dict[str, int] | None = None,
     ) -> tuple[list[str], list[str], dict[str, tuple[str, float]]]:
         """
@@ -453,6 +456,12 @@ class ChallengePeriodManager(CacheController):
             if not self.screen_minimum_interaction(ledger_element):
                 continue
 
+            # Check if miner has selected an asset class (only enforce after selection time)
+            if self.asset_selection_manager and current_time >= ASSET_CLASS_SELECTION_TIME_MS:
+                if hotkey not in self.asset_selection_manager.asset_selections:
+                    bt.logging.info(f'Hotkey {hotkey} has not selected an asset class. Skipping evaluation.')
+                    continue
+
             valid_candidate_hotkeys.append(hotkey)
 
         # Calculate dynamic minimum participation days for asset classes
@@ -465,35 +474,49 @@ class ChallengePeriodManager(CacheController):
 
         all_miner_account_sizes = self.contract_manager.get_all_miner_account_sizes(timestamp_ms=current_time)
 
-        # If success_scoring_dict is already calculated, no need to calculate scores. Useful for testing
-        if not success_scores_dict:
-            success_positions = {hotkey: miner_positions for hotkey, miner_positions in positions.items() if hotkey in success_hotkeys}
-            success_ledger = {hotkey: ledger_data for hotkey, ledger_data in ledger.items() if hotkey in success_hotkeys}
-            # Get the penalized scores of all successful miners
-            success_scores_dict = Scoring.score_miners(
-                    ledger_dict=success_ledger,
-                    positions=success_positions,
-                    asset_class_min_days=asset_class_min_days,
-                    evaluation_time_ms=current_time,
-                    weighting=True,
-                    all_miner_account_sizes=all_miner_account_sizes)
+        # # If success_scoring_dict is already calculated, no need to calculate scores. Useful for testing
+        # if not success_scores_dict:
+        #     success_positions = {hotkey: miner_positions for hotkey, miner_positions in positions.items() if hotkey in success_hotkeys}
+        #     success_ledger = {hotkey: ledger_data for hotkey, ledger_data in ledger.items() if hotkey in success_hotkeys}
+        #     # Get the penalized scores of all successful miners
+        #     success_scores_dict = Scoring.score_miners(
+        #             ledger_dict=success_ledger,
+        #             positions=success_positions,
+        #             asset_class_min_days=asset_class_min_days,
+        #             evaluation_time_ms=current_time,
+        #             weighting=True,
+        #             all_miner_account_sizes=all_miner_account_sizes)
 
-        if not inspection_scores_dict:
-            candidates_positions = {hotkey: positions[hotkey] for hotkey in valid_candidate_hotkeys}
-            candidates_ledgers = {hotkey: ledger[hotkey] for hotkey in valid_candidate_hotkeys}
+        # if not inspection_scores_dict:
+        #     candidates_positions = {hotkey: positions[hotkey] for hotkey in valid_candidate_hotkeys}
+        #     candidates_ledgers = {hotkey: ledger[hotkey] for hotkey in valid_candidate_hotkeys}
 
-            inspection_scores_dict = Scoring.score_miners(
-                    ledger_dict=candidates_ledgers,
-                    positions=candidates_positions,
-                    asset_class_min_days=asset_class_min_days,
-                    evaluation_time_ms=current_time,
-                    weighting=True,
-                    all_miner_account_sizes=all_miner_account_sizes)
+        #     inspection_scores_dict = Scoring.score_miners(
+        #             ledger_dict=candidates_ledgers,
+        #             positions=candidates_positions,
+        #             asset_class_min_days=asset_class_min_days,
+        #             evaluation_time_ms=current_time,
+        #             weighting=True,
+        #             all_miner_account_sizes=all_miner_account_sizes)
 
-        hotkeys_to_promote, hotkeys_to_demote = ChallengePeriodManager.evaluate_promotions(success_hotkeys,
-                                                                                           success_scores_dict,
-                                                                                           valid_candidate_hotkeys,
-                                                                                           inspection_scores_dict)
+        candidate_hotkeys = valid_candidate_hotkeys + success_hotkeys
+        candidate_ledgers = {hotkey: ledger for hotkey, ledger in ledger.items() if hotkey in candidate_hotkeys}
+        candidate_positions = {hotkey: pos_list for hotkey, pos_list in positions.items() if hotkey in candidate_hotkeys}
+
+        combined_scores_dict = Scoring.score_miners(
+            ledger_dict=candidate_ledgers,
+            positions=candidate_positions,
+            asset_class_min_days=asset_class_min_days,
+            evaluation_time_ms=current_time,
+            weighting=True,
+            all_miner_account_sizes=all_miner_account_sizes
+        )
+
+        hotkeys_to_promote, hotkeys_to_demote = self.evaluate_promotions(
+            success_hotkeys,
+            valid_candidate_hotkeys,
+            combined_scores_dict
+        )
 
         bt.logging.info(f"Challenge Period: evaluating {len(valid_candidate_hotkeys)}/{len(inspection_hotkeys)} miners eligible for promotion")
         bt.logging.info(f"Challenge Period: evaluating {len(success_hotkeys)} miners eligible for demotion")
@@ -505,43 +528,61 @@ class ChallengePeriodManager(CacheController):
 
         return hotkeys_to_promote, hotkeys_to_demote, miners_to_eliminate
 
-    @staticmethod
     def evaluate_promotions(
+            self,
             success_hotkeys,
-            success_scores_dict,
             candidate_hotkeys,
-            inspection_scores_dict
+            combined_scores_dict
             ) -> tuple[list[str], list[str]]:
-        # combine maincomp and challenge/probation miners into one scoring dict
-        combined_scores_dict = copy.deepcopy(success_scores_dict)
-        for asset_class, candidate_scores_dict in inspection_scores_dict.items():
-            for metric_name, candidate_metric in candidate_scores_dict["metrics"].items():
-                combined_scores_dict[asset_class]['metrics'][metric_name]["scores"] += candidate_metric["scores"]
-            combined_scores_dict[asset_class]["penalties"].update(candidate_scores_dict["penalties"])
 
         # score them based on asset class
         asset_combined_scores = Scoring.combine_scores(combined_scores_dict)
         asset_softmaxed_scores = Scoring.softmax_by_asset(asset_combined_scores)
 
-        # combine asset
-        weighted_scores = defaultdict(lambda: defaultdict(float))
-        for asset_class, miner_scores in asset_softmaxed_scores.items():
-            weight = ValiConfig.ASSET_CLASS_BREAKDOWN[asset_class]["emission"]
-
-            for hotkey, score in miner_scores.items():
-                weighted_scores[asset_class][hotkey] += weight * score
+        # Get asset class selections for filtering during threshold calculation
+        miner_asset_selections = {}
+        if self.asset_selection_manager:
+            all_selections = self.asset_selection_manager.get_all_miner_selections()
+            for hotkey, selection in all_selections.items():
+                if isinstance(selection, str):
+                    miner_asset_selections[hotkey] = TradePairCategory(selection)
+                else:
+                    miner_asset_selections[hotkey] = selection
 
         maincomp_hotkeys = set()
         promotion_threshold_rank = ValiConfig.PROMOTION_THRESHOLD_RANK
-        for asset_scores in weighted_scores.values():
-            threshold_score = 0
-            if len(asset_scores) >= promotion_threshold_rank:
-                sorted_scores = sorted(asset_scores.values(), reverse=True)
-                threshold_score = sorted_scores[promotion_threshold_rank-1]
+        for asset_class, asset_scores in asset_softmaxed_scores.items():
+            # Filter to only include miners who selected this asset class when calculating threshold
+            if miner_asset_selections:
+                miner_scores = {
+                    hotkey: score for hotkey, score in asset_scores.items()
+                    if miner_asset_selections.get(hotkey) == asset_class
+                }
+            else:
+                miner_scores = asset_scores
 
-            for hotkey, score in asset_scores.items():
-                if score >= threshold_score and score > 0:
-                    maincomp_hotkeys.add(hotkey)
+            # threshold_score = 0
+            sorted_scores = sorted(miner_scores.items(), key=lambda item: item[1], reverse=True)
+
+            # Only take miners with positive scores
+            top_miners = [(hotkey, score) for hotkey, score in sorted_scores[:promotion_threshold_rank] if score > 0]
+            maincomp_hotkeys.update({hotkey for hotkey, _ in top_miners})
+
+            # Log miners in maincomp for this asset class
+            bt.logging.info(f"Asset class {asset_class}: {len(miner_scores)} miners selected this class, top {len(top_miners)} (with positive scores) promoted to maincomp")
+            if top_miners:
+                bt.logging.info(f"  Top 5 in {asset_class}: {[(hotkey[:8], f'{score:.6f}') for hotkey, score in top_miners[:5]]}")
+                if len(top_miners) >= promotion_threshold_rank:
+                    bt.logging.info(f"  Rank {promotion_threshold_rank} threshold in {asset_class}: {top_miners[promotion_threshold_rank-1][0][:8]} with score {top_miners[promotion_threshold_rank-1][1]:.6f}")
+
+#             if len(miner_scores) >= promotion_threshold_rank:
+#                 sorted_scores = sorted(miner_scores.values(), reverse=True)
+#                 threshold_score = sorted_scores[promotion_threshold_rank-1]
+
+#             # Only promote miners who selected this asset class and are above threshold
+#             for hotkey, score in miner_scores.items():
+#                 if score >= threshold_score and score > 0:
+#                     maincomp_hotkeys.add(hotkey)
 
             # logging
             for hotkey in success_hotkeys:
