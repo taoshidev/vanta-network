@@ -352,9 +352,8 @@ class ChallengePeriodServer(RPCServerBase):
             probation_hotkeys,
             inspection_hotkeys,
             current_time,
-            combined_scores_dict,     # arg 7 -> success_scores_dict
-            combined_scores_dict,     # arg 8 -> inspection_scores_dict
-            hk_to_first_order_time    # arg 9 -> hk_to_first_order_time
+            hk_to_first_order_time,
+            combined_scores_dict
         )
 
     def to_checkpoint_dict_rpc(self) -> dict:
