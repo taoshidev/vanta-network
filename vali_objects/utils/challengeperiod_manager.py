@@ -31,7 +31,8 @@ class ChallengePeriodManager(CacheController):
             plagiarism_manager=None,
             *,
             running_unit_tests=False,
-            is_backtesting=False):
+            is_backtesting=False,
+            shutdown_dict=None):
         super().__init__(metagraph, running_unit_tests=running_unit_tests, is_backtesting=is_backtesting)
         self.perf_ledger_manager = perf_ledger_manager if perf_ledger_manager else \
             PerfLedgerManager(metagraph, running_unit_tests=running_unit_tests)
@@ -40,6 +41,7 @@ class ChallengePeriodManager(CacheController):
         self.eliminations_with_reasons: dict[str, tuple[str, float]] = {}
         self.contract_manager = contract_manager
         self.plagiarism_manager = plagiarism_manager
+        self.shutdown_dict = shutdown_dict
 
         self.CHALLENGE_FILE = ValiBkpUtils.get_challengeperiod_file_location(running_unit_tests=running_unit_tests)
 
@@ -153,7 +155,17 @@ class ChallengePeriodManager(CacheController):
 
         bt.logging.info("All challengeperiod start times up to date")
 
-    def refresh(self, current_time: int):
+    def refresh(self, current_time: int = None):
+        """
+        Refresh the challenge period manager.
+
+        Args:
+            current_time: Current time in milliseconds. If None, uses TimeUtil.now_in_millis().
+                         Parameter kept for backward compatibility.
+        """
+        if current_time is None:
+            current_time = TimeUtil.now_in_millis()
+
         if not self.refresh_allowed(ValiConfig.CHALLENGE_PERIOD_REFRESH_TIME_MS):
             time.sleep(1)
             return
@@ -227,6 +239,35 @@ class ChallengePeriodManager(CacheController):
             f"(CHALLENGE, {len(self.get_testing_miners())}) "
             f"(PLAGIARISM, {len(self.get_plagiarism_miners())})"
         )
+
+    def run_update_loop(self):
+        """
+        Run the challenge period manager in a continuous loop in its own process.
+        This method is designed to run in a separate process and will refresh the
+        challenge period continuously until shutdown is signaled.
+        """
+        from setproctitle import setproctitle
+        import traceback
+        setproctitle("vali_ChallengePeriodManager")
+
+        bt.logging.info("ChallengePeriodManager process started")
+
+        while not self.shutdown_dict:
+            try:
+                # Run the challenge period refresh
+                self.refresh()
+
+                # Sleep to avoid busy waiting. The refresh_allowed check in refresh
+                # will handle the actual refresh timing, but we sleep here to be nice
+                # to the CPU when refresh is not allowed
+                time.sleep(1)
+
+            except Exception as e:
+                bt.logging.error(f"Error in ChallengePeriodManager update loop: {e}")
+                bt.logging.error(traceback.format_exc())
+                time.sleep(10)  # Wait longer on error before retrying
+
+        bt.logging.info("ChallengePeriodManager process shutting down")
 
     def _prune_deregistered_metagraph(self, hotkeys=None) -> bool:
         """

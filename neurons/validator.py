@@ -407,9 +407,9 @@ class Validator:
         def initialization_watchdog():
             """Background thread that monitors for hung initialization steps"""
             HANG_TIMEOUT = 60  # Alert after 60 seconds on a single step
-            while init_watchdog['current_step'] <= 12:
+            while init_watchdog['current_step'] <= 13:
                 time.sleep(5)  # Check every 5 seconds
-                if init_watchdog['current_step'] > 12:
+                if init_watchdog['current_step'] > 13:
                     break  # Initialization complete
 
                 elapsed = time.time() - init_watchdog['start_time']
@@ -417,7 +417,7 @@ class Validator:
                     init_watchdog['alerted'] = True
                     hang_msg = (
                         f"⚠️ Validator Initialization Hang Detected!\n"
-                        f"Step {init_watchdog['current_step']}/12 has been running for {elapsed:.1f}s\n"
+                        f"Step {init_watchdog['current_step']}/13 has been running for {elapsed:.1f}s\n"
                         f"Step: {init_watchdog['step_desc']}\n"
                         f"Hotkey: {self.wallet.hotkey.ss58_address}\n"
                         f"Timeout threshold: {HANG_TIMEOUT}s\n"
@@ -440,16 +440,16 @@ class Validator:
             init_watchdog['start_time'] = time.time()
             init_watchdog['alerted'] = False
 
-            bt.logging.info(f"[INIT] Step {step_num}/12: {step_desc}...")
+            bt.logging.info(f"[INIT] Step {step_num}/13: {step_desc}...")
             start_time = time.time()
             try:
                 result = step_func()
                 elapsed = time.time() - start_time
-                bt.logging.info(f"[INIT] Step {step_num}/12 complete: {step_desc} (took {elapsed:.2f}s)")
+                bt.logging.info(f"[INIT] Step {step_num}/13 complete: {step_desc} (took {elapsed:.2f}s)")
                 return result
             except Exception as e:
                 elapsed = time.time() - start_time
-                error_msg = f"[INIT] Step {step_num}/12 FAILED: {step_desc} after {elapsed:.2f}s - {str(e)}"
+                error_msg = f"[INIT] Step {step_num}/13 FAILED: {step_desc} after {elapsed:.2f}s - {str(e)}"
                 bt.logging.error(error_msg)
                 bt.logging.error(traceback.format_exc())
 
@@ -457,7 +457,7 @@ class Validator:
                 if self.slack_notifier:
                     self.slack_notifier.send_message(
                         f"🚨 Validator Initialization Failed!\n"
-                        f"Step: {step_num}/12 - {step_desc}\n"
+                        f"Step: {step_num}/13 - {step_desc}\n"
                         f"Error: {str(e)}\n"
                         f"Hotkey: {self.wallet.hotkey.ss58_address}\n"
                         f"Time elapsed: {elapsed:.2f}s\n"
@@ -516,8 +516,20 @@ class Validator:
             return self.elimination_manager_process
         run_init_step_with_monitoring(5, "Starting elimination manager process", step5)
 
-        # Step 6: Initialize SubtensorWeightSetter
+        # Step 6: Start challenge period manager process
         def step6():
+            self.challengeperiod_manager_process = Process(target=self.challengeperiod_manager.run_update_loop, daemon=True)
+            self.challengeperiod_manager_process.start()
+            # Verify process started
+            time.sleep(0.1)  # Give process a moment to start
+            if not self.challengeperiod_manager_process.is_alive():
+                raise RuntimeError("Challenge period manager process failed to start")
+            bt.logging.info(f"Challenge period manager process started with PID: {self.challengeperiod_manager_process.pid}")
+            return self.challengeperiod_manager_process
+        run_init_step_with_monitoring(6, "Starting challenge period manager process", step6)
+
+        # Step 7: Initialize SubtensorWeightSetter
+        def step7():
             # Pass shared metagraph which contains substrate reserves refreshed by MetagraphUpdater
             # Pass debt_ledger_manager for encapsulated access to debt ledger data
             self.weight_setter = SubtensorWeightSetter(
@@ -533,10 +545,10 @@ class Validator:
                 is_mainnet=self.is_mainnet
             )
             return self.weight_setter
-        run_init_step_with_monitoring(6, "Initializing SubtensorWeightSetter", step6)
+        run_init_step_with_monitoring(7, "Initializing SubtensorWeightSetter", step7)
 
-        # Step 7: Initialize RequestCoreManager and MinerStatisticsManager
-        def step7():
+        # Step 8: Initialize RequestCoreManager and MinerStatisticsManager
+        def step8():
             self.request_core_manager = RequestCoreManager(self.position_manager, self.weight_setter, self.plagiarism_detector,
                                                           self.contract_manager, ipc_manager=self.ipc_manager,
                                                           asset_selection_manager=self.asset_selection_manager)
@@ -544,10 +556,10 @@ class Validator:
                                                                    self.plagiarism_detector, contract_manager=self.contract_manager,
                                                                    ipc_manager=self.ipc_manager)
             return (self.request_core_manager, self.miner_statistics_manager)
-        run_init_step_with_monitoring(7, "Initializing RequestCoreManager and MinerStatisticsManager", step7)
+        run_init_step_with_monitoring(8, "Initializing RequestCoreManager and MinerStatisticsManager", step8)
 
-        # Step 8: Start perf ledger updater process
-        def step8():
+        # Step 9: Start perf ledger updater process
+        def step9():
             self.perf_ledger_updater_thread = Process(target=self.perf_ledger_manager.run_update_loop, daemon=True)
             self.perf_ledger_updater_thread.start()
             # Verify process started
@@ -556,10 +568,10 @@ class Validator:
                 raise RuntimeError("Perf ledger updater process failed to start")
             bt.logging.info(f"Process started with PID: {self.perf_ledger_updater_thread.pid}")
             return self.perf_ledger_updater_thread
-        run_init_step_with_monitoring(8, "Starting perf ledger updater process", step8)
+        run_init_step_with_monitoring(9, "Starting perf ledger updater process", step9)
 
-        # Step 9: Start weight setter process
-        def step9():
+        # Step 10: Start weight setter process
+        def step10():
             self.weight_setter_process = Process(target=self.weight_setter.run_update_loop, daemon=True)
             self.weight_setter_process.start()
             # Verify process started
@@ -568,10 +580,10 @@ class Validator:
                 raise RuntimeError("Weight setter process failed to start")
             bt.logging.info(f"Process started with PID: {self.weight_setter_process.pid}")
             return self.weight_setter_process
-        run_init_step_with_monitoring(9, "Starting weight setter process", step9)
+        run_init_step_with_monitoring(10, "Starting weight setter process", step10)
 
-        # Step 10: Start weight processing thread
-        def step10():
+        # Step 11: Start weight processing thread
+        def step11():
             if self.metagraph_updater.weight_request_queue:
                 self.weight_processing_thread = threading.Thread(target=self.metagraph_updater.run_weight_processing_loop, daemon=True)
                 self.weight_processing_thread.start()
@@ -583,10 +595,10 @@ class Validator:
             else:
                 bt.logging.info("No weight request queue - skipping")
                 return None
-        run_init_step_with_monitoring(10, "Starting weight processing thread", step10)
+        run_init_step_with_monitoring(11, "Starting weight processing thread", step11)
 
-        # Step 11: Start request output generator (if enabled)
-        def step11():
+        # Step 12: Start request output generator (if enabled)
+        def step12():
             if self.config.start_generate:
                 self.rog = RequestOutputGenerator(rcm=self.request_core_manager, msm=self.miner_statistics_manager)
                 self.rog_thread = threading.Thread(target=self.rog.start_generation, daemon=True)
@@ -600,10 +612,10 @@ class Validator:
                 self.rog_thread = None
                 bt.logging.info("Request output generator not enabled - skipping")
                 return None
-        run_init_step_with_monitoring(11, "Starting request output generator (if enabled)", step11)
+        run_init_step_with_monitoring(12, "Starting request output generator (if enabled)", step12)
 
-        # Step 12: Start API services (if enabled)
-        def step12():
+        # Step 13: Start API services (if enabled)
+        def step13():
             if self.config.serve:
                 # Create API Manager with configuration options
                 self.api_manager = APIManager(
@@ -637,17 +649,17 @@ class Validator:
                 self.api_thread = None
                 bt.logging.info("API services not enabled - skipping")
                 return None
-        run_init_step_with_monitoring(12, "Starting API services (if enabled)", step12)
+        run_init_step_with_monitoring(13, "Starting API services (if enabled)", step13)
 
         # Signal watchdog that initialization is complete
-        init_watchdog['current_step'] = 13
-        bt.logging.info("[INIT] All 12 initialization steps completed successfully!")
+        init_watchdog['current_step'] = 14
+        bt.logging.info("[INIT] All 13 initialization steps completed successfully!")
 
         # Send success notification to Slack
         if self.slack_notifier:
             self.slack_notifier.send_message(
                 f"✅ Validator Initialization Complete!\n"
-                f"All 12 initialization steps completed successfully\n"
+                f"All 13 initialization steps completed successfully\n"
                 f"Hotkey: {self.wallet.hotkey.ss58_address}\n"
                 f"API services: {'Enabled' if self.config.serve else 'Disabled'}",
                 level="info"
@@ -806,6 +818,8 @@ class Validator:
         self.mdd_checker_process.join()
         bt.logging.warning("Stopping elimination manager...")
         self.elimination_manager_process.join()
+        bt.logging.warning("Stopping challenge period manager...")
+        self.challengeperiod_manager_process.join()
         if self.rog_thread:
             bt.logging.warning("Stopping request output generator...")
             self.rog_thread.join()
@@ -840,7 +854,7 @@ class Validator:
                 self.price_slippage_model.refresh_features_daily()
                 self.position_syncer.sync_positions_with_cooldown(self.auto_sync)
                 # MDD checker now runs in its own process
-                self.challengeperiod_manager.refresh(current_time=current_time)
+                # Challenge period manager now runs in its own process
                 # Elimination manager now runs in its own process
                 #self.position_locks.cleanup_locks(self.metagraph.hotkeys)
                 # Weight setting now runs in its own process
