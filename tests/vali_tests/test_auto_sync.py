@@ -1605,7 +1605,7 @@ class TestPositions(TestBase):
         """Test behavior when running as mothership"""
         # Mock mothership mode
         with patch('vali_objects.utils.validator_sync_base.ValiUtils.get_secrets') as mock_secrets:
-            mock_secrets.return_value = {'ms': 'mothership_secret'}
+            mock_secrets.return_value = {'ms': 'mothership_secret', 'polygon_apikey': "", 'tiingo_apikey': ""}
             
             # Create new syncer in mothership mode
             mothership_syncer = PositionSyncer(
