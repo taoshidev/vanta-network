@@ -131,11 +131,10 @@ class Validator:
         self.ipc_manager = Manager()
         self.shared_queue_websockets = self.ipc_manager.Queue()
 
-        # Create LivePriceFetcher client (automatically starts server and connects)
+        # Create LivePriceFetcher client
         self.live_price_fetcher = LivePriceFetcherClient(
             secrets=self.secrets,
             disable_ws=False,
-            ipc_manager=self.ipc_manager
         )
 
         self.price_slippage_model = PriceSlippageModel(live_price_fetcher=self.live_price_fetcher)
