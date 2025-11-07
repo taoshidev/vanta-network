@@ -412,8 +412,9 @@ class ChallengePeriodManager(CacheController):
         #TODO revisit this
         portfolio_only_ledgers = {hotkey: asset_ledgers.get("portfolio") for hotkey, asset_ledgers in ledger.items() if asset_ledgers is not None}
         promotion_eligible_hotkeys = []
-        for hotkey, bucket_start_time in inspection_hotkeys.items():
+        rank_eligible_hotkeys = []
 
+        for hotkey, bucket_start_time in inspection_hotkeys.items():
             if ChallengePeriodManager.is_recently_re_registered(portfolio_only_ledgers.get(hotkey), hotkey, hk_to_first_order_time):
                 miners_recently_reregistered.add(hotkey)
                 continue
@@ -448,16 +449,18 @@ class ChallengePeriodManager(CacheController):
                 miners_to_eliminate[hotkey] = (EliminationReason.FAILED_CHALLENGE_PERIOD_DRAWDOWN.value, recorded_drawdown_percentage)
                 continue
 
-            if not self.screen_minimum_interaction(ledger_element):
-                continue
-
             # Check if miner has selected an asset class (only enforce after selection time)
             if self.asset_selection_manager and current_time >= ASSET_CLASS_SELECTION_TIME_MS:
                 if hotkey not in self.asset_selection_manager.asset_selections:
                     # bt.logging.info(f'Hotkey {hotkey} has not selected an asset class. Skipping evaluation.')
                     continue
 
-            promotion_eligible_hotkeys.append(hotkey)
+            # Miner passed basic checks - include in ranking for accurate threshold calculation
+            rank_eligible_hotkeys.append(hotkey)
+
+            # Additional check for promotion eligibility: minimum trading days
+            if self.screen_minimum_interaction(ledger_element):
+                promotion_eligible_hotkeys.append(hotkey)
 
         # Calculate dynamic minimum participation days for asset classes
         maincomp_ledger = {hotkey: ledger_data for hotkey, ledger_data in ledger.items() if hotkey in [*success_hotkeys, *probation_hotkeys]}   # ledger of all miners in maincomp, including probation
@@ -471,13 +474,14 @@ class ChallengePeriodManager(CacheController):
 
         # Use provided scores dict if available (for testing), otherwise compute scores
         if combined_scores_dict is None:
-            candidate_hotkeys = success_hotkeys + list(inspection_hotkeys.keys())
-            candidate_ledgers = {hotkey: ledger for hotkey, ledger in ledger.items() if hotkey in candidate_hotkeys}
-            candidate_positions = {hotkey: pos_list for hotkey, pos_list in positions.items() if hotkey in candidate_hotkeys}
+            # Score all rank-eligible miners (including those without minimum days) for accurate threshold
+            scoring_hotkeys = success_hotkeys + rank_eligible_hotkeys
+            scoring_ledgers = {hotkey: ledger for hotkey, ledger in ledger.items() if hotkey in scoring_hotkeys}
+            scoring_positions = {hotkey: pos_list for hotkey, pos_list in positions.items() if hotkey in scoring_hotkeys}
 
             combined_scores_dict = Scoring.score_miners(
-                ledger_dict=candidate_ledgers,
-                positions=candidate_positions,
+                ledger_dict=scoring_ledgers,
+                positions=scoring_positions,
                 asset_class_min_days=asset_class_min_days,
                 evaluation_time_ms=current_time,
                 weighting=True,
@@ -490,8 +494,8 @@ class ChallengePeriodManager(CacheController):
             combined_scores_dict
         )
 
-        bt.logging.info(f"Challenge Period: evaluating {len(promotion_eligible_hotkeys)}/{len(inspection_hotkeys)} miners eligible for promotion")
-        bt.logging.info(f"Challenge Period: evaluating {len(success_hotkeys)} miners eligible for demotion")
+        bt.logging.info(f"Challenge Period: evaluated {len(promotion_eligible_hotkeys)}/{len(inspection_hotkeys)} miners eligible for promotion")
+        bt.logging.info(f"Challenge Period: evaluated {len(success_hotkeys)} miners eligible for demotion")
         bt.logging.info(f"Hotkeys to promote: {hotkeys_to_promote}")
         bt.logging.info(f"Hotkeys to demote: {hotkeys_to_demote}")
         bt.logging.info(f"Hotkeys to eliminate: {list(miners_to_eliminate.keys())}")
@@ -541,7 +545,7 @@ class ChallengePeriodManager(CacheController):
             maincomp_hotkeys.update({hotkey for hotkey, _ in top_miners})
 
             bt.logging.info(f"{asset_class}: {len(sorted_scores)} miners ranked for evaluation")
-            for h, s in top_miners:
+            for h, s in sorted_scores:
                 bt.logging.info(f"{h}: {s}")
 
             # Logging for missing hotkeys
