@@ -1,5 +1,7 @@
 from multiprocessing.managers import BaseManager
+from multiprocessing import Process
 import time
+import uuid
 from typing import List, Tuple, Dict
 
 import numpy as np
@@ -17,48 +19,218 @@ from vali_objects.vali_dataclasses.order import OrderSource
 from vali_objects.vali_dataclasses.price_source import PriceSource
 from statistics import median
 
-class LivePriceFetcherClient(BaseManager): pass
-LivePriceFetcherClient.register('LivePriceFetcher')
+class LivePriceFetcherClient:
+    """
+    Wrapper around the LivePriceFetcher RPC client that performs periodic health checks.
+    Health checks run inline on the main thread when methods are called.
+    """
 
-def get_live_price_client(address=('localhost', 50000), authkey=None, max_retries = 5):
-    if authkey is None:
-        raise ValueError("authkey parameter is required for LivePriceFetcher client connection")
-    bt.logging.info(f"Attempting to connect to LivePriceFetcher server")
-    for attempt in range(max_retries):
+    class ClientManager(BaseManager):
+        pass
+
+    ClientManager.register('LivePriceFetcher')
+
+    def __init__(self, secrets, address=('localhost', 50000), disable_ws=False, ipc_manager=None, is_backtesting=False):
+        """
+        Initialize client and start the server process.
+
+        Args:
+            secrets: Dictionary containing API keys for data services
+            address: Tuple of (host, port) for the RPC server
+            disable_ws: Whether to disable websocket connections
+            ipc_manager: IPC manager for shared memory
+            is_backtesting: Whether running in backtesting mode
+        """
+        self._secrets = secrets
+        self._address = address
+        self._disable_ws = disable_ws
+        self._ipc_manager = ipc_manager
+        self._is_backtesting = is_backtesting
+        self._max_retries = 5
+        self._health_check_interval_ms = 60 * 1000
+        self._last_health_check_time = 0
+        self._consecutive_failures = 0
+        self._client = None
+        self._server_process = None
+        self._authkey = None
+
+        # Start server and connect
+        self._start_server()
+
+    def _start_server(self, restart=False):
+        if restart:
+            bt.logging.warning("Restarting LivePriceFetcher server...")
+
+            # Terminate the old process if it exists
+            if self._server_process and self._server_process.is_alive():
+                bt.logging.info("Terminating old LivePriceFetcher server process...")
+                self._server_process.terminate()
+                self._server_process.join(timeout=5)
+
+                # Force kill if it didn't terminate
+                if self._server_process.is_alive():
+                    bt.logging.warning("Force killing LivePriceFetcher server process...")
+                    self._server_process.kill()
+                    self._server_process.join(timeout=2)
+
+        # Generate new authkey for security
+        self._authkey = str(uuid.uuid4()).encode()
+
+        # Start the server process
+        bt.logging.info("Starting LivePriceFetcher server process...")
+        self._server_process = Process(
+            target=LivePriceFetcherServer,
+            args=(self._secrets,),
+            kwargs={
+                'address': self._address,
+                'authkey': self._authkey,
+                'disable_ws': self._disable_ws,
+                'ipc_manager': self._ipc_manager,
+                'is_backtesting': self._is_backtesting
+            },
+            daemon=True
+        )
+        self._server_process.start()
+
+        # Wait for server to be ready
+        bt.logging.info("Waiting for LivePriceFetcher server to be ready...")
+        max_wait_time = 10
+        min_wait_time = 2
+        check_interval = 0.5
+        waited = 0
+        while waited < max_wait_time:
+            if not self._server_process.is_alive():
+                raise RuntimeError(
+                    f"LivePriceFetcher server process died during startup. "
+                    f"Exit code: {self._server_process.exitcode}"
+                )
+            time.sleep(check_interval)
+            waited += check_interval
+            if waited >= min_wait_time:
+                break
+
+        if not self._server_process.is_alive():
+            raise RuntimeError("LivePriceFetcher server process failed to start")
+
+        bt.logging.info("LivePriceFetcher server process ready")
+
+        # Connect to the server
+        self.connect()
+
+        # Reset failure counter
+        self._consecutive_failures = 0
+
+        if restart:
+            bt.logging.success("LivePriceFetcher server restarted successfully")
+
+    def connect(self):
+        bt.logging.info(f"Attempting to connect to LivePriceFetcher server at {self._address}")
+        for attempt in range(self._max_retries):
+            try:
+                manager = self.ClientManager(address=self._address, authkey=self._authkey)
+                manager.connect()
+                bt.logging.success(f"Successfully connected to LivePriceFetcher server")
+                self._client = manager.LivePriceFetcher()
+                return
+            except Exception as e:
+                if attempt < self._max_retries - 1:
+                    bt.logging.warning(f"Failed to connect to LivePriceFetcher server (attempt {attempt + 1}/{self._max_retries}): {e}. Retrying in 1s...")
+                    time.sleep(1)
+                else:
+                    bt.logging.error(f"Failed to connect to LivePriceFetcher server after {self._max_retries} attempts: {e}")
+                    raise
+
+    def health_check(self, current_time):
+        # Rate limit: only check if enough time has passed
+        if current_time - self._last_health_check_time < self._health_check_interval_ms:
+            return True  # Skip check, assume healthy
+
+        self._last_health_check_time = current_time
+
+        # Check if server process is alive
+        if self._server_process and not self._server_process.is_alive():
+            bt.logging.error(f"LivePriceFetcher server process is not alive! Exit code: {self._server_process.exitcode}")
+            self._consecutive_failures += 1
+            if self._consecutive_failures >= 3:
+                bt.logging.warning("Triggering server restart due to dead process...")
+                self._start_server(restart=True)
+            return False
+
         try:
-            manager = LivePriceFetcherClient(address=address, authkey=authkey)
-            manager.connect()
-            bt.logging.success(f"Successfully connected to LivePriceFetcher server")
-            return manager.LivePriceFetcher()
-        except Exception as e:
-            if attempt < max_retries - 1:
-                bt.logging.warning(f"Failed to connect to LivePriceFetcher server (attempt {attempt + 1}/{max_retries}): {e}. Retrying in 1s...")
-                time.sleep(1)
+            # Call the health_check RPC method
+            health_status = self._client.health_check()
+
+            if health_status.get("status") == "ok":
+                if self._consecutive_failures > 0:
+                    bt.logging.success(
+                        f"LivePriceFetcher server recovered after {self._consecutive_failures} failed health checks"
+                    )
+                self._consecutive_failures = 0
+                bt.logging.trace(f"LivePriceFetcher health check passed: {health_status}")
+                return True
             else:
-                bt.logging.error(f"Failed to connect to LivePriceFetcher server after {max_retries} attempts: {e}")
-                raise
+                self._consecutive_failures += 1
+                bt.logging.warning(
+                    f"LivePriceFetcher health check returned unexpected status: {health_status} "
+                    f"(consecutive failures: {self._consecutive_failures})"
+                )
+                if self._consecutive_failures >= 3:
+                    bt.logging.warning("Triggering server restart due to failed health checks...")
+                    self._start_server(restart=True)
+                return False
 
-class LivePriceFetcherServer(BaseManager): pass
+        except Exception as e:
+            self._consecutive_failures += 1
+            bt.logging.error(
+                f"LivePriceFetcher health check failed: {e} "
+                f"(consecutive failures: {self._consecutive_failures})"
+            )
 
-def run_live_price_server(secrets, address=('localhost', 50000), authkey=None, disable_ws=False, ipc_manager=None, is_backtesting=False):
-    if authkey is None:
-        raise ValueError("authkey parameter is required for LivePriceFetcher server")
-    bt.logging.info(f"Starting LivePriceFetcher server ...")
-    try:
+            # Trigger restart after 3 consecutive failures
+            if self._consecutive_failures >= 3:
+                bt.logging.warning("Triggering server restart due to failed health checks...")
+                self._start_server(restart=True)
+            return False
+
+    def __getattr__(self, name):
+        """
+        Proxy all method calls to the underlying client.
+        """
+        # Proxy the call to the underlying client
+        return getattr(self._client, name)
+
+class LivePriceFetcherServer:
+    """
+    Wrapper for the LivePriceFetcher RPC server.
+    Instantiating this class starts the server automatically.
+    """
+
+    class ServerManager(BaseManager):
+        pass
+
+    def __init__(self, secrets, address=('localhost', 50000), authkey=None, disable_ws=False, ipc_manager=None, is_backtesting=False):
+        if authkey is None:
+            raise ValueError("authkey parameter is required for LivePriceFetcher server")
+
+        bt.logging.info(f"Starting LivePriceFetcher server on {address}...")
+
+        # Create the LivePriceFetcher instance
         live_price_fetcher = LivePriceFetcher(secrets, disable_ws, ipc_manager, is_backtesting)
         bt.logging.info(f"LivePriceFetcher instance created successfully")
-        LivePriceFetcherServer.register('LivePriceFetcher', callable=lambda: live_price_fetcher)
-        manager = LivePriceFetcherServer(address=address, authkey=authkey)
+
+        # Register and start the RPC server
+        self.ServerManager.register('LivePriceFetcher', callable=lambda: live_price_fetcher)
+        manager = self.ServerManager(address=address, authkey=authkey)
         server = manager.get_server()
-        bt.logging.success(f"LivePriceFetcher server is now listening")
+        bt.logging.success(f"LivePriceFetcher server is now listening and serving requests")
+
+        # Start serving (blocks forever)
         server.serve_forever()
-    except Exception as e:
-        bt.logging.error(f"Failed to start LivePriceFetcher server {e}")
-        raise
 
 class LivePriceFetcher:
     def __init__(self, secrets, disable_ws=False, ipc_manager=None, is_backtesting=False):
         self.is_backtesting = is_backtesting
+        self.last_health_check_ms = 0
         if "tiingo_apikey" in secrets:
             self.tiingo_data_service = TiingoDataService(api_key=secrets["tiingo_apikey"], disable_ws=disable_ws,
                                                          ipc_manager=ipc_manager)
@@ -73,6 +245,18 @@ class LivePriceFetcher:
     def stop_all_threads(self):
         self.tiingo_data_service.stop_threads()
         self.polygon_data_service.stop_threads()
+
+    def health_check(self) -> dict:
+        """
+        Health check method for RPC connection between client and server.
+        Returns a simple status indicating the server is alive and responsive.
+        """
+        current_time_ms = TimeUtil.now_in_millis()
+        return {
+            "status": "ok",
+            "timestamp_ms": current_time_ms,
+            "is_backtesting": self.is_backtesting
+        }
 
     def is_market_open(self, trade_pair: TradePair) -> bool:
         return self.polygon_data_service.is_market_open(trade_pair)

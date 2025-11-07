@@ -28,7 +28,6 @@ import base64
 from runnable.generate_request_core import RequestCoreManager
 from runnable.generate_request_minerstatistics import MinerStatisticsManager
 from runnable.generate_request_outputs import RequestOutputGenerator
-from vali_objects.utils import live_price_fetcher
 from vali_objects.utils.auto_sync import PositionSyncer
 from vali_objects.utils.p2p_syncer import P2PSyncer
 from shared_objects.rate_limiter import RateLimiter
@@ -43,7 +42,7 @@ from shared_objects.metagraph_updater import MetagraphUpdater
 from shared_objects.error_utils import ErrorUtils
 from miner_objects.slack_notifier import SlackNotifier
 from vali_objects.utils.elimination_manager import EliminationManager
-from vali_objects.utils.live_price_fetcher import LivePriceFetcher
+from vali_objects.utils.live_price_fetcher import LivePriceFetcherClient
 from vali_objects.utils.price_slippage_model import PriceSlippageModel
 from vali_objects.utils.subtensor_weight_setter import SubtensorWeightSetter
 from vali_objects.utils.mdd_checker import MDDChecker
@@ -132,18 +131,12 @@ class Validator:
         self.ipc_manager = Manager()
         self.shared_queue_websockets = self.ipc_manager.Queue()
 
-        # Generate runtime authentication key for live price fetcher RPC
-        runtime_authkey = str(uuid.uuid4()).encode()
-
-        self.live_price_fetcher_process = Process(
-            target=live_price_fetcher.run_live_price_server,
-            args=(self.secrets,),
-            kwargs={'disable_ws': False, 'authkey': runtime_authkey},
-            daemon=True
+        # Create LivePriceFetcher client (automatically starts server and connects)
+        self.live_price_fetcher = LivePriceFetcherClient(
+            secrets=self.secrets,
+            disable_ws=False,
+            ipc_manager=self.ipc_manager
         )
-        self.live_price_fetcher_process.start()
-        self._wait_for_live_price_server_ready()
-        self.live_price_fetcher = live_price_fetcher.get_live_price_client(authkey=runtime_authkey);
 
         self.price_slippage_model = PriceSlippageModel(live_price_fetcher=self.live_price_fetcher)
         # Activating Bittensor's logging with the set configurations.
@@ -654,26 +647,6 @@ class Validator:
                 self.position_syncer.sync_positions(
                     False, candidate_data=self.position_syncer.read_validator_checkpoint_from_gcloud_zip())
 
-    def _wait_for_live_price_server_ready(self, max_wait_time=10, min_wait_time=2, check_interval=0.5):
-        bt.logging.info("LivePriceFetcher server process started, waiting for it to be ready...")
-
-        waited = 0
-        while waited < max_wait_time:
-            if not self.live_price_fetcher_process.is_alive():
-                raise RuntimeError(
-                    f"LivePriceFetcher server process died during startup. "
-                    f"Exit code: {self.live_price_fetcher_process.exitcode}"
-                )
-            time.sleep(check_interval)
-            waited += check_interval
-            if waited >= min_wait_time:
-                break
-
-        if not self.live_price_fetcher_process.is_alive():
-            raise RuntimeError("LivePriceFetcher server process failed to start")
-
-        bt.logging.info(f"LivePriceFetcher server process ready")
-
     @staticmethod
     def blacklist_fn(synapse, metagraph) -> Tuple[bool, str]:
         miner_hotkey = synapse.dendrite.hotkey
@@ -832,6 +805,7 @@ class Validator:
         while not shutdown_dict:
             try:
                 current_time = TimeUtil.now_in_millis()
+                self.live_price_fetcher.health_check(current_time)
                 self.price_slippage_model.refresh_features_daily()
                 self.position_syncer.sync_positions_with_cooldown(self.auto_sync)
                 self.mdd_checker.mdd_check(self.position_locks)
