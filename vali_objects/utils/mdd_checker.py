@@ -20,7 +20,7 @@ from vali_objects.vali_dataclasses.price_source import PriceSource
 class MDDChecker(CacheController):
 
     def __init__(self, metagraph, position_manager, running_unit_tests=False,
-                 live_price_fetcher=None, shutdown_dict=None):
+                 live_price_fetcher=None, shutdown_dict=None, position_locks=None):
         super().__init__(metagraph, running_unit_tests=running_unit_tests)
         self.last_price_fetch_time_ms = None
         self.last_quote_fetch_time_ms = None
@@ -36,6 +36,7 @@ class MDDChecker(CacheController):
         self.elimination_manager = position_manager.elimination_manager
         self.reset_debug_counters()
         self.shutdown_dict = shutdown_dict
+        self.position_locks = position_locks
         self.n_poly_api_requests = 0
 
     def reset_debug_counters(self):
@@ -75,8 +76,19 @@ class MDDChecker(CacheController):
             bt.logging.error(traceback.format_exc())
             return {}
 
-    
-    def mdd_check(self, position_locks):
+
+    def mdd_check(self, position_locks=None):
+        """
+        Run MDD check with price corrections.
+
+        Args:
+            position_locks: PositionLocks instance. If None, uses self.position_locks.
+                           Parameter kept for backward compatibility.
+        """
+        # Use provided position_locks or fall back to instance variable
+        if position_locks is None:
+            position_locks = self.position_locks
+
         self.n_poly_api_requests = 0
         if not self.refresh_allowed(ValiConfig.MDD_CHECK_REFRESH_TIME_MS):
             time.sleep(1)
@@ -102,6 +114,34 @@ class MDDChecker(CacheController):
                         f" n orders corrected: {self.n_orders_corrected}. n miners corrected: {len(self.miners_corrected)}."
                         f" n_poly_api_requests: {self.n_poly_api_requests}")
         self.set_last_update_time(skip_message=False)
+
+    def run_update_loop(self):
+        """
+        Run the MDD checker in a continuous loop in its own process.
+        This method is designed to run in a separate process and will check MDD
+        continuously until shutdown is signaled.
+        """
+        from setproctitle import setproctitle
+        setproctitle("vali_MDDChecker")
+
+        bt.logging.info("MDDChecker process started")
+
+        while not self.shutdown_dict:
+            try:
+                # Run the MDD check
+                self.mdd_check()
+
+                # Sleep to avoid busy waiting. The refresh_allowed check in mdd_check
+                # will handle the actual refresh timing, but we sleep here to be nice
+                # to the CPU when refresh is not allowed
+                time.sleep(1)
+
+            except Exception as e:
+                bt.logging.error(f"Error in MDDChecker update loop: {e}")
+                bt.logging.error(traceback.format_exc())
+                time.sleep(10)  # Wait longer on error before retrying
+
+        bt.logging.info("MDDChecker process shutting down")
 
     def update_order_with_newest_price_sources(self, order, candidate_price_sources, hotkey, position) -> bool:
         from vali_objects.utils.price_slippage_model import PriceSlippageModel
