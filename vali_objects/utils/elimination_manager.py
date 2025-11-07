@@ -39,7 +39,7 @@ class EliminationManager(CacheController):
 
     def __init__(self, metagraph, position_manager, challengeperiod_manager,
                  running_unit_tests=False, shutdown_dict=None, ipc_manager=None, is_backtesting=False,
-                 shared_queue_websockets=None, contract_manager=None):
+                 shared_queue_websockets=None, contract_manager=None, position_locks=None):
         super().__init__(metagraph=metagraph, is_backtesting=is_backtesting)
         self.position_manager = position_manager
         self.shutdown_dict = shutdown_dict
@@ -50,6 +50,7 @@ class EliminationManager(CacheController):
         secrets = ValiUtils.get_secrets(running_unit_tests=running_unit_tests)
         self.live_price_fetcher = LivePriceFetcher(secrets, disable_ws=True)
         self.contract_manager = contract_manager
+        self.position_locks = position_locks
 
         if ipc_manager:
             self.eliminations = ipc_manager.list()
@@ -175,7 +176,17 @@ class EliminationManager(CacheController):
 
         self.first_refresh_ran = True
 
-    def process_eliminations(self, position_locks):
+    def process_eliminations(self, position_locks=None):
+        """
+        Process all elimination checks and handle eliminated miners.
+
+        Args:
+            position_locks: PositionLocks instance. If None, uses self.position_locks.
+                           Parameter kept for backward compatibility.
+        """
+        # Use provided position_locks or fall back to instance variable
+        if position_locks is None:
+            position_locks = self.position_locks
 
         if not self.refresh_allowed(ValiConfig.ELIMINATION_CHECK_INTERVAL_MS) and \
                 not bool(self.challengeperiod_manager.eliminations_with_reasons):
@@ -193,6 +204,36 @@ class EliminationManager(CacheController):
         self._delete_eliminated_expired_miners()
 
         self.set_last_update_time()
+
+    def run_update_loop(self):
+        """
+        Run the elimination manager in a continuous loop in its own process.
+        This method is designed to run in a separate process and will process
+        eliminations continuously until shutdown is signaled.
+        """
+        import time
+        from setproctitle import setproctitle
+        setproctitle("vali_EliminationManager")
+
+        bt.logging.info("EliminationManager process started")
+
+        while not self.shutdown_dict:
+            try:
+                # Run the elimination process
+                self.process_eliminations()
+
+                # Sleep to avoid busy waiting. The refresh_allowed check in process_eliminations
+                # will handle the actual refresh timing, but we sleep here to be nice
+                # to the CPU when refresh is not allowed
+                time.sleep(1)
+
+            except Exception as e:
+                bt.logging.error(f"Error in EliminationManager update loop: {e}")
+                import traceback
+                bt.logging.error(traceback.format_exc())
+                time.sleep(10)  # Wait longer on error before retrying
+
+        bt.logging.info("EliminationManager process shutting down")
 
     def is_zombie_hotkey(self, hotkey, all_hotkeys_set):
         if hotkey in all_hotkeys_set:
