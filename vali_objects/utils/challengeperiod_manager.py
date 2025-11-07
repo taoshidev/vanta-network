@@ -545,8 +545,6 @@ class ChallengePeriodManager(CacheController):
             maincomp_hotkeys.update({hotkey for hotkey, _ in top_miners})
 
             bt.logging.info(f"{asset_class}: {len(sorted_scores)} miners ranked for evaluation")
-            for h, s in sorted_scores:
-                bt.logging.info(f"{h}: {s}")
 
             # Logging for missing hotkeys
             for hotkey in success_hotkeys:
