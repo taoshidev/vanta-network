@@ -1,4 +1,5 @@
 import math
+import time
 from collections import defaultdict
 from zoneinfo import ZoneInfo
 
@@ -321,6 +322,56 @@ class PriceSlippageModel:
                     order_updated = True
                 if order_updated:
                     position.rebuild_position_with_updated_orders(self.live_price_fetcher)
+
+    class FeatureRefresher:
+        """Daemon process that refreshes price slippage model features daily"""
+
+        def __init__(self, price_slippage_model, shutdown_dict=None, slack_notifier=None):
+            self.price_slippage_model = price_slippage_model
+            self.shutdown_dict = shutdown_dict
+            self.slack_notifier = slack_notifier
+
+        def run_update_loop(self):
+            from setproctitle import setproctitle
+            from shared_objects.error_utils import ErrorUtils
+            import traceback
+
+            setproctitle("vali_SlippageRefresher")
+            bt.logging.info("PriceSlippageFeatureRefresher daemon started")
+
+            while not self.shutdown_dict:
+                try:
+                    # Refresh features - the method has built-in date checking
+                    # and will only update if it's a new day
+                    self.price_slippage_model.refresh_features_daily()
+
+                    # Sleep for 10 minutes between checks
+                    # The refresh_features_daily method has built-in logic to only
+                    # refresh once per day, so checking every 10 minutes is fine
+                    time.sleep(10 * 60)
+
+                except Exception as e:
+                    error_traceback = traceback.format_exc()
+                    bt.logging.error(f"Error in PriceSlippageFeatureRefresher: {e}")
+                    bt.logging.error(error_traceback)
+
+                    # Send Slack notification
+                    if self.slack_notifier:
+                        error_message = ErrorUtils.format_error_for_slack(
+                            error=e,
+                            traceback_str=error_traceback,
+                            include_operation=True,
+                            include_timestamp=True
+                        )
+                        self.slack_notifier.send_message(
+                            f"❌ PriceSlippageFeatureRefresher Error!\n{error_message}",
+                            level="error"
+                        )
+
+                    # Sleep before retrying
+                    time.sleep(10 * 60)
+
+            bt.logging.info("PriceSlippageFeatureRefresher daemon shutting down")
 
 
 if __name__ == "__main__":

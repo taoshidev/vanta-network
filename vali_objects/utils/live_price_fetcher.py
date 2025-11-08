@@ -260,6 +260,55 @@ class LivePriceFetcherClient:
         # Proxy the call to the underlying client
         return getattr(self._client, name)
 
+    class HealthChecker:
+        """Daemon process that continuously monitors LivePriceFetcher server health"""
+
+        def __init__(self, live_price_fetcher_client, shutdown_dict=None, slack_notifier=None):
+            self.live_price_fetcher_client = live_price_fetcher_client
+            self.shutdown_dict = shutdown_dict
+            self.slack_notifier = slack_notifier
+
+        def run_update_loop(self):
+            from setproctitle import setproctitle
+            from shared_objects.error_utils import ErrorUtils
+            import traceback
+
+            setproctitle("vali_HealthChecker")
+            bt.logging.info("LivePriceFetcherHealthChecker daemon started")
+
+            while not self.shutdown_dict:
+                try:
+                    current_time = TimeUtil.now_in_millis()
+                    self.live_price_fetcher_client.health_check(current_time)
+
+                    # Sleep for 60 seconds between health checks
+                    # The health_check method has its own rate limiting (60s interval)
+                    # so this ensures we check approximately every minute
+                    time.sleep(60)
+
+                except Exception as e:
+                    error_traceback = traceback.format_exc()
+                    bt.logging.error(f"Error in LivePriceFetcherHealthChecker: {e}")
+                    bt.logging.error(error_traceback)
+
+                    # Send Slack notification
+                    if self.slack_notifier:
+                        error_message = ErrorUtils.format_error_for_slack(
+                            error=e,
+                            traceback_str=error_traceback,
+                            include_operation=True,
+                            include_timestamp=True
+                        )
+                        self.slack_notifier.send_message(
+                            f"❌ LivePriceFetcherHealthChecker Error!\n{error_message}",
+                            level="error"
+                        )
+
+                    # Sleep before retrying
+                    time.sleep(60)
+
+            bt.logging.info("LivePriceFetcherHealthChecker daemon shutting down")
+
 class LivePriceFetcherServer:
     """
     Wrapper for the LivePriceFetcher RPC server.

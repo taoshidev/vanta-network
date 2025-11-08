@@ -427,9 +427,9 @@ class Validator:
         def initialization_watchdog():
             """Background thread that monitors for hung initialization steps"""
             HANG_TIMEOUT = 60  # Alert after 60 seconds on a single step
-            while init_watchdog['current_step'] <= 13:
+            while init_watchdog['current_step'] <= 15:
                 time.sleep(5)  # Check every 5 seconds
-                if init_watchdog['current_step'] > 13:
+                if init_watchdog['current_step'] > 15:
                     break  # Initialization complete
 
                 elapsed = time.time() - init_watchdog['start_time']
@@ -437,7 +437,7 @@ class Validator:
                     init_watchdog['alerted'] = True
                     hang_msg = (
                         f"⚠️ Validator Initialization Hang Detected!\n"
-                        f"Step {init_watchdog['current_step']}/13 has been running for {elapsed:.1f}s\n"
+                        f"Step {init_watchdog['current_step']}/15 has been running for {elapsed:.1f}s\n"
                         f"Step: {init_watchdog['step_desc']}\n"
                         f"Hotkey: {self.wallet.hotkey.ss58_address}\n"
                         f"Timeout threshold: {HANG_TIMEOUT}s\n"
@@ -460,16 +460,16 @@ class Validator:
             init_watchdog['start_time'] = time.time()
             init_watchdog['alerted'] = False
 
-            bt.logging.info(f"[INIT] Step {step_num}/13: {step_desc}...")
+            bt.logging.info(f"[INIT] Step {step_num}/15: {step_desc}...")
             start_time = time.time()
             try:
                 result = step_func()
                 elapsed = time.time() - start_time
-                bt.logging.info(f"[INIT] Step {step_num}/13 complete: {step_desc} (took {elapsed:.2f}s)")
+                bt.logging.info(f"[INIT] Step {step_num}/15 complete: {step_desc} (took {elapsed:.2f}s)")
                 return result
             except Exception as e:
                 elapsed = time.time() - start_time
-                error_msg = f"[INIT] Step {step_num}/13 FAILED: {step_desc} after {elapsed:.2f}s - {str(e)}"
+                error_msg = f"[INIT] Step {step_num}/15 FAILED: {step_desc} after {elapsed:.2f}s - {str(e)}"
                 bt.logging.error(error_msg)
                 bt.logging.error(traceback.format_exc())
 
@@ -477,7 +477,7 @@ class Validator:
                 if self.slack_notifier:
                     self.slack_notifier.send_message(
                         f"🚨 Validator Initialization Failed!\n"
-                        f"Step: {step_num}/13 - {step_desc}\n"
+                        f"Step: {step_num}/15 - {step_desc}\n"
                         f"Error: {str(e)}\n"
                         f"Hotkey: {self.wallet.hotkey.ss58_address}\n"
                         f"Time elapsed: {elapsed:.2f}s\n"
@@ -673,15 +673,49 @@ class Validator:
                 return None
         run_init_step_with_monitoring(13, "Starting API services (if enabled)", step13)
 
+        # Step 14: Start LivePriceFetcher health checker process
+        def step14():
+            self.health_checker = LivePriceFetcherClient.HealthChecker(
+                live_price_fetcher_client=self.live_price_fetcher,
+                shutdown_dict=shutdown_dict,
+                slack_notifier=self.slack_notifier
+            )
+            self.health_checker_process = Process(target=self.health_checker.run_update_loop, daemon=True)
+            self.health_checker_process.start()
+            # Verify process started
+            time.sleep(0.1)
+            if not self.health_checker_process.is_alive():
+                raise RuntimeError("Health checker process failed to start")
+            bt.logging.info(f"Health checker process started with PID: {self.health_checker_process.pid}")
+            return self.health_checker_process
+        run_init_step_with_monitoring(14, "Starting LivePriceFetcher health checker process", step14)
+
+        # Step 15: Start price slippage feature refresher process
+        def step15():
+            self.slippage_refresher = PriceSlippageModel.FeatureRefresher(
+                price_slippage_model=self.price_slippage_model,
+                shutdown_dict=shutdown_dict,
+                slack_notifier=self.slack_notifier
+            )
+            self.slippage_refresher_process = Process(target=self.slippage_refresher.run_update_loop, daemon=True)
+            self.slippage_refresher_process.start()
+            # Verify process started
+            time.sleep(0.1)
+            if not self.slippage_refresher_process.is_alive():
+                raise RuntimeError("Slippage refresher process failed to start")
+            bt.logging.info(f"Slippage refresher process started with PID: {self.slippage_refresher_process.pid}")
+            return self.slippage_refresher_process
+        run_init_step_with_monitoring(15, "Starting price slippage feature refresher process", step15)
+
         # Signal watchdog that initialization is complete
-        init_watchdog['current_step'] = 14
-        bt.logging.info("[INIT] All 13 initialization steps completed successfully!")
+        init_watchdog['current_step'] = 16
+        bt.logging.info("[INIT] All 15 initialization steps completed successfully!")
 
         # Send success notification to Slack
         if self.slack_notifier:
             self.slack_notifier.send_message(
                 f"✅ Validator Initialization Complete!\n"
-                f"All 13 initialization steps completed successfully\n"
+                f"All 15 initialization steps completed successfully\n"
                 f"Hotkey: {self.wallet.hotkey.ss58_address}\n"
                 f"API services: {'Enabled' if self.config.serve else 'Disabled'}",
                 level="info"
@@ -842,6 +876,10 @@ class Validator:
         self.elimination_manager_process.join()
         bt.logging.warning("Stopping challenge period manager...")
         self.challengeperiod_manager_process.join()
+        bt.logging.warning("Stopping health checker...")
+        self.health_checker_process.join()
+        bt.logging.warning("Stopping slippage refresher...")
+        self.slippage_refresher_process.join()
         if self.rog_thread:
             bt.logging.warning("Stopping request output generator...")
             self.rog_thread.join()
@@ -871,15 +909,15 @@ class Validator:
             )
         while not shutdown_dict:
             try:
-                current_time = TimeUtil.now_in_millis()
-                self.live_price_fetcher.health_check(current_time)
-                self.price_slippage_model.refresh_features_daily()
                 self.position_syncer.sync_positions_with_cooldown(self.auto_sync)
-                # MDD checker now runs in its own process
-                # Challenge period manager now runs in its own process
-                # Elimination manager now runs in its own process
+                # All managers now run in their own daemon processes:
+                # - MDDChecker
+                # - EliminationManager
+                # - ChallengePeriodManager
+                # - LivePriceFetcherHealthChecker
+                # - PriceSlippageFeatureRefresher
+                # - Weight setter
                 #self.position_locks.cleanup_locks(self.metagraph.hotkeys)
-                # Weight setting now runs in its own process
                 #self.p2p_syncer.sync_positions_with_cooldown()
 
             # In case of unforeseen errors, the validator will log the error and send notification to Slack
