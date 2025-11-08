@@ -46,6 +46,11 @@ class SlackNotifier:
             "failing_validators": defaultdict(int)
         }
 
+        # Message cooldown tracking (prevents spam)
+        self.message_cooldown_seconds = 5 * 60  # 5 minutes
+        self.last_message_times = {}  # message_key -> timestamp
+        self.message_cooldown_lock = threading.Lock()
+
         # Start daily summary thread
         self._start_daily_summary_thread()
 
@@ -320,10 +325,34 @@ class SlackNotifier:
             except Exception as e:
                 bt.logging.error(f"Failed to send daily summary: {e}")
 
-    def send_message(self, message: str, level: str = "info"):
-        """Send a message to appropriate Slack channel based on level"""
+    def send_message(self, message: str, level: str = "info", bypass_cooldown: bool = False):
+        """Send a message to appropriate Slack channel based on level
+
+        Args:
+            message: The message to send
+            level: Message level (error, warning, success, info)
+            bypass_cooldown: If True, skip cooldown check (for critical messages)
+        """
         if not self.enabled:
             return
+
+        # Check cooldown unless bypassed
+        if not bypass_cooldown:
+            # Create a message key from the first line/emoji to group similar messages
+            message_key = message.split('\n')[0][:50]  # First 50 chars of first line
+
+            with self.message_cooldown_lock:
+                current_time = time.time()
+                last_send_time = self.last_message_times.get(message_key, 0)
+
+                # Check if we're still in cooldown period
+                if current_time - last_send_time < self.message_cooldown_seconds:
+                    time_remaining = int(self.message_cooldown_seconds - (current_time - last_send_time))
+                    bt.logging.debug(f"Slack message suppressed (cooldown). Retry in {time_remaining}s: {message_key}")
+                    return
+
+                # Update last send time
+                self.last_message_times[message_key] = current_time
 
         try:
             # Determine which webhook to use
@@ -577,12 +606,14 @@ class SlackNotifier:
     def __getstate__(self):
         """Prepare object for pickling - exclude unpicklable threading.Lock"""
         state = self.__dict__.copy()
-        # Remove the unpicklable lock
+        # Remove the unpicklable locks
         state.pop('daily_summary_lock', None)
+        state.pop('message_cooldown_lock', None)
         return state
 
     def __setstate__(self, state):
         """Restore object after unpickling - recreate threading.Lock"""
         self.__dict__.update(state)
-        # Recreate the lock in the new process
+        # Recreate the locks in the new process
         self.daily_summary_lock = threading.Lock()
+        self.message_cooldown_lock = threading.Lock()
