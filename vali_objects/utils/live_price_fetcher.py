@@ -64,16 +64,18 @@ class LivePriceFetcherClient:
             bt.logging.warning("Restarting LivePriceFetcher server...")
 
             # Terminate the old process if it exists
-            if self._server_process and self._server_process.is_alive():
+            # Note: We don't check is_alive() because this may be called from a different process
+            # (HealthChecker daemon) which cannot check the status of processes it didn't create.
+            # terminate() and kill() are safe to call on already-dead processes.
+            if self._server_process:
                 bt.logging.info("Terminating old LivePriceFetcher server process...")
                 self._server_process.terminate()
                 self._server_process.join(timeout=5)
 
                 # Force kill if it didn't terminate
-                if self._server_process.is_alive():
-                    bt.logging.warning("Force killing LivePriceFetcher server process...")
-                    self._server_process.kill()
-                    self._server_process.join(timeout=2)
+                bt.logging.info("Force killing LivePriceFetcher server process (if still alive)...")
+                self._server_process.kill()
+                self._server_process.join(timeout=2)
 
         # Generate new authkey for security
         self._authkey = str(uuid.uuid4()).encode()
@@ -95,47 +97,12 @@ class LivePriceFetcherClient:
         )
         self._server_process.start()
 
-        # Wait for server to be ready
-        bt.logging.info("Waiting for LivePriceFetcher server to be ready...")
-        max_wait_time = 10
-        min_wait_time = 2
-        check_interval = 0.5
-        waited = 0
-        while waited < max_wait_time:
-            if not self._server_process.is_alive():
-                error_msg = (
-                    f"LivePriceFetcher server process died during startup. "
-                    f"Exit code: {self._server_process.exitcode}"
-                )
-                bt.logging.error(error_msg)
-                if self._slack_notifier:
-                    self._slack_notifier.send_message(
-                        f"🚨 LivePriceFetcher Server Startup Failed!\n"
-                        f"{error_msg}\n"
-                        f"This is a critical error - price data will not be available.",
-                        level="error"
-                    )
-                raise RuntimeError(error_msg)
-            time.sleep(check_interval)
-            waited += check_interval
-            if waited >= min_wait_time:
-                break
+        # Wait minimum time for server to initialize before attempting connection
+        bt.logging.info("Waiting for LivePriceFetcher server to initialize...")
+        time.sleep(2)
 
-        if not self._server_process.is_alive():
-            error_msg = "LivePriceFetcher server process failed to start"
-            bt.logging.error(error_msg)
-            if self._slack_notifier:
-                self._slack_notifier.send_message(
-                    f"🚨 LivePriceFetcher Server Failed to Start!\n"
-                    f"{error_msg}\n"
-                    f"This is a critical error - price data will not be available.",
-                    level="error"
-                )
-            raise RuntimeError(error_msg)
-
-        bt.logging.info("LivePriceFetcher server process ready")
-
-        # Connect to the server
+        # Connect to the server - this verifies the server is actually working
+        # If connection fails, connect() will raise an exception
         self.connect()
 
         # Reset failure counter
@@ -243,9 +210,8 @@ class LivePriceFetcherClient:
     class HealthChecker:
         """Daemon process that continuously monitors LivePriceFetcher server health"""
 
-        def __init__(self, live_price_fetcher_client, shutdown_dict=None, slack_notifier=None):
+        def __init__(self, live_price_fetcher_client, slack_notifier=None):
             self.live_price_fetcher_client = live_price_fetcher_client
-            self.shutdown_dict = shutdown_dict
             self.slack_notifier = slack_notifier
 
         def run_update_loop(self):
@@ -256,7 +222,8 @@ class LivePriceFetcherClient:
             setproctitle("vali_HealthChecker")
             bt.logging.info("LivePriceFetcherHealthChecker daemon started")
 
-            while not self.shutdown_dict:
+            # Run indefinitely - process will terminate when main process exits (daemon=True)
+            while True:
                 try:
                     current_time = TimeUtil.now_in_millis()
                     self.live_price_fetcher_client.health_check(current_time)
@@ -286,8 +253,6 @@ class LivePriceFetcherClient:
 
                     # Sleep before retrying
                     time.sleep(60)
-
-            bt.logging.info("LivePriceFetcherHealthChecker daemon shutting down")
 
 class LivePriceFetcherServer:
     """

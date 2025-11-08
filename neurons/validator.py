@@ -677,7 +677,6 @@ class Validator:
         def step14():
             self.health_checker = LivePriceFetcherClient.HealthChecker(
                 live_price_fetcher_client=self.live_price_fetcher,
-                shutdown_dict=shutdown_dict,
                 slack_notifier=self.slack_notifier
             )
             self.health_checker_process = Process(target=self.health_checker.run_update_loop, daemon=True)
@@ -694,7 +693,6 @@ class Validator:
         def step15():
             self.slippage_refresher = PriceSlippageModel.FeatureRefresher(
                 price_slippage_model=self.price_slippage_model,
-                shutdown_dict=shutdown_dict,
                 slack_notifier=self.slack_notifier
             )
             self.slippage_refresher_process = Process(target=self.slippage_refresher.run_update_loop, daemon=True)

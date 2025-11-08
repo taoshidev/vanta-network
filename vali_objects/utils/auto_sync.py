@@ -109,7 +109,9 @@ class PositionSyncer(ValidatorSyncBase):
                 if self.sync_in_progress:
                     self.sync_in_progress.value = False
 
-        self.last_signal_sync_time_ms = TimeUtil.now_in_millis()
+                # Update timestamp inside lock to prevent race condition where another
+                # thread checks the timestamp before it's updated
+                self.last_signal_sync_time_ms = TimeUtil.now_in_millis()
 
     def sync_positions_with_cooldown(self, auto_sync_enabled:bool):
         if not auto_sync_enabled:

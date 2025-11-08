@@ -326,9 +326,8 @@ class PriceSlippageModel:
     class FeatureRefresher:
         """Daemon process that refreshes price slippage model features daily"""
 
-        def __init__(self, price_slippage_model, shutdown_dict=None, slack_notifier=None):
+        def __init__(self, price_slippage_model, slack_notifier=None):
             self.price_slippage_model = price_slippage_model
-            self.shutdown_dict = shutdown_dict
             self.slack_notifier = slack_notifier
 
         def run_update_loop(self):
@@ -339,7 +338,8 @@ class PriceSlippageModel:
             setproctitle("vali_SlippageRefresher")
             bt.logging.info("PriceSlippageFeatureRefresher daemon started")
 
-            while not self.shutdown_dict:
+            # Run indefinitely - process will terminate when main process exits (daemon=True)
+            while True:
                 try:
                     # Refresh features - the method has built-in date checking
                     # and will only update if it's a new day
@@ -370,8 +370,6 @@ class PriceSlippageModel:
 
                     # Sleep before retrying
                     time.sleep(10 * 60)
-
-            bt.logging.info("PriceSlippageFeatureRefresher daemon shutting down")
 
 
 if __name__ == "__main__":
