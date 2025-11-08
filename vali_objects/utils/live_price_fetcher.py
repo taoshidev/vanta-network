@@ -174,30 +174,10 @@ class LivePriceFetcherClient:
 
         self._last_health_check_time = current_time
 
-        # Check if server process is alive
-        if self._server_process and not self._server_process.is_alive():
-            bt.logging.error(f"LivePriceFetcher server process is not alive! Exit code: {self._server_process.exitcode}")
-            self._consecutive_failures += 1
-
-            # Send Slack notification on first detection of dead process
-            if self._consecutive_failures == 1 and self._slack_notifier:
-                self._slack_notifier.send_message(
-                    f"⚠️ LivePriceFetcher Server Process Died!\n"
-                    f"Exit code: {self._server_process.exitcode}\n"
-                    f"Attempting automatic restart...",
-                    level="warning"
-                )
-
-            if self._consecutive_failures >= 3:
-                bt.logging.warning("Triggering server restart due to dead process...")
-                if self._slack_notifier:
-                    self._slack_notifier.send_message(
-                        f"🔄 LivePriceFetcher Server Restart Triggered\n"
-                        f"Restarting after {self._consecutive_failures} consecutive failures...",
-                        level="warning"
-                    )
-                self._start_server(restart=True)
-            return False
+        # Note: We don't check is_alive() here because this method may be called from a different
+        # process (HealthChecker daemon), and multiprocessing doesn't allow checking process status
+        # across different parent processes. The RPC health_check call below is sufficient to detect
+        # if the server is down.
 
         try:
             # Call the health_check RPC method
