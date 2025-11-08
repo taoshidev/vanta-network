@@ -131,13 +131,15 @@ class Validator:
         self.ipc_manager = Manager()
         self.shared_queue_websockets = self.ipc_manager.Queue()
 
-        # Create LivePriceFetcher client
-        self.live_price_fetcher = LivePriceFetcherClient(
-            secrets=self.secrets,
-            disable_ws=False,
-        )
+        # Create shared sync_in_progress flag for cross-process synchronization
+        # When True, daemon processes should pause to allow position sync to complete
+        self.sync_in_progress = self.ipc_manager.Value('b', False)
 
-        self.price_slippage_model = PriceSlippageModel(live_price_fetcher=self.live_price_fetcher)
+        # Sync epoch counter: incremented each time auto sync runs
+        # Managers capture this at START of iteration and check before saving
+        # If epoch changed during iteration, data is stale and save is aborted
+        self.sync_epoch = self.ipc_manager.Value('i', 0)
+
         # Activating Bittensor's logging with the set configurations.
         bt.logging(config=self.config, logging_dir=self.config.full_path)
         bt.logging.info(
@@ -156,12 +158,22 @@ class Validator:
         self.wallet = bt.wallet(config=self.config)
 
         # Initialize Slack notifier for error reporting
+        # Created before LivePriceFetcher so it can be passed for crash notifications
         self.slack_notifier = SlackNotifier(
             hotkey=self.wallet.hotkey.ss58_address,
             webhook_url=getattr(self.config, 'slack_webhook_url', None),
             error_webhook_url=getattr(self.config, 'slack_error_webhook_url', None),
             is_miner=False  # This is a validator
         )
+
+        # Create LivePriceFetcher client with Slack notifier for crash notifications
+        self.live_price_fetcher = LivePriceFetcherClient(
+            secrets=self.secrets,
+            disable_ws=False,
+            slack_notifier=self.slack_notifier
+        )
+
+        self.price_slippage_model = PriceSlippageModel(live_price_fetcher=self.live_price_fetcher)
 
         # Track last error notification time to prevent spam
         self.last_error_notification_time = 0
@@ -204,7 +216,10 @@ class Validator:
                                                       None, shutdown_dict=shutdown_dict,
                                                       ipc_manager=self.ipc_manager,
                                                       shared_queue_websockets=self.shared_queue_websockets,
-                                                      contract_manager=self.contract_manager)
+                                                      contract_manager=self.contract_manager,
+                                                      sync_in_progress=self.sync_in_progress,
+                                                      slack_notifier=self.slack_notifier,
+                                                      sync_epoch=self.sync_epoch)
 
         self.asset_selection_manager = AssetSelectionManager(config=self.config, metagraph=self.metagraph, ipc_manager=self.ipc_manager)
 
@@ -215,8 +230,10 @@ class Validator:
                                               position_manager=None,     # Set after self.pm creation
                                               auto_sync_enabled=self.auto_sync,
                                               contract_manager=self.contract_manager,
-                                              live_price_fetcher=self.live_price_fetcher,
-                                              asset_selection_manager=self.asset_selection_manager)
+                                              sync_in_progress=self.sync_in_progress,
+                                              sync_epoch=self.sync_epoch,
+                                              # live_price_fetcher=self.live_price_fetcher,
+                                              asset_selection_manager=self.asset_selection_manager)  # Set after self.pm creation
 
         self.p2p_syncer = P2PSyncer(wallet=self.wallet, metagraph=self.metagraph, is_testnet=not self.is_mainnet,
                                     shutdown_dict=shutdown_dict, signal_sync_lock=self.signal_sync_lock,
@@ -256,7 +273,10 @@ class Validator:
                                                               position_manager=self.position_manager,
                                                               ipc_manager=self.ipc_manager,
                                                               contract_manager=self.contract_manager,
-                                                              plagiarism_manager=self.plagiarism_manager)
+                                                              plagiarism_manager=self.plagiarism_manager,
+                                                              sync_in_progress=self.sync_in_progress,
+                                                              slack_notifier=self.slack_notifier,
+                                                              sync_epoch=self.sync_epoch)
 
         # Attach the position manager to the other objects that need it
         for idx, obj in enumerate([self.perf_ledger_manager, self.position_manager, self.position_syncer,
@@ -488,7 +508,9 @@ class Validator:
         # Step 3: Initialize MDDChecker
         def step3():
             self.mdd_checker = MDDChecker(self.metagraph, self.position_manager, live_price_fetcher=self.live_price_fetcher,
-                                          shutdown_dict=shutdown_dict, position_locks=self.position_locks)
+                                          shutdown_dict=shutdown_dict, position_locks=self.position_locks,
+                                          sync_in_progress=self.sync_in_progress, slack_notifier=self.slack_notifier,
+                                          sync_epoch=self.sync_epoch)
             return self.mdd_checker
         run_init_step_with_monitoring(3, "Initializing MDDChecker", step3)
 

@@ -30,7 +30,7 @@ class LivePriceFetcherClient:
 
     ClientManager.register('LivePriceFetcher')
 
-    def __init__(self, secrets, address=('localhost', 50000), disable_ws=False, ipc_manager=None, is_backtesting=False):
+    def __init__(self, secrets, address=('localhost', 50000), disable_ws=False, ipc_manager=None, is_backtesting=False, slack_notifier=None):
         """
         Initialize client and start the server process.
 
@@ -40,12 +40,14 @@ class LivePriceFetcherClient:
             disable_ws: Whether to disable websocket connections
             ipc_manager: IPC manager for shared memory
             is_backtesting: Whether running in backtesting mode
+            slack_notifier: SlackNotifier instance for error notifications
         """
         self._secrets = secrets
         self._address = address
         self._disable_ws = disable_ws
         self._ipc_manager = ipc_manager
         self._is_backtesting = is_backtesting
+        self._slack_notifier = slack_notifier
         self._max_retries = 5
         self._health_check_interval_ms = 60 * 1000
         self._last_health_check_time = 0
@@ -86,7 +88,8 @@ class LivePriceFetcherClient:
                 'authkey': self._authkey,
                 'disable_ws': self._disable_ws,
                 'ipc_manager': self._ipc_manager,
-                'is_backtesting': self._is_backtesting
+                'is_backtesting': self._is_backtesting,
+                'slack_notifier': self._slack_notifier
             },
             daemon=True
         )
@@ -100,17 +103,35 @@ class LivePriceFetcherClient:
         waited = 0
         while waited < max_wait_time:
             if not self._server_process.is_alive():
-                raise RuntimeError(
+                error_msg = (
                     f"LivePriceFetcher server process died during startup. "
                     f"Exit code: {self._server_process.exitcode}"
                 )
+                bt.logging.error(error_msg)
+                if self._slack_notifier:
+                    self._slack_notifier.send_message(
+                        f"🚨 LivePriceFetcher Server Startup Failed!\n"
+                        f"{error_msg}\n"
+                        f"This is a critical error - price data will not be available.",
+                        level="error"
+                    )
+                raise RuntimeError(error_msg)
             time.sleep(check_interval)
             waited += check_interval
             if waited >= min_wait_time:
                 break
 
         if not self._server_process.is_alive():
-            raise RuntimeError("LivePriceFetcher server process failed to start")
+            error_msg = "LivePriceFetcher server process failed to start"
+            bt.logging.error(error_msg)
+            if self._slack_notifier:
+                self._slack_notifier.send_message(
+                    f"🚨 LivePriceFetcher Server Failed to Start!\n"
+                    f"{error_msg}\n"
+                    f"This is a critical error - price data will not be available.",
+                    level="error"
+                )
+            raise RuntimeError(error_msg)
 
         bt.logging.info("LivePriceFetcher server process ready")
 
@@ -122,6 +143,12 @@ class LivePriceFetcherClient:
 
         if restart:
             bt.logging.success("LivePriceFetcher server restarted successfully")
+            if self._slack_notifier:
+                self._slack_notifier.send_message(
+                    f"✅ LivePriceFetcher Server Restarted Successfully\n"
+                    f"Server is now operational and serving price data.",
+                    level="info"
+                )
 
     def connect(self):
         bt.logging.info(f"Attempting to connect to LivePriceFetcher server at {self._address}")
@@ -151,8 +178,24 @@ class LivePriceFetcherClient:
         if self._server_process and not self._server_process.is_alive():
             bt.logging.error(f"LivePriceFetcher server process is not alive! Exit code: {self._server_process.exitcode}")
             self._consecutive_failures += 1
+
+            # Send Slack notification on first detection of dead process
+            if self._consecutive_failures == 1 and self._slack_notifier:
+                self._slack_notifier.send_message(
+                    f"⚠️ LivePriceFetcher Server Process Died!\n"
+                    f"Exit code: {self._server_process.exitcode}\n"
+                    f"Attempting automatic restart...",
+                    level="warning"
+                )
+
             if self._consecutive_failures >= 3:
                 bt.logging.warning("Triggering server restart due to dead process...")
+                if self._slack_notifier:
+                    self._slack_notifier.send_message(
+                        f"🔄 LivePriceFetcher Server Restart Triggered\n"
+                        f"Restarting after {self._consecutive_failures} consecutive failures...",
+                        level="warning"
+                    )
                 self._start_server(restart=True)
             return False
 
@@ -162,9 +205,14 @@ class LivePriceFetcherClient:
 
             if health_status.get("status") == "ok":
                 if self._consecutive_failures > 0:
-                    bt.logging.success(
-                        f"LivePriceFetcher server recovered after {self._consecutive_failures} failed health checks"
-                    )
+                    recovery_msg = f"LivePriceFetcher server recovered after {self._consecutive_failures} failed health checks"
+                    bt.logging.success(recovery_msg)
+                    if self._slack_notifier:
+                        self._slack_notifier.send_message(
+                            f"✅ LivePriceFetcher Server Recovered!\n"
+                            f"Server is healthy after {self._consecutive_failures} failed checks.",
+                            level="info"
+                        )
                 self._consecutive_failures = 0
                 bt.logging.trace(f"LivePriceFetcher health check passed: {health_status}")
                 return True
@@ -176,6 +224,12 @@ class LivePriceFetcherClient:
                 )
                 if self._consecutive_failures >= 3:
                     bt.logging.warning("Triggering server restart due to failed health checks...")
+                    if self._slack_notifier:
+                        self._slack_notifier.send_message(
+                            f"🔄 LivePriceFetcher Server Restart Triggered\n"
+                            f"Restarting due to {self._consecutive_failures} failed health checks...",
+                            level="warning"
+                        )
                     self._start_server(restart=True)
                 return False
 
@@ -189,6 +243,13 @@ class LivePriceFetcherClient:
             # Trigger restart after 3 consecutive failures
             if self._consecutive_failures >= 3:
                 bt.logging.warning("Triggering server restart due to failed health checks...")
+                if self._slack_notifier:
+                    self._slack_notifier.send_message(
+                        f"🔄 LivePriceFetcher Server Restart Triggered\n"
+                        f"Restarting due to {self._consecutive_failures} failed health checks.\n"
+                        f"Last error: {str(e)}",
+                        level="warning"
+                    )
                 self._start_server(restart=True)
             return False
 
@@ -208,24 +269,54 @@ class LivePriceFetcherServer:
     class ServerManager(BaseManager):
         pass
 
-    def __init__(self, secrets, address=('localhost', 50000), authkey=None, disable_ws=False, ipc_manager=None, is_backtesting=False):
+    def __init__(self, secrets, address=('localhost', 50000), authkey=None, disable_ws=False, ipc_manager=None, is_backtesting=False, slack_notifier=None):
         if authkey is None:
             raise ValueError("authkey parameter is required for LivePriceFetcher server")
 
-        bt.logging.info(f"Starting LivePriceFetcher server on {address}...")
+        # Wrap everything in try/except to catch and report crashes
+        try:
+            from setproctitle import setproctitle
+            from shared_objects.error_utils import ErrorUtils
+            import traceback
 
-        # Create the LivePriceFetcher instance
-        live_price_fetcher = LivePriceFetcher(secrets, disable_ws, ipc_manager, is_backtesting)
-        bt.logging.info(f"LivePriceFetcher instance created successfully")
+            setproctitle("vali_LivePriceFetcher")
+            bt.logging.info(f"Starting LivePriceFetcher server on {address}...")
 
-        # Register and start the RPC server
-        self.ServerManager.register('LivePriceFetcher', callable=lambda: live_price_fetcher)
-        manager = self.ServerManager(address=address, authkey=authkey)
-        server = manager.get_server()
-        bt.logging.success(f"LivePriceFetcher server is now listening and serving requests")
+            # Create the LivePriceFetcher instance
+            live_price_fetcher = LivePriceFetcher(secrets, disable_ws, ipc_manager, is_backtesting)
+            bt.logging.info(f"LivePriceFetcher instance created successfully")
 
-        # Start serving (blocks forever)
-        server.serve_forever()
+            # Register and start the RPC server
+            self.ServerManager.register('LivePriceFetcher', callable=lambda: live_price_fetcher)
+            manager = self.ServerManager(address=address, authkey=authkey)
+            server = manager.get_server()
+            bt.logging.success(f"LivePriceFetcher server is now listening and serving requests")
+
+            # Start serving (blocks forever)
+            server.serve_forever()
+
+        except Exception as e:
+            error_traceback = traceback.format_exc()
+            bt.logging.error(f"CRITICAL: LivePriceFetcher server crashed: {e}")
+            bt.logging.error(error_traceback)
+
+            # Send critical error notification to Slack
+            if slack_notifier:
+                error_message = ErrorUtils.format_error_for_slack(
+                    error=e,
+                    traceback_str=error_traceback,
+                    include_operation=True,
+                    include_timestamp=True
+                )
+                slack_notifier.send_message(
+                    f"💥 CRITICAL: LivePriceFetcher Server Crashed!\n"
+                    f"{error_message}\n"
+                    f"Price data services are offline. Manual intervention required.",
+                    level="error"
+                )
+
+            # Re-raise to ensure process exits with error code
+            raise
 
 class LivePriceFetcher:
     def __init__(self, secrets, disable_ws=False, ipc_manager=None, is_backtesting=False):

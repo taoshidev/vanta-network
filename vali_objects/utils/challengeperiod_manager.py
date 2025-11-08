@@ -32,7 +32,10 @@ class ChallengePeriodManager(CacheController):
             *,
             running_unit_tests=False,
             is_backtesting=False,
-            shutdown_dict=None):
+            shutdown_dict=None,
+            sync_in_progress=None,
+            slack_notifier=None,
+            sync_epoch=None):
         super().__init__(metagraph, running_unit_tests=running_unit_tests, is_backtesting=is_backtesting)
         self.perf_ledger_manager = perf_ledger_manager if perf_ledger_manager else \
             PerfLedgerManager(metagraph, running_unit_tests=running_unit_tests)
@@ -42,6 +45,9 @@ class ChallengePeriodManager(CacheController):
         self.contract_manager = contract_manager
         self.plagiarism_manager = plagiarism_manager
         self.shutdown_dict = shutdown_dict
+        self.sync_in_progress = sync_in_progress
+        self.slack_notifier = slack_notifier
+        self.sync_epoch = sync_epoch
 
         self.CHALLENGE_FILE = ValiBkpUtils.get_challengeperiod_file_location(running_unit_tests=running_unit_tests)
 
@@ -155,13 +161,14 @@ class ChallengePeriodManager(CacheController):
 
         bt.logging.info("All challengeperiod start times up to date")
 
-    def refresh(self, current_time: int = None):
+    def refresh(self, current_time: int = None, iteration_epoch=None):
         """
         Refresh the challenge period manager.
 
         Args:
             current_time: Current time in milliseconds. If None, uses TimeUtil.now_in_millis().
                          Parameter kept for backward compatibility.
+            iteration_epoch: Epoch captured at start of iteration. Used to detect stale data.
         """
         if current_time is None:
             current_time = TimeUtil.now_in_millis()
@@ -170,6 +177,10 @@ class ChallengePeriodManager(CacheController):
             time.sleep(1)
             return
         bt.logging.info(f"Refreshing challenge period. invalidation data {self.perf_ledger_manager.perf_ledger_hks_to_invalidate}")
+
+        # Store iteration epoch for this refresh cycle - will be checked before any disk writes
+        self._current_iteration_epoch = iteration_epoch
+
         # The refresh should just read the current eliminations
         eliminations = self.elimination_manager.get_eliminations_from_memory()
 
@@ -230,6 +241,9 @@ class ChallengePeriodManager(CacheController):
         if any_changes:
             self._write_challengeperiod_from_memory_to_disk()
 
+        # Clear iteration epoch after refresh completes
+        self._current_iteration_epoch = None
+
         self.set_last_update_time()
 
         bt.logging.info(
@@ -247,6 +261,7 @@ class ChallengePeriodManager(CacheController):
         challenge period continuously until shutdown is signaled.
         """
         from setproctitle import setproctitle
+        from shared_objects.error_utils import ErrorUtils
         import traceback
         setproctitle("vali_ChallengePeriodManager")
 
@@ -254,8 +269,17 @@ class ChallengePeriodManager(CacheController):
 
         while not self.shutdown_dict:
             try:
-                # Run the challenge period refresh
-                self.refresh()
+                # Check if sync is in progress and pause if so
+                if self.sync_in_progress and self.sync_in_progress.value:
+                    bt.logging.debug("ChallengePeriodManager: Sync in progress, pausing...")
+                    time.sleep(1)
+                    continue
+
+                # Capture epoch at START of iteration
+                iteration_epoch = self.sync_epoch.value if self.sync_epoch else None
+
+                # Run the challenge period refresh with captured epoch
+                self.refresh(current_time=None, iteration_epoch=iteration_epoch)
 
                 # Sleep to avoid busy waiting. The refresh_allowed check in refresh
                 # will handle the actual refresh timing, but we sleep here to be nice
@@ -263,8 +287,23 @@ class ChallengePeriodManager(CacheController):
                 time.sleep(1)
 
             except Exception as e:
+                error_traceback = traceback.format_exc()
                 bt.logging.error(f"Error in ChallengePeriodManager update loop: {e}")
-                bt.logging.error(traceback.format_exc())
+                bt.logging.error(error_traceback)
+
+                # Send error notification to Slack
+                if self.slack_notifier:
+                    error_message = ErrorUtils.format_error_for_slack(
+                        error=e,
+                        traceback_str=error_traceback,
+                        include_operation=True,
+                        include_timestamp=True
+                    )
+                    self.slack_notifier.send_message(
+                        f"❌ ChallengePeriodManager daemon error!\n{error_message}",
+                        level="error"
+                    )
+
                 time.sleep(10)  # Wait longer on error before retrying
 
         bt.logging.info("ChallengePeriodManager process shutting down")
@@ -705,6 +744,18 @@ class ChallengePeriodManager(CacheController):
     def _write_challengeperiod_from_memory_to_disk(self):
         if self.is_backtesting:
             return
+
+        # Epoch-based validation: check if sync occurred during our iteration
+        if self.sync_epoch and hasattr(self, '_current_iteration_epoch') and self._current_iteration_epoch is not None:
+            current_epoch = self.sync_epoch.value
+            if current_epoch != self._current_iteration_epoch:
+                bt.logging.warning(
+                    f"Sync occurred during ChallengePeriodManager iteration "
+                    f"(epoch {self._current_iteration_epoch} -> {current_epoch}). "
+                    f"Skipping save to avoid data corruption"
+                )
+                return
+
         challengeperiod_data = self.to_checkpoint_dict()
         ValiBkpUtils.write_file(self.CHALLENGE_FILE, challengeperiod_data)
 

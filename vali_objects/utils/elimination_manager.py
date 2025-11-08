@@ -39,7 +39,8 @@ class EliminationManager(CacheController):
 
     def __init__(self, metagraph, position_manager, challengeperiod_manager,
                  running_unit_tests=False, shutdown_dict=None, ipc_manager=None, is_backtesting=False,
-                 shared_queue_websockets=None, contract_manager=None, position_locks=None):
+                 shared_queue_websockets=None, contract_manager=None, position_locks=None,
+                 sync_in_progress=None, slack_notifier=None, sync_epoch=None):
         super().__init__(metagraph=metagraph, is_backtesting=is_backtesting)
         self.position_manager = position_manager
         self.shutdown_dict = shutdown_dict
@@ -51,6 +52,9 @@ class EliminationManager(CacheController):
         self.live_price_fetcher = LivePriceFetcher(secrets, disable_ws=True)
         self.contract_manager = contract_manager
         self.position_locks = position_locks
+        self.sync_in_progress = sync_in_progress
+        self.slack_notifier = slack_notifier
+        self.sync_epoch = sync_epoch
 
         if ipc_manager:
             self.eliminations = ipc_manager.list()
@@ -73,7 +77,7 @@ class EliminationManager(CacheController):
         # Track previous metagraph hotkeys to detect changes
         self.previous_metagraph_hotkeys = set(self.metagraph.hotkeys) if self.metagraph and self.metagraph.hotkeys else set()
 
-    def handle_perf_ledger_eliminations(self, position_locks):
+    def handle_perf_ledger_eliminations(self, position_locks, iteration_epoch=None):
         perf_ledger_eliminations = self.position_manager.perf_ledger_manager.get_perf_ledger_eliminations()
         n_eliminations = 0
         for e in perf_ledger_eliminations:
@@ -102,9 +106,12 @@ class EliminationManager(CacheController):
             bt.logging.info(f'Wrote {n_eliminations} perf ledger eliminations to disk')
 
     def add_manual_flat_order(self, hotkey: str, position: Position, corresponding_elimination, position_locks,
-                              source_for_elimination):
+                              source_for_elimination, iteration_epoch=None):
         """
         Add flat orders to the positions for a miner that has been eliminated
+
+        Args:
+            iteration_epoch: Epoch captured at start of iteration. Used to detect stale data.
         """
         elimination_time_ms = corresponding_elimination['elimination_initiated_time_ms'] if corresponding_elimination else TimeUtil.now_in_millis()
         with position_locks.get_lock(hotkey, position.trade_pair.trade_pair_id):
@@ -127,6 +134,18 @@ class EliminationManager(CacheController):
 
             flat_order = Position.generate_fake_flat_order(position, fake_flat_order_time, self.live_price_fetcher, source_for_elimination)
             position.add_order(flat_order, self.live_price_fetcher)
+
+            # Epoch-based validation: check if sync occurred during our iteration
+            if self.sync_epoch and iteration_epoch is not None:
+                current_epoch = self.sync_epoch.value
+                if current_epoch != iteration_epoch:
+                    bt.logging.warning(
+                        f"Sync occurred during EliminationManager iteration for {hotkey} {position.trade_pair.trade_pair_id} "
+                        f"(epoch {iteration_epoch} -> {current_epoch}). "
+                        f"Skipping save to avoid data corruption"
+                    )
+                    return
+
             self.position_manager.save_miner_position(position, delete_open_position_if_exists=True)
             if self.shared_queue_websockets:
                 self.shared_queue_websockets.put(position.to_websocket_dict())
@@ -136,15 +155,15 @@ class EliminationManager(CacheController):
 
     def handle_eliminated_miner(self, hotkey: str,
                                 trade_pair_to_price_source_used_for_elimination_check: Dict[TradePair, PriceSource],
-                                position_locks):
+                                position_locks, iteration_epoch=None):
 
         for p in self.position_manager.get_positions_for_one_hotkey(hotkey, only_open_positions=True):
             source_for_elimination = trade_pair_to_price_source_used_for_elimination_check.get(p.trade_pair)
             corresponding_elimination = self.hotkey_in_eliminations(hotkey)
             if corresponding_elimination:
-                self.add_manual_flat_order(hotkey, p, corresponding_elimination, position_locks, source_for_elimination)
+                self.add_manual_flat_order(hotkey, p, corresponding_elimination, position_locks, source_for_elimination, iteration_epoch)
 
-    def handle_challenge_period_eliminations(self, position_locks):
+    def handle_challenge_period_eliminations(self, position_locks, iteration_epoch=None):
         eliminations_with_reasons = self.challengeperiod_manager.eliminations_with_reasons
         if not eliminations_with_reasons:
             return
@@ -159,9 +178,10 @@ class EliminationManager(CacheController):
             self.handle_eliminated_miner(hotkey, {}, position_locks)
             self.contract_manager.slash_miner_collateral_proportion(hotkey)
 
+
         self.challengeperiod_manager.eliminations_with_reasons = {}
 
-    def handle_first_refresh(self, position_locks):
+    def handle_first_refresh(self, position_locks, iteration_epoch=None):
         if self.is_backtesting or self.first_refresh_ran:
             return
 
@@ -172,17 +192,18 @@ class EliminationManager(CacheController):
             if not open_positions:
                 continue
             for p in open_positions:
-                self.add_manual_flat_order(hotkey, p, self.hotkey_in_eliminations(hotkey), position_locks, None)
+                self.add_manual_flat_order(hotkey, p, self.hotkey_in_eliminations(hotkey), position_locks, None, iteration_epoch)
 
         self.first_refresh_ran = True
 
-    def process_eliminations(self, position_locks=None):
+    def process_eliminations(self, position_locks=None, iteration_epoch=None):
         """
         Process all elimination checks and handle eliminated miners.
 
         Args:
             position_locks: PositionLocks instance. If None, uses self.position_locks.
                            Parameter kept for backward compatibility.
+            iteration_epoch: Epoch captured at start of iteration. Used to detect stale data.
         """
         # Use provided position_locks or fall back to instance variable
         if position_locks is None:
@@ -196,11 +217,11 @@ class EliminationManager(CacheController):
         bt.logging.info(f"running elimination manager. invalidation data {dict(self.position_manager.perf_ledger_manager.perf_ledger_hks_to_invalidate)}")
         # Update departed hotkeys tracking first to detect re-registrations
         self._update_departed_hotkeys()
-        self.handle_first_refresh(position_locks)
-        self.handle_perf_ledger_eliminations(position_locks)
-        self.handle_challenge_period_eliminations(position_locks)
-        self.handle_mdd_eliminations(position_locks)
-        self.handle_zombies(position_locks)
+        self.handle_first_refresh(position_locks, iteration_epoch)
+        self.handle_perf_ledger_eliminations(position_locks, iteration_epoch)
+        self.handle_challenge_period_eliminations(position_locks, iteration_epoch)
+        self.handle_mdd_eliminations(position_locks, iteration_epoch)
+        self.handle_zombies(position_locks, iteration_epoch)
         self._delete_eliminated_expired_miners()
 
         self.set_last_update_time()
@@ -212,15 +233,26 @@ class EliminationManager(CacheController):
         eliminations continuously until shutdown is signaled.
         """
         import time
+        import traceback
         from setproctitle import setproctitle
+        from shared_objects.error_utils import ErrorUtils
         setproctitle("vali_EliminationManager")
 
         bt.logging.info("EliminationManager process started")
 
         while not self.shutdown_dict:
             try:
-                # Run the elimination process
-                self.process_eliminations()
+                # Check if sync is in progress and pause if so
+                if self.sync_in_progress and self.sync_in_progress.value:
+                    bt.logging.debug("EliminationManager: Sync in progress, pausing...")
+                    time.sleep(1)
+                    continue
+
+                # Capture epoch at START of iteration
+                iteration_epoch = self.sync_epoch.value if self.sync_epoch else None
+
+                # Run the elimination process with captured epoch
+                self.process_eliminations(iteration_epoch=iteration_epoch)
 
                 # Sleep to avoid busy waiting. The refresh_allowed check in process_eliminations
                 # will handle the actual refresh timing, but we sleep here to be nice
@@ -228,9 +260,23 @@ class EliminationManager(CacheController):
                 time.sleep(1)
 
             except Exception as e:
+                error_traceback = traceback.format_exc()
                 bt.logging.error(f"Error in EliminationManager update loop: {e}")
-                import traceback
-                bt.logging.error(traceback.format_exc())
+                bt.logging.error(error_traceback)
+
+                # Send error notification to Slack
+                if self.slack_notifier:
+                    error_message = ErrorUtils.format_error_for_slack(
+                        error=e,
+                        traceback_str=error_traceback,
+                        include_operation=True,
+                        include_timestamp=True
+                    )
+                    self.slack_notifier.send_message(
+                        f"❌ EliminationManager daemon error!\n{error_message}",
+                        level="error"
+                    )
+
                 time.sleep(10)  # Wait longer on error before retrying
 
         bt.logging.info("EliminationManager process shutting down")
@@ -354,7 +400,7 @@ class EliminationManager(CacheController):
             self.eliminations.remove(item)
         self.save_eliminations()
 
-    def handle_mdd_eliminations(self, position_locks):
+    def handle_mdd_eliminations(self, position_locks, iteration_epoch=None):
         """
         Checks the mdd of each miner and eliminates any miners that surpass MAX_TOTAL_DRAWDOWN
         """
@@ -380,7 +426,8 @@ class EliminationManager(CacheController):
                 self.handle_eliminated_miner(miner_hotkey, {}, position_locks)
                 self.contract_manager.slash_miner_collateral_proportion(miner_hotkey, ValiConfig.DRAWDOWN_SLASH_PROPORTION)
 
-    def handle_zombies(self, position_locks):
+
+    def handle_zombies(self, position_locks, iteration_epoch=None):
         """
         If a miner is no longer in the metagraph and an elimination does not exist for them, we create an elimination
         row for them and add flat orders to their positions. If they have been a zombie for more than
@@ -399,7 +446,7 @@ class EliminationManager(CacheController):
                 continue  # already an elimination and marked for deletion
             elif self.is_zombie_hotkey(hotkey, all_hotkeys_set):
                 self.append_elimination_row(hotkey=hotkey, current_dd=None, reason=EliminationReason.ZOMBIE.value)
-                self.handle_eliminated_miner(hotkey, {}, position_locks)
+                self.handle_eliminated_miner(hotkey, {}, position_locks, iteration_epoch)
 
     def _update_departed_hotkeys(self):
         """

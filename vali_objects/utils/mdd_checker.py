@@ -20,7 +20,8 @@ from vali_objects.vali_dataclasses.price_source import PriceSource
 class MDDChecker(CacheController):
 
     def __init__(self, metagraph, position_manager, running_unit_tests=False,
-                 live_price_fetcher=None, shutdown_dict=None, position_locks=None):
+                 live_price_fetcher=None, shutdown_dict=None, position_locks=None,
+                 sync_in_progress=None, slack_notifier=None, sync_epoch=None):
         super().__init__(metagraph, running_unit_tests=running_unit_tests)
         self.last_price_fetch_time_ms = None
         self.last_quote_fetch_time_ms = None
@@ -38,6 +39,9 @@ class MDDChecker(CacheController):
         self.shutdown_dict = shutdown_dict
         self.position_locks = position_locks
         self.n_poly_api_requests = 0
+        self.sync_in_progress = sync_in_progress
+        self.slack_notifier = slack_notifier
+        self.sync_epoch = sync_epoch
 
     def reset_debug_counters(self):
         self.n_orders_corrected = 0
@@ -77,12 +81,13 @@ class MDDChecker(CacheController):
             return {}
 
 
-    def mdd_check(self, position_locks=None):
+    def mdd_check(self, position_locks=None, iteration_epoch=None):
         """
         Run MDD check with price corrections.
 
         Args:
             position_locks: PositionLocks instance. If None, uses self.position_locks.
+            iteration_epoch: Sync epoch captured at start of iteration. Used to detect stale data.
                            Parameter kept for backward compatibility.
         """
         # Use provided position_locks or fall back to instance variable
@@ -108,7 +113,7 @@ class MDDChecker(CacheController):
         for hotkey, sorted_positions in hotkey_to_positions.items():
             if self.shutdown_dict:
                 return
-            self.perform_price_corrections(hotkey, sorted_positions, tp_to_price_sources, position_locks)
+            self.perform_price_corrections(hotkey, sorted_positions, tp_to_price_sources, position_locks, iteration_epoch)
 
         bt.logging.info(f"mdd checker completed."
                         f" n orders corrected: {self.n_orders_corrected}. n miners corrected: {len(self.miners_corrected)}."
@@ -122,14 +127,24 @@ class MDDChecker(CacheController):
         continuously until shutdown is signaled.
         """
         from setproctitle import setproctitle
+        from shared_objects.error_utils import ErrorUtils
         setproctitle("vali_MDDChecker")
 
         bt.logging.info("MDDChecker process started")
 
         while not self.shutdown_dict:
             try:
-                # Run the MDD check
-                self.mdd_check()
+                # Check if sync is in progress and pause if so
+                if self.sync_in_progress and self.sync_in_progress.value:
+                    bt.logging.debug("MDDChecker: Sync in progress, pausing...")
+                    time.sleep(1)
+                    continue
+
+                # Capture epoch at START of iteration
+                iteration_epoch = self.sync_epoch.value if self.sync_epoch else None
+
+                # Run the MDD check with captured epoch
+                self.mdd_check(iteration_epoch=iteration_epoch)
 
                 # Sleep to avoid busy waiting. The refresh_allowed check in mdd_check
                 # will handle the actual refresh timing, but we sleep here to be nice
@@ -137,8 +152,23 @@ class MDDChecker(CacheController):
                 time.sleep(1)
 
             except Exception as e:
+                error_traceback = traceback.format_exc()
                 bt.logging.error(f"Error in MDDChecker update loop: {e}")
-                bt.logging.error(traceback.format_exc())
+                bt.logging.error(error_traceback)
+
+                # Send error notification to Slack
+                if self.slack_notifier:
+                    error_message = ErrorUtils.format_error_for_slack(
+                        error=e,
+                        traceback_str=error_traceback,
+                        include_operation=True,
+                        include_timestamp=True
+                    )
+                    self.slack_notifier.send_message(
+                        f"❌ MDDChecker daemon error!\n{error_message}",
+                        level="error"
+                    )
+
                 time.sleep(10)  # Wait longer on error before retrying
 
         bt.logging.info("MDDChecker process shutting down")
@@ -202,12 +232,15 @@ class MDDChecker(CacheController):
         return False
 
 
-    def _update_position_returns_and_persist_to_disk(self, hotkey, position, tp_to_price_sources_for_realtime_price: Dict[TradePair, List[PriceSource]], position_locks):
+    def _update_position_returns_and_persist_to_disk(self, hotkey, position, tp_to_price_sources_for_realtime_price: Dict[TradePair, List[PriceSource]], position_locks, iteration_epoch=None):
         """
         Setting the latest returns and persisting to disk for accurate MDD calculation and logging in get_positions
 
         Won't account for a position that was added in the time between mdd_check being called and this function
         being called. But that's ok as we will process such new positions the next round.
+
+        Args:
+            iteration_epoch: Epoch captured at start of iteration. If changed, data is stale and save is aborted.
         """
 
         def _get_sources_for_order(order, trade_pair: TradePair):
@@ -275,13 +308,24 @@ class MDDChecker(CacheController):
                 ret_changed = orig_return != position.return_at_close
 
             if n_orders_updated or ret_changed:
+                # Epoch-based validation: check if sync occurred during our iteration
+                if self.sync_epoch and iteration_epoch is not None:
+                    current_epoch = self.sync_epoch.value
+                    if current_epoch != iteration_epoch:
+                        bt.logging.warning(
+                            f"Sync occurred during MDDChecker iteration for {hotkey} {trade_pair_id} "
+                            f"(epoch {iteration_epoch} -> {current_epoch}). "
+                            f"Skipping save to avoid data corruption"
+                        )
+                        return
+
                 is_liquidated = position.current_return == 0
                 self.position_manager.save_miner_position(position, delete_open_position_if_exists=is_liquidated)
                 self.n_orders_corrected += n_orders_updated
                 self.miners_corrected.add(hotkey)
 
 
-    def perform_price_corrections(self, hotkey, sorted_positions, tp_to_price_sources: Dict[TradePair, List[PriceSource]], position_locks) -> bool:
+    def perform_price_corrections(self, hotkey, sorted_positions, tp_to_price_sources: Dict[TradePair, List[PriceSource]], position_locks, iteration_epoch=None) -> bool:
         if len(sorted_positions) == 0:
             return False
 
@@ -291,7 +335,7 @@ class MDDChecker(CacheController):
                 return False
             # Perform needed updates
             if self._position_is_candidate_for_price_correction(position, now_ms):
-                self._update_position_returns_and_persist_to_disk(hotkey, position, tp_to_price_sources, position_locks)
+                self._update_position_returns_and_persist_to_disk(hotkey, position, tp_to_price_sources, position_locks, iteration_epoch)
 
 
 

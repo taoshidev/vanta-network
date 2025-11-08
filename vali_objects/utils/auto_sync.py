@@ -21,13 +21,16 @@ class PositionSyncer(ValidatorSyncBase):
     def __init__(self, shutdown_dict=None, signal_sync_lock=None, signal_sync_condition=None,
                  n_orders_being_processed=None, running_unit_tests=False, position_manager=None,
                  ipc_manager=None, auto_sync_enabled=False, enable_position_splitting=False, verbose=False,
-                 contract_manager=None, live_price_fetcher=None, asset_selection_manager=None):
+                 contract_manager=None, live_price_fetcher=None, asset_selection_manager=None,
+                 sync_in_progress=None, sync_epoch=None):
         super().__init__(shutdown_dict, signal_sync_lock, signal_sync_condition, n_orders_being_processed,
                          running_unit_tests=running_unit_tests, position_manager=position_manager,
                          ipc_manager=ipc_manager, enable_position_splitting=enable_position_splitting, verbose=verbose,
                          contract_manager=contract_manager, live_price_fetcher=live_price_fetcher, asset_selection_manager=asset_selection_manager)
 
         self.force_ran_on_boot = True
+        self.sync_in_progress = sync_in_progress
+        self.sync_epoch = sync_epoch
         print(f'PositionSyncer: auto_sync_enabled: {auto_sync_enabled}')
         """
         time_now_ms = TimeUtil.now_in_millis()
@@ -76,8 +79,22 @@ class PositionSyncer(ValidatorSyncBase):
         with self.signal_sync_lock:
             while self.n_orders_being_processed[0] > 0:
                 self.signal_sync_condition.wait()
-            # Ready to perform in-flight refueling
+
+            # Wrap everything in try/finally to guarantee sync_in_progress is always reset
+            # This prevents deadlock if an exception occurs anywhere after setting the flag
             try:
+                # CRITICAL ORDERING: Set flag BEFORE incrementing epoch to prevent race condition
+                # 1. Set sync_in_progress FIRST to block new iterations from starting
+                if self.sync_in_progress:
+                    self.sync_in_progress.value = True
+
+                # 2. THEN increment sync epoch to invalidate in-flight iterations
+                # This ensures no new iteration can start with the new epoch before sync completes
+                if self.sync_epoch:
+                    old_epoch = self.sync_epoch.value
+                    self.sync_epoch.value += 1
+                    bt.logging.info(f"Incrementing sync epoch {old_epoch} -> {self.sync_epoch.value}")
+
                 candidate_data = self.read_validator_checkpoint_from_gcloud_zip()
                 if not candidate_data:
                     bt.logging.error("Unable to read validator checkpoint file. Sync canceled")
@@ -86,6 +103,11 @@ class PositionSyncer(ValidatorSyncBase):
             except Exception as e:
                 bt.logging.error(f"Error syncing positions: {e}")
                 bt.logging.error(traceback.format_exc())
+            finally:
+                # CRITICAL: Always clear sync_in_progress flag to prevent deadlock
+                # This executes even if exception occurs before sync starts
+                if self.sync_in_progress:
+                    self.sync_in_progress.value = False
 
         self.last_signal_sync_time_ms = TimeUtil.now_in_millis()
 
