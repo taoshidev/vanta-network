@@ -65,11 +65,11 @@ class EliminationManager(CacheController):
         # - Full details: `dict.get(hotkey)` → O(1), 500 bytes IPC
         # - Replaces O(N) list iteration that moved 25KB in worst case
         if eliminations_ipc_manager:
-            self.eliminations_dict = eliminations_ipc_manager.dict()  # {hotkey: {...}}
+            self.eliminations = eliminations_ipc_manager.dict()  # {hotkey: {...}}
         elif ipc_manager:
-            self.eliminations_dict = ipc_manager.dict()
+            self.eliminations = ipc_manager.dict()
         else:
-            self.eliminations_dict = {}
+            self.eliminations = {}
 
         if departed_hotkeys_ipc_manager:
             self.departed_hotkeys = departed_hotkeys_ipc_manager.dict()
@@ -82,9 +82,9 @@ class EliminationManager(CacheController):
         eliminations_from_disk = self.get_eliminations_from_disk()
         for elim in eliminations_from_disk:
             hotkey = elim['hotkey']
-            self.eliminations_dict[hotkey] = elim
+            self.eliminations[hotkey] = elim
 
-        if len(self.eliminations_dict) == 0:
+        if len(self.eliminations) == 0:
             ValiBkpUtils.write_file(
                 ValiBkpUtils.get_eliminations_dir(running_unit_tests=self.running_unit_tests),
                 {CacheController.ELIMINATIONS: []}
@@ -107,7 +107,7 @@ class EliminationManager(CacheController):
 
             n_eliminations += 1
             hotkey = e['hotkey']
-            self.eliminations_dict[hotkey] = e
+            self.eliminations[hotkey] = e
 
             price_info = e['price_info']
             trade_pair_to_price_source_used_for_elimination_check = {}
@@ -199,7 +199,7 @@ class EliminationManager(CacheController):
 
         hotkeys = list(eliminations_with_reasons.keys())
         bt.logging.info(f"[ELIM_DEBUG] Processing {len(hotkeys)} challenge period eliminations: {hotkeys}")
-        bt.logging.info(f"[ELIM_DEBUG] Current eliminations dict has {len(self.eliminations_dict)} entries")
+        bt.logging.info(f"[ELIM_DEBUG] Current eliminations dict has {len(self.eliminations)} entries")
 
         for hotkey in hotkeys:
             already_eliminated = self.hotkey_in_eliminations(hotkey)
@@ -215,7 +215,7 @@ class EliminationManager(CacheController):
             self.contract_manager.slash_miner_collateral_proportion(hotkey)
 
 
-        bt.logging.info(f"[ELIM_DEBUG] After processing, eliminations dict has {len(self.eliminations_dict)} entries")
+        bt.logging.info(f"[ELIM_DEBUG] After processing, eliminations dict has {len(self.eliminations)} entries")
 
         # Clear eliminations_with_reasons atomically with lock
         if self.eliminations_lock:
@@ -333,16 +333,16 @@ class EliminationManager(CacheController):
 
     def sync_eliminations(self, dat) -> list:
         # log the difference in hotkeys
-        hotkeys_before = set(self.eliminations_dict.keys())
+        hotkeys_before = set(self.eliminations.keys())
         hotkeys_after = set(x['hotkey'] for x in dat)
         removed = [x for x in hotkeys_before if x not in hotkeys_after]
         added = [x for x in hotkeys_after if x not in hotkeys_before]
         bt.logging.info(f'sync_eliminations: removed {len(removed)} {removed}, added {len(added)} {added}')
         # Update the dict in place while keeping the reference intact:
-        self.eliminations_dict.clear()
+        self.eliminations.clear()
         for elim in dat:
             hotkey = elim['hotkey']
-            self.eliminations_dict[hotkey] = elim
+            self.eliminations[hotkey] = elim
         self.save_eliminations()
         return removed
 
@@ -354,7 +354,7 @@ class EliminationManager(CacheController):
         Returns:
             bool: True if hotkey is eliminated, False otherwise
         """
-        return hotkey in self.eliminations_dict
+        return hotkey in self.eliminations
 
     def hotkey_in_eliminations(self, hotkey):
         """
@@ -368,7 +368,7 @@ class EliminationManager(CacheController):
 
         # Time the IPC dict.get() call
         ipc_start = time.perf_counter()
-        elimination = self.eliminations_dict.get(hotkey)
+        elimination = self.eliminations.get(hotkey)
         ipc_ms = (time.perf_counter() - ipc_start) * 1000
 
         # Time the deepcopy operation
@@ -383,11 +383,11 @@ class EliminationManager(CacheController):
 
     def _delete_eliminated_expired_miners(self):
         deleted_hotkeys = set()
-        # self.eliminations_dict was just refreshed in process_eliminations
+        # self.eliminations was just refreshed in process_eliminations
         any_challenege_period_changes = False
         now_ms = TimeUtil.now_in_millis()
         metagraph_hotkeys_set = set(self.metagraph.hotkeys) if self.metagraph and self.metagraph.hotkeys else set()
-        for x in self.eliminations_dict.values():
+        for x in self.eliminations.values():
             if self.shutdown_dict:
                 return
             hotkey = x['hotkey']
@@ -428,7 +428,7 @@ class EliminationManager(CacheController):
 
     def save_eliminations(self):
         if not self.is_backtesting:
-            self.write_eliminations_to_disk(list(self.eliminations_dict.values()))
+            self.write_eliminations_to_disk(list(self.eliminations.values()))
 
     def write_eliminations_to_disk(self, eliminations):
         if not isinstance(eliminations, list):
@@ -443,13 +443,13 @@ class EliminationManager(CacheController):
     def clear_eliminations(self):
         ValiBkpUtils.write_file(ValiBkpUtils.get_eliminations_dir(running_unit_tests=self.running_unit_tests),
                                 {CacheController.ELIMINATIONS: []})
-        self.eliminations_dict.clear()
+        self.eliminations.clear()
 
     def get_eliminated_hotkeys(self):
-        return set(self.eliminations_dict.keys()) if self.eliminations_dict else set()
+        return set(self.eliminations.keys()) if self.eliminations else set()
 
     def get_eliminations_from_memory(self):
-        return list(self.eliminations_dict.values())  # Convert dict values to list
+        return list(self.eliminations.values())  # Convert dict values to list
 
     def get_eliminations_from_disk(self) -> list:
         location = ValiBkpUtils.get_eliminations_dir(running_unit_tests=self.running_unit_tests)
@@ -467,9 +467,9 @@ class EliminationManager(CacheController):
         bt.logging.info(f"[ELIM_DEBUG] append_elimination_row called for {hotkey}, reason={reason}")
         elimination_row = self.generate_elimination_row(hotkey, current_dd, reason, t_ms=t_ms,
                                                         price_info=price_info, return_info=return_info)
-        dict_len_before = len(self.eliminations_dict)
-        self.eliminations_dict[hotkey] = elimination_row
-        dict_len_after = len(self.eliminations_dict)
+        dict_len_before = len(self.eliminations)
+        self.eliminations[hotkey] = elimination_row
+        dict_len_after = len(self.eliminations)
         bt.logging.info(f"[ELIM_DEBUG] Eliminations dict grew from {dict_len_before} to {dict_len_after} entries")
 
         self.save_eliminations()
@@ -477,8 +477,8 @@ class EliminationManager(CacheController):
 
     def delete_eliminations(self, deleted_hotkeys):
         for hotkey in deleted_hotkeys:
-            if hotkey in self.eliminations_dict:
-                del self.eliminations_dict[hotkey]
+            if hotkey in self.eliminations:
+                del self.eliminations[hotkey]
         self.save_eliminations()
 
     def handle_mdd_eliminations(self, position_locks, iteration_epoch=None):
