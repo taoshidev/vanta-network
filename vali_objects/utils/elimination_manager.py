@@ -364,8 +364,22 @@ class EliminationManager(CacheController):
         Returns:
             dict or None: Elimination details if found, None otherwise
         """
+        import time
+
+        # Time the IPC dict.get() call
+        ipc_start = time.perf_counter()
         elimination = self.eliminations_dict.get(hotkey)
-        return deepcopy(elimination) if elimination else None
+        ipc_ms = (time.perf_counter() - ipc_start) * 1000
+
+        # Time the deepcopy operation
+        copy_start = time.perf_counter()
+        result = deepcopy(elimination) if elimination else None
+        copy_ms = (time.perf_counter() - copy_start) * 1000
+
+        import bittensor as bt
+        bt.logging.info(f"[ELIM_TIMING] IPC dict.get()={ipc_ms:.2f}ms, deepcopy()={copy_ms:.2f}ms, total={(ipc_ms+copy_ms):.2f}ms")
+
+        return result
 
     def _delete_eliminated_expired_miners(self):
         deleted_hotkeys = set()
@@ -584,17 +598,30 @@ class EliminationManager(CacheController):
         Returns:
             True if the hotkey is in the metagraph AND in the departed_hotkeys dict, False otherwise
         """
+        import time
+        import bittensor as bt
+
         if not hotkey:
             return False
 
         # Fast path: Check departed_hotkeys first (O(1) IPC dict lookup)
         # If hotkey never departed, exit immediately (99%+ of cases)
-        if hotkey not in self.departed_hotkeys:
+        departed_start = time.perf_counter()
+        is_departed = hotkey in self.departed_hotkeys
+        departed_ms = (time.perf_counter() - departed_start) * 1000
+        bt.logging.info(f"[REREG_TIMING] departed_hotkeys check={departed_ms:.2f}ms, is_departed={is_departed}")
+
+        if not is_departed:
             return False
 
         # Slow path: Only reached for departed hotkeys (rare)
         # Direct list check - max 256 elements, negligible cost
-        return hotkey in (self.metagraph.hotkeys if self.metagraph and self.metagraph.hotkeys else [])
+        metagraph_start = time.perf_counter()
+        is_in_metagraph = hotkey in (self.metagraph.hotkeys if self.metagraph and self.metagraph.hotkeys else [])
+        metagraph_ms = (time.perf_counter() - metagraph_start) * 1000
+        bt.logging.info(f"[REREG_TIMING] metagraph.hotkeys check={metagraph_ms:.2f}ms, is_in_metagraph={is_in_metagraph}")
+
+        return is_in_metagraph
 
     def _get_departed_hotkeys_from_disk(self) -> dict:
         """Load departed hotkeys from disk.

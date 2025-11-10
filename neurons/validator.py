@@ -135,12 +135,14 @@ class Validator:
         self.locks_ipc_manager = Manager()  # Dedicated manager for position locks (locks dict)
         self.eliminations_ipc_manager = Manager()  # Dedicated manager for eliminations list
         self.departed_hotkeys_ipc_manager = Manager()  # Dedicated manager for departed_hotkeys dict
+        self.metagraph_ipc_manager = Manager()  # Dedicated manager for metagraph (hotkeys, neurons, uids, etc.)
 
-        bt.logging.info(f"[IPC] Created 5 IPC managers: general (PID: {self.ipc_manager._process.pid}), "
+        bt.logging.info(f"[IPC] Created 6 IPC managers: general (PID: {self.ipc_manager._process.pid}), "
                        f"positions (PID: {self.positions_ipc_manager._process.pid}), "
                        f"locks (PID: {self.locks_ipc_manager._process.pid}), "
                        f"eliminations (PID: {self.eliminations_ipc_manager._process.pid}), "
-                       f"departed_hotkeys (PID: {self.departed_hotkeys_ipc_manager._process.pid})")
+                       f"departed_hotkeys (PID: {self.departed_hotkeys_ipc_manager._process.pid}), "
+                       f"metagraph (PID: {self.metagraph_ipc_manager._process.pid})")
 
         self.shared_queue_websockets = self.ipc_manager.Queue()
 
@@ -200,7 +202,8 @@ class Validator:
 
         # metagraph provides the network's current state, holding state about other participants in a subnet.
         # IMPORTANT: Only update this variable in-place. Otherwise, the reference will be lost in the helper classes.
-        self.metagraph = get_ipc_metagraph(self.ipc_manager)
+        # Uses dedicated metagraph_ipc_manager to isolate high-frequency IPC operations (hotkeys, neurons, uids)
+        self.metagraph = get_ipc_metagraph(self.metagraph_ipc_manager)
 
         # Create single weight request queue (validator only)
         weight_request_queue = self.ipc_manager.Queue()
