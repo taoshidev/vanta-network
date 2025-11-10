@@ -35,13 +35,24 @@ class ChallengePeriodManager(CacheController):
             shutdown_dict=None,
             sync_in_progress=None,
             slack_notifier=None,
-            sync_epoch=None):
+            sync_epoch=None,
+            eliminations_lock=None):
         super().__init__(metagraph, running_unit_tests=running_unit_tests, is_backtesting=is_backtesting)
         self.perf_ledger_manager = perf_ledger_manager if perf_ledger_manager else \
             PerfLedgerManager(metagraph, running_unit_tests=running_unit_tests)
         self.position_manager = position_manager
         self.elimination_manager = self.position_manager.elimination_manager
-        self.eliminations_with_reasons: dict[str, tuple[str, float]] = {}
+
+        # Use IPC dict for cross-process communication with EliminationManager
+        if ipc_manager:
+            self.eliminations_with_reasons = ipc_manager.dict()
+            bt.logging.info("[CP_DEBUG] Created IPC-shared eliminations_with_reasons dict for cross-process communication")
+        else:
+            self.eliminations_with_reasons: dict[str, tuple[str, float]] = {}
+
+        # Dedicated lock for eliminations_with_reasons dict
+        self.eliminations_lock = eliminations_lock
+
         self.contract_manager = contract_manager
         self.plagiarism_manager = plagiarism_manager
         self.shutdown_dict = shutdown_dict
@@ -225,7 +236,15 @@ class ChallengePeriodManager(CacheController):
         plagiarism_elim_miners = self.prepare_plagiarism_elimination_miners(current_time=current_time)
         challengeperiod_eliminations.update(plagiarism_elim_miners)
 
-        self.eliminations_with_reasons = challengeperiod_eliminations
+        # Use lock to ensure atomic update (lock prevents readers from seeing intermediate state)
+        if self.eliminations_lock:
+            with self.eliminations_lock:
+                self.eliminations_with_reasons.clear()
+                self.eliminations_with_reasons.update(challengeperiod_eliminations)
+        else:
+            # Fallback for unit tests without lock
+            self.eliminations_with_reasons.clear()
+            self.eliminations_with_reasons.update(challengeperiod_eliminations)
 
         any_changes = bool(challengeperiod_success) or bool(challengeperiod_eliminations) or bool(challengeperiod_demoted)
 

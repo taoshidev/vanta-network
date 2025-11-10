@@ -41,7 +41,7 @@ class EliminationManager(CacheController):
                  running_unit_tests=False, shutdown_dict=None, ipc_manager=None, is_backtesting=False,
                  shared_queue_websockets=None, contract_manager=None, position_locks=None,
                  sync_in_progress=None, slack_notifier=None, sync_epoch=None,
-                 eliminations_ipc_manager=None, departed_hotkeys_ipc_manager=None):
+                 eliminations_ipc_manager=None, departed_hotkeys_ipc_manager=None, eliminations_lock=None):
         super().__init__(metagraph=metagraph, is_backtesting=is_backtesting)
         self.position_manager = position_manager
         self.shutdown_dict = shutdown_dict
@@ -56,6 +56,9 @@ class EliminationManager(CacheController):
         self.sync_in_progress = sync_in_progress
         self.slack_notifier = slack_notifier
         self.sync_epoch = sync_epoch
+
+        # Dedicated lock for eliminations_with_reasons dict
+        self.eliminations_lock = eliminations_lock
 
         # Use dedicated managers if available, fallback to general ipc_manager
         if eliminations_ipc_manager:
@@ -173,7 +176,15 @@ class EliminationManager(CacheController):
                 self.add_manual_flat_order(hotkey, p, corresponding_elimination, position_locks, source_for_elimination, iteration_epoch)
 
     def handle_challenge_period_eliminations(self, position_locks, iteration_epoch=None):
-        eliminations_with_reasons = self.challengeperiod_manager.eliminations_with_reasons
+        # Read eliminations_with_reasons atomically with lock
+        if self.eliminations_lock:
+            with self.eliminations_lock:
+                # Create a snapshot of the dict to avoid holding the lock during processing
+                eliminations_with_reasons = dict(self.challengeperiod_manager.eliminations_with_reasons)
+        else:
+            # Fallback for unit tests without lock
+            eliminations_with_reasons = self.challengeperiod_manager.eliminations_with_reasons
+
         if not eliminations_with_reasons:
             return
 
@@ -196,7 +207,14 @@ class EliminationManager(CacheController):
 
 
         bt.logging.info(f"[ELIM_DEBUG] After processing, eliminations list has {len(self.eliminations)} entries")
-        self.challengeperiod_manager.eliminations_with_reasons = {}
+
+        # Clear eliminations_with_reasons atomically with lock
+        if self.eliminations_lock:
+            with self.eliminations_lock:
+                self.challengeperiod_manager.eliminations_with_reasons.clear()
+        else:
+            # Fallback for unit tests without lock
+            self.challengeperiod_manager.eliminations_with_reasons.clear()
 
     def handle_first_refresh(self, position_locks, iteration_epoch=None):
         if self.is_backtesting or self.first_refresh_ran:

@@ -153,6 +153,10 @@ class Validator:
         # If epoch changed during iteration, data is stale and save is aborted
         self.sync_epoch = self.ipc_manager.Value('i', 0)
 
+        # Dedicated lock for eliminations_with_reasons IPC dict
+        # Protects cross-process access between ChallengePeriodManager and EliminationManager
+        self.eliminations_lock = self.ipc_manager.Lock()
+
         # Activating Bittensor's logging with the set configurations.
         bt.logging(config=self.config, logging_dir=self.config.full_path)
         bt.logging.info(
@@ -234,7 +238,8 @@ class Validator:
                                                       contract_manager=self.contract_manager,
                                                       sync_in_progress=self.sync_in_progress,
                                                       slack_notifier=self.slack_notifier,
-                                                      sync_epoch=self.sync_epoch)
+                                                      sync_epoch=self.sync_epoch,
+                                                      eliminations_lock=self.eliminations_lock)
 
         self.asset_selection_manager = AssetSelectionManager(config=self.config, metagraph=self.metagraph, ipc_manager=self.ipc_manager)
 
@@ -291,7 +296,8 @@ class Validator:
                                                               plagiarism_manager=self.plagiarism_manager,
                                                               sync_in_progress=self.sync_in_progress,
                                                               slack_notifier=self.slack_notifier,
-                                                              sync_epoch=self.sync_epoch)
+                                                              sync_epoch=self.sync_epoch,
+                                                              eliminations_lock=self.eliminations_lock)
 
         # Attach the position manager to the other objects that need it
         for idx, obj in enumerate([self.perf_ledger_manager, self.position_manager, self.position_syncer,
