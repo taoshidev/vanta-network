@@ -625,9 +625,12 @@ class ChallengePeriodManager(CacheController):
         else:
             eliminations_hotkeys = set([x['hotkey'] for x in eliminations])
 
+        bt.logging.info(f"[CP_DEBUG] _remove_eliminated_from_memory processing {len(eliminations_hotkeys)} eliminated hotkeys")
+
         any_changes = False
         for hotkey in eliminations_hotkeys:
             if hotkey in self.active_miners:
+                bt.logging.info(f"[CP_DEBUG] Removing already-eliminated hotkey {hotkey} from active_miners")
                 del self.active_miners[hotkey]
                 any_changes = True
 
@@ -702,14 +705,22 @@ class ChallengePeriodManager(CacheController):
     def _eliminate_challengeperiod_in_memory(self, eliminations_with_reasons: dict[str, tuple[str, float]]):
         hotkeys = eliminations_with_reasons.keys()
         if hotkeys:
-            bt.logging.info(f"Removing {len(hotkeys)} hotkeys from challenge period.")
+            bt.logging.info(f"[CP_DEBUG] Removing {len(hotkeys)} hotkeys from challenge period: {list(hotkeys)}")
+            bt.logging.info(f"[CP_DEBUG] active_miners has {len(self.active_miners)} entries before elimination")
 
         for hotkey in hotkeys:
             if hotkey in self.active_miners:
-                bt.logging.info(f"Eliminating {hotkey}")
+                bucket_info = self.active_miners[hotkey]
+                bt.logging.info(f"[CP_DEBUG] Eliminating {hotkey} from bucket {bucket_info[0].value}")
                 del self.active_miners[hotkey]
+
+                # Verify deletion
+                if hotkey not in self.active_miners:
+                    bt.logging.info(f"[CP_DEBUG] ✓ Verified {hotkey} was removed from active_miners")
+                else:
+                    bt.logging.error(f"[CP_DEBUG] ✗ FAILED to remove {hotkey} from active_miners!")
             else:
-                bt.logging.error(f"Hotkey {hotkey} was not in challengeperiod_testing but demotion to failure was attempted.")
+                bt.logging.error(f"[CP_DEBUG] Hotkey {hotkey} was not in active_miners but elimination was attempted. active_miners keys: {list(self.active_miners.keys())}")
 
     def _demote_challengeperiod_in_memory(self, hotkeys: list[str], current_time):
         if hotkeys:

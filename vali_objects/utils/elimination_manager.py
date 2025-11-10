@@ -178,9 +178,16 @@ class EliminationManager(CacheController):
             return
 
         hotkeys = list(eliminations_with_reasons.keys())
+        bt.logging.info(f"[ELIM_DEBUG] Processing {len(hotkeys)} challenge period eliminations: {hotkeys}")
+        bt.logging.info(f"[ELIM_DEBUG] Current eliminations list has {len(self.eliminations)} entries")
+
         for hotkey in hotkeys:
-            if self.hotkey_in_eliminations(hotkey):
+            already_eliminated = self.hotkey_in_eliminations(hotkey)
+            if already_eliminated:
+                bt.logging.warning(f"[ELIM_DEBUG] Hotkey {hotkey} is ALREADY in eliminations list. Skipping. Elimination: {already_eliminated}")
                 continue
+
+            bt.logging.info(f"[ELIM_DEBUG] Adding new elimination for {hotkey}")
             elim_reason = eliminations_with_reasons[hotkey][0]
             elim_mdd = eliminations_with_reasons[hotkey][1]
             self.append_elimination_row(hotkey=hotkey, current_dd=elim_mdd, reason=elim_reason)
@@ -188,6 +195,7 @@ class EliminationManager(CacheController):
             self.contract_manager.slash_miner_collateral_proportion(hotkey)
 
 
+        bt.logging.info(f"[ELIM_DEBUG] After processing, eliminations list has {len(self.eliminations)} entries")
         self.challengeperiod_manager.eliminations_with_reasons = {}
 
     def handle_first_refresh(self, position_locks, iteration_epoch=None):
@@ -367,9 +375,11 @@ class EliminationManager(CacheController):
         if not isinstance(eliminations, list):
             eliminations = list(eliminations)  # proxy list
         vali_eliminations = {CacheController.ELIMINATIONS: eliminations}
-        bt.logging.trace(f"Writing [{len(eliminations)}] eliminations from memory to disk: {vali_eliminations}")
         output_location = ValiBkpUtils.get_eliminations_dir(running_unit_tests=self.running_unit_tests)
+        bt.logging.info(f"[ELIM_DEBUG] Writing {len(eliminations)} eliminations to disk at {output_location}")
+        bt.logging.info(f"[ELIM_DEBUG] Hotkeys in elimination list being written: {[x['hotkey'] for x in eliminations]}")
         ValiBkpUtils.write_file(output_location, vali_eliminations)
+        bt.logging.info(f"[ELIM_DEBUG] Successfully wrote eliminations to disk")
 
     def clear_eliminations(self):
         ValiBkpUtils.write_file(ValiBkpUtils.get_eliminations_dir(running_unit_tests=self.running_unit_tests),
@@ -395,10 +405,15 @@ class EliminationManager(CacheController):
             return []
 
     def append_elimination_row(self, hotkey, current_dd, reason, t_ms=None, price_info=None, return_info=None):
+        bt.logging.info(f"[ELIM_DEBUG] append_elimination_row called for {hotkey}, reason={reason}")
         elimination_row = self.generate_elimination_row(hotkey, current_dd, reason, t_ms=t_ms,
                                                         price_info=price_info, return_info=return_info)
+        list_len_before = len(self.eliminations)
         self.eliminations.append(elimination_row)
         self.eliminations[-1] = elimination_row  # ipc list does not update the object without using __setitem__
+        list_len_after = len(self.eliminations)
+        bt.logging.info(f"[ELIM_DEBUG] Eliminations list grew from {list_len_before} to {list_len_after} entries")
+
         self.save_eliminations()
         bt.logging.info(f"miner eliminated with hotkey [{hotkey}]. Info [{elimination_row}]")
 

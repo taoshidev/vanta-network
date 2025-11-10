@@ -1068,7 +1068,11 @@ class Validator:
                 return True
 
         # don't process eliminated miners
+        elim_check_start = time.perf_counter()
         elimination_info = self.elimination_manager.hotkey_in_eliminations(synapse.dendrite.hotkey)
+        elim_check_ms = (time.perf_counter() - elim_check_start) * 1000
+        bt.logging.info(f"[FAIL_EARLY_DEBUG] hotkey_in_eliminations took {elim_check_ms:.2f}ms")
+
         if elimination_info:
             msg = f"This miner hotkey {synapse.dendrite.hotkey} has been eliminated and cannot participate in this subnet. Try again after re-registering. elimination_info {elimination_info}"
             bt.logging.debug(msg)
@@ -1077,9 +1081,18 @@ class Validator:
             return True
 
         # don't process re-registered miners
-        if self.elimination_manager.is_hotkey_re_registered(synapse.dendrite.hotkey):
+        rereg_check_start = time.perf_counter()
+        is_reregistered = self.elimination_manager.is_hotkey_re_registered(synapse.dendrite.hotkey)
+        rereg_check_ms = (time.perf_counter() - rereg_check_start) * 1000
+        bt.logging.info(f"[FAIL_EARLY_DEBUG] is_hotkey_re_registered took {rereg_check_ms:.2f}ms")
+
+        if is_reregistered:
             # Get deregistration timestamp and convert to human-readable date
+            departed_lookup_start = time.perf_counter()
             departed_info = self.elimination_manager.departed_hotkeys.get(synapse.dendrite.hotkey, {})
+            departed_lookup_ms = (time.perf_counter() - departed_lookup_start) * 1000
+            bt.logging.info(f"[FAIL_EARLY_DEBUG] departed_hotkeys IPC dict lookup took {departed_lookup_ms:.2f}ms")
+
             detected_ms = departed_info.get("detected_ms", 0)
             dereg_date = TimeUtil.millis_to_formatted_date_str(detected_ms) if detected_ms else "unknown"
 
@@ -1099,30 +1112,52 @@ class Validator:
             bt.logging.error(msg)
             synapse.error_message = msg
 
+        elif tp.is_blocked:
+            msg = (f"Trade pair [{tp.trade_pair_id}] is no longer supported. "
+                   f"Please try again with a different trade pair.")
+            synapse.error_message = msg
+
         elif signal and tp:
             # Validate asset class selection
-            if not self.asset_selection_manager.validate_order_asset_class(synapse.dendrite.hotkey, tp.trade_pair_category, now_ms):
+            asset_validate_start = time.perf_counter()
+            is_valid_asset = self.asset_selection_manager.validate_order_asset_class(synapse.dendrite.hotkey, tp.trade_pair_category, now_ms)
+            asset_validate_ms = (time.perf_counter() - asset_validate_start) * 1000
+            bt.logging.info(f"[FAIL_EARLY_DEBUG] validate_order_asset_class took {asset_validate_ms:.2f}ms")
+
+            if not is_valid_asset:
+                asset_lookup_start = time.perf_counter()
+                selected_asset = self.asset_selection_manager.asset_selections.get(synapse.dendrite.hotkey, None)
+                asset_lookup_ms = (time.perf_counter() - asset_lookup_start) * 1000
+                bt.logging.info(f"[FAIL_EARLY_DEBUG] asset_selections IPC dict lookup took {asset_lookup_ms:.2f}ms")
+
                 msg = (
                     f"miner [{synapse.dendrite.hotkey}] cannot trade asset class [{tp.trade_pair_category.value}]. "
-                    f"Selected asset class: [{self.asset_selection_manager.asset_selections.get(synapse.dendrite.hotkey, None)}]. Only trade pairs from your selected asset class are allowed. "
-                    f"See https://docs.taoshi.io/vanta/vanta-cli#miner-operations for more information."
+                    f"Selected asset class: [{selected_asset}]. Only trade pairs from your selected asset class are allowed. "
+                    f"See https://docs.taoshi.io/ptn/ptncli#miner-operations for more information."
                 )
                 synapse.error_message = msg
 
-            elif not self.live_price_fetcher.is_market_open(tp):
-                msg = (f"Market for trade pair [{tp.trade_pair_id}] is likely closed or this validator is"
-                       f" having issues fetching live price. Please try again later.")
-                synapse.error_message = msg
+            else:
+                market_open_start = time.perf_counter()
+                is_market_open = self.live_price_fetcher.is_market_open(tp)
+                market_open_ms = (time.perf_counter() - market_open_start) * 1000
+                bt.logging.info(f"[FAIL_EARLY_DEBUG] is_market_open took {market_open_ms:.2f}ms")
 
-            elif tp in self.live_price_fetcher.get_unsupported_trade_pairs():
-                msg = (f"Trade pair [{tp.trade_pair_id}] has been temporarily halted. "
-                       f"Please try again with a different trade pair.")
-                synapse.error_message = msg
+                if not is_market_open:
+                    msg = (f"Market for trade pair [{tp.trade_pair_id}] is likely closed or this validator is"
+                           f" having issues fetching live price. Please try again later.")
+                    synapse.error_message = msg
 
-            elif tp.is_blocked:
-                msg = (f"Trade pair [{tp.trade_pair_id}] is no longer supported. "
-                       f"Please try again with a different trade pair.")
-                synapse.error_message = msg
+                else:
+                    unsupported_check_start = time.perf_counter()
+                    unsupported_pairs = self.live_price_fetcher.get_unsupported_trade_pairs()
+                    unsupported_check_ms = (time.perf_counter() - unsupported_check_start) * 1000
+                    bt.logging.info(f"[FAIL_EARLY_DEBUG] get_unsupported_trade_pairs took {unsupported_check_ms:.2f}ms")
+
+                    if tp in unsupported_pairs:
+                        msg = (f"Trade pair [{tp.trade_pair_id}] has been temporarily halted. "
+                               f"Please try again with a different trade pair.")
+                        synapse.error_message = msg
 
         synapse.successfully_processed = not bool(synapse.error_message)
         if synapse.error_message:
