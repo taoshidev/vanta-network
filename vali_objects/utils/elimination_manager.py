@@ -606,8 +606,9 @@ class EliminationManager(CacheController):
 
         # Fast path: Check departed_hotkeys first (O(1) IPC dict lookup)
         # If hotkey never departed, exit immediately (99%+ of cases)
+        # Use .get() instead of 'in' operator for faster IPC performance (0.1ms vs 60ms)
         departed_start = time.perf_counter()
-        is_departed = hotkey in self.departed_hotkeys
+        is_departed = self.departed_hotkeys.get(hotkey) is not None
         departed_ms = (time.perf_counter() - departed_start) * 1000
         bt.logging.info(f"[REREG_TIMING] departed_hotkeys check={departed_ms:.2f}ms, is_departed={is_departed}")
 
