@@ -105,9 +105,36 @@ class MDDChecker(CacheController):
         bt.logging.info("running mdd checker")
         self.reset_debug_counters()
 
+        # Time the IPC read of positions
+        ipc_start = time.perf_counter()
         hotkey_to_positions = self.position_manager.get_positions_for_hotkeys(
             self.metagraph.hotkeys, sort_positions=True,
             eliminations=self.elimination_manager.get_eliminations_from_memory(),
+        )
+        ipc_ms = (time.perf_counter() - ipc_start) * 1000
+
+        # Verify position data freshness
+        now_ms = TimeUtil.now_in_millis()
+        total_positions = sum(len(positions) for positions in hotkey_to_positions.values())
+        newest_order_age_ms = 0
+        oldest_order_age_ms = 0
+        if total_positions > 0:
+            all_orders = []
+            for positions in hotkey_to_positions.values():
+                for pos in positions:
+                    if pos.orders:
+                        all_orders.extend([order.processed_ms for order in pos.orders])
+            if all_orders:
+                newest_order_ms = max(all_orders)
+                oldest_order_ms = min(all_orders)
+                newest_order_age_ms = now_ms - newest_order_ms
+                oldest_order_age_ms = now_ms - oldest_order_ms
+
+        bt.logging.info(
+            f"[MDD_IPC_TIMING] get_positions_for_hotkeys IPC read={ipc_ms:.2f}ms, "
+            f"total_positions={total_positions}, "
+            f"newest_order_age={newest_order_age_ms/1000:.1f}s, "
+            f"oldest_order_age={oldest_order_age_ms/1000:.1f}s"
         )
         tp_to_price_sources = self.get_sorted_price_sources(hotkey_to_positions)
         for hotkey, sorted_positions in hotkey_to_positions.items():
@@ -248,7 +275,19 @@ class MDDChecker(CacheController):
             # By a flurry of recent orders.
             #ws_only = not is_last_order
             self.n_poly_api_requests += 1#0 if ws_only else 1
+
+            # Time the price fetch for this order
+            fetch_start = time.perf_counter()
             price_sources = self.live_price_fetcher.get_sorted_price_sources_for_trade_pair(trade_pair, order.processed_ms)
+            fetch_ms = (time.perf_counter() - fetch_start) * 1000
+
+            now_ms = TimeUtil.now_in_millis()
+            order_age_ms = now_ms - order.processed_ms
+            bt.logging.info(
+                f"[MDD_PRICE_TIMING] get_price_sources for order={fetch_ms:.2f}ms, "
+                f"order_age={order_age_ms/1000:.1f}s, trade_pair={trade_pair.trade_pair_id}, "
+                f"sources_found={len(price_sources) if price_sources else 0}"
+            )
             return price_sources
 
         trade_pair = position.trade_pair
@@ -257,9 +296,18 @@ class MDDChecker(CacheController):
         orig_avg_price = position.average_entry_price
         orig_iep = position.initial_entry_price
         now_ms = TimeUtil.now_in_millis()
+
+        # Time the lock acquisition
+        lock_request_time = time.perf_counter()
         with (position_locks.get_lock(hotkey, trade_pair_id)):
+            lock_acquired_ms = (time.perf_counter() - lock_request_time) * 1000
+            bt.logging.info(f"[MDD_LOCK_TIMING] Lock acquired for {hotkey[:8]}.../{trade_pair_id} in {lock_acquired_ms:.2f}ms")
             # Position could have updated in the time between mdd_check being called and this function being called
+            # Time the IPC refresh
+            refresh_start = time.perf_counter()
             position_refreshed = self.position_manager.get_miner_position_by_uuid(hotkey, position.position_uuid)
+            refresh_ms = (time.perf_counter() - refresh_start) * 1000
+
             if position_refreshed is None:
                 bt.logging.warning(f"mdd_checker: Unexpectedly could not find position with uuid "
                                    f"{position.position_uuid} for hotkey {hotkey} and trade pair {trade_pair_id}.")
@@ -268,6 +316,15 @@ class MDDChecker(CacheController):
                 bt.logging.warning(f'mdd_checker: Position with uuid {position.position_uuid} for hotkey {hotkey} '
                                    f'and trade pair {trade_pair_id} is no longer a candidate for price correction.')
                 return
+
+            # Log if position changed between initial read and refresh
+            position_changed = position != position_refreshed
+            if position_changed:
+                bt.logging.info(
+                    f"[MDD_IPC_TIMING] Position refreshed from IPC in {refresh_ms:.2f}ms, position_changed={position_changed}, "
+                    f"uuid={position.position_uuid[:8]}..."
+                )
+
             position = position_refreshed
             n_orders_updated = 0
             for i, order in enumerate(reversed(position.orders)):

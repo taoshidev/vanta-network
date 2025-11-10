@@ -344,10 +344,34 @@ class LivePriceFetcher:
         }
 
     def is_market_open(self, trade_pair: TradePair) -> bool:
-        return self.polygon_data_service.is_market_open(trade_pair)
+        import time
+
+        # Time the RPC call to polygon_data_service
+        rpc_start = time.perf_counter()
+        result = self.polygon_data_service.is_market_open(trade_pair)
+        rpc_ms = (time.perf_counter() - rpc_start) * 1000
+
+        bt.logging.info(
+            f"[MARKET_TIMING] is_market_open RPC call to polygon_data_service={rpc_ms:.2f}ms, "
+            f"trade_pair={trade_pair.trade_pair_id}, result={result}"
+        )
+
+        return result
 
     def get_unsupported_trade_pairs(self):
-        return self.polygon_data_service.UNSUPPORTED_TRADE_PAIRS
+        import time
+
+        # Time the RPC call to get unsupported trade pairs
+        rpc_start = time.perf_counter()
+        result = self.polygon_data_service.UNSUPPORTED_TRADE_PAIRS
+        rpc_ms = (time.perf_counter() - rpc_start) * 1000
+
+        bt.logging.info(
+            f"[MARKET_TIMING] get_unsupported_trade_pairs RPC call={rpc_ms:.2f}ms, "
+            f"count={len(result) if result else 0}"
+        )
+
+        return result
 
     def get_currency_conversion(self, base: str, quote: str):
         return self.polygon_data_service.get_currency_conversion(base=base, quote=quote)

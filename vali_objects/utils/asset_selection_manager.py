@@ -137,17 +137,37 @@ class AssetSelectionManager:
         Returns:
             True if the miner can trade this asset class, False otherwise
         """
+        import time
+
+        # Time the timestamp operations
+        ts_start = time.perf_counter()
         if timestamp_ms is None:
             timestamp_ms = TimeUtil.now_in_millis()
-        if timestamp_ms < ASSET_CLASS_SELECTION_TIME_MS:
+        ts_check = timestamp_ms < ASSET_CLASS_SELECTION_TIME_MS
+        ts_ms = (time.perf_counter() - ts_start) * 1000
+
+        if ts_check:
+            bt.logging.info(f"[ASSET_TIMING] timestamp_check={ts_ms:.2f}ms, early_exit=True (pre-selection era)")
             return True
 
+        # Time the IPC dict lookup
+        ipc_start = time.perf_counter()
         selected_asset_class = self.asset_selections.get(miner_hotkey, None)
-        if selected_asset_class is None:
-            return False
+        ipc_ms = (time.perf_counter() - ipc_start) * 1000
 
-        # Check if the selected asset class matches the trade pair category
-        return selected_asset_class == trade_pair_category
+        # Time the comparison
+        compare_start = time.perf_counter()
+        result = selected_asset_class == trade_pair_category if selected_asset_class is not None else False
+        compare_ms = (time.perf_counter() - compare_start) * 1000
+
+        total_ms = ts_ms + ipc_ms + compare_ms
+        bt.logging.info(
+            f"[ASSET_TIMING] timestamp_check={ts_ms:.2f}ms, ipc_lookup={ipc_ms:.2f}ms, "
+            f"compare={compare_ms:.2f}ms, total={total_ms:.2f}ms, "
+            f"selected={selected_asset_class}, requested={trade_pair_category}, result={result}"
+        )
+
+        return result
 
     def process_asset_selection_request(self, asset_selection: str, miner: str) -> Dict[str, str]:
         """
