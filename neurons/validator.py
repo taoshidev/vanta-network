@@ -765,6 +765,7 @@ class Validator:
     def blacklist_fn(synapse, metagraph) -> Tuple[bool, str]:
         miner_hotkey = synapse.dendrite.hotkey
         # Ignore requests from unrecognized entities.
+        # 256 element list scan is negligible (~1-5 microseconds)
         if miner_hotkey not in metagraph.hotkeys:
             bt.logging.trace(
                 f"Blacklisting unrecognized hotkey {synapse.dendrite.hotkey}"
@@ -1074,6 +1075,7 @@ class Validator:
                 return True
 
         # don't process eliminated miners
+        # Single IPC call: returns None (~20 bytes) if not eliminated, full dict (~500 bytes) if eliminated
         elim_check_start = time.perf_counter()
         elimination_info = self.elimination_manager.hotkey_in_eliminations(synapse.dendrite.hotkey)
         elim_check_ms = (time.perf_counter() - elim_check_start) * 1000

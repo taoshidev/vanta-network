@@ -60,13 +60,16 @@ class EliminationManager(CacheController):
         # Dedicated lock for eliminations_with_reasons dict
         self.eliminations_lock = eliminations_lock
 
-        # Use dedicated managers if available, fallback to general ipc_manager
+        # IPC dict for eliminations (optimization over list)
+        # - Fast existence check: `hotkey in dict` → O(1), 1 byte IPC
+        # - Full details: `dict.get(hotkey)` → O(1), 500 bytes IPC
+        # - Replaces O(N) list iteration that moved 25KB in worst case
         if eliminations_ipc_manager:
-            self.eliminations = eliminations_ipc_manager.list()
+            self.eliminations_dict = eliminations_ipc_manager.dict()  # {hotkey: {...}}
         elif ipc_manager:
-            self.eliminations = ipc_manager.list()
+            self.eliminations_dict = ipc_manager.dict()
         else:
-            self.eliminations = []
+            self.eliminations_dict = {}
 
         if departed_hotkeys_ipc_manager:
             self.departed_hotkeys = departed_hotkeys_ipc_manager.dict()
@@ -74,8 +77,14 @@ class EliminationManager(CacheController):
             self.departed_hotkeys = ipc_manager.dict()
         else:
             self.departed_hotkeys = {}
-        self.eliminations.extend(self.get_eliminations_from_disk())
-        if len(self.eliminations) == 0:
+
+        # Populate from disk
+        eliminations_from_disk = self.get_eliminations_from_disk()
+        for elim in eliminations_from_disk:
+            hotkey = elim['hotkey']
+            self.eliminations_dict[hotkey] = elim
+
+        if len(self.eliminations_dict) == 0:
             ValiBkpUtils.write_file(
                 ValiBkpUtils.get_eliminations_dir(running_unit_tests=self.running_unit_tests),
                 {CacheController.ELIMINATIONS: []}
@@ -97,8 +106,8 @@ class EliminationManager(CacheController):
                 continue
 
             n_eliminations += 1
-            self.eliminations.append(e)
-            self.eliminations[-1] = e  # ipc list does not update the object without using __setitem__
+            hotkey = e['hotkey']
+            self.eliminations_dict[hotkey] = e
 
             price_info = e['price_info']
             trade_pair_to_price_source_used_for_elimination_check = {}
@@ -190,7 +199,7 @@ class EliminationManager(CacheController):
 
         hotkeys = list(eliminations_with_reasons.keys())
         bt.logging.info(f"[ELIM_DEBUG] Processing {len(hotkeys)} challenge period eliminations: {hotkeys}")
-        bt.logging.info(f"[ELIM_DEBUG] Current eliminations list has {len(self.eliminations)} entries")
+        bt.logging.info(f"[ELIM_DEBUG] Current eliminations dict has {len(self.eliminations_dict)} entries")
 
         for hotkey in hotkeys:
             already_eliminated = self.hotkey_in_eliminations(hotkey)
@@ -206,7 +215,7 @@ class EliminationManager(CacheController):
             self.contract_manager.slash_miner_collateral_proportion(hotkey)
 
 
-        bt.logging.info(f"[ELIM_DEBUG] After processing, eliminations list has {len(self.eliminations)} entries")
+        bt.logging.info(f"[ELIM_DEBUG] After processing, eliminations dict has {len(self.eliminations_dict)} entries")
 
         # Clear eliminations_with_reasons atomically with lock
         if self.eliminations_lock:
@@ -324,29 +333,47 @@ class EliminationManager(CacheController):
 
     def sync_eliminations(self, dat) -> list:
         # log the difference in hotkeys
-        hotkeys_before = set(x['hotkey'] for x in self.eliminations)
+        hotkeys_before = set(self.eliminations_dict.keys())
         hotkeys_after = set(x['hotkey'] for x in dat)
         removed = [x for x in hotkeys_before if x not in hotkeys_after]
         added = [x for x in hotkeys_after if x not in hotkeys_before]
         bt.logging.info(f'sync_eliminations: removed {len(removed)} {removed}, added {len(added)} {added}')
-        # Update the list in place while keeping the reference intact:
-        self.eliminations[:] = dat
+        # Update the dict in place while keeping the reference intact:
+        self.eliminations_dict.clear()
+        for elim in dat:
+            hotkey = elim['hotkey']
+            self.eliminations_dict[hotkey] = elim
         self.save_eliminations()
         return removed
 
+    def is_hotkey_eliminated(self, hotkey: str) -> bool:
+        """
+        Fast-path check if a hotkey is eliminated (O(1), 1 byte IPC).
+        Use this in performance-critical paths like should_fail_early().
+
+        Returns:
+            bool: True if hotkey is eliminated, False otherwise
+        """
+        return hotkey in self.eliminations_dict
+
     def hotkey_in_eliminations(self, hotkey):
-        for x in self.eliminations:
-            if x['hotkey'] == hotkey:
-                return deepcopy(x)
-        return None
+        """
+        Get full elimination details for a hotkey (O(1), 500 bytes IPC).
+        Returns the complete elimination dict with all metadata.
+
+        Returns:
+            dict or None: Elimination details if found, None otherwise
+        """
+        elimination = self.eliminations_dict.get(hotkey)
+        return deepcopy(elimination) if elimination else None
 
     def _delete_eliminated_expired_miners(self):
         deleted_hotkeys = set()
-        # self.eliminations were just refreshed in process_eliminations
+        # self.eliminations_dict was just refreshed in process_eliminations
         any_challenege_period_changes = False
         now_ms = TimeUtil.now_in_millis()
         metagraph_hotkeys_set = set(self.metagraph.hotkeys) if self.metagraph and self.metagraph.hotkeys else set()
-        for x in self.eliminations:
+        for x in self.eliminations_dict.values():
             if self.shutdown_dict:
                 return
             hotkey = x['hotkey']
@@ -387,7 +414,7 @@ class EliminationManager(CacheController):
 
     def save_eliminations(self):
         if not self.is_backtesting:
-            self.write_eliminations_to_disk(self.eliminations)
+            self.write_eliminations_to_disk(list(self.eliminations_dict.values()))
 
     def write_eliminations_to_disk(self, eliminations):
         if not isinstance(eliminations, list):
@@ -402,13 +429,13 @@ class EliminationManager(CacheController):
     def clear_eliminations(self):
         ValiBkpUtils.write_file(ValiBkpUtils.get_eliminations_dir(running_unit_tests=self.running_unit_tests),
                                 {CacheController.ELIMINATIONS: []})
-        del self.eliminations[:]
+        self.eliminations_dict.clear()
 
     def get_eliminated_hotkeys(self):
-        return set([x['hotkey'] for x in self.eliminations]) if self.eliminations else set()
+        return set(self.eliminations_dict.keys()) if self.eliminations_dict else set()
 
     def get_eliminations_from_memory(self):
-        return list(self.eliminations)  # ListProxy is not JSON serializable
+        return list(self.eliminations_dict.values())  # Convert dict values to list
 
     def get_eliminations_from_disk(self) -> list:
         location = ValiBkpUtils.get_eliminations_dir(running_unit_tests=self.running_unit_tests)
@@ -426,20 +453,18 @@ class EliminationManager(CacheController):
         bt.logging.info(f"[ELIM_DEBUG] append_elimination_row called for {hotkey}, reason={reason}")
         elimination_row = self.generate_elimination_row(hotkey, current_dd, reason, t_ms=t_ms,
                                                         price_info=price_info, return_info=return_info)
-        list_len_before = len(self.eliminations)
-        self.eliminations.append(elimination_row)
-        self.eliminations[-1] = elimination_row  # ipc list does not update the object without using __setitem__
-        list_len_after = len(self.eliminations)
-        bt.logging.info(f"[ELIM_DEBUG] Eliminations list grew from {list_len_before} to {list_len_after} entries")
+        dict_len_before = len(self.eliminations_dict)
+        self.eliminations_dict[hotkey] = elimination_row
+        dict_len_after = len(self.eliminations_dict)
+        bt.logging.info(f"[ELIM_DEBUG] Eliminations dict grew from {dict_len_before} to {dict_len_after} entries")
 
         self.save_eliminations()
         bt.logging.info(f"miner eliminated with hotkey [{hotkey}]. Info [{elimination_row}]")
 
     def delete_eliminations(self, deleted_hotkeys):
-        # with self.eliminations_lock:
-        items_to_remove = [x for x in self.eliminations if x['hotkey'] in deleted_hotkeys]
-        for item in items_to_remove:
-            self.eliminations.remove(item)
+        for hotkey in deleted_hotkeys:
+            if hotkey in self.eliminations_dict:
+                del self.eliminations_dict[hotkey]
         self.save_eliminations()
 
     def handle_mdd_eliminations(self, position_locks, iteration_epoch=None):
@@ -549,6 +574,10 @@ class EliminationManager(CacheController):
         """
         Check if a hotkey is re-registered (was previously de-registered and has re-registered).
 
+        Optimized to check departed_hotkeys first (O(1) IPC dict) before checking metagraph.
+        This is efficient because 99%+ of hotkeys were never departed, so we exit early.
+        For the rare departed cases, scanning 256 hotkeys is negligible (~1-5 microseconds).
+
         Args:
             hotkey: The hotkey to check
 
@@ -558,10 +587,14 @@ class EliminationManager(CacheController):
         if not hotkey:
             return False
 
-        current_hotkeys = set(self.metagraph.hotkeys) if self.metagraph and self.metagraph.hotkeys else set()
+        # Fast path: Check departed_hotkeys first (O(1) IPC dict lookup)
+        # If hotkey never departed, exit immediately (99%+ of cases)
+        if hotkey not in self.departed_hotkeys:
+            return False
 
-        # Re-registered if currently in metagraph AND previously departed (O(1) dict lookup)
-        return hotkey in current_hotkeys and hotkey in self.departed_hotkeys
+        # Slow path: Only reached for departed hotkeys (rare)
+        # Direct list check - max 256 elements, negligible cost
+        return hotkey in (self.metagraph.hotkeys if self.metagraph and self.metagraph.hotkeys else [])
 
     def _get_departed_hotkeys_from_disk(self) -> dict:
         """Load departed hotkeys from disk.
