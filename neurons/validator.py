@@ -1264,7 +1264,15 @@ class Validator:
             signal_order_type = OrderType.from_string(signal["order_type"])
 
             # Multiple threads can run receive_signal at once. Don't allow two threads to trample each other.
+            lock_key = f"{miner_hotkey[:8]}.../{trade_pair.trade_pair_id}"
+            lock_request_time = TimeUtil.now_in_millis()
+            bt.logging.info(f"[LOCK] Requesting position lock for {lock_key}")
+
             with self.position_locks.get_lock(miner_hotkey, trade_pair.trade_pair_id):
+                lock_acquired_time = TimeUtil.now_in_millis()
+                lock_wait_ms = lock_acquired_time - lock_request_time
+                bt.logging.info(f"[LOCK] Acquired lock for {lock_key} after {lock_wait_ms}ms wait")
+
                 # Check cooldown inside the lock to prevent race conditions
                 err_msg = self.enforce_order_cooldown(trade_pair.trade_pair_id, now_ms, miner_hotkey)
                 if err_msg:
@@ -1293,6 +1301,10 @@ class Validator:
                     pass
                 # Update the last received order time
                 self.timestamp_manager.update_timestamp(now_ms)
+
+            lock_released_time = TimeUtil.now_in_millis()
+            lock_hold_ms = lock_released_time - lock_acquired_time
+            bt.logging.info(f"[LOCK] Released lock for {lock_key} after holding for {lock_hold_ms}ms (wait={lock_wait_ms}ms, total={lock_released_time - lock_request_time}ms)")
 
         except SignalException as e:
             error_message = f"Error processing order for [{miner_hotkey}] with error [{e}]"

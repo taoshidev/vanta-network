@@ -1,5 +1,8 @@
 from multiprocessing import Lock as MPLock
 from threading import Lock
+import bittensor as bt
+import time
+
 class PositionLocks:
     """
     Updating positions in the validator is vulnerable to race conditions on a per-miner and per-trade-pair basis. This
@@ -38,8 +41,18 @@ class PositionLocks:
     def get_lock(self, miner_hotkey:str, trade_pair_id:str):
         #bt.logging.info(f"Getting lock for miner_hotkey [{miner_hotkey}] and trade_pair [{trade_pair}].")
         lock_key = (miner_hotkey, trade_pair_id)
-        if lock_key not in self.locks:
+        lock_lookup_start = time.perf_counter()
+        lock_exists = lock_key in self.locks
+        lock_lookup_ms = (time.perf_counter() - lock_lookup_start) * 1000
+
+        if not lock_exists:
+            lock_creation_start = time.perf_counter()
             self.locks[lock_key] = self.get_new_lock()
+            lock_creation_ms = (time.perf_counter() - lock_creation_start) * 1000
+            bt.logging.info(f"[LOCK_MGR] Created new lock for {miner_hotkey[:8]}.../{trade_pair_id} (lookup={lock_lookup_ms:.2f}ms, creation={lock_creation_ms:.2f}ms)")
+        else:
+            bt.logging.info(f"[LOCK_MGR] Retrieved existing lock for {miner_hotkey[:8]}.../{trade_pair_id} (lookup={lock_lookup_ms:.2f}ms)")
+
         return self.locks[lock_key]
 
     #def cleanup_locks(self, active_miner_hotkeys):
