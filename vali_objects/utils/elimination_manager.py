@@ -40,7 +40,8 @@ class EliminationManager(CacheController):
     def __init__(self, metagraph, position_manager, challengeperiod_manager,
                  running_unit_tests=False, shutdown_dict=None, ipc_manager=None, is_backtesting=False,
                  shared_queue_websockets=None, contract_manager=None, position_locks=None,
-                 sync_in_progress=None, slack_notifier=None, sync_epoch=None):
+                 sync_in_progress=None, slack_notifier=None, sync_epoch=None,
+                 eliminations_ipc_manager=None, departed_hotkeys_ipc_manager=None):
         super().__init__(metagraph=metagraph, is_backtesting=is_backtesting)
         self.position_manager = position_manager
         self.shutdown_dict = shutdown_dict
@@ -56,11 +57,19 @@ class EliminationManager(CacheController):
         self.slack_notifier = slack_notifier
         self.sync_epoch = sync_epoch
 
-        if ipc_manager:
+        # Use dedicated managers if available, fallback to general ipc_manager
+        if eliminations_ipc_manager:
+            self.eliminations = eliminations_ipc_manager.list()
+        elif ipc_manager:
             self.eliminations = ipc_manager.list()
-            self.departed_hotkeys = ipc_manager.dict()
         else:
             self.eliminations = []
+
+        if departed_hotkeys_ipc_manager:
+            self.departed_hotkeys = departed_hotkeys_ipc_manager.dict()
+        elif ipc_manager:
+            self.departed_hotkeys = ipc_manager.dict()
+        else:
             self.departed_hotkeys = {}
         self.eliminations.extend(self.get_eliminations_from_disk())
         if len(self.eliminations) == 0:

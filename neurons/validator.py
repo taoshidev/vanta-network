@@ -127,8 +127,21 @@ class Validator:
                 "validation/miner_secrets.json. Please ensure it exists"
             )
 
-        # 1. Initialize Manager for shared state
-        self.ipc_manager = Manager()
+        # 1. Initialize Managers for shared state
+        # PERFORMANCE OPTIMIZATION: Use separate managers to reduce IPC contention
+        # Each manager runs in its own process with its own server thread
+        self.ipc_manager = Manager()  # General-purpose manager for queues, values, etc.
+        self.positions_ipc_manager = Manager()  # Dedicated manager for position data (hotkey_to_positions dict)
+        self.locks_ipc_manager = Manager()  # Dedicated manager for position locks (locks dict)
+        self.eliminations_ipc_manager = Manager()  # Dedicated manager for eliminations list
+        self.departed_hotkeys_ipc_manager = Manager()  # Dedicated manager for departed_hotkeys dict
+
+        bt.logging.info(f"[IPC] Created 5 IPC managers: general (PID: {self.ipc_manager._process.pid}), "
+                       f"positions (PID: {self.positions_ipc_manager._process.pid}), "
+                       f"locks (PID: {self.locks_ipc_manager._process.pid}), "
+                       f"eliminations (PID: {self.eliminations_ipc_manager._process.pid}), "
+                       f"departed_hotkeys (PID: {self.departed_hotkeys_ipc_manager._process.pid})")
+
         self.shared_queue_websockets = self.ipc_manager.Queue()
 
         # Create shared sync_in_progress flag for cross-process synchronization
@@ -215,6 +228,8 @@ class Validator:
         self.elimination_manager = EliminationManager(self.metagraph, None,  # Set after self.pm creation
                                                       None, shutdown_dict=shutdown_dict,
                                                       ipc_manager=self.ipc_manager,
+                                                      eliminations_ipc_manager=self.eliminations_ipc_manager,
+                                                      departed_hotkeys_ipc_manager=self.departed_hotkeys_ipc_manager,
                                                       shared_queue_websockets=self.shared_queue_websockets,
                                                       contract_manager=self.contract_manager,
                                                       sync_in_progress=self.sync_in_progress,
@@ -261,7 +276,7 @@ class Validator:
                                                 closed_position_daemon=True)
 
         self.position_locks = PositionLocks(hotkey_to_positions=self.position_manager.get_positions_for_all_miners(),
-                                            ipc_manager=self.ipc_manager)
+                                            ipc_manager=self.locks_ipc_manager)  # Use dedicated locks manager
 
         # Set position_locks on elimination_manager now that it exists
         self.elimination_manager.position_locks = self.position_locks
@@ -1239,8 +1254,15 @@ class Validator:
         synapse.validator_hotkey = self.wallet.hotkey.ss58_address
         signal = synapse.signal
         bt.logging.info( f"received signal [{signal}] from miner_hotkey [{miner_hotkey}] using repo version [{miner_repo_version}].")
+
+        # TIMING: Check should_fail_early timing
+        fail_early_start = TimeUtil.now_in_millis()
         if self.should_fail_early(synapse, SynapseMethod.SIGNAL, signal=signal, now_ms=now_ms):
+            fail_early_ms = TimeUtil.now_in_millis() - fail_early_start
+            bt.logging.info(f"[TIMING] should_fail_early took {fail_early_ms}ms (rejected)")
             return synapse
+        fail_early_ms = TimeUtil.now_in_millis() - fail_early_start
+        bt.logging.info(f"[TIMING] should_fail_early took {fail_early_ms}ms")
 
         with self.signal_sync_lock:
             self.n_orders_being_processed[0] += 1
@@ -1248,6 +1270,8 @@ class Validator:
         # error message to send back to miners in case of a problem so they can fix and resend
         error_message = ""
         try:
+            # TIMING: Parse operations
+            parse_start = TimeUtil.now_in_millis()
             miner_order_uuid = self.parse_miner_uuid(synapse)
             trade_pair = self.parse_trade_pair_from_signal(signal)
             if trade_pair is None:
@@ -1255,8 +1279,15 @@ class Validator:
                 raise SignalException(
                     f"miner [{miner_hotkey}] incorrectly sent trade pair. Raw signal: {signal}"
                 )
+            parse_ms = TimeUtil.now_in_millis() - parse_start
+            bt.logging.info(f"[TIMING] Parse operations took {parse_ms}ms")
 
+            # TIMING: Price fetching
+            price_fetch_start = TimeUtil.now_in_millis()
             price_sources = self.live_price_fetcher.get_sorted_price_sources_for_trade_pair(trade_pair, now_ms)
+            price_fetch_ms = TimeUtil.now_in_millis() - price_fetch_start
+            bt.logging.info(f"[TIMING] Price fetching took {price_fetch_ms}ms")
+
             if not price_sources:
                 raise SignalException(
                     f"Ignoring order for [{miner_hotkey}] due to no live prices being found for trade_pair [{trade_pair}]. Please try again.")
@@ -1307,12 +1338,18 @@ class Validator:
             bt.logging.info(f"[LOCK] Released lock for {lock_key} after holding for {lock_hold_ms}ms (wait={lock_wait_ms}ms, total={lock_released_time - lock_request_time}ms)")
 
         except SignalException as e:
+            exception_time = TimeUtil.now_in_millis()
             error_message = f"Error processing order for [{miner_hotkey}] with error [{e}]"
             bt.logging.error(traceback.format_exc())
+            bt.logging.info(f"[TIMING] SignalException caught at {exception_time - now_ms}ms from start")
         except Exception as e:
+            exception_time = TimeUtil.now_in_millis()
             error_message = f"Error processing order for [{miner_hotkey}] with error [{e}]"
             bt.logging.error(traceback.format_exc())
+            bt.logging.info(f"[TIMING] General Exception caught at {exception_time - now_ms}ms from start")
 
+        # TIMING: Final processing
+        final_processing_start = TimeUtil.now_in_millis()
         if error_message == "":
             synapse.successfully_processed = True
         else:
@@ -1320,6 +1357,9 @@ class Validator:
             synapse.successfully_processed = False
 
         synapse.error_message = error_message
+        final_processing_ms = TimeUtil.now_in_millis() - final_processing_start
+        bt.logging.info(f"[TIMING] Final synapse setup took {final_processing_ms}ms")
+
         processing_time_s_3_decimals = round((TimeUtil.now_in_millis() - now_ms) / 1000.0, 3)
         bt.logging.success(f"Sending ack back to miner [{miner_hotkey}]. Synapse Message: {synapse.error_message}. "
                            f"Process time {processing_time_s_3_decimals} seconds. order {order}")
