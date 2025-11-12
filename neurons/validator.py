@@ -1339,10 +1339,20 @@ class Validator:
                 raise SignalException(
                     f"Ignoring order for [{miner_hotkey}] due to no live prices being found for trade_pair [{trade_pair}]. Please try again.")
 
+            # TIMING: Extract signal data
+            extract_start = TimeUtil.now_in_millis()
+            signal_leverage = signal["leverage"]
             signal_order_type = OrderType.from_string(signal["order_type"])
+            extract_ms = TimeUtil.now_in_millis() - extract_start
+            bt.logging.info(f"[TIMING] Extract signal data took {extract_ms}ms")
 
             # Multiple threads can run receive_signal at once. Don't allow two threads to trample each other.
             lock_key = f"{miner_hotkey[:8]}.../{trade_pair.trade_pair_id}"
+
+            # TIMING: Time from start to lock request
+            time_to_lock_request = TimeUtil.now_in_millis() - now_ms
+            bt.logging.info(f"[TIMING] Time from receive_signal start to lock request: {time_to_lock_request}ms")
+
             lock_request_time = TimeUtil.now_in_millis()
             bt.logging.info(f"[LOCK] Requesting position lock for {lock_key}")
 
@@ -1351,38 +1361,62 @@ class Validator:
                 lock_wait_ms = lock_acquired_time - lock_request_time
                 bt.logging.info(f"[LOCK] Acquired lock for {lock_key} after {lock_wait_ms}ms wait")
 
-                # Check cooldown inside the lock to prevent race conditions
+                # TIMING: Cooldown check
+                cooldown_start = TimeUtil.now_in_millis()
                 err_msg = self.enforce_order_cooldown(trade_pair.trade_pair_id, now_ms, miner_hotkey)
+                cooldown_ms = TimeUtil.now_in_millis() - cooldown_start
+                bt.logging.info(f"[LOCK_WORK] Cooldown check took {cooldown_ms}ms")
+
                 if err_msg:
                     bt.logging.error(err_msg)
                     synapse.successfully_processed = False
                     synapse.error_message = err_msg
                     return synapse
 
-                # Get relevant account size
+                # TIMING: Get account size
+                account_size_start = TimeUtil.now_in_millis()
                 account_size = self._get_account_size(miner_hotkey, now_ms)
+                account_size_ms = TimeUtil.now_in_millis() - account_size_start
+                bt.logging.info(f"[LOCK_WORK] Get account size took {account_size_ms}ms")
+
+                # TIMING: Get or create position
+                get_position_start = TimeUtil.now_in_millis()
                 existing_position = self._get_or_create_open_position_from_new_order(trade_pair, signal_order_type,
                     now_ms, miner_hotkey, miner_order_uuid, now_ms, price_sources, miner_repo_version, account_size)
+                get_position_ms = TimeUtil.now_in_millis() - get_position_start
+                bt.logging.info(f"[LOCK_WORK] Get/create position took {get_position_ms}ms")
+
+                # TIMING: Add order to position
                 if existing_position:
                     best_price_source = price_sources[0]
                     price = best_price_source.parse_appropriate_price(now_ms, trade_pair.is_forex, signal_order_type, existing_position)
                     usd_base_price = self.live_price_fetcher.get_usd_base_conversion(trade_pair, now_ms, price, signal_order_type, existing_position)
                     quantity, leverage, value = self.parse_order_size(signal, usd_base_price, trade_pair, existing_position.account_size)
-
+                    add_order_start = TimeUtil.now_in_millis()
                     order = self._add_order_to_existing_position(existing_position, trade_pair, signal_order_type,
                                                         quantity, leverage, value, now_ms, miner_hotkey,
                                                         price_sources, miner_order_uuid, miner_repo_version,
                                                         OrderSource.ORGANIC, usd_base_price)
+                    add_order_ms = TimeUtil.now_in_millis() - add_order_start
+                    bt.logging.info(f"[LOCK_WORK] Add order to position took {add_order_ms}ms")
                     synapse.order_json = existing_position.orders[-1].__str__()
                 else:
                     # Happens if a FLAT is sent when no position exists
                     pass
-                # Update the last received order time
+
+                # TIMING: Update timestamp
+                timestamp_start = TimeUtil.now_in_millis()
                 self.timestamp_manager.update_timestamp(now_ms)
+                timestamp_ms = TimeUtil.now_in_millis() - timestamp_start
+                bt.logging.info(f"[LOCK_WORK] Update timestamp took {timestamp_ms}ms")
 
             lock_released_time = TimeUtil.now_in_millis()
             lock_hold_ms = lock_released_time - lock_acquired_time
             bt.logging.info(f"[LOCK] Released lock for {lock_key} after holding for {lock_hold_ms}ms (wait={lock_wait_ms}ms, total={lock_released_time - lock_request_time}ms)")
+
+            # TIMING: Time from lock release to try block end
+            time_after_lock = TimeUtil.now_in_millis() - lock_released_time
+            bt.logging.info(f"[TIMING] Time from lock release to try block end: {time_after_lock}ms")
 
         except SignalException as e:
             exception_time = TimeUtil.now_in_millis()
