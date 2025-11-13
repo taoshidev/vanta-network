@@ -121,8 +121,8 @@ class IPCMetagraph:
 
     @property
     def hotkeys(self):
-        """Legacy property access - prefer get_hotkeys()."""
-        return self.get_hotkeys()
+        """Direct access to hotkeys (used by MetagraphUpdater sync)."""
+        return self._ipc_metagraph.hotkeys
 
     @hotkeys.setter
     def hotkeys(self, value):

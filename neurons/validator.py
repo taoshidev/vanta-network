@@ -334,8 +334,9 @@ class Validator:
         bt.logging.info(f"Metagraph n_entries: {len(self.metagraph.get_hotkeys())}")
         if not self.metagraph.has_hotkey(self.wallet.hotkey.ss58_address):
             bt.logging.error(
-                f"\nYour validator: {self.wallet} is not registered to chain "
-                f"connection: {self.metagraph_updater.get_subtensor()} \nRun btcli register and try again. "
+                f"\nYour validator hotkey: {self.wallet.hotkey.ss58_address} (wallet: {self.wallet.name}, hotkey: {self.wallet.hotkey_str}) "
+                f"is not registered to chain connection: {self.metagraph_updater.get_subtensor()} \n"
+                f"Run btcli register and try again. "
             )
             exit()
 
