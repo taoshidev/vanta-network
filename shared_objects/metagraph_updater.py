@@ -755,7 +755,7 @@ class MetagraphUpdater(CacheController):
             else:
                 recently_acked_miners = []
 
-        hotkeys_before = set(self.metagraph.get_hotkeys())
+        hotkeys_before = set(self.metagraph.hotkeys)
         
         # Synchronize with weight setting operations to prevent WebSocket concurrency errors
         with get_subtensor_lock():

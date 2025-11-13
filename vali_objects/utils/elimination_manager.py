@@ -97,7 +97,7 @@ class EliminationManager(CacheController):
             self._save_departed_hotkeys()
 
         # Track previous metagraph hotkeys to detect changes
-        self.previous_metagraph_hotkeys = set(self.metagraph.get_hotkeys()) if self.metagraph else set()
+        self.previous_metagraph_hotkeys = set(self.metagraph.hotkeys) if self.metagraph else set()
 
     def handle_perf_ledger_eliminations(self, position_locks, iteration_epoch=None):
         perf_ledger_eliminations = self.position_manager.perf_ledger_manager.get_perf_ledger_eliminations()
@@ -374,7 +374,7 @@ class EliminationManager(CacheController):
         # self.eliminations was just refreshed in process_eliminations
         any_challenege_period_changes = False
         now_ms = TimeUtil.now_in_millis()
-        metagraph_hotkeys_set = set(self.metagraph.get_hotkeys()) if self.metagraph else set()
+        metagraph_hotkeys_set = set(self.metagraph.hotkeys) if self.metagraph else set()
         for x in self.eliminations.values():
             if self.shutdown_dict:
                 return
@@ -585,7 +585,7 @@ class EliminationManager(CacheController):
             return
 
         all_miners_dir = ValiBkpUtils.get_miner_dir(running_unit_tests=self.running_unit_tests)
-        all_hotkeys_set = set(self.metagraph.get_hotkeys()) if self.metagraph else set()
+        all_hotkeys_set = set(self.metagraph.hotkeys) if self.metagraph else set()
 
         for hotkey in CacheController.get_directory_names(all_miners_dir):
             corresponding_elimination = self.hotkey_in_eliminations(hotkey)
@@ -605,7 +605,7 @@ class EliminationManager(CacheController):
         if self.is_backtesting:
             return
 
-        current_hotkeys = set(self.metagraph.get_hotkeys()) if self.metagraph else set()
+        current_hotkeys = set(self.metagraph.hotkeys) if self.metagraph else set()
         lost_hotkeys = self.previous_metagraph_hotkeys - current_hotkeys
         gained_hotkeys = current_hotkeys - self.previous_metagraph_hotkeys
 

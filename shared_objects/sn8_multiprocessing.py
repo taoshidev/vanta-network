@@ -43,14 +43,8 @@ class IPCMetagraph:
             list: Hotkeys with DEVELOPMENT prepended at index 0
         """
         ipc_hotkeys = self._ipc_metagraph.hotkeys
-
-        # Check if DEVELOPMENT is already in the actual list (shouldn't happen)
-        if self.DEVELOPMENT_HOTKEY in ipc_hotkeys:
-            bt.logging.warning(f"DEVELOPMENT hotkey found in actual metagraph - this should not happen")
-            return list(ipc_hotkeys)
-
         # Return new list with DEVELOPMENT prepended
-        return [self.DEVELOPMENT_HOTKEY] + list(ipc_hotkeys)
+        return list(ipc_hotkeys)
 
     def has_hotkey(self, hotkey: str) -> bool:
         """
