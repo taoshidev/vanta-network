@@ -13,7 +13,7 @@ from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 
 def start_rest_server(shared_queue, host="127.0.0.1", port=48888, refresh_interval=15, position_manager=None,
                       contract_manager=None, miner_statistics_manager=None, request_core_manager=None,
-                      asset_selection_manager=None, debt_ledger_manager=None):
+                      asset_selection_manager=None, debt_ledger_manager=None, limit_order_manager=None):
     """Starts the REST API server in a separate process."""
     try:
         print(f"[REST] Step 1/4: Starting REST server process with host={host}, port={port}")
@@ -35,7 +35,8 @@ def start_rest_server(shared_queue, host="127.0.0.1", port=48888, refresh_interv
             miner_statistics_manager=miner_statistics_manager,
             request_core_manager=request_core_manager,
             asset_selection_manager=asset_selection_manager,
-            debt_ledger_manager=debt_ledger_manager
+            debt_ledger_manager=debt_ledger_manager,
+            limit_order_manager=limit_order_manager
         )
         print(f"[REST] Step 4/4: PTNRestServer created successfully, starting server...")
         rest_server.run()
@@ -82,7 +83,7 @@ class APIManager:
                  position_manager=None, contract_manager=None,
                  miner_statistics_manager=None, request_core_manager=None,
                  asset_selection_manager=None, slack_webhook_url=None, debt_ledger_manager=None,
-                 validator_hotkey=None):
+                 validator_hotkey=None, limit_order_manager=None):
         """Initialize API management with shared queue and server configurations.
 
         Args:
@@ -130,6 +131,7 @@ class APIManager:
         self.max_restarts_per_window = 3
         self.restart_window_seconds = 300  # 5 minutes
         self.restart_lock = threading.Lock()  # Protect restart operations
+        self.limit_order_manager = limit_order_manager
 
         # Get default API keys file path
         self.api_keys_file = ValiBkpUtils.get_api_keys_file_path()
@@ -394,7 +396,7 @@ class APIManager:
             target=start_rest_server,
             args=(self.shared_queue, self.rest_host, self.rest_port, self.refresh_interval, self.position_manager,
                   self.contract_manager, self.miner_statistics_manager, self.request_core_manager,
-                  self.asset_selection_manager, self.debt_ledger_manager),
+                  self.asset_selection_manager, self.debt_ledger_manager,  self.limit_order_manager),
             name="RestServer"
         )
         self.rest_process.start()

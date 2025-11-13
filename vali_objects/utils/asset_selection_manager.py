@@ -47,6 +47,32 @@ class AssetSelectionManager:
         self.ASSET_SELECTIONS_FILE = ValiBkpUtils.get_asset_selections_file_location(running_unit_tests=running_unit_tests)
         self._load_asset_selections_from_disk()
 
+    def receive_asset_selection(self, synapse: template.protocol.AssetSelection) -> template.protocol.AssetSelection:
+        """
+        receive miner's asset selection
+        """
+        try:
+            # Process the collateral record through the contract manager
+            sender_hotkey = synapse.dendrite.hotkey
+            bt.logging.info(f"Received miner asset selection from validator hotkey [{sender_hotkey}].")
+            success = self.receive_asset_selection_update(synapse.asset_selection)
+
+            if success:
+                synapse.successfully_processed = True
+                synapse.error_message = ""
+                bt.logging.info(f"Successfully processed AssetSelection synapse from {sender_hotkey}")
+            else:
+                synapse.successfully_processed = False
+                synapse.error_message = "Failed to process miner's asset selection"
+                bt.logging.warning(f"Failed to process AssetSelection synapse from {sender_hotkey}")
+
+        except Exception as e:
+            synapse.successfully_processed = False
+            synapse.error_message = f"Error processing asset selection: {str(e)}"
+            bt.logging.error(f"Exception in receive_asset_selection: {e}")
+
+        return synapse
+
     @property
     def asset_selection_lock(self):
         if not self._asset_selection_lock:

@@ -783,7 +783,8 @@ class ValidatorContractManager:
                 f"Updated account size for {hotkey}: ${account_size:,.2f} (valid from {collateral_record.valid_date_str})")
         return True
 
-    def get_miner_account_size(self, hotkey: str, timestamp_ms: int=None, most_recent: bool=False, records_dict: dict=None) -> float | None:
+    def get_miner_account_size(self, hotkey: str, timestamp_ms: int=None, most_recent: bool=False,
+                               records_dict: dict=None, use_account_floor=False) -> float | None:
         """
         Get the account size for a miner at a given timestamp. Iterate list in reverse chronological order, and return
         the first record whose valid_date_timestamp <= start_of_day_ms
@@ -793,6 +794,7 @@ class ValidatorContractManager:
             timestamp_ms: Timestamp to query for (defaults to now)
             most_recent: If True, return most recent record regardless of timestamp
             records_dict: Optional dict to use instead of self.miner_account_sizes (for cached lookups)
+            use_account_floor: If True, return at least the minimum account size if no records found
 
         Returns:
             Account size in USD, or None if no applicable records
@@ -804,7 +806,7 @@ class ValidatorContractManager:
         source_records = records_dict if records_dict is not None else self.miner_account_sizes
 
         if hotkey not in source_records or not source_records[hotkey]:
-            return None
+            return ValiConfig.MIN_CAPITAL if use_account_floor else None
 
         # Get start of the requested day
         start_of_day_ms = int(
@@ -816,15 +818,20 @@ class ValidatorContractManager:
         # Return most recent record
         if most_recent:
             most_recent_record = source_records[hotkey][-1]
-            return most_recent_record.account_size
+            ans = most_recent_record.account_size
+            if use_account_floor:
+                ans = max(ans, ValiConfig.MIN_CAPITAL)
+            return ans
 
         # Iterate in reversed order, and return the first record that is valid for or before the requested day
         for record in reversed(source_records[hotkey]):
             if record.valid_date_timestamp <= start_of_day_ms:
-                return record.account_size
+                ans = record.account_size
+                if use_account_floor:
+                    ans = max(ans, ValiConfig.MIN_CAPITAL)
+                return ans
 
-        # No applicable records found
-        return None
+        return ValiConfig.MIN_CAPITAL if use_account_floor else None
 
     def get_all_miner_account_sizes(self, miner_account_sizes:dict[str, List[CollateralRecord]]=None, timestamp_ms:int=None) -> dict[str, float]:
         """
@@ -911,6 +918,33 @@ class ValidatorContractManager:
             bt.logging.error(f"Error in async broadcast collateral record: {e}")
             import traceback
             bt.logging.error(traceback.format_exc())
+
+    def receive_collateral_record(self,
+                                  synapse: template.protocol.CollateralRecord) -> template.protocol.CollateralRecord:
+        """
+        receive collateral record update, and update miner account sizes
+        """
+        try:
+            # Process the collateral record through the contract manager
+            sender_hotkey = synapse.dendrite.hotkey
+            bt.logging.info(f"Received collateral record update from validator hotkey [{sender_hotkey}].")
+            success = self.receive_collateral_record_update(synapse.collateral_record)
+
+            if success:
+                synapse.successfully_processed = True
+                synapse.error_message = ""
+                bt.logging.info(f"Successfully processed CollateralRecord synapse from {sender_hotkey}")
+            else:
+                synapse.successfully_processed = False
+                synapse.error_message = "Failed to process collateral record update"
+                bt.logging.warning(f"Failed to process CollateralRecord synapse from {sender_hotkey}")
+
+        except Exception as e:
+            synapse.successfully_processed = False
+            synapse.error_message = f"Error processing collateral record: {str(e)}"
+            bt.logging.error(f"Exception in receive_collateral_record: {e}")
+
+        return synapse
 
     def receive_collateral_record_update(self, collateral_record_data: dict) -> bool:
         """

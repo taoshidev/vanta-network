@@ -15,12 +15,13 @@ from vali_objects.vali_config import ValiConfig
 from vali_objects.position import Position
 from vali_objects.vali_dataclasses.order import OrderStatus
 from vali_objects.enums.order_type_enum import OrderType
+from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.vali_config import TradePair
 
 
 class CustomEncoder(json.JSONEncoder):
     def default(self, obj):
-        if isinstance(obj, TradePair) or isinstance(obj, OrderType):
+        if isinstance(obj, TradePair) or isinstance(obj, OrderType) or isinstance(obj, ExecutionType):
             return obj.__json__()
         elif isinstance(obj, BaseModel):
             return obj.dict()
@@ -130,7 +131,7 @@ class ValiBkpUtils:
     def get_plagiarism_raster_file_location(running_unit_tests=False) -> str:
         suffix = "/tests" if running_unit_tests else ""
         return ValiConfig.BASE_DIR + f"{suffix}/validation/plagiarism/raster_vectors"
-    
+
     @staticmethod
     def get_plagiarism_positions_file_location(running_unit_tests=False) -> str:
         suffix = "/tests" if running_unit_tests else ""
@@ -140,11 +141,11 @@ class ValiBkpUtils:
     def get_plagiarism_scores_dir(running_unit_tests=False) -> str:
         suffix = "/tests" if running_unit_tests else ""
         return ValiConfig.BASE_DIR + f"{suffix}/validation/plagiarism/miners/"
-    
+
     @staticmethod
     def get_plagiarism_score_file_location(hotkey, running_unit_tests=False) -> str:
         return f"{ValiBkpUtils.get_plagiarism_scores_dir(running_unit_tests=running_unit_tests)}{hotkey}.json"
-    
+
     @staticmethod
     def get_challengeperiod_file_location(running_unit_tests=False) -> str:
         suffix = "/tests" if running_unit_tests else ""
@@ -176,7 +177,7 @@ class ValiBkpUtils:
     @staticmethod
     def get_plagiarism_blocklist_file_location():
         return ValiConfig.BASE_DIR + "/miner_blocklist.json"
-    
+
     @staticmethod
     def get_vali_bkp_dir() -> str:
         return ValiConfig.BASE_DIR + "/backups/"
@@ -387,11 +388,11 @@ class ValiBkpUtils:
 
         # Concatenate "open" and other directory files without sorting
         return open_files + closed_files
-    
+
     @staticmethod
     def get_hotkeys_from_file_name(files: list[str]) -> list[str]:
         return [os.path.splitext(os.path.basename(path))[0] for path in files]
-    
+
     @staticmethod
     def get_directories_in_dir(directory):
         return [
@@ -415,3 +416,39 @@ class ValiBkpUtils:
         }[order_status]
 
         return f"{base_dir}{status_dir}"
+
+    @staticmethod
+    def get_limit_orders_dir(miner_hotkey, trade_pair_id, status_str, running_unit_tests=False):
+        base_dir = (f"{ValiBkpUtils.get_miner_dir(running_unit_tests=running_unit_tests)}"
+               f"{miner_hotkey}/limit_orders/{trade_pair_id}/")
+
+        return f"{base_dir}{status_str}/"
+
+    @staticmethod
+    def get_limit_orders(miner_hotkey, running_unit_tests=False):
+        miner_limit_orders_dir = (f"{ValiBkpUtils.get_miner_dir(running_unit_tests=running_unit_tests)}"
+                                  f"{miner_hotkey}/limit_orders/")
+
+        if not os.path.exists(miner_limit_orders_dir):
+            return []
+
+        orders = []
+        trade_pair_dirs = ValiBkpUtils.get_directories_in_dir(miner_limit_orders_dir)
+        status_dirs = ["unfilled", "closed"]
+        for trade_pair_id in trade_pair_dirs:
+            for status in status_dirs:
+                status_dir = ValiBkpUtils.get_limit_orders_dir(miner_hotkey, trade_pair_id, status, running_unit_tests)
+
+                if not os.path.exists(status_dir):
+                    continue
+
+                try:
+                    status_files = ValiBkpUtils.get_all_files_in_dir(status_dir)
+                    for filename in status_files:
+                        with open(filename, 'r') as f:
+                            orders.append(json.load(f))
+
+                except Exception as e:
+                    bt.logging.error(f"Error accessing {status} directory {status_dir}: {e}")
+
+        return orders

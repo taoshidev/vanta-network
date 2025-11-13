@@ -9,6 +9,7 @@ import requests
 from time_util.time_util import TimeUtil
 from vali_objects.utils.challengeperiod_manager import ChallengePeriodManager
 from vali_objects.utils.elimination_manager import EliminationManager
+from vali_objects.utils.limit_order_manager import LimitOrderManager
 from vali_objects.utils.position_manager import PositionManager
 from vali_objects.utils.validator_contract_manager import ValidatorContractManager
 from vali_objects.utils.validator_sync_base import ValidatorSyncBase
@@ -22,11 +23,12 @@ class PositionSyncer(ValidatorSyncBase):
                  n_orders_being_processed=None, running_unit_tests=False, position_manager=None,
                  ipc_manager=None, auto_sync_enabled=False, enable_position_splitting=False, verbose=False,
                  contract_manager=None, live_price_fetcher=None, asset_selection_manager=None,
-                 sync_in_progress=None, sync_epoch=None):
+                 sync_in_progress=None, sync_epoch=None, limit_order_manager=None):
         super().__init__(shutdown_dict, signal_sync_lock, signal_sync_condition, n_orders_being_processed,
                          running_unit_tests=running_unit_tests, position_manager=position_manager,
                          ipc_manager=ipc_manager, enable_position_splitting=enable_position_splitting, verbose=verbose,
-                         contract_manager=contract_manager, live_price_fetcher=live_price_fetcher, asset_selection_manager=asset_selection_manager)
+                         contract_manager=contract_manager, live_price_fetcher=live_price_fetcher,
+                         asset_selection_manager=asset_selection_manager, limit_order_manager=limit_order_manager)
 
         self.force_ran_on_boot = True
         self.sync_in_progress = sync_in_progress
@@ -141,6 +143,17 @@ if __name__ == "__main__":
     challengeperiod_manager = ChallengePeriodManager(metagraph=None, position_manager=position_manager)
     contract_manager = ValidatorContractManager(config=None, running_unit_tests=False)
     position_manager.challengeperiod_manager = challengeperiod_manager
-    position_syncer = PositionSyncer(position_manager=position_manager, contract_manager=contract_manager)
+    from vali_objects.utils.limit_order_manager import LimitOrderManager
+    from vali_objects.utils.position_lock import PositionLocks
+    position_locks = PositionLocks({})
+
+    # Create mock market_order_manager with position_locks attribute
+    class MockMarketOrderManager:
+        def __init__(self, position_locks):
+            self.position_locks = position_locks
+
+    mock_market_order_manager = MockMarketOrderManager(position_locks)
+    limit_order_manager = LimitOrderManager(position_manager, None, mock_market_order_manager, shutdown_dict=None, running_unit_tests=False)
+    position_syncer = PositionSyncer(position_manager=position_manager, contract_manager=contract_manager, limit_order_manager=limit_order_manager)
     candidate_data = position_syncer.read_validator_checkpoint_from_gcloud_zip()
     position_syncer.sync_positions(False, candidate_data=candidate_data)

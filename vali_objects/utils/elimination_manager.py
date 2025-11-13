@@ -45,7 +45,7 @@ class EliminationManager(CacheController):
     def __init__(self, metagraph, position_manager, challengeperiod_manager,
                  running_unit_tests=False, shutdown_dict=None, use_ipc=False, is_backtesting=False,
                  shared_queue_websockets=None, contract_manager=None, position_locks=None,
-                 sync_in_progress=None, slack_notifier=None, sync_epoch=None):
+                 sync_in_progress=None, slack_notifier=None, sync_epoch=None, limit_order_manager=None):
         super().__init__(metagraph=metagraph, is_backtesting=is_backtesting)
         self.position_manager = position_manager
         self.shutdown_dict = shutdown_dict
@@ -60,6 +60,7 @@ class EliminationManager(CacheController):
         self.sync_in_progress = sync_in_progress
         self.slack_notifier = slack_notifier
         self.sync_epoch = sync_epoch
+        self.limit_order_manager = limit_order_manager
 
         # Create dedicated IPC manager if requested
         self.use_ipc = use_ipc
@@ -194,6 +195,14 @@ class EliminationManager(CacheController):
     def handle_eliminated_miner(self, hotkey: str,
                                 trade_pair_to_price_source_used_for_elimination_check: Dict[TradePair, PriceSource],
                                 position_locks, iteration_epoch=None):
+
+        # Clean up limit orders for eliminated miner
+        if self.limit_order_manager:
+            try:
+                result = self.limit_order_manager.delete_all_limit_orders_for_hotkey(hotkey)
+                bt.logging.info(f"Cleaned up limit orders for eliminated miner [{hotkey}]: {result}")
+            except Exception as e:
+                bt.logging.error(f"Error cleaning up limit orders for eliminated miner [{hotkey}]: {e}")
 
         for p in self.position_manager.get_positions_for_one_hotkey(hotkey, only_open_positions=True):
             source_for_elimination = trade_pair_to_price_source_used_for_elimination_check.get(p.trade_pair)

@@ -8,7 +8,9 @@ import numpy as np
 from data_generator.tiingo_data_service import TiingoDataService
 from data_generator.polygon_data_service import PolygonDataService
 from time_util.time_util import TimeUtil, UnifiedMarketCalendar
-
+from setproctitle import setproctitle
+from shared_objects.error_utils import ErrorUtils
+import traceback
 from vali_objects.vali_config import TradePair
 from vali_objects.position import Position
 from vali_objects.utils.vali_utils import ValiUtils
@@ -233,9 +235,6 @@ class LivePriceFetcherClient:
             self.slack_notifier = slack_notifier
 
         def run_update_loop(self):
-            from setproctitle import setproctitle
-            from shared_objects.error_utils import ErrorUtils
-            import traceback
 
             setproctitle("vali_HealthChecker")
             bt.logging.info("LivePriceFetcherHealthChecker daemon started")

@@ -37,6 +37,61 @@ class P2PSyncer(ValidatorSyncBase):
         self.last_signal_sync_time_ms = 0
         self.running_unit_tests = running_unit_tests
 
+    def receive_checkpoint(self, synapse: template.protocol.ValidatorCheckpoint) -> template.protocol.ValidatorCheckpoint:
+        """
+        TODO: properly integrate with validator.py
+        receive checkpoint request, and ensure that only requests received from valid validators are processed.
+        """
+        sender_hotkey = synapse.dendrite.hotkey
+
+        # validator responds to poke from validator and attaches their checkpoint
+        if sender_hotkey in [axon.hotkey for axon in self.get_validators()]:
+            synapse.validator_receive_hotkey = self.wallet.hotkey.ss58_address
+
+            bt.logging.info(f"Received checkpoint request poke from validator hotkey [{sender_hotkey}].")
+            if self.should_fail_early(synapse, SynapseMethod.CHECKPOINT):
+                return synapse
+
+            error_message = ""
+            try:
+                with self.checkpoint_lock:
+                    # reset checkpoint after 10 minutes
+                    if TimeUtil.now_in_millis() - self.last_checkpoint_time > 1000 * 60 * 10:
+                        self.encoded_checkpoint = ""
+                    # save checkpoint so we only generate it once for all requests
+                    if not self.encoded_checkpoint:
+                        # get our current checkpoint
+                        self.last_checkpoint_time = TimeUtil.now_in_millis()
+                        checkpoint_dict = self.request_core_manager.generate_request_core()
+
+                        # compress json and encode as base64 to keep as a string
+                        checkpoint_str = json.dumps(checkpoint_dict, cls=CustomEncoder)
+                        compressed = gzip.compress(checkpoint_str.encode("utf-8"))
+                        self.encoded_checkpoint = base64.b64encode(compressed).decode("utf-8")
+
+                    # only send a checkpoint if we are an up-to-date validator
+                    timestamp = self.timestamp_manager.get_last_order_timestamp()
+                    if TimeUtil.now_in_millis() - timestamp < 1000 * 60 * 60 * 10:  # validators with no orders processed in 10 hrs are considered stale
+                        synapse.checkpoint = self.encoded_checkpoint
+                    else:
+                        error_message = f"Validator is stale, no orders received in 10 hrs, last order timestamp {timestamp}, {round((TimeUtil.now_in_millis() - timestamp)/(1000 * 60 * 60))} hrs ago"
+            except Exception as e:
+                error_message = f"Error processing checkpoint request poke from [{sender_hotkey}] with error [{e}]"
+                bt.logging.error(traceback.format_exc())
+
+            if error_message == "":
+                synapse.successfully_processed = True
+            else:
+                bt.logging.error(error_message)
+                synapse.successfully_processed = False
+            synapse.error_message = error_message
+            bt.logging.success(f"Sending checkpoint back to validator [{sender_hotkey}]")
+        else:
+            bt.logging.info(f"Received a checkpoint poke from non validator [{sender_hotkey}]")
+            synapse.error_message = "Rejecting checkpoint poke from non validator"
+            synapse.successfully_processed = False
+        return synapse
+
     async def send_checkpoint_requests(self):
         """
         serializes checkpoint json and transmits to all validators via synapse

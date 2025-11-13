@@ -183,6 +183,7 @@ class PositionManager(CacheController):
             if positions:
                 self.hotkey_to_positions[hk] = positions
 
+
     def ensure_position_consistency_serially(self):
         """
         Ensures position consistency by checking all closed positions for return calculation changes

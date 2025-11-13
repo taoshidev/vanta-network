@@ -1,0 +1,285 @@
+"""
+
+Modularize the logic that was originally in validator.py. No IPC communication here.
+"""
+import time
+import uuid
+
+from time_util.time_util import TimeUtil
+from vali_objects.enums.execution_type_enum import ExecutionType
+from vali_objects.enums.order_type_enum import OrderType
+from vali_objects.exceptions.signal_exception import SignalException
+import bittensor as bt
+
+from vali_objects.position import Position
+from vali_objects.utils.price_slippage_model import PriceSlippageModel
+from vali_objects.vali_config import ValiConfig, TradePair
+from vali_objects.vali_dataclasses.order import OrderSource, Order
+
+
+class MarketOrderManager():
+    def __init__(self, live_price_fetcher, position_locks, price_slippage_model, config, position_manager,
+                 shared_queue_websockets, contract_manager):
+        self.live_price_fetcher = live_price_fetcher
+        self.position_locks = position_locks
+        self.price_slippage_model = price_slippage_model
+        self.config = config
+        self.position_manager = position_manager
+        self.shared_queue_websockets = shared_queue_websockets
+        self.contract_manager = contract_manager
+        # Cache to track last order time for each (miner_hotkey, trade_pair) combination
+        self.last_order_time_cache = {}  # Key: (miner_hotkey, trade_pair_id), Value: last_order_time_ms
+
+
+    def _get_or_create_open_position_from_new_order(self, trade_pair: TradePair, order_type: OrderType, order_time_ms: int,
+                                        miner_hotkey: str, miner_order_uuid: str, now_ms:int, price_sources, miner_repo_version, account_size):
+
+        # gather open positions and see which trade pairs have an open position
+        positions = self.position_manager.get_positions_for_one_hotkey(miner_hotkey, only_open_positions=True)
+        trade_pair_to_open_position = {position.trade_pair: position for position in positions}
+
+        existing_open_pos = trade_pair_to_open_position.get(trade_pair)
+        if existing_open_pos:
+            # If the position has too many orders, we need to close it out to make room.
+            if len(existing_open_pos.orders) >= ValiConfig.MAX_ORDERS_PER_POSITION and order_type != OrderType.FLAT:
+                bt.logging.info(
+                    f"Miner [{miner_hotkey}] hit {ValiConfig.MAX_ORDERS_PER_POSITION} order limit. "
+                    f"Automatically closing position for {trade_pair.trade_pair_id} "
+                    f"with {len(existing_open_pos.orders)} orders to make room for new position."
+                )
+                force_close_order_time = now_ms - 1 # 2 orders for the same trade pair cannot have the same timestamp
+                force_close_order_uuid = existing_open_pos.position_uuid[::-1] # uuid will stay the same across validators
+                self._add_order_to_existing_position(existing_open_pos, trade_pair, OrderType.FLAT,
+                                                     0.0, 0.0, 0.0, force_close_order_time, miner_hotkey,
+                                                     price_sources, force_close_order_uuid, miner_repo_version,
+                                                     OrderSource.MAX_ORDERS_PER_POSITION_CLOSE)
+                time.sleep(0.1)  # Put 100ms between two consecutive websocket writes for the same trade pair and hotkey. We need the new order to be seen after the FLAT.
+            else:
+                # If the position is closed, raise an exception. This can happen if the miner is eliminated in the main
+                # loop thread.
+                if trade_pair_to_open_position[trade_pair].is_closed_position:
+                    raise SignalException(
+                        f"miner [{miner_hotkey}] sent signal for "
+                        f"closed position [{trade_pair}]")
+                bt.logging.debug("adding to existing position")
+                # Return existing open position (nominal path)
+                return trade_pair_to_open_position[trade_pair]
+
+
+        # if the order is FLAT ignore (noop)
+        if order_type == OrderType.FLAT:
+            open_position = None
+        else:
+            # if a position doesn't exist, then make a new one
+            open_position = Position(
+                miner_hotkey=miner_hotkey,
+                position_uuid=miner_order_uuid if miner_order_uuid else str(uuid.uuid4()),
+                open_ms=order_time_ms,
+                trade_pair=trade_pair,
+                account_size=account_size
+            )
+        return open_position
+
+    def _add_order_to_existing_position(self, existing_position, trade_pair, signal_order_type: OrderType,
+                                        quantity: float, leverage: float, value: float, order_time_ms: int, miner_hotkey: str,
+                                        price_sources, miner_order_uuid: str, miner_repo_version: str, src:OrderSource,
+                                        usd_base_price=None) -> Order:
+        # Must be locked by caller
+        best_price_source = price_sources[0]
+        price = best_price_source.parse_appropriate_price(order_time_ms, trade_pair.is_forex, signal_order_type, existing_position)
+
+        if existing_position.account_size <= 0:
+            bt.logging.warning(
+                f"Invalid account_size {existing_position.account_size} for position {existing_position.position_uuid}. "
+                f"Using MIN_CAPITAL as fallback."
+            )
+            existing_position.account_size = ValiConfig.MIN_CAPITAL
+
+        order = Order(
+            trade_pair=trade_pair,
+            order_type=signal_order_type,
+            quantity=quantity,
+            value=value,
+            leverage=leverage,
+            price=price,
+            processed_ms=order_time_ms,
+            order_uuid=miner_order_uuid,
+            price_sources=price_sources,
+            bid=best_price_source.bid,
+            ask=best_price_source.ask,
+            src=src
+        )
+        if usd_base_price is None:
+            usd_base_price = self.live_price_fetcher.get_usd_base_conversion(trade_pair, order_time_ms, price, signal_order_type, existing_position)
+        order.usd_base_rate = usd_base_price
+        order.quote_usd_rate = self.live_price_fetcher.get_quote_usd_conversion(order, existing_position)
+        net_portfolio_leverage = self.position_manager.calculate_net_portfolio_leverage(miner_hotkey)
+        order.slippage = PriceSlippageModel.calculate_slippage(order.bid, order.ask, order)
+        existing_position.add_order(order, self.live_price_fetcher, net_portfolio_leverage)
+        self.position_manager.save_miner_position(existing_position)
+        # Update cooldown cache after successful order processing
+        self.last_order_time_cache[(miner_hotkey, trade_pair.trade_pair_id)] = order_time_ms
+        # NOTE: UUID tracking happens in validator process, not here
+
+        if self.config.serve:
+            # Add the position to the queue for broadcasting
+            self.shared_queue_websockets.put(existing_position.to_websocket_dict(miner_repo_version=miner_repo_version))
+        return order
+
+
+    def enforce_order_cooldown(self, trade_pair_id, now_ms, miner_hotkey) -> str:
+        """
+        Enforce cooldown between orders for the same trade pair using an efficient cache.
+        This method must be called within the position lock to prevent race conditions.
+        """
+        cache_key = (miner_hotkey, trade_pair_id)
+        current_order_time_ms = now_ms
+
+        # Get the last order time from cache
+        cached_last_order_time = self.last_order_time_cache.get(cache_key, 0)
+        msg = None
+        if cached_last_order_time > 0:
+            time_since_last_order_ms = current_order_time_ms - cached_last_order_time
+
+            if time_since_last_order_ms < ValiConfig.ORDER_COOLDOWN_MS:
+                previous_order_time = TimeUtil.millis_to_formatted_date_str(cached_last_order_time)
+                current_time = TimeUtil.millis_to_formatted_date_str(current_order_time_ms)
+                time_to_wait_in_s = (ValiConfig.ORDER_COOLDOWN_MS - time_since_last_order_ms) / 1000
+                msg = (
+                    f"Order for trade pair [{trade_pair_id}] was placed too soon after the previous order. "
+                    f"Last order was placed at [{previous_order_time}] and current order was placed at [{current_time}]. "
+                    f"Please wait {time_to_wait_in_s:.1f} seconds before placing another order."
+                )
+
+        return msg
+
+    @staticmethod
+    def parse_order_size(signal, usd_base_conversion, trade_pair, portfolio_value):
+        """
+        parses an order signal and calculates leverage, value, and quantity
+        """
+        leverage = signal.get("leverage")
+        value = signal.get("value")
+        quantity = signal.get("quantity")
+
+        fields_set = [x is not None for x in (leverage, value, quantity)]
+        if sum(fields_set) != 1:
+            raise ValueError("Exactly one of 'leverage', 'value', or 'quantity' must be set")
+
+        if quantity is not None:
+            value = quantity * trade_pair.lot_size / usd_base_conversion
+            leverage = value / portfolio_value
+        if leverage is not None:
+            value = leverage * portfolio_value
+            quantity = (value * usd_base_conversion) / trade_pair.lot_size
+        elif value is not None:
+            leverage = value / portfolio_value
+            quantity = (value * usd_base_conversion) / trade_pair.lot_size
+
+        return quantity, leverage, value
+
+    def process_market_order(self, synapse, miner_order_uuid, miner_repo_version, trade_pair, now_ms, signal, miner_hotkey, price_sources=None):
+
+        err_message, existing_position = self._process_market_order(miner_order_uuid, miner_repo_version, trade_pair,
+                                                                    now_ms, signal, miner_hotkey, price_sources)
+        if err_message:
+            synapse.successfully_processed = False
+            synapse.error_message = err_message
+        if existing_position:
+            synapse.order_json = existing_position.orders[-1].__str__()
+
+    def _process_market_order(self, miner_order_uuid, miner_repo_version, trade_pair, now_ms, signal, miner_hotkey, price_sources):
+        # TIMING: Price fetching
+        if price_sources is None:
+            price_fetch_start = TimeUtil.now_in_millis()
+            price_sources = self.live_price_fetcher.get_sorted_price_sources_for_trade_pair(trade_pair, now_ms)
+            price_fetch_ms = TimeUtil.now_in_millis() - price_fetch_start
+            bt.logging.info(f"[TIMING] Price fetching took {price_fetch_ms}ms")
+
+        if not price_sources:
+            raise SignalException(
+                f"Ignoring order for [{miner_hotkey}] due to no live prices being found for trade_pair [{trade_pair}]. Please try again.")
+
+        # TIMING: Extract signal data
+        extract_start = TimeUtil.now_in_millis()
+        signal_order_type = OrderType.from_string(signal["order_type"])
+        extract_ms = TimeUtil.now_in_millis() - extract_start
+        bt.logging.info(f"[TIMING] Extract signal data took {extract_ms}ms")
+
+        # Multiple threads can run receive_signal at once. Don't allow two threads to trample each other.
+        debug_lock_key = f"{miner_hotkey[:8]}.../{trade_pair.trade_pair_id}"
+
+        # TIMING: Time from start to lock request
+        time_to_lock_request = TimeUtil.now_in_millis() - now_ms
+        bt.logging.info(f"[TIMING] Time from receive_signal start to lock request: {time_to_lock_request}ms")
+
+        lock_request_time = TimeUtil.now_in_millis()
+        bt.logging.info(f"[LOCK] Requesting position lock for {debug_lock_key}")
+        err_msg = None
+        existing_position = None
+        with (self.position_locks.get_lock(miner_hotkey, trade_pair.trade_pair_id)):
+            lock_acquired_time = TimeUtil.now_in_millis()
+            lock_wait_ms = lock_acquired_time - lock_request_time
+            bt.logging.info(f"[LOCK] Acquired lock for {debug_lock_key} after {lock_wait_ms}ms wait")
+
+            # TIMING: Cooldown check
+            cooldown_start = TimeUtil.now_in_millis()
+            err_msg = self.enforce_order_cooldown(trade_pair.trade_pair_id, now_ms, miner_hotkey)
+            cooldown_ms = TimeUtil.now_in_millis() - cooldown_start
+            bt.logging.info(f"[LOCK_WORK] Cooldown check took {cooldown_ms}ms")
+
+            if err_msg:
+                bt.logging.error(err_msg)
+                return err_msg, existing_position
+
+            # TIMING: Get account size
+            account_size_start = TimeUtil.now_in_millis()
+            account_size = self.contract_manager.get_miner_account_size(miner_hotkey, now_ms, use_account_floor=True)
+            account_size_ms = TimeUtil.now_in_millis() - account_size_start
+            bt.logging.info(f"[LOCK_WORK] Get account size took {account_size_ms}ms")
+
+            # TIMING: Get or create position
+            get_position_start = TimeUtil.now_in_millis()
+            existing_position = self._get_or_create_open_position_from_new_order(trade_pair, signal_order_type,
+                                                                                 now_ms, miner_hotkey, miner_order_uuid,
+                                                                                 now_ms, price_sources,
+                                                                                 miner_repo_version, account_size)
+            get_position_ms = TimeUtil.now_in_millis() - get_position_start
+            bt.logging.info(f"[LOCK_WORK] Get/create position took {get_position_ms}ms")
+
+            # TIMING: Add order to position
+            if existing_position:
+                add_order_start = TimeUtil.now_in_millis()
+                if signal.get('execution_type') == ExecutionType.LIMIT.name:
+                    new_src = OrderSource.ORDER_SRC_LIMIT_FILLED
+                else:
+                    new_src = OrderSource.ORGANIC
+
+                # Calculate price and USD conversions
+                best_price_source = price_sources[0]
+                price = best_price_source.parse_appropriate_price(now_ms, trade_pair.is_forex, signal_order_type, existing_position)
+                usd_base_price = self.live_price_fetcher.get_usd_base_conversion(trade_pair, now_ms, price, signal_order_type, existing_position)
+
+                # Parse order size (supports leverage, value, or quantity)
+                quantity, leverage, value = self.parse_order_size(signal, usd_base_price, trade_pair, existing_position.account_size)
+
+                self._add_order_to_existing_position(existing_position, trade_pair, signal_order_type,
+                                                     quantity, leverage, value, now_ms, miner_hotkey,
+                                                     price_sources, miner_order_uuid, miner_repo_version,
+                                                     new_src, usd_base_price)
+                add_order_ms = TimeUtil.now_in_millis() - add_order_start
+                bt.logging.info(f"[LOCK_WORK] Add order to position took {add_order_ms}ms")
+            else:
+                # Happens if a FLAT is sent when no position exists
+                pass
+
+        lock_released_time = TimeUtil.now_in_millis()
+        lock_hold_ms = lock_released_time - lock_acquired_time
+        bt.logging.info(
+            f"[LOCK] Released lock for {debug_lock_key} after holding for {lock_hold_ms}ms (wait={lock_wait_ms}ms, total={lock_released_time - lock_request_time}ms)")
+
+        # TIMING: Time from lock release to try block end
+        time_after_lock = TimeUtil.now_in_millis() - lock_released_time
+        bt.logging.info(f"[TIMING] Time from lock release to try block end: {time_after_lock}ms")
+        return err_msg, existing_position
+

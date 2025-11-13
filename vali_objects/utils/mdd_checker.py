@@ -6,6 +6,7 @@ import traceback
 from typing import List, Dict
 
 from time_util.time_util import TimeUtil
+from vali_objects.utils.price_slippage_model import PriceSlippageModel
 from vali_objects.vali_config import ValiConfig, TradePair
 from shared_objects.cache_controller import CacheController
 from vali_objects.position import Position
@@ -43,6 +44,7 @@ class MDDChecker(CacheController):
         self.slack_notifier = slack_notifier
         self.sync_epoch = sync_epoch
 
+
     def reset_debug_counters(self):
         self.n_orders_corrected = 0
         self.miners_corrected = set()
@@ -66,20 +68,24 @@ class MDDChecker(CacheController):
                         if trade_pair_to_market_open[tp]:
                             required_trade_pairs_for_candles.add(tp)
 
+
             now = TimeUtil.now_in_millis()
-            trade_pair_to_price_sources = self.live_price_fetcher.get_tp_to_sorted_price_sources(list(required_trade_pairs_for_candles))
+            trade_pair_to_price_sources = self.live_price_fetcher.get_tp_to_sorted_price_sources(
+                list(required_trade_pairs_for_candles)
+            )
             #bt.logging.info(f"Got candle data for {len(candle_data)} {candle_data}")
+
             for tp, sources in trade_pair_to_price_sources.items():
                 if sources and any(x and not x.websocket for x in sources):
                     self.n_poly_api_requests += 1
 
             self.last_price_fetch_time_ms = now
             return trade_pair_to_price_sources
+
         except Exception as e:
             bt.logging.error(f"Error in get_sorted_price_sources: {e}")
             bt.logging.error(traceback.format_exc())
             return {}
-
 
     def mdd_check(self, position_locks=None, iteration_epoch=None):
         """
@@ -102,7 +108,6 @@ class MDDChecker(CacheController):
         if self.shutdown_dict:
             return
 
-        bt.logging.info("running mdd checker")
         self.reset_debug_counters()
 
         # Time the IPC read of positions
@@ -137,14 +142,16 @@ class MDDChecker(CacheController):
             f"oldest_order_age={oldest_order_age_ms/1000:.1f}s"
         )
         tp_to_price_sources = self.get_sorted_price_sources(hotkey_to_positions)
+
         for hotkey, sorted_positions in hotkey_to_positions.items():
             if self.shutdown_dict:
                 return
             self.perform_price_corrections(hotkey, sorted_positions, tp_to_price_sources, position_locks, iteration_epoch)
 
+
         bt.logging.info(f"mdd checker completed."
                         f" n orders corrected: {self.n_orders_corrected}. n miners corrected: {len(self.miners_corrected)}."
-                        f" n_poly_api_requests: {self.n_poly_api_requests}")
+                        f" n_poly_api_requests: {self.n_poly_api_requests}.")
         self.set_last_update_time(skip_message=False)
 
     def run_update_loop(self):
@@ -201,8 +208,6 @@ class MDDChecker(CacheController):
         bt.logging.info("MDDChecker process shutting down")
 
     def update_order_with_newest_price_sources(self, order, candidate_price_sources, hotkey, position) -> bool:
-        from vali_objects.utils.price_slippage_model import PriceSlippageModel
-
         if not candidate_price_sources:
             return False
         trade_pair = position.trade_pair
@@ -383,12 +388,4 @@ class MDDChecker(CacheController):
             if self._position_is_candidate_for_price_correction(position, now_ms):
                 self._update_position_returns_and_persist_to_disk(hotkey, position, tp_to_price_sources, position_locks, iteration_epoch)
 
-
-
-
-
-
-
-
-                
-
+        return False
