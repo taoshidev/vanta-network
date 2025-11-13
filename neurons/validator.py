@@ -131,17 +131,9 @@ class Validator:
         # PERFORMANCE OPTIMIZATION: Use separate managers to reduce IPC contention
         # Each manager runs in its own process with its own server thread
         self.ipc_manager = Manager()  # General-purpose manager for queues, values, etc.
-        self.positions_ipc_manager = Manager()  # Dedicated manager for position data (hotkey_to_positions dict)
-        self.locks_ipc_manager = Manager()  # Dedicated manager for position locks (locks dict)
-        self.eliminations_ipc_manager = Manager()  # Dedicated manager for eliminations list
-        self.departed_hotkeys_ipc_manager = Manager()  # Dedicated manager for departed_hotkeys dict
         self.metagraph_ipc_manager = Manager()  # Dedicated manager for metagraph (hotkeys, neurons, uids, etc.)
 
-        bt.logging.info(f"[IPC] Created 6 IPC managers: general (PID: {self.ipc_manager._process.pid}), "
-                       f"positions (PID: {self.positions_ipc_manager._process.pid}), "
-                       f"locks (PID: {self.locks_ipc_manager._process.pid}), "
-                       f"eliminations (PID: {self.eliminations_ipc_manager._process.pid}), "
-                       f"departed_hotkeys (PID: {self.departed_hotkeys_ipc_manager._process.pid}), "
+        bt.logging.info(f"[IPC] Created 2 IPC managers: general (PID: {self.ipc_manager._process.pid}), "
                        f"metagraph (PID: {self.metagraph_ipc_manager._process.pid})")
 
         self.shared_queue_websockets = self.ipc_manager.Queue()
@@ -154,10 +146,6 @@ class Validator:
         # Managers capture this at START of iteration and check before saving
         # If epoch changed during iteration, data is stale and save is aborted
         self.sync_epoch = self.ipc_manager.Value('i', 0)
-
-        # Dedicated lock for eliminations_with_reasons IPC dict
-        # Protects cross-process access between ChallengePeriodManager and EliminationManager
-        self.eliminations_lock = self.ipc_manager.Lock()
 
         # Activating Bittensor's logging with the set configurations.
         bt.logging(config=self.config, logging_dir=self.config.full_path)
@@ -234,15 +222,12 @@ class Validator:
 
         self.elimination_manager = EliminationManager(self.metagraph, None,  # Set after self.pm creation
                                                       None, shutdown_dict=shutdown_dict,
-                                                      ipc_manager=self.ipc_manager,
-                                                      eliminations_ipc_manager=self.eliminations_ipc_manager,
-                                                      departed_hotkeys_ipc_manager=self.departed_hotkeys_ipc_manager,
+                                                      use_ipc=True,
                                                       shared_queue_websockets=self.shared_queue_websockets,
                                                       contract_manager=self.contract_manager,
                                                       sync_in_progress=self.sync_in_progress,
                                                       slack_notifier=self.slack_notifier,
-                                                      sync_epoch=self.sync_epoch,
-                                                      eliminations_lock=self.eliminations_lock)
+                                                      sync_epoch=self.sync_epoch)
 
         self.asset_selection_manager = AssetSelectionManager(config=self.config, metagraph=self.metagraph, ipc_manager=self.ipc_manager)
 
@@ -274,8 +259,8 @@ class Validator:
 
         self.position_manager = PositionManager(metagraph=self.metagraph,
                                                 perform_order_corrections=True,
-                                                ipc_manager=self.ipc_manager,
                                                 live_price_fetcher=self.live_price_fetcher,
+                                                use_ipc=True,
                                                 perf_ledger_manager=self.perf_ledger_manager,
                                                 elimination_manager=self.elimination_manager,
                                                 challengeperiod_manager=None,
@@ -284,7 +269,7 @@ class Validator:
                                                 closed_position_daemon=True)
 
         self.position_locks = PositionLocks(hotkey_to_positions=self.position_manager.get_positions_for_all_miners(),
-                                            ipc_manager=self.locks_ipc_manager)  # Use dedicated locks manager
+                                            use_ipc=True)
 
         # Set position_locks on elimination_manager now that it exists
         self.elimination_manager.position_locks = self.position_locks
@@ -295,12 +280,12 @@ class Validator:
                                                               perf_ledger_manager=self.perf_ledger_manager,
                                                               position_manager=self.position_manager,
                                                               ipc_manager=self.ipc_manager,
+                                                              eliminations_lock=self.elimination_manager.eliminations_lock,
                                                               contract_manager=self.contract_manager,
                                                               plagiarism_manager=self.plagiarism_manager,
                                                               sync_in_progress=self.sync_in_progress,
                                                               slack_notifier=self.slack_notifier,
                                                               sync_epoch=self.sync_epoch,
-                                                              eliminations_lock=self.eliminations_lock,
                                                               asset_selection_manager=self.asset_selection_manager)
 
         # Attach the position manager to the other objects that need it

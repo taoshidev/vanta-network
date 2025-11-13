@@ -725,31 +725,51 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
         
         def create_positions_and_run(parallel_mode):
             """Helper to create positions and run with specified parallel mode."""
+            # For multiprocessing mode, create a new PositionManager with IPC support
+            # to avoid pickling threading locks
+            if parallel_mode == ParallelizationMode.MULTIPROCESSING:
+                # Create EliminationManager with IPC support for multiprocessing
+                multiprocessing_elimination_manager = EliminationManager(
+                    self.mmg, None, None,
+                    running_unit_tests=True,
+                    use_ipc=True  # Use IPC-compatible locks for multiprocessing
+                )
+
+                position_manager = PositionManager(
+                    metagraph=self.mmg,
+                    running_unit_tests=True,
+                    elimination_manager=multiprocessing_elimination_manager,
+                    live_price_fetcher=self.live_price_fetcher,
+                    use_ipc=True  # Use IPC-compatible locks for multiprocessing
+                )
+            else:
+                position_manager = self.position_manager
+
             # Clear any existing positions
-            self.position_manager.clear_all_miner_positions()
-            
+            position_manager.clear_all_miner_positions()
+
             # Create fresh PerfLedgerManager for this mode with testing flags
             plm = PerfLedgerManager(
                 metagraph=self.mmg,
                 running_unit_tests=True,
-                position_manager=self.position_manager,
+                position_manager=position_manager,
                 parallel_mode=parallel_mode,
                 is_testing=True,  # Enable testing mode for consistent mocking
             )
             plm.clear_all_ledger_data()
-            
+
             # Create identical positions
             for name, tp, start_offset_hours, duration_hours, open_price, close_price in positions_data:
                 start_time = base_time + (start_offset_hours * 60 * 60 * 1000)
                 end_time = start_time + (duration_hours * 60 * 60 * 1000)
-                
+
                 position = self._create_position(
                     name, tp, start_time, end_time, open_price, close_price, OrderType.LONG
                 )
-                self.position_manager.save_miner_position(position)
+                position_manager.save_miner_position(position)
             
             # Get positions for input verification (before processing)
-            all_positions = self.position_manager.get_positions_for_all_miners()
+            all_positions = position_manager.get_positions_for_all_miners()
             hotkey_to_positions = {self.test_hotkey: all_positions.get(self.test_hotkey, [])}
             
             # Update using the appropriate API for the mode
@@ -1214,20 +1234,37 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
         serial_bundles = plm_serial.get_perf_ledgers(portfolio_only=False)
         
         # Test Multiprocessing mode (already tested extensively above)
+        # Create EliminationManager and PositionManager with IPC support to avoid pickling threading locks
+        multiprocessing_elimination_manager = EliminationManager(
+            self.mmg, None, None,
+            running_unit_tests=True,
+            use_ipc=True  # Use IPC-compatible locks for multiprocessing
+        )
+
+        multiprocessing_position_manager = PositionManager(
+            metagraph=self.mmg,
+            running_unit_tests=True,
+            elimination_manager=multiprocessing_elimination_manager,
+            live_price_fetcher=self.live_price_fetcher,
+            use_ipc=True  # Use IPC-compatible locks for multiprocessing
+        )
+        # Copy the position from the test's position_manager
+        multiprocessing_position_manager.save_miner_position(position)
+
         plm_multiprocessing = PerfLedgerManager(
             metagraph=self.mmg,
             running_unit_tests=True,
-            position_manager=self.position_manager,
+            position_manager=multiprocessing_position_manager,
             parallel_mode=ParallelizationMode.MULTIPROCESSING,
             is_testing=True,
         )
         plm_multiprocessing.clear_all_ledger_data()
-        
+
         # Use the parallel API
-        all_positions = self.position_manager.get_positions_for_all_miners()
+        all_positions = multiprocessing_position_manager.get_positions_for_all_miners()
         hotkey_to_positions = {self.test_hotkey: all_positions.get(self.test_hotkey, [])}
         existing_perf_ledgers = {}
-        
+
         from shared_objects.sn8_multiprocessing import get_multiprocessing_pool
         with get_multiprocessing_pool(ParallelizationMode.MULTIPROCESSING) as pool:
             multiprocessing_bundles = plm_multiprocessing.update_perf_ledgers_parallel(

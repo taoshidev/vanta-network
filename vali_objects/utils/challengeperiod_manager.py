@@ -2,6 +2,7 @@
 from collections import defaultdict
 import time
 import bittensor as bt
+import threading
 import copy
 
 from datetime import datetime
@@ -28,6 +29,7 @@ class ChallengePeriodManager(CacheController):
             perf_ledger_manager : PerfLedgerManager=None,
             position_manager: PositionManager=None,
             ipc_manager=None,
+            eliminations_lock=None,
             contract_manager=None,
             plagiarism_manager=None,
             asset_selection_manager=None,
@@ -37,8 +39,7 @@ class ChallengePeriodManager(CacheController):
             shutdown_dict=None,
             sync_in_progress=None,
             slack_notifier=None,
-            sync_epoch=None,
-            eliminations_lock=None):
+            sync_epoch=None):
         super().__init__(metagraph, running_unit_tests=running_unit_tests, is_backtesting=is_backtesting)
         self.perf_ledger_manager = perf_ledger_manager if perf_ledger_manager else \
             PerfLedgerManager(metagraph, running_unit_tests=running_unit_tests)
@@ -52,8 +53,14 @@ class ChallengePeriodManager(CacheController):
         else:
             self.eliminations_with_reasons: dict[str, tuple[str, float]] = {}
 
-        # Dedicated lock for eliminations_with_reasons dict
-        self.eliminations_lock = eliminations_lock
+        # Use shared eliminations_lock for cross-process synchronization with EliminationManager
+        # If not provided (tests), create a local threading lock
+        if eliminations_lock is not None:
+            self.eliminations_lock = eliminations_lock
+            bt.logging.info("[CP_DEBUG] Using shared eliminations_lock for cross-process synchronization")
+        else:
+            self.eliminations_lock = threading.Lock()
+            bt.logging.info("[CP_DEBUG] Created local threading lock for tests")
 
         self.contract_manager = contract_manager
         self.plagiarism_manager = plagiarism_manager

@@ -32,6 +32,26 @@ class MockMetagraph():
         self.axons = []
         self.emission = []
 
+    def __getstate__(self):
+        """Support pickling for multiprocessing."""
+        return {
+            'hotkeys': self.hotkeys,
+            'neurons': self.neurons,
+            'uids': self.uids,
+            'block_at_registration': self.block_at_registration,
+            'axons': self.axons,
+            'emission': self.emission,
+        }
+
+    def __setstate__(self, state):
+        """Support unpickling for multiprocessing."""
+        self.hotkeys = state['hotkeys']
+        self.neurons = state['neurons']
+        self.uids = state['uids']
+        self.block_at_registration = state['block_at_registration']
+        self.axons = state['axons']
+        self.emission = state['emission']
+
     def get_hotkeys(self) -> List[str]:
         """Get list of all hotkeys."""
         return self.hotkeys

@@ -41,7 +41,7 @@ class PositionManager(CacheController):
                  challengeperiod_manager=None,
                  elimination_manager=None,
                  secrets=None,
-                 ipc_manager=None,
+                 use_ipc=False,
                  live_price_fetcher=None,
                  is_backtesting=False,
                  shared_queue_websockets=None,
@@ -66,10 +66,22 @@ class PositionManager(CacheController):
         # Track splitting statistics
         self.split_stats = defaultdict(self._default_split_stats)
 
-        if ipc_manager:
+        # Create dedicated IPC manager if requested
+        self.use_ipc = use_ipc
+        if self.use_ipc:
+            from multiprocessing import Manager
+            ipc_manager = Manager()  # Don't store it - proxy objects are picklable
+            bt.logging.info(
+                f"PositionManager: Created dedicated IPC manager "
+                f"(PID: {ipc_manager._process.pid})"
+            )
+
+            # IPC-backed data structure - proxy objects ARE picklable
             self.hotkey_to_positions = ipc_manager.dict()
         else:
+            # Local (non-IPC) data structure for tests
             self.hotkey_to_positions = {}
+
         self.secrets = secrets
         self.live_price_fetcher = live_price_fetcher
         self._populate_memory_positions_for_first_time()

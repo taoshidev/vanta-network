@@ -204,10 +204,16 @@ class EnhancedMockChallengePeriodManager(BaseMockChallengePeriodManager):
 
 class EnhancedMockPerfLedgerManager:
     """Enhanced mock perf ledger manager that respects eliminations"""
-    
-    def __init__(self, metagraph, ipc_manager=None, running_unit_tests=True, perf_ledger_hks_to_invalidate=None):
+
+    def __init__(self, metagraph, running_unit_tests=True, perf_ledger_hks_to_invalidate=None):
         from vali_objects.vali_dataclasses.perf_ledger import PerfLedgerManager
-        self.base = PerfLedgerManager(metagraph, ipc_manager, running_unit_tests, perf_ledger_hks_to_invalidate or {})
+        # PerfLedgerManager still uses ipc_manager parameter, so pass None for it
+        self.base = PerfLedgerManager(
+            metagraph,
+            ipc_manager=None,
+            running_unit_tests=running_unit_tests,
+            perf_ledger_hks_to_invalidate=perf_ledger_hks_to_invalidate or {}
+        )
         # Delegate all attributes to base
         self.__dict__.update(self.base.__dict__)
         self.elimination_manager = None  # Set after initialization

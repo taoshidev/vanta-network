@@ -60,16 +60,9 @@ class TestReregistration(TestBase):
 
         self.position_locks = PositionLocks()
 
-        # Create IPC manager for multiprocessing simulation
-        # Use side_effect to return a NEW list/dict each time, not the same object
-        self.mock_ipc_manager = MagicMock()
-        self.mock_ipc_manager.list.side_effect = lambda: []
-        self.mock_ipc_manager.dict.side_effect = lambda: {}
-
         # Create managers
         self.perf_ledger_manager = EnhancedMockPerfLedgerManager(
             self.mock_metagraph,
-            ipc_manager=self.mock_ipc_manager,
             running_unit_tests=True,
             perf_ledger_hks_to_invalidate={}
         )
@@ -82,7 +75,7 @@ class TestReregistration(TestBase):
             None,  # position_manager set later
             None,  # challengeperiod_manager set later
             running_unit_tests=True,
-            ipc_manager=self.mock_ipc_manager,
+            use_ipc=False,
             contract_manager=self.contract_manager
         )
 
@@ -231,7 +224,7 @@ class TestReregistration(TestBase):
             self.position_manager,
             self.challengeperiod_manager,
             running_unit_tests=True,
-            ipc_manager=self.mock_ipc_manager,
+            use_ipc=False,
             contract_manager=self.contract_manager
         )
 
@@ -265,7 +258,7 @@ class TestReregistration(TestBase):
             self.position_manager,
             self.challengeperiod_manager,
             running_unit_tests=True,
-            ipc_manager=self.mock_ipc_manager,
+            use_ipc=False,
             contract_manager=self.contract_manager
         )
 
@@ -532,7 +525,7 @@ class TestReregistration(TestBase):
             self.position_manager,
             self.challengeperiod_manager,
             running_unit_tests=True,
-            ipc_manager=self.mock_ipc_manager,
+            use_ipc=False,
             contract_manager=self.contract_manager
         )
 
@@ -564,7 +557,7 @@ class TestReregistration(TestBase):
             self.position_manager,
             self.challengeperiod_manager,
             running_unit_tests=True,
-            ipc_manager=self.mock_ipc_manager,
+            use_ipc=False,
             contract_manager=self.contract_manager
         )
 

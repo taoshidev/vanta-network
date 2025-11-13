@@ -67,17 +67,10 @@ class TestEliminationIntegration(TestBase):
         self.live_price_fetcher = LivePriceFetcher(secrets=secrets, disable_ws=True)
         
         self.position_locks = PositionLocks()
-        
-        # Create IPC manager for multiprocessing simulation
-        self.mock_ipc_manager = MagicMock()
-        self.mock_ipc_manager.list.return_value = []
-        # Return a NEW dict for each call to avoid sharing between eliminations and departed_hotkeys
-        self.mock_ipc_manager.dict.side_effect = lambda: {}
-        
-        # Create all managers with IPC
+
+        # Create all managers
         self.perf_ledger_manager = EnhancedMockPerfLedgerManager(
             self.mock_metagraph,
-            ipc_manager=self.mock_ipc_manager,
             running_unit_tests=True,
             perf_ledger_hks_to_invalidate={}
         )
@@ -88,7 +81,7 @@ class TestEliminationIntegration(TestBase):
             self.live_price_fetcher,
             None,
             running_unit_tests=True,
-            ipc_manager=self.mock_ipc_manager,
+            use_ipc=False,
             contract_manager=self.contract_manager
         )
         

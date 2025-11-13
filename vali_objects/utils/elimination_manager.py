@@ -1,7 +1,9 @@
 # developer: jbonilla
 # Copyright © 2024 Taoshi Inc
-import shutil
 import time
+import traceback
+import shutil
+from multiprocessing import Manager
 from copy import deepcopy
 from enum import Enum
 from typing import Dict
@@ -11,6 +13,8 @@ from vali_objects.utils.live_price_fetcher import LivePriceFetcher
 from vali_objects.utils.miner_bucket_enum import MinerBucket
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import ValiConfig, TradePair
+from setproctitle import setproctitle
+from shared_objects.error_utils import ErrorUtils
 from shared_objects.cache_controller import CacheController
 from shared_objects.metagraph_utils import is_anomalous_hotkey_loss
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
@@ -39,10 +43,9 @@ class EliminationManager(CacheController):
     """
 
     def __init__(self, metagraph, position_manager, challengeperiod_manager,
-                 running_unit_tests=False, shutdown_dict=None, ipc_manager=None, is_backtesting=False,
+                 running_unit_tests=False, shutdown_dict=None, use_ipc=False, is_backtesting=False,
                  shared_queue_websockets=None, contract_manager=None, position_locks=None,
-                 sync_in_progress=None, slack_notifier=None, sync_epoch=None,
-                 eliminations_ipc_manager=None, departed_hotkeys_ipc_manager=None, eliminations_lock=None):
+                 sync_in_progress=None, slack_notifier=None, sync_epoch=None):
         super().__init__(metagraph=metagraph, is_backtesting=is_backtesting)
         self.position_manager = position_manager
         self.shutdown_dict = shutdown_dict
@@ -58,26 +61,28 @@ class EliminationManager(CacheController):
         self.slack_notifier = slack_notifier
         self.sync_epoch = sync_epoch
 
-        # Dedicated lock for eliminations_with_reasons dict
-        self.eliminations_lock = eliminations_lock
+        # Create dedicated IPC manager if requested
+        self.use_ipc = use_ipc
+        if self.use_ipc:
+            ipc_manager = Manager()  # Don't store it - proxy objects are picklable
+            bt.logging.info(
+                f"EliminationManager: Created dedicated IPC manager "
+                f"(PID: {ipc_manager._process.pid})"
+            )
 
-        # IPC dict for eliminations (optimization over list)
-        # - Fast existence check: `hotkey in dict` → O(1), 1 byte IPC
-        # - Full details: `dict.get(hotkey)` → O(1), 500 bytes IPC
-        # - Replaces O(N) list iteration that moved 25KB in worst case
-        if eliminations_ipc_manager:
-            self.eliminations = eliminations_ipc_manager.dict()  # {hotkey: {...}}
-        elif ipc_manager:
+            # IPC-backed data structures - proxy objects ARE picklable
+            # - Fast existence check: `hotkey in dict` → O(1), 1 byte IPC
+            # - Full details: `dict.get(hotkey)` → O(1), 500 bytes IPC
+            # - Replaces O(N) list iteration that moved 25KB in worst case
             self.eliminations = ipc_manager.dict()
-        else:
-            self.eliminations = {}
-
-        if departed_hotkeys_ipc_manager:
-            self.departed_hotkeys = departed_hotkeys_ipc_manager.dict()
-        elif ipc_manager:
             self.departed_hotkeys = ipc_manager.dict()
+            self.eliminations_lock = ipc_manager.Lock()
         else:
+            # Local (non-IPC) data structures for tests
+            self.eliminations = {}
             self.departed_hotkeys = {}
+            import threading
+            self.eliminations_lock = threading.Lock()
 
         # Populate from disk
         eliminations_from_disk = self.get_eliminations_from_disk()
@@ -98,6 +103,17 @@ class EliminationManager(CacheController):
 
         # Track previous metagraph hotkeys to detect changes
         self.previous_metagraph_hotkeys = set(self.metagraph.hotkeys) if self.metagraph else set()
+
+    def get_eliminations_lock(self):
+        """
+        Get the shared eliminations lock for cross-process synchronization.
+        This lock should be shared with ChallengePeriodManager to synchronize
+        access to the eliminations_with_reasons dict.
+
+        Returns:
+            Lock object (Manager.Lock() for IPC, threading.Lock() otherwise)
+        """
+        return self.eliminations_lock
 
     def handle_perf_ledger_eliminations(self, position_locks, iteration_epoch=None):
         perf_ledger_eliminations = self.position_manager.perf_ledger_manager.get_perf_ledger_eliminations()
@@ -266,10 +282,7 @@ class EliminationManager(CacheController):
         This method is designed to run in a separate process and will process
         eliminations continuously until shutdown is signaled.
         """
-        import time
-        import traceback
-        from setproctitle import setproctitle
-        from shared_objects.error_utils import ErrorUtils
+
         setproctitle("vali_EliminationManager")
 
         bt.logging.info("EliminationManager process started")

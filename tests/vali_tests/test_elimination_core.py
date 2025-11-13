@@ -483,22 +483,14 @@ class TestEliminationCore(TestBase):
 
     def test_elimination_with_ipc_manager(self):
         """Test elimination manager with IPC manager for multiprocessing"""
-        # Mock IPC manager
-        mock_ipc_manager = MagicMock()
-        # Return a NEW dict for each call to avoid sharing between eliminations and departed_hotkeys
-        mock_ipc_manager.dict.side_effect = lambda: {}
-
-        # Create elimination manager with IPC
+        # Create elimination manager with IPC enabled
         ipc_elimination_manager = EliminationManager(
             self.mock_metagraph,
             self.position_manager,
             self.challengeperiod_manager,
             running_unit_tests=True,
-            ipc_manager=mock_ipc_manager
+            use_ipc=True
         )
-
-        # Verify IPC dict was created for eliminations
-        mock_ipc_manager.dict.assert_called()
 
         # Test adding elimination
         test_elim = ipc_elimination_manager.generate_elimination_row(
