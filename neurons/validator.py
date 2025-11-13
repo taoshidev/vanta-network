@@ -1125,10 +1125,7 @@ class Validator:
                 synapse.error_message = msg
 
             else:
-                market_open_start = time.perf_counter()
-                is_market_open = self.live_price_fetcher.is_market_open(tp)
-                market_open_ms = (time.perf_counter() - market_open_start) * 1000
-                bt.logging.info(f"[FAIL_EARLY_DEBUG] is_market_open took {market_open_ms:.2f}ms")
+                is_market_open = self.live_price_fetcher.is_market_open(tp, now_ms)
 
                 if not is_market_open:
                     msg = (f"Market for trade pair [{tp.trade_pair_id}] is likely closed or this validator is"

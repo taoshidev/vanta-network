@@ -7,7 +7,7 @@ from typing import List, Tuple, Dict
 import numpy as np
 from data_generator.tiingo_data_service import TiingoDataService
 from data_generator.polygon_data_service import PolygonDataService
-from time_util.time_util import TimeUtil
+from time_util.time_util import TimeUtil, UnifiedMarketCalendar
 
 from vali_objects.vali_config import TradePair
 from vali_objects.position import Position
@@ -55,6 +55,9 @@ class LivePriceFetcherClient:
         self._client = None
         self._server_process = None
         self._authkey = None
+
+        # Market calendar for local (non-RPC) market hours checking
+        self._market_calendar = UnifiedMarketCalendar()
 
         # Start server and connect
         self._start_server()
@@ -200,6 +203,21 @@ class LivePriceFetcherClient:
                 self._start_server(restart=True)
             return False
 
+    def is_market_open(self, trade_pair: TradePair, time_ms=None) -> bool:
+        """
+        Check if market is open for a trade pair. Executes locally (no RPC).
+
+        Args:
+            trade_pair: The trade pair to check
+            time_ms: Optional timestamp in milliseconds (defaults to now)
+
+        Returns:
+            bool: True if market is open, False otherwise
+        """
+        if time_ms is None:
+            time_ms = TimeUtil.now_in_millis()
+        return self._market_calendar.is_market_open(trade_pair, time_ms)
+
     def __getattr__(self, name):
         """
         Proxy all method calls to the underlying client.
@@ -343,35 +361,8 @@ class LivePriceFetcher:
             "is_backtesting": self.is_backtesting
         }
 
-    def is_market_open(self, trade_pair: TradePair) -> bool:
-        import time
-
-        # Time the RPC call to polygon_data_service
-        rpc_start = time.perf_counter()
-        result = self.polygon_data_service.is_market_open(trade_pair)
-        rpc_ms = (time.perf_counter() - rpc_start) * 1000
-
-        bt.logging.info(
-            f"[MARKET_TIMING] is_market_open RPC call to polygon_data_service={rpc_ms:.2f}ms, "
-            f"trade_pair={trade_pair.trade_pair_id}, result={result}"
-        )
-
-        return result
-
     def get_unsupported_trade_pairs(self):
-        import time
-
-        # Time the RPC call to get unsupported trade pairs
-        rpc_start = time.perf_counter()
-        result = self.polygon_data_service.UNSUPPORTED_TRADE_PAIRS
-        rpc_ms = (time.perf_counter() - rpc_start) * 1000
-
-        bt.logging.info(
-            f"[MARKET_TIMING] get_unsupported_trade_pairs RPC call={rpc_ms:.2f}ms, "
-            f"count={len(result) if result else 0}"
-        )
-
-        return result
+        return self.polygon_data_service.UNSUPPORTED_TRADE_PAIRS
 
     def get_currency_conversion(self, base: str, quote: str):
         return self.polygon_data_service.get_currency_conversion(base=base, quote=quote)

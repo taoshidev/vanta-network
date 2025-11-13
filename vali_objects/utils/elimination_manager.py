@@ -354,20 +354,8 @@ class EliminationManager(CacheController):
         Returns:
             dict or None: Elimination details if found, None otherwise
         """
-
-        # Time the IPC dict.get() call
-        ipc_start = time.perf_counter()
         elimination = self.eliminations.get(hotkey)
-        ipc_ms = (time.perf_counter() - ipc_start) * 1000
-
-        # Time the deepcopy operation
-        copy_start = time.perf_counter()
-        result = deepcopy(elimination) if elimination else None
-        copy_ms = (time.perf_counter() - copy_start) * 1000
-
-        bt.logging.info(f"[ELIM_TIMING] IPC dict.get()={ipc_ms:.2f}ms, deepcopy()={copy_ms:.2f}ms, total={(ipc_ms+copy_ms):.2f}ms")
-
-        return result
+        return deepcopy(elimination) if elimination else None
 
     def _delete_eliminated_expired_miners(self):
         deleted_hotkeys = set()
