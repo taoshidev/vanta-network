@@ -61,7 +61,7 @@ class SubtensorWeightSetter(CacheController):
             current_time = TimeUtil.now_in_millis()
 
         # Collect metagraph hotkeys to ensure we are only setting weights for miners in the metagraph
-        metagraph_hotkeys = list(self.metagraph.hotkeys)
+        metagraph_hotkeys = list(self.metagraph.get_hotkeys())
         metagraph_hotkeys_set = set(metagraph_hotkeys)
         hotkey_to_idx = {hotkey: idx for idx, hotkey in enumerate(metagraph_hotkeys)}
 

@@ -51,6 +51,8 @@ class TestEliminationManager(TestBase):
                                                     elimination_manager=self.elimination_manager,
                                                     live_price_fetcher=self.live_price_fetcher)
         self.position_manager.clear_all_miner_positions()
+        self.elimination_manager.clear_eliminations()
+        self.ledger_manager.clear_perf_ledger_eliminations_from_disk()
         for hk in self.mock_metagraph.hotkeys:
             mock_position = Position(
                 miner_hotkey=hk,
@@ -96,6 +98,7 @@ class TestEliminationManager(TestBase):
         # Cleanup and setup
         self.position_manager.clear_all_miner_positions()
         self.ledger_manager.clear_perf_ledgers_from_disk()
+        self.ledger_manager.clear_perf_ledger_eliminations_from_disk()
         self.challengeperiod_manager._clear_challengeperiod_in_memory_and_disk()
         self.elimination_manager.clear_eliminations()
 

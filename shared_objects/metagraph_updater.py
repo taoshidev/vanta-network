@@ -210,24 +210,24 @@ class MetagraphUpdater(CacheController):
         # Wait for initial metagraph population before proceeding
         bt.logging.info("Waiting for initial metagraph population...")
         start_time = time.time()
-        while not self.metagraph.hotkeys and (time.time() - start_time) < max_wait_time:
+        while not self.metagraph.get_hotkeys() and (time.time() - start_time) < max_wait_time:
             time.sleep(1)
-        
-        if not self.metagraph.hotkeys:
+
+        if not self.metagraph.get_hotkeys():
             error_msg = f"Failed to populate metagraph within {max_wait_time} seconds"
             bt.logging.error(error_msg)
             if slack_notifier:
                 slack_notifier.send_message(f"❌ {error_msg}", level="error")
             exit()
-        
-        bt.logging.info(f"Metagraph populated with {len(self.metagraph.hotkeys)} hotkeys")
+
+        bt.logging.info(f"Metagraph populated with {len(self.metagraph.get_hotkeys())} hotkeys")
         return updater_thread
 
     def estimate_number_of_validators(self):
         # Filter out expired validators
         self.likely_validators = {k: v for k, v in self.likely_validators.items() if not self._is_expired(v)}
         hotkeys_with_v_trust = set() if self.is_miner else {self.hotkey}
-        for neuron in self.metagraph.neurons:
+        for neuron in self.metagraph.get_neurons():
             if neuron.validator_trust > 0:
                 hotkeys_with_v_trust.add(neuron.hotkey)
         return len(hotkeys_with_v_trust.union(set(self.likely_validators.keys())))
@@ -575,7 +575,7 @@ class MetagraphUpdater(CacheController):
         # Filter out expired miners
         self.likely_miners = {k: v for k, v in self.likely_miners.items() if not self._is_expired(v)}
         hotkeys_with_incentive = {self.hotkey} if self.is_miner else set()
-        for neuron in self.metagraph.neurons:
+        for neuron in self.metagraph.get_neurons():
             if neuron.incentive > 0:
                 hotkeys_with_incentive.add(neuron.hotkey)
 
@@ -601,7 +601,7 @@ class MetagraphUpdater(CacheController):
 
         bt.logging.info(
             f"metagraph state (approximation): {n_validators} active validators, {n_miners} active miners, hotkeys: "
-            f"{len(self.metagraph.hotkeys)}")
+            f"{len(self.metagraph.get_hotkeys())}")
 
     def sync_lists(self, shared_list, updated_list, brute_force=False):
         if brute_force:
@@ -755,7 +755,7 @@ class MetagraphUpdater(CacheController):
             else:
                 recently_acked_miners = []
 
-        hotkeys_before = set(self.metagraph.hotkeys)
+        hotkeys_before = set(self.metagraph.get_hotkeys())
         
         # Synchronize with weight setting operations to prevent WebSocket concurrency errors
         with get_subtensor_lock():

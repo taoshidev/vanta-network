@@ -61,7 +61,7 @@ class P2PSyncer(ValidatorSyncBase):
             hotkey_to_received_checkpoint = {}
 
             hotkey_to_v_trust = {}
-            for neuron in self.metagraph.neurons:
+            for neuron in self.metagraph.get_neurons():
                 if neuron.validator_trust >= 0:
                     hotkey_to_v_trust[neuron.hotkey] = neuron.validator_trust
 
@@ -553,9 +553,9 @@ class P2PSyncer(ValidatorSyncBase):
         stake > 1000 and validator_trust > 0.5
         """
         if self.is_testnet:
-            return self.metagraph.axons
+            return self.metagraph.get_axons()
         if neurons is None:
-            neurons = self.metagraph.neurons
+            neurons = self.metagraph.get_neurons()
         validator_axons = [n.axon_info for n in neurons
                            if n.stake > bt.Balance(ValiConfig.STAKE_MIN)
                            and n.axon_info.ip != ValiConfig.AXON_NO_IP]
@@ -569,7 +569,7 @@ class P2PSyncer(ValidatorSyncBase):
         if self.is_testnet:
             return self.get_validators()
         if neurons is None:
-            neurons = self.metagraph.neurons
+            neurons = self.metagraph.get_neurons()
         sorted_stake_neurons = sorted(neurons, key=lambda n: n.stake, reverse=True)
 
         return self.get_validators(sorted_stake_neurons)[:top_n_validators]

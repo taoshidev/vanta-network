@@ -331,8 +331,8 @@ class Validator:
         self.timestamp_manager = TimestampManager(metagraph=self.metagraph,
                                                   hotkey=self.wallet.hotkey.ss58_address)
 
-        bt.logging.info(f"Metagraph n_entries: {len(self.metagraph.hotkeys)}")
-        if self.wallet.hotkey.ss58_address not in self.metagraph.hotkeys:
+        bt.logging.info(f"Metagraph n_entries: {len(self.metagraph.get_hotkeys())}")
+        if not self.metagraph.has_hotkey(self.wallet.hotkey.ss58_address):
             bt.logging.error(
                 f"\nYour validator: {self.wallet} is not registered to chain "
                 f"connection: {self.metagraph_updater.get_subtensor()} \nRun btcli register and try again. "
@@ -361,68 +361,44 @@ class Validator:
         def rs_blacklist_fn(synapse: template.protocol.SendSignal) -> Tuple[bool, str]:
             return Validator.blacklist_fn(synapse, self.metagraph)
 
-        def rs_priority_fn(synapse: template.protocol.SendSignal) -> float:
-            return Validator.priority_fn(synapse, self.metagraph)
-
         def gp_blacklist_fn(synapse: template.protocol.GetPositions) -> Tuple[bool, str]:
             return Validator.blacklist_fn(synapse, self.metagraph)
-
-        def gp_priority_fn(synapse: template.protocol.GetPositions) -> float:
-            return Validator.priority_fn(synapse, self.metagraph)
 
         def gd_blacklist_fn(synapse: template.protocol.GetDashData) -> Tuple[bool, str]:
             return Validator.blacklist_fn(synapse, self.metagraph)
 
-        def gd_priority_fn(synapse: template.protocol.GetDashData) -> float:
-            return Validator.priority_fn(synapse, self.metagraph)
-
         def rc_blacklist_fn(synapse: template.protocol.ValidatorCheckpoint) -> Tuple[bool, str]:
             return Validator.blacklist_fn(synapse, self.metagraph)
-
-        def rc_priority_fn(synapse: template.protocol.ValidatorCheckpoint) -> float:
-            return Validator.priority_fn(synapse, self.metagraph)
 
         def cr_blacklist_fn(synapse: template.protocol.CollateralRecord) -> Tuple[bool, str]:
             return Validator.blacklist_fn(synapse, self.metagraph)
 
-        def cr_priority_fn(synapse: template.protocol.CollateralRecord) -> float:
-            return Validator.priority_fn(synapse, self.metagraph)
-
         def as_blacklist_fn(synapse: template.protocol.AssetSelection) -> Tuple[bool, str]:
             return Validator.blacklist_fn(synapse, self.metagraph)
 
-        def as_priority_fn(synapse: template.protocol.AssetSelection) -> float:
-            return Validator.priority_fn(synapse, self.metagraph)
-
         self.axon.attach(
             forward_fn=self.receive_signal,
-            blacklist_fn=rs_blacklist_fn,
-            priority_fn=rs_priority_fn,
+            blacklist_fn=rs_blacklist_fn
         )
         self.axon.attach(
             forward_fn=self.get_positions,
-            blacklist_fn=gp_blacklist_fn,
-            priority_fn=gp_priority_fn,
+            blacklist_fn=gp_blacklist_fn
         )
         self.axon.attach(
             forward_fn=self.get_dash_data,
-            blacklist_fn=gd_blacklist_fn,
-            priority_fn=gd_priority_fn,
+            blacklist_fn=gd_blacklist_fn
         )
         self.axon.attach(
             forward_fn=self.receive_checkpoint,
-            blacklist_fn=rc_blacklist_fn,
-            priority_fn=rc_priority_fn,
+            blacklist_fn=rc_blacklist_fn
         )
         self.axon.attach(
             forward_fn=self.receive_collateral_record,
-            blacklist_fn=cr_blacklist_fn,
-            priority_fn=cr_priority_fn,
+            blacklist_fn=cr_blacklist_fn
         )
         self.axon.attach(
             forward_fn=self.receive_asset_selection,
-            blacklist_fn=as_blacklist_fn,
-            priority_fn=as_priority_fn,
+            blacklist_fn=as_blacklist_fn
         )
 
         # Serve passes the axon information to the network + netuid we are hosting on.
@@ -438,7 +414,7 @@ class Validator:
         self.axon.start()
 
         # Each hotkey gets a unique identity (UID) in the network for differentiation.
-        my_subnet_uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
+        my_subnet_uid = self.metagraph.get_hotkeys().index(self.wallet.hotkey.ss58_address)
         bt.logging.info(f"Running validator on uid: {my_subnet_uid}")
 
         # Eliminations are read in validator, elimination_manager, mdd_checker, weight setter.
@@ -768,9 +744,7 @@ class Validator:
     @staticmethod
     def blacklist_fn(synapse, metagraph) -> Tuple[bool, str]:
         miner_hotkey = synapse.dendrite.hotkey
-        # Ignore requests from unrecognized entities.
-        # 256 element list scan is negligible (~1-5 microseconds)
-        if miner_hotkey not in metagraph.hotkeys:
+        if not metagraph.has_hotkey(miner_hotkey):
             bt.logging.trace(
                 f"Blacklisting unrecognized hotkey {synapse.dendrite.hotkey}"
             )
@@ -784,8 +758,8 @@ class Validator:
     @staticmethod
     def priority_fn(synapse, metagraph) -> float:
         # simply just prioritize based on uid as it's not significant
-        caller_uid = metagraph.hotkeys.index(synapse.dendrite.hotkey)
-        priority = float(metagraph.uids[caller_uid])
+        caller_uid = metagraph.get_hotkeys().index(synapse.dendrite.hotkey)
+        priority = float(metagraph.get_uids()[caller_uid])
         bt.logging.trace(
             f"Prioritizing {synapse.dendrite.hotkey} with value: ", priority
         )

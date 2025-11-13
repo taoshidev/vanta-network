@@ -524,8 +524,8 @@ class PositionManager(CacheController):
 
         # Promote miners that would have passed challenge period
         for miner in miners_to_promote:
-            if miner in self.challengeperiod_manager.active_miners:
-                if self.challengeperiod_manager.active_miners[miner][0] != MinerBucket.MAINCOMP:
+            if self.challengeperiod_manager.has_miner(miner):
+                if self.challengeperiod_manager.get_miner_bucket(miner) != MinerBucket.MAINCOMP:
                     self.challengeperiod_manager._promote_challengeperiod_in_memory([miner], now_ms)
         self.challengeperiod_manager._write_challengeperiod_from_memory_to_disk()
 
@@ -562,8 +562,8 @@ class PositionManager(CacheController):
                             pos.rebuild_position_with_updated_orders(self.live_price_fetcher)
                             self.save_miner_position(pos)
                             print(f'Removed eliminated orders from position {pos}')
-                if miner_hotkey in self.challengeperiod_manager.active_miners:
-                    self.challengeperiod_manager.active_miners.pop(miner_hotkey)
+                if self.challengeperiod_manager.has_miner(miner_hotkey):
+                    self.challengeperiod_manager.remove_miner(miner_hotkey)
                     print(f'Removed challengeperiod status for {miner_hotkey}')
 
                 self.challengeperiod_manager._write_challengeperiod_from_memory_to_disk()

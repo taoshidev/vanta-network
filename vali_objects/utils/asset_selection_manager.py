@@ -238,9 +238,9 @@ class AssetSelectionManager:
         try:
             # Get other validators to broadcast to
             if self.is_testnet:
-                validator_axons = [n.axon_info for n in self.metagraph.neurons if n.axon_info.ip != ValiConfig.AXON_NO_IP and n.axon_info.hotkey != self.wallet.hotkey.ss58_address]
+                validator_axons = [n.axon_info for n in self.metagraph.get_neurons() if n.axon_info.ip != ValiConfig.AXON_NO_IP and n.axon_info.hotkey != self.wallet.hotkey.ss58_address]
             else:
-                validator_axons = [n.axon_info for n in self.metagraph.neurons if n.stake > bt.Balance(ValiConfig.STAKE_MIN) and n.axon_info.ip != ValiConfig.AXON_NO_IP and n.axon_info.hotkey != self.wallet.hotkey.ss58_address]
+                validator_axons = [n.axon_info for n in self.metagraph.get_neurons() if n.stake > bt.Balance(ValiConfig.STAKE_MIN) and n.axon_info.ip != ValiConfig.AXON_NO_IP and n.axon_info.hotkey != self.wallet.hotkey.ss58_address]
 
             if not validator_axons:
                 bt.logging.debug("No other validators to broadcast CollateralRecord to")

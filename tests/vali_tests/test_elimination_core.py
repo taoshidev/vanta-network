@@ -108,6 +108,7 @@ class TestEliminationCore(TestBase):
         self.position_manager.clear_all_miner_positions()
         self.elimination_manager.clear_eliminations()
         self.ledger_manager.clear_perf_ledgers_from_disk()
+        self.ledger_manager.clear_perf_ledger_eliminations_from_disk()
         self.challengeperiod_manager._clear_challengeperiod_in_memory_and_disk()
         
         # Set up initial positions for all miners
@@ -124,6 +125,7 @@ class TestEliminationCore(TestBase):
         # Cleanup
         self.position_manager.clear_all_miner_positions()
         self.ledger_manager.clear_perf_ledgers_from_disk()
+        self.ledger_manager.clear_perf_ledger_eliminations_from_disk()
         self.challengeperiod_manager._clear_challengeperiod_in_memory_and_disk()
         self.elimination_manager.clear_eliminations()
 
@@ -377,14 +379,14 @@ class TestEliminationCore(TestBase):
             'dd': 0.12,
             'elimination_initiated_time_ms': TimeUtil.now_in_millis()
         }
-        
-        self.elimination_manager.eliminations.append(test_elimination)
-        
+
+        self.elimination_manager.add_elimination(self.MDD_MINER, test_elimination)
+
         # Force write to disk
-        self.elimination_manager.write_eliminations_to_disk(self.elimination_manager.eliminations)
-        
+        self.elimination_manager.write_eliminations_to_disk(list(self.elimination_manager.eliminations.values()))
+
         # Clear memory and reload
-        self.elimination_manager.eliminations = []
+        self.elimination_manager.eliminations.clear()
         loaded_eliminations = self.elimination_manager.get_eliminations_from_disk()
         
         # Verify persistence
@@ -447,7 +449,7 @@ class TestEliminationCore(TestBase):
     def test_hotkey_in_eliminations(self):
         """Test checking if hotkey is in eliminations"""
         # Add elimination
-        self.elimination_manager.eliminations.append({
+        self.elimination_manager.add_elimination(self.MDD_MINER, {
             'hotkey': self.MDD_MINER,
             'reason': EliminationReason.MAX_TOTAL_DRAWDOWN.value,
             'dd': 0.12,
@@ -483,9 +485,9 @@ class TestEliminationCore(TestBase):
         """Test elimination manager with IPC manager for multiprocessing"""
         # Mock IPC manager
         mock_ipc_manager = MagicMock()
-        mock_ipc_manager.list.return_value = []
-        mock_ipc_manager.dict.return_value = {}
-        
+        # Return a NEW dict for each call to avoid sharing between eliminations and departed_hotkeys
+        mock_ipc_manager.dict.side_effect = lambda: {}
+
         # Create elimination manager with IPC
         ipc_elimination_manager = EliminationManager(
             self.mock_metagraph,
@@ -494,18 +496,18 @@ class TestEliminationCore(TestBase):
             running_unit_tests=True,
             ipc_manager=mock_ipc_manager
         )
-        
-        # Verify IPC list was created
-        mock_ipc_manager.list.assert_called()
-        
+
+        # Verify IPC dict was created for eliminations
+        mock_ipc_manager.dict.assert_called()
+
         # Test adding elimination
         test_elim = ipc_elimination_manager.generate_elimination_row(
             self.MDD_MINER,
             0.12,
             EliminationReason.MAX_TOTAL_DRAWDOWN.value
         )
-        ipc_elimination_manager.eliminations.append(test_elim)
-        
+        ipc_elimination_manager.add_elimination(self.MDD_MINER, test_elim)
+
         # Verify it works with IPC manager
         self.assertEqual(len(ipc_elimination_manager.eliminations), 1)
 
@@ -519,9 +521,9 @@ class TestEliminationCore(TestBase):
         mock_get_candles.return_value = []
         from vali_objects.utils.live_price_fetcher import PriceSource
         mock_market_close.return_value = PriceSource(open=50000, high=50000, low=50000, close=50000, volume=0, vwap=50000, timestamp=0)
-        
+
         # First elimination
-        self.elimination_manager.eliminations.append({
+        self.elimination_manager.add_elimination(self.MDD_MINER, {
             'hotkey': self.MDD_MINER,
             'reason': EliminationReason.MAX_TOTAL_DRAWDOWN.value,
             'dd': 0.12,
@@ -550,17 +552,17 @@ class TestEliminationCore(TestBase):
         mock_get_candles.return_value = []
         from vali_objects.utils.live_price_fetcher import PriceSource
         mock_market_close.return_value = PriceSource(open=50000, high=50000, low=50000, close=50000, volume=0, vwap=50000, timestamp=0)
-        
+
         # Create an old elimination
         old_time = TimeUtil.now_in_millis() - ValiConfig.ELIMINATION_FILE_DELETION_DELAY_MS - MS_IN_8_HOURS
-        
+
         old_elim = self.elimination_manager.generate_elimination_row(
             'old_miner',
             0.15,
             EliminationReason.MAX_TOTAL_DRAWDOWN.value,
             t_ms=old_time
         )
-        self.elimination_manager.eliminations.append(old_elim)
+        self.elimination_manager.add_elimination('old_miner', old_elim)
         
         # Remove from metagraph
         self.mock_metagraph.hotkeys = [hk for hk in self.mock_metagraph.hotkeys if hk != 'old_miner']

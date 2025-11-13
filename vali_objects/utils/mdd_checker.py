@@ -108,7 +108,7 @@ class MDDChecker(CacheController):
         # Time the IPC read of positions
         ipc_start = time.perf_counter()
         hotkey_to_positions = self.position_manager.get_positions_for_hotkeys(
-            self.metagraph.hotkeys, sort_positions=True,
+            self.metagraph.get_hotkeys(), sort_positions=True,
             eliminations=self.elimination_manager.get_eliminations_from_memory(),
         )
         ipc_ms = (time.perf_counter() - ipc_start) * 1000
@@ -297,34 +297,23 @@ class MDDChecker(CacheController):
         orig_iep = position.initial_entry_price
         now_ms = TimeUtil.now_in_millis()
 
-        # Time the lock acquisition
+        # Candidate check already done by caller (perform_price_corrections)
+        # Just acquire lock and refresh position for TOCTOU protection
         lock_request_time = time.perf_counter()
         with (position_locks.get_lock(hotkey, trade_pair_id)):
             lock_acquired_ms = (time.perf_counter() - lock_request_time) * 1000
             bt.logging.info(f"[MDD_LOCK_TIMING] Lock acquired for {hotkey[:8]}.../{trade_pair_id} in {lock_acquired_ms:.2f}ms")
-            # Position could have updated in the time between mdd_check being called and this function being called
-            # Time the IPC refresh
+
+            # Refresh position inside lock for TOCTOU protection
             refresh_start = time.perf_counter()
             position_refreshed = self.position_manager.get_miner_position_by_uuid(hotkey, position.position_uuid)
             refresh_ms = (time.perf_counter() - refresh_start) * 1000
 
             if position_refreshed is None:
-                bt.logging.warning(f"mdd_checker: Unexpectedly could not find position with uuid "
-                                   f"{position.position_uuid} for hotkey {hotkey} and trade pair {trade_pair_id}.")
-                return
-            if not self._position_is_candidate_for_price_correction(position_refreshed, now_ms):
-                bt.logging.warning(f'mdd_checker: Position with uuid {position.position_uuid} for hotkey {hotkey} '
-                                   f'and trade pair {trade_pair_id} is no longer a candidate for price correction.')
+                bt.logging.warning(f"mdd_checker: Position not found (uuid {position.position_uuid[:8]}... for {hotkey[:8]}.../{trade_pair_id}). Skipping.")
                 return
 
-            # Log if position changed between initial read and refresh
-            position_changed = position != position_refreshed
-            if position_changed:
-                bt.logging.info(
-                    f"[MDD_IPC_TIMING] Position refreshed from IPC in {refresh_ms:.2f}ms, position_changed={position_changed}, "
-                    f"uuid={position.position_uuid[:8]}..."
-                )
-
+            bt.logging.info(f"[MDD_IPC_TIMING] Position refreshed in {refresh_ms:.2f}ms, uuid={position.position_uuid[:8]}...")
             position = position_refreshed
             n_orders_updated = 0
             for i, order in enumerate(reversed(position.orders)):

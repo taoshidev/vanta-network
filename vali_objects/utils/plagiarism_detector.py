@@ -47,7 +47,7 @@ class PlagiarismDetector(CacheController):
         while not self.shutdown_dict:
             try:
                 if self.refresh_allowed(ValiConfig.PLAGIARISM_REFRESH_TIME_MS):
-                    self.detect(hotkeys=self.position_manager.metagraph.hotkeys)
+                    self.detect(hotkeys=self.position_manager.metagraph.get_hotkeys())
                     self.set_last_update_time(skip_message=False)  # TODO: set True
 
             except Exception as e:
@@ -66,7 +66,7 @@ class PlagiarismDetector(CacheController):
         else:
             current_time = TimeUtil.now_in_millis()
         if hotkeys is None:
-            hotkeys = self.metagraph.hotkeys
+            hotkeys = self.metagraph.get_hotkeys()
             assert hotkeys, f"No hotkeys found in metagraph {self.metagraph}"
         if hotkey_positions is None:
             hotkey_positions = self.position_manager.get_positions_for_hotkeys(
@@ -76,7 +76,7 @@ class PlagiarismDetector(CacheController):
 
         bt.logging.info("Starting Plagiarism Detection")
         #bt.logging.error(
-        #    f'$$$$$$$ {len(hotkey_positions)} {len(self.position_manager.elimination_manager.get_eliminations_from_memory())} {len(self.metagraph.hotkeys)} {id(self.metagraph)} {type(self.metagraph)} {self.metagraph}')
+        #    f'$$$$$$$ {len(hotkey_positions)} {len(self.position_manager.elimination_manager.get_eliminations_from_memory())} {len(self.metagraph.get_hotkeys())} {id(self.metagraph)} {type(self.metagraph)} {self.metagraph}')
 
         plagiarism_data, raster_positions, positions = self.plagiarism_pipeline.run_reporting(positions=hotkey_positions, current_time=current_time)
 
@@ -165,7 +165,7 @@ class PlagiarismDetector(CacheController):
         blocklist_dict = ValiUtils.get_vali_json_file(ValiBkpUtils.get_plagiarism_blocklist_file_location())
         blocklist_scores = {key['miner_id']: 1 for key in blocklist_dict}
 
-        self.miner_plagiarism_scores = {mch: mc for mch, mc in cached_miner_plagiarism.items() if mch in self.metagraph.hotkeys}
+        self.miner_plagiarism_scores = {mch: mc for mch, mc in cached_miner_plagiarism.items() if mch in self.metagraph.get_hotkeys()}
 
         self.miner_plagiarism_scores = {
             **self.miner_plagiarism_scores,

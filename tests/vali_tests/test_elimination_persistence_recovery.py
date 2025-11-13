@@ -148,11 +148,11 @@ class TestEliminationPersistenceRecovery(TestBase):
                 'return_info': {'plagiarism_score': 0.95}
             }
         ]
-        
+
         # Add eliminations
         for elim in eliminations:
-            self.elimination_manager.eliminations.append(elim)
-        
+            self.elimination_manager.add_elimination(elim['hotkey'], elim)
+
         # Save to disk
         self.elimination_manager.save_eliminations()
         
@@ -239,10 +239,10 @@ class TestEliminationPersistenceRecovery(TestBase):
                 'price_info': {str(TradePair.BTCUSD): 45000}
             }
         ]
-        
+
         # Add and save eliminations
         for elim in original_eliminations:
-            self.elimination_manager.eliminations.append(elim)
+            self.elimination_manager.add_elimination(elim['hotkey'], elim)
         self.elimination_manager.save_eliminations()
         
         # Create backup directory
@@ -412,10 +412,10 @@ class TestEliminationPersistenceRecovery(TestBase):
                 'elimination_initiated_time_ms': TimeUtil.now_in_millis() - MS_IN_24_HOURS
             }
         ]
-        
+
         for elim in test_elims:
-            self.elimination_manager.eliminations.append(elim)
-        
+            self.elimination_manager.add_elimination(elim['hotkey'], elim)
+
         # Save to disk
         self.elimination_manager.save_eliminations()
         

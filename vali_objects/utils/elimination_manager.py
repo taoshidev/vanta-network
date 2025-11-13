@@ -1,6 +1,7 @@
 # developer: jbonilla
 # Copyright © 2024 Taoshi Inc
 import shutil
+import time
 from copy import deepcopy
 from enum import Enum
 from typing import Dict
@@ -96,7 +97,7 @@ class EliminationManager(CacheController):
             self._save_departed_hotkeys()
 
         # Track previous metagraph hotkeys to detect changes
-        self.previous_metagraph_hotkeys = set(self.metagraph.hotkeys) if self.metagraph and self.metagraph.hotkeys else set()
+        self.previous_metagraph_hotkeys = set(self.metagraph.get_hotkeys()) if self.metagraph else set()
 
     def handle_perf_ledger_eliminations(self, position_locks, iteration_epoch=None):
         perf_ledger_eliminations = self.position_manager.perf_ledger_manager.get_perf_ledger_eliminations()
@@ -185,14 +186,8 @@ class EliminationManager(CacheController):
                 self.add_manual_flat_order(hotkey, p, corresponding_elimination, position_locks, source_for_elimination, iteration_epoch)
 
     def handle_challenge_period_eliminations(self, position_locks, iteration_epoch=None):
-        # Read eliminations_with_reasons atomically with lock
-        if self.eliminations_lock:
-            with self.eliminations_lock:
-                # Create a snapshot of the dict to avoid holding the lock during processing
-                eliminations_with_reasons = dict(self.challengeperiod_manager.eliminations_with_reasons)
-        else:
-            # Fallback for unit tests without lock
-            eliminations_with_reasons = self.challengeperiod_manager.eliminations_with_reasons
+        # Read eliminations_with_reasons atomically
+        eliminations_with_reasons = self.challengeperiod_manager.get_all_elimination_reasons()
 
         if not eliminations_with_reasons:
             return
@@ -217,13 +212,8 @@ class EliminationManager(CacheController):
 
         bt.logging.info(f"[ELIM_DEBUG] After processing, eliminations dict has {len(self.eliminations)} entries")
 
-        # Clear eliminations_with_reasons atomically with lock
-        if self.eliminations_lock:
-            with self.eliminations_lock:
-                self.challengeperiod_manager.eliminations_with_reasons.clear()
-        else:
-            # Fallback for unit tests without lock
-            self.challengeperiod_manager.eliminations_with_reasons.clear()
+        # Clear eliminations_with_reasons atomically
+        self.challengeperiod_manager.clear_elimination_reasons()
 
     def handle_first_refresh(self, position_locks, iteration_epoch=None):
         if self.is_backtesting or self.first_refresh_ran:
@@ -254,7 +244,7 @@ class EliminationManager(CacheController):
             position_locks = self.position_locks
 
         if not self.refresh_allowed(ValiConfig.ELIMINATION_CHECK_INTERVAL_MS) and \
-                not bool(self.challengeperiod_manager.eliminations_with_reasons):
+                not self.challengeperiod_manager.has_elimination_reasons():
             return
 
 
@@ -364,7 +354,6 @@ class EliminationManager(CacheController):
         Returns:
             dict or None: Elimination details if found, None otherwise
         """
-        import time
 
         # Time the IPC dict.get() call
         ipc_start = time.perf_counter()
@@ -376,7 +365,6 @@ class EliminationManager(CacheController):
         result = deepcopy(elimination) if elimination else None
         copy_ms = (time.perf_counter() - copy_start) * 1000
 
-        import bittensor as bt
         bt.logging.info(f"[ELIM_TIMING] IPC dict.get()={ipc_ms:.2f}ms, deepcopy()={copy_ms:.2f}ms, total={(ipc_ms+copy_ms):.2f}ms")
 
         return result
@@ -386,7 +374,7 @@ class EliminationManager(CacheController):
         # self.eliminations was just refreshed in process_eliminations
         any_challenege_period_changes = False
         now_ms = TimeUtil.now_in_millis()
-        metagraph_hotkeys_set = set(self.metagraph.hotkeys) if self.metagraph and self.metagraph.hotkeys else set()
+        metagraph_hotkeys_set = set(self.metagraph.get_hotkeys()) if self.metagraph else set()
         for x in self.eliminations.values():
             if self.shutdown_dict:
                 return
@@ -401,8 +389,8 @@ class EliminationManager(CacheController):
                 continue
 
             # If the miner is no longer in the metagraph, we can remove them from the challengeperiod information
-            if hotkey in self.challengeperiod_manager.active_miners:
-                self.challengeperiod_manager.active_miners.pop(hotkey)
+            if self.challengeperiod_manager.has_miner(hotkey):
+                self.challengeperiod_manager.remove_miner(hotkey)
                 any_challenege_period_changes = True
 
             miner_dir = ValiBkpUtils.get_miner_dir(running_unit_tests=self.running_unit_tests) + hotkey
@@ -463,6 +451,85 @@ class EliminationManager(CacheController):
             bt.logging.warning(f"Could not load eliminations from disk: {e}. Starting with empty list.")
             return []
 
+    # ========== New Getter Methods ==========
+    def get_elimination(self, hotkey: str):
+        """
+        Get elimination details for a hotkey.
+
+        Args:
+            hotkey: The hotkey to look up
+
+        Returns:
+            Elimination dict if found, None otherwise
+
+        Example:
+            elim = manager.get_elimination("miner_hotkey")
+            if elim:
+                print(f"Eliminated for: {elim['reason']}")
+        """
+        elimination = self.eliminations.get(hotkey)
+        return deepcopy(elimination) if elimination else None
+
+    # ========== New Setter Methods ==========
+
+    def add_elimination(self, hotkey: str, elimination_data: dict) -> bool:
+        """
+        Add or update an elimination record.
+
+        Args:
+            hotkey: The hotkey to eliminate
+            elimination_data: Elimination dict with required fields
+
+        Returns:
+            True if added (new), False if already exists (updated)
+
+        Raises:
+            ValueError: If elimination_data is invalid
+
+        Example:
+            manager.add_elimination("miner_hotkey", {
+                'hotkey': "miner_hotkey",
+                'reason': EliminationReason.MAX_TOTAL_DRAWDOWN.value,
+                'dd': 0.12,
+                'elimination_initiated_time_ms': TimeUtil.now_in_millis()
+            })
+        """
+        # Validate required fields
+        required_fields = ['hotkey', 'reason', 'elimination_initiated_time_ms']
+        for field in required_fields:
+            if field not in elimination_data:
+                raise ValueError(f"Missing required field: {field}")
+
+        # Ensure hotkey matches
+        if elimination_data['hotkey'] != hotkey:
+            raise ValueError(f"Hotkey mismatch: {hotkey} != {elimination_data['hotkey']}")
+
+        already_exists = hotkey in self.eliminations
+        self.eliminations[hotkey] = elimination_data
+
+        return not already_exists
+
+    def remove_elimination(self, hotkey: str) -> bool:
+        """
+        Remove a single elimination.
+
+        Args:
+            hotkey: The hotkey to remove
+
+        Returns:
+            True if removed, False if not found
+
+        Example:
+            if manager.remove_elimination("miner_hotkey"):
+                print("Elimination removed")
+        """
+        if hotkey in self.eliminations:
+            del self.eliminations[hotkey]
+            return True
+        return False
+
+    # ========== End New Methods ==========
+
     def append_elimination_row(self, hotkey, current_dd, reason, t_ms=None, price_info=None, return_info=None):
         bt.logging.info(f"[ELIM_DEBUG] append_elimination_row called for {hotkey}, reason={reason}")
         elimination_row = self.generate_elimination_row(hotkey, current_dd, reason, t_ms=t_ms,
@@ -518,7 +585,7 @@ class EliminationManager(CacheController):
             return
 
         all_miners_dir = ValiBkpUtils.get_miner_dir(running_unit_tests=self.running_unit_tests)
-        all_hotkeys_set = set(self.metagraph.hotkeys) if self.metagraph and self.metagraph.hotkeys else set()
+        all_hotkeys_set = set(self.metagraph.get_hotkeys()) if self.metagraph else set()
 
         for hotkey in CacheController.get_directory_names(all_miners_dir):
             corresponding_elimination = self.hotkey_in_eliminations(hotkey)
@@ -538,7 +605,7 @@ class EliminationManager(CacheController):
         if self.is_backtesting:
             return
 
-        current_hotkeys = set(self.metagraph.hotkeys) if self.metagraph and self.metagraph.hotkeys else set()
+        current_hotkeys = set(self.metagraph.get_hotkeys()) if self.metagraph else set()
         lost_hotkeys = self.previous_metagraph_hotkeys - current_hotkeys
         gained_hotkeys = current_hotkeys - self.previous_metagraph_hotkeys
 
@@ -616,11 +683,11 @@ class EliminationManager(CacheController):
             return False
 
         # Slow path: Only reached for departed hotkeys (rare)
-        # Direct list check - max 256 elements, negligible cost
+        # Use has_hotkey() which checks metagraph efficiently
         metagraph_start = time.perf_counter()
-        is_in_metagraph = hotkey in (self.metagraph.hotkeys if self.metagraph and self.metagraph.hotkeys else [])
+        is_in_metagraph = self.metagraph.has_hotkey(hotkey) if self.metagraph else False
         metagraph_ms = (time.perf_counter() - metagraph_start) * 1000
-        bt.logging.info(f"[REREG_TIMING] metagraph.hotkeys check={metagraph_ms:.2f}ms, is_in_metagraph={is_in_metagraph}")
+        bt.logging.info(f"[REREG_TIMING] metagraph.has_hotkey() check={metagraph_ms:.2f}ms, is_in_metagraph={is_in_metagraph}")
 
         return is_in_metagraph
 

@@ -71,7 +71,8 @@ class TestEliminationIntegration(TestBase):
         # Create IPC manager for multiprocessing simulation
         self.mock_ipc_manager = MagicMock()
         self.mock_ipc_manager.list.return_value = []
-        self.mock_ipc_manager.dict.return_value = {}
+        # Return a NEW dict for each call to avoid sharing between eliminations and departed_hotkeys
+        self.mock_ipc_manager.dict.side_effect = lambda: {}
         
         # Create all managers with IPC
         self.perf_ledger_manager = EnhancedMockPerfLedgerManager(
@@ -497,7 +498,7 @@ class TestEliminationIntegration(TestBase):
             EliminationReason.MAX_TOTAL_DRAWDOWN.value,
             t_ms=old_elimination_time
         )
-        self.elimination_manager.eliminations.append(old_elim)
+        self.elimination_manager.add_elimination('old_eliminated_miner', old_elim)
         
         # Remove from metagraph (deregistered)
         self.mock_metagraph.hotkeys = [hk for hk in self.mock_metagraph.hotkeys if hk != 'old_eliminated_miner']

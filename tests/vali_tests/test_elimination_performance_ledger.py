@@ -70,7 +70,8 @@ class TestPerfLedgerEliminations(TestBase):
         # Create perf ledger manager with IPC manager for testing
         self.mock_ipc_manager = MagicMock()
         self.mock_ipc_manager.list.return_value = []
-        self.mock_ipc_manager.dict.return_value = {}
+        # Return a NEW dict for each call to avoid sharing between eliminations and departed_hotkeys
+        self.mock_ipc_manager.dict.side_effect = lambda: {}
         
         self.perf_ledger_manager = PerfLedgerManager(
             self.mock_metagraph,
