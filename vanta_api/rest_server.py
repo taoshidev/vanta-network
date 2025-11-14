@@ -585,7 +585,7 @@ class VantaRestServer(APIKeyMixin):
                 return self._jsonify_with_custom_encoder(data)
 
         @self.app.route("/debt-ledger/<minerid>", methods=["GET"])
-        def get_debt_ledger(minerid):
+        def get_miner_debt_ledger(minerid):
             api_key = self._get_api_key_safe()
 
             # Check if the API key is valid
@@ -593,6 +593,21 @@ class VantaRestServer(APIKeyMixin):
                 return jsonify({'error': 'Unauthorized access'}), 401
 
             data = self.debt_ledger_manager.get_ledger(minerid)
+
+            if data is None:
+                return jsonify({'error': 'Debt ledger data not found'}), 404
+            else:
+                return self._jsonify_with_custom_encoder(data)
+
+        @self.app.route("/debt-ledger", methods=["GET"])
+        def get_debt_ledger():
+            api_key = self._get_api_key_safe()
+
+            # Check if the API key is valid
+            if not self.is_valid_api_key(api_key):
+                return jsonify({'error': 'Unauthorized access'}), 401
+
+            data = self.debt_ledger_manager.debt_ledgers
 
             if data is None:
                 return jsonify({'error': 'Debt ledger data not found'}), 404
