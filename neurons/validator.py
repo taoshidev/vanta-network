@@ -734,7 +734,7 @@ class Validator(ValidatorBase):
             synapse.error_message = msg
             return True
 
-        if method == SynapseMethod.CHECKPOINT or method == SynapseMethod.DASHBOARD:
+        if method == SynapseMethod.CHECKPOINT:
             return False
         elif method == SynapseMethod.POSITION_INSPECTOR:
             # Check version 0 (old version that was opt-in)
