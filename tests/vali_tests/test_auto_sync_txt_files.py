@@ -121,8 +121,8 @@ class TestAutoSyncTxtFiles(TestBase):
         """Get all positions from disk."""
         all_positions = []
         for miner_hotkey in self.hotkeys:
-            positions = self.position_manager.get_positions_for_one_hotkey(
-                miner_hotkey, only_open_positions=False, from_disk=True
+            positions = self.position_manager._read_positions_from_disk_for_tests(
+                miner_hotkey, only_open_positions=False
             )
             all_positions.extend(positions)
         return all_positions
@@ -210,8 +210,8 @@ class TestAutoSyncTxtFiles(TestBase):
         # Get current disk positions in the expected format
         disk_positions_data = {}
         for miner_hotkey in self.hotkeys:
-            positions = self.position_manager.get_positions_for_one_hotkey(
-                miner_hotkey, only_open_positions=False, from_disk=True
+            positions = self.position_manager._read_positions_from_disk_for_tests(
+                miner_hotkey, only_open_positions=False
             )
             disk_positions_data[miner_hotkey] = positions
         
@@ -612,8 +612,8 @@ class TestAutoSyncTxtFiles(TestBase):
         # Get current disk positions
         disk_positions_data = {}
         for miner_hotkey in self.hotkeys:
-            positions = self.position_manager.get_positions_for_one_hotkey(
-                miner_hotkey, only_open_positions=False, from_disk=True
+            positions = self.position_manager._read_positions_from_disk_for_tests(
+                miner_hotkey, only_open_positions=False
             )
             disk_positions_data[miner_hotkey] = positions
         

@@ -221,8 +221,8 @@ class TestMDDChecker(TestBase):
         self.verify_elimination_data_in_memory_and_disk([])
         self.verify_positions_on_disk([position_btc], assert_all_open=True)
 
-        btc_position_from_disk = self.position_manager.get_positions_for_one_hotkey(self.MINER_HOTKEY, from_disk=True)[0]
-        btc_position_from_memory = self.position_manager.get_positions_for_one_hotkey(self.MINER_HOTKEY, from_disk=False)[0]
+        btc_position_from_disk = self.position_manager._read_positions_from_disk_for_tests(self.MINER_HOTKEY)[0]
+        btc_position_from_memory = self.position_manager.get_positions_for_one_hotkey(self.MINER_HOTKEY)[0]
         assert self.position_manager.positions_are_the_same(btc_position_from_disk, btc_position_from_memory)
         print("Position return on BTC after mdd_check:", btc_position_from_disk.current_return)
         # print("Max MDD for closed positions:", self.mdd_checker.portfolio_max_dd_closed_positions)

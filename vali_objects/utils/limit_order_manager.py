@@ -6,6 +6,7 @@ from multiprocessing import Process
 from multiprocessing.managers import BaseManager
 
 import bittensor as bt
+import threading
 
 from shared_objects.cache_controller import CacheController
 from time_util.time_util import TimeUtil
@@ -702,7 +703,6 @@ class LimitOrderManagerClient:
     @staticmethod
     def _start_server(position_manager, live_price_fetcher, market_order_manager, shutdown_dict, address):
         """Start the RPC server and daemon in a separate process."""
-        import threading
 
         class ServerManager(BaseManager):
             pass

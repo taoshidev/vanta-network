@@ -360,6 +360,21 @@ class LivePriceFetcher:
             "is_backtesting": self.is_backtesting
         }
 
+    def is_market_open(self, trade_pair: TradePair, time_ms=None) -> bool:
+        """
+        Check if market is open for a trade pair.
+
+        Args:
+            trade_pair: The trade pair to check
+            time_ms: Optional timestamp in milliseconds (defaults to now)
+
+        Returns:
+            bool: True if market is open, False otherwise
+        """
+        if time_ms is None:
+            time_ms = TimeUtil.now_in_millis()
+        return self.polygon_data_service.is_market_open(trade_pair, time_ms)
+
     def get_unsupported_trade_pairs(self):
         return self.polygon_data_service.UNSUPPORTED_TRADE_PAIRS
 

@@ -739,8 +739,7 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
                     metagraph=self.mmg,
                     running_unit_tests=True,
                     elimination_manager=multiprocessing_elimination_manager,
-                    live_price_fetcher=self.live_price_fetcher,
-                    use_ipc=True  # Use IPC-compatible locks for multiprocessing
+                    live_price_fetcher=self.live_price_fetcher
                 )
             else:
                 position_manager = self.position_manager
@@ -1245,8 +1244,7 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
             metagraph=self.mmg,
             running_unit_tests=True,
             elimination_manager=multiprocessing_elimination_manager,
-            live_price_fetcher=self.live_price_fetcher,
-            use_ipc=True  # Use IPC-compatible locks for multiprocessing
+            live_price_fetcher=self.live_price_fetcher
         )
         # Copy the position from the test's position_manager
         multiprocessing_position_manager.save_miner_position(position)

@@ -69,6 +69,13 @@ class TestMarketOrderManager(TestBase):
 
         self.position_manager.clear_all_miner_positions()
 
+    def tearDown(self):
+        """Clean up resources after each test."""
+        # Shutdown the RPC server to free the port for the next test
+        if hasattr(self, 'position_manager'):
+            self.position_manager.shutdown()
+        super().tearDown()
+
     def create_test_price_source(self, price, bid=None, ask=None, start_ms=None):
         """Helper to create a price source"""
         if start_ms is None:

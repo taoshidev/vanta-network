@@ -257,7 +257,6 @@ class Validator(ValidatorBase):
         self.position_manager = PositionManager(metagraph=self.metagraph,
                                                 perform_order_corrections=True,
                                                 live_price_fetcher=self.live_price_fetcher,
-                                                use_ipc=True,
                                                 perf_ledger_manager=self.perf_ledger_manager,
                                                 elimination_manager=self.elimination_manager,
                                                 challengeperiod_manager=None,

@@ -54,9 +54,9 @@ class PositionLocks:
             lock_creation_start = time.perf_counter()
             self.locks[lock_key] = ret
             lock_creation_ms = (time.perf_counter() - lock_creation_start) * 1000
-            bt.logging.info(f"[LOCK_MGR] Created new lock for {miner_hotkey[:8]}.../{trade_pair_id} (lookup={lock_lookup_ms:.2f}ms, creation={lock_creation_ms:.2f}ms)")
+            bt.logging.trace(f"[LOCK_MGR] Created new lock for {miner_hotkey[:8]}.../{trade_pair_id} (lookup={lock_lookup_ms:.2f}ms, creation={lock_creation_ms:.2f}ms)")
         else:
-            bt.logging.info(f"[LOCK_MGR] Retrieved existing lock for {miner_hotkey[:8]}.../{trade_pair_id} (lookup={lock_lookup_ms:.2f}ms)")
+            bt.logging.trace(f"[LOCK_MGR] Retrieved existing lock for {miner_hotkey[:8]}.../{trade_pair_id} (lookup={lock_lookup_ms:.2f}ms)")
 
         return ret
 

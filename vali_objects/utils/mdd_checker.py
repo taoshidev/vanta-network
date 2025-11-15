@@ -307,7 +307,7 @@ class MDDChecker(CacheController):
         lock_request_time = time.perf_counter()
         with (position_locks.get_lock(hotkey, trade_pair_id)):
             lock_acquired_ms = (time.perf_counter() - lock_request_time) * 1000
-            bt.logging.info(f"[MDD_LOCK_TIMING] Lock acquired for {hotkey[:8]}.../{trade_pair_id} in {lock_acquired_ms:.2f}ms")
+            bt.logging.trace(f"[MDD_LOCK_TIMING] Lock acquired for {hotkey[:8]}.../{trade_pair_id} in {lock_acquired_ms:.2f}ms")
 
             # Refresh position inside lock for TOCTOU protection
             refresh_start = time.perf_counter()

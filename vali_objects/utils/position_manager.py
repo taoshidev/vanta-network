@@ -12,7 +12,7 @@ from pickle import UnpicklingError
 from typing import List, Dict
 import bittensor as bt
 from pathlib import Path
-from multiprocessing import Manager
+from multiprocessing.managers import BaseManager
 from copy import deepcopy
 from shared_objects.cache_controller import CacheController
 from time_util.time_util import TimeUtil, timeme
@@ -41,7 +41,6 @@ class PositionManager(CacheController):
                  challengeperiod_manager=None,
                  elimination_manager=None,
                  secrets=None,
-                 use_ipc=False,
                  live_price_fetcher=None,
                  is_backtesting=False,
                  shared_queue_websockets=None,
@@ -49,7 +48,6 @@ class PositionManager(CacheController):
                  closed_position_daemon=False):
 
         super().__init__(metagraph=metagraph, running_unit_tests=running_unit_tests, is_backtesting=is_backtesting)
-        # Populate memory with positions
 
         self.perf_ledger_manager = perf_ledger_manager
         self.challengeperiod_manager = challengeperiod_manager
@@ -66,28 +64,143 @@ class PositionManager(CacheController):
         # Track splitting statistics
         self.split_stats = defaultdict(self._default_split_stats)
 
-        # Create dedicated IPC manager if requested
-        self.use_ipc = use_ipc
-        if self.use_ipc:
-            ipc_manager = Manager()  # Don't store it - proxy objects are picklable
-            bt.logging.info(
-                f"PositionManager: Created dedicated IPC manager "
-                f"(PID: {ipc_manager._process.pid})"
-            )
-
-            # IPC-backed data structure - proxy objects ARE picklable
-            self.hotkey_to_positions = ipc_manager.dict()
-        else:
-            # Local (non-IPC) data structure for tests
-            self.hotkey_to_positions = {}
-
         self.secrets = secrets
         self.live_price_fetcher = live_price_fetcher
-        self._populate_memory_positions_for_first_time()
+
+        # Start RPC server and connect as client (or use direct instance for tests)
+        self._server_process = None
+        self._rpc_client = None
+        self._rpc_server_proxy = None
+
+        if running_unit_tests:
+            # Use direct in-memory instance for tests (no RPC overhead)
+            self._start_direct_server()
+        else:
+            # Use RPC for production
+            self._start_rpc_server()
+
+        # Position splitting (if enabled) now happens on the server side during startup
+
         if closed_position_daemon:
             self.compaction_process = Process(target=self.run_closed_position_daemon_forever, daemon=True)
             self.compaction_process.start()
             bt.logging.info("Started run_closed_position_daemon_forever process.")
+
+    def __del__(self):
+        """Cleanup: terminate the RPC server process when PositionManager is destroyed."""
+        self.shutdown()
+
+    def shutdown(self):
+        """Shutdown the RPC server process cleanly."""
+        # For direct mode (unit tests), nothing to clean up
+        if self.running_unit_tests:
+            self._rpc_server_proxy = None
+            return
+
+        # For RPC mode: close client connection and terminate server process
+        if hasattr(self, '_rpc_client') and self._rpc_client:
+            try:
+                bt.logging.debug("Shutting down RPC client connection")
+                self._rpc_client.shutdown()
+            except Exception as e:
+                bt.logging.trace(f"Error shutting down RPC client: {e}")
+            finally:
+                self._rpc_client = None
+                self._rpc_server_proxy = None
+
+        if hasattr(self, '_server_process') and self._server_process and self._server_process.is_alive():
+            bt.logging.debug(f"Terminating PositionManager RPC server process (PID: {self._server_process.pid})")
+            self._server_process.terminate()
+            self._server_process.join(timeout=2)
+            if self._server_process.is_alive():
+                bt.logging.warning(f"Force killing PositionManager RPC server process (PID: {self._server_process.pid})")
+                self._server_process.kill()
+                self._server_process.join()
+
+            # Give the OS a moment to release the port
+            import time
+            time.sleep(1.5)
+
+    def _start_direct_server(self):
+        """
+        Create a direct in-memory instance of PositionManagerServer for unit tests.
+        This avoids RPC overhead and makes tests much faster.
+        """
+        from vali_objects.utils.position_manager_server import PositionManagerServer
+
+        # When split_positions_on_disk_load is enabled, force disk loading even in test mode
+        load_from_disk = True if self.split_positions_on_disk_load else None
+
+        # Create direct instance (no RPC, no separate process)
+        self._rpc_server_proxy = PositionManagerServer(
+            running_unit_tests=self.running_unit_tests,
+            is_backtesting=self.is_backtesting,
+            load_from_disk=load_from_disk,
+            split_positions_on_disk_load=self.split_positions_on_disk_load
+        )
+        bt.logging.success("PositionManager using direct in-memory server (unit test mode)")
+
+    def _start_rpc_server(self):
+        """Start the RPC server process and connect to it as a client."""
+        from vali_objects.utils.position_manager_server import (
+            start_position_manager_server,
+            cleanup_stale_position_manager_server
+        )
+        from multiprocessing import Event
+        import secrets
+
+        # Generate address and authkey for RPC
+        # Port 50000: LivePriceFetcherServer
+        # Port 50001: LimitOrderManager
+        # Port 50002: PositionManagerServer
+        address = ('localhost', 50002)
+        authkey = secrets.token_bytes(32)
+
+        # Check if port is already in use and cleanup if needed
+        cleanup_stale_position_manager_server(address[1])
+
+        # Create event for server readiness signaling
+        server_ready = Event()
+
+        # Start server process (only pass picklable arguments)
+        self._server_process = Process(
+            target=start_position_manager_server,
+            args=(
+                address,
+                authkey,
+                self.running_unit_tests,
+                self.is_backtesting,
+                self.split_positions_on_disk_load,
+                server_ready  # Pass event to signal when ready
+            ),
+            daemon=True
+        )
+        self._server_process.start()
+        bt.logging.info(f"Started PositionManager RPC server process (PID: {self._server_process.pid})")
+
+        # Wait for server to signal it's ready (with timeout)
+        if not server_ready.wait(timeout=10.0):
+            bt.logging.error("PositionManager RPC server failed to start within 10 seconds")
+            self._server_process.terminate()
+            raise TimeoutError("PositionManager RPC server startup timeout")
+
+        bt.logging.debug("PositionManager RPC server is ready, connecting client...")
+
+        # Connect as client
+        class PositionManagerClient(BaseManager):
+            pass
+
+        # Register the PositionManagerServer type (client just needs to know the type name)
+        PositionManagerClient.register('PositionManagerServer')
+
+        manager = PositionManagerClient(address=address, authkey=authkey)
+        manager.connect()
+
+        # Get the server proxy instance
+        self._rpc_server_proxy = manager.PositionManagerServer()
+
+        self._rpc_client = manager
+        bt.logging.success(f"PositionManager RPC client connected to server at {address}")
 
     def run_closed_position_daemon_forever(self):
         #try:
@@ -112,79 +225,6 @@ class PositionManager(CacheController):
             'product_return_post_split': 1.0
         }
 
-    @timeme
-    def _populate_memory_positions_for_first_time(self):
-        """
-        Load positions from disk into memory and apply position splitting if enabled.
-        Loads ALL positions including development positions so they can be queried via API.
-        """
-        if self.is_backtesting:
-            return
-
-        # Load all positions including development positions (they'll be filtered out in scoring/elimination)
-        initial_hk_to_positions = self.get_positions_for_all_miners(from_disk=True, include_development_positions=True)
-
-        # Apply position splitting if enabled on disk load
-        if self.split_positions_on_disk_load:
-            bt.logging.info("Applying position splitting on disk load...")
-            total_hotkeys = len(initial_hk_to_positions)
-            hotkeys_with_splits = 0
-            hotkeys_with_errors = []
-
-            for hk, positions in initial_hk_to_positions.items():
-                split_positions = []
-                positions_split_for_hotkey = 0
-
-                for position in positions:
-                    try:
-                        # Split the position and track stats
-                        new_positions, split_info = self.split_position_on_flat(position, track_stats=True)
-                        split_positions.extend(new_positions)
-
-                        # Count if this position was actually split
-                        if len(new_positions) > 1:
-                            positions_split_for_hotkey += 1
-
-                    except Exception as e:
-                        bt.logging.error(f"Failed to split position {position.position_uuid} for hotkey {hk}: {e}")
-                        bt.logging.error(f"Position details: {len(position.orders)} orders, trade_pair={position.trade_pair}")
-                        traceback.print_exc()
-                        # Keep the original position if splitting fails
-                        split_positions.append(position)
-                        if hk not in hotkeys_with_errors:
-                            hotkeys_with_errors.append(hk)
-
-                # Track if this hotkey had any splits
-                if positions_split_for_hotkey > 0:
-                    hotkeys_with_splits += 1
-
-                # Update with split positions
-                initial_hk_to_positions[hk] = split_positions
-
-            # Log comprehensive splitting statistics
-            self._log_split_stats()
-
-            # Log summary for all hotkeys
-            bt.logging.info("=" * 60)
-            bt.logging.info("POSITION SPLITTING SUMMARY")
-            bt.logging.info("=" * 60)
-            bt.logging.info(f"Total hotkeys processed: {total_hotkeys}")
-            bt.logging.info(f"Hotkeys with positions split: {hotkeys_with_splits}")
-            bt.logging.info(f"Hotkeys with no splits needed: {total_hotkeys - hotkeys_with_splits - len(hotkeys_with_errors)}")
-            if hotkeys_with_errors:
-                bt.logging.error(f"Hotkeys with splitting errors: {len(hotkeys_with_errors)}")
-                for hk in hotkeys_with_errors[:5]:  # Show first 5 errors
-                    bt.logging.error(f"  - {hk}")
-                if len(hotkeys_with_errors) > 5:
-                    bt.logging.error(f"  ... and {len(hotkeys_with_errors) - 5} more")
-            bt.logging.info("=" * 60)
-
-        # Load positions into memory
-        for hk, positions in initial_hk_to_positions.items():
-            if positions:
-                self.hotkey_to_positions[hk] = positions
-
-
     def ensure_position_consistency_serially(self):
         """
         Ensures position consistency by checking all closed positions for return calculation changes
@@ -202,13 +242,20 @@ class PositionManager(CacheController):
         successful_updates = 0
         failed_updates = 0
 
+        # Get all hotkeys from RPC server
+        all_hotkeys = self._rpc_server_proxy.get_all_hotkeys_rpc()
+
         # Calculate total positions for progress tracking
-        total_positions = sum(len([p for p in positions if not p.is_open_position])
-                            for positions in self.hotkey_to_positions.values())
+        total_positions = 0
+        for hk in all_hotkeys:
+            positions = self._rpc_server_proxy.get_positions_for_one_hotkey_rpc(hk, only_open_positions=False)
+            total_positions += len([p for p in positions if not p.is_open_position])
+
         bt.logging.info(f'Starting position consistency check on {total_positions} closed positions...')
 
         # Check all positions and immediately save if return changed
-        for hk_index, (hk, positions) in enumerate(self.hotkey_to_positions.items()):
+        for hk in all_hotkeys:
+            positions = self._rpc_server_proxy.get_positions_for_one_hotkey_rpc(hk, only_open_positions=False)
             for p in positions:
                 if p.is_open_position:
                     continue
@@ -883,8 +930,7 @@ class PositionManager(CacheController):
         return True, ""
 
     def get_miner_position_by_uuid(self, hotkey:str, position_uuid: str) -> Position | None:
-        if hotkey not in self.hotkey_to_positions:
-            return None
+        # Use RPC to get the specific position directly
         return self._position_from_list_of_position(hotkey, position_uuid)
 
     def get_recently_updated_miner_hotkeys(self):
@@ -963,7 +1009,8 @@ class PositionManager(CacheController):
         cdf = miner_dir[:-5] + 'closed/'
         positions.extend([self._get_position_from_disk(file) for file in ValiBkpUtils.get_all_files_in_dir(cdf)])
 
-        temp = self.hotkey_to_positions.get(updated_position.miner_hotkey, [])
+        # Use RPC to get positions from server
+        temp = self._rpc_server_proxy.get_positions_for_one_hotkey_rpc(updated_position.miner_hotkey, only_open_positions=False)
         positions_memory_by_position_uuid = {}
         for position in temp:
             if position.trade_pair == updated_position.trade_pair:
@@ -1002,27 +1049,23 @@ class PositionManager(CacheController):
         # -------------------------------------------------------------------------------------
 
     def _position_from_list_of_position(self, hotkey, position_uuid):
-        for p in self.hotkey_to_positions.get(hotkey, []):
-            if p.position_uuid == position_uuid:
-                return deepcopy(p)  # for unit tests we deepcopy. ipc cache never returns a reference.
-        return None
+        # Use RPC to get specific position
+        position = self._rpc_server_proxy.get_position_rpc(hotkey, position_uuid)
+        return deepcopy(position) if position else None
 
     def get_existing_positions(self, hotkey: str):
-        return self.hotkey_to_positions.get(hotkey, [])
+        # Use RPC to get positions for hotkey
+        return self._rpc_server_proxy.get_positions_for_one_hotkey_rpc(hotkey, only_open_positions=False)
 
     def _save_miner_position_to_memory(self, position: Position):
-        # Multiprocessing-safe
-        hk = position.miner_hotkey
-        existing_positions = self.get_existing_positions(hk)
+        # Use RPC to save position to server
+        # The server handles deduplication and in-place updates
+        existing_pos = self._position_from_list_of_position(position.miner_hotkey, position.position_uuid)
+        if existing_pos:
+            assert existing_pos.trade_pair == position.trade_pair, \
+                f"Trade pair mismatch for position {position.position_uuid}. Existing: {existing_pos.trade_pair}, New: {position.trade_pair}"
 
-        # Sanity check
-        if position.miner_hotkey in self.hotkey_to_positions and position.position_uuid in existing_positions:
-            existing_pos = self._position_from_list_of_position(position.miner_hotkey, position.position_uuid)
-            assert existing_pos.trade_pair == position.trade_pair, f"Trade pair mismatch for position {position.position_uuid}. Existing: {existing_pos.trade_pair}, New: {position.trade_pair}"
-
-        new_positions = [p for p in existing_positions if p.position_uuid != position.position_uuid]
-        new_positions.append(deepcopy(position))
-        self.hotkey_to_positions[hk] = new_positions  # Trigger the update on the multiprocessing Manager
+        self._rpc_server_proxy.save_miner_position_rpc(deepcopy(position))
 
 
     def save_miner_position(self, position: Position, delete_open_position_if_exists=True) -> None:
@@ -1051,7 +1094,9 @@ class PositionManager(CacheController):
         self._save_miner_position_to_memory(position)
 
     def clear_all_miner_positions(self, target_hotkey=None):
-        self.hotkey_to_positions = {}
+        # Use RPC to clear positions in server
+        self._rpc_server_proxy.clear_all_miner_positions_rpc()
+
         # Clear all files and directories in the directory specified by dir
         dir = ValiBkpUtils.get_miner_dir(running_unit_tests=self.running_unit_tests)
         for file in os.listdir(dir):
@@ -1067,11 +1112,8 @@ class PositionManager(CacheController):
         return len(self.elimination_manager.eliminations)
 
     def get_number_of_miners_with_any_positions(self):
-        ans = 0
-        for k, v in self.hotkey_to_positions.items():
-            if len(v) > 0:
-                ans += 1
-        return ans
+        # Use RPC to get all hotkeys - if a hotkey is in the dict, it has at least one position
+        return len(self._rpc_server_proxy.get_all_hotkeys_rpc())
 
     def get_extreme_position_order_processed_on_disk_ms(self):
         dir = ValiBkpUtils.get_miner_dir(running_unit_tests=self.running_unit_tests)
@@ -1091,10 +1133,11 @@ class PositionManager(CacheController):
         return min_time, max_time
 
     def get_open_position_for_a_miner_trade_pair(self, hotkey: str, trade_pair_id: str) -> Position | None:
-        temp = self.hotkey_to_positions.get(hotkey, [])
+        # Use RPC to get positions for hotkey, filtered to open positions only
+        all_positions = self._rpc_server_proxy.get_positions_for_one_hotkey_rpc(hotkey, only_open_positions=True)
         positions = []
-        for p in temp:
-            if p.trade_pair.trade_pair_id == trade_pair_id and p.is_open_position:
+        for p in all_positions:
+            if p.trade_pair.trade_pair_id == trade_pair_id:
                 positions.append(p)
         if len(positions) > 1:
             raise ValiRecordsMisalignmentException(f"More than one open position for miner {hotkey} and trade_pair."
@@ -1124,12 +1167,8 @@ class PositionManager(CacheController):
             self._delete_position_from_memory(hotkey, position_uuid)
 
     def _delete_position_from_memory(self, hotkey, position_uuid):
-        if hotkey in self.hotkey_to_positions:
-            new_positions = [p for p in self.hotkey_to_positions[hotkey] if p.position_uuid != position_uuid]
-            if new_positions:
-                self.hotkey_to_positions[hotkey] = new_positions
-            else:
-                del self.hotkey_to_positions[hotkey]
+        # Use RPC to delete position from server
+        self._rpc_server_proxy.delete_position_rpc(hotkey, position_uuid)
 
     def calculate_net_portfolio_leverage(self, hotkey: str) -> float:
         """
@@ -1145,19 +1184,21 @@ class PositionManager(CacheController):
         return portfolio_leverage
 
     @timeme
-    def get_positions_for_all_miners(self, from_disk=False, include_development_positions=False, **args) -> dict[str, list[Position]]:
-        if from_disk:
-            all_miner_hotkeys: list = ValiBkpUtils.get_directories_in_dir(
-                ValiBkpUtils.get_miner_dir(self.running_unit_tests)
-            )
-        else:
-            all_miner_hotkeys = list(self.hotkey_to_positions.keys())
+    def get_positions_for_all_miners(self, include_development_positions=False, **args) -> dict[str, list[Position]]:
+        """
+        Get positions for all miners from the RPC server.
+
+        Note: This always reads from the server's in-memory positions.
+        For tests that need to verify disk persistence, use _read_positions_from_disk_for_tests().
+        """
+        # Use RPC to get all hotkeys from server
+        all_miner_hotkeys = self._rpc_server_proxy.get_all_hotkeys_rpc()
 
         # Filter out development hotkey unless explicitly requested
         if not include_development_positions:
             all_miner_hotkeys = [hk for hk in all_miner_hotkeys if hk != ValiConfig.DEVELOPMENT_HOTKEY]
 
-        return self.get_positions_for_hotkeys(all_miner_hotkeys, from_disk=from_disk, **args)
+        return self.get_positions_for_hotkeys(all_miner_hotkeys, **args)
 
     @staticmethod
     def positions_to_dashboard_dict(original_positions: list[Position], time_now_ms) -> dict:
@@ -1225,6 +1266,36 @@ class PositionManager(CacheController):
         except Exception as e:
             raise ValiBkpCorruptDataException(f"Error {e} file_path {file} file_string: {file_string}")
 
+    def _read_positions_from_disk_for_tests(self, miner_hotkey: str, only_open_positions: bool = False) -> List[Position]:
+        """
+        Test helper method to read positions directly from disk, bypassing the RPC server.
+
+        ⚠️ WARNING: This method is ONLY for tests that need to verify disk persistence.
+        Production code should NEVER call this method - always use get_positions_for_one_hotkey() instead.
+
+        The RPC server architecture dictates that only the server should read from disk normally.
+        This helper exists solely to allow tests to verify that the server is correctly
+        persisting data to disk.
+
+        Args:
+            miner_hotkey: The hotkey to read positions for
+            only_open_positions: Whether to filter to only open positions
+
+        Returns:
+            List of positions loaded directly from disk files
+        """
+        miner_dir = ValiBkpUtils.get_miner_all_positions_dir(
+            miner_hotkey,
+            running_unit_tests=self.running_unit_tests
+        )
+        all_files = ValiBkpUtils.get_all_files_in_dir(miner_dir)
+        positions = [self._get_position_from_disk(file) for file in all_files]
+
+        if only_open_positions:
+            positions = [position for position in positions if position.is_open_position]
+
+        return positions
+
     @staticmethod
     def sort_by_close_ms(_position):
         """
@@ -1278,28 +1349,22 @@ class PositionManager(CacheController):
                                      miner_hotkey: str,
                                      only_open_positions: bool = False,
                                      sort_positions: bool = False,
-                                     acceptable_position_end_ms: int = None,
-                                     from_disk: bool = False
+                                     acceptable_position_end_ms: int = None
                                      ) -> List[Position]:
+        """
+        Get positions for a hotkey from the RPC server.
 
-        if from_disk:
-            miner_dir = ValiBkpUtils.get_miner_all_positions_dir(miner_hotkey,
-                                                                 running_unit_tests=self.running_unit_tests)
-            all_files = ValiBkpUtils.get_all_files_in_dir(miner_dir)
-            positions = [self._get_position_from_disk(file) for file in all_files]
-        else:
-            positions = self.hotkey_to_positions.get(miner_hotkey, [])
+        Note: This always reads from the server's in-memory positions.
+        For tests that need to verify disk persistence, use _read_positions_from_disk_for_tests().
+        """
+        # Use RPC to get positions from server
+        positions = self._rpc_server_proxy.get_positions_for_one_hotkey_rpc(miner_hotkey, only_open_positions)
 
         if acceptable_position_end_ms is not None:
             positions = [
                 position
                 for position in positions
                 if position.open_ms > acceptable_position_end_ms
-            ]
-
-        if only_open_positions:
-            positions = [
-                position for position in positions if position.is_open_position
             ]
 
         if sort_positions:
@@ -1309,16 +1374,48 @@ class PositionManager(CacheController):
 
     def get_positions_for_hotkeys(self, hotkeys: List[str], eliminations: List = None, **args) -> Dict[
         str, List[Position]]:
+        """
+        Get positions for multiple hotkeys from the RPC server (optimized bulk call).
+
+        Note: This always reads from the server's in-memory positions.
+        For tests that need to verify disk persistence, use _read_positions_from_disk_for_tests().
+        """
         eliminated_hotkeys = set(x['hotkey'] for x in eliminations) if eliminations is not None else set()
 
-        return {
-            hotkey: self.get_positions_for_one_hotkey(hotkey, **args)
-            for hotkey in hotkeys
-            if hotkey not in eliminated_hotkeys
-        }
+        # Filter out eliminated hotkeys first
+        active_hotkeys = [hk for hk in hotkeys if hk not in eliminated_hotkeys]
+
+        # Extract filter/sort parameters
+        only_open_positions = args.get('only_open_positions', False)
+        sort_positions = args.get('sort_positions', False)
+        acceptable_position_end_ms = args.get('acceptable_position_end_ms', None)
+
+        # Single bulk RPC call instead of N individual calls (50-100x faster!)
+        hotkey_to_positions = self._rpc_server_proxy.get_positions_for_hotkeys_rpc(
+            active_hotkeys,
+            only_open_positions=only_open_positions
+        )
+
+        # Apply client-side filtering and sorting
+        for hotkey, positions in hotkey_to_positions.items():
+            # Filter by acceptable_position_end_ms if specified
+            if acceptable_position_end_ms is not None:
+                positions = [
+                    position for position in positions
+                    if position.open_ms > acceptable_position_end_ms
+                ]
+
+            # Sort if requested
+            if sort_positions:
+                positions = sorted(positions, key=self.sort_by_close_ms)
+
+            hotkey_to_positions[hotkey] = positions
+
+        return hotkey_to_positions
 
     def get_miner_hotkeys_with_at_least_one_position(self, include_development_positions=False) -> set[str]:
-        hotkeys = set(self.hotkey_to_positions.keys())
+        # Use RPC to get all hotkeys from server
+        hotkeys = set(self._rpc_server_proxy.get_all_hotkeys_rpc())
 
         # Filter out development hotkey unless explicitly requested
         if not include_development_positions and ValiConfig.DEVELOPMENT_HOTKEY in hotkeys:
