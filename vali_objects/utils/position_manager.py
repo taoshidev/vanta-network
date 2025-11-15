@@ -121,9 +121,7 @@ class PositionManager(CacheController):
         if self.is_backtesting:
             return
 
-        bt.logging.info("[PM_INIT] Loading positions from disk for all miners...")
         initial_hk_to_positions = self.get_positions_for_all_miners(from_disk=True)
-        bt.logging.info(f"[PM_INIT] Loaded positions for {len(initial_hk_to_positions)} hotkeys from disk")
 
         # Apply position splitting if enabled on disk load
         if self.split_positions_on_disk_load:
@@ -182,13 +180,8 @@ class PositionManager(CacheController):
 
         # Load positions into memory
         for hk, positions in initial_hk_to_positions.items():
-            if not positions:
-                bt.logging.info(f"[PM_INIT] {hk} no positions on initial boot")
             if positions:
                 self.hotkey_to_positions[hk] = positions
-                n_open = sum(1 for p in positions if p.is_open_position)
-                n_closed = sum(1 for p in positions if p.is_closed_position)
-                bt.logging.info(f"[PM_INIT] {hk} loaded {len(positions)} positions (open: {n_open}, closed: {n_closed})")
 
     def ensure_position_consistency_serially(self):
         """
@@ -266,9 +259,6 @@ class PositionManager(CacheController):
         hk_to_first_order_time = {}
         filtered_positions = {}
         for hotkey, miner_positions in self.get_positions_for_hotkeys(hotkeys, sort_positions=True).items():
-            if not miner_positions or len(miner_positions) == 0:
-                bt.logging.info(f"[FILTERED SCORING] {hotkey} no positions")
-
             if miner_positions:
                 hk_to_first_order_time[hotkey] = min([p.orders[0].processed_ms for p in miner_positions])
                 filtered_positions[hotkey] = PositionFiltering.filter_positions_for_duration(miner_positions)
