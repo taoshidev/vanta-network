@@ -430,7 +430,7 @@ class Validator(ValidatorBase):
         # Step 8: Initialize RequestCoreManager and MinerStatisticsManager
         def step8():
             self.request_core_manager = RequestCoreManager(self.position_manager, self.weight_setter, self.plagiarism_detector,
-                                                          self.contract_manager, self.limit_order_manager, ipc_manager=self.ipc_manager,
+                                                          contract_manager=self.contract_manager, limit_order_manager=self.limit_order_manager, ipc_manager=self.ipc_manager,
                                                           asset_selection_manager=self.asset_selection_manager)
             self.miner_statistics_manager = MinerStatisticsManager(self.position_manager, self.weight_setter,
                                                                    self.plagiarism_detector, contract_manager=self.contract_manager,

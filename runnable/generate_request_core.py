@@ -29,7 +29,8 @@ PERCENT_NEW_POSITIONS_TIERS = [100, 50, 30, 0]
 assert sorted(PERCENT_NEW_POSITIONS_TIERS, reverse=True) == PERCENT_NEW_POSITIONS_TIERS, 'needs to be sorted for efficient pruning'
 
 class RequestCoreManager:
-    def __init__(self, position_manager, subtensor_weight_setter, plagiarism_detector, limit_order_manager, contract_manager=None, ipc_manager=None, asset_selection_manager=None):
+    def __init__(self, position_manager, subtensor_weight_setter, plagiarism_detector, contract_manager=None,
+                 ipc_manager=None, asset_selection_manager=None, limit_order_manager=None):
         self.position_manager = position_manager
         self.perf_ledger_manager = position_manager.perf_ledger_manager
         self.elimination_manager = position_manager.elimination_manager
