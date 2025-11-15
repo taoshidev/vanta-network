@@ -1096,16 +1096,13 @@ class PositionManager(CacheController):
         return min_time, max_time
 
     def get_open_position_for_a_miner_trade_pair(self, hotkey: str, trade_pair_id: str) -> Position | None:
-        # Use RPC to get positions for hotkey, filtered to open positions only
-        all_positions = self._rpc_server_proxy.get_positions_for_one_hotkey_rpc(hotkey, only_open_positions=True)
-        positions = []
-        for p in all_positions:
-            if p.trade_pair.trade_pair_id == trade_pair_id:
-                positions.append(p)
-        if len(positions) > 1:
-            raise ValiRecordsMisalignmentException(f"More than one open position for miner {hotkey} and trade_pair."
-                                                   f" {trade_pair_id}. Please restore cache. Positions: {positions}")
-        return deepcopy(positions[0]) if len(positions) == 1 else None
+        """
+        Get the open position for a specific miner and trade pair.
+        Uses pure RPC - filtering happens server-side to avoid sending all positions over RPC.
+        """
+        # Single RPC call with server-side filtering - only returns the matching position (or None)
+        position = self._rpc_server_proxy.get_open_position_for_trade_pair_rpc(hotkey, trade_pair_id)
+        return deepcopy(position) if position else None
 
     def get_filepath_for_position(self, hotkey, trade_pair_id, position_uuid, is_open):
         order_status = OrderStatus.CLOSED if not is_open else OrderStatus.OPEN

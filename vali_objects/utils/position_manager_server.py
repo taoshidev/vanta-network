@@ -19,6 +19,7 @@ from vali_objects.vali_config import ValiConfig
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.utils.live_price_fetcher import LivePriceFetcher
 from vali_objects.utils.vali_utils import ValiUtils
+from vali_objects.exceptions.vali_records_misalignment_exception import ValiRecordsMisalignmentException
 
 
 def cleanup_stale_position_manager_server(port: int = 50002):
@@ -251,6 +252,41 @@ class PositionManagerServer:
 
         # O(1) direct dict access
         return positions_dict.get(position_uuid, None)
+
+    def get_open_position_for_trade_pair_rpc(self, hotkey: str, trade_pair_id: str) -> Optional[Position]:
+        """
+        Get the open position for a specific hotkey and trade pair.
+        Filtering happens server-side to avoid sending all positions over RPC.
+
+        Args:
+            hotkey: The miner's hotkey
+            trade_pair_id: The trade pair ID to filter by
+
+        Returns:
+            The open position if found, None otherwise
+
+        Raises:
+            Exception: If more than one open position exists for this trade pair (data corruption)
+        """
+        if hotkey not in self.hotkey_to_positions:
+            return None
+
+        positions_dict = self.hotkey_to_positions[hotkey]
+
+        # Filter open positions for this trade pair (server-side filtering!)
+        matching_positions = [
+            p for p in positions_dict.values()
+            if not p.is_closed_position and p.trade_pair.trade_pair_id == trade_pair_id
+        ]
+
+        if len(matching_positions) > 1:
+            # Data corruption - this should never happen
+            raise ValiRecordsMisalignmentException(
+                f"More than one open position for miner {hotkey} and trade_pair {trade_pair_id}. "
+                f"Please restore cache. Found {len(matching_positions)} positions."
+            )
+
+        return matching_positions[0] if len(matching_positions) == 1 else None
 
     def get_hotkeys_with_open_positions_rpc(self):
         """Get list of hotkeys that have open positions."""
