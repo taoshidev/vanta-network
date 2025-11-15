@@ -48,7 +48,10 @@ class TestMarketOrderManager(TestBase):
         secrets = ValiUtils.get_secrets(running_unit_tests=True)
         self.live_price_fetcher = MockLivePriceFetcher(secrets=secrets, disable_ws=True)
 
-        self.price_slippage_model = PriceSlippageModel()
+        self.price_slippage_model = PriceSlippageModel(
+            live_price_fetcher=self.live_price_fetcher,
+            running_unit_tests=True
+        )
 
         # Mock contract manager
         self.mock_contract_manager = Mock(spec=ValidatorContractManager)
