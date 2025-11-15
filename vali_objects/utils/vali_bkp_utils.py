@@ -1,6 +1,7 @@
 # developer: Taoshidev
 # Copyright © 2024 Taoshi Inc
 
+import gzip
 import json
 import os
 import shutil
@@ -121,7 +122,45 @@ class ValiBkpUtils:
     @staticmethod
     def get_perf_ledgers_path(running_unit_tests=False) -> str:
         suffix = "/tests" if running_unit_tests else ""
+        return ValiConfig.BASE_DIR + f"{suffix}/validation/perf_ledgers.json.gz"
+
+    @staticmethod
+    def get_perf_ledgers_path_legacy(running_unit_tests=False) -> str:
+        """Get legacy uncompressed perf_ledgers path for migration."""
+        suffix = "/tests" if running_unit_tests else ""
         return ValiConfig.BASE_DIR + f"{suffix}/validation/perf_ledgers.json"
+
+    @staticmethod
+    def migrate_perf_ledgers_to_compressed(running_unit_tests=False) -> bool:
+        """
+        Migrate perf_ledgers.json to perf_ledgers.json.gz and delete old file.
+
+        Returns:
+            bool: True if migration occurred, False otherwise
+        """
+        legacy_path = ValiBkpUtils.get_perf_ledgers_path_legacy(running_unit_tests)
+        new_path = ValiBkpUtils.get_perf_ledgers_path(running_unit_tests)
+
+        # Skip if already migrated or no legacy file exists
+        if not os.path.exists(legacy_path):
+            return False
+
+        try:
+            # Read legacy uncompressed file
+            with open(legacy_path, 'r') as f:
+                data = json.load(f)
+
+            # Write to compressed format
+            ValiBkpUtils.write_compressed_json(new_path, data)
+
+            # Delete legacy file after successful migration
+            os.remove(legacy_path)
+            bt.logging.info(f"Migrated perf_ledgers from {legacy_path} to {new_path}")
+            return True
+
+        except Exception as e:
+            bt.logging.error(f"Failed to migrate perf_ledgers: {e}")
+            return False
 
     @staticmethod
     def get_plagiarism_dir(running_unit_tests=False) -> str:
@@ -315,6 +354,21 @@ class ValiBkpUtils:
                 f.write(json.dumps(vali_data, cls=CustomEncoder))
         # Move the file from temp to the final location
         shutil.move(temp_file_path, vali_file)
+
+    @staticmethod
+    def write_compressed_json(file_path: str, data: dict) -> None:
+        """Write JSON data compressed with gzip (atomic write via temp file)."""
+        temp_path = file_path + ".tmp"
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        with gzip.open(temp_path, 'wt', encoding='utf-8') as f:
+            json.dump(data, f, cls=CustomEncoder)
+        shutil.move(temp_path, file_path)
+
+    @staticmethod
+    def read_compressed_json(file_path: str) -> dict:
+        """Read compressed JSON data."""
+        with gzip.open(file_path, 'rt', encoding='utf-8') as f:
+            return json.load(f)
 
     @staticmethod
     def write_file(

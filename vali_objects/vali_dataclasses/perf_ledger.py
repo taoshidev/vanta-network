@@ -655,11 +655,19 @@ class PerfLedgerManager(CacheController):
         ret = {}
         if from_disk:
             file_path = ValiBkpUtils.get_perf_ledgers_path(self.running_unit_tests)
-            if not os.path.exists(file_path):
-                return ret
+            legacy_path = ValiBkpUtils.get_perf_ledgers_path_legacy(self.running_unit_tests)
 
-            with open(file_path, 'r') as file:
-                data = json.load(file)
+            # Try compressed file first
+            if os.path.exists(file_path):
+                data = ValiBkpUtils.read_compressed_json(file_path)
+            # Fall back to legacy uncompressed file
+            elif os.path.exists(legacy_path):
+                with open(legacy_path, 'r') as file:
+                    data = json.load(file)
+                # Migrate to compressed format after successful read
+                ValiBkpUtils.migrate_perf_ledgers_to_compressed(self.running_unit_tests)
+            else:
+                return ret
 
             for hk, possible_bundles in data.items():
                 if self._is_v1_perf_ledger(possible_bundles):
@@ -727,9 +735,17 @@ class PerfLedgerManager(CacheController):
     def clear_perf_ledgers_from_disk(self):
         assert self.running_unit_tests, 'this is only valid for unit tests'
         self.hotkey_to_perf_bundle = {}
+
+        # Clear compressed file
         file_path = ValiBkpUtils.get_perf_ledgers_path(self.running_unit_tests)
         if os.path.exists(file_path):
-            ValiBkpUtils.write_file(file_path, {})
+            ValiBkpUtils.write_compressed_json(file_path, {})
+
+        # Also clear legacy file if it exists
+        legacy_path = ValiBkpUtils.get_perf_ledgers_path_legacy(self.running_unit_tests)
+        if os.path.exists(legacy_path):
+            os.remove(legacy_path)
+
         for k in list(self.hotkey_to_perf_bundle.keys()):
             del self.hotkey_to_perf_bundle[k]
 
@@ -743,16 +759,30 @@ class PerfLedgerManager(CacheController):
     @staticmethod
     def clear_perf_ledgers_from_disk_autosync(hotkeys:list):
         file_path = ValiBkpUtils.get_perf_ledgers_path()
+        legacy_path = ValiBkpUtils.get_perf_ledgers_path_legacy()
+
         filtered_data = {}
+
+        # Try compressed file first
         if os.path.exists(file_path):
-            with open(file_path, 'r') as file:
+            existing_data = ValiBkpUtils.read_compressed_json(file_path)
+        # Fall back to legacy uncompressed file
+        elif os.path.exists(legacy_path):
+            with open(legacy_path, 'r') as file:
                 existing_data = json.load(file)
+        else:
+            existing_data = {}
 
-            for hk, bundles in existing_data.items():
-                if hk in hotkeys:
-                    filtered_data[hk] = bundles
+        for hk, bundles in existing_data.items():
+            if hk in hotkeys:
+                filtered_data[hk] = bundles
 
-        ValiBkpUtils.write_file(file_path, filtered_data)
+        # Always write to compressed format
+        ValiBkpUtils.write_compressed_json(file_path, filtered_data)
+
+        # Clean up legacy file if it exists
+        if os.path.exists(legacy_path):
+            os.remove(legacy_path)
 
 
     def run_update_loop(self):
@@ -2218,7 +2248,7 @@ class PerfLedgerManager(CacheController):
 
     def save_perf_ledgers_to_disk(self, perf_ledgers: dict[str, dict[str, PerfLedger]] | dict[str, dict[str, dict]], raw_json=False):
         file_path = ValiBkpUtils.get_perf_ledgers_path(self.running_unit_tests)
-        ValiBkpUtils.write_to_dir(file_path, perf_ledgers)
+        ValiBkpUtils.write_compressed_json(file_path, perf_ledgers)
 
     def debug_pl_plot(self, testing_one_hotkey):
         all_bundles = self.get_perf_ledgers(portfolio_only=False)
