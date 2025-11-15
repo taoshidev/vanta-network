@@ -435,6 +435,7 @@ class ChallengePeriodManager(CacheController):
             has_minimum_positions, inspection_positions = ChallengePeriodManager.screen_minimum_positions(positions, hotkey)
             if not has_minimum_positions:
                 miners_not_enough_positions.append(hotkey)
+                bt.logging.info("[CHALLENGE] {hotkey} has no positions")
                 continue
 
             # Get hotkey to ledger dict that only includes the inspection miner

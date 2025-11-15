@@ -272,8 +272,6 @@ class PositionManager(CacheController):
             if miner_positions:
                 hk_to_first_order_time[hotkey] = min([p.orders[0].processed_ms for p in miner_positions])
                 filtered_positions[hotkey] = PositionFiltering.filter_positions_for_duration(miner_positions)
-                if len(miner_positions) < 3:
-                    bt.logging.info(f"[FILTERED SCORING] {hotkey}: {miner_positions}")
 
         return filtered_positions, hk_to_first_order_time
 
