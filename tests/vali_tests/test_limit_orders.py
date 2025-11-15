@@ -31,7 +31,7 @@ class TestLimitOrders(TestBase):
         self.DEFAULT_TRADE_PAIR = TradePair.BTCUSD
 
         self.mock_metagraph = MockMetagraph([self.DEFAULT_MINER_HOTKEY])
-        self.elimination_manager = EliminationManager(None, None, self.mock_metagraph)
+        self.elimination_manager = EliminationManager(None, None, self.mock_metagraph, running_unit_tests=True)
         self.perf_ledger_manager = PerfLedgerManager(self.mock_metagraph, running_unit_tests=True)
 
         self.position_manager = PositionManager(
