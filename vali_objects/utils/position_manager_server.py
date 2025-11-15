@@ -109,9 +109,16 @@ class PositionManagerServer:
             load_from_disk: Override disk loading behavior (None=auto, True=force load, False=skip)
             split_positions_on_disk_load: Whether to apply position splitting after loading from disk
         """
-        # Nested dict structure: hotkey -> position_uuid -> Position
-        # This enables O(1) lookups, inserts, updates, and deletes
+        # SOURCE OF TRUTH: All positions (open + closed)
+        # Structure: hotkey -> position_uuid -> Position
+        # This enables O(1) lookups, inserts, updates, and deletes by position_uuid
         self.hotkey_to_positions: Dict[str, Dict[str, Position]] = {}
+
+        # SECONDARY INDEX: Only open positions, indexed by trade_pair_id for O(1) lookups
+        # Structure: hotkey -> trade_pair_id -> Position
+        # Invariant: Must always be in sync with open positions in hotkey_to_positions
+        # Benefits: O(1) lookup instead of O(N) scan for get_open_position_for_trade_pair
+        self.hotkey_to_open_positions: Dict[str, Dict[str, Position]] = {}
 
         self.running_unit_tests = running_unit_tests
         self.is_backtesting = is_backtesting
@@ -143,6 +150,73 @@ class PositionManagerServer:
                     n_removed += 1
         return n_removed
 
+    def _add_to_open_index(self, position: Position):
+        """
+        Add an open position to the secondary index for O(1) lookups.
+        Only call this for positions that are definitely open.
+
+        Raises:
+            ValiRecordsMisalignmentException: If another open position already exists for this trade pair
+        """
+        hotkey = position.miner_hotkey
+        trade_pair_id = position.trade_pair.trade_pair_id
+
+        if hotkey not in self.hotkey_to_open_positions:
+            self.hotkey_to_open_positions[hotkey] = {}
+
+        # Check for duplicates (data corruption - this should NEVER happen)
+        if trade_pair_id in self.hotkey_to_open_positions[hotkey]:
+            existing_pos = self.hotkey_to_open_positions[hotkey][trade_pair_id]
+            if existing_pos.position_uuid != position.position_uuid:
+                # Data corruption detected - raise exception instead of silently continuing
+                error_msg = (
+                    f"Data corruption: Multiple open positions for miner {hotkey} and trade_pair {trade_pair_id}. "
+                    f"Existing position UUID: {existing_pos.position_uuid}, "
+                    f"New position UUID: {position.position_uuid}. "
+                    f"Please restore cache."
+                )
+                bt.logging.error(error_msg)
+                raise ValiRecordsMisalignmentException(error_msg)
+
+        self.hotkey_to_open_positions[hotkey][trade_pair_id] = position
+        bt.logging.trace(f"Added to open index: {hotkey}/{trade_pair_id}")
+
+    def _remove_from_open_index(self, position: Position):
+        """
+        Remove a position from the open positions index.
+        Safe to call even if position isn't in the index.
+        """
+        hotkey = position.miner_hotkey
+        trade_pair_id = position.trade_pair.trade_pair_id
+
+        if hotkey not in self.hotkey_to_open_positions:
+            return
+
+        if trade_pair_id in self.hotkey_to_open_positions[hotkey]:
+            # Only remove if it's the same position (by UUID)
+            if self.hotkey_to_open_positions[hotkey][trade_pair_id].position_uuid == position.position_uuid:
+                del self.hotkey_to_open_positions[hotkey][trade_pair_id]
+                bt.logging.trace(f"Removed from open index: {hotkey}/{trade_pair_id}")
+
+                # Cleanup empty dicts
+                if not self.hotkey_to_open_positions[hotkey]:
+                    del self.hotkey_to_open_positions[hotkey]
+
+    def _rebuild_open_index(self):
+        """
+        Rebuild the entire open positions index from scratch.
+        Used after bulk operations like loading from disk or position splitting.
+        """
+        self.hotkey_to_open_positions.clear()
+
+        for hotkey, positions_dict in self.hotkey_to_positions.items():
+            for position in positions_dict.values():
+                if not position.is_closed_position:
+                    self._add_to_open_index(position)
+
+        total_open = sum(len(d) for d in self.hotkey_to_open_positions.values())
+        bt.logging.debug(f"Rebuilt open index: {total_open} open positions across {len(self.hotkey_to_open_positions)} hotkeys")
+
     def _default_split_stats(self):
         return {
             'original_leverage': 0.0,
@@ -169,17 +243,42 @@ class PositionManagerServer:
     def save_miner_position_rpc(self, position: Position):
         """
         Save a single position efficiently with O(1) insert/update.
+        Also maintains the open positions index for fast lookups.
         Note: Disk I/O is handled by the client to maintain compatibility with existing format.
         """
         hotkey = position.miner_hotkey
+        position_uuid = position.position_uuid
 
         if hotkey not in self.hotkey_to_positions:
             self.hotkey_to_positions[hotkey] = {}
 
-        # O(1) direct insert/update - no linear search needed!
-        self.hotkey_to_positions[hotkey][position.position_uuid] = position
+        # Check if this position already exists (update vs insert)
+        existing_position = self.hotkey_to_positions[hotkey].get(position_uuid)
 
-        bt.logging.trace(f"Saved position {position.position_uuid} for {hotkey}")
+        # Update the main data structure (source of truth)
+        self.hotkey_to_positions[hotkey][position_uuid] = position
+
+        # Maintain the open positions index
+        if existing_position:
+            # Position is being updated - handle state transitions
+            was_open = not existing_position.is_closed_position
+            is_now_open = not position.is_closed_position
+
+            if was_open and not is_now_open:
+                # Open -> Closed transition: remove from index
+                self._remove_from_open_index(position)
+            elif is_now_open and not was_open:
+                # Closed -> Open transition: add to index (rare but possible)
+                self._add_to_open_index(position)
+            elif is_now_open:
+                # Still open: update the index reference
+                self._add_to_open_index(position)
+        else:
+            # New position being inserted
+            if not position.is_closed_position:
+                self._add_to_open_index(position)
+
+        bt.logging.trace(f"Saved position {position_uuid} for {hotkey}")
 
     def get_all_miner_positions_rpc(self, only_open_positions=False):
         """Get all positions across all miners."""
@@ -221,13 +320,15 @@ class PositionManagerServer:
         return result
 
     def clear_all_miner_positions_rpc(self):
-        """Clear all positions (for testing)."""
+        """Clear all positions (for testing). Also clears the open positions index."""
         self.hotkey_to_positions.clear()
-        bt.logging.info("Cleared all positions")
+        self.hotkey_to_open_positions.clear()
+        bt.logging.info("Cleared all positions and open index")
 
     def delete_position_rpc(self, hotkey: str, position_uuid: str):
         """
         Delete a specific position with O(1) deletion.
+        Also removes from open positions index if it was open.
         Note: Disk I/O is handled by the client.
         """
         if hotkey not in self.hotkey_to_positions:
@@ -237,6 +338,12 @@ class PositionManagerServer:
 
         # O(1) direct deletion from dict
         if position_uuid in positions_dict:
+            position = positions_dict[position_uuid]
+
+            # Remove from open index if it's an open position
+            if not position.is_closed_position:
+                self._remove_from_open_index(position)
+
             del positions_dict[position_uuid]
             bt.logging.info(f"Deleted position {position_uuid} for {hotkey}")
             return True
@@ -256,7 +363,7 @@ class PositionManagerServer:
     def get_open_position_for_trade_pair_rpc(self, hotkey: str, trade_pair_id: str) -> Optional[Position]:
         """
         Get the open position for a specific hotkey and trade pair.
-        Filtering happens server-side to avoid sending all positions over RPC.
+        Uses O(1) index lookup instead of scanning - extremely fast!
 
         Args:
             hotkey: The miner's hotkey
@@ -264,29 +371,13 @@ class PositionManagerServer:
 
         Returns:
             The open position if found, None otherwise
-
-        Raises:
-            Exception: If more than one open position exists for this trade pair (data corruption)
         """
-        if hotkey not in self.hotkey_to_positions:
+        # O(1) lookup using the secondary index!
+        # This is MUCH faster than scanning through all positions
+        if hotkey not in self.hotkey_to_open_positions:
             return None
 
-        positions_dict = self.hotkey_to_positions[hotkey]
-
-        # Filter open positions for this trade pair (server-side filtering!)
-        matching_positions = [
-            p for p in positions_dict.values()
-            if not p.is_closed_position and p.trade_pair.trade_pair_id == trade_pair_id
-        ]
-
-        if len(matching_positions) > 1:
-            # Data corruption - this should never happen
-            raise ValiRecordsMisalignmentException(
-                f"More than one open position for miner {hotkey} and trade_pair {trade_pair_id}. "
-                f"Please restore cache. Found {len(matching_positions)} positions."
-            )
-
-        return matching_positions[0] if len(matching_positions) == 1 else None
+        return self.hotkey_to_open_positions[hotkey].get(trade_pair_id, None)
 
     def get_hotkeys_with_open_positions_rpc(self):
         """Get list of hotkeys that have open positions."""
@@ -416,6 +507,9 @@ class PositionManagerServer:
                 f"Loaded {total_positions} positions for {len(self.hotkey_to_positions)} hotkeys from disk"
             )
 
+            # Rebuild the open positions index after loading
+            self._rebuild_open_index()
+
         except Exception as e:
             bt.logging.error(f"Error loading positions from disk: {e}")
 
@@ -475,6 +569,9 @@ class PositionManagerServer:
             f"Position splitting complete: {total_positions_split} positions split across "
             f"{hotkeys_with_splits}/{total_hotkeys} hotkeys"
         )
+
+        # Rebuild the open positions index after splitting
+        self._rebuild_open_index()
 
     def _find_split_points(self, position: Position) -> list[int]:
         """
