@@ -12,7 +12,7 @@ from pickle import UnpicklingError
 from typing import List, Dict
 import bittensor as bt
 from pathlib import Path
-
+from multiprocessing import Manager
 from copy import deepcopy
 from shared_objects.cache_controller import CacheController
 from time_util.time_util import TimeUtil, timeme
@@ -69,7 +69,6 @@ class PositionManager(CacheController):
         # Create dedicated IPC manager if requested
         self.use_ipc = use_ipc
         if self.use_ipc:
-            from multiprocessing import Manager
             ipc_manager = Manager()  # Don't store it - proxy objects are picklable
             bt.logging.info(
                 f"PositionManager: Created dedicated IPC manager "

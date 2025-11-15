@@ -56,6 +56,7 @@ from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.utils.plagiarism_detector import PlagiarismDetector
 from vali_objects.utils.validator_contract_manager import ValidatorContractManager
 from vali_objects.utils.asset_selection_manager import AssetSelectionManager
+from vali_objects.utils.order_processor import OrderProcessor
 
 # Global flag used to indicate shutdown
 shutdown_dict = {}
@@ -873,42 +874,19 @@ class Validator(ValidatorBase):
             # TIMING: Parse operations
             parse_start = TimeUtil.now_in_millis()
             miner_order_uuid = SendSignal.parse_miner_uuid(synapse)
-            trade_pair = Order.parse_trade_pair_from_signal(signal)
 
-            if trade_pair is None:
-                bt.logging.error(f"[{trade_pair}] not in TradePair enum.")
-                raise SignalException(
-                    f"miner [{miner_hotkey}] incorrectly sent trade pair. Raw signal: {signal}"
-                )
+            # Use OrderProcessor to parse common fields
+            trade_pair, execution_type, _ = OrderProcessor.parse_signal_data(signal, miner_order_uuid)
 
-            execution_type = ExecutionType.from_string(signal.get("execution_type", "MARKET").upper())
             parse_ms = TimeUtil.now_in_millis() - parse_start
             bt.logging.info(f"[TIMING] Parse operations took {parse_ms}ms")
 
             if execution_type == ExecutionType.LIMIT:
-                # Extract signal data (validator's responsibility - understands protocol)
-                signal_leverage = signal["leverage"]
-                signal_order_type = OrderType.from_string(signal["order_type"])
-
-                if not signal.get("limit_price"):
-                    raise SignalException("must set limit_price for limit order")
-
-                # Create order object (validator has full context)
-                order = Order(
-                    trade_pair=trade_pair,
-                    order_uuid=miner_order_uuid,
-                    processed_ms=now_ms,
-                    price=0.0,
-                    order_type=signal_order_type,
-                    leverage=signal_leverage,
-                    execution_type=ExecutionType.LIMIT,
-                    limit_price=signal["limit_price"],
-                    src=OrderSource.ORDER_SRC_LIMIT_UNFILLED
+                # Use OrderProcessor to handle LIMIT order
+                order = OrderProcessor.process_limit_order(
+                    signal, trade_pair, miner_order_uuid, now_ms,
+                    miner_hotkey, self.limit_order_manager
                 )
-
-                # RPC call to manager (pure data, no synapse)
-                # May throw SignalException or RPC exception (pickled and re-raised)
-                self.limit_order_manager.process_limit_order(miner_hotkey, order)
 
                 # Set synapse response (validator's responsibility)
                 synapse.order_json = order.__str__()
@@ -917,13 +895,10 @@ class Validator(ValidatorBase):
                 self.uuid_tracker.add(miner_order_uuid)
 
             elif execution_type == ExecutionType.LIMIT_CANCEL:
-                # RPC call to cancel order (simple, clear interface)
-                # May throw SignalException or RPC exception (pickled and re-raised)
-                result = self.limit_order_manager.cancel_limit_order(
-                    miner_hotkey,
-                    trade_pair.trade_pair_id,
-                    miner_order_uuid,
-                    now_ms
+                # Use OrderProcessor to handle LIMIT_CANCEL
+                result = OrderProcessor.process_limit_cancel(
+                    signal, trade_pair, miner_order_uuid, now_ms,
+                    miner_hotkey, self.limit_order_manager
                 )
 
                 # Set synapse response (validator's responsibility)
@@ -931,8 +906,12 @@ class Validator(ValidatorBase):
                 # No UUID tracking for cancel operations
 
             else:
-                # Market orders - may throw SignalException
-                self.market_order_manager.process_market_order(synapse, miner_order_uuid, miner_repo_version, trade_pair, now_ms, signal, miner_hotkey)
+                # Use OrderProcessor to handle MARKET order
+                OrderProcessor.process_market_order(
+                    signal, trade_pair, miner_order_uuid, now_ms,
+                    miner_hotkey, miner_repo_version,
+                    self.market_order_manager, synapse=synapse
+                )
                 # UUID tracking happens HERE in validator process
                 self.uuid_tracker.add(miner_order_uuid)
 

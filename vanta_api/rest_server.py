@@ -28,6 +28,7 @@ from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.vali_dataclasses.order import Order, OrderSource
 from vali_objects.exceptions.signal_exception import SignalException
+from vali_objects.utils.order_processor import OrderProcessor
 from multiprocessing import current_process
 from vanta_api.api_key_refresh import APIKeyMixin
 from vanta_api.nonce_manager import NonceManager
@@ -1151,7 +1152,7 @@ class VantaRestServer(APIKeyMixin):
             # Limit order
             curl -X POST http://localhost:48888/development/order \\
               -H "Authorization: Bearer YOUR_API_KEY" \\
-              -H "Content-Type: application/json" \\
+              -H "Content-Type": application/json" \\
               -d '{"execution_type": "LIMIT", "trade_pair_id": "BTCUSD", "order_type": "LONG", "leverage": 1.0, "limit_price": 50000.0}'
 
             # Cancel specific limit order
@@ -1166,7 +1167,6 @@ class VantaRestServer(APIKeyMixin):
               -H "Content-Type: application/json" \\
               -d '{"execution_type": "LIMIT_CANCEL", "trade_pair_id": "BTCUSD"}'
             """
-
             DEVELOPMENT_HOTKEY = ValiConfig.DEVELOPMENT_HOTKEY
 
             # Check API key authentication
@@ -1175,7 +1175,7 @@ class VantaRestServer(APIKeyMixin):
                 return jsonify({'error': 'Unauthorized access'}), 401
 
             try:
-                # Parse JSON request
+                # Parse and validate request
                 if not request.is_json:
                     return jsonify({'error': 'Content-Type must be application/json'}), 400
 
@@ -1183,66 +1183,43 @@ class VantaRestServer(APIKeyMixin):
                 if not data:
                     return jsonify({'error': 'Invalid JSON body'}), 400
 
-                # Validate required fields
-                if 'execution_type' not in data or 'trade_pair_id' not in data:
-                    return jsonify({'error': 'Missing required fields: execution_type, trade_pair_id'}), 400
+                # Create signal dict from request data
+                signal = {
+                    'trade_pair': data.get('trade_pair_id'),
+                    'order_type': data.get('order_type', '').upper(),
+                    'leverage': data.get('leverage'),
+                    'execution_type': data.get('execution_type', 'MARKET').upper()
+                }
 
-                # Parse execution type
-                try:
-                    execution_type = ExecutionType.from_string(data['execution_type'].upper())
-                except ValueError as e:
-                    return jsonify({'error': f'Invalid execution_type: {str(e)}'}), 400
+                # Add limit_price for limit orders
+                if 'limit_price' in data:
+                    signal['limit_price'] = data['limit_price']
 
-                # Parse trade pair
-                try:
-                    trade_pair = TradePair.from_trade_pair_id(data['trade_pair_id'])
-                except Exception as e:
-                    return jsonify({'error': f'Invalid trade_pair_id: {str(e)}'}), 400
+                # Use OrderProcessor to parse signal (same logic as validator.py)
+                trade_pair, execution_type, order_uuid = OrderProcessor.parse_signal_data(
+                    signal, data.get('order_uuid')
+                )
 
                 now_ms = TimeUtil.now_in_millis()
+                miner_repo_version = "development"
 
-                # Generate or use provided UUID
-                order_uuid = data.get('order_uuid', str(uuid.uuid4()))
-
-                # Route based on execution type
+                # Route based on execution type (same logic as validator.py)
                 if execution_type == ExecutionType.LIMIT:
                     # Check if limit order manager is available
                     if not self.limit_order_manager:
                         return jsonify({'error': 'Limit order operations not available'}), 503
 
-                    # Validate LIMIT-specific fields
-                    required_limit_fields = ['order_type', 'leverage', 'limit_price']
-                    for field in required_limit_fields:
-                        if field not in data:
-                            return jsonify({'error': f'Missing required field for LIMIT order: {field}'}), 400
-
-                    # Parse order type
-                    try:
-                        signal_order_type = OrderType.from_string(data['order_type'].upper())
-                    except ValueError as e:
-                        return jsonify({'error': f'Invalid order_type: {str(e)}'}), 400
-
-                    # Create limit order
-                    order = Order(
-                        trade_pair=trade_pair,
-                        order_uuid=order_uuid,
-                        processed_ms=now_ms,
-                        price=0.0,
-                        order_type=signal_order_type,
-                        leverage=float(data['leverage']),
-                        execution_type=ExecutionType.LIMIT,
-                        limit_price=float(data['limit_price']),
-                        src=OrderSource.ORDER_SRC_LIMIT_UNFILLED
+                    # Use OrderProcessor to handle LIMIT order
+                    order = OrderProcessor.process_limit_order(
+                        signal, trade_pair, order_uuid, now_ms,
+                        DEVELOPMENT_HOTKEY, self.limit_order_manager
                     )
-
-                    # Call limit order manager
-                    result = self.limit_order_manager.process_limit_order(DEVELOPMENT_HOTKEY, order)
 
                     return jsonify({
                         'status': 'success',
                         'execution_type': 'LIMIT',
                         'order_uuid': order_uuid,
-                        'result': result
+                        'order': str(order)
                     })
 
                 elif execution_type == ExecutionType.LIMIT_CANCEL:
@@ -1250,15 +1227,10 @@ class VantaRestServer(APIKeyMixin):
                     if not self.limit_order_manager:
                         return jsonify({'error': 'Limit order operations not available'}), 503
 
-                    # order_uuid is optional - if not provided, cancels all for trade pair
-                    cancel_uuid = data.get('order_uuid', None)
-
-                    # Call cancel limit order
-                    result = self.limit_order_manager.cancel_limit_order(
-                        DEVELOPMENT_HOTKEY,
-                        trade_pair.trade_pair_id,
-                        cancel_uuid,
-                        now_ms
+                    # Use OrderProcessor to handle LIMIT_CANCEL
+                    result = OrderProcessor.process_limit_cancel(
+                        signal, trade_pair, order_uuid, now_ms,
+                        DEVELOPMENT_HOTKEY, self.limit_order_manager
                     )
 
                     return jsonify({
@@ -1272,37 +1244,11 @@ class VantaRestServer(APIKeyMixin):
                     if not self.market_order_manager:
                         return jsonify({'error': 'Market order operations not available'}), 503
 
-                    # Validate MARKET-specific fields
-                    required_market_fields = ['order_type', 'leverage']
-                    for field in required_market_fields:
-                        if field not in data:
-                            return jsonify({'error': f'Missing required field for MARKET order: {field}'}), 400
-
-                    # Parse order type
-                    try:
-                        signal_order_type = OrderType.from_string(data['order_type'].upper())
-                    except ValueError as e:
-                        return jsonify({'error': f'Invalid order_type: {str(e)}'}), 400
-
-                    # Create signal dict (matching what validator expects)
-                    signal = {
-                        'trade_pair': data['trade_pair_id'],
-                        'order_type': data['order_type'].upper(),
-                        'leverage': float(data['leverage']),
-                        'execution_type': 'MARKET'
-                    }
-
-                    miner_repo_version = "development"
-
-                    # Call market order manager directly using _process_market_order
-                    err_msg, updated_position = self.market_order_manager._process_market_order(
-                        order_uuid,
-                        miner_repo_version,
-                        trade_pair,
-                        now_ms,
-                        signal,
-                        DEVELOPMENT_HOTKEY,
-                        price_sources=None
+                    # Use OrderProcessor to handle MARKET order
+                    err_msg, updated_position = OrderProcessor.process_market_order(
+                        signal, trade_pair, order_uuid, now_ms,
+                        DEVELOPMENT_HOTKEY, miner_repo_version,
+                        self.market_order_manager, synapse=None
                     )
 
                     if err_msg:
