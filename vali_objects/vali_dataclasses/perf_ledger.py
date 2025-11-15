@@ -741,11 +741,6 @@ class PerfLedgerManager(CacheController):
         if os.path.exists(file_path):
             ValiBkpUtils.write_compressed_json(file_path, {})
 
-        # Also clear legacy file if it exists
-        legacy_path = ValiBkpUtils.get_perf_ledgers_path_legacy(self.running_unit_tests)
-        if os.path.exists(legacy_path):
-            os.remove(legacy_path)
-
         for k in list(self.hotkey_to_perf_bundle.keys()):
             del self.hotkey_to_perf_bundle[k]
 
@@ -766,10 +761,12 @@ class PerfLedgerManager(CacheController):
         # Try compressed file first
         if os.path.exists(file_path):
             existing_data = ValiBkpUtils.read_compressed_json(file_path)
-        # Fall back to legacy uncompressed file
+        # Fall back to legacy uncompressed file and migrate
         elif os.path.exists(legacy_path):
             with open(legacy_path, 'r') as file:
                 existing_data = json.load(file)
+            # Migration will handle deleting the legacy file
+            ValiBkpUtils.migrate_perf_ledgers_to_compressed(running_unit_tests=False)
         else:
             existing_data = {}
 
@@ -779,10 +776,6 @@ class PerfLedgerManager(CacheController):
 
         # Always write to compressed format
         ValiBkpUtils.write_compressed_json(file_path, filtered_data)
-
-        # Clean up legacy file if it exists
-        if os.path.exists(legacy_path):
-            os.remove(legacy_path)
 
 
     def run_update_loop(self):

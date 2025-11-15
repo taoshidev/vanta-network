@@ -109,6 +109,8 @@ class MDDChecker(CacheController):
             return
 
         self.reset_debug_counters()
+        self.position_refresh_sum_ms = 0.0  # Track total refresh time for aggregate logging
+        self.position_refresh_count = 0  # Track number of positions refreshed
 
         # Time the IPC read of positions
         ipc_start = time.perf_counter()
@@ -148,6 +150,10 @@ class MDDChecker(CacheController):
                 return
             self.perform_price_corrections(hotkey, sorted_positions, tp_to_price_sources, position_locks, iteration_epoch)
 
+        # Log aggregate position refresh statistics
+        if self.position_refresh_count > 0:
+            avg_refresh_ms = self.position_refresh_sum_ms / self.position_refresh_count
+            bt.logging.info(f"[MDD_IPC_TIMING] Positions refreshed: {self.position_refresh_count}, avg_time={avg_refresh_ms:.2f}ms")
 
         bt.logging.info(f"mdd checker completed."
                         f" n orders corrected: {self.n_orders_corrected}. n miners corrected: {len(self.miners_corrected)}."
@@ -318,7 +324,9 @@ class MDDChecker(CacheController):
                 bt.logging.warning(f"mdd_checker: Position not found (uuid {position.position_uuid[:8]}... for {hotkey[:8]}.../{trade_pair_id}). Skipping.")
                 return
 
-            bt.logging.info(f"[MDD_IPC_TIMING] Position refreshed in {refresh_ms:.2f}ms, uuid={position.position_uuid[:8]}...")
+            # Track refresh timing for aggregate logging
+            self.position_refresh_sum_ms += refresh_ms
+            self.position_refresh_count += 1
             position = position_refreshed
             n_orders_updated = 0
             for i, order in enumerate(reversed(position.orders)):
