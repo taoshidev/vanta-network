@@ -130,6 +130,18 @@ class PositionManagerServer:
 
         bt.logging.success("PositionManagerServer initialized with normal Python dict")
 
+    @staticmethod
+    def strip_old_price_sources(position: Position, time_now_ms: int) -> int:
+        """Strip price_sources from orders older than 1 week to save disk space."""
+        n_removed = 0
+        one_week_ago_ms = time_now_ms - 1000 * 60 * 60 * 24 * 7
+        for o in position.orders:
+            if o.processed_ms < one_week_ago_ms:
+                if o.price_sources:
+                    o.price_sources = []
+                    n_removed += 1
+        return n_removed
+
     def _default_split_stats(self):
         return {
             'original_leverage': 0.0,
@@ -256,6 +268,50 @@ class PositionManagerServer:
         positions_dir = ValiBkpUtils.get_miner_all_positions_dir()
         positions_dir.mkdir(parents=True, exist_ok=True)
         bt.logging.debug(f"Initialized cache directory: {positions_dir}")
+
+    @timeme
+    def compact_price_sources(self):
+        """
+        Compact price_sources by removing old price data from closed positions.
+        Runs directly on server's in-memory positions - no RPC overhead!
+        """
+        time_now = TimeUtil.now_in_millis()
+        cutoff_time_ms = time_now - 10 * ValiConfig.RECENT_EVENT_TRACKER_OLDEST_ALLOWED_RECORD_MS  # Generous bound
+        n_price_sources_removed = 0
+
+        # Direct access to in-memory positions - no RPC call needed!
+        for hotkey, positions_dict in self.hotkey_to_positions.items():
+            for position in positions_dict.values():
+                if position.is_open_position:
+                    continue  # Don't modify open positions as we don't want to deal with locking
+                elif any(o.processed_ms > cutoff_time_ms for o in position.orders):
+                    continue  # Could be subject to retro price correction and we don't want to deal with locking
+
+                n = self.strip_old_price_sources(position, time_now)
+                if n:
+                    n_price_sources_removed += n
+                    # Save to disk
+                    self._write_position_to_disk(position)
+
+        bt.logging.info(f'Removed {n_price_sources_removed} price sources from old data.')
+
+    def run_compaction_daemon_forever(self):
+        """
+        Daemon that periodically compacts price_sources from old closed positions.
+        Runs on server side with direct memory access - no RPC overhead!
+        """
+        import time
+
+        bt.logging.info("Starting price source compaction daemon on server")
+        while True:
+            try:
+                t0 = time.time()
+                self.compact_price_sources()
+                bt.logging.info(f'Compacted price sources in {time.time() - t0:.2f} seconds')
+            except Exception as e:
+                bt.logging.error(f"Error in run_compaction_daemon_forever: {traceback.format_exc()}")
+                time.sleep(ValiConfig.PRICE_SOURCE_COMPACTING_SLEEP_INTERVAL_SECONDS)
+            time.sleep(ValiConfig.PRICE_SOURCE_COMPACTING_SLEEP_INTERVAL_SECONDS)
 
     # ========================================================================
     # Private Helper Methods (not exposed via RPC)
@@ -486,6 +542,23 @@ class PositionManagerServer:
             bt.logging.error(f"Error during position splitting: {e}")
             return [position], {'implicit_flat_splits': 0, 'explicit_flat_splits': 0}
 
+    def _write_position_to_disk(self, position: Position):
+        """Write a single position to disk."""
+        try:
+            from vali_objects.vali_dataclasses.order import OrderStatus
+
+            miner_dir = ValiBkpUtils.get_partitioned_miner_positions_dir(
+                position.miner_hotkey,
+                position.trade_pair.trade_pair_id,
+                order_status=OrderStatus.OPEN if position.is_open_position else OrderStatus.CLOSED,
+                running_unit_tests=self.running_unit_tests
+            )
+            ValiBkpUtils.write_file(miner_dir + position.position_uuid, position)
+            bt.logging.trace(f"Wrote position {position.position_uuid} for {position.miner_hotkey} to disk")
+
+        except Exception as e:
+            bt.logging.error(f"Error writing position {position.position_uuid} to disk: {e}")
+
     def _write_positions_for_hotkey_to_disk(self, hotkey: str):
         """Write positions for a specific hotkey to disk."""
         try:
@@ -505,7 +578,7 @@ class PositionManagerServer:
             bt.logging.error(f"Error writing positions for {hotkey} to disk: {e}")
 
 
-def start_position_manager_server(address, authkey, running_unit_tests=False, is_backtesting=False, split_positions_on_disk_load=False, ready_event=None):
+def start_position_manager_server(address, authkey, running_unit_tests=False, is_backtesting=False, split_positions_on_disk_load=False, start_compaction_daemon=False, ready_event=None):
     """
     Start the PositionManager server process.
 
@@ -515,9 +588,11 @@ def start_position_manager_server(address, authkey, running_unit_tests=False, is
         running_unit_tests: Whether running in test mode
         is_backtesting: Whether running in backtesting mode
         split_positions_on_disk_load: Whether to apply position splitting after loading from disk
+        start_compaction_daemon: Whether to start the price source compaction daemon
         ready_event: Optional multiprocessing.Event to signal when server is ready
     """
     from setproctitle import setproctitle
+    from threading import Thread
     setproctitle("vali_PositionManagerServer")
 
     bt.logging.info(f"Starting PositionManager server on {address}")
@@ -528,6 +603,12 @@ def start_position_manager_server(address, authkey, running_unit_tests=False, is
         is_backtesting=is_backtesting,
         split_positions_on_disk_load=split_positions_on_disk_load
     )
+
+    # Start compaction daemon if requested (runs in background thread on server)
+    if start_compaction_daemon:
+        compaction_thread = Thread(target=server_instance.run_compaction_daemon_forever, daemon=True)
+        compaction_thread.start()
+        bt.logging.info("Started price source compaction daemon on server")
 
     # Register the PositionManagerServer class directly with BaseManager
     # BaseManager will proxy method calls to the server instance

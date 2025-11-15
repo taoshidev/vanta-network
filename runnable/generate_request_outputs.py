@@ -23,8 +23,8 @@ class RequestOutputGenerator:
         self.running_deprecated = running_deprecated
         self.last_write_time_s = 0
         self.n_updates = 0
-        self.msm_refresh_interval_ms = 15 * 1000
-        self.rcm_refresh_interval_ms = 15 * 1000
+        self.msm_refresh_interval_ms = 60 * 1000
+        self.rcm_refresh_interval_ms = 60 * 1000
         self.rcm = rcm
         self.msm = msm
         self.checkpoints = checkpoints

@@ -66,6 +66,7 @@ class PositionManager(CacheController):
 
         self.secrets = secrets
         self.live_price_fetcher = live_price_fetcher
+        self.start_compaction_daemon = closed_position_daemon
 
         # Start RPC server and connect as client (or use direct instance for tests)
         self._server_process = None
@@ -80,11 +81,7 @@ class PositionManager(CacheController):
             self._start_rpc_server()
 
         # Position splitting (if enabled) now happens on the server side during startup
-
-        if closed_position_daemon:
-            self.compaction_process = Process(target=self.run_closed_position_daemon_forever, daemon=True)
-            self.compaction_process.start()
-            bt.logging.info("Started run_closed_position_daemon_forever process.")
+        # Compaction daemon (if enabled) now runs on the server side to avoid RPC overhead
 
     def __del__(self):
         """Cleanup: terminate the RPC server process when PositionManager is destroyed."""
@@ -171,6 +168,7 @@ class PositionManager(CacheController):
                 self.running_unit_tests,
                 self.is_backtesting,
                 self.split_positions_on_disk_load,
+                self.start_compaction_daemon,  # Run compaction daemon on server side
                 server_ready  # Pass event to signal when ready
             ),
             daemon=True
@@ -201,21 +199,6 @@ class PositionManager(CacheController):
 
         self._rpc_client = manager
         bt.logging.success(f"PositionManager RPC client connected to server at {address}")
-
-    def run_closed_position_daemon_forever(self):
-        #try:
-        #    self.ensure_position_consistency_serially()
-        #except Exception as e:
-        #    bt.logging.error(f"Error {e} in initial ensure_position_consistency_serially: {traceback.format_exc()}")
-        while True:
-            try:
-                t0 = time.time()
-                self.compact_price_sources()
-                bt.logging.info(f'compacted price sources in {time.time() - t0:.2f} seconds')
-            except Exception as e:
-                bt.logging.error(f"Error {e} in run_closed_position_daemon_forever: {traceback.format_exc()}")
-                time.sleep(ValiConfig.PRICE_SOURCE_COMPACTING_SLEEP_INTERVAL_SECONDS)
-            time.sleep(ValiConfig.PRICE_SOURCE_COMPACTING_SLEEP_INTERVAL_SECONDS)
 
     def _default_split_stats(self):
         """Default split statistics for each miner. Used to make defaultdict pickleable."""
@@ -440,26 +423,6 @@ class PositionManager(CacheController):
                 print('rac2:', position.return_at_close)
                 self.save_miner_position(position, delete_open_position_if_exists=False)
                 print(f"Reopened position {position.position_uuid} for trade pair {position.trade_pair.trade_pair_id}")
-
-    @timeme
-    def compact_price_sources(self):
-        time_now = TimeUtil.now_in_millis()
-        cutoff_time_ms = time_now - 10 * ValiConfig.RECENT_EVENT_TRACKER_OLDEST_ALLOWED_RECORD_MS # Generous bound
-        n_price_sources_removed = 0
-        hotkey_to_positions = self.get_positions_for_all_miners(sort_positions=True)
-        for hotkey, positions in hotkey_to_positions.items():
-            for position in positions:
-                if position.is_open_position:
-                    continue # Don't modify open positions as we don't want to deal with locking
-                elif any(o.processed_ms > cutoff_time_ms for o in position.orders):
-                    continue # Could be subject to retro price correction and we don't want to deal with locking
-
-                n = self.strip_old_price_sources(position, time_now)
-                if n:
-                    n_price_sources_removed += n
-                    self.save_miner_position(position, delete_open_position_if_exists=False)
-
-        bt.logging.info(f'Removed {n_price_sources_removed} price sources from old data.')
 
     def dedupe_positions(self, positions, miner_hotkey):
         positions_by_trade_pair = defaultdict(list)
