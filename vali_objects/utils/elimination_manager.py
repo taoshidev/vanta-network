@@ -338,6 +338,10 @@ class EliminationManager(CacheController):
         bt.logging.info("EliminationManager process shutting down")
 
     def is_zombie_hotkey(self, hotkey, all_hotkeys_set):
+        # Ignore development hotkey used for testing
+        if hotkey == ValiConfig.DEVELOPMENT_HOTKEY:
+            return False
+
         if hotkey in all_hotkeys_set:
             return False
 

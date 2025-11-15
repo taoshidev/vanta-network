@@ -12,7 +12,6 @@ from time_util.time_util import TimeUtil
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.exceptions.signal_exception import SignalException
 from vali_objects.utils.position_lock import PositionLocks
-from vali_objects.utils.price_slippage_model import PriceSlippageModel
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.vali_config import ValiConfig, TradePair
 from vali_objects.vali_dataclasses.order import OrderSource, Order

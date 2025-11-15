@@ -121,8 +121,9 @@ class MarketOrderManager():
         self.last_order_time_cache[(miner_hotkey, trade_pair.trade_pair_id)] = order_time_ms
         # NOTE: UUID tracking happens in validator process, not here
 
-        if self.config.serve:
+        if self.config.serve and miner_hotkey != ValiConfig.DEVELOPMENT_HOTKEY:
             # Add the position to the queue for broadcasting
+            # Skip websocket messages for development hotkey
             self.shared_queue_websockets.put(existing_position.to_websocket_dict(miner_repo_version=miner_repo_version))
         return order
 

@@ -26,6 +26,7 @@ from runnable.generate_request_minerstatistics import MinerStatisticsManager
 from runnable.generate_request_outputs import RequestOutputGenerator
 from template.protocol import SendSignal
 from vali_objects.enums.execution_type_enum import ExecutionType
+from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.utils.auto_sync import PositionSyncer
 from vali_objects.utils.limit_order_manager import LimitOrderManagerClient
 from vali_objects.utils.market_order_manager import MarketOrderManager

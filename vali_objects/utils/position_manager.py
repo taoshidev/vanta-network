@@ -117,11 +117,13 @@ class PositionManager(CacheController):
     def _populate_memory_positions_for_first_time(self):
         """
         Load positions from disk into memory and apply position splitting if enabled.
+        Loads ALL positions including development positions so they can be queried via API.
         """
         if self.is_backtesting:
             return
 
-        initial_hk_to_positions = self.get_positions_for_all_miners(from_disk=True)
+        # Load all positions including development positions (they'll be filtered out in scoring/elimination)
+        initial_hk_to_positions = self.get_positions_for_all_miners(from_disk=True, include_development_positions=True)
 
         # Apply position splitting if enabled on disk load
         if self.split_positions_on_disk_load:
@@ -249,13 +251,20 @@ class PositionManager(CacheController):
 
     def filtered_positions_for_scoring(
             self,
-            hotkeys: List[str] = None
+            hotkeys: List[str] = None,
+            include_development_positions=False
     ) -> (Dict[str, List[Position]], Dict[str, int]):
         """
         Filter the positions for a set of hotkeys.
+        Excludes development positions by default.
         """
         if hotkeys is None:
-            hotkeys = self.get_miner_hotkeys_with_at_least_one_position()
+            # Get hotkeys from position manager - already filtered by include_development_positions
+            hotkeys = list(self.get_miner_hotkeys_with_at_least_one_position(include_development_positions=include_development_positions))
+        else:
+            # Hotkeys were provided explicitly - filter them if needed
+            if not include_development_positions:
+                hotkeys = [hk for hk in hotkeys if hk != ValiConfig.DEVELOPMENT_HOTKEY]
 
         hk_to_first_order_time = {}
         filtered_positions = {}
@@ -1137,13 +1146,18 @@ class PositionManager(CacheController):
         return portfolio_leverage
 
     @timeme
-    def get_positions_for_all_miners(self, from_disk=False, **args) -> dict[str, list[Position]]:
+    def get_positions_for_all_miners(self, from_disk=False, include_development_positions=False, **args) -> dict[str, list[Position]]:
         if from_disk:
             all_miner_hotkeys: list = ValiBkpUtils.get_directories_in_dir(
                 ValiBkpUtils.get_miner_dir(self.running_unit_tests)
             )
         else:
             all_miner_hotkeys = list(self.hotkey_to_positions.keys())
+
+        # Filter out development hotkey unless explicitly requested
+        if not include_development_positions:
+            all_miner_hotkeys = [hk for hk in all_miner_hotkeys if hk != ValiConfig.DEVELOPMENT_HOTKEY]
+
         return self.get_positions_for_hotkeys(all_miner_hotkeys, from_disk=from_disk, **args)
 
     @staticmethod
@@ -1304,8 +1318,14 @@ class PositionManager(CacheController):
             if hotkey not in eliminated_hotkeys
         }
 
-    def get_miner_hotkeys_with_at_least_one_position(self) -> set[str]:
-        return set(self.hotkey_to_positions.keys())
+    def get_miner_hotkeys_with_at_least_one_position(self, include_development_positions=False) -> set[str]:
+        hotkeys = set(self.hotkey_to_positions.keys())
+
+        # Filter out development hotkey unless explicitly requested
+        if not include_development_positions and ValiConfig.DEVELOPMENT_HOTKEY in hotkeys:
+            hotkeys = hotkeys - {ValiConfig.DEVELOPMENT_HOTKEY}
+
+        return hotkeys
 
     def compute_realtime_drawdown(self, hotkey: str) -> float:
         """

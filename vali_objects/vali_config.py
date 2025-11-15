@@ -125,6 +125,9 @@ class ValiConfig:
     DAYS_IN_YEAR_CRYPTO = 365  # annualization factor
     DAYS_IN_YEAR_FOREX = 252
 
+    # Development hotkey for testing
+    DEVELOPMENT_HOTKEY = "DEVELOPMENT"
+
     # Min number of trading days required for scoring
     STATISTICAL_CONFIDENCE_MINIMUM_N_CEIL = 60
     STATISTICAL_CONFIDENCE_MINIMUM_N_FLOOR = 7
