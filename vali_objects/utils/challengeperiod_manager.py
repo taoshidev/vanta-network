@@ -460,7 +460,7 @@ class ChallengePeriodManager(CacheController):
             rank_eligible_hotkeys.append(hotkey)
 
             # Additional check for promotion eligibility: minimum trading days
-            if self.screen_minimum_interaction(ledger_element):
+            if self.screen_minimum_interaction(inspection_ledger):
                 promotion_eligible_hotkeys.append(hotkey)
 
         # Calculate dynamic minimum participation days for asset classes
