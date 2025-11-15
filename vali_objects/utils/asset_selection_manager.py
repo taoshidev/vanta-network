@@ -1,5 +1,6 @@
 import asyncio
 import threading
+import time
 
 import bittensor as bt
 from typing import Dict, Optional
@@ -163,7 +164,6 @@ class AssetSelectionManager:
         Returns:
             True if the miner can trade this asset class, False otherwise
         """
-        import time
 
         # Time the timestamp operations
         ts_start = time.perf_counter()

@@ -9,6 +9,7 @@ import bittensor as bt
 bt.logging.enable_info()
 
 import template
+from time_util.time_util import timeme
 
 
 class ValidatorBase:
@@ -92,6 +93,7 @@ class ValidatorBase:
                 if self.slack_notifier:
                     self.slack_notifier.send_message(hang_msg, level="error")
 
+    @timeme
     def blacklist_fn(self, synapse, metagraph) -> Tuple[bool, str]:
         miner_hotkey = synapse.dendrite.hotkey
         if not metagraph.has_hotkey(miner_hotkey):

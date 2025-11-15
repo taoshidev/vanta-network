@@ -390,6 +390,19 @@ class PositionManagerServer:
         """Get all hotkeys that have positions."""
         return list(self.hotkey_to_positions.keys())
 
+    def health_check_rpc(self) -> dict:
+        """Health check endpoint for RPC monitoring"""
+        total_positions = sum(len(positions_dict) for positions_dict in self.hotkey_to_positions.values())
+        total_open = sum(len(d) for d in self.hotkey_to_open_positions.values())
+
+        return {
+            "status": "ok",
+            "timestamp_ms": TimeUtil.now_in_millis(),
+            "total_positions": total_positions,
+            "total_open_positions": total_open,
+            "num_hotkeys": len(self.hotkey_to_positions)
+        }
+
     def init_cache_files_rpc(self):
         """Initialize cache files (create directories)."""
         positions_dir = ValiBkpUtils.get_miner_all_positions_dir()

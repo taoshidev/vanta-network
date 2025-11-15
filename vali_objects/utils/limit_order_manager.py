@@ -9,6 +9,7 @@ import bittensor as bt
 import threading
 
 from shared_objects.cache_controller import CacheController
+from shared_objects.rpc_service_base import RPCServiceBase
 from time_util.time_util import TimeUtil
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.exceptions.signal_exception import SignalException
@@ -308,6 +309,28 @@ class LimitOrderManager(CacheController):
             bt.logging.error(f"Error deleting limit orders for hotkey {miner_hotkey}: {e}")
             bt.logging.error(traceback.format_exc())
             raise
+
+    def health_check_rpc(self) -> dict:
+        """Health check endpoint for RPC monitoring"""
+        total_orders = sum(
+            len(orders)
+            for hotkey_dict in self._limit_orders.values()
+            for orders in hotkey_dict.values()
+        )
+        unfilled_count = sum(
+            1 for hotkey_dict in self._limit_orders.values()
+            for orders in hotkey_dict.values()
+            for order in orders
+            if order.src == OrderSource.ORDER_SRC_LIMIT_UNFILLED
+        )
+
+        return {
+            "status": "ok",
+            "timestamp_ms": TimeUtil.now_in_millis(),
+            "total_orders": total_orders,
+            "unfilled_orders": unfilled_count,
+            "num_trade_pairs": len(self._limit_orders)
+        }
 
     # ============================================================================
     # Daemon Method (runs in separate process)
@@ -636,7 +659,7 @@ class LimitOrderManager(CacheController):
 # RPC Client
 # ============================================================================
 
-class LimitOrderManagerClient:
+class LimitOrderManagerClient(RPCServiceBase):
     """
     RPC client for LimitOrderManager.
 
@@ -650,14 +673,9 @@ class LimitOrderManagerClient:
     - Validator owns all protocol/synapse handling logic
     """
 
-    class ClientManager(BaseManager):
-        pass
-
-    ClientManager.register('LimitOrderManager')
-
     def __init__(self, position_manager, live_price_fetcher, market_order_manager,
                  shutdown_dict=None, running_unit_tests=False,
-                 address=('localhost', 50001)):
+                 slack_notifier=None):
         """
         Initialize client and start the server process.
 
@@ -667,62 +685,72 @@ class LimitOrderManagerClient:
             market_order_manager: MarketOrderManager instance (provides position_locks)
             shutdown_dict: Shutdown dictionary
             running_unit_tests: Whether running unit tests
-            address: (host, port) for RPC server
+            slack_notifier: Optional SlackNotifier for health check alerts
 
         Note: uuid_tracker is NOT passed here because this runs in a separate process.
               All UUID tracking must happen in the validator process.
         """
-        self.address = address
-        self.running_unit_tests = running_unit_tests
-        self.shutdown_dict = shutdown_dict or {}
+        # Initialize RPCServiceBase
+        RPCServiceBase.__init__(
+            self,
+            service_name="LimitOrderManager",
+            port=50001,
+            running_unit_tests=running_unit_tests,
+            enable_health_check=True,
+            health_check_interval_s=60,
+            max_consecutive_failures=3,
+            enable_auto_restart=True,
+            slack_notifier=slack_notifier
+        )
+
+        # Store dependencies for server creation
+        self.position_manager = position_manager
+        self.live_price_fetcher = live_price_fetcher
         self.market_order_manager = market_order_manager
+        self.shutdown_dict = shutdown_dict or {}
 
-        if not running_unit_tests:
-            # Start server process
-            self.server_process = Process(
-                target=self._start_server,
-                args=(position_manager, live_price_fetcher, market_order_manager, shutdown_dict, address),
-                daemon=True
+        # Start the RPC service
+        self._initialize_service()
+
+        # Store reference for backward compatibility
+        self.limit_order_manager = self._server_proxy
+
+    def _create_direct_server(self):
+        """Create direct in-memory instance for tests"""
+        return LimitOrderManager(
+            self.position_manager,
+            self.live_price_fetcher,
+            self.market_order_manager,
+            self.shutdown_dict,
+            running_unit_tests=True
+        )
+
+    def _start_server_process(self, address, authkey, server_ready):
+        """Start RPC server in separate process"""
+        def server_main():
+            from setproctitle import setproctitle
+            setproctitle("vali_LimitOrderManager")
+
+            # Create server instance
+            server_instance = LimitOrderManager(
+                self.position_manager,
+                self.live_price_fetcher,
+                self.market_order_manager,
+                self.shutdown_dict,
+                running_unit_tests=False
             )
-            self.server_process.start()
-            time.sleep(1)  # Give server time to start
 
-            # Connect client
-            self.manager = self.ClientManager(address=address, authkey=b'limit_order_manager')
-            self.manager.connect()
-            self.limit_order_manager = self.manager.LimitOrderManager()
+            # Start daemon thread in server process
+            daemon_thread = threading.Thread(target=server_instance.run_limit_order_daemon, daemon=True)
+            daemon_thread.start()
+            bt.logging.info("Limit order daemon thread started in server process")
 
-            bt.logging.info(f"LimitOrderManagerClient connected to server at {address}")
-        else:
-            # For unit tests, use direct instance
-            self.limit_order_manager = LimitOrderManager(
-                position_manager, live_price_fetcher, market_order_manager,
-                shutdown_dict, running_unit_tests
-            )
+            # Serve RPC
+            self._serve_rpc(server_instance, address, authkey, server_ready)
 
-    @staticmethod
-    def _start_server(position_manager, live_price_fetcher, market_order_manager, shutdown_dict, address):
-        """Start the RPC server and daemon in a separate process."""
-
-        class ServerManager(BaseManager):
-            pass
-
-        # Create manager instance
-        manager = LimitOrderManager(position_manager, live_price_fetcher, market_order_manager,
-                                    shutdown_dict, False)
-
-        # Start daemon thread in this process
-        daemon_thread = threading.Thread(target=manager.run_limit_order_daemon, daemon=True)
-        daemon_thread.start()
-        bt.logging.info("Limit order daemon thread started in server process")
-
-        # Register with server
-        ServerManager.register('LimitOrderManager', callable=lambda: manager)
-
-        # Start server (blocks forever)
-        server = ServerManager(address=address, authkey=b'limit_order_manager')
-        bt.logging.info(f"LimitOrderManager RPC server starting at {address}")
-        server.get_server().serve_forever()
+        process = Process(target=server_main, daemon=True)
+        process.start()
+        return process
 
     # ============================================================================
     # Client API Methods

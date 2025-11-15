@@ -15,6 +15,7 @@ from pathlib import Path
 from multiprocessing.managers import BaseManager
 from copy import deepcopy
 from shared_objects.cache_controller import CacheController
+from shared_objects.rpc_service_base import RPCServiceBase
 from time_util.time_util import TimeUtil, timeme
 from vali_objects.decoders.generalized_json_decoder import GeneralizedJSONDecoder
 from vali_objects.exceptions.corrupt_data_exception import ValiBkpCorruptDataException
@@ -33,7 +34,7 @@ from vali_objects.utils.position_filtering import PositionFiltering
 
 TARGET_MS = 1764145800000
 
-class PositionManager(CacheController):
+class PositionManager(RPCServiceBase, CacheController):
     def __init__(self, metagraph=None, running_unit_tests=False,
                  perform_order_corrections=False,
                  perform_compaction=False,
@@ -45,9 +46,24 @@ class PositionManager(CacheController):
                  is_backtesting=False,
                  shared_queue_websockets=None,
                  split_positions_on_disk_load=False,
-                 closed_position_daemon=False):
+                 closed_position_daemon=False,
+                 slack_notifier=None):
 
-        super().__init__(metagraph=metagraph, running_unit_tests=running_unit_tests, is_backtesting=is_backtesting)
+        # Initialize RPCServiceBase
+        RPCServiceBase.__init__(
+            self,
+            service_name="PositionManagerServer",
+            port=50002,
+            running_unit_tests=running_unit_tests,
+            enable_health_check=True,
+            health_check_interval_s=60,
+            max_consecutive_failures=3,
+            enable_auto_restart=True,
+            slack_notifier=slack_notifier
+        )
+
+        # Initialize CacheController
+        CacheController.__init__(self, metagraph=metagraph, running_unit_tests=running_unit_tests, is_backtesting=is_backtesting)
 
         self.perf_ledger_manager = perf_ledger_manager
         self.challengeperiod_manager = challengeperiod_manager
@@ -68,99 +84,35 @@ class PositionManager(CacheController):
         self.live_price_fetcher = live_price_fetcher
         self.start_compaction_daemon = closed_position_daemon
 
-        # Start RPC server and connect as client (or use direct instance for tests)
-        self._server_process = None
-        self._rpc_client = None
-        self._rpc_server_proxy = None
+        # Store dependencies needed for server creation
+        self.is_backtesting = is_backtesting
 
-        if running_unit_tests:
-            # Use direct in-memory instance for tests (no RPC overhead)
-            self._start_direct_server()
-        else:
-            # Use RPC for production
-            self._start_rpc_server()
+        # Start the RPC service (this replaces _start_direct_server and _start_rpc_server)
+        self._initialize_service()
 
         # Position splitting (if enabled) now happens on the server side during startup
         # Compaction daemon (if enabled) now runs on the server side to avoid RPC overhead
 
-    def __del__(self):
-        """Cleanup: terminate the RPC server process when PositionManager is destroyed."""
-        self.shutdown()
-
-    def shutdown(self):
-        """Shutdown the RPC server process cleanly."""
-        # For direct mode (unit tests), nothing to clean up
-        if self.running_unit_tests:
-            self._rpc_server_proxy = None
-            return
-
-        # For RPC mode: close client connection and terminate server process
-        if hasattr(self, '_rpc_client') and self._rpc_client:
-            try:
-                bt.logging.debug("Shutting down RPC client connection")
-                self._rpc_client.shutdown()
-            except Exception as e:
-                bt.logging.trace(f"Error shutting down RPC client: {e}")
-            finally:
-                self._rpc_client = None
-                self._rpc_server_proxy = None
-
-        if hasattr(self, '_server_process') and self._server_process and self._server_process.is_alive():
-            bt.logging.debug(f"Terminating PositionManager RPC server process (PID: {self._server_process.pid})")
-            self._server_process.terminate()
-            self._server_process.join(timeout=2)
-            if self._server_process.is_alive():
-                bt.logging.warning(f"Force killing PositionManager RPC server process (PID: {self._server_process.pid})")
-                self._server_process.kill()
-                self._server_process.join()
-
-            # Give the OS a moment to release the port
-            import time
-            time.sleep(1.5)
-
-    def _start_direct_server(self):
-        """
-        Create a direct in-memory instance of PositionManagerServer for unit tests.
-        This avoids RPC overhead and makes tests much faster.
-        """
+    def _create_direct_server(self):
+        """Create direct in-memory instance for tests"""
         from vali_objects.utils.position_manager_server import PositionManagerServer
 
         # When split_positions_on_disk_load is enabled, force disk loading even in test mode
         load_from_disk = True if self.split_positions_on_disk_load else None
 
-        # Create direct instance (no RPC, no separate process)
-        self._rpc_server_proxy = PositionManagerServer(
+        return PositionManagerServer(
             running_unit_tests=self.running_unit_tests,
             is_backtesting=self.is_backtesting,
             load_from_disk=load_from_disk,
             split_positions_on_disk_load=self.split_positions_on_disk_load
         )
-        bt.logging.success("PositionManager using direct in-memory server (unit test mode)")
 
-    def _start_rpc_server(self):
-        """Start the RPC server process and connect to it as a client."""
-        from vali_objects.utils.position_manager_server import (
-            start_position_manager_server,
-            cleanup_stale_position_manager_server
-        )
-        from multiprocessing import Event
-        import secrets
+    def _start_server_process(self, address, authkey, server_ready):
+        """Start RPC server in separate process"""
+        from multiprocessing import Process
+        from vali_objects.utils.position_manager_server import start_position_manager_server
 
-        # Generate address and authkey for RPC
-        # Port 50000: LivePriceFetcherServer
-        # Port 50001: LimitOrderManager
-        # Port 50002: PositionManagerServer
-        address = ('localhost', 50002)
-        authkey = secrets.token_bytes(32)
-
-        # Check if port is already in use and cleanup if needed
-        cleanup_stale_position_manager_server(address[1])
-
-        # Create event for server readiness signaling
-        server_ready = Event()
-
-        # Start server process (only pass picklable arguments)
-        self._server_process = Process(
+        process = Process(
             target=start_position_manager_server,
             args=(
                 address,
@@ -168,37 +120,13 @@ class PositionManager(CacheController):
                 self.running_unit_tests,
                 self.is_backtesting,
                 self.split_positions_on_disk_load,
-                self.start_compaction_daemon,  # Run compaction daemon on server side
-                server_ready  # Pass event to signal when ready
+                self.start_compaction_daemon,
+                server_ready
             ),
             daemon=True
         )
-        self._server_process.start()
-        bt.logging.info(f"Started PositionManager RPC server process (PID: {self._server_process.pid})")
-
-        # Wait for server to signal it's ready (with timeout)
-        if not server_ready.wait(timeout=10.0):
-            bt.logging.error("PositionManager RPC server failed to start within 10 seconds")
-            self._server_process.terminate()
-            raise TimeoutError("PositionManager RPC server startup timeout")
-
-        bt.logging.debug("PositionManager RPC server is ready, connecting client...")
-
-        # Connect as client
-        class PositionManagerClient(BaseManager):
-            pass
-
-        # Register the PositionManagerServer type (client just needs to know the type name)
-        PositionManagerClient.register('PositionManagerServer')
-
-        manager = PositionManagerClient(address=address, authkey=authkey)
-        manager.connect()
-
-        # Get the server proxy instance
-        self._rpc_server_proxy = manager.PositionManagerServer()
-
-        self._rpc_client = manager
-        bt.logging.success(f"PositionManager RPC client connected to server at {address}")
+        process.start()
+        return process
 
     def _default_split_stats(self):
         """Default split statistics for each miner. Used to make defaultdict pickleable."""
@@ -226,19 +154,19 @@ class PositionManager(CacheController):
         failed_updates = 0
 
         # Get all hotkeys from RPC server
-        all_hotkeys = self._rpc_server_proxy.get_all_hotkeys_rpc()
+        all_hotkeys = self._server_proxy.get_all_hotkeys_rpc()
 
         # Calculate total positions for progress tracking
         total_positions = 0
         for hk in all_hotkeys:
-            positions = self._rpc_server_proxy.get_positions_for_one_hotkey_rpc(hk, only_open_positions=False)
+            positions = self._server_proxy.get_positions_for_one_hotkey_rpc(hk, only_open_positions=False)
             total_positions += len([p for p in positions if not p.is_open_position])
 
         bt.logging.info(f'Starting position consistency check on {total_positions} closed positions...')
 
         # Check all positions and immediately save if return changed
         for hk in all_hotkeys:
-            positions = self._rpc_server_proxy.get_positions_for_one_hotkey_rpc(hk, only_open_positions=False)
+            positions = self._server_proxy.get_positions_for_one_hotkey_rpc(hk, only_open_positions=False)
             for p in positions:
                 if p.is_open_position:
                     continue
@@ -973,7 +901,7 @@ class PositionManager(CacheController):
         positions.extend([self._get_position_from_disk(file) for file in ValiBkpUtils.get_all_files_in_dir(cdf)])
 
         # Use RPC to get positions from server
-        temp = self._rpc_server_proxy.get_positions_for_one_hotkey_rpc(updated_position.miner_hotkey, only_open_positions=False)
+        temp = self._server_proxy.get_positions_for_one_hotkey_rpc(updated_position.miner_hotkey, only_open_positions=False)
         positions_memory_by_position_uuid = {}
         for position in temp:
             if position.trade_pair == updated_position.trade_pair:
@@ -1013,12 +941,16 @@ class PositionManager(CacheController):
 
     def _position_from_list_of_position(self, hotkey, position_uuid):
         # Use RPC to get specific position
-        position = self._rpc_server_proxy.get_position_rpc(hotkey, position_uuid)
-        return deepcopy(position) if position else None
+        position = self._server_proxy.get_position_rpc(hotkey, position_uuid)
+        # Only deepcopy in direct mode (unit tests) where we access dict directly
+        # In RPC mode, pickle serialization already creates a copy
+        if position and self.running_unit_tests:
+            return deepcopy(position)
+        return position
 
     def get_existing_positions(self, hotkey: str):
         # Use RPC to get positions for hotkey
-        return self._rpc_server_proxy.get_positions_for_one_hotkey_rpc(hotkey, only_open_positions=False)
+        return self._server_proxy.get_positions_for_one_hotkey_rpc(hotkey, only_open_positions=False)
 
     def _save_miner_position_to_memory(self, position: Position):
         # Use RPC to save position to server
@@ -1028,7 +960,12 @@ class PositionManager(CacheController):
             assert existing_pos.trade_pair == position.trade_pair, \
                 f"Trade pair mismatch for position {position.position_uuid}. Existing: {existing_pos.trade_pair}, New: {position.trade_pair}"
 
-        self._rpc_server_proxy.save_miner_position_rpc(deepcopy(position))
+        # Only deepcopy in direct mode (unit tests) to protect server's internal state
+        # In RPC mode, pickle serialization already creates a copy
+        if self.running_unit_tests:
+            self._server_proxy.save_miner_position_rpc(deepcopy(position))
+        else:
+            self._server_proxy.save_miner_position_rpc(position)
 
 
     def save_miner_position(self, position: Position, delete_open_position_if_exists=True) -> None:
@@ -1058,7 +995,7 @@ class PositionManager(CacheController):
 
     def clear_all_miner_positions(self, target_hotkey=None):
         # Use RPC to clear positions in server
-        self._rpc_server_proxy.clear_all_miner_positions_rpc()
+        self._server_proxy.clear_all_miner_positions_rpc()
 
         # Clear all files and directories in the directory specified by dir
         dir = ValiBkpUtils.get_miner_dir(running_unit_tests=self.running_unit_tests)
@@ -1076,7 +1013,7 @@ class PositionManager(CacheController):
 
     def get_number_of_miners_with_any_positions(self):
         # Use RPC to get all hotkeys - if a hotkey is in the dict, it has at least one position
-        return len(self._rpc_server_proxy.get_all_hotkeys_rpc())
+        return len(self._server_proxy.get_all_hotkeys_rpc())
 
     def get_extreme_position_order_processed_on_disk_ms(self):
         dir = ValiBkpUtils.get_miner_dir(running_unit_tests=self.running_unit_tests)
@@ -1101,8 +1038,12 @@ class PositionManager(CacheController):
         Uses pure RPC - filtering happens server-side to avoid sending all positions over RPC.
         """
         # Single RPC call with server-side filtering - only returns the matching position (or None)
-        position = self._rpc_server_proxy.get_open_position_for_trade_pair_rpc(hotkey, trade_pair_id)
-        return deepcopy(position) if position else None
+        position = self._server_proxy.get_open_position_for_trade_pair_rpc(hotkey, trade_pair_id)
+        # Only deepcopy in direct mode (unit tests) where we access dict directly
+        # In RPC mode, pickle serialization already creates a copy
+        if position and self.running_unit_tests:
+            return deepcopy(position)
+        return position
 
     def get_filepath_for_position(self, hotkey, trade_pair_id, position_uuid, is_open):
         order_status = OrderStatus.CLOSED if not is_open else OrderStatus.OPEN
@@ -1128,7 +1069,7 @@ class PositionManager(CacheController):
 
     def _delete_position_from_memory(self, hotkey, position_uuid):
         # Use RPC to delete position from server
-        self._rpc_server_proxy.delete_position_rpc(hotkey, position_uuid)
+        self._server_proxy.delete_position_rpc(hotkey, position_uuid)
 
     def calculate_net_portfolio_leverage(self, hotkey: str) -> float:
         """
@@ -1152,7 +1093,7 @@ class PositionManager(CacheController):
         For tests that need to verify disk persistence, use _read_positions_from_disk_for_tests().
         """
         # Use RPC to get all hotkeys from server
-        all_miner_hotkeys = self._rpc_server_proxy.get_all_hotkeys_rpc()
+        all_miner_hotkeys = self._server_proxy.get_all_hotkeys_rpc()
 
         # Filter out development hotkey unless explicitly requested
         if not include_development_positions:
@@ -1318,7 +1259,7 @@ class PositionManager(CacheController):
         For tests that need to verify disk persistence, use _read_positions_from_disk_for_tests().
         """
         # Use RPC to get positions from server
-        positions = self._rpc_server_proxy.get_positions_for_one_hotkey_rpc(miner_hotkey, only_open_positions)
+        positions = self._server_proxy.get_positions_for_one_hotkey_rpc(miner_hotkey, only_open_positions)
 
         if acceptable_position_end_ms is not None:
             positions = [
@@ -1351,7 +1292,7 @@ class PositionManager(CacheController):
         acceptable_position_end_ms = args.get('acceptable_position_end_ms', None)
 
         # Single bulk RPC call instead of N individual calls (50-100x faster!)
-        hotkey_to_positions = self._rpc_server_proxy.get_positions_for_hotkeys_rpc(
+        hotkey_to_positions = self._server_proxy.get_positions_for_hotkeys_rpc(
             active_hotkeys,
             only_open_positions=only_open_positions
         )
@@ -1375,7 +1316,7 @@ class PositionManager(CacheController):
 
     def get_miner_hotkeys_with_at_least_one_position(self, include_development_positions=False) -> set[str]:
         # Use RPC to get all hotkeys from server
-        hotkeys = set(self._rpc_server_proxy.get_all_hotkeys_rpc())
+        hotkeys = set(self._server_proxy.get_all_hotkeys_rpc())
 
         # Filter out development hotkey unless explicitly requested
         if not include_development_positions and ValiConfig.DEVELOPMENT_HOTKEY in hotkeys:

@@ -10,6 +10,7 @@ from data_generator.polygon_data_service import PolygonDataService
 from time_util.time_util import TimeUtil, UnifiedMarketCalendar
 from setproctitle import setproctitle
 from shared_objects.error_utils import ErrorUtils
+from shared_objects.rpc_service_base import RPCServiceBase
 import traceback
 from vali_objects.vali_config import TradePair
 from vali_objects.position import Position
@@ -21,189 +22,81 @@ from vali_objects.vali_dataclasses.order import OrderSource
 from vali_objects.vali_dataclasses.price_source import PriceSource
 from statistics import median
 
-class LivePriceFetcherClient:
+class LivePriceFetcherClient(RPCServiceBase):
     """
     Wrapper around the LivePriceFetcher RPC client that performs periodic health checks.
     Health checks run inline on the main thread when methods are called.
     """
 
-    class ClientManager(BaseManager):
-        pass
-
-    ClientManager.register('LivePriceFetcher')
-
-    def __init__(self, secrets, address=('localhost', 50000), disable_ws=False, ipc_manager=None, is_backtesting=False, slack_notifier=None):
+    def __init__(self, secrets, disable_ws=False, ipc_manager=None, is_backtesting=False, slack_notifier=None, running_unit_tests=False):
         """
         Initialize client and start the server process.
 
         Args:
             secrets: Dictionary containing API keys for data services
-            address: Tuple of (host, port) for the RPC server
             disable_ws: Whether to disable websocket connections
             ipc_manager: IPC manager for shared memory
             is_backtesting: Whether running in backtesting mode
             slack_notifier: SlackNotifier instance for error notifications
+            running_unit_tests: Whether running in unit test mode
         """
+        # Initialize RPCServiceBase
+        RPCServiceBase.__init__(
+            self,
+            service_name="LivePriceFetcher",
+            port=50000,
+            running_unit_tests=running_unit_tests,
+            enable_health_check=True,
+            health_check_interval_s=60,
+            max_consecutive_failures=3,
+            enable_auto_restart=True,
+            slack_notifier=slack_notifier
+        )
+
+        # Store dependencies for server creation
         self._secrets = secrets
-        self._address = address
         self._disable_ws = disable_ws
         self._ipc_manager = ipc_manager
         self._is_backtesting = is_backtesting
-        self._slack_notifier = slack_notifier
-        self._max_retries = 5
-        self._health_check_interval_ms = 60 * 1000
-        self._last_health_check_time = 0
-        self._consecutive_failures = 0
-        self._client = None
-        self._server_process = None
-        self._authkey = None
 
         # Market calendar for local (non-RPC) market hours checking
         self._market_calendar = UnifiedMarketCalendar()
 
-        # Start server and connect
-        self._start_server()
+        # Start the RPC service
+        self._initialize_service()
 
-    def _start_server(self, restart=False):
-        if restart:
-            bt.logging.warning("Restarting LivePriceFetcher server...")
+        # Store reference for backward compatibility
+        self._client = self._server_proxy
 
-            # Terminate the old process if it exists
-            # Note: We don't check is_alive() because this may be called from a different process
-            # (HealthChecker daemon) which cannot check the status of processes it didn't create.
-            # terminate() and kill() are safe to call on already-dead processes.
-            if self._server_process:
-                bt.logging.info("Terminating old LivePriceFetcher server process...")
-                self._server_process.terminate()
-                self._server_process.join(timeout=5)
-
-                # Force kill if it didn't terminate
-                bt.logging.info("Force killing LivePriceFetcher server process (if still alive)...")
-                self._server_process.kill()
-                self._server_process.join(timeout=2)
-
-        # Generate new authkey for security
-        self._authkey = str(uuid.uuid4()).encode()
-
-        # Start the server process
-        bt.logging.info("Starting LivePriceFetcher server process...")
-        self._server_process = Process(
-            target=LivePriceFetcherServer,
-            args=(self._secrets,),
-            kwargs={
-                'address': self._address,
-                'authkey': self._authkey,
-                'disable_ws': self._disable_ws,
-                'ipc_manager': self._ipc_manager,
-                'is_backtesting': self._is_backtesting,
-                'slack_notifier': self._slack_notifier
-            },
-            daemon=True
+    def _create_direct_server(self):
+        """Create direct in-memory instance for tests"""
+        return LivePriceFetcher(
+            self._secrets,
+            disable_ws=self._disable_ws,
+            ipc_manager=self._ipc_manager,
+            is_backtesting=self._is_backtesting
         )
-        self._server_process.start()
 
-        # Wait minimum time for server to initialize before attempting connection
-        bt.logging.info("Waiting for LivePriceFetcher server to initialize...")
-        time.sleep(2)
+    def _start_server_process(self, address, authkey, server_ready):
+        """Start RPC server in separate process"""
+        def server_main():
+            from setproctitle import setproctitle
+            setproctitle("vali_LivePriceFetcher")
 
-        # Connect to the server - this verifies the server is actually working
-        # If connection fails, connect() will raise an exception
-        self.connect()
-
-        # Reset failure counter
-        self._consecutive_failures = 0
-
-        if restart:
-            bt.logging.success("LivePriceFetcher server restarted successfully")
-            if self._slack_notifier:
-                self._slack_notifier.send_message(
-                    f"✅ LivePriceFetcher Server Restarted Successfully\n"
-                    f"Server is now operational and serving price data.",
-                    level="info"
-                )
-
-    def connect(self):
-        bt.logging.info(f"Attempting to connect to LivePriceFetcher server at {self._address}")
-        for attempt in range(self._max_retries):
-            try:
-                manager = self.ClientManager(address=self._address, authkey=self._authkey)
-                manager.connect()
-                bt.logging.success(f"Successfully connected to LivePriceFetcher server")
-                self._client = manager.LivePriceFetcher()
-                return
-            except Exception as e:
-                if attempt < self._max_retries - 1:
-                    bt.logging.warning(f"Failed to connect to LivePriceFetcher server (attempt {attempt + 1}/{self._max_retries}): {e}. Retrying in 1s...")
-                    time.sleep(1)
-                else:
-                    bt.logging.error(f"Failed to connect to LivePriceFetcher server after {self._max_retries} attempts: {e}")
-                    raise
-
-    def health_check(self, current_time):
-        # Rate limit: only check if enough time has passed
-        if current_time - self._last_health_check_time < self._health_check_interval_ms:
-            return True  # Skip check, assume healthy
-
-        self._last_health_check_time = current_time
-
-        # Note: We don't check is_alive() here because this method may be called from a different
-        # process (HealthChecker daemon), and multiprocessing doesn't allow checking process status
-        # across different parent processes. The RPC health_check call below is sufficient to detect
-        # if the server is down.
-
-        try:
-            # Call the health_check RPC method
-            health_status = self._client.health_check()
-
-            if health_status.get("status") == "ok":
-                if self._consecutive_failures > 0:
-                    recovery_msg = f"LivePriceFetcher server recovered after {self._consecutive_failures} failed health checks"
-                    bt.logging.success(recovery_msg)
-                    if self._slack_notifier:
-                        self._slack_notifier.send_message(
-                            f"✅ LivePriceFetcher Server Recovered!\n"
-                            f"Server is healthy after {self._consecutive_failures} failed checks.",
-                            level="info"
-                        )
-                self._consecutive_failures = 0
-                bt.logging.trace(f"LivePriceFetcher health check passed: {health_status}")
-                return True
-            else:
-                self._consecutive_failures += 1
-                bt.logging.warning(
-                    f"LivePriceFetcher health check returned unexpected status: {health_status} "
-                    f"(consecutive failures: {self._consecutive_failures})"
-                )
-                if self._consecutive_failures >= 3:
-                    bt.logging.warning("Triggering server restart due to failed health checks...")
-                    if self._slack_notifier:
-                        self._slack_notifier.send_message(
-                            f"🔄 LivePriceFetcher Server Restart Triggered\n"
-                            f"Restarting due to {self._consecutive_failures} failed health checks...",
-                            level="warning"
-                        )
-                    self._start_server(restart=True)
-                return False
-
-        except Exception as e:
-            self._consecutive_failures += 1
-            bt.logging.error(
-                f"LivePriceFetcher health check failed: {e} "
-                f"(consecutive failures: {self._consecutive_failures})"
+            # Create server instance
+            server_instance = LivePriceFetcher(
+                self._secrets,
+                disable_ws=self._disable_ws,
+                ipc_manager=self._ipc_manager,
+                is_backtesting=self._is_backtesting
             )
 
-            # Trigger restart after 3 consecutive failures
-            if self._consecutive_failures >= 3:
-                bt.logging.warning("Triggering server restart due to failed health checks...")
-                if self._slack_notifier:
-                    self._slack_notifier.send_message(
-                        f"🔄 LivePriceFetcher Server Restart Triggered\n"
-                        f"Restarting due to {self._consecutive_failures} failed health checks.\n"
-                        f"Last error: {str(e)}",
-                        level="warning"
-                    )
-                self._start_server(restart=True)
-            return False
+            # Serve RPC
+            self._serve_rpc(server_instance, address, authkey, server_ready)
+
+        process = Process(target=server_main, daemon=True)
+        process.start()
+        return process
 
     def is_market_open(self, trade_pair: TradePair, time_ms=None) -> bool:
         """
@@ -224,8 +117,8 @@ class LivePriceFetcherClient:
         """
         Proxy all method calls to the underlying client.
         """
-        # Proxy the call to the underlying client
-        return getattr(self._client, name)
+        # Proxy the call to the underlying client (which is _server_proxy from RPCServiceBase)
+        return getattr(self._server_proxy, name)
 
     class HealthChecker:
         """Daemon process that continuously monitors LivePriceFetcher server health"""
