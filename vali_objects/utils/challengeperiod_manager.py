@@ -431,31 +431,30 @@ class ChallengePeriodManager(CacheController):
                 miners_to_eliminate[hotkey] = (EliminationReason.FAILED_CHALLENGE_PERIOD_TIME.value, -1)
                 continue
 
-            # Get hotkey to positions dict that only includes the inspection miner
-            has_minimum_positions, inspection_positions = ChallengePeriodManager.screen_minimum_positions(positions, hotkey)
-            if not has_minimum_positions:
-                miners_not_enough_positions.append(hotkey)
-                bt.logging.info(f"[CHALLENGE] {hotkey} has no positions")
-                continue
-
             # Get hotkey to ledger dict that only includes the inspection miner
             has_minimum_ledger, inspection_ledger = ChallengePeriodManager.screen_minimum_ledger(portfolio_only_ledgers, hotkey)
             if not has_minimum_ledger:
                 continue
 
             # This step we want to check their drawdown. If they fail, we can move on.
-            ledger_element = inspection_ledger[hotkey]
-            exceeds_max_drawdown, recorded_drawdown_percentage = LedgerUtils.is_beyond_max_drawdown(ledger_element)
+            exceeds_max_drawdown, recorded_drawdown_percentage = LedgerUtils.is_beyond_max_drawdown(inspection_ledger)
             if exceeds_max_drawdown:
                 bt.logging.info(f'Hotkey {hotkey} has failed the {miner_bucket.value} period due to drawdown {recorded_drawdown_percentage}. cp_failed')
                 miners_to_eliminate[hotkey] = (EliminationReason.FAILED_CHALLENGE_PERIOD_DRAWDOWN.value, recorded_drawdown_percentage)
                 continue
+
 
             # Check if miner has selected an asset class (only enforce after selection time)
             if self.asset_selection_manager and current_time >= ASSET_CLASS_SELECTION_TIME_MS:
                 if hotkey not in self.asset_selection_manager.asset_selections:
                     # bt.logging.info(f'Hotkey {hotkey} has not selected an asset class. Skipping evaluation.')
                     continue
+
+            # Get hotkey to positions dict that only includes the inspection miner
+            has_minimum_positions, inspection_positions = ChallengePeriodManager.screen_minimum_positions(positions, hotkey)
+            if not has_minimum_positions:
+                miners_not_enough_positions.append(hotkey)
+                continue
 
             # Miner passed basic checks - include in ranking for accurate threshold calculation
             rank_eligible_hotkeys.append(hotkey)
@@ -590,26 +589,24 @@ class ChallengePeriodManager(CacheController):
     def screen_minimum_ledger(
             ledger: dict[str, PerfLedger],
             inspection_hotkey: str
-    ) -> tuple[bool, dict[str, PerfLedger]]:
+    ) -> tuple[bool, PerfLedger]:
         """
         Ensures there is enough ledger data globally and for the specific miner to evaluate challenge period.
         """
         if ledger is None or len(ledger) == 0:
             bt.logging.info(f"No ledgers for any miner to evaluate for challenge period. ledger: {ledger}")
-            return False, {}
+            return False, None
 
         single_ledger = ledger.get(inspection_hotkey, None)
         if single_ledger is None:
-            return False, {}
+            return False, None
 
         has_minimum_ledger = len(single_ledger.cps) > 0
 
         if not has_minimum_ledger:
             bt.logging.info(f"Hotkey: {inspection_hotkey} doesn't have the minimum ledger for challenge period. ledger: {single_ledger}")
 
-        inspection_ledger = {inspection_hotkey: single_ledger} if has_minimum_ledger else {}
-
-        return has_minimum_ledger, inspection_ledger
+        return has_minimum_ledger, single_ledger
 
     @staticmethod
     def screen_minimum_positions(
