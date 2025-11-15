@@ -317,7 +317,7 @@ class RequestCoreManager:
             miner_account_sizes_dict = self.contract_manager.miner_account_sizes_dict()
 
         if write_and_upload_production_files:
-            limit_orders_dict = self.limit_order_manager.get_limit_orders()
+            limit_orders_dict = self.limit_order_manager.get_all_limit_orders()
             self.create_and_upload_production_files(eliminations, ord_dict_hotkey_position_map, time_now_ms,
                                            youngest_order_processed_ms, oldest_order_processed_ms,
                                            challengeperiod_dict, miner_account_sizes_dict, limit_orders_dict)

@@ -243,6 +243,25 @@ class LimitOrderManager(CacheController):
             bt.logging.error(f"Error creating dashboard dict: {e}")
             return None
 
+    def get_all_limit_orders_rpc(self):
+        """
+        RPC method to get all limit orders across all trade pairs and hotkeys.
+
+        Returns:
+            Dict of {trade_pair_id: {hotkey: [order_dicts]}}
+        """
+        try:
+            result = {}
+            for trade_pair, hotkey_dict in self._limit_orders.items():
+                trade_pair_id = trade_pair.trade_pair_id
+                result[trade_pair_id] = {}
+                for hotkey, orders in hotkey_dict.items():
+                    result[trade_pair_id][hotkey] = [order.to_python_dict() for order in orders]
+            return result
+        except Exception as e:
+            bt.logging.error(f"Error getting all limit orders: {e}")
+            return {}
+
     def delete_all_limit_orders_for_hotkey_rpc(self, miner_hotkey):
         """
         RPC method to delete all limit orders (both in-memory and on-disk) for a hotkey.
@@ -747,6 +766,15 @@ class LimitOrderManagerClient:
             Exception: RPC or server errors
         """
         return self.limit_order_manager.cancel_limit_order_rpc(miner_hotkey, trade_pair_id, order_uuid, now_ms)
+
+    def get_all_limit_orders(self) -> dict:
+        """
+        Get all limit orders via RPC.
+
+        Returns:
+            Dict of {trade_pair_id: {hotkey: [order_dicts]}}
+        """
+        return self.limit_order_manager.get_all_limit_orders_rpc()
 
     def get_limit_orders(self, miner_hotkey: str) -> list:
         """
