@@ -171,6 +171,7 @@ mining/processed_signals/
 validation/miners/
 validation/outputs/
 validation/plagiarism/
+validation/tmp/
 tests/validation/miners/
 tests/validation/plagiarism/
 
