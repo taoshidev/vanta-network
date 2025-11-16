@@ -198,7 +198,7 @@ class EliminationManagerServer(CacheController):
 
     def get_departed_hotkeys_rpc(self) -> Dict[str, dict]:
         """Get all departed hotkeys"""
-        return dict(self.departed_hotkeys)
+        return self.departed_hotkeys
 
     def get_departed_hotkey_info_rpc(self, hotkey: str) -> Optional[dict]:
         """Get departed info for a single hotkey (O(1) lookup)"""

@@ -136,7 +136,7 @@ class TestLimitOrders(TestBase):
 
         result = self.limit_order_manager.process_limit_order_rpc(
             self.DEFAULT_MINER_HOTKEY,
-            limit_order.to_python_dict()
+            limit_order
         )
 
         self.assertEqual(result["status"], "success")
@@ -161,7 +161,7 @@ class TestLimitOrders(TestBase):
             )
             self.limit_order_manager.process_limit_order_rpc(
                 self.DEFAULT_MINER_HOTKEY,
-                limit_order.to_python_dict()
+                limit_order
             )
 
         # Attempt to add one more
@@ -170,7 +170,7 @@ class TestLimitOrders(TestBase):
         with self.assertRaises(SignalException) as context:
             self.limit_order_manager.process_limit_order_rpc(
                 self.DEFAULT_MINER_HOTKEY,
-                excess_order.to_python_dict()
+                excess_order
             )
         self.assertIn("too many unfilled limit orders", str(context.exception))
 
@@ -184,7 +184,7 @@ class TestLimitOrders(TestBase):
         with self.assertRaises(SignalException) as context:
             self.limit_order_manager.process_limit_order_rpc(
                 self.DEFAULT_MINER_HOTKEY,
-                flat_order.to_python_dict()
+                flat_order
             )
         self.assertIn("No position found for FLAT order", str(context.exception))
 
@@ -200,7 +200,7 @@ class TestLimitOrders(TestBase):
 
         result = self.limit_order_manager.process_limit_order_rpc(
             self.DEFAULT_MINER_HOTKEY,
-            flat_order.to_python_dict()
+            flat_order
         )
 
         self.assertEqual(result["status"], "success")
@@ -237,7 +237,7 @@ class TestLimitOrders(TestBase):
 
         result = self.limit_order_manager.process_limit_order_rpc(
             self.DEFAULT_MINER_HOTKEY,
-            limit_order.to_python_dict()
+            limit_order
         )
 
         self.assertEqual(result["status"], "success")
@@ -258,11 +258,11 @@ class TestLimitOrders(TestBase):
 
         self.limit_order_manager.process_limit_order_rpc(
             self.DEFAULT_MINER_HOTKEY,
-            btc_order.to_python_dict()
+            btc_order
         )
         self.limit_order_manager.process_limit_order_rpc(
             self.DEFAULT_MINER_HOTKEY,
-            eth_order.to_python_dict()
+            eth_order
         )
 
         # Verify structure
@@ -288,11 +288,11 @@ class TestLimitOrders(TestBase):
 
         self.limit_order_manager.process_limit_order_rpc(
             self.DEFAULT_MINER_HOTKEY,
-            order1.to_python_dict()
+            order1
         )
         self.limit_order_manager.process_limit_order_rpc(
             self.DEFAULT_MINER_HOTKEY,
-            order2.to_python_dict()
+            order2
         )
 
         # Cancel order1
@@ -320,7 +320,7 @@ class TestLimitOrders(TestBase):
             order = self.create_test_limit_order(order_uuid=f"order{i}")
             self.limit_order_manager.process_limit_order_rpc(
                 self.DEFAULT_MINER_HOTKEY,
-                order.to_python_dict()
+                order
             )
 
         # Cancel all (empty order_uuid)
@@ -362,11 +362,11 @@ class TestLimitOrders(TestBase):
 
         self.limit_order_manager.process_limit_order_rpc(
             self.DEFAULT_MINER_HOTKEY,
-            btc_order.to_python_dict()
+            btc_order
         )
         self.limit_order_manager.process_limit_order_rpc(
             self.DEFAULT_MINER_HOTKEY,
-            eth_order.to_python_dict()
+            eth_order
         )
 
         # Delete all
@@ -393,11 +393,11 @@ class TestLimitOrders(TestBase):
 
         self.limit_order_manager.process_limit_order_rpc(
             self.DEFAULT_MINER_HOTKEY,
-            order1.to_python_dict()
+            order1
         )
         self.limit_order_manager.process_limit_order_rpc(
             miner2,
-            order2.to_python_dict()
+            order2
         )
 
         # Delete only miner1
@@ -764,7 +764,7 @@ class TestLimitOrders(TestBase):
                 )
                 self.limit_order_manager.process_limit_order_rpc(
                     self.DEFAULT_MINER_HOTKEY,
-                    order.to_python_dict()
+                    order
                 )
 
         count = self.limit_order_manager._count_unfilled_orders_for_hotkey(self.DEFAULT_MINER_HOTKEY)
@@ -801,7 +801,7 @@ class TestLimitOrders(TestBase):
         order = self.create_test_limit_order()
         self.limit_order_manager.process_limit_order_rpc(
             self.DEFAULT_MINER_HOTKEY,
-            order.to_python_dict()
+            order
         )
 
         # Verify structure
@@ -825,11 +825,11 @@ class TestLimitOrders(TestBase):
 
         self.limit_order_manager.process_limit_order_rpc(
             self.DEFAULT_MINER_HOTKEY,
-            order1.to_python_dict()
+            order1
         )
         self.limit_order_manager.process_limit_order_rpc(
             miner2,
-            order2.to_python_dict()
+            order2
         )
 
         miner1_orders = self.limit_order_manager._limit_orders[self.DEFAULT_TRADE_PAIR][self.DEFAULT_MINER_HOTKEY]
@@ -846,7 +846,7 @@ class TestLimitOrders(TestBase):
         order = self.create_test_limit_order()
         self.limit_order_manager.process_limit_order_rpc(
             self.DEFAULT_MINER_HOTKEY,
-            order.to_python_dict()
+            order
         )
 
         # Eliminate miner - use proper API method

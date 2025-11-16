@@ -1,18 +1,15 @@
 # developer: jbonilla
 # Copyright © 2024 Taoshi Inc
 import json
-import math
 import os
 import shutil
 import time
 import traceback
 from collections import defaultdict
-from multiprocessing import Process
 from pickle import UnpicklingError
 from typing import List, Dict
 import bittensor as bt
 from pathlib import Path
-from multiprocessing.managers import BaseManager
 from copy import deepcopy
 from shared_objects.cache_controller import CacheController
 from shared_objects.rpc_service_base import RPCServiceBase
@@ -31,6 +28,7 @@ from vali_objects.position import Position
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.vali_dataclasses.order import OrderStatus, OrderSource, Order
 from vali_objects.utils.position_filtering import PositionFiltering
+from vali_objects.utils.position_splitter import PositionSplitter
 
 TARGET_MS = 1764145800000
 
@@ -739,13 +737,12 @@ class PositionManager(RPCServiceBase, CacheController):
                     flat_order = Order(price=live_price,
                                        price_sources=price_sources,
                                        processed_ms=TARGET_MS,
-                                       order_uuid=position.position_uuid[::-1], # deterministic across validators. Won't mess with p2p sync
+                                       order_uuid=position.position_uuid[::-1],
+                                       # determinstic across validators. Won't mess with p2p sync
                                        trade_pair=position.trade_pair,
                                        order_type=OrderType.FLAT,
-                                       leverage=-position.net_leverage,
+                                       leverage=0,
                                        src=OrderSource.DEPRECATION_FLAT)
-                    flat_order.quote_usd_rate = self.live_price_fetcher.get_quote_usd_conversion(flat_order, position)
-                    flat_order.usd_base_rate = self.live_price_fetcher.get_usd_base_conversion(position.trade_pair, TARGET_MS, live_price, OrderType.FLAT, position)
 
                     position.add_order(flat_order, self.live_price_fetcher)
                     self.save_miner_position(position, delete_open_position_if_exists=True)
@@ -819,13 +816,7 @@ class PositionManager(RPCServiceBase, CacheController):
             else:
                 value2 = getattr(position2, attr, None)
 
-            # tolerant float comparison
-            if isinstance(value1, (int, float)) and isinstance(value2, (int, float)):
-                value1 = float(value1)
-                value2 = float(value2)
-                if not math.isclose(value1, value2, rel_tol=1e-9, abs_tol=1e-9):
-                    return False, f"{attr} is different. {value1} != {value2}"
-            elif value1 != value2:
+            if value1 != value2:
                 return False, f"{attr} is different. {value1} != {value2}"
         return True, ""
 
@@ -1156,6 +1147,7 @@ class PositionManager(RPCServiceBase, CacheController):
             ans["positions"].append(position_dict)
         return ans
 
+
     def _get_position_from_disk(self, file) -> Position:
         # wrapping here to allow simpler error handling & original for other error handling
         # Note one position always corresponds to one file.
@@ -1264,19 +1256,19 @@ class PositionManager(RPCServiceBase, CacheController):
         """
         Get positions for a hotkey from the RPC server.
 
+        Server-side filtering reduces RPC payload and client processing overhead.
+
         Note: This always reads from the server's in-memory positions.
         For tests that need to verify disk persistence, use _read_positions_from_disk_for_tests().
         """
-        # Use RPC to get positions from server
-        positions = self._server_proxy.get_positions_for_one_hotkey_rpc(miner_hotkey, only_open_positions)
+        # Single RPC call with server-side filtering (timestamp filtering happens on server)
+        positions = self._server_proxy.get_positions_for_one_hotkey_rpc(
+            miner_hotkey,
+            only_open_positions,
+            acceptable_position_end_ms
+        )
 
-        if acceptable_position_end_ms is not None:
-            positions = [
-                position
-                for position in positions
-                if position.open_ms > acceptable_position_end_ms
-            ]
-
+        # Client-side sorting only (can't be done efficiently server-side)
         if sort_positions:
             positions = sorted(positions, key=self.sort_by_close_ms)
 
@@ -1396,7 +1388,6 @@ class PositionManager(RPCServiceBase, CacheController):
                     # Calculate return with fees at this moment
                     position_return = position.get_open_position_return_with_fees(
                         realtime_price,
-                        self.live_price_fetcher,
                         now_ms
                     )
                     portfolio_return *= position_return
@@ -1430,180 +1421,39 @@ class PositionManager(RPCServiceBase, CacheController):
     def _find_split_points(self, position: Position) -> list[int]:
         """
         Find all valid split points in a position where splitting should occur.
-        Returns a list of order indices where splits should happen.
-        This is the single source of truth for split logic.
+        Delegates to PositionSplitter utility (single source of truth).
         """
-        if len(position.orders) < 2:
-            return []
-
-        split_points = []
-        cumulative_leverage = 0.0
-        previous_sign = None
-
-        for i, order in enumerate(position.orders):
-            previous_leverage = cumulative_leverage
-            cumulative_leverage += order.leverage
-
-            # Determine the sign of leverage (positive, negative, or zero)
-            current_sign = None
-            if abs(cumulative_leverage) < 1e-9:
-                current_sign = 0
-            elif cumulative_leverage > 0:
-                current_sign = 1
-            else:
-                current_sign = -1
-
-            # Check for leverage sign flip
-            leverage_flipped = False
-            if previous_sign is not None and previous_sign != 0 and current_sign != 0 and previous_sign != current_sign:
-                leverage_flipped = True
-
-            # Check for explicit FLAT or implicit flat (leverage reaches zero or flips sign)
-            is_explicit_flat = order.order_type == OrderType.FLAT
-            is_implicit_flat = (abs(cumulative_leverage) < 1e-9 or leverage_flipped) and not is_explicit_flat
-
-            if is_explicit_flat or is_implicit_flat:
-                # Don't split if this is the last order
-                if i < len(position.orders) - 1:
-                    # Check if the split would create valid sub-positions
-                    orders_before = position.orders[:i+1]
-                    orders_after = position.orders[i+1:]
-
-                    # Check if first part is valid (2+ orders, doesn't start with FLAT)
-                    first_valid = (len(orders_before) >= 2 and
-                                 orders_before[0].order_type != OrderType.FLAT)
-
-                    # Check if second part would be valid (at least 1 order, doesn't start with FLAT)
-                    second_valid = (len(orders_after) >= 1 and
-                                  orders_after[0].order_type != OrderType.FLAT)
-
-                    if first_valid and second_valid:
-                        split_points.append(i)
-                        cumulative_leverage = 0.0  # Reset for next segment
-                        previous_sign = 0
-                        continue
-
-            # Update previous sign for next iteration
-            previous_sign = current_sign
-
-        return split_points
+        return PositionSplitter.find_split_points(position)
 
     def _position_needs_splitting(self, position: Position) -> bool:
         """
         Check if a position would actually be split by split_position_on_flat.
-        Uses the same logic as split_position_on_flat but without creating new positions.
+        Delegates to PositionSplitter utility (single source of truth).
         """
-        return len(self._find_split_points(position)) > 0
+        return PositionSplitter.position_needs_splitting(position)
 
     def split_position_on_flat(self, position: Position, track_stats: bool = False) -> tuple[list[Position], dict]:
         """
-        Takes a position, iterates through the orders, and splits the position into multiple positions
-        separated by FLAT orders OR when cumulative leverage reaches zero or flips sign (implicit flat).
-
-        Implicit flat is defined as:
-        - Cumulative leverage reaches zero (abs(cumulative_leverage) < 1e-9), OR
-        - Cumulative leverage flips sign (e.g., from positive to negative or vice versa)
-
-        Uses _find_split_points as the single source of truth for split logic.
-        Ensures:
-        - CLOSED positions have at least 2 orders
-        - OPEN positions can have 1 order
-        - No position starts with a FLAT order
+        Split a position into multiple positions separated by FLAT orders or implicit flats.
+        Delegates to PositionSplitter utility (single source of truth).
 
         If track_stats is True, updates split_stats with splitting information.
 
         Returns:
             tuple: (list of positions, split_info dict with 'implicit_flat_splits' and 'explicit_flat_splits')
         """
-        try:
-            split_points = self._find_split_points(position)
-
-            if not split_points:
-                return [position], {'implicit_flat_splits': 0, 'explicit_flat_splits': 0}
-
-            # Track pre-split return if requested
-            pre_split_return = position.return_at_close if track_stats else None
-
-            # Count implicit vs explicit flats
-            implicit_flat_splits = 0
-            explicit_flat_splits = 0
-
-            cumulative_leverage = 0.0
-            previous_sign = None
-
-            for i, order in enumerate(position.orders):
-                cumulative_leverage += order.leverage
-
-                # Determine the sign of leverage (positive, negative, or zero)
-                current_sign = None
-                if abs(cumulative_leverage) < 1e-9:
-                    current_sign = 0
-                elif cumulative_leverage > 0:
-                    current_sign = 1
-                else:
-                    current_sign = -1
-
-                # Check for leverage sign flip
-                leverage_flipped = False
-                if previous_sign is not None and previous_sign != 0 and current_sign != 0 and previous_sign != current_sign:
-                    leverage_flipped = True
-
-                if i in split_points:
-                    if order.order_type == OrderType.FLAT:
-                        explicit_flat_splits += 1
-                    elif abs(cumulative_leverage) < 1e-9 or leverage_flipped:
-                        implicit_flat_splits += 1
-
-                # Update previous sign for next iteration
-                previous_sign = current_sign
-
-            # Create order groups based on split points
-            order_groups = []
-            start_idx = 0
-
-            for split_idx in split_points:
-                # Add orders up to and including the split point
-                order_group = position.orders[start_idx:split_idx + 1]
-                order_groups.append(order_group)
-                start_idx = split_idx + 1
-
-            # Add remaining orders if any
-            if start_idx < len(position.orders):
-                order_groups.append(position.orders[start_idx:])
-
-            # Update the original position with the first group
-            position.orders = order_groups[0]
-            position.rebuild_position_with_updated_orders(self.live_price_fetcher)
-
-            positions = [position]
-
-            # Create new positions for remaining groups
-            for order_group in order_groups[1:]:
-                new_position = Position(miner_hotkey=position.miner_hotkey,
-                                        position_uuid=order_group[0].order_uuid,
-                                        open_ms=0,
-                                        trade_pair=position.trade_pair,
-                                        orders=order_group,
-                                        account_size=position.account_size)
-                new_position.rebuild_position_with_updated_orders(self.live_price_fetcher)
-                positions.append(new_position)
-
-            split_info = {
-                'implicit_flat_splits': implicit_flat_splits,
-                'explicit_flat_splits': explicit_flat_splits
-            }
-
-        except Exception as e:
-            bt.logging.error(f"Error during position splitting for {position.miner_hotkey}: {e}")
-            bt.logging.error(f"Position UUID: {position.position_uuid}, Orders: {len(position.orders)}")
-            # Return original position on error
-            return [position], {'implicit_flat_splits': 0, 'explicit_flat_splits': 0}
+        # Delegate to PositionSplitter for the actual splitting logic
+        positions, split_info = PositionSplitter.split_position_on_flat(
+            position,
+            self.live_price_fetcher,
+            track_stats=track_stats
+        )
 
         # Track stats if requested
-        if track_stats and pre_split_return is not None:
+        if track_stats and 'pre_split_return' in split_info and split_info['pre_split_return'] is not None:
             hotkey = position.miner_hotkey
             self.split_stats[hotkey]['n_positions_split'] += 1
-            self.split_stats[hotkey]['product_return_pre_split'] *= pre_split_return
+            self.split_stats[hotkey]['product_return_pre_split'] *= split_info['pre_split_return']
 
             # Calculate post-split product of returns
             for pos in positions:

@@ -80,16 +80,15 @@ class LimitOrderManager(CacheController):
     # RPC Methods (called from client)
     # ============================================================================
 
-    def process_limit_order_rpc(self, miner_hotkey, order_dict):
+    def process_limit_order_rpc(self, miner_hotkey, order):
         """
         RPC method to process a limit order.
         Args:
             miner_hotkey: The miner's hotkey
-            order_dict: Order serialized as dict
+            order: Order object (pickled automatically by RPC)
         Returns:
             dict with status and order_uuid
         """
-        order = Order.from_dict(order_dict)
         trade_pair = order.trade_pair
 
         # Variables to track whether to fill immediately
@@ -771,8 +770,8 @@ class LimitOrderManagerClient(RPCServiceBase):
             SignalException: Validation errors (pickled from server)
             Exception: RPC or server errors
         """
-        order_dict = limit_order.to_python_dict()
-        return self.limit_order_manager.process_limit_order_rpc(miner_hotkey, order_dict)
+        # Send Order object directly - pickle handles serialization
+        return self.limit_order_manager.process_limit_order_rpc(miner_hotkey, limit_order)
 
     def cancel_limit_order(self, miner_hotkey: str, trade_pair_id: str,
                           order_uuid: str, now_ms: int) -> dict:

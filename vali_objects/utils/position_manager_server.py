@@ -4,96 +4,23 @@ Position Manager Server - RPC server for managing position data.
 This server process manages position data in a normal Python dict (not IPC),
 providing efficient in-place mutations and selective disk writes.
 """
-import os
+import time
 import bittensor as bt
 import traceback
 from collections import defaultdict
 from pathlib import Path
 from multiprocessing.managers import BaseManager
 from typing import List, Dict, Optional
+from vali_objects.vali_dataclasses.order import OrderStatus
 
 from time_util.time_util import TimeUtil, timeme
 from vali_objects.position import Position
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.vali_config import ValiConfig
-from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.utils.live_price_fetcher import LivePriceFetcher
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.exceptions.vali_records_misalignment_exception import ValiRecordsMisalignmentException
-
-
-def cleanup_stale_position_manager_server(port: int = 50002):
-    """
-    Kill any existing process using the PositionManager RPC server port.
-
-    This should be called before starting a new server to avoid "Address already in use" errors.
-
-    Args:
-        port: The port to cleanup (default: 50002)
-    """
-    import signal
-    import subprocess
-    import time
-
-    if os.name != 'posix':
-        bt.logging.debug("Port cleanup only supported on POSIX systems")
-        return
-
-    try:
-        result = subprocess.run(
-            ['lsof', '-ti', f':{port}'],
-            capture_output=True,
-            text=True,
-            timeout=2
-        )
-
-        if result.returncode == 0 and result.stdout.strip():
-            pids = result.stdout.strip().split('\n')
-
-            for pid_str in pids:
-                try:
-                    pid = int(pid_str)
-
-                    # Check if it's a PositionManager server process
-                    cmd_result = subprocess.run(
-                        ['ps', '-p', str(pid), '-o', 'comm='],
-                        capture_output=True,
-                        text=True,
-                        timeout=1
-                    )
-
-                    if cmd_result.returncode == 0:
-                        process_name = cmd_result.stdout.strip()
-
-                        # Only kill if it looks like our server
-                        if 'PositionManagerServer' in process_name or 'python' in process_name:
-                            bt.logging.warning(
-                                f"Killing stale PositionManager server process "
-                                f"(PID: {pid}, port: {port})"
-                            )
-
-                            try:
-                                os.kill(pid, signal.SIGTERM)
-                                time.sleep(0.5)
-
-                                # Force kill if still alive
-                                try:
-                                    os.kill(pid, signal.SIGKILL)
-                                except ProcessLookupError:
-                                    pass  # Already dead
-
-                            except ProcessLookupError:
-                                pass  # Process already terminated
-
-                except (ValueError, subprocess.TimeoutExpired) as e:
-                    bt.logging.trace(f"Error checking process {pid_str}: {e}")
-
-    except FileNotFoundError:
-        bt.logging.trace("lsof command not available, skipping port cleanup")
-    except subprocess.TimeoutExpired:
-        bt.logging.warning("Port cleanup timed out")
-    except Exception as e:
-        bt.logging.warning(f"Error during port cleanup: {e}")
+from vali_objects.utils.position_splitter import PositionSplitter
 
 
 class PositionManagerServer:
@@ -268,16 +195,32 @@ class PositionManagerServer:
     # RPC Methods (called by client via RPC)
     # ========================================================================
 
-    def get_positions_for_one_hotkey_rpc(self, hotkey: str, only_open_positions=False):
-        """Get positions for a specific hotkey."""
+    def get_positions_for_one_hotkey_rpc(self, hotkey: str, only_open_positions=False, acceptable_position_end_ms=None):
+        """
+        Get positions for a specific hotkey.
+
+        Args:
+            hotkey: The miner's hotkey
+            only_open_positions: Whether to return only open positions
+            acceptable_position_end_ms: Minimum timestamp for positions (filters out older positions server-side)
+
+        Returns:
+            List of positions matching the filters
+        """
         if hotkey not in self.hotkey_to_positions:
             return []
 
         positions_dict = self.hotkey_to_positions[hotkey]
         positions = list(positions_dict.values())  # Convert dict values to list
 
+        # Server-side filters
         if only_open_positions:
-            return [p for p in positions if not p.is_closed_position]
+            positions = [p for p in positions if not p.is_closed_position]
+
+        # Server-side timestamp filtering
+        if acceptable_position_end_ms is not None:
+            positions = [p for p in positions if p.open_ms > acceptable_position_end_ms]
+
         return positions
 
     def save_miner_position_rpc(self, position: Position):
@@ -320,16 +263,6 @@ class PositionManagerServer:
 
         bt.logging.trace(f"Saved position {position_uuid} for {hotkey}")
 
-    def get_all_miner_positions_rpc(self, only_open_positions=False):
-        """Get all positions across all miners."""
-        all_positions = []
-        for positions_dict in self.hotkey_to_positions.values():
-            positions = positions_dict.values()  # Get all positions from nested dict
-            if only_open_positions:
-                all_positions.extend([p for p in positions if not p.is_closed_position])
-            else:
-                all_positions.extend(positions)
-        return all_positions
 
     def get_positions_for_hotkeys_rpc(self, hotkeys: List[str], only_open_positions=False,
                                        filter_eliminations: bool = False,
@@ -438,13 +371,6 @@ class PositionManagerServer:
 
         return self.hotkey_to_open_positions[hotkey].get(trade_pair_id, None)
 
-    def get_hotkeys_with_open_positions_rpc(self):
-        """Get list of hotkeys that have open positions."""
-        return [
-            hotkey for hotkey, positions_dict in self.hotkey_to_positions.items()
-            if any(not p.is_closed_position for p in positions_dict.values())
-        ]
-
     def get_all_hotkeys_rpc(self):
         """Get all hotkeys that have positions."""
         return list(self.hotkey_to_positions.keys())
@@ -461,12 +387,6 @@ class PositionManagerServer:
             "total_open_positions": total_open,
             "num_hotkeys": len(self.hotkey_to_positions)
         }
-
-    def init_cache_files_rpc(self):
-        """Initialize cache files (create directories)."""
-        positions_dir = ValiBkpUtils.get_miner_all_positions_dir()
-        positions_dir.mkdir(parents=True, exist_ok=True)
-        bt.logging.debug(f"Initialized cache directory: {positions_dir}")
 
     @timeme
     def compact_price_sources(self):
@@ -499,8 +419,6 @@ class PositionManagerServer:
         Daemon that periodically compacts price_sources from old closed positions.
         Runs on server side with direct memory access - no RPC overhead!
         """
-        import time
-
         bt.logging.info("Starting price source compaction daemon on server")
         while True:
             try:
@@ -648,110 +566,22 @@ class PositionManagerServer:
     def _find_split_points(self, position: Position) -> list[int]:
         """
         Find all valid split points in a position where splitting should occur.
-        Returns a list of order indices where splits should happen.
+        Delegates to PositionSplitter utility (single source of truth).
         """
-        if len(position.orders) < 2:
-            return []
-
-        split_points = []
-        cumulative_leverage = 0.0
-        previous_sign = None
-
-        for i, order in enumerate(position.orders):
-            cumulative_leverage += order.leverage
-
-            # Determine the sign of leverage
-            if abs(cumulative_leverage) < 1e-9:
-                current_sign = 0
-            elif cumulative_leverage > 0:
-                current_sign = 1
-            else:
-                current_sign = -1
-
-            # Check for leverage sign flip
-            leverage_flipped = False
-            if previous_sign is not None and previous_sign != 0 and current_sign != 0 and previous_sign != current_sign:
-                leverage_flipped = True
-
-            # Check for explicit FLAT or implicit flat
-            is_explicit_flat = order.order_type == OrderType.FLAT
-            is_implicit_flat = (abs(cumulative_leverage) < 1e-9 or leverage_flipped) and not is_explicit_flat
-
-            if is_explicit_flat or is_implicit_flat:
-                # Don't split if this is the last order
-                if i < len(position.orders) - 1:
-                    orders_before = position.orders[:i+1]
-                    orders_after = position.orders[i+1:]
-
-                    # Check if both parts are valid
-                    first_valid = (len(orders_before) >= 2 and
-                                 orders_before[0].order_type != OrderType.FLAT)
-                    second_valid = (len(orders_after) >= 1 and
-                                  orders_after[0].order_type != OrderType.FLAT)
-
-                    if first_valid and second_valid:
-                        split_points.append(i)
-                        cumulative_leverage = 0.0
-                        previous_sign = 0
-                        continue
-
-            previous_sign = current_sign
-
-        return split_points
+        return PositionSplitter.find_split_points(position)
 
     def _split_position_on_flat(self, position: Position, live_price_fetcher) -> tuple[list[Position], dict]:
         """
         Split a position into multiple positions based on FLAT orders or implicit flats.
+        Delegates to PositionSplitter utility (single source of truth).
         Returns tuple of (list of positions, split_info dict).
         """
-        try:
-            split_points = self._find_split_points(position)
-
-            if not split_points:
-                return [position], {'implicit_flat_splits': 0, 'explicit_flat_splits': 0}
-
-            # Create order groups based on split points
-            order_groups = []
-            start_idx = 0
-
-            for split_idx in split_points:
-                order_group = position.orders[start_idx:split_idx + 1]
-                order_groups.append(order_group)
-                start_idx = split_idx + 1
-
-            # Add remaining orders if any
-            if start_idx < len(position.orders):
-                order_groups.append(position.orders[start_idx:])
-
-            # Update the original position with the first group
-            position.orders = order_groups[0]
-            position.rebuild_position_with_updated_orders(live_price_fetcher)
-
-            positions = [position]
-
-            # Create new positions for remaining groups
-            for order_group in order_groups[1:]:
-                new_position = Position(
-                    miner_hotkey=position.miner_hotkey,
-                    position_uuid=order_group[0].order_uuid,
-                    open_ms=0,
-                    trade_pair=position.trade_pair,
-                    orders=order_group
-                )
-                new_position.rebuild_position_with_updated_orders(live_price_fetcher)
-                positions.append(new_position)
-
-            return positions, {'implicit_flat_splits': 0, 'explicit_flat_splits': 0}
-
-        except Exception as e:
-            bt.logging.error(f"Error during position splitting: {e}")
-            return [position], {'implicit_flat_splits': 0, 'explicit_flat_splits': 0}
+        # Delegate to PositionSplitter for all splitting logic
+        return PositionSplitter.split_position_on_flat(position, live_price_fetcher, track_stats=False)
 
     def _write_position_to_disk(self, position: Position):
         """Write a single position to disk."""
         try:
-            from vali_objects.vali_dataclasses.order import OrderStatus
-
             miner_dir = ValiBkpUtils.get_partitioned_miner_positions_dir(
                 position.miner_hotkey,
                 position.trade_pair.trade_pair_id,
@@ -763,25 +593,6 @@ class PositionManagerServer:
 
         except Exception as e:
             bt.logging.error(f"Error writing position {position.position_uuid} to disk: {e}")
-
-    def _write_positions_for_hotkey_to_disk(self, hotkey: str):
-        """Write positions for a specific hotkey to disk."""
-        try:
-            positions_dir = ValiBkpUtils.get_miner_all_positions_dir()
-            positions_dir.mkdir(parents=True, exist_ok=True)
-
-            filepath = positions_dir / f"{hotkey}.json"
-            positions = self.hotkey_to_positions.get(hotkey, [])
-
-            # Convert positions to dict format
-            positions_data = [p.to_dict() for p in positions]
-
-            ValiBkpUtils.write_file(str(filepath), ValiBkpUtils.get_file_contents_from_json(positions_data))
-            bt.logging.trace(f"Wrote {len(positions)} positions for {hotkey} to disk")
-
-        except Exception as e:
-            bt.logging.error(f"Error writing positions for {hotkey} to disk: {e}")
-
 
 def start_position_manager_server(address, authkey, running_unit_tests=False, is_backtesting=False,
                                    split_positions_on_disk_load=False, start_compaction_daemon=False, ready_event=None,

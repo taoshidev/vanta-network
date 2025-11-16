@@ -311,7 +311,7 @@ class Validator(ValidatorBase):
 
         self.debt_ledger_manager = DebtLedgerManager(self.perf_ledger_manager, self.position_manager, self.contract_manager,
                                      self.asset_selection_manager, challengeperiod_manager=self.challengeperiod_manager,
-                                     slack_webhook_url=self.config.slack_error_webhook_url, start_daemon=True,
+                                     slack_webhook_url=self.config.slack_error_webhook_url, start_server=True,
                                      ipc_manager=self.ipc_manager, validator_hotkey=self.wallet.hotkey.ss58_address)
 
 

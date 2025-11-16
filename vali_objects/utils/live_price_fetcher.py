@@ -164,63 +164,6 @@ class LivePriceFetcherClient(RPCServiceBase):
                     # Sleep before retrying
                     time.sleep(60)
 
-class LivePriceFetcherServer:
-    """
-    Wrapper for the LivePriceFetcher RPC server.
-    Instantiating this class starts the server automatically.
-    """
-
-    class ServerManager(BaseManager):
-        pass
-
-    def __init__(self, secrets, address=('localhost', 50000), authkey=None, disable_ws=False, ipc_manager=None, is_backtesting=False, slack_notifier=None):
-        if authkey is None:
-            raise ValueError("authkey parameter is required for LivePriceFetcher server")
-
-        # Wrap everything in try/except to catch and report crashes
-        try:
-            from setproctitle import setproctitle
-            from shared_objects.error_utils import ErrorUtils
-            import traceback
-
-            setproctitle("vali_LivePriceFetcher")
-            bt.logging.info(f"Starting LivePriceFetcher server on {address}...")
-
-            # Create the LivePriceFetcher instance
-            live_price_fetcher = LivePriceFetcher(secrets, disable_ws, ipc_manager, is_backtesting)
-            bt.logging.info(f"LivePriceFetcher instance created successfully")
-
-            # Register and start the RPC server
-            self.ServerManager.register('LivePriceFetcher', callable=lambda: live_price_fetcher)
-            manager = self.ServerManager(address=address, authkey=authkey)
-            server = manager.get_server()
-            bt.logging.success(f"LivePriceFetcher server is now listening and serving requests")
-
-            # Start serving (blocks forever)
-            server.serve_forever()
-
-        except Exception as e:
-            error_traceback = traceback.format_exc()
-            bt.logging.error(f"CRITICAL: LivePriceFetcher server crashed: {e}")
-            bt.logging.error(error_traceback)
-
-            # Send critical error notification to Slack
-            if slack_notifier:
-                error_message = ErrorUtils.format_error_for_slack(
-                    error=e,
-                    traceback_str=error_traceback,
-                    include_operation=True,
-                    include_timestamp=True
-                )
-                slack_notifier.send_message(
-                    f"💥 CRITICAL: LivePriceFetcher Server Crashed!\n"
-                    f"{error_message}\n"
-                    f"Price data services are offline. Manual intervention required.",
-                    level="error"
-                )
-
-            # Re-raise to ensure process exits with error code
-            raise
 
 class LivePriceFetcher:
     def __init__(self, secrets, disable_ws=False, ipc_manager=None, is_backtesting=False):
