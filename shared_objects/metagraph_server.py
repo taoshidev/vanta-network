@@ -90,97 +90,45 @@ class MetagraphServer:
         with self._lock:
             return list(self._hotkeys)
 
-    def set_hotkeys_rpc(self, hotkeys: list) -> None:
-        """
-        Set hotkeys and update cached set (thread-safe).
-
-        Args:
-            hotkeys: List of hotkeys to set
-        """
-        with self._lock:
-            self._hotkeys = list(hotkeys)
-            # Update cached set for O(1) lookups
-            self._hotkeys_set = set(hotkeys)
-
     def get_neurons_rpc(self) -> list:
         """Get list of neurons (thread-safe)"""
         with self._lock:
             return list(self._neurons)
-
-    def set_neurons_rpc(self, neurons: list) -> None:
-        """Set neurons list (thread-safe)"""
-        with self._lock:
-            self._neurons = list(neurons)
 
     def get_uids_rpc(self) -> list:
         """Get list of UIDs (thread-safe)"""
         with self._lock:
             return list(self._uids)
 
-    def set_uids_rpc(self, uids: list) -> None:
-        """Set UIDs list (thread-safe)"""
-        with self._lock:
-            self._uids = list(uids)
-
     def get_axons_rpc(self) -> list:
         """Get list of axons (thread-safe)"""
         with self._lock:
             return list(self._axons)
-
-    def set_axons_rpc(self, axons: list) -> None:
-        """Set axons list (thread-safe)"""
-        with self._lock:
-            self._axons = list(axons)
 
     def get_block_at_registration_rpc(self) -> list:
         """Get block at registration list (thread-safe)"""
         with self._lock:
             return list(self._block_at_registration)
 
-    def set_block_at_registration_rpc(self, blocks: list) -> None:
-        """Set block at registration list (thread-safe)"""
-        with self._lock:
-            self._block_at_registration = list(blocks)
-
     def get_emission_rpc(self) -> list:
         """Get emission list (thread-safe)"""
         with self._lock:
             return list(self._emission)
-
-    def set_emission_rpc(self, emission: list) -> None:
-        """Set emission list (thread-safe)"""
-        with self._lock:
-            self._emission = list(emission)
 
     def get_tao_reserve_rao_rpc(self) -> float:
         """Get TAO reserve in RAO (thread-safe)"""
         with self._lock:
             return self._tao_reserve_rao
 
-    def set_tao_reserve_rao_rpc(self, value: float) -> None:
-        """Set TAO reserve in RAO (thread-safe)"""
-        with self._lock:
-            self._tao_reserve_rao = float(value)
-
     def get_alpha_reserve_rao_rpc(self) -> float:
         """Get ALPHA reserve in RAO (thread-safe)"""
         with self._lock:
             return self._alpha_reserve_rao
 
-    def set_alpha_reserve_rao_rpc(self, value: float) -> None:
-        """Set ALPHA reserve in RAO (thread-safe)"""
-        with self._lock:
-            self._alpha_reserve_rao = float(value)
-
     def get_tao_to_usd_rate_rpc(self) -> float:
         """Get TAO to USD conversion rate (thread-safe)"""
         with self._lock:
             return self._tao_to_usd_rate
-
-    def set_tao_to_usd_rate_rpc(self, value: float) -> None:
-        """Set TAO to USD conversion rate (thread-safe)"""
-        with self._lock:
-            self._tao_to_usd_rate = float(value)
 
     def update_metagraph_rpc(self, neurons: list = None, uids: list = None, hotkeys: list = None,
                             block_at_registration: list = None, axons: list = None,

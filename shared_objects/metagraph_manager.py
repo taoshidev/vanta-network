@@ -91,73 +91,37 @@ class MetagraphManager(RPCServiceBase):
         """Get list of all hotkeys"""
         return self._server_proxy.get_hotkeys_rpc()
 
-    def set_hotkeys(self, hotkeys: list) -> None:
-        """Set hotkeys and update server's cached set"""
-        self._server_proxy.set_hotkeys_rpc(hotkeys)
-
     def get_neurons(self) -> list:
         """Get list of neurons"""
         return self._server_proxy.get_neurons_rpc()
-
-    def set_neurons(self, neurons: list) -> None:
-        """Set neurons list"""
-        self._server_proxy.set_neurons_rpc(neurons)
 
     def get_uids(self) -> list:
         """Get list of UIDs"""
         return self._server_proxy.get_uids_rpc()
 
-    def set_uids(self, uids: list) -> None:
-        """Set UIDs list"""
-        self._server_proxy.set_uids_rpc(uids)
-
     def get_axons(self) -> list:
         """Get list of axons"""
         return self._server_proxy.get_axons_rpc()
-
-    def set_axons(self, axons: list) -> None:
-        """Set axons list"""
-        self._server_proxy.set_axons_rpc(axons)
 
     def get_block_at_registration(self) -> list:
         """Get block at registration list"""
         return self._server_proxy.get_block_at_registration_rpc()
 
-    def set_block_at_registration(self, blocks: list) -> None:
-        """Set block at registration list"""
-        self._server_proxy.set_block_at_registration_rpc(blocks)
-
     def get_emission(self) -> list:
         """Get emission list"""
         return self._server_proxy.get_emission_rpc()
-
-    def set_emission(self, emission: list) -> None:
-        """Set emission list"""
-        self._server_proxy.set_emission_rpc(emission)
 
     def get_tao_reserve_rao(self) -> float:
         """Get TAO reserve in RAO"""
         return self._server_proxy.get_tao_reserve_rao_rpc()
 
-    def set_tao_reserve_rao(self, value: float) -> None:
-        """Set TAO reserve in RAO"""
-        self._server_proxy.set_tao_reserve_rao_rpc(value)
-
     def get_alpha_reserve_rao(self) -> float:
         """Get ALPHA reserve in RAO"""
         return self._server_proxy.get_alpha_reserve_rao_rpc()
 
-    def set_alpha_reserve_rao(self, value: float) -> None:
-        """Set ALPHA reserve in RAO"""
-        self._server_proxy.set_alpha_reserve_rao_rpc(value)
-
     def get_tao_to_usd_rate(self) -> float:
         """Get TAO to USD conversion rate"""
         return self._server_proxy.get_tao_to_usd_rate_rpc()
-
-    def set_tao_to_usd_rate(self, value: float) -> None:
-        """Set TAO to USD conversion rate"""
-        self._server_proxy.set_tao_to_usd_rate_rpc(value)
 
     def update_metagraph(self, neurons: list = None, uids: list = None, hotkeys: list = None,
                         block_at_registration: list = None, axons: list = None,
@@ -200,97 +164,53 @@ class MetagraphManager(RPCServiceBase):
             tao_to_usd_rate=tao_to_usd_rate
         )
 
-    # ==================== Backwards Compatibility Properties ====================
+    # ==================== Backwards Compatibility Properties (Read-Only) ====================
+    # Setters removed - use update_metagraph() for all writes
 
     @property
     def hotkeys(self) -> list:
-        """Direct access to hotkeys (for compatibility)"""
+        """Direct access to hotkeys (read-only). Use update_metagraph() to update."""
         return self.get_hotkeys()
-
-    @hotkeys.setter
-    def hotkeys(self, value: list):
-        """Allow setting hotkeys (for compatibility)"""
-        self.set_hotkeys(value)
 
     @property
     def neurons(self) -> list:
-        """Direct access to neurons (for compatibility)"""
+        """Direct access to neurons (read-only). Use update_metagraph() to update."""
         return self.get_neurons()
-
-    @neurons.setter
-    def neurons(self, value: list):
-        """Allow setting neurons (for compatibility)"""
-        self.set_neurons(value)
 
     @property
     def uids(self) -> list:
-        """Direct access to uids (for compatibility)"""
+        """Direct access to uids (read-only). Use update_metagraph() to update."""
         return self.get_uids()
-
-    @uids.setter
-    def uids(self, value: list):
-        """Allow setting uids (for compatibility)"""
-        self.set_uids(value)
 
     @property
     def axons(self) -> list:
-        """Direct access to axons (for compatibility)"""
+        """Direct access to axons (read-only). Use update_metagraph() to update."""
         return self.get_axons()
-
-    @axons.setter
-    def axons(self, value: list):
-        """Allow setting axons (for compatibility)"""
-        self.set_axons(value)
 
     @property
     def block_at_registration(self) -> list:
-        """Direct access to block_at_registration (for compatibility)"""
+        """Direct access to block_at_registration (read-only). Use update_metagraph() to update."""
         return self.get_block_at_registration()
-
-    @block_at_registration.setter
-    def block_at_registration(self, value: list):
-        """Allow setting block_at_registration (for compatibility)"""
-        self.set_block_at_registration(value)
 
     @property
     def emission(self) -> list:
-        """Direct access to emission (for compatibility)"""
+        """Direct access to emission (read-only). Use update_metagraph() to update."""
         return self.get_emission()
-
-    @emission.setter
-    def emission(self, value: list):
-        """Allow setting emission (for compatibility)"""
-        self.set_emission(value)
 
     @property
     def tao_reserve_rao(self) -> float:
-        """Direct access to TAO reserve (for compatibility)"""
+        """Direct access to TAO reserve (read-only). Use update_metagraph() to update."""
         return self.get_tao_reserve_rao()
-
-    @tao_reserve_rao.setter
-    def tao_reserve_rao(self, value: float):
-        """Allow setting TAO reserve (for compatibility)"""
-        self.set_tao_reserve_rao(value)
 
     @property
     def alpha_reserve_rao(self) -> float:
-        """Direct access to ALPHA reserve (for compatibility)"""
+        """Direct access to ALPHA reserve (read-only). Use update_metagraph() to update."""
         return self.get_alpha_reserve_rao()
-
-    @alpha_reserve_rao.setter
-    def alpha_reserve_rao(self, value: float):
-        """Allow setting ALPHA reserve (for compatibility)"""
-        self.set_alpha_reserve_rao(value)
 
     @property
     def tao_to_usd_rate(self) -> float:
-        """Direct access to TAO/USD rate (for compatibility)"""
+        """Direct access to TAO/USD rate (read-only). Use update_metagraph() to update."""
         return self.get_tao_to_usd_rate()
-
-    @tao_to_usd_rate.setter
-    def tao_to_usd_rate(self, value: float):
-        """Allow setting TAO/USD rate (for compatibility)"""
-        self.set_tao_to_usd_rate(value)
 
     def is_development_hotkey(self, hotkey: str) -> bool:
         """Check if hotkey is the synthetic DEVELOPMENT hotkey"""
