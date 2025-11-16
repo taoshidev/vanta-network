@@ -259,15 +259,16 @@ class TestAssetSelectionManager(TestBase):
         # Should handle gracefully without crashing
         self.assertIn('error_message', result)
         
-    @patch.object(AssetSelectionManager, '_save_asset_selections_to_disk')
-    def test_save_error_handling(self, mock_save):
+    def test_save_error_handling(self):
         """Test error handling when disk save fails"""
-        mock_save.side_effect = Exception("Disk write failed")
-        
-        # Should handle save errors gracefully
-        result = self.asset_manager.process_asset_selection_request('crypto', self.test_miner_1)
-        self.assertFalse(result['successfully_processed'])
-        self.assertIn('Internal server error', result['error_message'])
+        from vali_objects.utils.asset_selection_manager_server import AssetSelectionManagerServer
+
+        # Mock the server's save method (since tests run in direct mode, _server_proxy is the server)
+        with patch.object(AssetSelectionManagerServer, '_save_asset_selections_to_disk', side_effect=Exception("Disk write failed")):
+            # Should handle save errors gracefully
+            result = self.asset_manager.process_asset_selection_request('crypto', self.test_miner_1)
+            self.assertFalse(result['successfully_processed'])
+            self.assertIn('Internal server error', result['error_message'])
         
 
 if __name__ == '__main__':

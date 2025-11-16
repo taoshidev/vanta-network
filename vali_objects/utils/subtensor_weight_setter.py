@@ -126,16 +126,17 @@ class SubtensorWeightSetter(CacheController):
             return [], []
 
         # Filter debt ledgers to only include specified hotkeys
-        # debt_ledger_manager.debt_ledgers is an IPC-managed dict
+        # Get all debt ledgers via RPC
+        all_debt_ledgers = self.debt_ledger_manager.get_all_ledgers()
         filtered_debt_ledgers = {
             hotkey: ledger
-            for hotkey, ledger in self.debt_ledger_manager.debt_ledgers.items()
+            for hotkey, ledger in all_debt_ledgers.items()
             if hotkey in hotkeys_to_compute_weights_for
         }
 
         if len(filtered_debt_ledgers) == 0:
             # Diagnostic logging to understand the mismatch
-            total_ledgers = len(self.debt_ledger_manager.debt_ledgers)
+            total_ledgers = len(all_debt_ledgers)
             if total_ledgers == 0:
                 bt.logging.info(
                     f"No debt ledgers loaded yet for {miner_group}. "
@@ -149,11 +150,11 @@ class SubtensorWeightSetter(CacheController):
                     f"Requested {len(hotkeys_to_compute_weights_for)} hotkeys, "
                     f"debt_ledger_manager has {total_ledgers} ledgers loaded."
                 )
-                if hotkeys_to_compute_weights_for and self.debt_ledger_manager.debt_ledgers:
+                if hotkeys_to_compute_weights_for and all_debt_ledgers:
                     bt.logging.debug(
                         f"Sample requested hotkey: {hotkeys_to_compute_weights_for[0][:16]}..."
                     )
-                    sample_available = list(self.debt_ledger_manager.debt_ledgers.keys())[0]
+                    sample_available = list(all_debt_ledgers.keys())[0]
                     bt.logging.debug(f"Sample available hotkey: {sample_available[:16]}...")
             return [], []
 

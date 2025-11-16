@@ -221,7 +221,7 @@ class Validator(ValidatorBase):
                                                       slack_notifier=self.slack_notifier,
                                                       sync_epoch=self.sync_epoch)
 
-        self.asset_selection_manager = AssetSelectionManager(config=self.config, metagraph=self.metagraph, ipc_manager=self.ipc_manager)
+        self.asset_selection_manager = AssetSelectionManager(config=self.config, metagraph=self.metagraph)
 
         self.position_syncer = PositionSyncer(shutdown_dict=shutdown_dict, signal_sync_lock=self.signal_sync_lock,
                                               signal_sync_condition=self.signal_sync_condition,

@@ -61,8 +61,10 @@ class DebtLedgerManagerServer:
 
         self.perf_ledger_manager = perf_ledger_manager
 
-        # IMPORTANT: PenaltyLedgerManager now runs in its own daemon (run_daemon=True)
-        # This ensures penalty ledgers refresh every 12 hours UTC-aligned with accurate checkpoint data
+        # IMPORTANT: PenaltyLedgerManager runs WITHOUT its own daemon process (run_daemon=False)
+        # because DebtLedgerManagerServer itself is already a daemon process, and daemon processes
+        # cannot spawn child processes. The DebtLedgerManagerServer daemon thread calls
+        # penalty_ledger_manager methods directly when needed.
         self.penalty_ledger_manager = PenaltyLedgerManager(
             position_manager=position_manager,
             perf_ledger_manager=perf_ledger_manager,
@@ -70,7 +72,7 @@ class DebtLedgerManagerServer:
             asset_selection_manager=asset_selection_manager,
             challengeperiod_manager=challengeperiod_manager,
             slack_webhook_url=slack_webhook_url,
-            run_daemon=True,  # Run penalty ledger in its own daemon
+            run_daemon=False,  # No daemon - already inside DebtLedgerManagerServer daemon process
             running_unit_tests=running_unit_tests,
             validator_hotkey=validator_hotkey,
             ipc_manager=ipc_manager
@@ -298,6 +300,7 @@ class DebtLedgerManagerServer:
         bt.logging.info("Debt Ledger Manager - Daemon Mode")
         bt.logging.info("=" * 80)
         bt.logging.info(f"Check Interval: {check_interval_seconds}s ({check_interval_seconds / 3600:.1f} hours)")
+        bt.logging.info(f"Update Sequence: Penalty -> Emissions -> Debt (all in this thread)")
         bt.logging.info(f"Full Rebuild Mode: Enabled (debt ledgers derived from emissions + penalties + perf)")
         bt.logging.info(f"Slack Notifications: {'Enabled' if self.slack_notifier.webhook_url else 'Disabled'}")
         bt.logging.info("=" * 80)
@@ -321,20 +324,22 @@ class DebtLedgerManagerServer:
                 # IMPORTANT: Update sub-ledgers FIRST in correct order before building debt ledgers
                 # This ensures debt ledgers have the latest data from all sources
 
-                # NOTE: Penalty ledgers are now updated in their own dedicated daemon (UTC-aligned 12-hour intervals)
-                # This ensures penalty data has accurate challenge period status per checkpoint
+                # Step 1: Update penalty ledgers (runs in this thread, not separate daemon)
+                bt.logging.info("Step 1/3: Updating penalty ledgers...")
+                penalty_start = time.time()
+                self.penalty_ledger_manager.build_penalty_ledgers(force_rebuild=False)
+                bt.logging.info(f"Penalty ledgers updated in {time.time() - penalty_start:.2f}s")
 
-                # Step 1: Update emissions ledgers
-                bt.logging.info("Step 1/2: Updating emissions ledgers...")
+                # Step 2: Update emissions ledgers
+                bt.logging.info("Step 2/3: Updating emissions ledgers...")
                 emissions_start = time.time()
                 self.emissions_ledger_manager.build_delta_update()
                 bt.logging.info(f"Emissions ledgers updated in {time.time() - emissions_start:.2f}s")
 
-                # Step 2: Build debt ledgers (combines data from penalty + emissions + perf)
-                # Penalty ledgers are updated separately by their dedicated daemon
+                # Step 3: Build debt ledgers (combines data from penalty + emissions + perf)
                 # IMPORTANT: Debt ledgers ALWAYS do full rebuilds (never delta updates)
                 # since they're derived from three sources that can change retroactively
-                bt.logging.info("Step 2/2: Building debt ledgers (full rebuild)...")
+                bt.logging.info("Step 3/3: Building debt ledgers (full rebuild)...")
                 debt_start = time.time()
                 self.build_debt_ledgers(verbose=verbose, delta_update=False)
                 bt.logging.info(f"Debt ledgers built in {time.time() - debt_start:.2f}s")

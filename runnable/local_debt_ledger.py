@@ -388,8 +388,7 @@ if __name__ == "__main__":
     bt.logging.info("Creating AssetSelectionManager...")
     asset_selection_manager = AssetSelectionManager(
         config=None,
-        metagraph=mmg,
-        ipc_manager=None
+        metagraph=mmg
     )
 
     # Create DebtLedgerManager in direct mode (no RPC overhead for local debugging)
