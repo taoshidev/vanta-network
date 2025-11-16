@@ -658,10 +658,9 @@ class MetagraphUpdater(CacheController):
         if alpha_reserve_rao == 0:
             raise ValueError("Alpha reserve is zero - cannot calculate conversion rate")
 
-        # Update shared metagraph (accessible from all processes via IPC)
-        # Use .value accessor for manager.Value() thread-safe synchronization
-        self.metagraph.tao_reserve_rao.value = tao_reserve_rao
-        self.metagraph.alpha_reserve_rao.value = alpha_reserve_rao
+        # Update shared metagraph via RPC (much faster than IPC)
+        self.metagraph.set_tao_reserve_rao(tao_reserve_rao)
+        self.metagraph.set_alpha_reserve_rao(alpha_reserve_rao)
 
         bt.logging.info(
             f"Updated reserves from metagraph.pool: TAO={tao_reserve_rao / 1e9:.2f} TAO "
@@ -715,8 +714,8 @@ class MetagraphUpdater(CacheController):
                 )
                 return False
 
-            # Update shared metagraph (accessible from all processes via IPC)
-            self.metagraph.tao_to_usd_rate = tao_to_usd_rate
+            # Update shared metagraph via RPC (much faster than IPC)
+            self.metagraph.set_tao_to_usd_rate(tao_to_usd_rate)
 
             bt.logging.info(
                 f"Updated TAO/USD price: ${tao_to_usd_rate:.2f}/TAO "
@@ -787,14 +786,14 @@ class MetagraphUpdater(CacheController):
                 )
             return  # Actually block the metagraph update
 
-        self.sync_lists(self.metagraph.neurons, list(metagraph_clone.neurons), brute_force=True)
-        self.sync_lists(self.metagraph.uids, metagraph_clone.uids, brute_force=True)
-        self.sync_lists(self.metagraph.hotkeys, metagraph_clone.hotkeys, brute_force=True)
-        # Tuple doesn't support item assignment.
-        self.sync_lists(self.metagraph.block_at_registration, metagraph_clone.block_at_registration,
-                        brute_force=True)
+        # Use RPC methods to update metagraph server (much faster than IPC property access)
+        self.metagraph.set_neurons(list(metagraph_clone.neurons))
+        self.metagraph.set_uids(list(metagraph_clone.uids))
+        self.metagraph.set_hotkeys(list(metagraph_clone.hotkeys))  # Server will update cached set
+        self.metagraph.set_block_at_registration(list(metagraph_clone.block_at_registration))
+
         if self.is_miner:
-            self.sync_lists(self.metagraph.axons, metagraph_clone.axons, brute_force=True)
+            self.metagraph.set_axons(list(metagraph_clone.axons))
 
         if recently_acked_miners:
             self.update_likely_miners(recently_acked_miners)
@@ -802,13 +801,13 @@ class MetagraphUpdater(CacheController):
             self.update_likely_validators(recently_acked_validators)
 
         # Update shared emission data (TAO per tempo for each UID)
-        self.sync_lists(self.metagraph.emission, metagraph_clone.emission, brute_force=True)
+        self.metagraph.set_emission(list(metagraph_clone.emission))
 
         # Refresh reserve data (TAO and ALPHA) from metagraph.pool for debt-based scoring
         # Also refresh TAO/USD price for USD-based payout calculations
         if not self.is_miner:  # Only validators need this for weight calculation
             self.refresh_substrate_reserves(metagraph_clone)
-            self.refresh_tao_usd_price()
+            self.refresh_tao_usd_rate()
 
         # self.log_metagraph_state()
         self.set_last_update_time()

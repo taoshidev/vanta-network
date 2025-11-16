@@ -12,7 +12,7 @@ from setproctitle import setproctitle
 
 from vanta_api.api_manager import APIManager
 from neurons.validator_base import ValidatorBase
-from shared_objects.sn8_multiprocessing import get_ipc_metagraph
+from shared_objects.metagraph_manager import MetagraphManager
 from multiprocessing import Manager, Process
 from enum import Enum
 
@@ -186,8 +186,8 @@ class Validator(ValidatorBase):
 
         # metagraph provides the network's current state, holding state about other participants in a subnet.
         # IMPORTANT: Only update this variable in-place. Otherwise, the reference will be lost in the helper classes.
-        # Uses dedicated metagraph_ipc_manager to isolate high-frequency IPC operations (hotkeys, neurons, uids)
-        self.metagraph = get_ipc_metagraph(self.metagraph_ipc_manager)
+        # Uses RPC-based MetagraphManager with server-side hotkeys_set cache for O(1) has_hotkey() lookups
+        self.metagraph = MetagraphManager(running_unit_tests=False, slack_notifier=self.slack_notifier)
 
         # Create single weight request queue (validator only)
         weight_request_queue = self.ipc_manager.Queue()
