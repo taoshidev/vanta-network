@@ -332,6 +332,13 @@ class RPCServiceBase(ABC):
             bt.logging.debug(f"{self.service_name} port cleanup only supported on POSIX systems")
             return
 
+        # Check if port is already free
+        if PortManager.is_port_free(self.port):
+            bt.logging.debug(f"{self.service_name} port {self.port} is already free")
+            return
+
+        bt.logging.warning(f"{self.service_name} port {self.port} is in use, cleaning up stale processes...")
+
         try:
             # Find processes using the port
             result = subprocess.run(
@@ -343,6 +350,7 @@ class RPCServiceBase(ABC):
 
             if result.returncode == 0 and result.stdout.strip():
                 pids = result.stdout.strip().split('\n')
+                killed_any = False
 
                 for pid_str in pids:
                     try:
@@ -369,6 +377,7 @@ class RPCServiceBase(ABC):
 
                                 try:
                                     os.kill(pid, signal.SIGTERM)
+                                    killed_any = True
 
                                     # Wait briefly for graceful termination
                                     # Poll to see if process terminated
@@ -393,6 +402,19 @@ class RPCServiceBase(ABC):
 
                     except (ValueError, subprocess.TimeoutExpired) as e:
                         bt.logging.trace(f"Error checking process {pid_str}: {e}")
+
+                # After killing processes, wait for port to actually be released
+                if killed_any:
+                    bt.logging.info(f"{self.service_name} waiting for port {self.port} to be released...")
+                    if PortManager.wait_for_port_release(self.port, timeout=5.0):
+                        bt.logging.success(
+                            f"{self.service_name} port {self.port} successfully released"
+                        )
+                    else:
+                        bt.logging.error(
+                            f"{self.service_name} port {self.port} still in use after cleanup! "
+                            f"Server startup may fail with 'Address already in use'"
+                        )
 
         except FileNotFoundError:
             bt.logging.trace(f"{self.service_name}: lsof command not available, skipping port cleanup")
