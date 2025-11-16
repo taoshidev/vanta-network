@@ -26,7 +26,6 @@ from runnable.generate_request_minerstatistics import MinerStatisticsManager
 from runnable.generate_request_outputs import RequestOutputGenerator
 from template.protocol import SendSignal
 from vali_objects.enums.execution_type_enum import ExecutionType
-from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.utils.auto_sync import PositionSyncer
 from vali_objects.utils.limit_order_manager import LimitOrderManagerClient
 from vali_objects.utils.market_order_manager import MarketOrderManager
@@ -127,10 +126,7 @@ class Validator(ValidatorBase):
         # PERFORMANCE OPTIMIZATION: Use separate managers to reduce IPC contention
         # Each manager runs in its own process with its own server thread
         self.ipc_manager = Manager()  # General-purpose manager for queues, values, etc.
-        self.metagraph_ipc_manager = Manager()  # Dedicated manager for metagraph (hotkeys, neurons, uids, etc.)
-
-        bt.logging.info(f"[IPC] Created 2 IPC managers: general (PID: {self.ipc_manager._process.pid}), "
-                       f"metagraph (PID: {self.metagraph_ipc_manager._process.pid})")
+        bt.logging.info(f"[IPC] Created IPC manager: general (PID: {self.ipc_manager._process.pid})")
 
         self.shared_queue_websockets = self.ipc_manager.Queue()
 
@@ -713,18 +709,17 @@ class Validator(ValidatorBase):
 
         # don't process re-registered miners
         rereg_check_start = time.perf_counter()
-        is_reregistered = self.elimination_manager.is_hotkey_re_registered(synapse.dendrite.hotkey)
+        rereg_info = self.elimination_manager.get_departed_hotkey_info(synapse.dendrite.hotkey)
         rereg_check_ms = (time.perf_counter() - rereg_check_start) * 1000
         bt.logging.info(f"[FAIL_EARLY_DEBUG] is_hotkey_re_registered took {rereg_check_ms:.2f}ms")
 
-        if is_reregistered:
+        if rereg_info:
             # Get deregistration timestamp and convert to human-readable date
             departed_lookup_start = time.perf_counter()
-            departed_info = self.elimination_manager.get_departed_hotkey_info(synapse.dendrite.hotkey) or {}
             departed_lookup_ms = (time.perf_counter() - departed_lookup_start) * 1000
             bt.logging.info(f"[FAIL_EARLY_DEBUG] get_departed_hotkey_info RPC took {departed_lookup_ms:.2f}ms")
 
-            detected_ms = departed_info.get("detected_ms", 0)
+            detected_ms = rereg_info.get("detected_ms", 0)
             dereg_date = TimeUtil.millis_to_formatted_date_str(detected_ms) if detected_ms else "unknown"
 
             msg = (f"This miner hotkey {synapse.dendrite.hotkey} was previously de-registered and is not allowed to re-register. "

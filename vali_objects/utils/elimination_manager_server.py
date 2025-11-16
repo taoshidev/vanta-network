@@ -193,7 +193,7 @@ class EliminationManagerServer(CacheController):
             return False
 
         # Slow path: Check if back in metagraph
-        is_in_metagraph = self.metagraph.has_hotkey(hotkey) if self.metagraph else False
+        is_in_metagraph = self.metagraph.has_hotkey(hotkey)
         return is_in_metagraph
 
     def get_departed_hotkeys_rpc(self) -> Dict[str, dict]:
