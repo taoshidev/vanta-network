@@ -188,9 +188,19 @@ class RequestCoreManager:
         blob.upload_from_string(zip_buffer)
         print(f'Uploaded {blob_name} to {bucket_name}')
 
-    def create_and_upload_production_files(self, eliminations, ord_dict_hotkey_position_map, time_now,
-                                           youngest_order_processed_ms, oldest_order_processed_ms,
-                                           challengeperiod_dict, miner_account_sizes_dict, limit_orders_dict):
+    def create_and_upload_production_files(
+        self,
+        eliminations,
+        ord_dict_hotkey_position_map,
+        time_now,
+        youngest_order_processed_ms,
+        oldest_order_processed_ms,
+        challengeperiod_dict,
+        miner_account_sizes_dict,
+        limit_orders_dict,
+        save_to_disk=True,
+        upload_to_gcloud=True
+    ):
 
         perf_ledgers = self.perf_ledger_manager.get_perf_ledgers(portfolio_only=False)
 
@@ -214,43 +224,65 @@ class RequestCoreManager:
             'limit_orders': limit_orders_dict
         }
 
-        # Write compressed checkpoint only - saves disk space and bandwidth
-        compressed_data = self.compress_dict(final_dict)
-        
-        # Write compressed file directly
-        compressed_path = ValiBkpUtils.get_vcp_output_path()
-        with open(compressed_path, 'wb') as f:
-            f.write(compressed_data)
-        #print(f"Wrote compressed checkpoint to {compressed_path}")
-        
-        # Store compressed checkpoint data in IPC memory cache
-        self.store_checkpoint_in_memory(final_dict)
+        if save_to_disk:
+            # Write compressed checkpoint only - saves disk space and bandwidth
+            compressed_data = self.compress_dict(final_dict)
 
-        # Write positions data (sellable via RN) at the different tiers. Each iteration, the number of orders (possibly) decreases
-        for t in PERCENT_NEW_POSITIONS_TIERS:
-            if t == 100:  # no filtering
-                # Write legacy location as well. no compression
+            # Write compressed file directly
+            compressed_path = ValiBkpUtils.get_vcp_output_path()
+            with open(compressed_path, 'wb') as f:
+                f.write(compressed_data)
+            #print(f"Wrote compressed checkpoint to {compressed_path}")
+
+            # Store compressed checkpoint data in IPC memory cache
+            self.store_checkpoint_in_memory(final_dict)
+
+            # Write positions data (sellable via RN) at the different tiers. Each iteration, the number of orders (possibly) decreases
+            for t in PERCENT_NEW_POSITIONS_TIERS:
+                if t == 100:  # no filtering
+                    # Write legacy location as well. no compression
+                    ValiBkpUtils.write_file(
+                        ValiBkpUtils.get_miner_positions_output_path(suffix_dir=None),
+                        ord_dict_hotkey_position_map,
+                    )
+                else:
+                    self.filter_new_positions_random_sample(t, ord_dict_hotkey_position_map, time_now)
+
+                # "v2" add a tier. compress the data. This is a location in a subdir
+                for hotkey, dat in ord_dict_hotkey_position_map.items():
+                    dat['tier'] = t
+
+                compressed_positions = self.compress_dict(ord_dict_hotkey_position_map)
                 ValiBkpUtils.write_file(
-                    ValiBkpUtils.get_miner_positions_output_path(suffix_dir=None),
-                    ord_dict_hotkey_position_map,
+                    ValiBkpUtils.get_miner_positions_output_path(suffix_dir=str(t)),
+                    compressed_positions, is_binary=True
                 )
-            else:
-                self.filter_new_positions_random_sample(t, ord_dict_hotkey_position_map, time_now)
-
-            # "v2" add a tier. compress the data. This is a location in a subdir
-            for hotkey, dat in ord_dict_hotkey_position_map.items():
-                dat['tier'] = t
-
-            compressed_positions = self.compress_dict(ord_dict_hotkey_position_map)
-            ValiBkpUtils.write_file(
-                ValiBkpUtils.get_miner_positions_output_path(suffix_dir=str(t)),
-                compressed_positions, is_binary=True
-            )
 
         # Max filtering
-        self.upload_checkpoint_to_gcloud(final_dict)
+        if upload_to_gcloud:
+            self.upload_checkpoint_to_gcloud(final_dict)
 
-    def generate_request_core(self, get_dash_data_hotkey: str | None = None, write_and_upload_production_files=False) -> dict:
+    def generate_request_core(
+        self,
+        get_dash_data_hotkey: str | None = None,
+        write_and_upload_production_files=False,
+        create_production_files=True,
+        save_production_files=True,
+        upload_production_files=True
+    ) -> dict:
+        """
+        Generate request core data and optionally create/save/upload production files.
+
+        Args:
+            get_dash_data_hotkey: Optional specific hotkey to query (for dashboard)
+            write_and_upload_production_files: Legacy parameter - if True, creates/saves/uploads files
+            create_production_files: If False, skips creating production file dicts
+            save_production_files: If False, skips writing files to disk
+            upload_production_files: If False, skips uploading to gcloud
+
+        Returns:
+            dict: Checkpoint data containing positions, challengeperiod, etc.
+        """
         eliminations = self.elimination_manager.get_eliminations_from_memory()
         try:
             if not os.path.exists(ValiBkpUtils.get_miner_dir()):
@@ -316,11 +348,25 @@ class RequestCoreManager:
         if self.contract_manager:
             miner_account_sizes_dict = self.contract_manager.miner_account_sizes_dict()
 
+        # Handle legacy parameter
         if write_and_upload_production_files:
-            limit_orders_dict = self.limit_order_manager.get_all_limit_orders()
-            self.create_and_upload_production_files(eliminations, ord_dict_hotkey_position_map, time_now_ms,
-                                           youngest_order_processed_ms, oldest_order_processed_ms,
-                                           challengeperiod_dict, miner_account_sizes_dict, limit_orders_dict)
+            create_production_files = True
+            save_production_files = True
+            upload_production_files = True
+
+        if create_production_files:
+            limit_orders_dict = {}
+            if self.limit_order_manager:
+                limit_orders_dict = self.limit_order_manager.get_all_limit_orders()
+
+            if save_production_files or upload_production_files:
+                self.create_and_upload_production_files(
+                    eliminations, ord_dict_hotkey_position_map, time_now_ms,
+                    youngest_order_processed_ms, oldest_order_processed_ms,
+                    challengeperiod_dict, miner_account_sizes_dict, limit_orders_dict,
+                    save_to_disk=save_production_files,
+                    upload_to_gcloud=upload_production_files
+                )
 
         checkpoint_dict = {
             'challengeperiod': challengeperiod_dict,

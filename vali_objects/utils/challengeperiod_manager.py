@@ -590,6 +590,16 @@ class ChallengePeriodManager(RPCServiceBase, CacheController):
             combined_scores_dict=combined_scores_dict
         )
 
+    def to_checkpoint_dict(self) -> dict:
+        """
+        Get challenge period data as a checkpoint dict for serialization.
+        Uses RPC in both test and production modes.
+
+        Returns:
+            dict: Mapping hotkeys to their bucket information
+        """
+        return self._server_proxy.to_checkpoint_dict_rpc()
+
     @staticmethod
     def parse_checkpoint_dict(json_dict):
         """

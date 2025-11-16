@@ -496,6 +496,15 @@ class ChallengePeriodManagerServer(CacheController):
             combined_scores_dict=combined_scores_dict
         )
 
+    def to_checkpoint_dict_rpc(self) -> dict:
+        """
+        Get challenge period data as a checkpoint dict for serialization.
+
+        Returns:
+            dict: Mapping hotkeys to their bucket information
+        """
+        return self.to_checkpoint_dict()
+
     # ==================== Internal Methods (NOT exposed via RPC) ====================
 
     def _bucket_view(self, bucket: MinerBucket):
