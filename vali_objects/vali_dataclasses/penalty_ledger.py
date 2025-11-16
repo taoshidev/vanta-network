@@ -698,11 +698,11 @@ class PenaltyLedgerManager:
 
         bt.logging.info("[PENALTY_LEDGER] Penalty Ledger Manager daemon stopped")
 
-    def _get_status_for_checkpoint(self, checkpoint_ms: int, bucket_data: tuple) -> str:
+    def _get_status_for_checkpoint(self, checkpoint_ms: int, bucket_data: dict) -> str:
         """
         Determine the challenge period status for a checkpoint based on bucket transitions.
 
-        Tuple structure: (bucket, bucket_start_time_ms, previous_bucket, previous_bucket_time_ms)
+        Dict structure: {"bucket": str, "bucket_start_time": int, "previous_bucket": str, "previous_bucket_start_time": int}
 
         Logic:
         - CHALLENGE: all checkpoints → CHALLENGE
@@ -712,20 +712,21 @@ class PenaltyLedgerManager:
 
         Args:
             checkpoint_ms: The checkpoint timestamp in milliseconds
-            bucket_data: Tuple containing (bucket, bucket_start_time_ms, previous_bucket, previous_bucket_time_ms)
+            bucket_data: Dict containing bucket information from to_checkpoint_dict()
 
         Returns:
             Status string for this checkpoint
         """
-        if not bucket_data or len(bucket_data) < 2:
+        if not bucket_data or not isinstance(bucket_data, dict):
             return MinerBucket.UNKNOWN.value
 
-        bucket, bucket_start_time_ms = bucket_data[0], bucket_data[1]
+        bucket_str = bucket_data.get("bucket")
+        bucket_start_time_ms = bucket_data.get("bucket_start_time")
 
-        if not bucket:
+        if not bucket_str:
             return MinerBucket.UNKNOWN.value
 
-        current_status = bucket.value
+        current_status = bucket_str
 
         # CHALLENGE status: all checkpoints are CHALLENGE
         if current_status == MinerBucket.CHALLENGE.value:
@@ -786,17 +787,17 @@ class PenaltyLedgerManager:
 
         # OPTIMIZATION: Fetch entire active_miners dict once upfront to avoid O(n) IPC calls
         # Instead of calling get_miner_bucket() for each miner (which makes an IPC call each time),
-        # we fetch the entire dict once and do local lookups
-        # Tuple structure: (bucket, bucket_start_time_ms, previous_bucket, previous_bucket_time_ms)
+        # we fetch the entire dict once using RPC
+        # Dict structure: {"bucket": str, "bucket_start_time": int, "previous_bucket": str, "previous_bucket_start_time": int}
         challenge_period_data = {}
         if self.challengeperiod_manager:
-            # Make a single IPC call to get the entire dict with full tuple data
-            active_miners_snapshot = dict(self.challengeperiod_manager.active_miners)
-            # Keep full tuple data for timestamp-based backfilling
+            # Make a single RPC call to get the entire dict with full bucket data
+            challenge_period_data = self.challengeperiod_manager.to_checkpoint_dict()
+            # Filter out None entries
             challenge_period_data = {
-                hotkey: bucket_tuple
-                for hotkey, bucket_tuple in active_miners_snapshot.items()
-                if bucket_tuple  # Filter out None entries
+                hotkey: bucket_data
+                for hotkey, bucket_data in challenge_period_data.items()
+                if bucket_data
             }
 
         bt.logging.info(
