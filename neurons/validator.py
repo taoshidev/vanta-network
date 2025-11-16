@@ -362,26 +362,16 @@ class Validator(ValidatorBase):
             return self.plagiarism_thread
         self.run_init_step_with_monitoring(2, "Starting plagiarism detector process", step2)
 
-        # Step 3: Initialize MDDChecker
+        # Step 3: Initialize MDDChecker with auto-start daemon
+        # MDDChecker runs in its own daemon process and updates position prices in local memory
+        # No IPC required - all updates happen on local Python dicts within the MDDChecker process
         def step3():
             self.mdd_checker = MDDChecker(self.metagraph, self.position_manager, live_price_fetcher=self.live_price_fetcher,
                                           shutdown_dict=shutdown_dict, position_locks=self.position_locks,
                                           sync_in_progress=self.sync_in_progress, slack_notifier=self.slack_notifier,
-                                          sync_epoch=self.sync_epoch)
+                                          sync_epoch=self.sync_epoch, start_daemon=True)
             return self.mdd_checker
-        self.run_init_step_with_monitoring(3, "Initializing MDDChecker", step3)
-
-        # Step 4: Start MDD checker process
-        def step4():
-            self.mdd_checker_process = Process(target=self.mdd_checker.run_update_loop, daemon=True)
-            self.mdd_checker_process.start()
-            # Verify process started
-            time.sleep(0.1)  # Give process a moment to start
-            if not self.mdd_checker_process.is_alive():
-                raise RuntimeError("MDD checker process failed to start")
-            bt.logging.info(f"MDD checker process started with PID: {self.mdd_checker_process.pid}")
-            return self.mdd_checker_process
-        self.run_init_step_with_monitoring(4, "Starting MDD checker process", step4)
+        self.run_init_step_with_monitoring(3, "Initializing MDDChecker with daemon", step3)
 
         # Step 5 & 6: RPC managers (EliminationManager and ChallengePeriodManager)
         # are automatically started in their __init__ methods via _initialize_service()
@@ -598,8 +588,7 @@ class Validator(ValidatorBase):
             self.weight_processing_thread.join()
         bt.logging.warning("Stopping plagiarism detector...")
         self.plagiarism_thread.join()
-        bt.logging.warning("Stopping MDD checker...")
-        self.mdd_checker_process.join()
+        # MDDChecker daemon shuts down automatically via shutdown_dict
         # EliminationManager and ChallengePeriodManager RPC servers shutdown automatically via shutdown_dict
         # LivePriceFetcher RPC health checker shuts down automatically via RPCServiceBase
         bt.logging.warning("Stopping slippage refresher...")

@@ -22,7 +22,7 @@ class MDDChecker(CacheController):
 
     def __init__(self, metagraph, position_manager, running_unit_tests=False,
                  live_price_fetcher=None, shutdown_dict=None, position_locks=None,
-                 sync_in_progress=None, slack_notifier=None, sync_epoch=None):
+                 sync_in_progress=None, slack_notifier=None, sync_epoch=None, start_daemon=False):
         super().__init__(metagraph, running_unit_tests=running_unit_tests)
         self.last_price_fetch_time_ms = None
         self.last_quote_fetch_time_ms = None
@@ -44,10 +44,24 @@ class MDDChecker(CacheController):
         self.slack_notifier = slack_notifier
         self.sync_epoch = sync_epoch
 
+        # Start daemon process if requested
+        if start_daemon:
+            self._start_daemon_process()
+
 
     def reset_debug_counters(self):
         self.n_orders_corrected = 0
         self.miners_corrected = set()
+
+    def _start_daemon_process(self):
+        """Start the daemon process for continuous MDD checking."""
+        import multiprocessing
+        daemon_process = multiprocessing.Process(
+            target=self.run_update_loop,
+            daemon=True
+        )
+        daemon_process.start()
+        bt.logging.info(f"Started MDDChecker daemon process with PID: {daemon_process.pid}")
 
     def _position_is_candidate_for_price_correction(self, position: Position, now_ms):
         return (position.is_open_position or
