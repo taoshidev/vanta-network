@@ -99,7 +99,8 @@ def cleanup_stale_position_manager_server(port: int = 50002):
 class PositionManagerServer:
     """Server process that manages position data in a normal Python dict."""
 
-    def __init__(self, running_unit_tests=False, is_backtesting=False, load_from_disk=None, split_positions_on_disk_load=False):
+    def __init__(self, running_unit_tests=False, is_backtesting=False, load_from_disk=None, split_positions_on_disk_load=False,
+                 elimination_manager_address=None, elimination_manager_authkey=None):
         """
         Initialize the server with a normal Python dict for positions.
 
@@ -108,6 +109,8 @@ class PositionManagerServer:
             is_backtesting: Whether running in backtesting mode
             load_from_disk: Override disk loading behavior (None=auto, True=force load, False=skip)
             split_positions_on_disk_load: Whether to apply position splitting after loading from disk
+            elimination_manager_address: Address tuple (host, port) for EliminationManagerServer RPC connection
+            elimination_manager_authkey: Auth key for EliminationManagerServer RPC connection
         """
         # SOURCE OF TRUTH: All positions (open + closed)
         # Structure: hotkey -> position_uuid -> Position
@@ -129,6 +132,11 @@ class PositionManagerServer:
         self.split_stats = defaultdict(self._default_split_stats)
         self.recalibrated_position_uuids = set()
 
+        # RPC client to EliminationManagerServer for internal elimination fetching
+        self._elimination_manager_proxy = None
+        if elimination_manager_address and elimination_manager_authkey:
+            self._connect_to_elimination_manager(elimination_manager_address, elimination_manager_authkey)
+
         # Load positions from disk on startup
         self._load_positions_from_disk()
 
@@ -137,6 +145,38 @@ class PositionManagerServer:
             self._apply_position_splitting_on_startup()
 
         bt.logging.success("PositionManagerServer initialized with normal Python dict")
+
+    def _connect_to_elimination_manager(self, address, authkey):
+        """
+        Create RPC client connection to EliminationManagerServer.
+        This allows PositionManagerServer to fetch eliminations internally without
+        requiring the client to pass them in.
+
+        Args:
+            address: (host, port) tuple for EliminationManagerServer
+            authkey: Authentication key for RPC connection
+        """
+        try:
+            from multiprocessing.managers import BaseManager
+
+            class EliminationManagerRPC(BaseManager):
+                pass
+
+            EliminationManagerRPC.register('EliminationManagerServer')
+
+            manager = EliminationManagerRPC(address=address, authkey=authkey)
+            manager.connect()
+
+            self._elimination_manager_proxy = manager.EliminationManagerServer()
+            bt.logging.success(
+                f"PositionManagerServer connected to EliminationManagerServer at {address}"
+            )
+        except Exception as e:
+            bt.logging.warning(
+                f"Failed to connect to EliminationManagerServer at {address}: {e}. "
+                f"Elimination filtering will not be available."
+            )
+            self._elimination_manager_proxy = None
 
     @staticmethod
     def strip_old_price_sources(position: Position, time_now_ms: int) -> int:
@@ -291,18 +331,32 @@ class PositionManagerServer:
                 all_positions.extend(positions)
         return all_positions
 
-    def get_positions_for_hotkeys_rpc(self, hotkeys: List[str], only_open_positions=False) -> Dict[str, List[Position]]:
+    def get_positions_for_hotkeys_rpc(self, hotkeys: List[str], only_open_positions=False,
+                                       filter_eliminations: bool = False,
+                                       acceptable_position_end_ms: int = None) -> Dict[str, List[Position]]:
         """
         Get positions for multiple hotkeys in a single RPC call (bulk operation).
         This is much more efficient than calling get_positions_for_one_hotkey_rpc multiple times.
 
+        Server-side filtering reduces RPC payload and client processing.
+
         Args:
             hotkeys: List of hotkeys to fetch positions for
             only_open_positions: Whether to return only open positions
+            filter_eliminations: If True, fetch eliminations internally and filter them out server-side
+            acceptable_position_end_ms: Minimum timestamp for positions (filters out older positions server-side)
 
         Returns:
             Dict mapping hotkey to list of positions
         """
+        # Server-side elimination filtering (fetch eliminations internally if requested)
+        if filter_eliminations and self._elimination_manager_proxy:
+            # Fetch eliminations from EliminationManagerServer via RPC
+            eliminations_list = self._elimination_manager_proxy.get_eliminations_from_memory_rpc()
+            eliminated_hotkeys = set(x['hotkey'] for x in eliminations_list) if eliminations_list else set()
+            # Filter out eliminated hotkeys
+            hotkeys = [hk for hk in hotkeys if hk not in eliminated_hotkeys]
+
         result = {}
         for hotkey in hotkeys:
             if hotkey not in self.hotkey_to_positions:
@@ -312,10 +366,15 @@ class PositionManagerServer:
             positions_dict = self.hotkey_to_positions[hotkey]
             positions = list(positions_dict.values())  # Convert dict values to list
 
+            # Server-side filters
             if only_open_positions:
-                result[hotkey] = [p for p in positions if not p.is_closed_position]
-            else:
-                result[hotkey] = positions
+                positions = [p for p in positions if not p.is_closed_position]
+
+            # Server-side timestamp filtering
+            if acceptable_position_end_ms is not None:
+                positions = [p for p in positions if p.open_ms > acceptable_position_end_ms]
+
+            result[hotkey] = positions
 
         return result
 
@@ -724,7 +783,9 @@ class PositionManagerServer:
             bt.logging.error(f"Error writing positions for {hotkey} to disk: {e}")
 
 
-def start_position_manager_server(address, authkey, running_unit_tests=False, is_backtesting=False, split_positions_on_disk_load=False, start_compaction_daemon=False, ready_event=None):
+def start_position_manager_server(address, authkey, running_unit_tests=False, is_backtesting=False,
+                                   split_positions_on_disk_load=False, start_compaction_daemon=False, ready_event=None,
+                                   elimination_manager_address=None, elimination_manager_authkey=None):
     """
     Start the PositionManager server process.
 
@@ -736,6 +797,8 @@ def start_position_manager_server(address, authkey, running_unit_tests=False, is
         split_positions_on_disk_load: Whether to apply position splitting after loading from disk
         start_compaction_daemon: Whether to start the price source compaction daemon
         ready_event: Optional multiprocessing.Event to signal when server is ready
+        elimination_manager_address: Address tuple (host, port) for EliminationManagerServer RPC connection
+        elimination_manager_authkey: Auth key for EliminationManagerServer RPC connection
     """
     from setproctitle import setproctitle
     from threading import Thread
@@ -747,7 +810,9 @@ def start_position_manager_server(address, authkey, running_unit_tests=False, is
     server_instance = PositionManagerServer(
         running_unit_tests=running_unit_tests,
         is_backtesting=is_backtesting,
-        split_positions_on_disk_load=split_positions_on_disk_load
+        split_positions_on_disk_load=split_positions_on_disk_load,
+        elimination_manager_address=elimination_manager_address,
+        elimination_manager_authkey=elimination_manager_authkey
     )
 
     # Start compaction daemon if requested (runs in background thread on server)

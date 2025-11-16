@@ -112,6 +112,13 @@ class PositionManager(RPCServiceBase, CacheController):
         from multiprocessing import Process
         from vali_objects.utils.position_manager_server import start_position_manager_server
 
+        # Get EliminationManager address/authkey if elimination_manager exists
+        elimination_manager_address = None
+        elimination_manager_authkey = None
+        if self.elimination_manager and hasattr(self.elimination_manager, '_address') and hasattr(self.elimination_manager, '_authkey'):
+            elimination_manager_address = self.elimination_manager._address
+            elimination_manager_authkey = self.elimination_manager._authkey
+
         process = Process(
             target=start_position_manager_server,
             args=(
@@ -121,7 +128,9 @@ class PositionManager(RPCServiceBase, CacheController):
                 self.is_backtesting,
                 self.split_positions_on_disk_load,
                 self.start_compaction_daemon,
-                server_ready
+                server_ready,
+                elimination_manager_address,
+                elimination_manager_authkey
             ),
             daemon=True
         )
@@ -1273,44 +1282,40 @@ class PositionManager(RPCServiceBase, CacheController):
 
         return positions
 
-    def get_positions_for_hotkeys(self, hotkeys: List[str], eliminations: List = None, **args) -> Dict[
+    def get_positions_for_hotkeys(self, hotkeys: List[str],
+                                   filter_eliminations: bool = False, **args) -> Dict[
         str, List[Position]]:
         """
         Get positions for multiple hotkeys from the RPC server (optimized bulk call).
 
+        Server-side filtering reduces RPC payload and client processing overhead.
+
+        Args:
+            hotkeys: List of hotkeys to fetch positions for
+            filter_eliminations: If True, server will fetch and filter eliminations internally
+            **args: Additional filtering parameters (only_open_positions, sort_positions, acceptable_position_end_ms)
+
         Note: This always reads from the server's in-memory positions.
         For tests that need to verify disk persistence, use _read_positions_from_disk_for_tests().
         """
-        eliminated_hotkeys = set(x['hotkey'] for x in eliminations) if eliminations is not None else set()
-
-        # Filter out eliminated hotkeys first
-        active_hotkeys = [hk for hk in hotkeys if hk not in eliminated_hotkeys]
-
         # Extract filter/sort parameters
         only_open_positions = args.get('only_open_positions', False)
         sort_positions = args.get('sort_positions', False)
         acceptable_position_end_ms = args.get('acceptable_position_end_ms', None)
 
-        # Single bulk RPC call instead of N individual calls (50-100x faster!)
+        # Single bulk RPC call with server-side filtering (much faster!)
+        # Server handles elimination filtering, timestamp filtering, and open/closed filtering
         hotkey_to_positions = self._server_proxy.get_positions_for_hotkeys_rpc(
-            active_hotkeys,
-            only_open_positions=only_open_positions
+            hotkeys,
+            only_open_positions=only_open_positions,
+            filter_eliminations=filter_eliminations,  # Server fetches and filters internally
+            acceptable_position_end_ms=acceptable_position_end_ms  # Server-side filtering
         )
 
-        # Apply client-side filtering and sorting
-        for hotkey, positions in hotkey_to_positions.items():
-            # Filter by acceptable_position_end_ms if specified
-            if acceptable_position_end_ms is not None:
-                positions = [
-                    position for position in positions
-                    if position.open_ms > acceptable_position_end_ms
-                ]
-
-            # Sort if requested
-            if sort_positions:
-                positions = sorted(positions, key=self.sort_by_close_ms)
-
-            hotkey_to_positions[hotkey] = positions
+        # Client-side sorting only (can't be done efficiently server-side)
+        if sort_positions:
+            for hotkey, positions in hotkey_to_positions.items():
+                hotkey_to_positions[hotkey] = sorted(positions, key=self.sort_by_close_ms)
 
         return hotkey_to_positions
 

@@ -1,13 +1,10 @@
 # developer: jbonilla
 # Copyright © 2024 Taoshi Inc
-from typing import Dict, Optional, List, Tuple
+from typing import Optional, List
 from multiprocessing import Process
 from shared_objects.rpc_service_base import RPCServiceBase
 from shared_objects.cache_controller import CacheController
 from vali_objects.utils.miner_bucket_enum import MinerBucket
-
-import bittensor as bt
-
 
 class ChallengePeriodManager(RPCServiceBase, CacheController):
     """

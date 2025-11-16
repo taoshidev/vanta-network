@@ -71,7 +71,7 @@ class PlagiarismDetector(CacheController):
         if hotkey_positions is None:
             hotkey_positions = self.position_manager.get_positions_for_hotkeys(
                 hotkeys,
-                eliminations=self.position_manager.elimination_manager.get_eliminations_from_memory(),
+                filter_eliminations=True  # Automatically fetch and filter eliminations internally
             )
 
         bt.logging.info("Starting Plagiarism Detection")

@@ -129,8 +129,9 @@ class MDDChecker(CacheController):
         # Time the IPC read of positions
         ipc_start = time.perf_counter()
         hotkey_to_positions = self.position_manager.get_positions_for_hotkeys(
-            self.metagraph.get_hotkeys(), sort_positions=True,
-            eliminations=self.elimination_manager.get_eliminations_from_memory(),
+            self.metagraph.get_hotkeys(),
+            filter_eliminations=True,  # Automatically fetch and filter eliminations internally
+            sort_positions=True
         )
         ipc_ms = (time.perf_counter() - ipc_start) * 1000
 

@@ -22,9 +22,12 @@ class TestDebtBasedScoring(unittest.TestCase):
         # To get 10 TAO/block total, we need 10 * 360 = 3600 TAO per tempo
         self.mock_metagraph.emission = [360] * 10  # 10 miners, 360 TAO per tempo each = 1 TAO/block each
         # Create hotkeys list for burn address testing
-        self.mock_metagraph.hotkeys = [f"hotkey_{i}" for i in range(256)]
-        self.mock_metagraph.hotkeys[229] = "burn_address_mainnet"
-        self.mock_metagraph.hotkeys[5] = "burn_address_testnet"
+        hotkeys_list = [f"hotkey_{i}" for i in range(256)]
+        hotkeys_list[229] = "burn_address_mainnet"
+        hotkeys_list[5] = "burn_address_testnet"
+        self.mock_metagraph.hotkeys = hotkeys_list
+        self.mock_metagraph.get_hotkeys = Mock(return_value=hotkeys_list)
+        self.mock_metagraph.get_emission = Mock(return_value=[360] * 10)
 
         # Mock substrate reserves (IPC manager.Value objects)
         # Using Mock objects that have .value attribute
@@ -1787,6 +1790,7 @@ class TestDebtBasedScoring(unittest.TestCase):
         # Create metagraph with $250/TAO (half the price)
         mock_metagraph_low_price = Mock()
         mock_metagraph_low_price.emission = self.mock_metagraph.emission
+        mock_metagraph_low_price.get_emission = Mock(return_value=self.mock_metagraph.emission)
         mock_metagraph_low_price.tao_reserve_rao = self.mock_metagraph.tao_reserve_rao
         mock_metagraph_low_price.alpha_reserve_rao = self.mock_metagraph.alpha_reserve_rao
         mock_metagraph_low_price.tao_to_usd_rate = 250.0  # Half the price
@@ -1806,6 +1810,7 @@ class TestDebtBasedScoring(unittest.TestCase):
         """Test that dust calculation works with direct float values (no .value accessor)"""
         mock_metagraph = Mock()
         mock_metagraph.emission = [360] * 10
+        mock_metagraph.get_emission = Mock(return_value=[360] * 10)
 
         # Use direct float values instead of Mock with .value
         mock_metagraph.tao_reserve_rao = 1_000_000 * 1e9  # Direct float

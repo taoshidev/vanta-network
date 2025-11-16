@@ -34,11 +34,11 @@ class MarketOrderManager():
     def _get_or_create_open_position_from_new_order(self, trade_pair: TradePair, order_type: OrderType, order_time_ms: int,
                                         miner_hotkey: str, miner_order_uuid: str, now_ms:int, price_sources, miner_repo_version, account_size):
 
-        # gather open positions and see which trade pairs have an open position
-        positions = self.position_manager.get_positions_for_one_hotkey(miner_hotkey, only_open_positions=True)
-        trade_pair_to_open_position = {position.trade_pair: position for position in positions}
-
-        existing_open_pos = trade_pair_to_open_position.get(trade_pair)
+        # Check if there's an existing open position for this specific trade pair (server-side filtered)
+        existing_open_pos = self.position_manager.get_open_position_for_a_miner_trade_pair(
+            miner_hotkey,
+            trade_pair.trade_pair_id
+        )
         if existing_open_pos:
             # If the position has too many orders, we need to close it out to make room.
             if len(existing_open_pos.orders) >= ValiConfig.MAX_ORDERS_PER_POSITION and order_type != OrderType.FLAT:
@@ -57,13 +57,13 @@ class MarketOrderManager():
             else:
                 # If the position is closed, raise an exception. This can happen if the miner is eliminated in the main
                 # loop thread.
-                if trade_pair_to_open_position[trade_pair].is_closed_position:
+                if existing_open_pos.is_closed_position:
                     raise SignalException(
                         f"miner [{miner_hotkey}] sent signal for "
                         f"closed position [{trade_pair}]")
                 bt.logging.debug("adding to existing position")
                 # Return existing open position (nominal path)
-                return trade_pair_to_open_position[trade_pair]
+                return existing_open_pos
 
 
         # if the order is FLAT ignore (noop)
