@@ -512,21 +512,10 @@ class Validator(ValidatorBase):
                 return None
         self.run_init_step_with_monitoring(13, "Starting API services (if enabled)", step13)
 
-        # Step 14: Start LivePriceFetcher health checker process
-        def step14():
-            self.health_checker = LivePriceFetcherClient.HealthChecker(
-                live_price_fetcher_client=self.live_price_fetcher,
-                slack_notifier=self.slack_notifier
-            )
-            self.health_checker_process = Process(target=self.health_checker.run_update_loop, daemon=True)
-            self.health_checker_process.start()
-            # Verify process started
-            time.sleep(0.1)
-            if not self.health_checker_process.is_alive():
-                raise RuntimeError("Health checker process failed to start")
-            bt.logging.info(f"Health checker process started with PID: {self.health_checker_process.pid}")
-            return self.health_checker_process
-        self.run_init_step_with_monitoring(14, "Starting LivePriceFetcher health checker process", step14)
+        # Step 14: LivePriceFetcher RPC health checker
+        # Health checking is automatically started in LivePriceFetcherClient.__init__ via RPCServiceBase
+        # with enable_health_check=True, health_check_interval_s=60, enable_auto_restart=True
+        bt.logging.info("Step 14: LivePriceFetcher RPC health checker already started")
 
         # Step 15: Start price slippage feature refresher process
         def step15():
@@ -612,8 +601,7 @@ class Validator(ValidatorBase):
         bt.logging.warning("Stopping MDD checker...")
         self.mdd_checker_process.join()
         # EliminationManager and ChallengePeriodManager RPC servers shutdown automatically via shutdown_dict
-        bt.logging.warning("Stopping health checker...")
-        self.health_checker_process.join()
+        # LivePriceFetcher RPC health checker shuts down automatically via RPCServiceBase
         bt.logging.warning("Stopping slippage refresher...")
         self.slippage_refresher_process.join()
         if self.rog_thread:
