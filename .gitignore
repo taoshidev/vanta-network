@@ -5,6 +5,11 @@
 !vali_objects/utils/model_parameters/all_model_parameters.json
 !vali_objects/utils/model_parameters/slippage_estimates.json
 
+# Markdown files (ignore temporary ones at root, keep important docs)
+*.md
+!README.md
+!CLAUDE.md
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
