@@ -95,7 +95,7 @@ class TestReregistration(TestBase):
             running_unit_tests=True
         )
 
-        # Set circular references
+        # Set circular references (auto-synced to server via property setters)
         self.elimination_manager.position_manager = self.position_manager
         self.elimination_manager.challengeperiod_manager = self.challengeperiod_manager
 
@@ -169,7 +169,7 @@ class TestReregistration(TestBase):
         self._setup_polygon_mocks(mock_candle_fetcher, mock_get_candles, mock_market_close)
 
         # Initial state - no departed hotkeys
-        self.assertEqual(len(self.elimination_manager.departed_hotkeys), 0)
+        self.assertEqual(len(self.elimination_manager.get_departed_hotkeys()), 0)
 
         # Remove a miner from metagraph (simulate de-registration)
         self.mock_metagraph.remove_hotkey(self.DEREGISTERED_MINER)
@@ -178,8 +178,8 @@ class TestReregistration(TestBase):
         self.elimination_manager.process_eliminations(self.position_locks)
 
         # Verify the departed hotkey was tracked
-        self.assertIn(self.DEREGISTERED_MINER, self.elimination_manager.departed_hotkeys)
-        self.assertEqual(len(self.elimination_manager.departed_hotkeys), 1)
+        self.assertIn(self.DEREGISTERED_MINER, self.elimination_manager.get_departed_hotkeys())
+        self.assertEqual(len(self.elimination_manager.get_departed_hotkeys()), 1)
 
         # Verify it was persisted to disk
         departed_file = ValiBkpUtils.get_departed_hotkeys_dir(running_unit_tests=True)
@@ -204,9 +204,9 @@ class TestReregistration(TestBase):
         self.elimination_manager.process_eliminations(self.position_locks)
 
         # Verify both were tracked
-        self.assertIn(self.DEREGISTERED_MINER, self.elimination_manager.departed_hotkeys)
-        self.assertIn(self.FUTURE_REREG_MINER, self.elimination_manager.departed_hotkeys)
-        self.assertEqual(len(self.elimination_manager.departed_hotkeys), 2)
+        self.assertIn(self.DEREGISTERED_MINER, self.elimination_manager.get_departed_hotkeys())
+        self.assertIn(self.FUTURE_REREG_MINER, self.elimination_manager.get_departed_hotkeys())
+        self.assertEqual(len(self.elimination_manager.get_departed_hotkeys()), 2)
 
     @patch('data_generator.polygon_data_service.PolygonDataService.get_event_before_market_close')
     @patch('data_generator.polygon_data_service.PolygonDataService.get_candles_for_trade_pair')
@@ -240,7 +240,7 @@ class TestReregistration(TestBase):
         self.elimination_manager.process_eliminations(self.position_locks)
 
         # Verify departed hotkeys were NOT tracked (anomaly detected)
-        self.assertEqual(len(self.elimination_manager.departed_hotkeys), 0)
+        self.assertEqual(len(self.elimination_manager.get_departed_hotkeys()), 0)
 
     @patch('data_generator.polygon_data_service.PolygonDataService.get_event_before_market_close')
     @patch('data_generator.polygon_data_service.PolygonDataService.get_candles_for_trade_pair')
@@ -274,9 +274,9 @@ class TestReregistration(TestBase):
         self.elimination_manager.process_eliminations(self.position_locks)
 
         # Verify departed hotkeys WERE tracked (not anomalous)
-        self.assertEqual(len(self.elimination_manager.departed_hotkeys), 5)
+        self.assertEqual(len(self.elimination_manager.get_departed_hotkeys()), 5)
         for miner in miners_to_remove:
-            self.assertIn(miner, self.elimination_manager.departed_hotkeys)
+            self.assertIn(miner, self.elimination_manager.get_departed_hotkeys())
 
     @patch('data_generator.polygon_data_service.PolygonDataService.get_event_before_market_close')
     @patch('data_generator.polygon_data_service.PolygonDataService.get_candles_for_trade_pair')
@@ -289,7 +289,7 @@ class TestReregistration(TestBase):
 
         # Process to track departure
         self.elimination_manager.process_eliminations(self.position_locks)
-        self.assertIn(self.REREGISTERED_MINER, self.elimination_manager.departed_hotkeys)
+        self.assertIn(self.REREGISTERED_MINER, self.elimination_manager.get_departed_hotkeys())
 
         # Re-add miner to metagraph (simulate re-registration)
         self.mock_metagraph.add_hotkey(self.REREGISTERED_MINER)
@@ -301,7 +301,7 @@ class TestReregistration(TestBase):
         self.assertTrue(self.elimination_manager.is_hotkey_re_registered(self.REREGISTERED_MINER))
 
         # Verify the hotkey is still in departed list (permanent record)
-        self.assertIn(self.REREGISTERED_MINER, self.elimination_manager.departed_hotkeys)
+        self.assertIn(self.REREGISTERED_MINER, self.elimination_manager.get_departed_hotkeys())
 
     @patch('data_generator.polygon_data_service.PolygonDataService.get_event_before_market_close')
     @patch('data_generator.polygon_data_service.PolygonDataService.get_candles_for_trade_pair')
@@ -340,7 +340,7 @@ class TestReregistration(TestBase):
         self.elimination_manager.process_eliminations(self.position_locks)
 
         # Verify they were tracked
-        self.assertEqual(len(self.elimination_manager.departed_hotkeys), 2)
+        self.assertEqual(len(self.elimination_manager.get_departed_hotkeys()), 2)
 
         # Create new elimination manager (simulate restart)
         new_elimination_manager = EliminationManager(
@@ -352,9 +352,9 @@ class TestReregistration(TestBase):
         )
 
         # Verify departed hotkeys were loaded from disk
-        self.assertEqual(len(new_elimination_manager.departed_hotkeys), 2)
-        self.assertIn(self.DEREGISTERED_MINER, new_elimination_manager.departed_hotkeys)
-        self.assertIn(self.FUTURE_REREG_MINER, new_elimination_manager.departed_hotkeys)
+        self.assertEqual(len(new_elimination_manager.get_departed_hotkeys()), 2)
+        self.assertIn(self.DEREGISTERED_MINER, new_elimination_manager.get_departed_hotkeys())
+        self.assertIn(self.FUTURE_REREG_MINER, new_elimination_manager.get_departed_hotkeys())
 
     @patch('data_generator.polygon_data_service.PolygonDataService.get_event_before_market_close')
     @patch('data_generator.polygon_data_service.PolygonDataService.get_candles_for_trade_pair')
@@ -458,7 +458,7 @@ class TestReregistration(TestBase):
         self.elimination_manager.process_eliminations(self.position_locks)
 
         # Verify both tracked as departed
-        self.assertEqual(len(self.elimination_manager.departed_hotkeys), 2)
+        self.assertEqual(len(self.elimination_manager.get_departed_hotkeys()), 2)
 
         # Re-register both
         for miner in miners_to_rereg:
@@ -507,8 +507,8 @@ class TestReregistration(TestBase):
         self.elimination_manager.process_eliminations(self.position_locks)
 
         # Should only appear once (dict keys are unique by definition)
-        self.assertIn(self.DEREGISTERED_MINER, self.elimination_manager.departed_hotkeys)
-        self.assertEqual(len(self.elimination_manager.departed_hotkeys), 1)
+        self.assertIn(self.DEREGISTERED_MINER, self.elimination_manager.get_departed_hotkeys())
+        self.assertEqual(len(self.elimination_manager.get_departed_hotkeys()), 1)
 
     @patch('data_generator.polygon_data_service.PolygonDataService.get_event_before_market_close')
     @patch('data_generator.polygon_data_service.PolygonDataService.get_candles_for_trade_pair')
@@ -540,7 +540,7 @@ class TestReregistration(TestBase):
 
         # At boundary (exactly 10 miners AND 25%), should NOT trigger anomaly (needs > 10)
         # So departed hotkeys should be tracked
-        self.assertEqual(len(self.elimination_manager.departed_hotkeys), 10)
+        self.assertEqual(len(self.elimination_manager.get_departed_hotkeys()), 10)
 
     @patch('data_generator.polygon_data_service.PolygonDataService.get_event_before_market_close')
     @patch('data_generator.polygon_data_service.PolygonDataService.get_candles_for_trade_pair')
@@ -571,4 +571,4 @@ class TestReregistration(TestBase):
         self.elimination_manager.process_eliminations(self.position_locks)
 
         # Just below threshold, should track
-        self.assertEqual(len(self.elimination_manager.departed_hotkeys), 10)
+        self.assertEqual(len(self.elimination_manager.get_departed_hotkeys()), 10)

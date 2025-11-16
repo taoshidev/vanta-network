@@ -275,12 +275,12 @@ class TestEliminationIntegration(TestBase):
         self.assertEqual(zombie_elim['reason'], EliminationReason.ZOMBIE.value)
         
         # Step 4: Challenge period failure
-        self.challengeperiod_manager.eliminations_with_reasons = {
+        self.challengeperiod_manager.update_elimination_reasons({
             self.CHALLENGE_FAIL_MINER: (
                 EliminationReason.FAILED_CHALLENGE_PERIOD_DRAWDOWN.value,
                 0.08
             )
-        }
+        })
         
         # Process eliminations
         self.elimination_manager.process_eliminations(self.position_locks)
@@ -385,12 +385,12 @@ class TestEliminationIntegration(TestBase):
 
         
         # 3. Challenge period failure
-        self.challengeperiod_manager.eliminations_with_reasons = {
+        self.challengeperiod_manager.update_elimination_reasons({
             self.CHALLENGE_FAIL_MINER: (
                 EliminationReason.FAILED_CHALLENGE_PERIOD_TIME.value,
                 None
             )
-        }
+        })
         
         # 4. Perf ledger liquidation
         self.perf_ledger_manager.pl_elimination_rows.append({

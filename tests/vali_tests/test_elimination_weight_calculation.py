@@ -123,7 +123,7 @@ class TestEliminationWeightCalculation(TestBase):
             running_unit_tests=True
         )
         
-        # Set circular references
+        # Set circular references (auto-synced to server via property setters)
         self.elimination_manager.position_manager = self.position_manager
         self.elimination_manager.challengeperiod_manager = self.challengeperiod_manager
         self.perf_ledger_manager.position_manager = self.position_manager
@@ -190,28 +190,26 @@ class TestEliminationWeightCalculation(TestBase):
         """Set up challenge period status"""
         # Main competition miners - use start of ledger window as bucket start time
         bucket_start_ms = self.TEST_TIME_MS - ValiConfig.TARGET_LEDGER_WINDOW_MS
-        self.challengeperiod_manager.active_miners[self.HEALTHY_MINER_1] = (MinerBucket.MAINCOMP, bucket_start_ms, None, None)
-        self.challengeperiod_manager.active_miners[self.HEALTHY_MINER_2] = (MinerBucket.MAINCOMP, bucket_start_ms, None, None)
-        self.challengeperiod_manager.active_miners[self.ELIMINATED_MINER] = (MinerBucket.MAINCOMP, bucket_start_ms, None, None)
+        self.challengeperiod_manager.set_miner_bucket(self.HEALTHY_MINER_1, MinerBucket.MAINCOMP, bucket_start_ms)
+        self.challengeperiod_manager.set_miner_bucket(self.HEALTHY_MINER_2, MinerBucket.MAINCOMP, bucket_start_ms)
+        self.challengeperiod_manager.set_miner_bucket(self.ELIMINATED_MINER, MinerBucket.MAINCOMP, bucket_start_ms)
 
         # Challenge period miner
-        self.challengeperiod_manager.active_miners[self.CHALLENGE_MINER] = (
+        self.challengeperiod_manager.set_miner_bucket(
+            self.CHALLENGE_MINER,
             MinerBucket.CHALLENGE,
-            self.TEST_TIME_MS - MS_IN_24_HOURS,
-            None,
-            None
+            self.TEST_TIME_MS - MS_IN_24_HOURS
         )
 
         # Probation miner
-        self.challengeperiod_manager.active_miners[self.PROBATION_MINER] = (
+        self.challengeperiod_manager.set_miner_bucket(
+            self.PROBATION_MINER,
             MinerBucket.PROBATION,
-            self.TEST_TIME_MS - MS_IN_24_HOURS * 3,
-            None,
-            None
+            self.TEST_TIME_MS - MS_IN_24_HOURS * 3
         )
 
         # Zombie miner (will be removed from metagraph)
-        self.challengeperiod_manager.active_miners[self.ZOMBIE_MINER] = (MinerBucket.MAINCOMP, bucket_start_ms, None, None)
+        self.challengeperiod_manager.set_miner_bucket(self.ZOMBIE_MINER, MinerBucket.MAINCOMP, bucket_start_ms)
 
     def _setup_perf_ledgers(self):
         """Set up performance ledgers"""
@@ -459,7 +457,7 @@ class TestEliminationWeightCalculation(TestBase):
         # Test with no eliminations
         self.elimination_manager.clear_eliminations()
         # Re-add the eliminated miner to active_miners since we cleared eliminations
-        self.challengeperiod_manager.active_miners[self.ELIMINATED_MINER] = (MinerBucket.MAINCOMP, 0, None, None)
+        self.challengeperiod_manager.set_miner_bucket(self.ELIMINATED_MINER, MinerBucket.MAINCOMP, 0)
         current_time = TimeUtil.now_in_millis()
         _, transformed_list = self.weight_setter.compute_weights_default(current_time)
 

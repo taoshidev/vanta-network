@@ -622,6 +622,27 @@ class PerfLedgerManager(CacheController):
         self.pl_elimination_rows.clear()
         self.clear_perf_ledger_eliminations_from_disk()
 
+    def __getstate__(self):
+        """
+        Custom pickle method to exclude unpicklable attributes.
+
+        When using multiprocessing, the PerfLedgerManager needs to be pickled,
+        but position_manager contains RPC clients with threading locks that cannot be pickled.
+        These managers are not needed during parallel processing (positions are passed directly),
+        so we exclude them from pickling.
+        """
+        state = self.__dict__.copy()
+        # Remove unpicklable attributes that aren't needed during parallel processing
+        state['position_manager'] = None
+        state['contract_manager'] = None
+        state['live_price_fetcher'] = None
+        state['pds'] = None
+        return state
+
+    def __setstate__(self, state):
+        """Restore state from pickle, with excluded attributes set to None."""
+        self.__dict__.update(state)
+
     @staticmethod
     def print_bundles(ans: dict[str, dict[str, PerfLedger]]):
         for hk, bundle in ans.items():

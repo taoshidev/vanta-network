@@ -53,13 +53,14 @@ class TestPlagiarism(TestBase):
             running_unit_tests=True
         )
 
-        # Initialize active miners
-        self.challenge_manager.active_miners = {
+        # Initialize active miners using update_miners API
+        self.challenge_manager.clear_all_miners()
+        self.challenge_manager.update_miners({
             self.MINER_HOTKEY1: (MinerBucket.MAINCOMP, self.current_time, None, None),
             self.MINER_HOTKEY2: (MinerBucket.PROBATION, self.current_time, None, None),
             self.MINER_HOTKEY3: (MinerBucket.CHALLENGE, self.current_time, None, None),
             self.PLAGIARISM_HOTKEY: (MinerBucket.PLAGIARISM, self.current_time, MinerBucket.PROBATION, self.current_time - ValiConfig.PLAGIARISM_REVIEW_PERIOD_MS)
-        }
+        })
 
     def test_update_plagiarism_miners_new_plagiarists(self):
         """Test demotion of miners to plagiarism bucket when new plagiarists are detected"""
@@ -165,8 +166,8 @@ class TestPlagiarism(TestBase):
         self.assertEqual(self.challenge_manager.get_miner_bucket(self.MINER_HOTKEY2), MinerBucket.PLAGIARISM)
 
         # Verify timestamps were updated
-        _, timestamp1, _, _ = self.challenge_manager.active_miners[self.MINER_HOTKEY1]
-        _, timestamp2, _, _ = self.challenge_manager.active_miners[self.MINER_HOTKEY2]
+        timestamp1 = self.challenge_manager.get_miner_start_time(self.MINER_HOTKEY1)
+        timestamp2 = self.challenge_manager.get_miner_start_time(self.MINER_HOTKEY2)
         self.assertEqual(timestamp1, self.current_time)
         self.assertEqual(timestamp2, self.current_time)
 
@@ -184,7 +185,7 @@ class TestPlagiarism(TestBase):
         self.assertEqual(self.challenge_manager.get_miner_bucket(self.PLAGIARISM_HOTKEY), MinerBucket.PROBATION)
 
         # Verify timestamp was updated
-        _, timestamp, _, _ = self.challenge_manager.active_miners[self.PLAGIARISM_HOTKEY]
+        timestamp = self.challenge_manager.get_miner_start_time(self.PLAGIARISM_HOTKEY)
         self.assertEqual(timestamp, self.current_time - ValiConfig.PLAGIARISM_REVIEW_PERIOD_MS)
 
     def test_update_plagiarism_miners_whitelisted_promotion_non_existant(self):
@@ -319,7 +320,7 @@ class TestPlagiarism(TestBase):
         self.challenge_manager._eliminate_challengeperiod_in_memory(elimination_result)
 
         # Verify miner was eliminated
-        self.assertNotIn(self.MINER_HOTKEY3, self.challenge_manager.active_miners)
+        self.assertFalse(self.challenge_manager.has_miner(self.MINER_HOTKEY3))
 
 
 if __name__ == '__main__':

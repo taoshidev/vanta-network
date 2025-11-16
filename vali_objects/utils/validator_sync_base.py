@@ -118,15 +118,15 @@ class ValidatorSyncBase():
         eliminations = candidate_data['eliminations']
         if not self.is_mothership:
             # Get current eliminations before sync
-            old_eliminated_hotkeys = set(x['hotkey'] for x in self.position_manager.elimination_manager.eliminations)
-            
+            old_eliminated_hotkeys = set(x['hotkey'] for x in self.position_manager.elimination_manager.get_eliminations_from_memory())
+
             # Sync eliminations and get removed hotkeys
             removed = self.position_manager.elimination_manager.sync_eliminations(eliminations)
-            
+
             # Get new eliminations after sync
             new_eliminated_hotkeys = set(x['hotkey'] for x in eliminations)
             newly_eliminated = new_eliminated_hotkeys - old_eliminated_hotkeys
-            
+
             # Invalidate perf ledgers for both removed and newly eliminated miners
             for hk in removed:
                 self.perf_ledger_hks_to_invalidate[hk] = 0

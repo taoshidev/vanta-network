@@ -849,8 +849,14 @@ class TestLimitOrders(TestBase):
             order.to_python_dict()
         )
 
-        # Eliminate miner - add to eliminations dict
-        self.elimination_manager.eliminations[self.DEFAULT_MINER_HOTKEY] = TimeUtil.now_in_millis()
+        # Eliminate miner - use proper API method
+        from vali_objects.utils.elimination_manager import EliminationReason
+        self.elimination_manager.add_elimination(self.DEFAULT_MINER_HOTKEY, {
+            'hotkey': self.DEFAULT_MINER_HOTKEY,
+            'reason': EliminationReason.MAX_TOTAL_DRAWDOWN.value,
+            'dd': 0.15,
+            'elimination_initiated_time_ms': TimeUtil.now_in_millis()
+        })
 
         # Create new manager instance (simulates restart)
         new_manager = LimitOrderManager(

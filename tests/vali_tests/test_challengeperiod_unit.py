@@ -155,14 +155,13 @@ class TestChallengePeriodUnit(TestBase):
         return combined_scores_dict
 
     def _populate_active_miners(self, *, maincomp=[], challenge=[], probation=[]):
-        miners = {}
+        # Use RPC methods to properly set miners on the server
         for hotkey in maincomp:
-            miners[hotkey] = (MinerBucket.MAINCOMP, self.START_TIME, None, None)
+            self.challengeperiod_manager.set_miner_bucket(hotkey, MinerBucket.MAINCOMP, self.START_TIME)
         for hotkey in challenge:
-            miners[hotkey] = (MinerBucket.CHALLENGE, self.START_TIME, None, None)
+            self.challengeperiod_manager.set_miner_bucket(hotkey, MinerBucket.CHALLENGE, self.START_TIME)
         for hotkey in probation:
-            miners[hotkey] = (MinerBucket.PROBATION, self.START_TIME, None, None)
-        self.challengeperiod_manager.active_miners = miners
+            self.challengeperiod_manager.set_miner_bucket(hotkey, MinerBucket.PROBATION, self.START_TIME)
 
     def test_screen_drawdown(self):
         """Test that a high drawdown miner is screened"""

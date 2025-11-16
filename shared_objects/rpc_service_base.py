@@ -401,6 +401,35 @@ class RPCServiceBase(ABC):
         except Exception as e:
             bt.logging.warning(f"{self.service_name} error during port cleanup: {e}")
 
+    def _is_process_alive_safe(self, process: Optional[Process]) -> bool:
+        """
+        Safely check if a process is alive, handling fork scenarios.
+
+        Multiprocessing.Process.is_alive() checks that _parent_pid == os.getpid(),
+        which fails if the current process forked (e.g., PM2 daemonization).
+
+        Args:
+            process: Process object to check (or None)
+
+        Returns:
+            bool: True if process is alive, False otherwise (or if not checkable)
+        """
+        if not process:
+            return False
+
+        try:
+            return process.is_alive()
+        except AssertionError as e:
+            # AssertionError: can only test a child process
+            # This happens when we're in a forked child trying to check a parent's process
+            if "can only test a child process" in str(e):
+                bt.logging.debug(
+                    f"{self.service_name} process check failed (forked child context), "
+                    f"assuming process is not manageable from this context"
+                )
+                return False
+            raise
+
     def health_check(self, current_time_ms: Optional[int] = None) -> bool:
         """
         Perform health check on the RPC server.
@@ -425,6 +454,39 @@ class RPCServiceBase(ABC):
         # Health checks only enabled in RPC mode
         if not self._health_check_enabled_for_instance:
             return True
+
+        # If server_proxy is None, server is dead/unreachable
+        # This should NEVER happen with proper deployment - it indicates either:
+        # 1. Server process crashed (auto-restart will handle)
+        # 2. Process was forked after RPC initialization (MISCONFIGURATION)
+        if not self._server_proxy:
+            bt.logging.error(
+                f"❌ {self.service_name} health check failed: _server_proxy is None\n"
+                f"This indicates a serious issue:\n"
+                f"  • Server process may have crashed, OR\n"
+                f"  • Process was forked after RPC initialization (DEPLOYMENT ERROR)\n"
+                f"\n"
+                f"If using PM2: Ensure validator is started WITHOUT fork mode.\n"
+                f"RPC services must be initialized BEFORE any process forking."
+            )
+
+            self._consecutive_failures += 1
+
+            if self._consecutive_failures >= self.max_consecutive_failures:
+                if self.slack_notifier:
+                    self.slack_notifier.send_message(
+                        f"🔴 {self.service_name} _server_proxy is None after {self._consecutive_failures} checks\n"
+                        f"This may indicate:\n"
+                        f"1. Server crash (auto-restart will attempt recovery)\n"
+                        f"2. Process fork AFTER RPC init (check deployment config)\n"
+                        f"\n"
+                        f"Auto-restart: {'Enabled' if self.enable_auto_restart else 'Disabled'}",
+                        level="error"
+                    )
+
+                self._trigger_restart("_server_proxy is None")
+
+            return False
 
         # Get current time
         if current_time_ms is None:
@@ -586,7 +648,8 @@ class RPCServiceBase(ABC):
                 self._client_manager = None
                 self._server_proxy = None
 
-        if self._server_process and self._server_process.is_alive():
+        # Use safe process check (handles fork scenarios)
+        if self._is_process_alive_safe(self._server_process):
             bt.logging.debug(
                 f"{self.service_name} terminating RPC server process "
                 f"(PID: {self._server_process.pid})"
@@ -594,7 +657,8 @@ class RPCServiceBase(ABC):
             self._server_process.terminate()
             self._server_process.join(timeout=2)
 
-            if self._server_process.is_alive():
+            # Check again after terminate
+            if self._is_process_alive_safe(self._server_process):
                 bt.logging.warning(
                     f"{self.service_name} force killing RPC server process "
                     f"(PID: {self._server_process.pid})"
@@ -615,5 +679,25 @@ class RPCServiceBase(ABC):
             bt.logging.success(f"{self.service_name} RPC server shutdown complete")
 
     def __del__(self):
-        """Cleanup: terminate the RPC server process when service is destroyed."""
-        self.shutdown()
+        """
+        Cleanup: terminate the RPC server process when service is destroyed.
+
+        IMPORTANT: Only cleanup if we're in the same process that created the server.
+        If the process was forked after initialization, __del__ in the child should
+        NOT attempt cleanup (that would break the parent's server).
+        """
+        # Safety check: Only cleanup if running_unit_tests or if we actually own the server
+        # In forked child processes, we don't want to cleanup parent's resources
+        if self.running_unit_tests:
+            # Unit test mode - safe to cleanup
+            self.shutdown()
+        elif self._server_process:
+            try:
+                # Check if we can access the server process (will fail if forked)
+                _ = self._server_process.is_alive()
+                # If we get here, we own the process - safe to cleanup
+                self.shutdown()
+            except (AssertionError, AttributeError):
+                # Forked child context or invalid process - DO NOT cleanup
+                # This prevents breaking the parent's RPC servers
+                pass

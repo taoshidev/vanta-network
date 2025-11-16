@@ -154,18 +154,25 @@ class TestEliminationCore(TestBase):
 
     def _setup_challenge_period_status(self):
         """Set up challenge period status for miners"""
+        # Build miners dict
+        miners = {}
+
         # Most miners in main competition
-        for miner in [self.MDD_MINER, self.REGULAR_MINER, self.ZOMBIE_MINER, 
+        for miner in [self.MDD_MINER, self.REGULAR_MINER, self.ZOMBIE_MINER,
                       self.PLAGIARIST_MINER, self.LIQUIDATED_MINER]:
-            self.challengeperiod_manager.active_miners[miner] = (MinerBucket.MAINCOMP, 0, None, None)
-        
+            miners[miner] = (MinerBucket.MAINCOMP, 0, None, None)
+
         # Challenge fail miner in challenge period
-        self.challengeperiod_manager.active_miners[self.CHALLENGE_FAIL_MINER] = (
+        miners[self.CHALLENGE_FAIL_MINER] = (
             MinerBucket.CHALLENGE,
             TimeUtil.now_in_millis() - (ValiConfig.CHALLENGE_PERIOD_MINIMUM_DAYS * 24 * 60 * 60 * 1000) - MS_IN_8_HOURS,
             None,
             None
         )
+
+        # Update using RPC API
+        self.challengeperiod_manager.clear_all_miners()
+        self.challengeperiod_manager.update_miners(miners)
 
     def _setup_perf_ledgers(self):
         """Set up performance ledgers for testing"""
@@ -305,12 +312,12 @@ class TestEliminationCore(TestBase):
         mock_market_close.return_value = PriceSource(open=50000, high=50000, low=50000, close=50000, volume=0, vwap=50000, timestamp=0)
         
         # Set up challenge period failure
-        self.challengeperiod_manager.eliminations_with_reasons = {
+        self.challengeperiod_manager.update_elimination_reasons({
             self.CHALLENGE_FAIL_MINER: (
                 EliminationReason.FAILED_CHALLENGE_PERIOD_DRAWDOWN.value,
                 0.08
             )
-        }
+        })
         
         # Process eliminations
         self.elimination_manager.process_eliminations(self.position_locks)
@@ -372,27 +379,31 @@ class TestEliminationCore(TestBase):
 
     def test_elimination_persistence(self):
         """Test that eliminations are persisted to disk correctly"""
-        # Create eliminations
-        test_elimination = {
-            'hotkey': self.MDD_MINER,
-            'reason': EliminationReason.MAX_TOTAL_DRAWDOWN.value,
-            'dd': 0.12,
-            'elimination_initiated_time_ms': TimeUtil.now_in_millis()
-        }
+        # Add elimination using append_elimination_row which saves to disk
+        test_dd = 0.12
+        test_reason = EliminationReason.MAX_TOTAL_DRAWDOWN.value
+        test_time = TimeUtil.now_in_millis()
 
-        self.elimination_manager.add_elimination(self.MDD_MINER, test_elimination)
+        self.elimination_manager.append_elimination_row(
+            self.MDD_MINER,
+            test_dd,
+            test_reason,
+            t_ms=test_time
+        )
 
-        # Force write to disk
-        self.elimination_manager.write_eliminations_to_disk(list(self.elimination_manager.eliminations.values()))
+        # Verify it's in memory
+        eliminations_in_memory = self.elimination_manager.get_eliminations_from_memory()
+        self.assertEqual(len(eliminations_in_memory), 1)
+        self.assertEqual(eliminations_in_memory[0]['hotkey'], self.MDD_MINER)
 
-        # Clear memory and reload
-        self.elimination_manager.eliminations.clear()
+        # Load from disk to verify persistence
         loaded_eliminations = self.elimination_manager.get_eliminations_from_disk()
-        
+
         # Verify persistence
         self.assertEqual(len(loaded_eliminations), 1)
         self.assertEqual(loaded_eliminations[0]['hotkey'], self.MDD_MINER)
-        self.assertEqual(loaded_eliminations[0]['reason'], EliminationReason.MAX_TOTAL_DRAWDOWN.value)
+        self.assertEqual(loaded_eliminations[0]['reason'], test_reason)
+        self.assertEqual(loaded_eliminations[0]['dd'], test_dd)
 
     def test_elimination_row_generation(self):
         """Test elimination row data structure generation"""
@@ -501,7 +512,8 @@ class TestEliminationCore(TestBase):
         ipc_elimination_manager.add_elimination(self.MDD_MINER, test_elim)
 
         # Verify it works with IPC manager
-        self.assertEqual(len(ipc_elimination_manager.eliminations), 1)
+        eliminations = ipc_elimination_manager.get_eliminations_from_memory()
+        self.assertEqual(len(eliminations), 1)
 
     @patch('data_generator.polygon_data_service.PolygonDataService.get_event_before_market_close')
     @patch('data_generator.polygon_data_service.PolygonDataService.get_candles_for_trade_pair')

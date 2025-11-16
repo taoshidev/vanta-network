@@ -97,7 +97,7 @@ class TestProbationComprehensive(TestBase):
                                                    contract_manager=self.contract_manager,
                                                    running_unit_tests=True)
 
-        # Cross-reference managers
+        # Cross-reference managers (auto-synced to server via property setters)
         self.position_manager.perf_ledger_manager = self.ledger_manager
         self.elimination_manager.position_manager = self.position_manager
         self.elimination_manager.challengeperiod_manager = self.challengeperiod_manager
@@ -153,14 +153,14 @@ class TestProbationComprehensive(TestBase):
             miners[hotkey] = (MinerBucket.PROBATION, self.PROBATION_START_TIME, None, None)
         for hotkey in self.ELIMINATED_MINER_NAMES:
             miners[hotkey] = (MinerBucket.CHALLENGE, self.START_TIME, None, None)
-        self.challengeperiod_manager.active_miners = miners
+        self.challengeperiod_manager.update_miners(miners)
 
     def tearDown(self):
         super().tearDown()
         self.position_manager.clear_all_miner_positions()
         self.ledger_manager.clear_perf_ledgers_from_disk()
         self.challengeperiod_manager._clear_challengeperiod_in_memory_and_disk()
-        self.challengeperiod_manager.elimination_manager.clear_eliminations()
+        self.elimination_manager.clear_eliminations()
 
     def test_probation_timeout_elimination(self):
         """
@@ -176,20 +176,18 @@ class TestProbationComprehensive(TestBase):
         """
         # Setup probation miner with expired timestamp
         expired_miner = "probation_miner1"
-        self.challengeperiod_manager.active_miners[expired_miner] = (
+        self.challengeperiod_manager.set_miner_bucket(
+            expired_miner,
             MinerBucket.PROBATION,
-            self.PROBATION_START_TIME,
-            None,
-            None
+            self.PROBATION_START_TIME
         )
 
         # Setup probation miner still within time limit
         valid_miner = "probation_miner2"
-        self.challengeperiod_manager.active_miners[valid_miner] = (
+        self.challengeperiod_manager.set_miner_bucket(
+            valid_miner,
             MinerBucket.PROBATION,
-            self.PROBATION_EXPIRED - 10000,
-            None,
-            None
+            self.PROBATION_EXPIRED - 10000
         )
 
         # Refresh challenge period at current time
@@ -197,7 +195,7 @@ class TestProbationComprehensive(TestBase):
         self.elimination_manager.process_eliminations(PositionLocks())
 
         # Check eliminations
-        eliminated_hotkeys = self.challengeperiod_manager.elimination_manager.get_eliminated_hotkeys()
+        eliminated_hotkeys = self.elimination_manager.get_eliminated_hotkeys()
 
         # Expired probation miner should be eliminated
         self.assertIn(expired_miner, eliminated_hotkeys,
@@ -227,12 +225,12 @@ class TestProbationComprehensive(TestBase):
         probation_miner = "probation_test_miner"
 
         # Clear and setup new miner configuration
-        self.challengeperiod_manager.active_miners.clear()
+        self.challengeperiod_manager.clear_all_miners()
         for miner in exactly_25_miners:
-            self.challengeperiod_manager.active_miners[miner] = (MinerBucket.MAINCOMP, self.START_TIME, None, None)
+            self.challengeperiod_manager.set_miner_bucket(miner, MinerBucket.MAINCOMP, self.START_TIME)
 
-        self.challengeperiod_manager.active_miners[challenge_miner] = (MinerBucket.CHALLENGE, self.START_TIME, None, None)
-        self.challengeperiod_manager.active_miners[probation_miner] = (MinerBucket.PROBATION, self.START_TIME, None, None)
+        self.challengeperiod_manager.set_miner_bucket(challenge_miner, MinerBucket.CHALLENGE, self.START_TIME)
+        self.challengeperiod_manager.set_miner_bucket(probation_miner, MinerBucket.PROBATION, self.START_TIME)
 
         # Setup positions and ledgers for new miners
         for miner in exactly_25_miners + [challenge_miner, probation_miner]:
@@ -330,7 +328,7 @@ class TestProbationComprehensive(TestBase):
 
         # First refresh - should demote to probation or eliminate due to drawdown
         self.challengeperiod_manager.refresh(current_time=self.CURRENT_TIME)
-        with unittest.mock.patch.object(self.elimination_manager, 'live_price_fetcher', self.live_price_fetcher):
+        with unittest.mock.patch.object(self.elimination_manager._server_proxy, 'live_price_fetcher', self.live_price_fetcher):
             self.elimination_manager.process_eliminations(PositionLocks())
 
         maincomp_miners = self.challengeperiod_manager.get_success_miners()
@@ -340,10 +338,10 @@ class TestProbationComprehensive(TestBase):
         # Now test probation timeout elimination
         future_time = self.CURRENT_TIME + ValiConfig.PROBATION_MAXIMUM_MS + 1000
         self.challengeperiod_manager.refresh(current_time=future_time)
-        with unittest.mock.patch.object(self.elimination_manager, 'live_price_fetcher', self.live_price_fetcher):
+        with unittest.mock.patch.object(self.elimination_manager._server_proxy, 'live_price_fetcher', self.live_price_fetcher):
             self.elimination_manager.process_eliminations(PositionLocks())
 
-        final_eliminated = self.challengeperiod_manager.elimination_manager.get_eliminated_hotkeys()
+        final_eliminated = self.elimination_manager.get_eliminated_hotkeys()
         self.assertIn(poor_miner, final_eliminated,
                      "Poor probation miner should be eliminated after timeout")
 
@@ -364,7 +362,7 @@ class TestProbationComprehensive(TestBase):
         }
 
         for miner, timestamp in test_probation_miners.items():
-            self.challengeperiod_manager.active_miners[miner] = (MinerBucket.PROBATION, timestamp, None, None)
+            self.challengeperiod_manager.set_miner_bucket(miner, MinerBucket.PROBATION, timestamp)
 
         # Force save to disk
         self.challengeperiod_manager._write_challengeperiod_from_memory_to_disk()
@@ -383,7 +381,7 @@ class TestProbationComprehensive(TestBase):
         for miner, expected_timestamp in test_probation_miners.items():
             self.assertIn(miner, probation_miners,
                          f"Probation miner {miner} should persist across restart")
-            actual_timestamp = new_challengeperiod_manager.active_miners[miner][1]
+            actual_timestamp = new_challengeperiod_manager.get_miner_start_time(miner)
             self.assertEqual(actual_timestamp, expected_timestamp,
                            f"Probation timestamp for {miner} should be preserved")
 
@@ -436,7 +434,7 @@ class TestProbationComprehensive(TestBase):
         total_final = final_maincomp + final_challenge + final_probation
 
         # Account for potential eliminations (total might decrease)
-        eliminated = len(self.challengeperiod_manager.elimination_manager.get_eliminated_hotkeys())
+        eliminated = len(self.elimination_manager.get_eliminated_hotkeys())
         self.assertEqual(total_initial, total_final + eliminated,
                         "Total miner count should be conserved (accounting for eliminations)")
 
@@ -594,7 +592,7 @@ class TestProbationComprehensive(TestBase):
         """
         # Clear all probation miners
         for hotkey in list(self.challengeperiod_manager.get_probation_miners().keys()):
-            del self.challengeperiod_manager.active_miners[hotkey]
+            self.challengeperiod_manager.remove_miner(hotkey)
 
         # self.ledger_manager.save_perf_ledgers(self.LEDGERS)
         # Verify no probation miners
@@ -681,8 +679,10 @@ class TestProbationComprehensive(TestBase):
         expired_probation_miner = "probation_timeout_test"
         expired_start_time = self.PROBATION_EXPIRED
 
-        self.challengeperiod_manager.active_miners[expired_probation_miner] = (
-            MinerBucket.PROBATION, expired_start_time, None, None
+        self.challengeperiod_manager.set_miner_bucket(
+            expired_probation_miner,
+            MinerBucket.PROBATION,
+            expired_start_time
         )
 
         # Create minimal required data for this miner
@@ -711,7 +711,7 @@ class TestProbationComprehensive(TestBase):
         self.elimination_manager.process_eliminations(PositionLocks())
 
         # Check elimination reason
-        eliminations = self.challengeperiod_manager.elimination_manager.get_eliminations_from_disk()
+        eliminations = self.elimination_manager.get_eliminations_from_memory()
         probation_eliminations = [e for e in eliminations if e['hotkey'] == expired_probation_miner]
 
         if probation_eliminations:
@@ -748,7 +748,7 @@ class TestProbationComprehensive(TestBase):
 
         # Record initial state
         initial_maincomp = len(self.challengeperiod_manager.get_success_miners())
-        total_initial = len(self.challengeperiod_manager.active_miners)
+        total_initial = len(self.challengeperiod_manager.get_all_miner_hotkeys())
 
         # Trigger evaluation
         self.challengeperiod_manager.refresh(current_time=self.CURRENT_TIME)
@@ -757,8 +757,8 @@ class TestProbationComprehensive(TestBase):
         final_maincomp = len(self.challengeperiod_manager.get_success_miners())
 
         # System should be stable and maintain total miner count (minus eliminations)
-        eliminated_count = len(self.challengeperiod_manager.eliminations_with_reasons)
-        total_final = len(self.challengeperiod_manager.active_miners)
+        eliminated_count = len(self.challengeperiod_manager.get_all_elimination_reasons())
+        total_final = len(self.challengeperiod_manager.get_all_miner_hotkeys())
 
         self.assertEqual(total_initial, total_final + eliminated_count,
                         "System should maintain miner count consistency during mass demotion")
@@ -779,8 +779,10 @@ class TestProbationComprehensive(TestBase):
         probation_miner = "probation_miner5"
         original_probation_time = self.PROBATION_START_TIME
 
-        self.challengeperiod_manager.active_miners[probation_miner] = (
-            MinerBucket.PROBATION, original_probation_time, None, None
+        self.challengeperiod_manager.set_miner_bucket(
+            probation_miner,
+            MinerBucket.PROBATION,
+            original_probation_time
         )
 
         # Run multiple refresh cycles
@@ -796,7 +798,7 @@ class TestProbationComprehensive(TestBase):
             # Should be in probation, maincomp, or eliminated
             probation_miners = self.challengeperiod_manager.get_probation_miners()
             maincomp_miners = self.challengeperiod_manager.get_success_miners()
-            eliminated_miners = self.challengeperiod_manager.eliminations_with_reasons
+            eliminated_miners = self.challengeperiod_manager.get_all_elimination_reasons()
 
             miner_found = (probation_miner in probation_miners or
                           probation_miner in maincomp_miners or

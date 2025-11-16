@@ -57,9 +57,9 @@ class TestPositions(TestBase):
                                                 elimination_manager=self.elimination_manager, live_price_fetcher=self.live_price_fetcher)
         self.elimination_manager.position_manager = self.position_manager
         self.position_manager.clear_all_miner_positions()
-        
+
         # Clear any eliminations that might persist between tests
-        self.elimination_manager.eliminations.clear()
+        self.elimination_manager.clear_eliminations()
 
         self.default_open_position = Position(
             miner_hotkey=self.DEFAULT_MINER_HOTKEY,
@@ -1322,26 +1322,26 @@ class TestPositions(TestBase):
         }
         
         # Clear any existing challengeperiod data
-        self.position_manager.challengeperiod_manager.active_miners.clear()
-        
+        self.position_manager.challengeperiod_manager.clear_all_miners()
+
         disk_positions = self.positions_to_disk_data([self.default_position])
         self.position_syncer.sync_positions(shadow_mode=False, candidate_data=candidate_data,
                                            disk_positions=disk_positions)
-        
+
         # Verify challengeperiod was synced
-        assert self.DEFAULT_MINER_HOTKEY in self.position_manager.challengeperiod_manager.active_miners
-        assert test_hotkey2 in self.position_manager.challengeperiod_manager.active_miners
-        
-        bucket1, _, _, _ = self.position_manager.challengeperiod_manager.active_miners[self.DEFAULT_MINER_HOTKEY]
-        bucket2, _, _, _ = self.position_manager.challengeperiod_manager.active_miners[test_hotkey2]
-        
+        assert self.position_manager.challengeperiod_manager.has_miner(self.DEFAULT_MINER_HOTKEY)
+        assert self.position_manager.challengeperiod_manager.has_miner(test_hotkey2)
+
+        bucket1 = self.position_manager.challengeperiod_manager.get_miner_bucket(self.DEFAULT_MINER_HOTKEY)
+        bucket2 = self.position_manager.challengeperiod_manager.get_miner_bucket(test_hotkey2)
+
         assert bucket1 == MinerBucket.CHALLENGE
         assert bucket2 == MinerBucket.MAINCOMP
 
     def test_elimination_sync_and_ledger_invalidation(self):
         """Test elimination sync and perf ledger invalidation"""
         # Ensure clean elimination state for test
-        self.elimination_manager.eliminations.clear()
+        self.elimination_manager.clear_eliminations()
         
         # Create eliminations in candidate data
         eliminated_hotkey = "eliminated_miner"
@@ -3109,7 +3109,7 @@ class TestOverlapDetection(TestBase):
         )
         self.elimination_manager.position_manager = self.position_manager
         self.position_manager.clear_all_miner_positions()
-        self.elimination_manager.eliminations.clear()
+        self.elimination_manager.clear_eliminations()
 
         self.position_syncer = PositionSyncer(
             running_unit_tests=True,
