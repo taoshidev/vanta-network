@@ -151,6 +151,46 @@ class MetagraphServer:
         """Set TAO to USD conversion rate"""
         self._tao_to_usd_rate = float(value)
 
+    def update_metagraph_rpc(self, neurons: list = None, uids: list = None, hotkeys: list = None,
+                            block_at_registration: list = None, axons: list = None,
+                            emission: list = None, tao_reserve_rao: float = None,
+                            alpha_reserve_rao: float = None, tao_to_usd_rate: float = None) -> None:
+        """
+        Atomically update multiple metagraph fields in a single RPC call.
+        Only updates fields that are provided (not None).
+
+        Args:
+            neurons: List of neurons (optional)
+            uids: List of UIDs (optional)
+            hotkeys: List of hotkeys (optional, will update cached set)
+            block_at_registration: List of block numbers (optional)
+            axons: List of axons (optional)
+            emission: List of emission values (optional)
+            tao_reserve_rao: TAO reserve in RAO (optional)
+            alpha_reserve_rao: ALPHA reserve in RAO (optional)
+            tao_to_usd_rate: TAO to USD conversion rate (optional)
+        """
+        if neurons is not None:
+            self._neurons = list(neurons)
+        if uids is not None:
+            self._uids = list(uids)
+        if hotkeys is not None:
+            self._hotkeys = list(hotkeys)
+            # Update cached set for O(1) lookups
+            self._hotkeys_set = set(hotkeys)
+        if block_at_registration is not None:
+            self._block_at_registration = list(block_at_registration)
+        if axons is not None:
+            self._axons = list(axons)
+        if emission is not None:
+            self._emission = list(emission)
+        if tao_reserve_rao is not None:
+            self._tao_reserve_rao = float(tao_reserve_rao)
+        if alpha_reserve_rao is not None:
+            self._alpha_reserve_rao = float(alpha_reserve_rao)
+        if tao_to_usd_rate is not None:
+            self._tao_to_usd_rate = float(tao_to_usd_rate)
+
 
 def start_metagraph_server(running_unit_tests, address, authkey, server_ready):
     """Entry point for server process"""

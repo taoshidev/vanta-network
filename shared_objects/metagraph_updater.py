@@ -633,14 +633,17 @@ class MetagraphUpdater(CacheController):
         """
         return self.metagraph
 
-    def refresh_substrate_reserves(self, metagraph_clone):
+    def _get_substrate_reserves(self, metagraph_clone):
         """
-        Refresh TAO and ALPHA reserve balances from metagraph.pool and store in shared metagraph.
+        Get TAO and ALPHA reserve balances from metagraph.pool.
         Uses built-in metagraph.pool data (verified to be identical to direct substrate queries).
         Fails fast - exceptions propagate to slack alert mechanism.
 
         Args:
             metagraph_clone: Freshly synced metagraph with pool data
+
+        Returns:
+            tuple: (tao_reserve_rao, alpha_reserve_rao)
         """
         # Extract reserve data from metagraph.pool
         if not hasattr(metagraph_clone, 'pool') or not metagraph_clone.pool:
@@ -658,26 +661,36 @@ class MetagraphUpdater(CacheController):
         if alpha_reserve_rao == 0:
             raise ValueError("Alpha reserve is zero - cannot calculate conversion rate")
 
-        # Update shared metagraph via RPC (much faster than IPC)
-        self.metagraph.set_tao_reserve_rao(tao_reserve_rao)
-        self.metagraph.set_alpha_reserve_rao(alpha_reserve_rao)
-
         bt.logging.info(
-            f"Updated reserves from metagraph.pool: TAO={tao_reserve_rao / 1e9:.2f} TAO "
+            f"Got reserves from metagraph.pool: TAO={tao_reserve_rao / 1e9:.2f} TAO "
             f"({tao_reserve_rao:.0f} RAO), ALPHA={alpha_reserve_rao / 1e9:.2f} ALPHA "
             f"({alpha_reserve_rao:.0f} RAO)"
         )
 
-    def refresh_tao_usd_price(self):
+        return tao_reserve_rao, alpha_reserve_rao
+
+    def refresh_substrate_reserves(self, metagraph_clone):
         """
-        Refresh TAO/USD price using live_price_fetcher and store in shared metagraph.
+        Refresh TAO and ALPHA reserve balances from metagraph.pool and store in shared metagraph.
+        DEPRECATED: Use _get_substrate_reserves() and update_metagraph() for atomic updates.
+
+        Args:
+            metagraph_clone: Freshly synced metagraph with pool data
+        """
+        tao_reserve_rao, alpha_reserve_rao = self._get_substrate_reserves(metagraph_clone)
+        self.metagraph.set_tao_reserve_rao(tao_reserve_rao)
+        self.metagraph.set_alpha_reserve_rao(alpha_reserve_rao)
+
+    def _get_tao_usd_rate(self):
+        """
+        Get current TAO/USD price using live_price_fetcher.
         Uses current timestamp to get latest available price.
 
-        Non-blocking: If price refresh fails, logs error but continues metagraph update.
+        Non-blocking: If price fetch fails, logs error and returns None.
         Better to use a slightly stale TAO/USD price than block metagraph updates.
 
         Returns:
-            bool: True if price was successfully updated, False otherwise
+            float: TAO/USD rate, or None if unavailable
         """
         try:
             if not self.live_price_fetcher:
@@ -685,7 +698,7 @@ class MetagraphUpdater(CacheController):
                     "live_price_fetcher not available - cannot query TAO/USD price. "
                     "Using existing price from metagraph (may be stale)."
                 )
-                return False
+                return None
 
             # Get current timestamp for price query
             current_time_ms = TimeUtil.now_in_millis()
@@ -702,7 +715,7 @@ class MetagraphUpdater(CacheController):
                     f"Using existing price from metagraph (may be stale). "
                     f"price_source={price_source}"
                 )
-                return False
+                return None
 
             tao_to_usd_rate = float(price_source.close)
 
@@ -712,24 +725,35 @@ class MetagraphUpdater(CacheController):
                     f"Invalid TAO/USD price: ${tao_to_usd_rate}. "
                     f"Using existing price from metagraph (may be stale)."
                 )
-                return False
-
-            # Update shared metagraph via RPC (much faster than IPC)
-            self.metagraph.set_tao_to_usd_rate(tao_to_usd_rate)
+                return None
 
             bt.logging.info(
-                f"Updated TAO/USD price: ${tao_to_usd_rate:.2f}/TAO "
+                f"Got TAO/USD price: ${tao_to_usd_rate:.2f}/TAO "
                 f"(timestamp: {current_time_ms})"
             )
-            return True
+            return tao_to_usd_rate
 
         except Exception as e:
             bt.logging.error(
-                f"Error refreshing TAO/USD price: {e}. "
+                f"Error fetching TAO/USD price: {e}. "
                 f"Using existing price from metagraph (may be stale)."
             )
             bt.logging.error(traceback.format_exc())
-            return False
+            return None
+
+    def refresh_tao_usd_price(self):
+        """
+        Refresh TAO/USD price using live_price_fetcher and store in shared metagraph.
+        DEPRECATED: Use _get_tao_usd_rate() and update_metagraph() for atomic updates.
+
+        Returns:
+            bool: True if price was successfully updated, False otherwise
+        """
+        tao_to_usd_rate = self._get_tao_usd_rate()
+        if tao_to_usd_rate:
+            self.metagraph.set_tao_to_usd_rate(tao_to_usd_rate)
+            return True
+        return False
 
     def update_metagraph(self):
         if not self.refresh_allowed(self.interval_wait_time_ms):
@@ -786,28 +810,34 @@ class MetagraphUpdater(CacheController):
                 )
             return  # Actually block the metagraph update
 
-        # Use RPC methods to update metagraph server (much faster than IPC property access)
-        self.metagraph.set_neurons(list(metagraph_clone.neurons))
-        self.metagraph.set_uids(list(metagraph_clone.uids))
-        self.metagraph.set_hotkeys(list(metagraph_clone.hotkeys))  # Server will update cached set
-        self.metagraph.set_block_at_registration(list(metagraph_clone.block_at_registration))
-
-        if self.is_miner:
-            self.metagraph.set_axons(list(metagraph_clone.axons))
+        # Use single atomic RPC call to update all metagraph fields (much faster than multiple calls)
+        self.metagraph.update_metagraph(
+            neurons=list(metagraph_clone.neurons),
+            uids=list(metagraph_clone.uids),
+            hotkeys=list(metagraph_clone.hotkeys),  # Server will update cached set
+            block_at_registration=list(metagraph_clone.block_at_registration),
+            axons=list(metagraph_clone.axons) if self.is_miner else None,
+            emission=list(metagraph_clone.emission)
+        )
 
         if recently_acked_miners:
             self.update_likely_miners(recently_acked_miners)
         if recently_acked_validators:
             self.update_likely_validators(recently_acked_validators)
 
-        # Update shared emission data (TAO per tempo for each UID)
-        self.metagraph.set_emission(list(metagraph_clone.emission))
-
         # Refresh reserve data (TAO and ALPHA) from metagraph.pool for debt-based scoring
         # Also refresh TAO/USD price for USD-based payout calculations
         if not self.is_miner:  # Only validators need this for weight calculation
-            self.refresh_substrate_reserves(metagraph_clone)
-            self.refresh_tao_usd_rate()
+            # Get reserve data and TAO/USD price, then update metagraph atomically
+            tao_reserve_rao, alpha_reserve_rao = self._get_substrate_reserves(metagraph_clone)
+            tao_to_usd_rate = self._get_tao_usd_rate()
+
+            # Update reserves and price in single RPC call
+            self.metagraph.update_metagraph(
+                tao_reserve_rao=tao_reserve_rao,
+                alpha_reserve_rao=alpha_reserve_rao,
+                tao_to_usd_rate=tao_to_usd_rate if tao_to_usd_rate else None
+            )
 
         # self.log_metagraph_state()
         self.set_last_update_time()

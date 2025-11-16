@@ -159,6 +159,47 @@ class MetagraphManager(RPCServiceBase):
         """Set TAO to USD conversion rate"""
         self._server_proxy.set_tao_to_usd_rate_rpc(value)
 
+    def update_metagraph(self, neurons: list = None, uids: list = None, hotkeys: list = None,
+                        block_at_registration: list = None, axons: list = None,
+                        emission: list = None, tao_reserve_rao: float = None,
+                        alpha_reserve_rao: float = None, tao_to_usd_rate: float = None) -> None:
+        """
+        Atomically update multiple metagraph fields in a single RPC call.
+        Much faster than individual setter calls (1 RPC call instead of N).
+
+        Args:
+            neurons: List of neurons (optional)
+            uids: List of UIDs (optional)
+            hotkeys: List of hotkeys (optional, will update cached set)
+            block_at_registration: List of block numbers (optional)
+            axons: List of axons (optional)
+            emission: List of emission values (optional)
+            tao_reserve_rao: TAO reserve in RAO (optional)
+            alpha_reserve_rao: ALPHA reserve in RAO (optional)
+            tao_to_usd_rate: TAO to USD conversion rate (optional)
+
+        Example:
+            # Update all metagraph fields in one atomic RPC call
+            metagraph.update_metagraph(
+                neurons=list(metagraph_clone.neurons),
+                uids=list(metagraph_clone.uids),
+                hotkeys=list(metagraph_clone.hotkeys),
+                block_at_registration=list(metagraph_clone.block_at_registration),
+                emission=list(metagraph_clone.emission)
+            )
+        """
+        self._server_proxy.update_metagraph_rpc(
+            neurons=neurons,
+            uids=uids,
+            hotkeys=hotkeys,
+            block_at_registration=block_at_registration,
+            axons=axons,
+            emission=emission,
+            tao_reserve_rao=tao_reserve_rao,
+            alpha_reserve_rao=alpha_reserve_rao,
+            tao_to_usd_rate=tao_to_usd_rate
+        )
+
     # ==================== Backwards Compatibility Properties ====================
 
     @property
