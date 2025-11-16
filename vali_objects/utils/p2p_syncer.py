@@ -62,7 +62,13 @@ class P2PSyncer(ValidatorSyncBase):
                     if not self.encoded_checkpoint:
                         # get our current checkpoint
                         self.last_checkpoint_time = TimeUtil.now_in_millis()
-                        checkpoint_dict = self.request_core_manager.generate_request_core()
+                        # Don't create production files - just get checkpoint dict for P2P sharing
+                        # RequestOutputGenerator handles scheduled disk writes and uploads
+                        checkpoint_dict = self.request_core_manager.generate_request_core(
+                            create_production_files=False,
+                            save_production_files=False,
+                            upload_production_files=False
+                        )
 
                         # compress json and encode as base64 to keep as a string
                         checkpoint_str = json.dumps(checkpoint_dict, cls=CustomEncoder)
