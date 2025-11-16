@@ -383,29 +383,10 @@ class Validator(ValidatorBase):
             return self.mdd_checker_process
         self.run_init_step_with_monitoring(4, "Starting MDD checker process", step4)
 
-        # Step 5: Start elimination manager process
-        def step5():
-            self.elimination_manager_process = Process(target=self.elimination_manager.run_update_loop, daemon=True)
-            self.elimination_manager_process.start()
-            # Verify process started
-            time.sleep(0.1)  # Give process a moment to start
-            if not self.elimination_manager_process.is_alive():
-                raise RuntimeError("Elimination manager process failed to start")
-            bt.logging.info(f"Elimination manager process started with PID: {self.elimination_manager_process.pid}")
-            return self.elimination_manager_process
-        self.run_init_step_with_monitoring(5, "Starting elimination manager process", step5)
-
-        # Step 6: Start challenge period manager process
-        def step6():
-            self.challengeperiod_manager_process = Process(target=self.challengeperiod_manager.run_update_loop, daemon=True)
-            self.challengeperiod_manager_process.start()
-            # Verify process started
-            time.sleep(0.1)  # Give process a moment to start
-            if not self.challengeperiod_manager_process.is_alive():
-                raise RuntimeError("Challenge period manager process failed to start")
-            bt.logging.info(f"Challenge period manager process started with PID: {self.challengeperiod_manager_process.pid}")
-            return self.challengeperiod_manager_process
-        self.run_init_step_with_monitoring(6, "Starting challenge period manager process", step6)
+        # Step 5 & 6: RPC managers (EliminationManager and ChallengePeriodManager)
+        # are automatically started in their __init__ methods via _initialize_service()
+        # No need to manually start them here
+        bt.logging.info("Step 5-6: EliminationManager and ChallengePeriodManager RPC servers already started")
 
         # Step 7: Initialize SubtensorWeightSetter
         def step7():
@@ -630,10 +611,7 @@ class Validator(ValidatorBase):
         self.plagiarism_thread.join()
         bt.logging.warning("Stopping MDD checker...")
         self.mdd_checker_process.join()
-        bt.logging.warning("Stopping elimination manager...")
-        self.elimination_manager_process.join()
-        bt.logging.warning("Stopping challenge period manager...")
-        self.challengeperiod_manager_process.join()
+        # EliminationManager and ChallengePeriodManager RPC servers shutdown automatically via shutdown_dict
         bt.logging.warning("Stopping health checker...")
         self.health_checker_process.join()
         bt.logging.warning("Stopping slippage refresher...")
