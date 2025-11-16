@@ -164,54 +164,6 @@ class MetagraphManager(RPCServiceBase):
             tao_to_usd_rate=tao_to_usd_rate
         )
 
-    # ==================== Backwards Compatibility Properties (Read-Only) ====================
-    # Setters removed - use update_metagraph() for all writes
-
-    @property
-    def hotkeys(self) -> list:
-        """Direct access to hotkeys (read-only). Use update_metagraph() to update."""
-        return self.get_hotkeys()
-
-    @property
-    def neurons(self) -> list:
-        """Direct access to neurons (read-only). Use update_metagraph() to update."""
-        return self.get_neurons()
-
-    @property
-    def uids(self) -> list:
-        """Direct access to uids (read-only). Use update_metagraph() to update."""
-        return self.get_uids()
-
-    @property
-    def axons(self) -> list:
-        """Direct access to axons (read-only). Use update_metagraph() to update."""
-        return self.get_axons()
-
-    @property
-    def block_at_registration(self) -> list:
-        """Direct access to block_at_registration (read-only). Use update_metagraph() to update."""
-        return self.get_block_at_registration()
-
-    @property
-    def emission(self) -> list:
-        """Direct access to emission (read-only). Use update_metagraph() to update."""
-        return self.get_emission()
-
-    @property
-    def tao_reserve_rao(self) -> float:
-        """Direct access to TAO reserve (read-only). Use update_metagraph() to update."""
-        return self.get_tao_reserve_rao()
-
-    @property
-    def alpha_reserve_rao(self) -> float:
-        """Direct access to ALPHA reserve (read-only). Use update_metagraph() to update."""
-        return self.get_alpha_reserve_rao()
-
-    @property
-    def tao_to_usd_rate(self) -> float:
-        """Direct access to TAO/USD rate (read-only). Use update_metagraph() to update."""
-        return self.get_tao_to_usd_rate()
-
     def is_development_hotkey(self, hotkey: str) -> bool:
         """Check if hotkey is the synthetic DEVELOPMENT hotkey"""
         return hotkey == self.DEVELOPMENT_HOTKEY
