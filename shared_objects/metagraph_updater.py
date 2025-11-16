@@ -810,34 +810,33 @@ class MetagraphUpdater(CacheController):
                 )
             return  # Actually block the metagraph update
 
-        # Use single atomic RPC call to update all metagraph fields (much faster than multiple calls)
+        # Gather validator-specific data (reserves and TAO/USD price) if needed
+        tao_reserve_rao = None
+        alpha_reserve_rao = None
+        tao_to_usd_rate = None
+
+        if not self.is_miner:  # Only validators need reserves/prices for weight calculation
+            tao_reserve_rao, alpha_reserve_rao = self._get_substrate_reserves(metagraph_clone)
+            tao_to_usd_rate = self._get_tao_usd_rate()
+
+        # Single atomic RPC call to update all metagraph fields
+        # Much faster than multiple calls - all fields updated together under one lock
         self.metagraph.update_metagraph(
             neurons=list(metagraph_clone.neurons),
             uids=list(metagraph_clone.uids),
             hotkeys=list(metagraph_clone.hotkeys),  # Server will update cached set
             block_at_registration=list(metagraph_clone.block_at_registration),
             axons=list(metagraph_clone.axons) if self.is_miner else None,
-            emission=list(metagraph_clone.emission)
+            emission=list(metagraph_clone.emission),
+            tao_reserve_rao=tao_reserve_rao,
+            alpha_reserve_rao=alpha_reserve_rao,
+            tao_to_usd_rate=tao_to_usd_rate
         )
 
         if recently_acked_miners:
             self.update_likely_miners(recently_acked_miners)
         if recently_acked_validators:
             self.update_likely_validators(recently_acked_validators)
-
-        # Refresh reserve data (TAO and ALPHA) from metagraph.pool for debt-based scoring
-        # Also refresh TAO/USD price for USD-based payout calculations
-        if not self.is_miner:  # Only validators need this for weight calculation
-            # Get reserve data and TAO/USD price, then update metagraph atomically
-            tao_reserve_rao, alpha_reserve_rao = self._get_substrate_reserves(metagraph_clone)
-            tao_to_usd_rate = self._get_tao_usd_rate()
-
-            # Update reserves and price in single RPC call
-            self.metagraph.update_metagraph(
-                tao_reserve_rao=tao_reserve_rao,
-                alpha_reserve_rao=alpha_reserve_rao,
-                tao_to_usd_rate=tao_to_usd_rate if tao_to_usd_rate else None
-            )
 
         # self.log_metagraph_state()
         self.set_last_update_time()
