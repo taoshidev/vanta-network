@@ -720,9 +720,9 @@ class Validator(ValidatorBase):
         if is_reregistered:
             # Get deregistration timestamp and convert to human-readable date
             departed_lookup_start = time.perf_counter()
-            departed_info = self.elimination_manager.get_departed_hotkeys().get(synapse.dendrite.hotkey, {})
+            departed_info = self.elimination_manager.get_departed_hotkey_info(synapse.dendrite.hotkey) or {}
             departed_lookup_ms = (time.perf_counter() - departed_lookup_start) * 1000
-            bt.logging.info(f"[FAIL_EARLY_DEBUG] departed_hotkeys RPC lookup took {departed_lookup_ms:.2f}ms")
+            bt.logging.info(f"[FAIL_EARLY_DEBUG] get_departed_hotkey_info RPC took {departed_lookup_ms:.2f}ms")
 
             detected_ms = departed_info.get("detected_ms", 0)
             dereg_date = TimeUtil.millis_to_formatted_date_str(detected_ms) if detected_ms else "unknown"

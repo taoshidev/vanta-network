@@ -200,6 +200,10 @@ class EliminationManagerServer(CacheController):
         """Get all departed hotkeys"""
         return dict(self.departed_hotkeys)
 
+    def get_departed_hotkey_info_rpc(self, hotkey: str) -> Optional[dict]:
+        """Get departed info for a single hotkey (O(1) lookup)"""
+        return self.departed_hotkeys.get(hotkey)
+
     def get_eliminations_lock_rpc(self):
         """This method should not be called via RPC - lock is local to server"""
         raise NotImplementedError(

@@ -273,6 +273,18 @@ class EliminationManager(RPCServiceBase, CacheController):
         """Get all departed hotkeys"""
         return self._server_proxy.get_departed_hotkeys_rpc()
 
+    def get_departed_hotkey_info(self, hotkey: str) -> Optional[dict]:
+        """
+        Get departed info for a single hotkey (O(1) RPC call).
+
+        Args:
+            hotkey: The hotkey to look up
+
+        Returns:
+            dict with 'detected_ms' if hotkey is departed, None otherwise
+        """
+        return self._server_proxy.get_departed_hotkey_info_rpc(hotkey)
+
     def delete_eliminations(self, deleted_hotkeys):
         """
         Delete multiple eliminations.
