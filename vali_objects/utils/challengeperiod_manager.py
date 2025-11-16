@@ -37,7 +37,7 @@ class ChallengePeriodManager(RPCServiceBase, CacheController):
         RPCServiceBase.__init__(
             self,
             service_name="ChallengePeriodManagerServer",
-            port=50005,  # Unique port for ChallengePeriodManager
+            port=50003,  # Unique port for ChallengePeriodManager
             running_unit_tests=running_unit_tests,
             enable_health_check=True,
             health_check_interval_s=60,
