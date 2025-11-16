@@ -46,9 +46,9 @@ class PositionInspector:
         # Right now bittensor has no functionality to know if a hotkey 100% corresponds to a validator
         # Revisit this in the future.
         if self.is_testnet:
-            return [n.axon_info for n in self.metagraph.neurons if n.axon_info.ip != MinerConfig.AXON_NO_IP]
+            return [n.axon_info for n in self.metagraph.get_neurons() if n.axon_info.ip != MinerConfig.AXON_NO_IP]
         else:
-            return [n.axon_info for n in self.metagraph.neurons
+            return [n.axon_info for n in self.metagraph.get_neurons()
                     if n.stake > bt.Balance(MinerConfig.STAKE_MIN)
                     and n.axon_info.ip != MinerConfig.AXON_NO_IP]
 
@@ -59,7 +59,7 @@ class PositionInspector:
         async with bt.dendrite(wallet=self.wallet) as dendrite:
             responses = await dendrite.aquery(remaining_validators_to_query, GetPositions(version=1), deserialize=True)
         
-        hotkey_to_v_trust = {neuron.hotkey: neuron.validator_trust for neuron in self.metagraph.neurons}
+        hotkey_to_v_trust = {neuron.hotkey: neuron.validator_trust for neuron in self.metagraph.get_neurons()}
         ret = []
         for validator, response in zip(remaining_validators_to_query, responses):
             v_trust = hotkey_to_v_trust.get(validator.hotkey, 0)
@@ -72,7 +72,7 @@ class PositionInspector:
 
     def reconcile_validator_positions(self, hotkey_to_positions, validators):
         hotkey_to_validator = {v.hotkey: v for v in validators}
-        hotkey_to_v_trust = {neuron.hotkey: neuron.validator_trust for neuron in self.metagraph.neurons}
+        hotkey_to_v_trust = {neuron.hotkey: neuron.validator_trust for neuron in self.metagraph.get_neurons()}
         orders_count = defaultdict(int)
         max_order_count = 0
         corresponding_positions = []

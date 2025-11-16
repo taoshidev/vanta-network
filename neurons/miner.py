@@ -24,10 +24,31 @@ class MinerMetagraph():
     def __init__(self):
         # Only essential attributes used in miner codebase
         self.neurons = []         # Used to access neuron properties (stake, validator_trust, axon_info)
-        self.hotkeys = []         # Used for registration check and UID lookup  
+        self.hotkeys = []         # Used for registration check and UID lookup
         self.uids = []            # Used by shared code
         self.block_at_registration = []  # Used by metagraph_updater.py sync_lists
         self.axons = []           # Used in dashboard.py for testnet validator queries
+
+    # Explicit getter methods required by MetagraphUpdater
+    def get_hotkeys(self):
+        """Get list of hotkeys"""
+        return self.hotkeys
+
+    def get_neurons(self):
+        """Get list of neurons"""
+        return self.neurons
+
+    def get_uids(self):
+        """Get list of UIDs"""
+        return self.uids
+
+    def get_axons(self):
+        """Get list of axons"""
+        return self.axons
+
+    def get_emission(self):
+        """Get emission list (not used by miners)"""
+        return []
 
 
 class Miner:

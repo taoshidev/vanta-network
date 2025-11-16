@@ -262,7 +262,7 @@ class TestChallengePeriodIntegration(TestBase):
         self.assertEqual(len(self.challengeperiod_manager.get_testing_miners()), len(self.TESTING_MINER_NAMES))
 
         self.challengeperiod_manager._add_challengeperiod_testing_in_memory_and_disk(
-            new_hotkeys=self.challengeperiod_manager.metagraph.hotkeys,
+            new_hotkeys=self.challengeperiod_manager.metagraph.get_hotkeys(),
             eliminations=self.elimination_manager.get_eliminations_from_memory(),
             hk_to_first_order_time=self.HK_TO_OPEN_MS,
             default_time=self.START_TIME,
