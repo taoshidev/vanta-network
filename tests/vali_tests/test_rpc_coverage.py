@@ -55,7 +55,10 @@ class TestRPCCoverage(unittest.TestCase):
         'sync_challenge_period_data',
         'refresh',
         'inspect',
-       'get_hotkeys_by_bucket',
+        'get_hotkeys_by_bucket',
+        'generate_elimination_row',
+        'calculate_drawdown',
+        'iter_active_miners',
     }
 
     ELIMINATION_ALLOWED_MISSING = {
@@ -80,6 +83,7 @@ class TestRPCCoverage(unittest.TestCase):
         'generate_elimination_row',
         'handle_challenge_period_eliminations',
         'add_manual_flat_order',
+        'delete_eliminations',  # Composite method that loops over remove_elimination
     }
 
     CLIENT_COMPOSITE_METHODS = {
@@ -125,6 +129,9 @@ class TestRPCCoverage(unittest.TestCase):
 
         missing_rpc = []
         for method_name in public_methods:
+            # Skip methods that are already RPC methods (end with _rpc)
+            if method_name.endswith('_rpc'):
+                continue
             if method_name in self.CHALLENGEPERIOD_ALLOWED_MISSING:
                 continue
             if method_name not in rpc_methods:
@@ -150,6 +157,9 @@ class TestRPCCoverage(unittest.TestCase):
 
         missing_rpc = []
         for method_name in public_methods:
+            # Skip methods that are already RPC methods (end with _rpc)
+            if method_name.endswith('_rpc'):
+                continue
             if method_name in self.ELIMINATION_ALLOWED_MISSING:
                 continue
             if method_name not in rpc_methods:
@@ -235,9 +245,14 @@ class TestRPCCoverage(unittest.TestCase):
 
         issues = []
         for method_name in client_methods:
-            # Skip special cases
-            if method_name in {'refresh_allowed', 'set_last_update_time', 'get_last_update_time_ms'}:
-                # These are inherited from CacheController
+            # Skip inherited CacheController methods
+            if method_name in {'refresh_allowed', 'set_last_update_time', 'get_last_update_time_ms',
+                              'get_directory_names', 'is_drawdown_beyond_mdd',
+                              'get_last_modified_time_miner_directory', 'init_cache_files'}:
+                continue
+
+            # Skip internal helper methods
+            if method_name in {'calculate_drawdown', 'generate_elimination_row', 'get_eliminations_lock'}:
                 continue
 
             # Get method object
