@@ -166,7 +166,8 @@ class DebtBasedScoring:
         """
         try:
             # Fallback detection: Check if metagraph has emission data
-            if not hasattr(metagraph, 'emission') or metagraph.emission is None:
+            emission = metagraph.get_emission()
+            if emission is None:
                 bt.logging.warning(
                     "Metagraph missing 'emission' attribute. "
                     f"Falling back to static dust: {ValiConfig.CHALLENGE_PERIOD_MIN_WEIGHT}"
@@ -175,7 +176,7 @@ class DebtBasedScoring:
 
             # Step 1: Calculate total ALPHA emissions per day
             try:
-                total_tao_per_tempo = sum(metagraph.emission)  # TAO per tempo (360 blocks)
+                total_tao_per_tempo = sum(emission)  # TAO per tempo (360 blocks)
             except (TypeError, AttributeError) as e:
                 bt.logging.warning(
                     f"Failed to sum metagraph.emission: {e}. "
@@ -720,7 +721,7 @@ class DebtBasedScoring:
             # Get total TAO emission per block for the subnet (sum across all miners)
             # metagraph.emission is already in TAO (not RAO), but per tempo (360 blocks)
             # Need to convert: per-tempo → per-block (÷360)
-            total_tao_per_tempo = sum(metagraph.emission)
+            total_tao_per_tempo = sum(metagraph.get_emission())
             total_tao_per_block = total_tao_per_tempo / 360
 
             if verbose:
@@ -1496,12 +1497,13 @@ class DebtBasedScoring:
         burn_uid = DebtBasedScoring.get_burn_uid(is_testnet)
 
         # Get hotkey for burn UID
-        if burn_uid < len(metagraph.hotkeys):
-            return metagraph.hotkeys[burn_uid]
+        hotkeys = metagraph.get_hotkeys()
+        if burn_uid < len(hotkeys):
+            return hotkeys[burn_uid]
         else:
             bt.logging.warning(
                 f"Burn UID {burn_uid} not found in metagraph "
-                f"(only {len(metagraph.hotkeys)} UIDs). Using placeholder."
+                f"(only {len(hotkeys)} UIDs). Using placeholder."
             )
             return f"burn_uid_{burn_uid}"
 
