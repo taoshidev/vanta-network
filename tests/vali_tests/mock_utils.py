@@ -298,8 +298,8 @@ class EnhancedMockPositionManager(BaseMockPositionManager):
     def filtered_positions_for_scoring(self, hotkeys: List[str] = None):
         """Get positions filtered for scoring"""
         if hotkeys is None:
-            hotkeys = self.metagraph.hotkeys
-            
+            hotkeys = self.metagraph.get_hotkeys()
+
         filtered_positions = {}
         all_positions = {}
         

@@ -727,7 +727,7 @@ class PerfLedgerManager(CacheController):
         """
 
         if hotkeys is None:
-            hotkeys = self.metagraph.hotkeys
+            hotkeys = self.metagraph.get_hotkeys()
 
         # Build filtered ledger for all miners with positions
         filtered_ledger = {}
@@ -2170,7 +2170,7 @@ class PerfLedgerManager(CacheController):
         hotkeys_ordered_by_last_trade = sorted(hotkey_to_positions.keys(), key=sort_key, reverse=True)
 
         # Remove keys from perf ledgers if they aren't inx the metagraph anymore
-        metagraph_hotkeys = set(self.metagraph.hotkeys)
+        metagraph_hotkeys = set(self.metagraph.get_hotkeys())
         hotkeys_to_delete = set([x for x in hotkeys_with_no_positions if x in perf_ledger_bundles])
         rss_modified = False
         # Recently re-registered
