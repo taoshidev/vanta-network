@@ -8,6 +8,7 @@ Much faster than IPC for has_hotkey() checks (O(1) with server-side cached set).
 """
 from multiprocessing import Process
 from shared_objects.rpc_service_base import RPCServiceBase
+from shared_objects.metagraph_server import start_metagraph_server
 
 import bittensor as bt
 
@@ -57,8 +58,6 @@ class MetagraphManager(RPCServiceBase):
 
     def _start_server_process(self, address, authkey, server_ready):
         """Start RPC server in separate process"""
-        from shared_objects.metagraph_server import start_metagraph_server
-
         process = Process(
             target=start_metagraph_server,
             args=(
