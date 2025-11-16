@@ -236,13 +236,17 @@ class ValiBkpUtils:
         return ValiConfig.BASE_DIR + "/validator_checkpoint.json"
 
     @staticmethod
-    def get_vcp_output_path() -> str:
+    def get_vcp_output_path(running_unit_tests=False) -> str:
         """Get path for compressed validator checkpoint output file.
-        
+
+        Args:
+            running_unit_tests: If True, returns test-specific path
+
         Returns:
             Full path to compressed validator checkpoint output file (.gz)
         """
-        return ValiBkpUtils.get_vali_outputs_dir() + "validator_checkpoint.json.gz"
+        suffix = "/tests" if running_unit_tests else ""
+        return ValiConfig.BASE_DIR + f"{suffix}/runnable/validator_checkpoint.json.gz"
 
     @staticmethod
     def get_miner_positions_output_path(suffix_dir: None | str = None) -> str:

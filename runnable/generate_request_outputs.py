@@ -37,7 +37,11 @@ class RequestOutputGenerator:
             self.log_deprecation_message()
             current_time_ms = TimeUtil.now_in_millis()
             self.repull_data_from_disk()
-            self.rcm.generate_request_core(write_and_upload_production_files=True)
+            self.rcm.generate_request_core(
+                create_production_files=True,
+                save_production_files=True,
+                upload_production_files=True
+            )
             self.msm.generate_request_minerstatistics(
                 time_now=current_time_ms,
                 checkpoints=self.checkpoints,
@@ -107,7 +111,11 @@ class RequestOutputGenerator:
                 if current_time_ms - last_update_time_ms < self.rcm_refresh_interval_ms:
                     time.sleep(1)
                     continue
-                self.rcm.generate_request_core(write_and_upload_production_files=True)
+                self.rcm.generate_request_core(
+                create_production_files=True,
+                save_production_files=True,
+                upload_production_files=True
+            )
                 n_updates += 1
                 tf = TimeUtil.now_in_millis()
                 if n_updates % 5 == 0:

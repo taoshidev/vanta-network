@@ -222,6 +222,9 @@ class TestRequestOutputGenerator(TestBase):
         Test that generate_request_core can execute without writing to disk.
 
         This is the critical test that would have caught the missing to_checkpoint_dict RPC method.
+
+        Note: If you need to test with save_production_files=True, use RequestCoreManager.cleanup_test_files()
+        in tearDown or a try/finally block to clean up test files.
         """
         rcm = RequestCoreManager(
             position_manager=self.position_manager,
@@ -238,8 +241,8 @@ class TestRequestOutputGenerator(TestBase):
         try:
             checkpoint_dict = rcm.generate_request_core(
                 create_production_files=True,  # Create the dicts
-                save_production_files=False,   # Don't write to disk
-                upload_production_files=False  # Don't upload to gcloud
+                save_production_files=False,   # Don't write to disk (default, but explicit)
+                upload_production_files=False  # Don't upload to gcloud (default, but explicit)
             )
         except AttributeError as e:
             self.fail(f"generate_request_core raised AttributeError (likely missing RPC method): {e}")
@@ -357,8 +360,8 @@ class TestRequestOutputGenerator(TestBase):
         try:
             checkpoint_dict = rcm.generate_request_core(
                 create_production_files=True,
-                save_production_files=False,
-                upload_production_files=False
+                save_production_files=False,   # Don't write to disk (default, but explicit)
+                upload_production_files=False  # Don't upload to gcloud (default, but explicit)
             )
         except Exception as e:
             self.fail(f"generate_request_core failed: {e}")

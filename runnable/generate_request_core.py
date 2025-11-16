@@ -109,6 +109,35 @@ class RequestCoreManager:
             # Turn the positions back into json dicts. Note we are overwriting the original positions
             positions['positions'] = [json.loads(str(p), cls=GeneralizedJSONDecoder) for p in new_positions]
 
+    @staticmethod
+    def cleanup_test_files():
+        """
+        Clean up files created by generate_request_core for testing.
+
+        This removes:
+        - Compressed validator checkpoint
+        - Miner positions at all tier levels (100, 50, 30, 0)
+        """
+        import os
+
+        # Remove compressed checkpoint from test directory
+        try:
+            compressed_path = ValiBkpUtils.get_vcp_output_path(running_unit_tests=True)
+            if os.path.exists(compressed_path):
+                os.remove(compressed_path)
+        except Exception as e:
+            print(f"Error removing compressed checkpoint: {e}")
+
+        # Remove miner positions at all tiers
+        for tier in PERCENT_NEW_POSITIONS_TIERS:
+            try:
+                suffix_dir = None if tier == 100 else str(tier)
+                positions_path = ValiBkpUtils.get_miner_positions_output_path(suffix_dir=suffix_dir)
+                if os.path.exists(positions_path):
+                    os.remove(positions_path)
+            except Exception as e:
+                print(f"Error removing positions file for tier {tier}: {e}")
+
     def compress_dict(self, data: dict) -> bytes:
         str_to_write = json.dumps(data, cls=CustomEncoder)
         # Encode the JSON string to bytes and then compress it using gzip
@@ -228,8 +257,10 @@ class RequestCoreManager:
             # Write compressed checkpoint only - saves disk space and bandwidth
             compressed_data = self.compress_dict(final_dict)
 
-            # Write compressed file directly
-            compressed_path = ValiBkpUtils.get_vcp_output_path()
+            # Write compressed file directly (use test path if running unit tests)
+            compressed_path = ValiBkpUtils.get_vcp_output_path(
+                running_unit_tests=self.position_manager.running_unit_tests
+            )
             with open(compressed_path, 'wb') as f:
                 f.write(compressed_data)
             #print(f"Wrote compressed checkpoint to {compressed_path}")
@@ -267,8 +298,8 @@ class RequestCoreManager:
         get_dash_data_hotkey: str | None = None,
         write_and_upload_production_files=False,
         create_production_files=True,
-        save_production_files=True,
-        upload_production_files=True
+        save_production_files=False,
+        upload_production_files=False
     ) -> dict:
         """
         Generate request core data and optionally create/save/upload production files.
@@ -400,4 +431,8 @@ if __name__ == "__main__":
 
     rcm = RequestCoreManager(position_manager, subtensor_weight_setter, plagiarism_detector, limit_order_manager, contract_manager=contract_manager)
 
-    rcm.generate_request_core(write_and_upload_production_files=True)
+    rcm.generate_request_core(
+        create_production_files=True,
+        save_production_files=True,
+        upload_production_files=True
+    )
