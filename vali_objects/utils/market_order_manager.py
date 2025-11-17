@@ -84,7 +84,7 @@ class MarketOrderManager():
     def _add_order_to_existing_position(self, existing_position, trade_pair, signal_order_type: OrderType,
                                         quantity: float, leverage: float, value: float, order_time_ms: int, miner_hotkey: str,
                                         price_sources, miner_order_uuid: str, miner_repo_version: str, src:OrderSource,
-                                        account_size=None, usd_base_price=None, execution_type=ExecutionType.MARKET) -> Order:
+                                        account_size=None, usd_base_price=None, execution_type=ExecutionType.MARKET, limit_price=None) -> Order:
         # Must be locked by caller
         step_start = TimeUtil.now_in_millis()
 
@@ -111,6 +111,7 @@ class MarketOrderManager():
             bid=best_price_source.bid,
             ask=best_price_source.ask,
             src=src,
+            limit_price=limit_price,
             execution_type=execution_type
         )
         order_creation_ms = TimeUtil.now_in_millis() - step_start
@@ -311,8 +312,10 @@ class MarketOrderManager():
                 add_order_start = TimeUtil.now_in_millis()
                 if execution_type == ExecutionType.LIMIT:
                     new_src = OrderSource.ORDER_SRC_LIMIT_FILLED
+                    limit_price = signal.get("limit_price")
                 else:
                     new_src = OrderSource.ORGANIC
+                    limit_price = None
 
                 # Calculate price and USD conversions
                 best_price_source = price_sources[0]
@@ -325,7 +328,7 @@ class MarketOrderManager():
                 created_order = self._add_order_to_existing_position(existing_position, trade_pair, signal_order_type,
                                                      quantity, leverage, value, now_ms, miner_hotkey,
                                                      price_sources, miner_order_uuid, miner_repo_version,
-                                                     new_src, account_size, usd_base_price, execution_type)
+                                                     new_src, account_size, usd_base_price, execution_type, limit_price)
                 add_order_ms = TimeUtil.now_in_millis() - add_order_start
                 bt.logging.info(f"[LOCK_WORK] Add order to position took {add_order_ms}ms")
             else:
