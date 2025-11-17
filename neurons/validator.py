@@ -286,7 +286,8 @@ class Validator(ValidatorBase):
                                                               sync_in_progress=self.sync_in_progress,
                                                               slack_notifier=self.slack_notifier,
                                                               sync_epoch=self.sync_epoch,
-                                                              asset_selection_manager=self.asset_selection_manager)
+                                                              asset_selection_manager=self.asset_selection_manager,
+                                                              start_daemon=True)
 
         self.market_order_manager = MarketOrderManager(self.live_price_fetcher, self.position_locks, self.price_slippage_model,
                self.config, self.position_manager, self.shared_queue_websockets, self.contract_manager)
@@ -381,7 +382,7 @@ class Validator(ValidatorBase):
 
         # Step 5 & 6: RPC managers (EliminationManager and ChallengePeriodManager)
         # are automatically started in their __init__ methods via _initialize_service()
-        # No need to manually start them here
+        # ChallengePeriodManager daemon process also started via start_daemon=True
         bt.logging.info("Step 5-6: EliminationManager and ChallengePeriodManager RPC servers already started")
 
         # Step 7: Initialize SubtensorWeightSetter
@@ -595,6 +596,7 @@ class Validator(ValidatorBase):
         bt.logging.warning("Stopping plagiarism detector...")
         self.plagiarism_thread.join()
         # MDDChecker daemon shuts down automatically via shutdown_dict
+        # ChallengePeriodManager daemon shuts down automatically via shutdown_dict
         # EliminationManager and ChallengePeriodManager RPC servers shutdown automatically via shutdown_dict
         # LivePriceFetcher RPC health checker shuts down automatically via RPCServiceBase
         bt.logging.warning("Stopping slippage refresher...")

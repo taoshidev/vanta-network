@@ -2,6 +2,8 @@
 # Copyright © 2024 Taoshi Inc
 from typing import Optional, List
 from multiprocessing import Process
+import multiprocessing
+import bittensor as bt
 from shared_objects.rpc_service_base import RPCServiceBase
 from shared_objects.cache_controller import CacheController
 from vali_objects.utils.miner_bucket_enum import MinerBucket
@@ -28,7 +30,8 @@ class ChallengePeriodManager(RPCServiceBase, CacheController):
             shutdown_dict=None,
             sync_in_progress=None,
             slack_notifier=None,
-            sync_epoch=None):
+            sync_epoch=None,
+            start_daemon=False):
 
         # Initialize RPCServiceBase
         RPCServiceBase.__init__(
@@ -60,6 +63,39 @@ class ChallengePeriodManager(RPCServiceBase, CacheController):
 
         # Start the RPC service (this replaces direct initialization)
         self._initialize_service()
+
+        # Start daemon process if requested (for continuous challenge period updates)
+        if start_daemon:
+            self._start_daemon_process()
+
+    def _start_daemon_process(self):
+        """
+        Start the daemon process for continuous challenge period updates.
+
+        The daemon process runs run_update_loop() on the server, which continuously
+        refreshes the challenge period manager state (updating buckets, handling
+        promotions/demotions, etc.).
+
+        This is separate from the RPC server process - the RPC server handles
+        requests, while the daemon process performs continuous background updates.
+        """
+
+        # Call run_update_loop on the server (either direct or via RPC)
+        if self.running_unit_tests:
+            # In test mode with direct server, just call run_update_loop directly
+            bt.logging.info("ChallengePeriodManager: Test mode - run_update_loop must be called manually")
+            # We don't start a daemon in test mode because tests control the flow
+        else:
+            # In production with RPC server, the server already has run_update_loop
+            # We need to start a daemon process that calls it
+            daemon_process = multiprocessing.Process(
+                target=self._server_proxy.run_update_loop,
+                daemon=True
+            )
+            daemon_process.start()
+            bt.logging.success(
+                f"ChallengePeriodManager daemon process started with PID: {daemon_process.pid}"
+            )
 
     # ==================== Dependency Properties (auto-sync to server in test mode) ====================
 
