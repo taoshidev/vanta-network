@@ -281,18 +281,18 @@ class AssetSelectionManagerServer:
         """
         Get all miner asset selections as a dictionary (RPC method).
 
+        No lock needed - dict iteration is atomic and writes are always atomic.
+
         Returns:
             Dict[str, str]: Dictionary mapping miner hotkeys to their asset class selections (as strings).
                            Returns empty dict if no selections exist.
         """
         try:
-            # Only need lock for the copy operation to get a consistent snapshot
-            with self.asset_selection_lock:
-                # Convert the dict to include string values
-                return {
-                    hotkey: asset_class.value if hasattr(asset_class, 'value') else str(asset_class)
-                    for hotkey, asset_class in self.asset_selections.items()
-                }
+            # No lock needed for reads - dict comprehension is atomic
+            return {
+                hotkey: asset_class.value if hasattr(asset_class, 'value') else str(asset_class)
+                for hotkey, asset_class in self.asset_selections.items()
+            }
         except Exception as e:
             bt.logging.error(f"Error getting all miner selections: {e}")
             return {}
@@ -362,6 +362,21 @@ class AssetSelectionManagerServer:
         Save asset selections to disk (RPC method).
         """
         return self._save_asset_selections_to_disk()
+
+    def get_asset_selections_rpc(self) -> Dict[str, TradePairCategory]:
+        """
+        Get the raw asset_selections dict (RPC method).
+
+        This allows clients to access the asset_selections dict via RPC instead of
+        trying to access it as a direct attribute (which doesn't work with AutoProxy).
+
+        No lock needed - dict() copy operation is atomic and writes are always atomic.
+
+        Returns:
+            Dict[str, TradePairCategory]: Dictionary mapping hotkey to TradePairCategory enum
+        """
+        # No lock needed for reads - dict copy is atomic
+        return dict(self.asset_selections)
 
     # ========================================================================
     # BROADCASTING METHODS (internal to server)

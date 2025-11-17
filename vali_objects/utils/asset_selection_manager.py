@@ -56,6 +56,10 @@ class AssetSelectionManager(RPCServiceBase):
             slack_notifier=slack_notifier
         )
 
+        # Cache static file path locally (no need for RPC call)
+        from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
+        self._asset_selections_file = ValiBkpUtils.get_asset_selections_file_location(running_unit_tests=running_unit_tests)
+
         # Initialize the service (RPC mode or direct mode for tests)
         self._initialize_service()
 
@@ -206,23 +210,30 @@ class AssetSelectionManager(RPCServiceBase):
         """
         Get asset selections dict from server (backward compatibility for tests).
 
-        In test mode (running_unit_tests=True), this provides direct access to the
-        server's asset_selections dict. In production, this would require an RPC call.
+        In test mode, provides direct access to server's dict for mutation.
+        In production, uses RPC call which returns a copy.
 
         Returns:
             Dict mapping hotkey to TradePairCategory
         """
-        return self._server_proxy.asset_selections
+        if self.running_unit_tests:
+            # Direct mode: return actual dict reference for test mutations
+            return self._server_proxy.asset_selections
+        else:
+            # RPC mode: return copy via RPC call
+            return self._server_proxy.get_asset_selections_rpc()
 
     @property
     def ASSET_SELECTIONS_FILE(self) -> str:
         """
-        Get asset selections file path from server (backward compatibility for tests).
+        Get asset selections file path (backward compatibility for tests).
+
+        Cached locally during initialization - no RPC call needed for static value.
 
         Returns:
             File path for asset selections persistence
         """
-        return self._server_proxy.ASSET_SELECTIONS_FILE
+        return self._asset_selections_file
 
     def _to_dict(self) -> Dict:
         """Convert asset selections to disk format (backward compatibility)."""

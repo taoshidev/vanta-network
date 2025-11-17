@@ -85,6 +85,8 @@ class MarketOrderManager():
                                         price_sources, miner_order_uuid: str, miner_repo_version: str, src:OrderSource,
                                         usd_base_price=None) -> Order:
         # Must be locked by caller
+        step_start = TimeUtil.now_in_millis()
+
         best_price_source = price_sources[0]
         price = best_price_source.parse_appropriate_price(order_time_ms, trade_pair.is_forex, signal_order_type, existing_position)
 
@@ -109,14 +111,47 @@ class MarketOrderManager():
             ask=best_price_source.ask,
             src=src
         )
+        order_creation_ms = TimeUtil.now_in_millis() - step_start
+        bt.logging.info(f"[ADD_ORDER_DETAIL] Order object creation took {order_creation_ms}ms")
+
+        # Calculate USD conversions
+        step_start = TimeUtil.now_in_millis()
         if usd_base_price is None:
             usd_base_price = self.live_price_fetcher.get_usd_base_conversion(trade_pair, order_time_ms, price, signal_order_type, existing_position)
         order.usd_base_rate = usd_base_price
         order.quote_usd_rate = self.live_price_fetcher.get_quote_usd_conversion(order, existing_position)
+        usd_conversion_ms = TimeUtil.now_in_millis() - step_start
+        bt.logging.info(f"[ADD_ORDER_DETAIL] USD conversion calculation took {usd_conversion_ms}ms")
+
+        # Refresh features - this may make expensive API calls on new day
+        step_start = TimeUtil.now_in_millis()
+        self.price_slippage_model.refresh_features_daily(time_ms=order_time_ms)
+        refresh_features_ms = TimeUtil.now_in_millis() - step_start
+        if refresh_features_ms > 100:
+            bt.logging.warning(f"[ADD_ORDER_DETAIL] ⚠️  refresh_features_daily took {refresh_features_ms}ms (BLOCKING ORDER FILL)")
+        else:
+            bt.logging.info(f"[ADD_ORDER_DETAIL] refresh_features_daily took {refresh_features_ms}ms")
+
+        step_start = TimeUtil.now_in_millis()
+        order.slippage = PriceSlippageModel.calculate_slippage(order.bid, order.ask, order, existing_position.account_size)
+        slippage_calc_ms = TimeUtil.now_in_millis() - step_start
+        bt.logging.info(f"[ADD_ORDER_DETAIL] Slippage calculation took {slippage_calc_ms}ms")
+
+        step_start = TimeUtil.now_in_millis()
         net_portfolio_leverage = self.position_manager.calculate_net_portfolio_leverage(miner_hotkey)
-        order.slippage = PriceSlippageModel.calculate_slippage(order.bid, order.ask, order)
+        leverage_calc_ms = TimeUtil.now_in_millis() - step_start
+        bt.logging.info(f"[ADD_ORDER_DETAIL] Net portfolio leverage calc took {leverage_calc_ms}ms")
+
+        step_start = TimeUtil.now_in_millis()
         existing_position.add_order(order, self.live_price_fetcher, net_portfolio_leverage)
+        add_order_ms = TimeUtil.now_in_millis() - step_start
+        bt.logging.info(f"[ADD_ORDER_DETAIL] Position.add_order() took {add_order_ms}ms")
+
+        step_start = TimeUtil.now_in_millis()
         self.position_manager.save_miner_position(existing_position)
+        save_position_ms = TimeUtil.now_in_millis() - step_start
+        bt.logging.info(f"[ADD_ORDER_DETAIL] Save position to disk took {save_position_ms}ms")
+
         # Update cooldown cache after successful order processing
         self.last_order_time_cache[(miner_hotkey, trade_pair.trade_pair_id)] = order_time_ms
         # NOTE: UUID tracking happens in validator process, not here
@@ -124,7 +159,11 @@ class MarketOrderManager():
         if self.config.serve and miner_hotkey != ValiConfig.DEVELOPMENT_HOTKEY:
             # Add the position to the queue for broadcasting
             # Skip websocket messages for development hotkey
+            step_start = TimeUtil.now_in_millis()
             self.shared_queue_websockets.put(existing_position.to_websocket_dict(miner_repo_version=miner_repo_version))
+            websocket_ms = TimeUtil.now_in_millis() - step_start
+            bt.logging.info(f"[ADD_ORDER_DETAIL] Websocket queue put took {websocket_ms}ms")
+
         return order
 
 
