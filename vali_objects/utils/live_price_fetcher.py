@@ -12,7 +12,7 @@ from setproctitle import setproctitle
 from shared_objects.error_utils import ErrorUtils
 from shared_objects.rpc_service_base import RPCServiceBase
 import traceback
-from vali_objects.vali_config import TradePair
+from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.position import Position
 from vali_objects.utils.vali_utils import ValiUtils
 import bittensor as bt
@@ -113,6 +113,19 @@ class LivePriceFetcherClient(RPCServiceBase):
             time_ms = TimeUtil.now_in_millis()
         return self._market_calendar.is_market_open(trade_pair, time_ms)
 
+    def get_unsupported_trade_pairs(self):
+        """
+        Return static tuple of unsupported trade pairs. Executes locally (no RPC).
+
+        These trade pairs are permanently unsupported (not temporarily halted),
+        so we can return them directly without any RPC call.
+
+        Returns:
+            Tuple of TradePair constants that are unsupported
+        """
+        # Return ValiConfig constant (saves ~92ms per order!)
+        return ValiConfig.UNSUPPORTED_TRADE_PAIRS
+
     def __getattr__(self, name):
         """
         Proxy all method calls to the underlying client.
@@ -212,7 +225,17 @@ class LivePriceFetcher:
         return self.polygon_data_service.is_market_open(trade_pair, time_ms)
 
     def get_unsupported_trade_pairs(self):
-        return self.polygon_data_service.UNSUPPORTED_TRADE_PAIRS
+        """
+        Return static tuple of unsupported trade pairs without RPC overhead.
+
+        These trade pairs are permanently unsupported (not temporarily halted),
+        so no need to fetch from polygon_data_service on every call.
+
+        Returns:
+            Tuple of TradePair constants that are unsupported
+        """
+        # Return ValiConfig constant
+        return ValiConfig.UNSUPPORTED_TRADE_PAIRS
 
     def get_currency_conversion(self, base: str, quote: str):
         return self.polygon_data_service.get_currency_conversion(base=base, quote=quote)

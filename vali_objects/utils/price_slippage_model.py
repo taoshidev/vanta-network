@@ -1,5 +1,6 @@
 import math
 import time
+import threading
 from collections import defaultdict
 from zoneinfo import ZoneInfo
 
@@ -29,6 +30,10 @@ class PriceSlippageModel:
     fetch_slippage_data = False
     recalculate_slippage = False
     last_refresh_time_ms = 0
+
+    # Refresh coordination (no lock needed - dict writes are atomic)
+    _refresh_in_progress = False
+    _refresh_current_date = None
 
     def __init__(self, live_price_fetcher=None, running_unit_tests=False, is_backtesting=False,
                  fetch_slippage_data=False, recalculate_slippage=False):
@@ -170,37 +175,110 @@ class PriceSlippageModel:
 
 
     @classmethod
-    def refresh_features_daily(cls, time_ms:int=None, write_to_disk:bool=True):
+    def refresh_features_daily(cls, time_ms: int = None, write_to_disk: bool = True,
+                              allow_blocking: bool = False):
         """
-        Calculate and store model features (average daily volume and annualized volatility) for new days
+        Calculate and store model features (average daily volume and annualized volatility) for new days.
+
+        No locks needed - dict writes are atomic. Uses flag to prevent duplicate expensive work.
+
+        Args:
+            time_ms: Timestamp in milliseconds (defaults to now)
+            write_to_disk: Whether to persist features to disk
+            allow_blocking: If False (default), uses fallback if refresh in progress.
+                           If True, skips refresh if already in progress (daemon will retry).
+
+        Returns:
+            True if features are available for the date, False otherwise
         """
         if not time_ms:
             time_ms = TimeUtil.now_in_millis()
         current_date = TimeUtil.millis_to_short_date_str(time_ms)
 
+        # Fast path: Features already cached
         if current_date in cls.features:
-            return
+            return True
 
+        # Throttle: Prevent rapid successive calls (except in backtesting)
         if not cls.is_backtesting and time_ms - cls.last_refresh_time_ms < 1000:
-            return
+            return current_date in cls.features
 
-        bt.logging.info(
-            f"Calculating avg daily volume and annualized volatility for new day UTC {current_date}")
-        trade_pairs = [tp for tp in TradePair if tp.is_forex or tp.is_equities]
-        tp_to_adv, tp_to_vol = cls.get_features(trade_pairs=trade_pairs, processed_ms=time_ms)
-        if tp_to_adv and tp_to_vol:
-            cls.features[current_date] = {
-                "adv": tp_to_adv,
-                "vol": tp_to_vol
-            }
+        # Check if refresh is already in progress for this date
+        if cls._refresh_in_progress and cls._refresh_current_date == current_date:
+            if allow_blocking:
+                # Background daemon path: skip this cycle, will retry in 10 minutes
+                bt.logging.debug(f"Refresh already in progress for {current_date}, daemon will retry later")
+                return current_date in cls.features
+            else:
+                # Order filling path: don't block, use fallback from previous day
+                bt.logging.warning(
+                    f"Refresh in progress for {current_date}, using fallback to avoid blocking order fill"
+                )
+                return cls._get_fallback_features(current_date)
 
-            if write_to_disk:
-                cls.write_features_from_memory_to_disk()
+        # Set flag to indicate refresh in progress (atomic)
+        cls._refresh_in_progress = True
+        cls._refresh_current_date = current_date
+
+        try:
             bt.logging.info(
-                    f"Completed refreshing avg daily volume and annualized volatility for new day UTC {current_date}")
-        else:
-            bt.logging.info(f"Skipping feature update for {current_date} due to missing data. tp_to_adv: {bool(tp_to_adv)}, tp_to_vol: {bool(tp_to_vol)}")
-        cls.last_refresh_time_ms = time_ms
+                f"Calculating avg daily volume and annualized volatility for new day UTC {current_date}"
+            )
+            trade_pairs = [tp for tp in TradePair if tp.is_forex or tp.is_equities]
+            tp_to_adv, tp_to_vol = cls.get_features(trade_pairs=trade_pairs, processed_ms=time_ms)
+
+            if tp_to_adv and tp_to_vol:
+                # Atomic dict write - no lock needed
+                cls.features[current_date] = {
+                    "adv": tp_to_adv,
+                    "vol": tp_to_vol
+                }
+
+                if write_to_disk:
+                    cls.write_features_from_memory_to_disk()
+
+                bt.logging.info(
+                    f"Completed refreshing avg daily volume and annualized volatility for new day UTC {current_date}"
+                )
+                cls.last_refresh_time_ms = time_ms
+                return True
+            else:
+                bt.logging.warning(
+                    f"Skipping feature update for {current_date} due to missing data. "
+                    f"tp_to_adv: {bool(tp_to_adv)}, tp_to_vol: {bool(tp_to_vol)}"
+                )
+                return False
+        finally:
+            # Clear flag (atomic)
+            cls._refresh_in_progress = False
+            cls._refresh_current_date = None
+
+    @classmethod
+    def _get_fallback_features(cls, current_date: str) -> bool:
+        """
+        Attempt to use features from previous day as fallback when current day is refreshing.
+
+        Returns:
+            True if fallback features were found and copied, False otherwise
+        """
+        # Try to find most recent cached features
+        if not cls.features:
+            bt.logging.error(f"No cached features available for fallback on {current_date}")
+            return False
+
+        # Get most recent date from cache
+        most_recent_date = max(cls.features.keys())
+
+        bt.logging.warning(
+            f"Using fallback features from {most_recent_date} for date {current_date} "
+            f"(refresh in progress)"
+        )
+
+        # Create shallow copy of most recent features for current date
+        # This is temporary - will be overwritten when background refresh completes
+        cls.features[current_date] = cls.features[most_recent_date].copy()
+
+        return True
 
     @classmethod
     def get_features(cls, trade_pairs: list[TradePair], processed_ms: int, adv_lookback_window: int = 10,
@@ -338,12 +416,62 @@ class PriceSlippageModel:
             setproctitle("vali_SlippageRefresher")
             bt.logging.info("PriceSlippageFeatureRefresher daemon started")
 
+            # Load persisted features from disk on startup
+            try:
+                bt.logging.info("Loading persisted slippage features from disk...")
+                features_file = ValiBkpUtils.get_slippage_model_features_file()
+                persisted_features = ValiUtils.get_vali_json_file_dict(features_file)
+
+                if persisted_features:
+                    # Convert persisted dict to defaultdict(dict) and load
+                    PriceSlippageModel.features = defaultdict(dict, persisted_features)
+
+                    # Log what was loaded
+                    dates_loaded = sorted(persisted_features.keys())
+                    most_recent = dates_loaded[-1] if dates_loaded else None
+
+                    bt.logging.success(
+                        f"✅ Loaded {len(dates_loaded)} days of slippage features from disk. "
+                        f"Date range: {dates_loaded[0] if dates_loaded else 'N/A'} to {most_recent or 'N/A'}"
+                    )
+
+                    if most_recent:
+                        # Show sample of most recent data
+                        recent_data = persisted_features[most_recent]
+                        trade_pairs_count = len(recent_data.get('adv', {}))
+                        bt.logging.info(
+                            f"Most recent date ({most_recent}) has features for {trade_pairs_count} trade pairs"
+                        )
+                else:
+                    bt.logging.warning("⚠️  No persisted slippage features found on disk - starting fresh")
+            except FileNotFoundError:
+                bt.logging.warning("⚠️  Slippage features file not found - starting fresh")
+            except Exception as e:
+                bt.logging.error(f"❌ Error loading persisted slippage features: {e}")
+                # Continue with empty features - will be populated by refresh
+
+            # Pre-warm cache on startup to ensure features available for today
+            try:
+                bt.logging.info("Pre-warming slippage feature cache for current date...")
+                success = self.price_slippage_model.refresh_features_daily(allow_blocking=True)
+
+                if success:
+                    current_date = TimeUtil.millis_to_short_date_str(TimeUtil.now_in_millis())
+                    bt.logging.success(f"✅ Slippage feature cache pre-warmed successfully for {current_date}")
+                else:
+                    bt.logging.warning("⚠️  Pre-warming completed but features may not be available")
+            except Exception as e:
+                bt.logging.error(f"❌ Failed to pre-warm slippage feature cache: {e}")
+                import traceback as tb
+                bt.logging.error(tb.format_exc())
+                # Continue anyway - will retry in main loop
+
             # Run indefinitely - process will terminate when main process exits (daemon=True)
             while True:
                 try:
-                    # Refresh features - the method has built-in date checking
-                    # and will only update if it's a new day
-                    self.price_slippage_model.refresh_features_daily()
+                    # Refresh features with blocking allowed (daemon can afford to wait/retry)
+                    # The method has built-in date checking and will only update if it's a new day
+                    self.price_slippage_model.refresh_features_daily(allow_blocking=True)
 
                     # Sleep for 10 minutes between checks
                     # The refresh_features_daily method has built-in logic to only

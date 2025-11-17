@@ -13,7 +13,7 @@ from setproctitle import setproctitle
 from tiingo import TiingoWebsocketClient
 
 from time_util.time_util import TimeUtil, UnifiedMarketCalendar
-from vali_objects.vali_config import TradePair, TradePairCategory
+from vali_objects.vali_config import TradePair, TradePairCategory, ValiConfig
 from vali_objects.vali_dataclasses.recent_event_tracker import RecentEventTracker
 from vali_objects.vali_dataclasses.price_source import PriceSource
 
@@ -77,7 +77,8 @@ class BaseDataService():
         self.last_restart_time = {}
         self.tpc_to_last_event_time = {t: 0 for t in self.enabled_websocket_categories}
 
-        self.UNSUPPORTED_TRADE_PAIRS = (TradePair.SPX, TradePair.DJI, TradePair.NDX, TradePair.VIX, TradePair.FTSE, TradePair.GDAXI, TradePair.TAOUSD)
+        # Reference ValiConfig constant for backward compatibility
+        self.UNSUPPORTED_TRADE_PAIRS = ValiConfig.UNSUPPORTED_TRADE_PAIRS
 
         for trade_pair in TradePair:
             assert trade_pair.trade_pair_category in self.trade_pair_category_to_longest_allowed_lag_s, \

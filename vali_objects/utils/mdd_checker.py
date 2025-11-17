@@ -4,7 +4,9 @@ import threading
 import time
 import traceback
 from typing import List, Dict
-
+import multiprocessing
+from setproctitle import setproctitle
+from shared_objects.error_utils import ErrorUtils
 from time_util.time_util import TimeUtil
 from vali_objects.utils.price_slippage_model import PriceSlippageModel
 from vali_objects.vali_config import ValiConfig, TradePair
@@ -55,7 +57,6 @@ class MDDChecker(CacheController):
 
     def _start_daemon_process(self):
         """Start the daemon process for continuous MDD checking."""
-        import multiprocessing
         daemon_process = multiprocessing.Process(
             target=self.run_update_loop,
             daemon=True
@@ -181,8 +182,6 @@ class MDDChecker(CacheController):
         This method is designed to run in a separate process and will check MDD
         continuously until shutdown is signaled.
         """
-        from setproctitle import setproctitle
-        from shared_objects.error_utils import ErrorUtils
         setproctitle("vali_MDDChecker")
 
         bt.logging.info("MDDChecker process started")

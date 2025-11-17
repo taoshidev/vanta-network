@@ -340,6 +340,10 @@ class ValiConfig:
         'USDMXN'
     }
 
+    # Trade pairs that are permanently unsupported (no price data available)
+    # This constant is referenced by TradePair enum values after class definition
+    UNSUPPORTED_TRADE_PAIRS = None  # Will be set after TradePair definition
+
     MAX_UNFILLED_LIMIT_ORDERS = 100
     LIMIT_ORDER_CHECK_REFRESH_MS = 10 * 1000 # 10 seconds
     LIMIT_ORDER_FILL_INTERVAL_MS = 30 * 1000 # 30 seconds
@@ -632,3 +636,8 @@ class TradePair(Enum):
 
 TRADE_PAIR_ID_TO_TRADE_PAIR = {x.trade_pair_id: x for x in TradePair}
 TRADE_PAIR_STR_TO_TRADE_PAIR = {x.trade_pair: x for x in TradePair}
+
+# Set UNSUPPORTED_TRADE_PAIRS now that TradePair enum is defined
+# These are trade pairs that have no price data available (not just temporarily halted)
+ValiConfig.UNSUPPORTED_TRADE_PAIRS = (TradePair.SPX, TradePair.DJI, TradePair.NDX, TradePair.VIX,
+                                      TradePair.FTSE, TradePair.GDAXI, TradePair.TAOUSD)

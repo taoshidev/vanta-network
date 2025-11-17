@@ -125,10 +125,23 @@ class MarketOrderManager():
 
         # Refresh features - this may make expensive API calls on new day
         step_start = TimeUtil.now_in_millis()
-        self.price_slippage_model.refresh_features_daily(time_ms=order_time_ms)
+        features_available = self.price_slippage_model.refresh_features_daily(
+            time_ms=order_time_ms,
+            allow_blocking=False  # Don't block order filling!
+        )
         refresh_features_ms = TimeUtil.now_in_millis() - step_start
+
+        if not features_available:
+            bt.logging.error(
+                f"[ADD_ORDER_DETAIL] ⚠️  Features not available for slippage calculation! "
+                f"This will affect slippage accuracy."
+            )
+
         if refresh_features_ms > 100:
-            bt.logging.warning(f"[ADD_ORDER_DETAIL] ⚠️  refresh_features_daily took {refresh_features_ms}ms (BLOCKING ORDER FILL)")
+            bt.logging.warning(
+                f"[ADD_ORDER_DETAIL] ⚠️  refresh_features_daily took {refresh_features_ms}ms "
+                f"(BLOCKING ORDER FILL)"
+            )
         else:
             bt.logging.info(f"[ADD_ORDER_DETAIL] refresh_features_daily took {refresh_features_ms}ms")
 
