@@ -151,13 +151,8 @@ class LimitOrderManager(CacheController):
         try:
             trade_pair = TradePair.from_trade_pair_id(trade_pair_id)
 
-            orders_to_cancel = []
-
-            if order_uuid:
-                # Cancel specific order
-                orders_to_cancel = self._find_orders_to_cancel_by_uuid(miner_hotkey, order_uuid)
-            else:
-                # Cancel all unfilled orders for this trade pair
+            orders_to_cancel = self._find_orders_to_cancel_by_uuid(miner_hotkey, order_uuid)
+            if not orders_to_cancel:
                 orders_to_cancel = self._find_orders_to_cancel_by_trade_pair(miner_hotkey, trade_pair)
 
             if not orders_to_cancel:
