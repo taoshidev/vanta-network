@@ -52,7 +52,8 @@ class MarketOrderManager():
                 self._add_order_to_existing_position(existing_open_pos, trade_pair, OrderType.FLAT,
                                                      0.0, 0.0, 0.0, force_close_order_time, miner_hotkey,
                                                      price_sources, force_close_order_uuid, miner_repo_version,
-                                                     OrderSource.MAX_ORDERS_PER_POSITION_CLOSE)
+                                                     OrderSource.MAX_ORDERS_PER_POSITION_CLOSE,
+                                                     existing_open_pos.account_size)
                 time.sleep(0.1)  # Put 100ms between two consecutive websocket writes for the same trade pair and hotkey. We need the new order to be seen after the FLAT.
             else:
                 # If the position is closed, raise an exception. This can happen if the miner is eliminated in the main
@@ -83,7 +84,7 @@ class MarketOrderManager():
     def _add_order_to_existing_position(self, existing_position, trade_pair, signal_order_type: OrderType,
                                         quantity: float, leverage: float, value: float, order_time_ms: int, miner_hotkey: str,
                                         price_sources, miner_order_uuid: str, miner_repo_version: str, src:OrderSource,
-                                        usd_base_price=None) -> Order:
+                                        account_size=None, usd_base_price=None, execution_type=ExecutionType.MARKET) -> Order:
         # Must be locked by caller
         step_start = TimeUtil.now_in_millis()
 
@@ -109,7 +110,8 @@ class MarketOrderManager():
             price_sources=price_sources,
             bid=best_price_source.bid,
             ask=best_price_source.ask,
-            src=src
+            src=src,
+            execution_type=execution_type
         )
         order_creation_ms = TimeUtil.now_in_millis() - step_start
         bt.logging.info(f"[ADD_ORDER_DETAIL] Order object creation took {order_creation_ms}ms")
@@ -258,6 +260,7 @@ class MarketOrderManager():
         # TIMING: Extract signal data
         extract_start = TimeUtil.now_in_millis()
         signal_order_type = OrderType.from_string(signal["order_type"])
+        execution_type = ExecutionType.from_string(signal.get("execution_type"))
         extract_ms = TimeUtil.now_in_millis() - extract_start
         bt.logging.info(f"[TIMING] Extract signal data took {extract_ms}ms")
 
@@ -306,7 +309,7 @@ class MarketOrderManager():
             created_order = None
             if existing_position:
                 add_order_start = TimeUtil.now_in_millis()
-                if signal.get('execution_type') == ExecutionType.LIMIT.name:
+                if execution_type == ExecutionType.LIMIT:
                     new_src = OrderSource.ORDER_SRC_LIMIT_FILLED
                 else:
                     new_src = OrderSource.ORGANIC
@@ -322,7 +325,7 @@ class MarketOrderManager():
                 created_order = self._add_order_to_existing_position(existing_position, trade_pair, signal_order_type,
                                                      quantity, leverage, value, now_ms, miner_hotkey,
                                                      price_sources, miner_order_uuid, miner_repo_version,
-                                                     new_src, usd_base_price)
+                                                     new_src, account_size, usd_base_price, execution_type)
                 add_order_ms = TimeUtil.now_in_millis() - add_order_start
                 bt.logging.info(f"[LOCK_WORK] Add order to position took {add_order_ms}ms")
             else:

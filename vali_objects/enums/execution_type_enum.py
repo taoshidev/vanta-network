@@ -16,7 +16,7 @@ class ExecutionType(Enum):
     @staticmethod
     def from_string(execution_type_value: str):
         e_map = ExecutionType.execution_type_map()
-        if execution_type_value in e_map:
+        if execution_type_value.upper() in e_map:
             return e_map[execution_type_value]
         else:
             raise ValueError(f"No matching order type found for value '{execution_type_value}'. Please check the input "
