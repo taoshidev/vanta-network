@@ -221,7 +221,7 @@ class TestLimitOrders(TestBase):
         mock_position = self.create_test_position()
         mock_position.orders = [filled_order]
 
-        self.mock_market_order_manager._process_market_order.return_value = (None, mock_position)
+        self.mock_market_order_manager._process_market_order.return_value = (None, mock_position, None)
 
         # Mock live_price_fetcher to return triggering price
         trigger_price_source = self.create_test_price_source(48500.0, bid=48500.0, ask=48500.0)
@@ -570,7 +570,7 @@ class TestLimitOrders(TestBase):
         mock_position = self.create_test_position()
         mock_position.orders = [filled_order]
 
-        self.mock_market_order_manager._process_market_order.return_value = (None, mock_position)
+        self.mock_market_order_manager._process_market_order.return_value = (None, mock_position, None)
 
         # Store order first
         self.limit_order_manager._limit_orders[self.DEFAULT_TRADE_PAIR] = {
@@ -611,6 +611,7 @@ class TestLimitOrders(TestBase):
         # Mock fill error
         self.mock_market_order_manager._process_market_order.return_value = (
             "Error: position not found",
+            None,
             None
         )
 
@@ -721,7 +722,7 @@ class TestLimitOrders(TestBase):
         filled_order.price = 49000.0
         mock_position = self.create_test_position()
         mock_position.orders = [filled_order]
-        self.mock_market_order_manager._process_market_order.return_value = (None, mock_position)
+        self.mock_market_order_manager._process_market_order.return_value = (None, mock_position, None)
 
         self.limit_order_manager.check_and_fill_limit_orders()
 

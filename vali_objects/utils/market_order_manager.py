@@ -181,13 +181,15 @@ class MarketOrderManager():
 
     def process_market_order(self, synapse, miner_order_uuid, miner_repo_version, trade_pair, now_ms, signal, miner_hotkey, price_sources=None):
 
-        err_message, existing_position = self._process_market_order(miner_order_uuid, miner_repo_version, trade_pair,
+        err_message, existing_position, created_order = self._process_market_order(miner_order_uuid, miner_repo_version, trade_pair,
                                                                     now_ms, signal, miner_hotkey, price_sources)
         if err_message:
             synapse.successfully_processed = False
             synapse.error_message = err_message
         if existing_position:
             synapse.order_json = existing_position.orders[-1].__str__()
+
+        return created_order
 
     def _process_market_order(self, miner_order_uuid, miner_repo_version, trade_pair, now_ms, signal, miner_hotkey, price_sources):
         # TIMING: Price fetching
@@ -231,7 +233,7 @@ class MarketOrderManager():
 
             if err_msg:
                 bt.logging.error(err_msg)
-                return err_msg, existing_position
+                return err_msg, existing_position, None
 
             # TIMING: Get account size
             account_size_start = TimeUtil.now_in_millis()
@@ -249,6 +251,7 @@ class MarketOrderManager():
             bt.logging.info(f"[LOCK_WORK] Get/create position took {get_position_ms}ms")
 
             # TIMING: Add order to position
+            created_order = None
             if existing_position:
                 add_order_start = TimeUtil.now_in_millis()
                 if signal.get('execution_type') == ExecutionType.LIMIT.name:
@@ -264,7 +267,7 @@ class MarketOrderManager():
                 # Parse order size (supports leverage, value, or quantity)
                 quantity, leverage, value = self.parse_order_size(signal, usd_base_price, trade_pair, existing_position.account_size)
 
-                self._add_order_to_existing_position(existing_position, trade_pair, signal_order_type,
+                created_order = self._add_order_to_existing_position(existing_position, trade_pair, signal_order_type,
                                                      quantity, leverage, value, now_ms, miner_hotkey,
                                                      price_sources, miner_order_uuid, miner_repo_version,
                                                      new_src, usd_base_price)
@@ -282,5 +285,5 @@ class MarketOrderManager():
         # TIMING: Time from lock release to try block end
         time_after_lock = TimeUtil.now_in_millis() - lock_released_time
         bt.logging.info(f"[TIMING] Time from lock release to try block end: {time_after_lock}ms")
-        return err_msg, existing_position
+        return err_msg, existing_position, created_order
 

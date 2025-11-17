@@ -854,7 +854,7 @@ class Validator(ValidatorBase):
 
             else:
                 # Use OrderProcessor to handle MARKET order
-                OrderProcessor.process_market_order(
+                order = OrderProcessor.process_market_order(
                     signal, trade_pair, miner_order_uuid, now_ms,
                     miner_hotkey, miner_repo_version,
                     self.market_order_manager, synapse=synapse

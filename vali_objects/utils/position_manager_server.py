@@ -238,6 +238,11 @@ class PositionManagerServer:
         # Check if this position already exists (update vs insert)
         existing_position = self.hotkey_to_positions[hotkey].get(position_uuid)
 
+        # Validate trade pair consistency for updates
+        if existing_position:
+            assert existing_position.trade_pair == position.trade_pair, \
+                f"Trade pair mismatch for position {position_uuid}. Existing: {existing_position.trade_pair}, New: {position.trade_pair}"
+
         # Update the main data structure (source of truth)
         self.hotkey_to_positions[hotkey][position_uuid] = position
 

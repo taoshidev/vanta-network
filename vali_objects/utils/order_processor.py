@@ -149,7 +149,7 @@ class OrderProcessor:
     @staticmethod
     def process_market_order(signal: dict, trade_pair, order_uuid: str, now_ms: int,
                             miner_hotkey: str, miner_repo_version: str,
-                            market_order_manager, synapse=None) -> tuple:
+                            market_order_manager, synapse=None):
         """
         Process a MARKET order by calling market_order_manager.
 
@@ -164,23 +164,24 @@ class OrderProcessor:
             synapse: Optional synapse object (for validator path)
 
         Returns:
-            Tuple of (error_message, updated_position)
+            For validator path (synapse): Order object (or None if no order created)
+            For REST API path: Tuple of (error_message, updated_position, created_order)
 
         Raises:
             SignalException: If processing fails
         """
         if synapse:
             # Validator path: use synapse-based method
-            market_order_manager.process_market_order(
+            created_order = market_order_manager.process_market_order(
                 synapse, order_uuid, miner_repo_version, trade_pair,
                 now_ms, signal, miner_hotkey
             )
             # Error checking happens via synapse.error_message
-            return None, None
+            return created_order
         else:
             # REST API path: use direct method
-            err_msg, updated_position = market_order_manager._process_market_order(
+            err_msg, updated_position, created_order = market_order_manager._process_market_order(
                 order_uuid, miner_repo_version, trade_pair,
                 now_ms, signal, miner_hotkey, price_sources=None
             )
-            return err_msg, updated_position
+            return err_msg, updated_position, created_order

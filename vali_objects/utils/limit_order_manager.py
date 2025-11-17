@@ -469,7 +469,7 @@ class LimitOrderManager(CacheController):
         new_src = OrderSource.ORDER_SRC_LIMIT_FILLED
 
         try:
-            err_msg, updated_position = self.market_order_manager._process_market_order(
+            err_msg, updated_position, _ = self.market_order_manager._process_market_order(
                 order.order_uuid,
                 "limit_order",
                 trade_pair,

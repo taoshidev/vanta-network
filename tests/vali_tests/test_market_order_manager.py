@@ -547,7 +547,7 @@ class TestMarketOrderManager(TestBase):
         signal = self.create_test_signal(order_type=OrderType.LONG, leverage=1.0)
         price_sources = [self.create_test_price_source(50000.0, start_ms=now_ms)]
 
-        err_msg, position = self.market_order_manager._process_market_order(
+        err_msg, position, _ = self.market_order_manager._process_market_order(
             miner_order_uuid="test_uuid",
             miner_repo_version="1.0.0",
             trade_pair=self.DEFAULT_TRADE_PAIR,
@@ -578,7 +578,7 @@ class TestMarketOrderManager(TestBase):
             first_order_time = now_ms - ValiConfig.ORDER_COOLDOWN_MS - 1000  # Well before cooldown period
             first_price_sources = [self.create_test_price_source(50000.0, start_ms=first_order_time)]
 
-            err_msg1, existing_position = self.market_order_manager._process_market_order(
+            err_msg1, existing_position, _ = self.market_order_manager._process_market_order(
                 miner_order_uuid="first_order",
                 miner_repo_version="1.0.0",
                 trade_pair=self.DEFAULT_TRADE_PAIR,
@@ -596,7 +596,7 @@ class TestMarketOrderManager(TestBase):
             second_signal = self.create_test_signal(order_type=OrderType.LONG, leverage=0.2)
             second_price_sources = [self.create_test_price_source(51000.0, start_ms=now_ms)]
 
-            err_msg2, position = self.market_order_manager._process_market_order(
+            err_msg2, position, _ = self.market_order_manager._process_market_order(
                 miner_order_uuid="second_order",
                 miner_repo_version="1.0.0",
                 trade_pair=self.DEFAULT_TRADE_PAIR,
@@ -648,7 +648,7 @@ class TestMarketOrderManager(TestBase):
         signal = self.create_test_signal(order_type=OrderType.LONG, leverage=1.0)
         price_sources = [self.create_test_price_source(50000.0, start_ms=now_ms + 1000)]
 
-        err_msg, position = self.market_order_manager._process_market_order(
+        err_msg, position, _ = self.market_order_manager._process_market_order(
             miner_order_uuid="second_order",
             miner_repo_version="1.0.0",
             trade_pair=self.DEFAULT_TRADE_PAIR,
@@ -668,7 +668,7 @@ class TestMarketOrderManager(TestBase):
         signal = self.create_test_signal(order_type=OrderType.FLAT, leverage=0.0)
         price_sources = [self.create_test_price_source(50000.0, start_ms=now_ms)]
 
-        err_msg, position = self.market_order_manager._process_market_order(
+        err_msg, position, _ = self.market_order_manager._process_market_order(
             miner_order_uuid="flat_order",
             miner_repo_version="1.0.0",
             trade_pair=self.DEFAULT_TRADE_PAIR,
@@ -715,7 +715,7 @@ class TestMarketOrderManager(TestBase):
         )
         price_sources = [self.create_test_price_source(50000.0, start_ms=now_ms)]
 
-        err_msg, position = self.market_order_manager._process_market_order(
+        err_msg, position, _ = self.market_order_manager._process_market_order(
             miner_order_uuid="limit_uuid",
             miner_repo_version="1.0.0",
             trade_pair=self.DEFAULT_TRADE_PAIR,
@@ -742,7 +742,7 @@ class TestMarketOrderManager(TestBase):
         )
         price_sources = [self.create_test_price_source(50000.0, start_ms=now_ms)]
 
-        err_msg, position = self.market_order_manager._process_market_order(
+        err_msg, position, _ = self.market_order_manager._process_market_order(
             miner_order_uuid="market_uuid",
             miner_repo_version="1.0.0",
             trade_pair=self.DEFAULT_TRADE_PAIR,
@@ -833,7 +833,7 @@ class TestMarketOrderManager(TestBase):
         price_sources = [self.create_test_price_source(50000.0, start_ms=now_ms)]
 
         # Process order for miner 1
-        _, pos1 = self.market_order_manager._process_market_order(
+        _, pos1, _ = self.market_order_manager._process_market_order(
             miner_order_uuid="miner1_order",
             miner_repo_version="1.0.0",
             trade_pair=self.DEFAULT_TRADE_PAIR,
@@ -844,7 +844,7 @@ class TestMarketOrderManager(TestBase):
         )
 
         # Process order for miner 2
-        _, pos2 = self.market_order_manager._process_market_order(
+        _, pos2, _ = self.market_order_manager._process_market_order(
             miner_order_uuid="miner2_order",
             miner_repo_version="1.0.0",
             trade_pair=self.DEFAULT_TRADE_PAIR,
@@ -867,7 +867,7 @@ class TestMarketOrderManager(TestBase):
         eth_price_sources = [self.create_test_price_source(3000.0, start_ms=now_ms)]
 
         # BTC position
-        _, btc_pos = self.market_order_manager._process_market_order(
+        _, btc_pos, _ = self.market_order_manager._process_market_order(
             miner_order_uuid="btc_order",
             miner_repo_version="1.0.0",
             trade_pair=TradePair.BTCUSD,
@@ -878,7 +878,7 @@ class TestMarketOrderManager(TestBase):
         )
 
         # ETH position
-        _, eth_pos = self.market_order_manager._process_market_order(
+        _, eth_pos, _ = self.market_order_manager._process_market_order(
             miner_order_uuid="eth_order",
             miner_repo_version="1.0.0",
             trade_pair=TradePair.ETHUSD,

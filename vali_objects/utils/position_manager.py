@@ -954,12 +954,7 @@ class PositionManager(RPCServiceBase, CacheController):
 
     def _save_miner_position_to_memory(self, position: Position):
         # Use RPC to save position to server
-        # The server handles deduplication and in-place updates
-        existing_pos = self._position_from_list_of_position(position.miner_hotkey, position.position_uuid)
-        if existing_pos:
-            assert existing_pos.trade_pair == position.trade_pair, \
-                f"Trade pair mismatch for position {position.position_uuid}. Existing: {existing_pos.trade_pair}, New: {position.trade_pair}"
-
+        # The server handles deduplication, in-place updates, and validation
         # Only deepcopy in direct mode (unit tests) to protect server's internal state
         # In RPC mode, pickle serialization already creates a copy
         if self.running_unit_tests:
