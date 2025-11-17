@@ -1185,7 +1185,7 @@ class VantaRestServer(APIKeyMixin):
 
                 # Create signal dict from request data
                 signal = {
-                    'trade_pair': data.get('trade_pair_id'),
+                    'trade_pair': {'trade_pair_id': data.get('trade_pair_id')},
                     'order_type': data.get('order_type', '').upper(),
                     'leverage': data.get('leverage'),
                     'execution_type': data.get('execution_type', 'MARKET').upper()
