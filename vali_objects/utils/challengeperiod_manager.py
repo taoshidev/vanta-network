@@ -31,6 +31,7 @@ class ChallengePeriodManager(RPCServiceBase, CacheController):
             sync_in_progress=None,
             slack_notifier=None,
             sync_epoch=None,
+            start_server=True,
             start_daemon=False):
 
         # Initialize RPCServiceBase
@@ -61,12 +62,44 @@ class ChallengePeriodManager(RPCServiceBase, CacheController):
         self.sync_epoch = sync_epoch
         self.asset_selection_manager = asset_selection_manager
 
-        # Start the RPC service (this replaces direct initialization)
-        self._initialize_service()
+        # Start the RPC service (unless deferred via start_server=False)
+        if start_server:
+            self._initialize_service()
 
-        # Start daemon process if requested (for continuous challenge period updates)
-        if start_daemon:
-            self._start_daemon_process()
+            # Start daemon process if requested (for continuous challenge period updates)
+            if start_daemon:
+                self._start_daemon_process()
+        else:
+            bt.logging.info("ChallengePeriodManager: Deferring server start until initialize_server() is called")
+
+    def initialize_server(self):
+        """
+        Initialize the RPC server after dependencies have been set.
+
+        This method should be called after position_manager and elimination_manager
+        have been set via property setters (when start_server=False was passed to __init__).
+
+        Example:
+            # Create with deferred server start
+            cp_mgr = ChallengePeriodManager(..., start_server=False)
+
+            # Set dependencies
+            cp_mgr.position_manager = position_manager
+            cp_mgr.perf_ledger_manager = perf_ledger_manager
+
+            # Now start the server with all dependencies ready
+            cp_mgr.initialize_server()
+
+            # Start daemon after server is ready
+            cp_mgr._start_daemon_process()
+        """
+        if hasattr(self, '_server_proxy') and self._server_proxy is not None:
+            bt.logging.warning("ChallengePeriodManager: Server already initialized, ignoring")
+            return
+
+        bt.logging.info("ChallengePeriodManager: Initializing RPC server with all dependencies")
+        self._initialize_service()
+        bt.logging.success("ChallengePeriodManager: RPC server initialized successfully")
 
     def _start_daemon_process(self):
         """
@@ -197,6 +230,127 @@ class ChallengePeriodManager(RPCServiceBase, CacheController):
             )
         self._server_proxy.active_miners = value
 
+
+    def __getstate__(self):
+        """
+        Prepare object for pickling (when passed to child processes).
+
+        When challengeperiod_manager is passed to other components (EliminationManager,
+        LimitOrderManager) that run in separate processes, this method ensures the
+        object can be pickled properly.
+
+        The unpickled object will be a client-only instance that connects to the
+        existing RPC server.
+        """
+        import os
+
+        msg = (
+            f"[CP_PICKLE] __getstate__ called in PID {os.getpid()}, "
+            f"running_unit_tests={self.running_unit_tests}, port={self.port}"
+        )
+        bt.logging.info(msg)
+        print(msg, flush=True)  # Also print to ensure visibility
+
+        state = self.__dict__.copy()
+
+        # Mark as client-only so unpickled instance connects to existing server
+        state['_is_client_only'] = True
+
+        # Don't pickle process/proxy objects (they're not picklable anyway)
+        state['_server_process'] = None
+        state['_client_manager'] = None
+        state['_server_proxy'] = None
+
+        bt.logging.debug(
+            f"[CP_PICKLE] __getstate__ complete, removed unpicklable objects"
+        )
+
+        return state
+
+    def __setstate__(self, state):
+        """
+        Restore object after unpickling (in child process).
+
+        Automatically reconnects to existing RPC server running in the main validator process.
+        """
+        import os
+
+        msg = (
+            f"[CP_UNPICKLE] __setstate__ called in PID {os.getpid()}, "
+            f"running_unit_tests={state.get('running_unit_tests', 'UNKNOWN')}"
+        )
+        bt.logging.info(msg)
+        print(msg, flush=True)  # Also print to ensure visibility
+
+        self.__dict__.update(state)
+
+        # In test mode, recreate direct server instance
+        if self.running_unit_tests:
+            bt.logging.info("[CP_UNPICKLE] Test mode - recreating direct server instance")
+            self._server_proxy = self._create_direct_server()
+            bt.logging.success(
+                f"[CP_UNPICKLE] Direct server created, type: {type(self._server_proxy)}"
+            )
+            return
+
+        # Reconnect to existing RPC server
+        msg_reconnect = f"[CP_UNPICKLE] Production mode - reconnecting to RPC server on port {self.port}"
+        bt.logging.info(msg_reconnect)
+        print(msg_reconnect, flush=True)
+
+        self._connect_client_only()
+
+        # Verify connection succeeded
+        if self._server_proxy is None:
+            msg_error = "[CP_UNPICKLE] CRITICAL: _server_proxy is still None after _connect_client_only()!"
+            bt.logging.error(msg_error)
+            print(msg_error, flush=True)
+        else:
+            msg_success = f"[CP_UNPICKLE] _server_proxy successfully set: {type(self._server_proxy)}"
+            bt.logging.success(msg_success)
+            print(msg_success, flush=True)
+
+    def _connect_client_only(self):
+        """
+        Connect to existing RPC server (client-only mode for child processes).
+
+        This is called when challengeperiod_manager is unpickled in a child process
+        (EliminationManagerServer, LimitOrderManager, etc.).
+        """
+        import hashlib
+        import traceback
+
+        bt.logging.info(
+            f"[CP_UNPICKLE] Starting client-only reconnection on port {self.port}"
+        )
+
+        # Use stable authkey (must match what server used)
+        if not hasattr(self, '_authkey'):
+            self._authkey = hashlib.sha256(f"ChallengePeriodManagerServer_{self.port}".encode()).digest()[:32]
+            bt.logging.debug(f"[CP_UNPICKLE] Generated authkey from port {self.port}")
+
+        # Connect to existing server (inherited from RPCServiceBase)
+        try:
+            bt.logging.info(f"[CP_UNPICKLE] Attempting to connect to {self._address}")
+            self._connect_client()
+            bt.logging.success(
+                f"[CP_UNPICKLE] ✓ Client-only mode connected to existing RPC server at {self._address}"
+            )
+            bt.logging.info(f"[CP_UNPICKLE] _server_proxy type: {type(self._server_proxy)}")
+        except Exception as e:
+            error_trace = traceback.format_exc()
+            bt.logging.error(
+                f"[CP_UNPICKLE] ✗ Failed to reconnect in client-only mode: {e}\n"
+                f"Address: {self._address}\n"
+                f"Port: {self.port}\n"
+                f"Traceback:\n{error_trace}"
+            )
+            # Don't raise - allow child process to continue, but log the error
+            # The _server_proxy will be None and methods will fail with clearer errors
+            bt.logging.error(
+                "[CP_UNPICKLE] Child process will not be able to use challengeperiod_manager methods. "
+                "This likely means the RPC server is not running or not accessible from this process."
+            )
 
     # ==================== Client Methods (proxy to RPC) ====================
 

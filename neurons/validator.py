@@ -297,34 +297,64 @@ class Validator(ValidatorBase):
 
         #force_validator_to_restore_from_checkpoint(self.wallet.hotkey.ss58_address, self.metagraph, self.config, self.secrets)
 
-        # Create ChallengePeriodManager FIRST (without starting daemon yet)
-        # This allows us to set it on elimination_manager BEFORE starting the RPC server
-        self.challengeperiod_manager = ChallengePeriodManager(self.metagraph,
-                                                              perf_ledger_manager=self.perf_ledger_manager,
-                                                              position_manager=self.position_manager,
-                                                              contract_manager=self.contract_manager,
-                                                              plagiarism_manager=self.plagiarism_manager,
-                                                              sync_in_progress=self.sync_in_progress,
-                                                              slack_notifier=self.slack_notifier,
-                                                              sync_epoch=self.sync_epoch,
-                                                              asset_selection_manager=self.asset_selection_manager,
-                                                              start_daemon=True)
 
-        # Set challengeperiod_manager references BEFORE initializing elimination_manager server
-        # This ensures challengeperiod_manager is pickled to the server process (not None!)
+        # CRITICAL: Break circular dependency between EliminationManager and ChallengePeriodManager
+        #
+        # The circular dependency:
+        # - EliminationManager server needs challengeperiod_manager reference (to call has_elimination_reasons, etc.)
+        # - ChallengePeriodManager server needs elimination_manager._server_proxy set (to call get_eliminations_from_memory, etc.)
+        #
+        # Solution: Create both managers with deferred server start, wire up dependencies, then initialize servers
+        # This ensures both servers pickle their dependencies AFTER all references are set
+        #
+        # Initialization sequence:
+        # 1. Both managers already created with start_server=False (line 225 for elimination_manager)
+        # 2. Create ChallengePeriodManager with start_server=False
+        # 3. Wire up all dependencies on client instances
+        # 4. Initialize EliminationManager server (pickles with challengeperiod_manager set)
+        # 5. Initialize ChallengePeriodManager server (pickles with elimination_manager._server_proxy set)
+        # 6. Start both daemons
+
+        # Step 1: Create ChallengePeriodManager WITHOUT starting server or daemon
+        self.challengeperiod_manager = ChallengePeriodManager(
+            self.metagraph,
+            perf_ledger_manager=self.perf_ledger_manager,
+            position_manager=self.position_manager,
+            contract_manager=self.contract_manager,
+            plagiarism_manager=self.plagiarism_manager,
+            asset_selection_manager=self.asset_selection_manager,
+            sync_in_progress=self.sync_in_progress,
+            slack_notifier=self.slack_notifier,
+            sync_epoch=self.sync_epoch,
+            start_server=False,  # Defer server initialization
+            start_daemon=False   # Defer daemon start
+        )
+        bt.logging.info("[INIT] ChallengePeriodManager created (server and daemon deferred)")
+
+        # Step 2: Wire up all dependencies on client instances
+        # These assignments update the CLIENT objects; servers will see these when pickled
         self.elimination_manager.challengeperiod_manager = self.challengeperiod_manager
         self.position_manager.challengeperiod_manager = self.challengeperiod_manager
+        bt.logging.info("[INIT] All dependencies wired up on client instances")
 
-        # NOW initialize elimination_manager server with challengeperiod_manager set
-        # When the server process starts, it will pickle self.challengeperiod_manager correctly
+        # Step 3: Initialize ChallengePeriodManager server FIRST
+        # CRITICAL: CP server must start before EliminationManager server
+        # When EliminationManager pickles challengeperiod_manager, it needs a running CP server to reconnect to
+        self.challengeperiod_manager.initialize_server()
+        bt.logging.success("[INIT] ChallengePeriodManager server initialized (server is now running)")
+
+        # Step 4: Initialize EliminationManager server SECOND
+        # When server process spawns, it pickles challengeperiod_manager which can now reconnect to running CP server
+        # Also pickles position_manager which contains elimination_manager (will be set to None on pickle, then unpickled)
         self.elimination_manager.initialize_server()
+        bt.logging.success("[INIT] EliminationManager server initialized (has challengeperiod_manager RPC client)")
 
-        # Start the elimination manager daemon
+        # Step 5: Start both daemons
         self.elimination_manager.start_daemon()
+        bt.logging.success("[INIT] EliminationManager daemon started")
 
-        # Finally start ChallengePeriodManager daemon
-        # Now it can safely pickle position_manager (containing elimination_manager with _server_proxy set)
         self.challengeperiod_manager._start_daemon_process()
+        bt.logging.success("[INIT] ChallengePeriodManager daemon started")
 
         # Create LimitOrderManagerClient AFTER elimination_manager server is initialized
         # This ensures elimination_manager._server_proxy is set before pickling
