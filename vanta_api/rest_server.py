@@ -607,7 +607,7 @@ class VantaRestServer(APIKeyMixin):
             if not self.is_valid_api_key(api_key):
                 return jsonify({'error': 'Unauthorized access'}), 401
 
-            data = self.debt_ledger_manager.debt_ledgers
+            data = self.debt_ledger_manager.get_all_ledgers()
 
             if data is None:
                 return jsonify({'error': 'Debt ledger data not found'}), 404
