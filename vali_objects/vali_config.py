@@ -320,11 +320,8 @@ class ValiConfig:
     MIN_CAPITAL = 5_000   # USD minimum capital account size
     DEFAULT_CAPITAL = 100_000  # conversion of 1x leverage to $100K in capital
 
-    # Miner will get a base of 50% collateral returned upon elimination
-    BASE_COLLATERAL_RETURNED = 0.5
-    # 50% of drawdown proportion is slashed
-    SLASH_PROPORTION = 0.5
-    CHALLENGEPERIOD_SLASH_PROPORTION = 0.1  # 10% slashed upon challenge period elimination
+    # 100% percent of collateral deposit is at risk of slashing based on drawdown
+    DRAWDOWN_SLASH_PROPORTION = 1.0
 
     BLOCKED_TRADE_PAIR_IDS = {
         'SPX', 'DJI', 'NDX', 'VIX', 'FTSE', 'GDAXI',  # Indices

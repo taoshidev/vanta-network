@@ -94,7 +94,7 @@ class EliminationManager(CacheController):
                                                                                                 timespan_ms=1000,
                                                                                                 websocket=False)
             self.handle_eliminated_miner(e['hotkey'], trade_pair_to_price_source_used_for_elimination_check, position_locks)
-            self.contract_manager.slash_miner_collateral_proportion(e['hotkey'], ValiConfig.SLASH_PROPORTION)
+            self.contract_manager.slash_miner_collateral_proportion(e['hotkey'])
 
         if n_eliminations:
             self.save_eliminations()
@@ -156,7 +156,7 @@ class EliminationManager(CacheController):
             elim_mdd = eliminations_with_reasons[hotkey][1]
             self.append_elimination_row(hotkey=hotkey, current_dd=elim_mdd, reason=elim_reason)
             self.handle_eliminated_miner(hotkey, {}, position_locks)
-            self.contract_manager.slash_miner_collateral_proportion(hotkey, ValiConfig.CHALLENGEPERIOD_SLASH_PROPORTION)
+            self.contract_manager.slash_miner_collateral_proportion(hotkey)
 
         self.challengeperiod_manager.eliminations_with_reasons = {}
 
@@ -337,7 +337,7 @@ class EliminationManager(CacheController):
             if miner_exceeds_mdd:
                 self.append_elimination_row(miner_hotkey, drawdown_percentage, EliminationReason.MAX_TOTAL_DRAWDOWN.value)
                 self.handle_eliminated_miner(miner_hotkey, {}, position_locks)
-                self.contract_manager.slash_miner_collateral_proportion(miner_hotkey, ValiConfig.SLASH_PROPORTION)
+                self.contract_manager.slash_miner_collateral_proportion(miner_hotkey, ValiConfig.DRAWDOWN_SLASH_PROPORTION)
 
     def handle_zombies(self, position_locks):
         """
