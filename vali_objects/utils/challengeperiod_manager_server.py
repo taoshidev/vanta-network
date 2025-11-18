@@ -549,13 +549,24 @@ class ChallengePeriodManagerServer(CacheController):
             eliminations = self.elimination_manager.get_eliminations_from_memory()
 
         elimination_hotkeys = set(x['hotkey'] for x in eliminations)
+
+        # Get local eliminations that haven't been persisted yet (thread-safe)
+        with self.eliminations_lock:
+            local_elimination_hotkeys = set(self.eliminations_with_reasons.keys())
+
         maincomp_hotkeys = self.get_hotkeys_by_bucket(MinerBucket.MAINCOMP)
         probation_hotkeys = self.get_hotkeys_by_bucket(MinerBucket.PROBATION)
         plagiarism_hotkeys = self.get_hotkeys_by_bucket(MinerBucket.PLAGIARISM)
 
         any_changes = False
         for hotkey in new_hotkeys:
+            # Skip if miner is in persisted eliminations
             if hotkey in elimination_hotkeys:
+                continue
+
+            # Skip if miner is in local eliminations (eliminated this cycle, not yet persisted by EliminationManager)
+            if hotkey in local_elimination_hotkeys:
+                bt.logging.info(f"[CP_DEBUG] Skipping {hotkey[:16]}...{hotkey[-8:]} - in eliminations_with_reasons (not yet persisted)")
                 continue
 
             if hotkey in maincomp_hotkeys or hotkey in probation_hotkeys or hotkey in plagiarism_hotkeys:

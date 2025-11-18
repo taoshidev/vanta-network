@@ -35,7 +35,7 @@ from shared_objects.rate_limiter import RateLimiter
 from vali_objects.utils.plagiarism_manager import PlagiarismManager
 from vali_objects.utils.position_lock import PositionLocks
 from vali_objects.uuid_tracker import UUIDTracker
-from time_util.time_util import TimeUtil
+from time_util.time_util import TimeUtil, timeme
 from vali_objects.exceptions.signal_exception import SignalException
 from shared_objects.metagraph_updater import MetagraphUpdater
 from shared_objects.error_utils import ErrorUtils
@@ -827,6 +827,7 @@ class Validator(ValidatorBase):
 
         return bool(synapse.error_message)
 
+    @timeme
     def blacklist_fn(self, synapse, metagraph) -> Tuple[bool, str]:
         """
         Override blacklist_fn to use metagraph_updater's cached hotkeys.
