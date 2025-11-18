@@ -227,10 +227,12 @@ class Validator(ValidatorBase):
         self.asset_selection_manager = AssetSelectionManager(config=self.config, metagraph=self.metagraph)
 
         # Asset selection local cache for fast validation (saves 81ms per order!)
-        # Syncs from RPC server every 5 seconds to avoid per-order RPC overhead
+        # Refreshed by background daemon - NO per-order overhead
+        # Dict reference assignment is atomic in Python - no lock needed
         self._asset_selections_cache = {}  # {hotkey: TradePairCategory}
-        self._asset_cache_last_sync_ms = 0
-        self._asset_cache_sync_interval_ms = 5000  # Sync every 5 seconds
+
+        # Start background daemon to refresh asset selections cache
+        self._start_asset_cache_refresh_daemon()
 
         self.position_syncer = PositionSyncer(shutdown_dict=shutdown_dict, signal_sync_lock=self.signal_sync_lock,
                                               signal_sync_condition=self.signal_sync_condition,
@@ -295,18 +297,8 @@ class Validator(ValidatorBase):
 
         #force_validator_to_restore_from_checkpoint(self.wallet.hotkey.ss58_address, self.metagraph, self.config, self.secrets)
 
-        # Initialize elimination_manager server FIRST, BEFORE creating ChallengePeriodManager
-        # This is critical because ChallengePeriodManager.__init__() immediately starts its RPC server
-        # which pickles position_manager (containing elimination_manager), so elimination_manager
-        # must have _server_proxy set BEFORE ChallengePeriodManager is created
-        self.elimination_manager.initialize_server()
-
-        # Start the elimination manager daemon
-        self.elimination_manager.start_daemon()
-
-        # NOW create ChallengePeriodManager - elimination_manager is fully initialized
-        # so when ChallengePeriodManager starts its RPC server and pickles position_manager,
-        # elimination_manager._server_proxy will already be set
+        # Create ChallengePeriodManager FIRST (without starting daemon yet)
+        # This allows us to set it on elimination_manager BEFORE starting the RPC server
         self.challengeperiod_manager = ChallengePeriodManager(self.metagraph,
                                                               perf_ledger_manager=self.perf_ledger_manager,
                                                               position_manager=self.position_manager,
@@ -318,10 +310,21 @@ class Validator(ValidatorBase):
                                                               asset_selection_manager=self.asset_selection_manager,
                                                               start_daemon=True)
 
-
-        # Set challengeperiod_manager references AFTER creating it
+        # Set challengeperiod_manager references BEFORE initializing elimination_manager server
+        # This ensures challengeperiod_manager is pickled to the server process (not None!)
         self.elimination_manager.challengeperiod_manager = self.challengeperiod_manager
         self.position_manager.challengeperiod_manager = self.challengeperiod_manager
+
+        # NOW initialize elimination_manager server with challengeperiod_manager set
+        # When the server process starts, it will pickle self.challengeperiod_manager correctly
+        self.elimination_manager.initialize_server()
+
+        # Start the elimination manager daemon
+        self.elimination_manager.start_daemon()
+
+        # Finally start ChallengePeriodManager daemon
+        # Now it can safely pickle position_manager (containing elimination_manager with _server_proxy set)
+        self.challengeperiod_manager._start_daemon_process()
 
         # Create LimitOrderManagerClient AFTER elimination_manager server is initialized
         # This ensures elimination_manager._server_proxy is set before pickling
@@ -684,22 +687,42 @@ class Validator(ValidatorBase):
 
         self.check_shutdown()
 
-    def _sync_asset_selections_cache(self):
+    def _asset_cache_refresh_loop(self):
         """
-        Sync asset selections from RPC server to local cache.
+        Background daemon that refreshes asset selections cache every 5 seconds.
 
-        This eliminates per-order RPC overhead (81ms → <0.01ms) by maintaining
-        a local cache that syncs every 5 seconds.
-
-        Asset selections are permanent (miners can't change them), so 5-second
-        staleness has minimal risk.
+        This ensures the cache is always fresh without blocking order processing.
+        Runs in a separate thread so NO order ever pays the refresh penalty.
         """
-        now_ms = TimeUtil.now_in_millis()
-        if now_ms - self._asset_cache_last_sync_ms > self._asset_cache_sync_interval_ms:
-            # Single RPC call to fetch all selections (happens once per 5 seconds)
-            self._asset_selections_cache = self.asset_selection_manager.asset_selections
-            self._asset_cache_last_sync_ms = now_ms
-            bt.logging.debug(f"Synced {len(self._asset_selections_cache)} asset selections to local cache")
+        setproctitle("vali_AssetCacheRefresher")
+        bt.logging.info("Asset selections cache refresh daemon started (5-second interval)")
+
+        while not shutdown_dict:
+            try:
+                sync_start = time.perf_counter()
+                # Fetch all selections via RPC (happens in background thread)
+                new_cache = self.asset_selection_manager.asset_selections
+                sync_ms = (time.perf_counter() - sync_start) * 1000
+
+                # Atomic cache update (dict reference assignment is atomic in Python)
+                self._asset_selections_cache = new_cache
+
+                bt.logging.debug(
+                    f"[ASSET_CACHE] Refreshed {len(new_cache)} asset selections in {sync_ms:.2f}ms"
+                )
+                time.sleep(5)  # Refresh every 5 seconds
+
+            except Exception as e:
+                bt.logging.error(f"Error in asset cache refresh daemon: {e}")
+                time.sleep(5)
+
+        bt.logging.info("Asset selections cache refresh daemon shutting down")
+
+    def _start_asset_cache_refresh_daemon(self):
+        """Start the background asset cache refresh thread."""
+        refresh_thread = threading.Thread(target=self._asset_cache_refresh_loop, daemon=True)
+        refresh_thread.start()
+        bt.logging.info("Started asset selections cache refresh daemon")
 
     def should_fail_early(self, synapse: template.protocol.SendSignal | template.protocol.GetPositions | template.protocol.ValidatorCheckpoint, method:SynapseMethod,
                           signal:dict=None, now_ms=None) -> bool:
@@ -794,18 +817,14 @@ class Validator(ValidatorBase):
                    f"Please try again with a different trade pair.")
             synapse.error_message = msg
 
-        elif signal and tp and not synapse.error_message:
-            # Validate asset class selection
-
-            # Sync cache if needed (happens once per 5 seconds, not per order)
-            self._sync_asset_selections_cache()
-
-            # Fast local validation (no RPC call!) - saves 81ms per order
+        elif signal and tp:
+            # Fast local validation using background-refreshed cache (no RPC call, no refresh penalty!)
             asset_validate_start = time.perf_counter()
 
             # Check timestamp and validate locally using cached data
             from vali_objects.utils.asset_selection_manager import ASSET_CLASS_SELECTION_TIME_MS
             if now_ms >= ASSET_CLASS_SELECTION_TIME_MS:
+                # Atomic cache read (dict reference is atomic in Python)
                 selected_asset = self._asset_selections_cache.get(synapse.dendrite.hotkey, None)
                 is_valid_asset = selected_asset == tp.trade_pair_category if selected_asset is not None else False
             else:
@@ -815,8 +834,8 @@ class Validator(ValidatorBase):
             bt.logging.info(f"[FAIL_EARLY_DEBUG] validate_order_asset_class took {asset_validate_ms:.2f}ms")
 
             if not is_valid_asset:
-                # Use cached value for error message (no additional RPC call needed)
-                selected_asset = self._asset_selections_cache.get(synapse.dendrite.hotkey, None)
+                # Use cached value for error message (already fetched above with lock)
+                pass  # selected_asset already set above
 
                 msg = (
                     f"miner [{synapse.dendrite.hotkey}] cannot trade asset class [{tp.trade_pair_category.value}]. "

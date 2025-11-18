@@ -38,24 +38,12 @@ Use runnable/local_debt_ledger.py for standalone execution with hard-coded confi
 Edit the configuration variables at the top of that file to customize behavior.
 
 """
-import multiprocessing
-import signal
-import bittensor as bt
-import time
-import gzip
-import json
-import os
-import shutil
+
 from dataclasses import dataclass
 from typing import List, Optional, Dict
 from datetime import datetime, timezone
 
-from vanta_api.slack_notifier import SlackNotifier
 from time_util.time_util import TimeUtil
-from vali_objects.vali_config import ValiConfig
-from vali_objects.vali_dataclasses.emissions_ledger import EmissionsLedgerManager, EmissionsLedger
-from vali_objects.vali_dataclasses.penalty_ledger import PenaltyLedgerManager, PenaltyLedger
-from vali_objects.vali_dataclasses.perf_ledger import TP_ID_PORTFOLIO
 from vali_objects.utils.miner_bucket_enum import MinerBucket
 from shared_objects.rpc_service_base import RPCServiceBase
 
