@@ -15,6 +15,8 @@ class Signal(BaseModel):
     quantity: Optional[float] = None    # Base currency, number of lots/coins/shares/etc.
     execution_type: ExecutionType = ExecutionType.MARKET
     limit_price: Optional[float] = None
+    stop_loss: Optional[float] = None
+    take_profit: Optional[float] = None
 
     @model_validator(mode='before')
     def check_exclusive_fields(cls, values):
@@ -58,11 +60,27 @@ class Signal(BaseModel):
         return trade_pair
 
     def __str__(self):
-        return str({'trade_pair': str(self.trade_pair),
-                    'order_type': str(self.order_type),
-                    'leverage': self.leverage,
-                    'value': self.value,
-                    'quantity': self.quantity,
-                    'execution_type': str(self.execution_type),
-                    'limit_price': self.limit_price
-                    })
+        base = {
+            'trade_pair': str(self.trade_pair),
+            'order_type': str(self.order_type),
+            'leverage': self.leverage,
+            'value': self.value,
+            'quantity': self.quantity,
+            'execution_type': str(self.execution_type)
+        }
+        if self.execution_type == ExecutionType.MARKET:
+            return str(base)
+
+        elif self.execution_type == ExecutionType.LIMIT:
+            base.update({
+                'limit_price': self.limit_price,
+                'stop_loss': self.stop_loss,
+                'take_profit': self.take_profit
+            })
+            return str(base)
+
+        elif self.execution_type == ExecutionType.LIMIT_CANCEL:
+            # No extra fields needed - order_uuid comes from synapse.miner_order_uuid
+            return str(base)
+
+        return str({**base, 'Error': 'Unknown execution type'})

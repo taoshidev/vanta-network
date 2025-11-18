@@ -21,6 +21,8 @@ class OrderSource(IntEnum):
     ORDER_SRC_LIMIT_UNFILLED = 5       # limit order created but not yet filled
     ORDER_SRC_LIMIT_FILLED = 6         # limit order that was filled
     ORDER_SRC_LIMIT_CANCELLED = 7      # limit order that was cancelled
+    ORDER_SRC_SLTP_UNFILLED = 8        # stop loss/take profit order created but not yet filled
+    ORDER_SRC_SLTP_FILLED = 9          # stop loss/take profit order that was filled
 
 # Backward compatibility constants - to be removed after migration
 ORDER_SRC_ORGANIC = OrderSource.ORGANIC
@@ -151,22 +153,25 @@ class Order(Signal):
     def to_python_dict(self):
         trade_pair_id = self.trade_pair.trade_pair_id if hasattr(self.trade_pair, 'trade_pair_id') else 'unknown'
         return {'trade_pair_id': trade_pair_id,
-                    'order_type': self.order_type.name,
-                    'leverage': self.leverage,
-                    'value': self.value,
-                    'quantity': self.quantity,
-                    'price': self.price,
-                    'bid': self.bid,
-                    'ask': self.ask,
-                    'slippage': self.slippage,
-                    'quote_usd_rate': self.quote_usd_rate,
-                    'usd_base_rate': self.usd_base_rate,
-                    'processed_ms': self.processed_ms,
-                    'price_sources': self.price_sources,
-                    'order_uuid': self.order_uuid,
-                    'src': self.src,
-                    'execution_type': self.execution_type.name if self.execution_type else None,
-                    'limit_price': self.limit_price}
+                'order_type': self.order_type.name,
+                'leverage': self.leverage,
+                'value': self.value,
+                'quantity': self.quantity,
+                'price': self.price,
+                'bid': self.bid,
+                'ask': self.ask,
+                'slippage': self.slippage,
+                'quote_usd_rate': self.quote_usd_rate,
+                'usd_base_rate': self.usd_base_rate,
+                'processed_ms': self.processed_ms,
+                'price_sources': self.price_sources,
+                'order_uuid': self.order_uuid,
+                'src': self.src,
+                'execution_type': self.execution_type.name if self.execution_type else None,
+                'limit_price': self.limit_price,
+                'stop_loss': self.stop_loss,
+                'take_profit': self.take_profit}
+
     def __str__(self):
         # Ensuring the `trade_pair.trade_pair_id` is accessible for the string representation
         # This assumes that trade_pair_id is a valid attribute of trade_pair

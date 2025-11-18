@@ -56,6 +56,7 @@ class LimitOrderManager(CacheController):
         # Internal data structure: {TradePair: {hotkey: [Order]}}
         # Regular Python dict - NO IPC!
         self._limit_orders = {}
+        self._last_fill_time = {}
 
         self._read_limit_orders_from_disk()
         self._reset_counters()
@@ -101,9 +102,11 @@ class LimitOrderManager(CacheController):
             # Ensure trade_pair exists in structure
             if trade_pair not in self._limit_orders:
                 self._limit_orders[trade_pair] = {}
+                self._last_fill_time[trade_pair] = {}
 
             if miner_hotkey not in self._limit_orders[trade_pair]:
                 self._limit_orders[trade_pair][miner_hotkey] = []
+                self._last_fill_time[trade_pair][miner_hotkey] = 0
 
             # Check max unfilled orders for this miner across ALL trade pairs
             total_unfilled = self._count_unfilled_orders_for_hotkey(miner_hotkey)
@@ -315,7 +318,7 @@ class LimitOrderManager(CacheController):
             1 for hotkey_dict in self._limit_orders.values()
             for orders in hotkey_dict.values()
             for order in orders
-            if order.src == OrderSource.ORDER_SRC_LIMIT_UNFILLED
+            if order.src in [OrderSource.ORDER_SRC_LIMIT_UNFILLED, OrderSource.ORDER_SRC_SLTP_UNFILLED]
         )
 
         return {
@@ -339,11 +342,11 @@ class LimitOrderManager(CacheController):
         while not self.shutdown_dict:
             try:
                 self.check_and_fill_limit_orders()
-                time.sleep(60)
+                time.sleep(15)
             except Exception as e:
                 bt.logging.error(f"Error in limit order daemon: {e}")
                 bt.logging.error(traceback.format_exc())
-                time.sleep(10)
+                time.sleep(5)
 
         bt.logging.info("Limit order daemon shutting down")
 
@@ -371,8 +374,16 @@ class LimitOrderManager(CacheController):
 
             # Iterate through all hotkeys for this trade pair
             for miner_hotkey, orders in hotkey_dict.items():
+                last_fill_time = self._last_fill_time.get(trade_pair, {}).get(miner_hotkey, 0)
+                time_since_last_fill = now_ms - last_fill_time
+
+                if time_since_last_fill < ValiConfig.LIMIT_ORDER_FILL_INTERVAL_MS:
+                    bt.logging.debug(f"Skipping {trade_pair.trade_pair_id} for {miner_hotkey}: {time_since_last_fill}ms since last fill")
+                    continue
+
                 for order in orders:
-                    if order.src != OrderSource.ORDER_SRC_LIMIT_UNFILLED:
+                    # Check both regular limit orders and SL/TP orders
+                    if order.src not in [OrderSource.ORDER_SRC_LIMIT_UNFILLED, OrderSource.ORDER_SRC_SLTP_UNFILLED]:
                         continue
 
                     total_checked += 1
@@ -427,8 +438,8 @@ class LimitOrderManager(CacheController):
         try:
             # Check if order should be filled (under limit_order_locks)
             with self.limit_order_locks.get_lock(miner_hotkey, trade_pair.trade_pair_id):
-                # Verify order still unfilled
-                if order.src != OrderSource.ORDER_SRC_LIMIT_UNFILLED:
+                # Verify order still unfilled (either regular limit or SL/TP)
+                if order.src not in [OrderSource.ORDER_SRC_LIMIT_UNFILLED, OrderSource.ORDER_SRC_SLTP_UNFILLED]:
                     return False
 
                 # Check if limit price triggered
@@ -445,7 +456,7 @@ class LimitOrderManager(CacheController):
                     return False
 
             # Re-check order still unfilled (race condition protection)
-            if order.src != OrderSource.ORDER_SRC_LIMIT_UNFILLED:
+            if order.src not in [OrderSource.ORDER_SRC_LIMIT_UNFILLED, OrderSource.ORDER_SRC_SLTP_UNFILLED]:
                 return False
 
             # Fill the order using the triggered price_source
@@ -461,7 +472,11 @@ class LimitOrderManager(CacheController):
         """Fill a limit order and update position."""
         trade_pair = order.trade_pair
         fill_time = price_source.start_ms
-        new_src = OrderSource.ORDER_SRC_LIMIT_FILLED
+
+        if order.src == OrderSource.ORDER_SRC_SLTP_UNFILLED:
+            new_src = OrderSource.ORDER_SRC_SLTP_FILLED
+        else:
+            new_src = OrderSource.ORDER_SRC_LIMIT_FILLED
 
         try:
             err_msg, updated_position, _ = self.market_order_manager._process_market_order(
@@ -493,6 +508,15 @@ class LimitOrderManager(CacheController):
 
             # Issue 3: Log success only after successful update
             bt.logging.success(f"Filled limit order {order.order_uuid} at {order.price}")
+
+            if trade_pair not in self._last_fill_time:
+                self._last_fill_time[trade_pair] = {}
+            self._last_fill_time[trade_pair][miner_hotkey] = fill_time
+
+            if order.src == OrderSource.ORDER_SRC_SLTP_UNFILLED:
+                self._cancel_sibling_sltp_orders(miner_hotkey, order)
+            elif order.stop_loss is not None or order.take_profit is not None:
+                self._create_sltp_orders(miner_hotkey, order)
 
         except Exception as e:
             bt.logging.info(f"Could not fill limit order [{order.order_uuid}]: {e}. Cancelling order")
@@ -527,6 +551,114 @@ class LimitOrderManager(CacheController):
                         break
 
             bt.logging.info(f"Successfully closed limit order [{order_uuid}] [{trade_pair_id}] for [{miner_hotkey}]")
+
+    def _create_sltp_orders(self, miner_hotkey, parent_order):
+        trade_pair = parent_order.trade_pair
+        now_ms = TimeUtil.now_in_millis()
+
+        if parent_order.order_type == OrderType.LONG:
+            opposite_order_type = OrderType.SHORT
+            opposite_leverage = -abs(parent_order.leverage)
+        elif parent_order.order_type == OrderType.SHORT:
+            opposite_order_type = OrderType.LONG
+            opposite_leverage = abs(parent_order.leverage)
+        else:
+            bt.logging.warning(f"Cannot create SL/TP for FLAT parent order [{parent_order.order_uuid}]")
+            return
+
+        try:
+            if parent_order.stop_loss is not None:
+                sl_order = Order(
+                    trade_pair=trade_pair,
+                    order_uuid=f"{parent_order.order_uuid}-sl",
+                    processed_ms=now_ms,
+                    price=0.0,
+                    order_type=opposite_order_type,
+                    leverage=opposite_leverage,
+                    execution_type=parent_order.execution_type,
+                    limit_price=parent_order.stop_loss,
+                    stop_loss=None,
+                    take_profit=None,
+                    src=OrderSource.ORDER_SRC_SLTP_UNFILLED
+                )
+
+                with self.limit_order_locks.get_lock(miner_hotkey, trade_pair.trade_pair_id):
+                    if trade_pair not in self._limit_orders:
+                        self._limit_orders[trade_pair] = {}
+                        self._last_fill_time[trade_pair] = {}
+                    if miner_hotkey not in self._limit_orders[trade_pair]:
+                        self._limit_orders[trade_pair][miner_hotkey] = []
+                        self._last_fill_time[trade_pair][miner_hotkey] = 0
+
+                    self._write_to_disk(miner_hotkey, sl_order)
+                    self._limit_orders[trade_pair][miner_hotkey].append(sl_order)
+
+                    bt.logging.info(f"Created stop loss {opposite_order_type.value} order [{sl_order.order_uuid}] at {parent_order.stop_loss} with leverage {opposite_leverage}")
+
+            if parent_order.take_profit is not None:
+                tp_order = Order(
+                    trade_pair=trade_pair,
+                    order_uuid=f"{parent_order.order_uuid}-tp",
+                    processed_ms=now_ms,
+                    price=0.0,
+                    order_type=opposite_order_type,
+                    leverage=opposite_leverage,
+                    execution_type=parent_order.execution_type,
+                    limit_price=parent_order.take_profit,
+                    stop_loss=None,
+                    take_profit=None,
+                    src=OrderSource.ORDER_SRC_SLTP_UNFILLED
+                )
+
+                with self.limit_order_locks.get_lock(miner_hotkey, trade_pair.trade_pair_id):
+                    if trade_pair not in self._limit_orders:
+                        self._limit_orders[trade_pair] = {}
+                        self._last_fill_time[trade_pair] = {}
+                    if miner_hotkey not in self._limit_orders[trade_pair]:
+                        self._limit_orders[trade_pair][miner_hotkey] = []
+                        self._last_fill_time[trade_pair][miner_hotkey] = 0
+
+                    self._write_to_disk(miner_hotkey, tp_order)
+                    self._limit_orders[trade_pair][miner_hotkey].append(tp_order)
+
+                    bt.logging.info(f"Created take profit {opposite_order_type.value} order [{tp_order.order_uuid}] at {parent_order.take_profit} with leverage {opposite_leverage}")
+
+        except Exception as e:
+            bt.logging.error(f"Error creating SL/TP orders: {e}")
+            bt.logging.error(traceback.format_exc())
+
+    def _cancel_sibling_sltp_orders(self, miner_hotkey, triggered_order):
+        triggered_uuid = triggered_order.order_uuid
+        if not triggered_uuid.endswith('-sl') and not triggered_uuid.endswith('-tp'):
+            return
+
+        # Extract parent UUID by removing the -sl or -tp suffix
+        parent_uuid = triggered_uuid.rsplit('-', 1)[0]
+        if not parent_uuid:
+            return
+
+        try:
+            trade_pair = triggered_order.trade_pair
+            now_ms = TimeUtil.now_in_millis()
+
+            with self.limit_order_locks.get_lock(miner_hotkey, trade_pair.trade_pair_id):
+                if trade_pair not in self._limit_orders or miner_hotkey not in self._limit_orders[trade_pair]:
+                    return
+
+                # Find other unfilled SL/TP orders with the same parent (excluding the triggered one)
+                orders_to_cancel = [
+                    o for o in self._limit_orders[trade_pair][miner_hotkey]
+                    if o.src == OrderSource.ORDER_SRC_SLTP_UNFILLED
+                    and o.order_uuid.startswith(parent_uuid + '-')
+                    and o.order_uuid != triggered_uuid
+                ]
+
+                for order in orders_to_cancel:
+                    self._close_limit_order(miner_hotkey, order, OrderSource.ORDER_SRC_LIMIT_CANCELLED, now_ms)
+                    bt.logging.info(f"Cancelled SL/TP order [{order.order_uuid}] because sibling from parent [{parent_uuid}] was triggered")
+
+        except Exception as e:
+            bt.logging.error(f"Error cancelling sibling SL/TP orders: {e}")
 
     def _get_position_for(self, hotkey, order):
         """Get open position for hotkey and trade pair."""
@@ -572,10 +704,12 @@ class LimitOrderManager(CacheController):
                     # Initialize nested structure
                     if trade_pair not in self._limit_orders:
                         self._limit_orders[trade_pair] = {}
+                        self._last_fill_time[trade_pair] = {}
                     if hotkey not in self._limit_orders[trade_pair]:
                         self._limit_orders[trade_pair][hotkey] = []
 
                     self._limit_orders[trade_pair][hotkey].append(order)
+                    self._last_fill_time[trade_pair][hotkey] = 0
 
                 except Exception as e:
                     bt.logging.error(f"Error reading limit order from disk: {e}")

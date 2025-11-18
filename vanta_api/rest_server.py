@@ -1213,6 +1213,12 @@ class VantaRestServer(APIKeyMixin):
                 if 'limit_price' in data:
                     signal['limit_price'] = data['limit_price']
 
+                if 'stop_loss' in data:
+                    signal['stop_loss'] = data['stop_loss']
+
+                if 'take_profit' in data:
+                    signal['take_profit'] = data['take_profit']
+
                 # Use OrderProcessor to parse signal (same logic as validator.py)
                 trade_pair, execution_type, order_uuid = OrderProcessor.parse_signal_data(
                     signal, data.get('order_uuid')

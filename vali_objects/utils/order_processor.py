@@ -81,6 +81,8 @@ class OrderProcessor:
         signal_leverage = signal.get("leverage")
         signal_order_type_str = signal.get("order_type")
         limit_price = signal.get("limit_price")
+        stop_loss = signal.get("stop_loss")
+        take_profit = signal.get("take_profit")
 
         # Validate required fields
         if not signal_leverage:
@@ -96,6 +98,28 @@ class OrderProcessor:
         except ValueError as e:
             raise SignalException(f"Invalid order_type: {str(e)}")
 
+        limit_price = float(limit_price)
+
+        if stop_loss is not None:
+            stop_loss = float(stop_loss)
+            if stop_loss <= 0:
+                raise SignalException("stop_loss must be greater than 0")
+
+            if signal_order_type == OrderType.LONG and stop_loss >= limit_price:
+                raise SignalException(f"For LONG orders, stop_loss ({stop_loss}) must be less than limit_price ({limit_price})")
+            elif signal_order_type == OrderType.SHORT and stop_loss <= limit_price:
+                raise SignalException(f"For SHORT orders, stop_loss ({stop_loss}) must be greater than limit_price ({limit_price})")
+
+        if take_profit is not None:
+            take_profit = float(take_profit)
+            if take_profit <= 0:
+                raise SignalException("take_profit must be greater than 0")
+
+            if signal_order_type == OrderType.LONG and take_profit <= limit_price:
+                raise SignalException(f"For LONG orders, take_profit ({take_profit}) must be greater than limit_price ({limit_price})")
+            elif signal_order_type == OrderType.SHORT and take_profit >= limit_price:
+                raise SignalException(f"For SHORT orders, take_profit ({take_profit}) must be less than limit_price ({limit_price})")
+
         # Create order object
         order = Order(
             trade_pair=trade_pair,
@@ -106,6 +130,8 @@ class OrderProcessor:
             leverage=float(signal_leverage),
             execution_type=ExecutionType.LIMIT,
             limit_price=float(limit_price),
+            stop_loss=stop_loss,
+            take_profit=take_profit,
             src=OrderSource.ORDER_SRC_LIMIT_UNFILLED
         )
 
