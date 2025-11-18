@@ -566,8 +566,20 @@ class EliminationManagerServer(CacheController):
         # 1. Process if time-based refresh is due
         # 2. OR process if there are urgent challenge period eliminations
         refresh_due = self.refresh_allowed(ValiConfig.ELIMINATION_CHECK_INTERVAL_MS)
-        has_urgent_eliminations = (self.cp_client is not None and
-                                   self.cp_client.call("has_elimination_reasons_rpc"))
+
+        # Check for urgent eliminations using dual interface pattern
+        has_urgent_eliminations = False
+        if self.running_unit_tests and self.challengeperiod_manager:
+            # Test mode: use direct reference
+            has_urgent_eliminations = self.challengeperiod_manager.has_elimination_reasons()
+        elif self.cp_client:
+            # Production mode: use RPC client (with safe call handling)
+            try:
+                has_urgent_eliminations = self.cp_client.call("has_elimination_reasons_rpc")
+            except RuntimeError as e:
+                # RPC not connected - skip urgent eliminations check
+                bt.logging.debug(f"CP client not connected, skipping urgent eliminations check: {e}")
+                has_urgent_eliminations = False
 
         if not refresh_due and not has_urgent_eliminations:
             return
