@@ -236,6 +236,18 @@ class ChallengePeriodManager(RPCServiceBase, CacheController):
         """
         return self._server_proxy.update_elimination_reasons_rpc(reasons_dict)
 
+    def pop_elimination_reason(self, hotkey: str):
+        """
+        Atomically get and remove an elimination reason for a single hotkey.
+
+        Args:
+            hotkey: The hotkey to pop elimination reason for
+
+        Returns:
+            Tuple of (reason, drawdown) or None if not found
+        """
+        return self._server_proxy.pop_elimination_reason_rpc(hotkey)
+
     # ==================== Active Miners Methods ====================
 
     def has_miner(self, hotkey: str) -> bool:

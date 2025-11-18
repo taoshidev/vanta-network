@@ -220,7 +220,8 @@ class Validator(ValidatorBase):
                                                       contract_manager=self.contract_manager,
                                                       sync_in_progress=self.sync_in_progress,
                                                       slack_notifier=self.slack_notifier,
-                                                      sync_epoch=self.sync_epoch)
+                                                      sync_epoch=self.sync_epoch,
+                                                      start_daemon=True)
 
         self.asset_selection_manager = AssetSelectionManager(config=self.config, metagraph=self.metagraph)
 
@@ -383,8 +384,8 @@ class Validator(ValidatorBase):
 
         # Step 5 & 6: RPC managers (EliminationManager and ChallengePeriodManager)
         # are automatically started in their __init__ methods via _initialize_service()
-        # ChallengePeriodManager daemon process also started via start_daemon=True
-        bt.logging.info("Step 5-6: EliminationManager and ChallengePeriodManager RPC servers already started")
+        # Both EliminationManager and ChallengePeriodManager daemon processes started via start_daemon=True
+        bt.logging.info("Step 5-6: EliminationManager and ChallengePeriodManager RPC servers and daemons already started")
 
         # Step 7: Initialize SubtensorWeightSetter
         def step7():

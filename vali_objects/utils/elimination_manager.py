@@ -40,7 +40,8 @@ class EliminationManager(RPCServiceBase, CacheController):
     def __init__(self, metagraph, position_manager, challengeperiod_manager,
                  running_unit_tests=False, shutdown_dict=None, use_ipc=False, is_backtesting=False,
                  shared_queue_websockets=None, contract_manager=None, position_locks=None,
-                 sync_in_progress=None, slack_notifier=None, sync_epoch=None, limit_order_manager=None):
+                 sync_in_progress=None, slack_notifier=None, sync_epoch=None, limit_order_manager=None,
+                 start_daemon=False):
 
         # Initialize RPCServiceBase
         RPCServiceBase.__init__(
@@ -81,6 +82,39 @@ class EliminationManager(RPCServiceBase, CacheController):
         # Start cache refresh daemon (only if not running unit tests)
         if not running_unit_tests:
             self._start_cache_refresh_daemon()
+
+        # Start daemon process if requested (for continuous elimination processing)
+        if start_daemon:
+            self._start_daemon_process()
+
+    def _start_daemon_process(self):
+        """
+        Start the daemon process for continuous elimination processing.
+
+        The daemon process runs run_update_loop() on the server, which continuously
+        processes eliminations (MDD checks, challenge period eliminations, etc.).
+
+        This is separate from the RPC server process - the RPC server handles
+        requests, while the daemon process performs continuous background updates.
+        """
+        import multiprocessing
+
+        # Call run_update_loop on the server (either direct or via RPC)
+        if self.running_unit_tests:
+            # In test mode with direct server, just call run_update_loop directly
+            bt.logging.info("EliminationManager: Test mode - run_update_loop must be called manually")
+            # We don't start a daemon in test mode because tests control the flow
+        else:
+            # In production with RPC server, the server already has run_update_loop
+            # We need to start a daemon process that calls it
+            daemon_process = multiprocessing.Process(
+                target=self._server_proxy.run_update_loop,
+                daemon=True
+            )
+            daemon_process.start()
+            bt.logging.success(
+                f"EliminationManager daemon process started with PID: {daemon_process.pid}"
+            )
 
     # ==================== Dependency Properties (auto-sync to server in test mode) ====================
 

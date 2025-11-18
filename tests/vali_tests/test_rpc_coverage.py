@@ -251,8 +251,9 @@ class TestRPCCoverage(unittest.TestCase):
                               'get_last_modified_time_miner_directory', 'init_cache_files'}:
                 continue
 
-            # Skip internal helper methods
-            if method_name in {'calculate_drawdown', 'generate_elimination_row', 'get_eliminations_lock'}:
+            # Skip internal helper methods and performance-optimized cache methods
+            if method_name in {'calculate_drawdown', 'generate_elimination_row', 'get_eliminations_lock',
+                              'get_cached_elimination_data'}:  # Intentionally uses local cache (no RPC) for performance
                 continue
 
             # Get method object

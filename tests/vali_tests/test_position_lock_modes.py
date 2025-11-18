@@ -81,7 +81,7 @@ class TestPositionLockModes(unittest.TestCase):
 
     def test_rpc_mode(self):
         """Test RPC mode (lock server)"""
-        locks = PositionLocks(mode='rpc')
+        locks = PositionLocks(mode='rpc', running_unit_tests=True)
 
         miner_hotkey = "test_miner"
         trade_pair_id = "SOLUSD"
@@ -94,27 +94,23 @@ class TestPositionLockModes(unittest.TestCase):
         # Lock is released
         self.assertEqual(locks.mode, 'rpc')
 
-    def test_rpc_mode_metrics(self):
-        """Test RPC mode provides metrics"""
-        locks = PositionLocks(mode='rpc')
+        # Cleanup
+        locks.shutdown()
 
-        miner_hotkey = "test_miner"
-        trade_pair_id = "BTCUSD"
+    def test_rpc_mode_health_check(self):
+        """Test RPC mode health check"""
+        locks = PositionLocks(mode='rpc', running_unit_tests=True)
 
-        # Acquire and release lock a few times
-        for _ in range(3):
-            with locks.get_lock(miner_hotkey, trade_pair_id):
-                time.sleep(0.001)
+        # Health check should return True
+        is_healthy = locks.health_check()
+        self.assertTrue(is_healthy)
 
-        # Get metrics
-        metrics = locks.get_metrics()
-        self.assertIsNotNone(metrics)
-        self.assertIn('global', metrics)
-        self.assertGreaterEqual(metrics['global']['total_acquisitions'], 3)
+        # Cleanup
+        locks.shutdown()
 
     def test_rpc_mode_concurrency(self):
         """Test RPC mode handles concurrent access"""
-        locks = PositionLocks(mode='rpc')
+        locks = PositionLocks(mode='rpc', running_unit_tests=True)
 
         miner_hotkey = "test_miner"
         trade_pair_id = "ETHUSD"
@@ -148,6 +144,9 @@ class TestPositionLockModes(unittest.TestCase):
             # End should immediately follow start (lock held)
             self.assertEqual(end_idx, start_idx + 1,
                            f"Worker {i} was not atomic: start at {start_idx}, end at {end_idx}")
+
+        # Cleanup
+        locks.shutdown()
 
     def test_legacy_is_backtesting_param(self):
         """Test backward compatibility with is_backtesting parameter"""

@@ -1325,6 +1325,29 @@ class ChallengePeriodManagerServer(CacheController):
         """Get list of all active miner hotkeys."""
         return list(self.active_miners.keys())
 
+    def get_all_elimination_reasons(self) -> dict:
+        """Get all elimination reasons as a dict (internal method)."""
+        with self.eliminations_lock:
+            return dict(self.eliminations_with_reasons)
+
+    def has_elimination_reasons(self) -> bool:
+        """Check if there are any elimination reasons (internal method)."""
+        with self.eliminations_lock:
+            return bool(self.eliminations_with_reasons)
+
+    def pop_elimination_reason(self, hotkey: str) -> Optional[Tuple[str, float]]:
+        """
+        Atomically get and remove an elimination reason for a single hotkey (internal method).
+
+        Args:
+            hotkey: The hotkey to pop
+
+        Returns:
+            Tuple of (reason, drawdown) or None if not found
+        """
+        with self.eliminations_lock:
+            return self.eliminations_with_reasons.pop(hotkey, None)
+
     def clear_elimination_reasons(self):
         """Clear all elimination reasons."""
         with self.eliminations_lock:
