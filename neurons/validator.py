@@ -213,6 +213,7 @@ class Validator(ValidatorBase):
         self.contract_manager = ValidatorContractManager(config=self.config, position_manager=None, ipc_manager=self.ipc_manager, metagraph=self.metagraph)
 
 
+        # Create EliminationManager with deferred server start (dependencies will be set later)
         self.elimination_manager = EliminationManager(self.metagraph, None,  # Set after self.pm creation
                                                       None, shutdown_dict=shutdown_dict,
                                                       use_ipc=True,
@@ -221,7 +222,7 @@ class Validator(ValidatorBase):
                                                       sync_in_progress=self.sync_in_progress,
                                                       slack_notifier=self.slack_notifier,
                                                       sync_epoch=self.sync_epoch,
-                                                      start_daemon=True)
+                                                      start_server=False)  # Defer server start until dependencies are ready
 
         self.asset_selection_manager = AssetSelectionManager(config=self.config, metagraph=self.metagraph)
 
@@ -280,6 +281,32 @@ class Validator(ValidatorBase):
 
         self.plagiarism_manager = PlagiarismManager(slack_notifier=self.slack_notifier,
                                                     ipc_manager=self.ipc_manager)
+
+        self.market_order_manager = MarketOrderManager(self.live_price_fetcher, self.position_locks, self.price_slippage_model,
+               self.config, self.position_manager, self.shared_queue_websockets, self.contract_manager)
+
+        # Attach the position manager to the other objects that need it (BEFORE creating ChallengePeriodManager)
+        for idx, obj in enumerate([self.perf_ledger_manager, self.position_manager, self.position_syncer,
+                                   self.p2p_syncer, self.elimination_manager, self.metagraph_updater,
+                                   self.contract_manager]):
+            obj.position_manager = self.position_manager
+
+        self.position_manager.perf_ledger_manager = self.perf_ledger_manager
+
+        #force_validator_to_restore_from_checkpoint(self.wallet.hotkey.ss58_address, self.metagraph, self.config, self.secrets)
+
+        # Initialize elimination_manager server FIRST, BEFORE creating ChallengePeriodManager
+        # This is critical because ChallengePeriodManager.__init__() immediately starts its RPC server
+        # which pickles position_manager (containing elimination_manager), so elimination_manager
+        # must have _server_proxy set BEFORE ChallengePeriodManager is created
+        self.elimination_manager.initialize_server()
+
+        # Start the elimination manager daemon
+        self.elimination_manager.start_daemon()
+
+        # NOW create ChallengePeriodManager - elimination_manager is fully initialized
+        # so when ChallengePeriodManager starts its RPC server and pickles position_manager,
+        # elimination_manager._server_proxy will already be set
         self.challengeperiod_manager = ChallengePeriodManager(self.metagraph,
                                                               perf_ledger_manager=self.perf_ledger_manager,
                                                               position_manager=self.position_manager,
@@ -291,9 +318,13 @@ class Validator(ValidatorBase):
                                                               asset_selection_manager=self.asset_selection_manager,
                                                               start_daemon=True)
 
-        self.market_order_manager = MarketOrderManager(self.live_price_fetcher, self.position_locks, self.price_slippage_model,
-               self.config, self.position_manager, self.shared_queue_websockets, self.contract_manager)
 
+        # Set challengeperiod_manager references AFTER creating it
+        self.elimination_manager.challengeperiod_manager = self.challengeperiod_manager
+        self.position_manager.challengeperiod_manager = self.challengeperiod_manager
+
+        # Create LimitOrderManagerClient AFTER elimination_manager server is initialized
+        # This ensures elimination_manager._server_proxy is set before pickling
         self.limit_order_manager = LimitOrderManagerClient(
             position_manager=self.position_manager,
             live_price_fetcher=self.live_price_fetcher,
@@ -305,19 +336,8 @@ class Validator(ValidatorBase):
         # Set limit_order_manager on elimination_manager now that it exists
         self.elimination_manager.limit_order_manager = self.limit_order_manager
 
-        # Attach the position manager to the other objects that need it
-        for idx, obj in enumerate([self.perf_ledger_manager, self.position_manager, self.position_syncer,
-                                   self.p2p_syncer, self.elimination_manager, self.metagraph_updater,
-                                   self.contract_manager]):
-            obj.position_manager = self.position_manager
-
-        self.position_manager.challengeperiod_manager = self.challengeperiod_manager
+        # Set limit_order_manager on position_syncer
         self.position_syncer.limit_order_manager = self.limit_order_manager
-
-        #force_validator_to_restore_from_checkpoint(self.wallet.hotkey.ss58_address, self.metagraph, self.config, self.secrets)
-
-        self.elimination_manager.challengeperiod_manager = self.challengeperiod_manager
-        self.position_manager.perf_ledger_manager = self.perf_ledger_manager
 
         self.position_manager.pre_run_setup()
         self.uuid_tracker.add_initial_uuids(self.position_manager.get_positions_for_all_miners())

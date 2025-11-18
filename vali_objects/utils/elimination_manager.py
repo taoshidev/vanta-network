@@ -41,7 +41,7 @@ class EliminationManager(RPCServiceBase, CacheController):
                  running_unit_tests=False, shutdown_dict=None, use_ipc=False, is_backtesting=False,
                  shared_queue_websockets=None, contract_manager=None, position_locks=None,
                  sync_in_progress=None, slack_notifier=None, sync_epoch=None, limit_order_manager=None,
-                 start_daemon=False):
+                 start_server=True):
 
         # Initialize RPCServiceBase
         RPCServiceBase.__init__(
@@ -76,45 +76,74 @@ class EliminationManager(RPCServiceBase, CacheController):
         self._departed_hotkeys_cache = {}  # {hotkey: departure_info_dict}
         self._cache_lock = threading.Lock()  # Thread-safe access
 
-        # Start the RPC service (this replaces direct initialization)
+        # Start the RPC service (unless deferred via start_server=False)
+        if start_server:
+            self._initialize_service()
+
+            # Start cache refresh daemon (only if not running unit tests)
+            if not running_unit_tests:
+                self._start_cache_refresh_daemon()
+        else:
+            bt.logging.info("EliminationManager: Deferring server start until initialize_server() is called")
+
+    def initialize_server(self):
+        """
+        Initialize the RPC server after dependencies have been set.
+
+        This method should be called after position_manager and challengeperiod_manager
+        have been set via property setters (when start_server=False was passed to __init__).
+
+        Example:
+            # Create with deferred server start
+            elim_mgr = EliminationManager(..., start_server=False)
+
+            # Set dependencies
+            elim_mgr.position_manager = position_manager
+            elim_mgr.challengeperiod_manager = challengeperiod_manager
+
+            # Now start the server with all dependencies ready
+            elim_mgr.initialize_server()
+
+            # Start daemon after server is ready
+            elim_mgr.start_daemon()
+        """
+        if hasattr(self, '_server_proxy') and self._server_proxy is not None:
+            bt.logging.warning("EliminationManager: Server already initialized, ignoring")
+            return
+
+        bt.logging.info("EliminationManager: Initializing RPC server with all dependencies")
         self._initialize_service()
 
         # Start cache refresh daemon (only if not running unit tests)
-        if not running_unit_tests:
+        if not self.running_unit_tests:
             self._start_cache_refresh_daemon()
 
-        # Start daemon process if requested (for continuous elimination processing)
-        if start_daemon:
-            self._start_daemon_process()
+        bt.logging.success("EliminationManager: RPC server initialized successfully")
 
-    def _start_daemon_process(self):
+    def start_daemon(self):
         """
-        Start the daemon process for continuous elimination processing.
+        Start the daemon thread for continuous elimination processing.
 
-        The daemon process runs run_update_loop() on the server, which continuously
-        processes eliminations (MDD checks, challenge period eliminations, etc.).
+        This method should be called AFTER all dependencies (position_manager,
+        challengeperiod_manager) have been set via property setters.
 
-        This is separate from the RPC server process - the RPC server handles
-        requests, while the daemon process performs continuous background updates.
+        The daemon will process eliminations every 5 minutes, including:
+        - MDD eliminations
+        - Challenge period eliminations
+        - Zombie hotkey cleanup
+        - Performance ledger eliminations
         """
-        import multiprocessing
-
-        # Call run_update_loop on the server (either direct or via RPC)
         if self.running_unit_tests:
-            # In test mode with direct server, just call run_update_loop directly
-            bt.logging.info("EliminationManager: Test mode - run_update_loop must be called manually")
-            # We don't start a daemon in test mode because tests control the flow
-        else:
-            # In production with RPC server, the server already has run_update_loop
-            # We need to start a daemon process that calls it
-            daemon_process = multiprocessing.Process(
-                target=self._server_proxy.run_update_loop,
-                daemon=True
-            )
-            daemon_process.start()
-            bt.logging.success(
-                f"EliminationManager daemon process started with PID: {daemon_process.pid}"
-            )
+            bt.logging.info("EliminationManager: Test mode - daemon not started")
+            return
+
+        if not self._server_proxy:
+            bt.logging.warning("EliminationManager: Server not ready, cannot start daemon")
+            return
+
+        # Trigger daemon start via RPC
+        self._server_proxy.start_daemon_rpc()
+        bt.logging.success("EliminationManager: Daemon start requested via RPC")
 
     # ==================== Dependency Properties (auto-sync to server in test mode) ====================
 
@@ -125,11 +154,13 @@ class EliminationManager(RPCServiceBase, CacheController):
 
     @position_manager.setter
     def position_manager(self, value):
-        """Set position manager and auto-sync to server in test mode"""
+        """Set position manager and sync to server in test mode only"""
         self._position_manager = value
-        # In test mode, also update server instance
+        # In test mode, also update server instance directly (no RPC needed in test mode)
         if self.running_unit_tests and hasattr(self, '_server_proxy') and self._server_proxy:
             self._server_proxy.position_manager = value
+        # In production, RPC client objects cannot be sent via RPC (unpicklable).
+        # Dependencies must be passed at server creation time via multiprocessing.Process args.
 
     @property
     def challengeperiod_manager(self):
@@ -138,11 +169,13 @@ class EliminationManager(RPCServiceBase, CacheController):
 
     @challengeperiod_manager.setter
     def challengeperiod_manager(self, value):
-        """Set challenge period manager and auto-sync to server in test mode"""
+        """Set challenge period manager and sync to server in test mode only"""
         self._challengeperiod_manager = value
-        # In test mode, also update server instance
+        # In test mode, also update server instance directly (no RPC needed in test mode)
         if self.running_unit_tests and hasattr(self, '_server_proxy') and self._server_proxy:
             self._server_proxy.challengeperiod_manager = value
+        # In production, RPC client objects cannot be sent via RPC (unpicklable).
+        # Dependencies must be passed at server creation time via multiprocessing.Process args.
 
     @property
     def contract_manager(self):
@@ -182,6 +215,10 @@ class EliminationManager(RPCServiceBase, CacheController):
         """Start RPC server in separate process"""
         from vali_objects.utils.elimination_manager_server import start_elimination_manager_server
 
+        # Store authkey for client-only reconnection (when pickled to other processes)
+        import hashlib
+        self._authkey = hashlib.sha256(f"EliminationManagerServer_{self.port}".encode()).digest()[:32]
+
         process = Process(
             target=start_elimination_manager_server,
             args=(
@@ -199,13 +236,146 @@ class EliminationManager(RPCServiceBase, CacheController):
                 self.sync_epoch,
                 self.limit_order_manager,
                 address,
-                authkey,
+                self._authkey,
                 server_ready
             ),
             daemon=True
         )
         process.start()
         return process
+
+    def __getstate__(self):
+        """
+        Prepare object for pickling (when passed to child processes).
+
+        When elimination_manager is passed to other components (ChallengePeriodManager,
+        LimitOrderManager) that run in separate processes, this method ensures the
+        object can be pickled properly.
+
+        The unpickled object will be a client-only instance that connects to the
+        existing RPC server.
+        """
+        import os
+
+        msg = (
+            f"[ELIMINATION_PICKLE] __getstate__ called in PID {os.getpid()}, "
+            f"running_unit_tests={self.running_unit_tests}, port={self.port}"
+        )
+        bt.logging.info(msg)
+        print(msg, flush=True)  # Also print to ensure visibility
+
+        state = self.__dict__.copy()
+
+        # Mark as client-only so unpickled instance connects to existing server
+        state['_is_client_only'] = True
+
+        # Don't pickle process/proxy objects (they're not picklable anyway)
+        state['_server_process'] = None
+        state['_client_manager'] = None
+        state['_server_proxy'] = None
+
+        # Don't pickle locks (they're not picklable)
+        state['_cache_lock'] = None
+
+        # Don't pickle cache data (will be refreshed after reconnection)
+        state['_eliminations_cache'] = {}
+        state['_departed_hotkeys_cache'] = {}
+
+        bt.logging.debug(
+            f"[ELIMINATION_PICKLE] __getstate__ complete, removed unpicklable objects"
+        )
+
+        return state
+
+    def __setstate__(self, state):
+        """
+        Restore object after unpickling (in child process).
+
+        Automatically reconnects to existing RPC server running in the main validator process.
+        """
+        import threading
+        import os
+
+        msg = (
+            f"[ELIMINATION_UNPICKLE] __setstate__ called in PID {os.getpid()}, "
+            f"running_unit_tests={state.get('running_unit_tests', 'UNKNOWN')}"
+        )
+        bt.logging.info(msg)
+        print(msg, flush=True)  # Also print to ensure visibility
+
+        self.__dict__.update(state)
+
+        # Recreate cache lock (threading locks can't be pickled)
+        self._cache_lock = threading.Lock()
+        bt.logging.debug("[ELIMINATION_UNPICKLE] Recreated cache lock")
+
+        # In test mode, recreate direct server instance
+        if self.running_unit_tests:
+            bt.logging.info("[ELIMINATION_UNPICKLE] Test mode - recreating direct server instance")
+            self._server_proxy = self._create_direct_server()
+            bt.logging.success(
+                f"[ELIMINATION_UNPICKLE] Direct server created, type: {type(self._server_proxy)}"
+            )
+            return
+
+        # Reconnect to existing RPC server
+        msg_reconnect = f"[ELIMINATION_UNPICKLE] Production mode - reconnecting to RPC server on port {self.port}"
+        bt.logging.info(msg_reconnect)
+        print(msg_reconnect, flush=True)
+
+        self._connect_client_only()
+
+        # Verify connection succeeded
+        if self._server_proxy is None:
+            msg_error = "[ELIMINATION_UNPICKLE] CRITICAL: _server_proxy is still None after _connect_client_only()!"
+            bt.logging.error(msg_error)
+            print(msg_error, flush=True)
+        else:
+            msg_success = f"[ELIMINATION_UNPICKLE] _server_proxy successfully set: {type(self._server_proxy)}"
+            bt.logging.success(msg_success)
+            print(msg_success, flush=True)
+
+    def _connect_client_only(self):
+        """
+        Connect to existing RPC server (client-only mode for child processes).
+
+        This is called when elimination_manager is unpickled in a child process
+        (ChallengePeriodManagerServer, LimitOrderManager, etc.).
+        """
+        import hashlib
+        import traceback
+
+        bt.logging.info(
+            f"[ELIMINATION_UNPICKLE] Starting client-only reconnection on port {self.port}"
+        )
+
+        # Use stable authkey (must match what server used)
+        if not hasattr(self, '_authkey'):
+            self._authkey = hashlib.sha256(f"EliminationManagerServer_{self.port}".encode()).digest()[:32]
+            bt.logging.debug(f"[ELIMINATION_UNPICKLE] Generated authkey from port {self.port}")
+
+        # Connect to existing server (inherited from RPCServiceBase)
+        try:
+            bt.logging.info(f"[ELIMINATION_UNPICKLE] Attempting to connect to {self._address}")
+            self._connect_client()
+            bt.logging.success(
+                f"[ELIMINATION_UNPICKLE] ✓ Client-only mode connected to existing RPC server at {self._address}"
+            )
+            bt.logging.info(f"[ELIMINATION_UNPICKLE] _server_proxy type: {type(self._server_proxy)}")
+        except Exception as e:
+            error_trace = traceback.format_exc()
+            bt.logging.error(
+                f"[ELIMINATION_UNPICKLE] ✗ Failed to reconnect in client-only mode: {e}\n"
+                f"Address: {self._address}\n"
+                f"Port: {self.port}\n"
+                f"Traceback:\n{error_trace}"
+            )
+            # Don't raise - allow child process to continue, but log the error
+            # The _server_proxy will be None and methods will fail with clearer errors
+            bt.logging.error(
+                "[ELIMINATION_UNPICKLE] Child process will not be able to use elimination_manager methods. "
+                "This likely means the RPC server is not running or not accessible from this process."
+            )
 
     # ==================== Cache Refresh Daemon ====================
 

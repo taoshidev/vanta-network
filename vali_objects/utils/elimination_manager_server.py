@@ -316,6 +316,28 @@ class EliminationManagerServer(CacheController):
         """
         self.handle_first_refresh(position_locks, iteration_epoch)
 
+    def start_daemon_rpc(self) -> None:
+        """
+        Start the daemon loop (called via RPC after all dependencies are ready).
+
+        Dependencies (position_manager, challengeperiod_manager) must be passed at
+        server creation time via __init__ parameters. This method should be called
+        after the validator has finished all initialization.
+        """
+        if hasattr(self, '_daemon_started') and self._daemon_started:
+            bt.logging.warning("EliminationManager daemon already started, ignoring")
+            return
+
+        import threading
+
+        daemon_thread = threading.Thread(
+            target=self.run_update_loop,
+            daemon=True
+        )
+        daemon_thread.start()
+        self._daemon_started = True
+        bt.logging.success("EliminationManager daemon loop started in server process (via RPC)")
+
     # ==================== Internal Methods (not exposed) ====================
 
     def get_eliminations_lock(self):
@@ -426,6 +448,10 @@ class EliminationManagerServer(CacheController):
         Uses atomic pop operations to prevent race conditions where ChallengePeriodManager
         might add new eliminations while we're processing.
         """
+        # Skip if challengeperiod_manager not initialized yet
+        if self.challengeperiod_manager is None:
+            return
+
         # Check if there are any eliminations to process
         if not self.challengeperiod_manager.has_elimination_reasons():
             return
@@ -496,8 +522,14 @@ class EliminationManagerServer(CacheController):
         if position_locks is None:
             position_locks = self.position_locks
 
-        if not self.refresh_allowed(ValiConfig.ELIMINATION_CHECK_INTERVAL_MS) and \
-                not self.challengeperiod_manager.has_elimination_reasons():
+        # Check if we should process:
+        # 1. Process if time-based refresh is due
+        # 2. OR process if there are urgent challenge period eliminations
+        refresh_due = self.refresh_allowed(ValiConfig.ELIMINATION_CHECK_INTERVAL_MS)
+        has_urgent_eliminations = (self.challengeperiod_manager is not None and
+                                   self.challengeperiod_manager.has_elimination_reasons())
+
+        if not refresh_due and not has_urgent_eliminations:
             return
 
         bt.logging.info(
@@ -518,7 +550,7 @@ class EliminationManagerServer(CacheController):
     def run_update_loop(self):
         """Main server loop"""
         setproctitle("vali_EliminationManagerServer")
-        bt.logging.info("EliminationManagerServer process started")
+        bt.logging.info("EliminationManagerServer daemon loop running")
 
         while not self.shutdown_dict:
             try:
@@ -611,6 +643,11 @@ class EliminationManagerServer(CacheController):
         bt.logging.info("checking main competition for maximum drawdown eliminations.")
         if self.shutdown_dict:
             return
+
+        # Skip if challengeperiod_manager not initialized yet
+        if self.challengeperiod_manager is None:
+            return
+
         challengeperiod_success_hotkeys = self.challengeperiod_manager.get_hotkeys_by_bucket(MinerBucket.MAINCOMP)
 
         filtered_ledger = self.position_manager.perf_ledger_manager.filtered_ledger_for_scoring(
@@ -708,7 +745,7 @@ class EliminationManagerServer(CacheController):
                 bt.logging.trace(f"miner [{hotkey}] has not been deregistered by BT yet. Not deleting miner dir.")
                 continue
 
-            if self.challengeperiod_manager.has_miner(hotkey):
+            if self.challengeperiod_manager and self.challengeperiod_manager.has_miner(hotkey):
                 self.challengeperiod_manager.remove_miner(hotkey)
                 any_challenege_period_changes = True
 
@@ -726,7 +763,7 @@ class EliminationManagerServer(CacheController):
             )
             deleted_hotkeys.add(hotkey)
 
-        if any_challenege_period_changes:
+        if any_challenege_period_changes and self.challengeperiod_manager:
             self.challengeperiod_manager._write_challengeperiod_from_memory_to_disk()
 
         if deleted_hotkeys:
@@ -802,6 +839,9 @@ def start_elimination_manager_server(
         sync_epoch=sync_epoch,
         limit_order_manager=limit_order_manager
     )
+
+    # NOTE: Daemon is NOT started here - it's started explicitly via start_daemon_rpc()
+    # after all dependencies (position_manager, challengeperiod_manager) are wired up
 
     # Register server with manager
     class EliminationManagerRPC(BaseManager):
