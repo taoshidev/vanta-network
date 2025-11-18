@@ -1294,8 +1294,17 @@ class DebtBasedScoring:
         # Group miners by current bucket
         bucket_groups = defaultdict(list)
         for hotkey, ledger in ledger_dict.items():
-            bucket = challengeperiod_manager.get_miner_bucket(hotkey).value
-            bucket_groups[bucket].append((hotkey, ledger))
+            bucket = challengeperiod_manager.get_miner_bucket(hotkey)
+            # Handle None case - use UNKNOWN as default
+            if bucket is None:
+                bt.logging.warning(
+                    f"get_miner_bucket returned None for hotkey {hotkey[:16]}...{hotkey[-8:]} in dust calculation. "
+                    f"Using {MinerBucket.UNKNOWN.value} as default bucket."
+                )
+                bucket_value = MinerBucket.UNKNOWN.value
+            else:
+                bucket_value = bucket.value
+            bucket_groups[bucket_value].append((hotkey, ledger))
 
         if verbose:
             bt.logging.info(
@@ -1427,10 +1436,18 @@ class DebtBasedScoring:
         }
 
         # Batch read all statuses in one IPC call to minimize overhead
-        miner_statuses = {
-            hotkey: challengeperiod_manager.get_miner_bucket(hotkey).value
-            for hotkey in ledger_dict.keys()
-        }
+        miner_statuses = {}
+        for hotkey in ledger_dict.keys():
+            bucket = challengeperiod_manager.get_miner_bucket(hotkey)
+            # Handle None case - use UNKNOWN as default
+            if bucket is None:
+                bt.logging.warning(
+                    f"get_miner_bucket returned None for hotkey {hotkey[:16]}...{hotkey[-8:]}. "
+                    f"Using {MinerBucket.UNKNOWN.value} as default status."
+                )
+                miner_statuses[hotkey] = MinerBucket.UNKNOWN.value
+            else:
+                miner_statuses[hotkey] = bucket.value
 
         # Step 1: Normalize remaining payouts from USD to proportional weights (sum to 1.0)
         # This ensures we're comparing apples to apples when applying dust minimums

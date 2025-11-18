@@ -1179,7 +1179,25 @@ class VantaRestServer(APIKeyMixin):
                 if not request.is_json:
                     return jsonify({'error': 'Content-Type must be application/json'}), 400
 
-                data = request.get_json()
+                # Log raw request data for debugging JSON parse errors
+                raw_data = request.get_data(as_text=True)
+                bt.logging.debug(f"[DEV_ORDER] Raw request body (first 300 chars): {raw_data[:300]}")
+                bt.logging.debug(f"[DEV_ORDER] Request body length: {len(raw_data)} chars")
+
+                try:
+                    data = request.get_json()
+                except json.JSONDecodeError as e:
+                    bt.logging.error(
+                        f"[DEV_ORDER] JSON parse error at position {e.pos}: {e.msg}\n"
+                        f"  Raw body: {raw_data}\n"
+                        f"  Error context (char {max(0, e.pos-20)} to {min(len(raw_data), e.pos+20)}): "
+                        f"{raw_data[max(0, e.pos-20):min(len(raw_data), e.pos+20)]}"
+                    )
+                    return jsonify({
+                        'error': f'Invalid JSON at position {e.pos}: {e.msg}',
+                        'position': e.pos
+                    }), 400
+
                 if not data:
                     return jsonify({'error': 'Invalid JSON body'}), 400
 

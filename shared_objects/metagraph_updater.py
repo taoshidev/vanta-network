@@ -155,6 +155,10 @@ class MetagraphUpdater(CacheController):
         self.current_backoff = self.min_backoff
         self.consecutive_failures = 0
         
+        # Hotkeys cache for fast lookups (refreshed atomically during metagraph updates)
+        # No lock needed - set assignment is atomic in Python
+        self._hotkeys_cache = set()
+
         # Log mode
         mode = "miner" if is_miner else "validator"
         weight_mode = "enabled" if self.weight_request_queue else "disabled"
@@ -633,6 +637,21 @@ class MetagraphUpdater(CacheController):
         """
         return self.metagraph
 
+    def is_hotkey_registered_cached(self, hotkey: str) -> bool:
+        """
+        Fast local check if hotkey is registered (no RPC call!).
+
+        Uses local cache that is atomically refreshed during metagraph updates.
+        Much faster than calling metagraph.has_hotkey() which does RPC.
+
+        Args:
+            hotkey: The hotkey to check
+
+        Returns:
+            True if hotkey is registered in metagraph, False otherwise
+        """
+        return hotkey in self._hotkeys_cache
+
     def _get_substrate_reserves(self, metagraph_clone):
         """
         Get TAO and ALPHA reserve balances from metagraph.pool.
@@ -832,6 +851,9 @@ class MetagraphUpdater(CacheController):
             alpha_reserve_rao=alpha_reserve_rao,
             tao_to_usd_rate=tao_to_usd_rate
         )
+
+        # Update local hotkeys cache atomically (no lock needed - set assignment is atomic)
+        self._hotkeys_cache = set(metagraph_clone.hotkeys)
 
         if recently_acked_miners:
             self.update_likely_miners(recently_acked_miners)

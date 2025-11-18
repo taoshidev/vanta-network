@@ -2316,5 +2316,64 @@ class TestDebtBasedScoring(unittest.TestCase):
                          "Miner at threshold should have non-zero weight")
 
 
+    def test_none_bucket_handling(self):
+        """Test that None bucket from get_miner_bucket is handled gracefully"""
+        # Use November 2025 as current time (before activation)
+        current_time = datetime(2025, 11, 15, 12, 0, 0, tzinfo=timezone.utc)
+        current_time_ms = int(current_time.timestamp() * 1000)
+
+        # Create ledgers for multiple miners
+        ledger1 = DebtLedger(hotkey="miner_1", checkpoints=[])
+        ledger2 = DebtLedger(hotkey="miner_2", checkpoints=[])
+        ledger3 = DebtLedger(hotkey="miner_3", checkpoints=[])
+
+        # Mock get_miner_bucket to return None for some miners
+        def mock_get_miner_bucket_with_none(hotkey):
+            if hotkey == "miner_2":
+                # Return None for miner_2
+                return None
+            # Return normal Mock for other miners
+            mock_bucket = Mock()
+            mock_bucket.value = MinerBucket.MAINCOMP.value
+            return mock_bucket
+
+        self.mock_challengeperiod_manager.get_miner_bucket = Mock(
+            side_effect=mock_get_miner_bucket_with_none
+        )
+
+        # Should not raise AttributeError
+        result = DebtBasedScoring.compute_results(
+            {
+                "miner_1": ledger1,
+                "miner_2": ledger2,
+                "miner_3": ledger3
+            },
+            self.mock_metagraph,
+            self.mock_challengeperiod_manager,
+            self.mock_contract_manager,
+            current_time_ms=current_time_ms,
+            is_testnet=False
+        )
+
+        # Verify result includes all miners
+        weights_dict = dict(result)
+        self.assertIn("miner_1", weights_dict)
+        self.assertIn("miner_2", weights_dict)  # Should be included despite None bucket
+        self.assertIn("miner_3", weights_dict)
+
+        # miner_2 should get UNKNOWN bucket weight (0x dust = 0.0)
+        self.assertEqual(weights_dict["miner_2"], 0.0,
+                        "Miner with None bucket should get UNKNOWN bucket weight (0.0)")
+
+        # miner_1 and miner_3 should get MAINCOMP bucket weight (3x dust)
+        expected_maincomp_dust = 3 * ValiConfig.CHALLENGE_PERIOD_MIN_WEIGHT
+        self.assertEqual(weights_dict["miner_1"], expected_maincomp_dust)
+        self.assertEqual(weights_dict["miner_3"], expected_maincomp_dust)
+
+        # Verify total weight sums to 1.0 (including burn address)
+        total_weight = sum(w for _, w in result)
+        self.assertAlmostEqual(total_weight, 1.0, places=10)
+
+
 if __name__ == '__main__':
     unittest.main()

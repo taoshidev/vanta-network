@@ -1,8 +1,10 @@
 # developer: jbonilla
 # Copyright © 2024 Taoshi Inc
 from enum import Enum
-from typing import Dict, Set, List, Optional
+from typing import Dict, Set, List, Optional, Tuple
 from multiprocessing import Process
+import threading
+
 from shared_objects.rpc_service_base import RPCServiceBase
 from shared_objects.cache_controller import CacheController
 
@@ -68,8 +70,17 @@ class EliminationManager(RPCServiceBase, CacheController):
         self.sync_epoch = sync_epoch
         self.limit_order_manager = limit_order_manager
 
+        # Local cache for fast lookups (refreshed by background daemon thread)
+        self._eliminations_cache = {}  # {hotkey: elimination_dict}
+        self._departed_hotkeys_cache = {}  # {hotkey: departure_info_dict}
+        self._cache_lock = threading.Lock()  # Thread-safe access
+
         # Start the RPC service (this replaces direct initialization)
         self._initialize_service()
+
+        # Start cache refresh daemon (only if not running unit tests)
+        if not running_unit_tests:
+            self._start_cache_refresh_daemon()
 
     # ==================== Dependency Properties (auto-sync to server in test mode) ====================
 
@@ -111,6 +122,121 @@ class EliminationManager(RPCServiceBase, CacheController):
         # In test mode, also update server instance
         if self.running_unit_tests and hasattr(self, '_server_proxy') and self._server_proxy:
             self._server_proxy.contract_manager = value
+
+
+    def _create_direct_server(self):
+        """Create direct in-memory instance for tests"""
+        from vali_objects.utils.elimination_manager_server import EliminationManagerServer
+
+        return EliminationManagerServer(
+            metagraph=self.metagraph,
+            position_manager=self.position_manager,
+            challengeperiod_manager=self.challengeperiod_manager,
+            running_unit_tests=self.running_unit_tests,
+            shutdown_dict=self.shutdown_dict,
+            is_backtesting=self.is_backtesting,
+            shared_queue_websockets=self.shared_queue_websockets,
+            contract_manager=self.contract_manager,
+            position_locks=self.position_locks,
+            sync_in_progress=self.sync_in_progress,
+            slack_notifier=self.slack_notifier,
+            sync_epoch=self.sync_epoch,
+            limit_order_manager=self.limit_order_manager
+        )
+
+    def _start_server_process(self, address, authkey, server_ready):
+        """Start RPC server in separate process"""
+        from vali_objects.utils.elimination_manager_server import start_elimination_manager_server
+
+        process = Process(
+            target=start_elimination_manager_server,
+            args=(
+                self.metagraph,
+                self.position_manager,
+                self.challengeperiod_manager,
+                self.running_unit_tests,
+                self.shutdown_dict,
+                self.is_backtesting,
+                self.shared_queue_websockets,
+                self.contract_manager,
+                self.position_locks,
+                self.sync_in_progress,
+                self.slack_notifier,
+                self.sync_epoch,
+                self.limit_order_manager,
+                address,
+                authkey,
+                server_ready
+            ),
+            daemon=True
+        )
+        process.start()
+        return process
+
+    # ==================== Cache Refresh Daemon ====================
+
+    def _cache_refresh_loop(self):
+        """
+        Background daemon that periodically refreshes local cache from RPC server.
+
+        Fetches elimination data from server and updates local cache.
+        This allows validator to do pure local lookups with zero RPC calls.
+        """
+        import bittensor as bt
+        from setproctitle import setproctitle
+        import time
+        from vali_objects.vali_config import ValiConfig
+
+        setproctitle("vali_EliminationClientCacheRefresher")
+        bt.logging.info(f"Elimination manager cache refresh daemon started ({ValiConfig.ELIMINATION_CACHE_REFRESH_INTERVAL_S}-second interval)")
+
+        while not self.shutdown_dict:
+            try:
+                time.sleep(ValiConfig.ELIMINATION_CACHE_REFRESH_INTERVAL_S)
+
+                # Fetch elimination data from RPC server (server has its own daemon refreshing from disk)
+                eliminations, departed = self._server_proxy.get_cached_elimination_data_rpc()
+
+                # Update local cache atomically
+                with self._cache_lock:
+                    self._eliminations_cache = eliminations
+                    self._departed_hotkeys_cache = departed
+
+                bt.logging.debug(
+                    f"[ELIMINATION_CACHE_REFRESH] Synced: {len(eliminations)} eliminated, "
+                    f"{len(departed)} departed hotkeys"
+                )
+
+            except Exception as e:
+                bt.logging.error(f"Error in elimination cache refresh daemon: {e}")
+                time.sleep(ValiConfig.ELIMINATION_CACHE_REFRESH_INTERVAL_S)
+
+        bt.logging.info("Elimination manager cache refresh daemon shutting down")
+
+    def _start_cache_refresh_daemon(self):
+        """Start the background cache refresh thread."""
+        import bittensor as bt
+        import threading
+
+        # Initial cache population (blocking, before daemon starts)
+        try:
+            eliminations, departed = self._server_proxy.get_cached_elimination_data_rpc()
+
+            with self._cache_lock:
+                self._eliminations_cache = eliminations
+                self._departed_hotkeys_cache = departed
+
+            bt.logging.info(
+                f"Initial elimination cache populated: {len(eliminations)} eliminated, "
+                f"{len(departed)} departed hotkeys"
+            )
+        except Exception as e:
+            bt.logging.error(f"Error populating initial elimination cache: {e}")
+
+        # Start daemon thread
+        refresh_thread = threading.Thread(target=self._cache_refresh_loop, daemon=True)
+        refresh_thread.start()
+        bt.logging.info("Started elimination manager cache refresh daemon")
 
     # ==================== Client Methods (proxy to RPC) ====================
 
@@ -284,6 +410,68 @@ class EliminationManager(RPCServiceBase, CacheController):
             dict with 'detected_ms' if hotkey is departed, None otherwise
         """
         return self._server_proxy.get_departed_hotkey_info_rpc(hotkey)
+
+    def get_cached_elimination_data(self) -> Tuple[dict, dict]:
+        """
+        Get cached elimination data from local cache (no RPC call!).
+
+        The local cache is automatically refreshed by a background daemon thread.
+        This method performs a fast local read with zero network overhead.
+
+        Performance impact:
+        - hotkey_in_eliminations: 66.81ms RPC → <0.01ms dict lookup
+        - get_departed_hotkey_info: 11.26ms RPC → <0.01ms dict lookup
+
+        Returns:
+            Tuple of (eliminations_cache: dict, departed_hotkeys_cache: dict)
+            - eliminations_cache: Dict mapping hotkey to elimination dict
+            - departed_hotkeys_cache: Dict mapping hotkey to departure info dict
+
+        Example:
+            eliminations, departed = manager.get_cached_elimination_data()
+            if miner_hotkey in eliminations:
+                print(f"Miner is eliminated: {eliminations[miner_hotkey]}")
+            if miner_hotkey in departed:
+                print(f"Miner departed at {departed[miner_hotkey]['detected_ms']}")
+        """
+        with self._cache_lock:
+            return (dict(self._eliminations_cache), dict(self._departed_hotkeys_cache))
+
+    def get_elimination_cached(self, hotkey: str) -> Optional[dict]:
+        """
+        Fast local check if hotkey is eliminated AND get elimination info in one call (no RPC call!).
+
+        Uses local cache refreshed by background daemon thread.
+        This is more efficient than separate calls to check elimination status and get info.
+
+        Args:
+            hotkey: The hotkey to check
+
+        Returns:
+            Elimination dict if hotkey is eliminated, None if not eliminated
+
+        Example:
+            elim_info = manager.get_elimination_cached(hotkey)
+            if elim_info:
+                print(f"Eliminated for {elim_info['reason']}")
+        """
+        with self._cache_lock:
+            return self._eliminations_cache.get(hotkey)
+
+    def get_departed_hotkey_info_cached(self, hotkey: str) -> Optional[dict]:
+        """
+        Fast local check if hotkey is departed (no RPC call!).
+
+        Uses local cache refreshed by background daemon thread.
+
+        Args:
+            hotkey: The hotkey to check
+
+        Returns:
+            Departure info dict if hotkey is departed, None otherwise
+        """
+        with self._cache_lock:
+            return self._departed_hotkeys_cache.get(hotkey)
 
     def delete_eliminations(self, deleted_hotkeys):
         """

@@ -83,6 +83,49 @@ class EliminationManagerServer(CacheController):
         # Track previous metagraph hotkeys to detect changes
         self.previous_metagraph_hotkeys = set(self.metagraph.get_hotkeys()) if self.metagraph else set()
 
+        # Cache for fast fail-early checks (auto-refreshed by daemon)
+        self._eliminations_cache = {}  # {hotkey: elimination_dict}
+        self._departed_hotkeys_cache = {}  # {hotkey: departure_info_dict}
+        self._cache_lock = threading.Lock()
+
+        # Initial cache population
+        self._refresh_cache()
+
+        # Start cache refresh daemon
+        if not running_unit_tests:
+            self._start_cache_refresh_daemon()
+
+    def _refresh_cache(self):
+        """Refresh the fast-lookup caches from current state."""
+        with self._cache_lock:
+            self._eliminations_cache = dict(self.eliminations)  # Full elimination dicts
+            self._departed_hotkeys_cache = dict(self.departed_hotkeys)
+            bt.logging.debug(
+                f"[CACHE_REFRESH] Refreshed: {len(self._eliminations_cache)} eliminated, "
+                f"{len(self._departed_hotkeys_cache)} departed hotkeys"
+            )
+
+    def _cache_refresh_loop(self):
+        """Background daemon that refreshes cache periodically."""
+        setproctitle("vali_EliminationCacheRefresher")
+        bt.logging.info(f"Elimination cache refresh daemon started ({ValiConfig.ELIMINATION_CACHE_REFRESH_INTERVAL_S}-second interval)")
+
+        while not self.shutdown_dict:
+            try:
+                time.sleep(ValiConfig.ELIMINATION_CACHE_REFRESH_INTERVAL_S)
+                self._refresh_cache()
+            except Exception as e:
+                bt.logging.error(f"Error in cache refresh daemon: {e}")
+                time.sleep(ValiConfig.ELIMINATION_CACHE_REFRESH_INTERVAL_S)
+
+        bt.logging.info("Elimination cache refresh daemon shutting down")
+
+    def _start_cache_refresh_daemon(self):
+        """Start the background cache refresh thread."""
+        refresh_thread = threading.Thread(target=self._cache_refresh_loop, daemon=True)
+        refresh_thread.start()
+        bt.logging.info("Started cache refresh daemon")
+
     # ==================== RPC Methods (exposed to client) ====================
 
     def health_check_rpc(self) -> dict:
@@ -203,6 +246,16 @@ class EliminationManagerServer(CacheController):
     def get_departed_hotkey_info_rpc(self, hotkey: str) -> Optional[dict]:
         """Get departed info for a single hotkey (O(1) lookup)"""
         return self.departed_hotkeys.get(hotkey)
+
+    def get_cached_elimination_data_rpc(self) -> tuple:
+        """
+        Get cached elimination data (always fresh, auto-refreshed by background daemon).
+
+        Returns:
+            Tuple of (eliminations_dict, departed_hotkeys_dict)
+        """
+        with self._cache_lock:
+            return (dict(self._eliminations_cache), dict(self._departed_hotkeys_cache))
 
     def get_eliminations_lock_rpc(self):
         """This method should not be called via RPC - lock is local to server"""
