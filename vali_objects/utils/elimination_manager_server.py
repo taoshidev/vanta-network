@@ -491,9 +491,15 @@ class EliminationManagerServer(CacheController):
                 return
             eliminations_snapshot = cp_interface.get_all_elimination_reasons()
         else:
-            if not cp_interface.call("has_elimination_reasons_rpc"):
+            # Production mode: use RPC client (with safe call handling)
+            try:
+                if not cp_interface.call("has_elimination_reasons_rpc"):
+                    return
+                eliminations_snapshot = cp_interface.call("get_all_elimination_reasons_rpc")
+            except RuntimeError as e:
+                # RPC not connected - skip challenge period eliminations
+                bt.logging.debug(f"CP client not connected, skipping challenge period eliminations: {e}")
                 return
-            eliminations_snapshot = cp_interface.call("get_all_elimination_reasons_rpc")
 
         hotkeys = list(eliminations_snapshot.keys())
 

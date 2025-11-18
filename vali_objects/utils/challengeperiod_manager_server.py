@@ -554,9 +554,20 @@ class ChallengePeriodManagerServer(CacheController):
         eliminations = []
         if run_elimination:
             # The refresh should just read the current eliminations
-            if self.elim_client:
-                eliminations = self.elim_client.call("get_eliminations_from_memory_rpc")
+            # Determine which elimination interface to use
+            if self.running_unit_tests and self.elimination_manager:
+                # Test mode: use direct reference
+                eliminations = self.elimination_manager.get_eliminations_from_memory()
+            elif self.elim_client:
+                # Production mode: use RPC client (with safe call handling)
+                try:
+                    eliminations = self.elim_client.call("get_eliminations_from_memory_rpc")
+                except RuntimeError as e:
+                    # RPC not connected - skip eliminations
+                    bt.logging.debug(f"Elim client not connected, skipping eliminations in add_all_miners_to_success: {e}")
+                    eliminations = []
             else:
+                # No elimination interface available
                 eliminations = []
 
             # Collect challenge period and update with new eliminations criteria
@@ -586,9 +597,20 @@ class ChallengePeriodManagerServer(CacheController):
             default_time: int
     ):
         if not eliminations:
-            if self.elim_client:
-                eliminations = self.elim_client.call("get_eliminations_from_memory_rpc")
+            # Determine which elimination interface to use
+            if self.running_unit_tests and self.elimination_manager:
+                # Test mode: use direct reference
+                eliminations = self.elimination_manager.get_eliminations_from_memory()
+            elif self.elim_client:
+                # Production mode: use RPC client (with safe call handling)
+                try:
+                    eliminations = self.elim_client.call("get_eliminations_from_memory_rpc")
+                except RuntimeError as e:
+                    # RPC not connected - skip eliminations
+                    bt.logging.debug(f"Elim client not connected, skipping eliminations in _add_challengeperiod_testing: {e}")
+                    eliminations = []
             else:
+                # No elimination interface available
                 eliminations = []
 
         elimination_hotkeys = set(x['hotkey'] for x in eliminations)
@@ -681,9 +703,20 @@ class ChallengePeriodManagerServer(CacheController):
         self._current_iteration_epoch = iteration_epoch
 
         # The refresh should just read the current eliminations
-        if self.elim_client:
-            eliminations = self.elim_client.call("get_eliminations_from_memory_rpc")
+        # Determine which elimination interface to use
+        if self.running_unit_tests and self.elimination_manager:
+            # Test mode: use direct reference
+            eliminations = self.elimination_manager.get_eliminations_from_memory()
+        elif self.elim_client:
+            # Production mode: use RPC client (with safe call handling)
+            try:
+                eliminations = self.elim_client.call("get_eliminations_from_memory_rpc")
+            except RuntimeError as e:
+                # RPC not connected - skip eliminations for this refresh
+                bt.logging.debug(f"Elim client not connected, skipping eliminations in refresh: {e}")
+                eliminations = []
         else:
+            # No elimination interface available
             eliminations = []
 
         self.update_plagiarism_miners(current_time, self.get_plagiarism_miners())
