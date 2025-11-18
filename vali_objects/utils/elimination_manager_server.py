@@ -727,7 +727,13 @@ class EliminationManagerServer(CacheController):
         if use_direct_call:
             challengeperiod_success_hotkeys = cp_interface.get_hotkeys_by_bucket(MinerBucket.MAINCOMP)
         else:
-            challengeperiod_success_hotkeys = cp_interface.call("get_hotkeys_by_bucket_rpc", MinerBucket.MAINCOMP)
+            # Production mode: use RPC client (with safe call handling)
+            try:
+                challengeperiod_success_hotkeys = cp_interface.call("get_hotkeys_by_bucket_rpc", MinerBucket.MAINCOMP)
+            except RuntimeError as e:
+                # RPC not connected - skip MDD eliminations check
+                bt.logging.debug(f"CP client not connected, skipping MDD eliminations: {e}")
+                return
 
         filtered_ledger = self.position_manager.perf_ledger_manager.filtered_ledger_for_scoring(
             portfolio_only=True, hotkeys=challengeperiod_success_hotkeys
@@ -831,10 +837,14 @@ class EliminationManagerServer(CacheController):
                     self.challengeperiod_manager.remove_miner(hotkey)
                     any_challenege_period_changes = True
             elif self.cp_client:
-                # Production mode: use RPC client
-                if self.cp_client.call("has_miner_rpc", hotkey):
-                    self.cp_client.call("remove_miner_rpc", hotkey)
-                    any_challenege_period_changes = True
+                # Production mode: use RPC client (with safe call handling)
+                try:
+                    if self.cp_client.call("has_miner_rpc", hotkey):
+                        self.cp_client.call("remove_miner_rpc", hotkey)
+                        any_challenege_period_changes = True
+                except RuntimeError as e:
+                    # RPC not connected - skip challenge period cleanup
+                    bt.logging.debug(f"CP client not connected, skipping challenge period cleanup for {hotkey}: {e}")
 
             miner_dir = ValiBkpUtils.get_miner_dir(running_unit_tests=self.running_unit_tests) + hotkey
             all_positions = self.position_manager.get_positions_for_one_hotkey(hotkey)
@@ -856,8 +866,12 @@ class EliminationManagerServer(CacheController):
                 # Test mode: use direct reference
                 self.challengeperiod_manager._write_challengeperiod_from_memory_to_disk()
             elif self.cp_client:
-                # Production mode: use RPC client
-                self.cp_client.call("write_challengeperiod_from_memory_to_disk_rpc")
+                # Production mode: use RPC client (with safe call handling)
+                try:
+                    self.cp_client.call("write_challengeperiod_from_memory_to_disk_rpc")
+                except RuntimeError as e:
+                    # RPC not connected - skip writing challenge period changes
+                    bt.logging.debug(f"CP client not connected, skipping challenge period disk write: {e}")
 
         if deleted_hotkeys:
             self.delete_eliminations(deleted_hotkeys)
