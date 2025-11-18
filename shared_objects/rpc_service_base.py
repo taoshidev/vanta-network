@@ -80,6 +80,7 @@ from setproctitle import setproctitle
 from time_util.time_util import TimeUtil
 from shared_objects.error_utils import ErrorUtils
 from shared_objects.port_manager import PortManager
+from vali_objects.vali_config import ValiConfig
 
 
 class RPCServiceBase(ABC):
@@ -248,8 +249,9 @@ class RPCServiceBase(ABC):
 
     def _start_rpc_mode(self):
         """Start the service in RPC mode with process and client connection."""
-        # Generate secure authentication key
-        self._authkey = secrets.token_bytes(32)
+        # Generate deterministic authentication key based on service name and port
+        # This ensures all clients connecting to this service use the same authkey
+        self._authkey = ValiConfig.get_rpc_authkey(self.service_name, self.port)
 
         # Cleanup any stale servers on this port
         self._cleanup_stale_server()

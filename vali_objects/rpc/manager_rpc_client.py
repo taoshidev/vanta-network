@@ -10,8 +10,8 @@ Key principle: Only import shared protocol, never actual manager classes.
 """
 from multiprocessing.managers import BaseManager
 import bittensor as bt
-from typing import Optional, Dict, List, Tuple
 from vali_objects.vali_config import ValiConfig
+import time
 
 
 class ManagerRPCClient:
@@ -69,8 +69,6 @@ class ManagerRPCClient:
         Returns:
             bool: True if connected successfully, False otherwise
         """
-        import time
-
         for attempt in range(1, max_retries + 1):
             try:
                 bt.logging.debug(
@@ -117,6 +115,8 @@ class ManagerRPCClient:
         """
         Call a method on the remote RPC server.
 
+        Auto-reconnects if not connected or connection was lost.
+
         Args:
             method_name: Name of the RPC method to call (e.g., "has_elimination_reasons_rpc")
             *args: Positional arguments to pass
@@ -126,13 +126,18 @@ class ManagerRPCClient:
             The result from the RPC call
 
         Raises:
-            RuntimeError: If not connected
+            RuntimeError: If not connected and reconnection fails
             AttributeError: If method doesn't exist on remote service
         """
+        # Auto-reconnect if not connected
         if not self._connected or self._proxy is None:
-            raise RuntimeError(
-                f"Not connected to {self.service_name}. Call connect() first."
+            bt.logging.debug(
+                f"[ManagerRPCClient] Not connected to {self.service_name}, attempting to reconnect..."
             )
+            if not self.connect(max_retries=60, retry_delay=1.0):
+                raise RuntimeError(
+                    f"Not connected to {self.service_name}. Reconnection failed."
+                )
 
         try:
             method = getattr(self._proxy, method_name)
