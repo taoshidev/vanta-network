@@ -24,6 +24,7 @@ class ChallengePeriodManager(RPCServiceBase, CacheController):
             contract_manager=None,
             plagiarism_manager=None,
             asset_selection_manager=None,
+            elimination_rpc_address=None,
             *,
             running_unit_tests=False,
             is_backtesting=False,
@@ -33,6 +34,28 @@ class ChallengePeriodManager(RPCServiceBase, CacheController):
             sync_epoch=None,
             start_server=True,
             start_daemon=False):
+        """
+        Initialize ChallengePeriodManager.
+
+        Args:
+            metagraph: Metagraph instance
+            perf_ledger_manager: Performance ledger manager
+            position_manager: Position manager
+            contract_manager: Contract manager
+            plagiarism_manager: Plagiarism manager
+            asset_selection_manager: Asset selection manager
+            elimination_rpc_address: Tuple of (host, port) for EliminationManager RPC server.
+                                    If None, Elim integration will be disabled.
+                                    Example: ("localhost", 50004)
+            running_unit_tests: Whether running in test mode
+            is_backtesting: Whether backtesting
+            shutdown_dict: Shared shutdown flag
+            sync_in_progress: Sync flag
+            slack_notifier: Slack notifier
+            sync_epoch: Sync epoch counter
+            start_server: Whether to start RPC server immediately (vs deferred)
+            start_daemon: Whether to start daemon process immediately
+        """
 
         # Initialize RPCServiceBase
         RPCServiceBase.__init__(
@@ -61,6 +84,10 @@ class ChallengePeriodManager(RPCServiceBase, CacheController):
         self.sync_in_progress = sync_in_progress
         self.sync_epoch = sync_epoch
         self.asset_selection_manager = asset_selection_manager
+
+        # Store peer RPC address (NOT the object itself)
+        # Server will create its own RPC client to communicate with EliminationManager
+        self.elimination_rpc_address = elimination_rpc_address
 
         # Start the RPC service (unless deferred via start_server=False)
         if start_server:
@@ -198,6 +225,29 @@ class ChallengePeriodManager(RPCServiceBase, CacheController):
             self._server_proxy.asset_selection_manager = value
 
     @property
+    def elimination_manager(self):
+        """
+        Elimination manager dependency (test mode only).
+
+        In production, the server uses elimination_rpc_address to create its own RPC client.
+        In test mode, we allow setting a direct reference for backward compatibility.
+        """
+        return getattr(self, '_elimination_manager', None)
+
+    @elimination_manager.setter
+    def elimination_manager(self, value):
+        """
+        Set elimination manager and sync to server in test mode only.
+
+        This property exists for test mode backward compatibility where tests
+        set circular references directly. In production, this is ignored.
+        """
+        self._elimination_manager = value
+        # In test mode, also update server instance directly (no RPC needed in test mode)
+        if self.running_unit_tests and hasattr(self, '_server_proxy') and self._server_proxy:
+            self._server_proxy.elimination_manager = value
+
+    @property
     def active_miners(self):
         """
         Direct access to active_miners dict (test mode only).
@@ -230,6 +280,54 @@ class ChallengePeriodManager(RPCServiceBase, CacheController):
             )
         self._server_proxy.active_miners = value
 
+    def _create_direct_server(self):
+        """Create direct in-memory instance for tests"""
+        from vali_objects.utils.challengeperiod_manager_server import ChallengePeriodManagerServer
+
+        return ChallengePeriodManagerServer(
+            metagraph=self.metagraph,
+            perf_ledger_manager=self.perf_ledger_manager,
+            position_manager=self.position_manager,
+            contract_manager=self.contract_manager,
+            plagiarism_manager=self.plagiarism_manager,
+            asset_selection_manager=self.asset_selection_manager,
+            elimination_rpc_address=self.elimination_rpc_address,  # Pass address, not object
+            running_unit_tests=self.running_unit_tests,
+            shutdown_dict=self.shutdown_dict,
+            is_backtesting=self.is_backtesting,
+            sync_in_progress=self.sync_in_progress,
+            slack_notifier=self.slack_notifier,
+            sync_epoch=self.sync_epoch
+        )
+
+    def _start_server_process(self, address, authkey, server_ready):
+        """Start RPC server in separate process"""
+        from vali_objects.utils.challengeperiod_manager_server import start_challengeperiod_manager_server
+
+        process = Process(
+            target=start_challengeperiod_manager_server,
+            args=(
+                self.metagraph,
+                self.perf_ledger_manager,
+                self.position_manager,
+                self.contract_manager,
+                self.plagiarism_manager,
+                self.asset_selection_manager,
+                self.elimination_rpc_address,  # Pass address, not object
+                self.running_unit_tests,
+                self.shutdown_dict,
+                self.is_backtesting,
+                self.sync_in_progress,
+                self.slack_notifier,
+                self.sync_epoch,
+                address,
+                authkey,
+                server_ready
+            ),
+            daemon=True
+        )
+        process.start()
+        return process
 
     def __getstate__(self):
         """
@@ -241,6 +339,8 @@ class ChallengePeriodManager(RPCServiceBase, CacheController):
 
         The unpickled object will be a client-only instance that connects to the
         existing RPC server.
+
+        Note: elimination_rpc_address is a simple tuple and pickles normally.
         """
         import os
 
@@ -260,6 +360,8 @@ class ChallengePeriodManager(RPCServiceBase, CacheController):
         state['_server_process'] = None
         state['_client_manager'] = None
         state['_server_proxy'] = None
+
+        # elimination_rpc_address is a simple tuple - pickles normally
 
         bt.logging.debug(
             f"[CP_PICKLE] __getstate__ complete, removed unpicklable objects"

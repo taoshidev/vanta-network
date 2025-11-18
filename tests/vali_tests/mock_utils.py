@@ -148,10 +148,11 @@ class EnhancedMockMetagraph(BaseMockMetagraph):
 class EnhancedMockChallengePeriodManager(BaseMockChallengePeriodManager):
     """Enhanced mock challenge period manager with full bucket support"""
 
-    def __init__(self, metagraph, position_manager, perf_ledger_manager, contract_manager, plagiarism_manager, running_unit_tests=True):
+    def __init__(self, metagraph, position_manager, perf_ledger_manager, contract_manager, plagiarism_manager, elimination_rpc_address=None, running_unit_tests=True):
         super().__init__(metagraph, position_manager, contract_manager, plagiarism_manager)
         self.perf_ledger_manager = perf_ledger_manager
         self.elimination_manager = position_manager.elimination_manager if position_manager else None
+        # elimination_rpc_address is ignored in test mode since we use direct references
 
         # Initialize bucket storage
         self.active_miners = {}  # hotkey -> (bucket, timestamp)

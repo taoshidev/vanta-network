@@ -54,7 +54,7 @@ class TestPerfLedgerEdgeCasesAndValidation(TestBase):
         self.DEFAULT_ACCOUNT_SIZE = 100_000
         
         self.mmg = MockMetagraph(hotkeys=[self.test_hotkey])
-        self.elimination_manager = EliminationManager(self.mmg, None, None, running_unit_tests=True)
+        self.elimination_manager = EliminationManager(self.mmg, None, challengeperiod_rpc_address=None, running_unit_tests=True)
         self.position_manager = PositionManager(
             metagraph=self.mmg,
             running_unit_tests=True,
@@ -252,7 +252,7 @@ class TestPerfLedgerEdgeCasesAndValidation(TestBase):
             position_manager=PositionManager(
                 metagraph=mmg,
                 running_unit_tests=True,
-                elimination_manager=EliminationManager(mmg, None, None, running_unit_tests=True),
+                elimination_manager=EliminationManager(mmg, None, challengeperiod_rpc_address=None, running_unit_tests=True),
             ),
             parallel_mode=ParallelizationMode.SERIAL,
         )

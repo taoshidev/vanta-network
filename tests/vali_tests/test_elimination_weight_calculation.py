@@ -97,7 +97,7 @@ class TestEliminationWeightCalculation(TestBase):
         self.elimination_manager = EliminationManager(
             self.mock_metagraph,
             self.live_price_fetcher,
-            None,
+            challengeperiod_rpc_address=None,  # Not needed in test mode
             running_unit_tests=True,
             contract_manager=self.contract_manager
         )
@@ -120,12 +120,14 @@ class TestEliminationWeightCalculation(TestBase):
             perf_ledger_manager=self.perf_ledger_manager,
             contract_manager=self.contract_manager,
             plagiarism_manager=self.plagiarism_manager,
+            elimination_rpc_address=None,  # Not needed in test mode
             running_unit_tests=True
         )
         
         # Set circular references (auto-synced to server via property setters)
         self.elimination_manager.position_manager = self.position_manager
         self.elimination_manager.challengeperiod_manager = self.challengeperiod_manager
+        self.challengeperiod_manager.elimination_manager = self.elimination_manager
         self.perf_ledger_manager.position_manager = self.position_manager
         self.perf_ledger_manager.elimination_manager = self.elimination_manager
         self.position_manager.challengeperiod_manager = self.challengeperiod_manager

@@ -71,9 +71,9 @@ class TestEliminationCore(TestBase):
         # Create elimination manager
         self.contract_manager = ValidatorContractManager(running_unit_tests=True)
         self.elimination_manager = EliminationManager(
-            self.mock_metagraph, 
-            self.live_price_fetcher,
-            None,  # challengeperiod_manager set later
+            self.mock_metagraph,
+            self.live_price_fetcher,  # position_manager (set properly later)
+            challengeperiod_rpc_address=None,  # Not needed in test mode
             running_unit_tests=True,
             contract_manager=self.contract_manager
         )
@@ -97,8 +97,10 @@ class TestEliminationCore(TestBase):
             position_manager=self.position_manager,
             perf_ledger_manager=self.ledger_manager,
             plagiarism_manager=self.plagiarism_manager,
+            elimination_rpc_address=None,  # Not needed in test mode
             running_unit_tests=True
         )
+        # In test mode, still set direct reference for compatibility
         self.elimination_manager.challengeperiod_manager = self.challengeperiod_manager
         
         # Create position locks
@@ -498,7 +500,7 @@ class TestEliminationCore(TestBase):
         ipc_elimination_manager = EliminationManager(
             self.mock_metagraph,
             self.position_manager,
-            self.challengeperiod_manager,
+            challengeperiod_rpc_address=None,  # Not needed in test mode
             running_unit_tests=True,
             use_ipc=True
         )
@@ -615,11 +617,13 @@ class TestEliminationCore(TestBase):
         new_manager = EliminationManager(
             self.mock_metagraph,
             self.position_manager,
-            self.challengeperiod_manager,
+            challengeperiod_rpc_address=None,  # Not needed in test mode
             running_unit_tests=True,
             contract_manager=self.contract_manager
         )
-        
+        # In test mode, set direct reference for compatibility
+        new_manager.challengeperiod_manager = self.challengeperiod_manager
+
         # First refresh should have special handling
         self.assertFalse(new_manager.first_refresh_ran)
         

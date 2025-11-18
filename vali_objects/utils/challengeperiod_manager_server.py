@@ -42,6 +42,7 @@ class ChallengePeriodManagerServer(CacheController):
             contract_manager=None,
             plagiarism_manager=None,
             asset_selection_manager=None,
+            elimination_rpc_address=None,
             *,
             running_unit_tests=False,
             is_backtesting=False,
@@ -53,7 +54,26 @@ class ChallengePeriodManagerServer(CacheController):
         self.perf_ledger_manager = perf_ledger_manager if perf_ledger_manager else \
             PerfLedgerManager(metagraph, running_unit_tests=running_unit_tests)
         self.position_manager = position_manager
-        self.elimination_manager = self.position_manager.elimination_manager
+        self.running_unit_tests = running_unit_tests
+
+        # Create RPC client for EliminationManager (using address injection pattern)
+        self.elim_client = None
+        if elimination_rpc_address and not running_unit_tests:
+            from vali_objects.rpc.manager_rpc_client import ManagerRPCClient
+            host, port = elimination_rpc_address
+            self.elim_client = ManagerRPCClient(host, port, "EliminationManagerServer")
+            connection_success = self.elim_client.connect()
+            if connection_success:
+                bt.logging.success(
+                    f"[CP_RPC] Connected to EliminationManager at {elimination_rpc_address}"
+                )
+            else:
+                bt.logging.warning(
+                    f"[CP_RPC] Failed to connect to EliminationManager at {elimination_rpc_address}"
+                )
+
+        # For test mode: direct reference to elimination manager (set via property on client)
+        self.elimination_manager = None
 
         # Local dicts (NOT IPC managerized) - much faster!
         self.eliminations_with_reasons: Dict[str, Tuple[str, float]] = {}
@@ -534,7 +554,10 @@ class ChallengePeriodManagerServer(CacheController):
         eliminations = []
         if run_elimination:
             # The refresh should just read the current eliminations
-            eliminations = self.elimination_manager.get_eliminations_from_memory()
+            if self.elim_client:
+                eliminations = self.elim_client.call("get_eliminations_from_memory_rpc")
+            else:
+                eliminations = []
 
             # Collect challenge period and update with new eliminations criteria
             self.remove_eliminated(eliminations=eliminations)
@@ -563,7 +586,10 @@ class ChallengePeriodManagerServer(CacheController):
             default_time: int
     ):
         if not eliminations:
-            eliminations = self.elimination_manager.get_eliminations_from_memory()
+            if self.elim_client:
+                eliminations = self.elim_client.call("get_eliminations_from_memory_rpc")
+            else:
+                eliminations = []
 
         elimination_hotkeys = set(x['hotkey'] for x in eliminations)
 
@@ -655,7 +681,10 @@ class ChallengePeriodManagerServer(CacheController):
         self._current_iteration_epoch = iteration_epoch
 
         # The refresh should just read the current eliminations
-        eliminations = self.elimination_manager.get_eliminations_from_memory()
+        if self.elim_client:
+            eliminations = self.elim_client.call("get_eliminations_from_memory_rpc")
+        else:
+            eliminations = []
 
         self.update_plagiarism_miners(current_time, self.get_plagiarism_miners())
 
@@ -1103,7 +1132,16 @@ class ChallengePeriodManagerServer(CacheController):
 
     def _remove_eliminated_from_memory(self, eliminations: list[dict] = None) -> bool:
         if eliminations is None:
-            eliminations_hotkeys = self.elimination_manager.get_eliminated_hotkeys()
+            # Determine which elimination interface to use
+            if self.running_unit_tests and self.elimination_manager:
+                # Test mode: use direct reference
+                eliminations_hotkeys = self.elimination_manager.get_eliminated_hotkeys()
+            elif self.elim_client:
+                # Production mode: use RPC client
+                eliminations_hotkeys = self.elim_client.call("get_eliminated_hotkeys_rpc")
+            else:
+                # No elimination interface available
+                eliminations_hotkeys = set()
         else:
             eliminations_hotkeys = set([x['hotkey'] for x in eliminations])
 
@@ -1424,6 +1462,7 @@ def start_challengeperiod_manager_server(
     contract_manager,
     plagiarism_manager,
     asset_selection_manager,
+    elimination_rpc_address,
     running_unit_tests,
     shutdown_dict,
     is_backtesting,
@@ -1438,6 +1477,10 @@ def start_challengeperiod_manager_server(
     Entry point for ChallengePeriodManagerServer RPC process.
 
     Creates server instance and serves RPC requests forever.
+
+    Args:
+        elimination_rpc_address: Tuple of (host, port) for EliminationManager RPC server.
+                                Example: ("localhost", 50004)
     """
     bt.logging.info("[CP_SERVER] Starting ChallengePeriodManagerServer RPC process")
 
@@ -1449,6 +1492,7 @@ def start_challengeperiod_manager_server(
         contract_manager=contract_manager,
         plagiarism_manager=plagiarism_manager,
         asset_selection_manager=asset_selection_manager,
+        elimination_rpc_address=elimination_rpc_address,
         running_unit_tests=running_unit_tests,
         shutdown_dict=shutdown_dict,
         is_backtesting=is_backtesting,

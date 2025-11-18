@@ -37,11 +37,33 @@ class EliminationManager(RPCServiceBase, CacheController):
     would already be cleared and their weight would be calculated as normal.
     """
 
-    def __init__(self, metagraph, position_manager, challengeperiod_manager,
+    def __init__(self, metagraph, position_manager, challengeperiod_rpc_address=None,
                  running_unit_tests=False, shutdown_dict=None, use_ipc=False, is_backtesting=False,
                  shared_queue_websockets=None, contract_manager=None, position_locks=None,
                  sync_in_progress=None, slack_notifier=None, sync_epoch=None, limit_order_manager=None,
                  start_server=True):
+        """
+        Initialize EliminationManager.
+
+        Args:
+            metagraph: Metagraph instance
+            position_manager: PositionManager instance
+            challengeperiod_rpc_address: Tuple of (host, port) for ChallengePeriodManager RPC server.
+                                        If None, CP integration will be disabled.
+                                        Example: ("localhost", 50003)
+            running_unit_tests: Whether running in test mode
+            shutdown_dict: Shared shutdown flag
+            use_ipc: Legacy parameter (unused)
+            is_backtesting: Whether backtesting
+            shared_queue_websockets: Websocket queue
+            contract_manager: Contract manager instance
+            position_locks: Position locks manager
+            sync_in_progress: Sync flag
+            slack_notifier: Slack notifier
+            sync_epoch: Sync epoch counter
+            limit_order_manager: Limit order manager
+            start_server: Whether to start RPC server immediately (vs deferred)
+        """
 
         # Initialize RPCServiceBase
         RPCServiceBase.__init__(
@@ -61,7 +83,6 @@ class EliminationManager(RPCServiceBase, CacheController):
 
         # Store dependencies needed for server creation (using private attributes for properties)
         self._position_manager = position_manager
-        self._challengeperiod_manager = challengeperiod_manager
         self._contract_manager = contract_manager
         self.shutdown_dict = shutdown_dict
         self.is_backtesting = is_backtesting
@@ -70,6 +91,10 @@ class EliminationManager(RPCServiceBase, CacheController):
         self.sync_in_progress = sync_in_progress
         self.sync_epoch = sync_epoch
         self.limit_order_manager = limit_order_manager
+
+        # Store peer RPC address (NOT the object itself)
+        # Server will create its own RPC client to communicate with ChallengePeriodManager
+        self.challengeperiod_rpc_address = challengeperiod_rpc_address
 
         # Local cache for fast lookups (refreshed by background daemon thread)
         self._eliminations_cache = {}  # {hotkey: elimination_dict}
@@ -164,12 +189,22 @@ class EliminationManager(RPCServiceBase, CacheController):
 
     @property
     def challengeperiod_manager(self):
-        """Challenge period manager dependency"""
-        return self._challengeperiod_manager
+        """
+        ChallengePeriod manager dependency (test mode only).
+
+        In production, the server uses challengeperiod_rpc_address to create its own RPC client.
+        In test mode, we allow setting a direct reference for backward compatibility.
+        """
+        return getattr(self, '_challengeperiod_manager', None)
 
     @challengeperiod_manager.setter
     def challengeperiod_manager(self, value):
-        """Set challenge period manager and sync to server in test mode only"""
+        """
+        Set challengeperiod manager and sync to server in test mode only.
+
+        This property exists for test mode backward compatibility where tests
+        set circular references directly. In production, this is ignored.
+        """
         self._challengeperiod_manager = value
         # In test mode, also update server instance directly (no RPC needed in test mode)
         if self.running_unit_tests and hasattr(self, '_server_proxy') and self._server_proxy:
@@ -198,7 +233,7 @@ class EliminationManager(RPCServiceBase, CacheController):
         return EliminationManagerServer(
             metagraph=self.metagraph,
             position_manager=self.position_manager,
-            challengeperiod_manager=self.challengeperiod_manager,
+            challengeperiod_rpc_address=self.challengeperiod_rpc_address,  # Pass address, not object
             running_unit_tests=self.running_unit_tests,
             shutdown_dict=self.shutdown_dict,
             is_backtesting=self.is_backtesting,
@@ -224,7 +259,7 @@ class EliminationManager(RPCServiceBase, CacheController):
             args=(
                 self.metagraph,
                 self.position_manager,
-                self.challengeperiod_manager,
+                self.challengeperiod_rpc_address,  # Pass address, not object
                 self.running_unit_tests,
                 self.shutdown_dict,
                 self.is_backtesting,
@@ -254,6 +289,8 @@ class EliminationManager(RPCServiceBase, CacheController):
 
         The unpickled object will be a client-only instance that connects to the
         existing RPC server.
+
+        Note: challengeperiod_rpc_address is a simple tuple and pickles normally.
         """
         import os
 
@@ -280,6 +317,8 @@ class EliminationManager(RPCServiceBase, CacheController):
         # Don't pickle cache data (will be refreshed after reconnection)
         state['_eliminations_cache'] = {}
         state['_departed_hotkeys_cache'] = {}
+
+        # challengeperiod_rpc_address is a simple tuple - pickles normally
 
         bt.logging.debug(
             f"[ELIMINATION_PICKLE] __getstate__ complete, removed unpicklable objects"

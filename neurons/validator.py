@@ -213,16 +213,21 @@ class Validator(ValidatorBase):
         self.contract_manager = ValidatorContractManager(config=self.config, position_manager=None, ipc_manager=self.ipc_manager, metagraph=self.metagraph)
 
 
-        # Create EliminationManager with deferred server start (dependencies will be set later)
-        self.elimination_manager = EliminationManager(self.metagraph, None,  # Set after self.pm creation
-                                                      None, shutdown_dict=shutdown_dict,
-                                                      use_ipc=True,
-                                                      shared_queue_websockets=self.shared_queue_websockets,
-                                                      contract_manager=self.contract_manager,
-                                                      sync_in_progress=self.sync_in_progress,
-                                                      slack_notifier=self.slack_notifier,
-                                                      sync_epoch=self.sync_epoch,
-                                                      start_server=False)  # Defer server start until dependencies are ready
+        # Create EliminationManager with RPC address injection (NO circular dependency)
+        # Pass ChallengePeriodManager's RPC server address for client connection
+        self.elimination_manager = EliminationManager(
+            self.metagraph,
+            None,  # position_manager set after self.pm creation
+            challengeperiod_rpc_address=("localhost", 50003),  # CP's RPC server address
+            shutdown_dict=shutdown_dict,
+            use_ipc=True,
+            shared_queue_websockets=self.shared_queue_websockets,
+            contract_manager=self.contract_manager,
+            sync_in_progress=self.sync_in_progress,
+            slack_notifier=self.slack_notifier,
+            sync_epoch=self.sync_epoch,
+            start_server=False  # Defer server start until dependencies are ready
+        )
 
         self.asset_selection_manager = AssetSelectionManager(config=self.config, metagraph=self.metagraph)
 
@@ -297,25 +302,32 @@ class Validator(ValidatorBase):
 
         #force_validator_to_restore_from_checkpoint(self.wallet.hotkey.ss58_address, self.metagraph, self.config, self.secrets)
 
-
-        # CRITICAL: Break circular dependency between EliminationManager and ChallengePeriodManager
+        # RPC ADDRESS INJECTION PATTERN - No circular dependencies!
         #
-        # The circular dependency:
-        # - EliminationManager server needs challengeperiod_manager reference (to call has_elimination_reasons, etc.)
-        # - ChallengePeriodManager server needs elimination_manager._server_proxy set (to call get_eliminations_from_memory, etc.)
+        # Architecture:
+        # - EliminationManager has challengeperiod_rpc_address=("localhost", 50003)
+        # - ChallengePeriodManager has elimination_rpc_address=("localhost", 50004)
+        # - Each server creates its own RPC client to communicate with peer
+        # - No object references passed between managers
+        # - Servers can start in any order (no initialization dependency)
         #
-        # Solution: Create both managers with deferred server start, wire up dependencies, then initialize servers
-        # This ensures both servers pickle their dependencies AFTER all references are set
+        # Benefits over old approach:
+        # 1. NO circular dependencies (just simple address tuples)
+        # 2. NO pickle issues (tuples pickle normally)
+        # 3. Order independent initialization (servers start independently)
+        # 4. Clean separation of concerns (RPC protocol defines interface)
+        # 5. Easy to test (mock RPC clients in tests)
         #
         # Initialization sequence:
-        # 1. Both managers already created with start_server=False (line 225 for elimination_manager)
-        # 2. Create ChallengePeriodManager with start_server=False
-        # 3. Wire up all dependencies on client instances
-        # 4. Initialize EliminationManager server (pickles with challengeperiod_manager set)
-        # 5. Initialize ChallengePeriodManager server (pickles with elimination_manager._server_proxy set)
+        # 1. Both managers already created with RPC addresses (line 221 for elimination_manager)
+        # 2. Create ChallengePeriodManager with elimination_rpc_address
+        # 3. Wire up position_manager dependency
+        # 4. Initialize ChallengePeriodManager server (creates elim_client internally)
+        # 5. Initialize EliminationManager server (creates cp_client internally)
         # 6. Start both daemons
 
-        # Step 1: Create ChallengePeriodManager WITHOUT starting server or daemon
+        # Step 1: Create ChallengePeriodManager with RPC address injection (NO circular dependency)
+        # Pass EliminationManager's RPC server address for client connection
         self.challengeperiod_manager = ChallengePeriodManager(
             self.metagraph,
             perf_ledger_manager=self.perf_ledger_manager,
@@ -323,31 +335,28 @@ class Validator(ValidatorBase):
             contract_manager=self.contract_manager,
             plagiarism_manager=self.plagiarism_manager,
             asset_selection_manager=self.asset_selection_manager,
+            elimination_rpc_address=("localhost", 50004),  # Elim's RPC server address
             sync_in_progress=self.sync_in_progress,
             slack_notifier=self.slack_notifier,
             sync_epoch=self.sync_epoch,
             start_server=False,  # Defer server initialization
             start_daemon=False   # Defer daemon start
         )
-        bt.logging.info("[INIT] ChallengePeriodManager created (server and daemon deferred)")
+        bt.logging.info("[INIT] ChallengePeriodManager created with elimination_rpc_address (no circular dependency)")
 
-        # Step 2: Wire up all dependencies on client instances
-        # These assignments update the CLIENT objects; servers will see these when pickled
-        self.elimination_manager.challengeperiod_manager = self.challengeperiod_manager
+        # Step 2: Wire up position_manager dependency only (NO circular dependency with elimination_manager!)
         self.position_manager.challengeperiod_manager = self.challengeperiod_manager
-        bt.logging.info("[INIT] All dependencies wired up on client instances")
+        bt.logging.info("[INIT] position_manager.challengeperiod_manager wired up")
 
-        # Step 3: Initialize ChallengePeriodManager server FIRST
-        # CRITICAL: CP server must start before EliminationManager server
-        # When EliminationManager pickles challengeperiod_manager, it needs a running CP server to reconnect to
+        # Step 3: Initialize ChallengePeriodManager server
+        # Server will create RPC client to EliminationManager automatically
         self.challengeperiod_manager.initialize_server()
-        bt.logging.success("[INIT] ChallengePeriodManager server initialized (server is now running)")
+        bt.logging.success("[INIT] ChallengePeriodManager server initialized (has elim_client for RPC calls)")
 
-        # Step 4: Initialize EliminationManager server SECOND
-        # When server process spawns, it pickles challengeperiod_manager which can now reconnect to running CP server
-        # Also pickles position_manager which contains elimination_manager (will be set to None on pickle, then unpickled)
+        # Step 4: Initialize EliminationManager server
+        # Server will create RPC client to ChallengePeriodManager automatically
         self.elimination_manager.initialize_server()
-        bt.logging.success("[INIT] EliminationManager server initialized (has challengeperiod_manager RPC client)")
+        bt.logging.success("[INIT] EliminationManager server initialized (has cp_client for RPC calls)")
 
         # Step 5: Start both daemons
         self.elimination_manager.start_daemon()

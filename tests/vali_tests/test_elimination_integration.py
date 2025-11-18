@@ -79,7 +79,7 @@ class TestEliminationIntegration(TestBase):
         self.elimination_manager = EliminationManager(
             self.mock_metagraph,
             self.live_price_fetcher,
-            None,
+            challengeperiod_rpc_address=None,  # Not needed in test mode
             running_unit_tests=True,
             use_ipc=False,
             contract_manager=self.contract_manager
@@ -101,6 +101,7 @@ class TestEliminationIntegration(TestBase):
             perf_ledger_manager=self.perf_ledger_manager,
             contract_manager=self.contract_manager,
             plagiarism_manager=self.plagiarism_manager,
+            elimination_rpc_address=None,  # Not needed in test mode
             running_unit_tests=True
         )
         
@@ -355,7 +356,7 @@ class TestEliminationIntegration(TestBase):
         new_elimination_manager = EliminationManager(
             self.mock_metagraph,
             self.live_price_fetcher,
-            self.challengeperiod_manager,
+            challengeperiod_rpc_address=None,  # Not needed in test mode
             running_unit_tests=True
         )
         

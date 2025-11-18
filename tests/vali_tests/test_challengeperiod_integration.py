@@ -117,7 +117,13 @@ class TestChallengePeriodIntegration(TestBase):
         secrets = ValiUtils.get_secrets(running_unit_tests=True)
         self.live_price_fetcher = LivePriceFetcher(secrets=secrets, disable_ws=True)
         self.contract_manager = ValidatorContractManager(running_unit_tests=True)
-        self.elimination_manager = EliminationManager(self.mock_metagraph, self.live_price_fetcher, None, running_unit_tests=True, contract_manager=self.contract_manager)
+        self.elimination_manager = EliminationManager(
+            self.mock_metagraph,
+            self.live_price_fetcher,
+            challengeperiod_rpc_address=None,  # Not needed in test mode
+            running_unit_tests=True,
+            contract_manager=self.contract_manager
+        )
         self.ledger_manager = PerfLedgerManager(self.mock_metagraph, running_unit_tests=True)
         self.ledger_manager.clear_all_ledger_data()
         # Ensure no perf ledgers present
@@ -127,12 +133,15 @@ class TestChallengePeriodIntegration(TestBase):
                                                     elimination_manager=self.elimination_manager,
                                                     live_price_fetcher=self.live_price_fetcher)
         self.plagiarism_manager = PlagiarismManager(slack_notifier=None, running_unit_tests=True)
-        self.challengeperiod_manager = ChallengePeriodManager(self.mock_metagraph,
-                                                              position_manager=self.position_manager,
-                                                              perf_ledger_manager=self.ledger_manager,
-                                                              contract_manager=self.contract_manager,
-                                                              plagiarism_manager=self.plagiarism_manager,
-                                                              running_unit_tests=True)
+        self.challengeperiod_manager = ChallengePeriodManager(
+            self.mock_metagraph,
+            position_manager=self.position_manager,
+            perf_ledger_manager=self.ledger_manager,
+            contract_manager=self.contract_manager,
+            plagiarism_manager=self.plagiarism_manager,
+            elimination_rpc_address=None,  # Not needed in test mode
+            running_unit_tests=True
+        )
         self.position_manager.perf_ledger_manager = self.ledger_manager
         self.elimination_manager.position_manager = self.position_manager
         self.elimination_manager.challengeperiod_manager = self.challengeperiod_manager

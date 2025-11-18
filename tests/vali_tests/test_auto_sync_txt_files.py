@@ -70,7 +70,7 @@ class TestAutoSyncTxtFiles(TestBase):
         
         # Initialize managers
         self.elimination_manager = EliminationManager(
-            self.mock_metagraph, None, None, running_unit_tests=True
+            self.mock_metagraph, None, challengeperiod_rpc_address=None, running_unit_tests=True
         )
         self.position_manager = PositionManager(
             metagraph=self.mock_metagraph, 

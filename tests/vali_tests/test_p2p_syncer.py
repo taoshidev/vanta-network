@@ -51,7 +51,7 @@ class TestPositions(TestBase):
                                          stake=Balance(0.0))
 
         self.mock_metagraph = MockMetagraph([self.DEFAULT_MINER_HOTKEY])
-        self.elimination_manager = EliminationManager(self.mock_metagraph, None, None, running_unit_tests=True)
+        self.elimination_manager = EliminationManager(self.mock_metagraph, None, challengeperiod_rpc_address=None, running_unit_tests=True)
         self.position_manager = PositionManager(metagraph=self.mock_metagraph, running_unit_tests=True,
                                                 elimination_manager=self.elimination_manager)
         self.position_manager.clear_all_miner_positions()

@@ -72,7 +72,7 @@ class TestEliminationPersistenceRecovery(TestBase):
         self.elimination_manager = EliminationManager(
             self.mock_metagraph,
             self.position_manager,
-            None,  # challengeperiod_manager set later
+            challengeperiod_rpc_address=None,  # Not needed in test mode
             running_unit_tests=True
         )
         
@@ -83,6 +83,7 @@ class TestEliminationPersistenceRecovery(TestBase):
             self.mock_metagraph,
             position_manager=self.position_manager,
             perf_ledger_manager=self.perf_ledger_manager,
+            elimination_rpc_address=None,  # Not needed in test mode
             running_unit_tests=True
         )
         
@@ -202,9 +203,10 @@ class TestEliminationPersistenceRecovery(TestBase):
         new_elimination_manager = EliminationManager(
             self.mock_metagraph,
             self.position_manager,
-            self.challengeperiod_manager,
+            challengeperiod_rpc_address=None,  # Not needed in test mode
             running_unit_tests=True
         )
+        new_elimination_manager.challengeperiod_manager = self.challengeperiod_manager
         
         # Verify eliminations were loaded
         loaded_eliminations = new_elimination_manager.get_eliminations_from_memory()
@@ -267,9 +269,10 @@ class TestEliminationPersistenceRecovery(TestBase):
         restored_elimination_manager = EliminationManager(
             self.mock_metagraph,
             self.position_manager,
-            self.challengeperiod_manager,
+            challengeperiod_rpc_address=None,  # Not needed in test mode
             running_unit_tests=True
         )
+        restored_elimination_manager.challengeperiod_manager = self.challengeperiod_manager
         
         # Verify restoration
         restored_eliminations = restored_elimination_manager.get_eliminations_from_memory()
@@ -293,9 +296,10 @@ class TestEliminationPersistenceRecovery(TestBase):
             em1 = EliminationManager(
                 self.mock_metagraph,
                 self.position_manager,
-                self.challengeperiod_manager,
+                challengeperiod_rpc_address=None,  # Not needed in test mode
                 running_unit_tests=True
             )
+            em1.challengeperiod_manager = self.challengeperiod_manager
             # Should create empty eliminations
             self.assertEqual(len(em1.eliminations), 0)
         except Exception as e:
@@ -319,9 +323,10 @@ class TestEliminationPersistenceRecovery(TestBase):
         em2 = EliminationManager(
             self.mock_metagraph,
             self.position_manager,
-            self.challengeperiod_manager,
+            challengeperiod_rpc_address=None,  # Not needed in test mode
             running_unit_tests=True
         )
+        em2.challengeperiod_manager = self.challengeperiod_manager
         
         # Should load what it can
         loaded = em2.get_eliminations_from_memory()
@@ -366,17 +371,19 @@ class TestEliminationPersistenceRecovery(TestBase):
         em1 = EliminationManager(
             self.mock_metagraph,
             self.position_manager,
-            self.challengeperiod_manager,
+            challengeperiod_rpc_address=None,  # Not needed in test mode
             running_unit_tests=True
         )
-        
+        em1.challengeperiod_manager = self.challengeperiod_manager
+
         # Manager 2 loads same data
         em2 = EliminationManager(
             self.mock_metagraph,
             self.position_manager,
-            self.challengeperiod_manager,
+            challengeperiod_rpc_address=None,  # Not needed in test mode
             running_unit_tests=True
         )
+        em2.challengeperiod_manager = self.challengeperiod_manager
         
         # Both add different eliminations
         em1.append_elimination_row(
@@ -453,9 +460,10 @@ class TestEliminationPersistenceRecovery(TestBase):
         em = EliminationManager(
             self.mock_metagraph,
             self.position_manager,
-            self.challengeperiod_manager,
+            challengeperiod_rpc_address=None,  # Not needed in test mode
             running_unit_tests=True
         )
+        em.challengeperiod_manager = self.challengeperiod_manager
         
         # Should either migrate or handle gracefully
         loaded = em.get_eliminations_from_memory()

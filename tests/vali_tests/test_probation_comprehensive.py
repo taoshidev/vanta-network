@@ -76,7 +76,13 @@ class TestProbationComprehensive(TestBase):
         # Setup system components
         self.mock_metagraph = MockMetagraph(self.ALL_MINER_NAMES)
         self.contract_manager = ValidatorContractManager(running_unit_tests=True)
-        self.elimination_manager = EliminationManager(self.mock_metagraph, None, None, running_unit_tests=True, contract_manager=self.contract_manager)
+        self.elimination_manager = EliminationManager(
+            self.mock_metagraph,
+            None,
+            challengeperiod_rpc_address=None,  # Not needed in test mode
+            running_unit_tests=True,
+            contract_manager=self.contract_manager
+        )
         self.ledger_manager = PerfLedgerManager(self.mock_metagraph, running_unit_tests=True)
         secrets = ValiUtils.get_secrets(running_unit_tests=True)
         self.live_price_fetcher = MockLivePriceFetcher(secrets=secrets, disable_ws=True)
@@ -86,12 +92,15 @@ class TestProbationComprehensive(TestBase):
                                                     live_price_fetcher=self.live_price_fetcher)
         self.plagiarism_manager = PlagiarismManager(slack_notifier=None, running_unit_tests=True)
 
-        self.challengeperiod_manager = ChallengePeriodManager(self.mock_metagraph,
-                                                              position_manager=self.position_manager,
-                                                              perf_ledger_manager=self.ledger_manager,
-                                                              contract_manager=self.contract_manager,
-                                                              plagiarism_manager=self.plagiarism_manager,
-                                                              running_unit_tests=True)
+        self.challengeperiod_manager = ChallengePeriodManager(
+            self.mock_metagraph,
+            position_manager=self.position_manager,
+            perf_ledger_manager=self.ledger_manager,
+            contract_manager=self.contract_manager,
+            plagiarism_manager=self.plagiarism_manager,
+            elimination_rpc_address=None,  # Not needed in test mode
+            running_unit_tests=True
+        )
         self.weight_setter = SubtensorWeightSetter(self.mock_metagraph,
                                                    self.position_manager,
                                                    contract_manager=self.contract_manager,
@@ -372,7 +381,8 @@ class TestProbationComprehensive(TestBase):
             self.mock_metagraph,
             position_manager=self.position_manager,
             perf_ledger_manager=self.ledger_manager,
-            running_unit_tests=True,
+            elimination_rpc_address=None,  # Not needed in test mode
+            running_unit_tests=True
         )
 
         # Verify probation miners and timestamps are preserved

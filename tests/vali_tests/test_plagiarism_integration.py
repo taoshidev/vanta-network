@@ -38,7 +38,7 @@ class TestPlagiarismIntegration(TestBase):
         self.live_price_fetcher = MockLivePriceFetcher(secrets=secrets, disable_ws=True)
         self.mock_metagraph = MockMetagraph(self.MINER_NAMES)
         self.current_time = ValiConfig.PLAGIARISM_LOOKBACK_RANGE_MS
-        self.elimination_manager = EliminationManager(self.mock_metagraph, None, None, running_unit_tests=True)
+        self.elimination_manager = EliminationManager(self.mock_metagraph, None, challengeperiod_rpc_address=None, running_unit_tests=True)
 
         self.position_manager = MockPositionManager(metagraph=self.mock_metagraph, perf_ledger_manager=None,
                                                     elimination_manager=self.elimination_manager)

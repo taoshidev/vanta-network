@@ -38,15 +38,33 @@ class EliminationManagerServer(CacheController):
     Internal state (eliminations, departed_hotkeys) is kept local to this process.
     """
 
-    def __init__(self, metagraph, position_manager, challengeperiod_manager,
+    def __init__(self, metagraph, position_manager, challengeperiod_rpc_address=None,
                  running_unit_tests=False, shutdown_dict=None, is_backtesting=False,
                  shared_queue_websockets=None, contract_manager=None, position_locks=None,
                  sync_in_progress=None, slack_notifier=None, sync_epoch=None, limit_order_manager=None):
         super().__init__(metagraph=metagraph, is_backtesting=is_backtesting)
         self.position_manager = position_manager
         self.shutdown_dict = shutdown_dict
-        self.challengeperiod_manager = challengeperiod_manager
         self.running_unit_tests = running_unit_tests
+
+        # ChallengePeriod manager reference (test mode only - set via property)
+        self.challengeperiod_manager = None
+
+        # Create RPC client for ChallengePeriodManager (using address injection pattern)
+        self.cp_client = None
+        if challengeperiod_rpc_address and not running_unit_tests:
+            from vali_objects.rpc.manager_rpc_client import ManagerRPCClient
+            host, port = challengeperiod_rpc_address
+            self.cp_client = ManagerRPCClient(host, port, "ChallengePeriodManagerServer")
+            connection_success = self.cp_client.connect()
+            if connection_success:
+                bt.logging.success(
+                    f"[ELIM_RPC] Connected to ChallengePeriodManager at {challengeperiod_rpc_address}"
+                )
+            else:
+                bt.logging.warning(
+                    f"[ELIM_RPC] Failed to connect to ChallengePeriodManager at {challengeperiod_rpc_address}"
+                )
         self.first_refresh_ran = False
         self.shared_queue_websockets = shared_queue_websockets
         secrets = ValiUtils.get_secrets(running_unit_tests=running_unit_tests)
@@ -447,17 +465,36 @@ class EliminationManagerServer(CacheController):
 
         Uses atomic pop operations to prevent race conditions where ChallengePeriodManager
         might add new eliminations while we're processing.
+
+        In test mode, uses direct reference to challengeperiod_manager.
+        In production, uses RPC client (cp_client).
         """
-        # Skip if challengeperiod_manager not initialized yet
-        if self.challengeperiod_manager is None:
+        # Determine which CP interface to use
+        cp_interface = None
+        use_direct_call = False
+
+        if self.running_unit_tests and self.challengeperiod_manager:
+            # Test mode: use direct reference
+            cp_interface = self.challengeperiod_manager
+            use_direct_call = True
+        elif self.cp_client:
+            # Production mode: use RPC client
+            cp_interface = self.cp_client
+            use_direct_call = False
+        else:
+            # No CP interface available
             return
 
         # Check if there are any eliminations to process
-        if not self.challengeperiod_manager.has_elimination_reasons():
-            return
+        if use_direct_call:
+            if not cp_interface.has_elimination_reasons():
+                return
+            eliminations_snapshot = cp_interface.get_all_elimination_reasons()
+        else:
+            if not cp_interface.call("has_elimination_reasons_rpc"):
+                return
+            eliminations_snapshot = cp_interface.call("get_all_elimination_reasons_rpc")
 
-        # Get list of hotkeys to process (snapshot - doesn't remove them yet)
-        eliminations_snapshot = self.challengeperiod_manager.get_all_elimination_reasons()
         hotkeys = list(eliminations_snapshot.keys())
 
         if not hotkeys:
@@ -470,7 +507,10 @@ class EliminationManagerServer(CacheController):
         for hotkey in hotkeys:
             # Atomically pop the elimination reason (get + remove in one operation)
             # This prevents ChallengePeriodManager from re-adding while we process
-            elim_data = self.challengeperiod_manager.pop_elimination_reason(hotkey)
+            if use_direct_call:
+                elim_data = cp_interface.pop_elimination_reason(hotkey)
+            else:
+                elim_data = cp_interface.call("pop_elimination_reason_rpc", hotkey)
 
             # Skip if already removed (another thread might have processed it)
             if elim_data is None:
@@ -526,8 +566,8 @@ class EliminationManagerServer(CacheController):
         # 1. Process if time-based refresh is due
         # 2. OR process if there are urgent challenge period eliminations
         refresh_due = self.refresh_allowed(ValiConfig.ELIMINATION_CHECK_INTERVAL_MS)
-        has_urgent_eliminations = (self.challengeperiod_manager is not None and
-                                   self.challengeperiod_manager.has_elimination_reasons())
+        has_urgent_eliminations = (self.cp_client is not None and
+                                   self.cp_client.call("has_elimination_reasons_rpc"))
 
         if not refresh_due and not has_urgent_eliminations:
             return
@@ -638,17 +678,38 @@ class EliminationManagerServer(CacheController):
         self.save_eliminations()
 
     def handle_mdd_eliminations(self, position_locks, iteration_epoch=None):
-        """Check for MDD eliminations"""
+        """
+        Check for MDD eliminations.
+
+        In test mode, uses direct reference to challengeperiod_manager.
+        In production, uses RPC client (cp_client).
+        """
         from vali_objects.utils.ledger_utils import LedgerUtils
         bt.logging.info("checking main competition for maximum drawdown eliminations.")
         if self.shutdown_dict:
             return
 
-        # Skip if challengeperiod_manager not initialized yet
-        if self.challengeperiod_manager is None:
+        # Determine which CP interface to use
+        cp_interface = None
+        use_direct_call = False
+
+        if self.running_unit_tests and self.challengeperiod_manager:
+            # Test mode: use direct reference
+            cp_interface = self.challengeperiod_manager
+            use_direct_call = True
+        elif self.cp_client:
+            # Production mode: use RPC client
+            cp_interface = self.cp_client
+            use_direct_call = False
+        else:
+            # No CP interface available
             return
 
-        challengeperiod_success_hotkeys = self.challengeperiod_manager.get_hotkeys_by_bucket(MinerBucket.MAINCOMP)
+        # Get MAINCOMP hotkeys
+        if use_direct_call:
+            challengeperiod_success_hotkeys = cp_interface.get_hotkeys_by_bucket(MinerBucket.MAINCOMP)
+        else:
+            challengeperiod_success_hotkeys = cp_interface.call("get_hotkeys_by_bucket_rpc", MinerBucket.MAINCOMP)
 
         filtered_ledger = self.position_manager.perf_ledger_manager.filtered_ledger_for_scoring(
             portfolio_only=True, hotkeys=challengeperiod_success_hotkeys
@@ -745,9 +806,17 @@ class EliminationManagerServer(CacheController):
                 bt.logging.trace(f"miner [{hotkey}] has not been deregistered by BT yet. Not deleting miner dir.")
                 continue
 
-            if self.challengeperiod_manager and self.challengeperiod_manager.has_miner(hotkey):
-                self.challengeperiod_manager.remove_miner(hotkey)
-                any_challenege_period_changes = True
+            # Determine which CP interface to use for cleanup
+            if self.running_unit_tests and self.challengeperiod_manager:
+                # Test mode: use direct reference
+                if self.challengeperiod_manager.has_miner(hotkey):
+                    self.challengeperiod_manager.remove_miner(hotkey)
+                    any_challenege_period_changes = True
+            elif self.cp_client:
+                # Production mode: use RPC client
+                if self.cp_client.call("has_miner_rpc", hotkey):
+                    self.cp_client.call("remove_miner_rpc", hotkey)
+                    any_challenege_period_changes = True
 
             miner_dir = ValiBkpUtils.get_miner_dir(running_unit_tests=self.running_unit_tests) + hotkey
             all_positions = self.position_manager.get_positions_for_one_hotkey(hotkey)
@@ -763,8 +832,14 @@ class EliminationManagerServer(CacheController):
             )
             deleted_hotkeys.add(hotkey)
 
-        if any_challenege_period_changes and self.challengeperiod_manager:
-            self.challengeperiod_manager._write_challengeperiod_from_memory_to_disk()
+        # Write challengeperiod changes to disk if any changes were made
+        if any_challenege_period_changes:
+            if self.running_unit_tests and self.challengeperiod_manager:
+                # Test mode: use direct reference
+                self.challengeperiod_manager._write_challengeperiod_from_memory_to_disk()
+            elif self.cp_client:
+                # Production mode: use RPC client
+                self.cp_client.call("write_challengeperiod_from_memory_to_disk_rpc")
 
         if deleted_hotkeys:
             self.delete_eliminations(deleted_hotkeys)
@@ -815,19 +890,25 @@ class EliminationManagerServer(CacheController):
 
 
 def start_elimination_manager_server(
-    metagraph, position_manager, challengeperiod_manager,
+    metagraph, position_manager, challengeperiod_rpc_address,
     running_unit_tests, shutdown_dict, is_backtesting,
     shared_queue_websockets, contract_manager, position_locks,
     sync_in_progress, slack_notifier, sync_epoch, limit_order_manager,
     address, authkey, server_ready
 ):
-    """Entry point for server process"""
+    """
+    Entry point for server process.
+
+    Args:
+        challengeperiod_rpc_address: Tuple of (host, port) for ChallengePeriodManager RPC server.
+                                    Example: ("localhost", 50003)
+    """
     from multiprocessing.managers import BaseManager
 
     server_instance = EliminationManagerServer(
         metagraph=metagraph,
         position_manager=position_manager,
-        challengeperiod_manager=challengeperiod_manager,
+        challengeperiod_rpc_address=challengeperiod_rpc_address,
         running_unit_tests=running_unit_tests,
         shutdown_dict=shutdown_dict,
         is_backtesting=is_backtesting,

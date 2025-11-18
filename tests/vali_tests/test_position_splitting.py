@@ -27,7 +27,7 @@ class TestPositionSplitting(TestBase):
         self.live_price_fetcher = MockLivePriceFetcher(secrets=secrets, disable_ws=True)
         self.DEFAULT_MINER_HOTKEY = "test_miner"
         self.mock_metagraph = MockMetagraph([self.DEFAULT_MINER_HOTKEY])
-        self.elimination_manager = EliminationManager(self.mock_metagraph, None, None, running_unit_tests=True)
+        self.elimination_manager = EliminationManager(self.mock_metagraph, None, challengeperiod_rpc_address=None, running_unit_tests=True)
         
     def create_position_with_orders(self, orders_data):
         """Helper to create a position with specified orders."""
