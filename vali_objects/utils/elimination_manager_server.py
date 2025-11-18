@@ -420,17 +420,37 @@ class EliminationManagerServer(CacheController):
                                           source_for_elimination, iteration_epoch)
 
     def handle_challenge_period_eliminations(self, position_locks, iteration_epoch=None):
-        """Process challenge period eliminations"""
-        eliminations_with_reasons = self.challengeperiod_manager.get_all_elimination_reasons()
+        """
+        Process challenge period eliminations.
 
-        if not eliminations_with_reasons:
+        Uses atomic pop operations to prevent race conditions where ChallengePeriodManager
+        might add new eliminations while we're processing.
+        """
+        # Check if there are any eliminations to process
+        if not self.challengeperiod_manager.has_elimination_reasons():
             return
 
-        hotkeys = list(eliminations_with_reasons.keys())
+        # Get list of hotkeys to process (snapshot - doesn't remove them yet)
+        eliminations_snapshot = self.challengeperiod_manager.get_all_elimination_reasons()
+        hotkeys = list(eliminations_snapshot.keys())
+
+        if not hotkeys:
+            return
+
         bt.logging.info(f"[ELIM_DEBUG] Processing {len(hotkeys)} challenge period eliminations: {hotkeys}")
         bt.logging.info(f"[ELIM_DEBUG] Current eliminations dict has {len(self.eliminations)} entries")
 
+        # Process each hotkey individually, popping atomically to avoid race conditions
         for hotkey in hotkeys:
+            # Atomically pop the elimination reason (get + remove in one operation)
+            # This prevents ChallengePeriodManager from re-adding while we process
+            elim_data = self.challengeperiod_manager.pop_elimination_reason(hotkey)
+
+            # Skip if already removed (another thread might have processed it)
+            if elim_data is None:
+                bt.logging.debug(f"[ELIM_DEBUG] Hotkey {hotkey} already processed/removed")
+                continue
+
             already_eliminated = hotkey in self.eliminations
             if already_eliminated:
                 bt.logging.warning(
@@ -440,8 +460,8 @@ class EliminationManagerServer(CacheController):
                 continue
 
             bt.logging.info(f"[ELIM_DEBUG] Adding new elimination for {hotkey}")
-            elim_reason = eliminations_with_reasons[hotkey][0]
-            elim_mdd = eliminations_with_reasons[hotkey][1]
+            elim_reason = elim_data[0]
+            elim_mdd = elim_data[1]
             self.append_elimination_row(hotkey=hotkey, current_dd=elim_mdd, reason=elim_reason)
 
             # Verify it was added
@@ -454,7 +474,6 @@ class EliminationManagerServer(CacheController):
             self.contract_manager.slash_miner_collateral_proportion(hotkey, ValiConfig.CHALLENGEPERIOD_SLASH_PROPORTION)
 
         bt.logging.info(f"[ELIM_DEBUG] After processing, eliminations dict has {len(self.eliminations)} entries")
-        self.challengeperiod_manager.clear_elimination_reasons()
 
     def handle_first_refresh(self, position_locks, iteration_epoch=None):
         """Handle first refresh on startup"""

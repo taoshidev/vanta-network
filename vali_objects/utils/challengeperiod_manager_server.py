@@ -131,21 +131,38 @@ class ChallengePeriodManagerServer(CacheController):
         with self.eliminations_lock:
             self.eliminations_with_reasons.clear()
 
+    def pop_elimination_reason_rpc(self, hotkey: str) -> Optional[Tuple[str, float]]:
+        """
+        Atomically get and remove an elimination reason for a single hotkey.
+        Returns the (reason, drawdown) tuple if found, None otherwise.
+
+        Args:
+            hotkey: The hotkey to pop
+
+        Returns:
+            Tuple of (reason, drawdown) or None if not found
+        """
+        with self.eliminations_lock:
+            return self.eliminations_with_reasons.pop(hotkey, None)
+
     def update_elimination_reasons_rpc(self, reasons_dict: dict) -> int:
         """
-        Bulk update elimination reasons from a dict.
-        Replaces all existing elimination reasons.
+        Accumulate elimination reasons from a dict.
+        Does NOT clear existing eliminations - allows accumulation across multiple refresh cycles
+        until EliminationManager persists and clears them.
 
         Args:
             reasons_dict: Dict mapping hotkeys to (reason, drawdown) tuples
 
         Returns:
-            int: Number of elimination reasons set
+            int: Total number of elimination reasons after update
         """
         with self.eliminations_lock:
-            self.eliminations_with_reasons.clear()
+            # Don't clear - accumulate instead to prevent race condition where
+            # ChallengePeriodManager refreshes multiple times before EliminationManager
+            # reads and persists the eliminations
             self.eliminations_with_reasons.update(reasons_dict)
-        return len(reasons_dict)
+        return len(self.eliminations_with_reasons)
 
     # ==================== Active Miners RPC Methods ====================
 
@@ -1314,11 +1331,17 @@ class ChallengePeriodManagerServer(CacheController):
             self.eliminations_with_reasons.clear()
 
     def update_elimination_reasons(self, reasons_dict: dict) -> int:
-        """Bulk update elimination reasons from a dict."""
+        """
+        Accumulate elimination reasons from a dict.
+        Does NOT clear existing eliminations - allows accumulation across multiple refresh cycles
+        until EliminationManager persists and clears them.
+        """
         with self.eliminations_lock:
-            self.eliminations_with_reasons.clear()
+            # Don't clear - accumulate instead to prevent race condition where
+            # ChallengePeriodManager refreshes multiple times before EliminationManager
+            # reads and persists the eliminations
             self.eliminations_with_reasons.update(reasons_dict)
-        return len(reasons_dict)
+        return len(self.eliminations_with_reasons)
 
     def get_miner_bucket(self, hotkey):
         return self.active_miners.get(hotkey, [None])[0]
