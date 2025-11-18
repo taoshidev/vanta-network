@@ -9,6 +9,7 @@ Much faster than IPC for has_hotkey() checks (O(1) with server-side cached set).
 from multiprocessing import Process
 from shared_objects.rpc_service_base import RPCServiceBase
 from shared_objects.metagraph_server import start_metagraph_server
+from vali_objects.vali_config import ValiConfig
 
 import bittensor as bt
 
@@ -34,8 +35,8 @@ class MetagraphManager(RPCServiceBase):
         # Initialize RPCServiceBase
         RPCServiceBase.__init__(
             self,
-            service_name="MetagraphServer",
-            port=50005,  # Unique port for MetagraphServer
+            service_name=ValiConfig.RPC_METAGRAPH_SERVICE_NAME,
+            port=ValiConfig.RPC_METAGRAPH_PORT,
             running_unit_tests=running_unit_tests,
             enable_health_check=True,
             health_check_interval_s=60,

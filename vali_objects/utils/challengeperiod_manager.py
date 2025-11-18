@@ -7,6 +7,7 @@ import bittensor as bt
 from shared_objects.rpc_service_base import RPCServiceBase
 from shared_objects.cache_controller import CacheController
 from vali_objects.utils.miner_bucket_enum import MinerBucket
+from vali_objects.vali_config import ValiConfig
 
 class ChallengePeriodManager(RPCServiceBase, CacheController):
     """
@@ -60,8 +61,8 @@ class ChallengePeriodManager(RPCServiceBase, CacheController):
         # Initialize RPCServiceBase
         RPCServiceBase.__init__(
             self,
-            service_name="ChallengePeriodManagerServer",
-            port=50003,  # Unique port for ChallengePeriodManager
+            service_name=ValiConfig.RPC_CHALLENGEPERIOD_SERVICE_NAME,
+            port=ValiConfig.RPC_CHALLENGEPERIOD_PORT,
             running_unit_tests=running_unit_tests,
             enable_health_check=True,
             health_check_interval_s=60,
@@ -419,7 +420,6 @@ class ChallengePeriodManager(RPCServiceBase, CacheController):
         This is called when challengeperiod_manager is unpickled in a child process
         (EliminationManagerServer, LimitOrderManager, etc.).
         """
-        import hashlib
         import traceback
 
         bt.logging.info(
@@ -428,7 +428,7 @@ class ChallengePeriodManager(RPCServiceBase, CacheController):
 
         # Use stable authkey (must match what server used)
         if not hasattr(self, '_authkey'):
-            self._authkey = hashlib.sha256(f"ChallengePeriodManagerServer_{self.port}".encode()).digest()[:32]
+            self._authkey = ValiConfig.get_rpc_authkey(self.service_name, self.port)
             bt.logging.debug(f"[CP_UNPICKLE] Generated authkey from port {self.port}")
 
         # Connect to existing server (inherited from RPCServiceBase)

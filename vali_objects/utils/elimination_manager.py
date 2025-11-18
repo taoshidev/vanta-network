@@ -7,6 +7,7 @@ import threading
 
 from shared_objects.rpc_service_base import RPCServiceBase
 from shared_objects.cache_controller import CacheController
+from vali_objects.vali_config import ValiConfig
 
 import bittensor as bt
 
@@ -68,8 +69,8 @@ class EliminationManager(RPCServiceBase, CacheController):
         # Initialize RPCServiceBase
         RPCServiceBase.__init__(
             self,
-            service_name="EliminationManagerServer",
-            port=50004,  # Unique port for EliminationManager
+            service_name=ValiConfig.RPC_ELIMINATION_SERVICE_NAME,
+            port=ValiConfig.RPC_ELIMINATION_PORT,
             running_unit_tests=running_unit_tests,
             enable_health_check=True,
             health_check_interval_s=60,
@@ -251,8 +252,7 @@ class EliminationManager(RPCServiceBase, CacheController):
         from vali_objects.utils.elimination_manager_server import start_elimination_manager_server
 
         # Store authkey for client-only reconnection (when pickled to other processes)
-        import hashlib
-        self._authkey = hashlib.sha256(f"EliminationManagerServer_{self.port}".encode()).digest()[:32]
+        self._authkey = ValiConfig.get_rpc_authkey(self.service_name, self.port)
 
         process = Process(
             target=start_elimination_manager_server,
@@ -381,7 +381,6 @@ class EliminationManager(RPCServiceBase, CacheController):
         This is called when elimination_manager is unpickled in a child process
         (ChallengePeriodManagerServer, LimitOrderManager, etc.).
         """
-        import hashlib
         import traceback
 
         bt.logging.info(
@@ -390,7 +389,7 @@ class EliminationManager(RPCServiceBase, CacheController):
 
         # Use stable authkey (must match what server used)
         if not hasattr(self, '_authkey'):
-            self._authkey = hashlib.sha256(f"EliminationManagerServer_{self.port}".encode()).digest()[:32]
+            self._authkey = ValiConfig.get_rpc_authkey(self.service_name, self.port)
             bt.logging.debug(f"[ELIMINATION_UNPICKLE] Generated authkey from port {self.port}")
 
         # Connect to existing server (inherited from RPCServiceBase)

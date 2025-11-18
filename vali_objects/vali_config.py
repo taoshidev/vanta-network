@@ -128,6 +128,54 @@ class ValiConfig:
     # Development hotkey for testing
     DEVELOPMENT_HOTKEY = "DEVELOPMENT"
 
+    # RPC Service Configuration
+    # Centralized port and service name definitions to avoid conflicts and inconsistencies
+    # All RPC services are defined here to prevent port conflicts and ensure consistent authkey generation
+
+    # Core Manager Services
+    RPC_LIVEPRICEFETCHER_PORT = 50000
+    RPC_LIVEPRICEFETCHER_SERVICE_NAME = "LivePriceFetcher"
+
+    RPC_LIMITORDERMANAGER_PORT = 50001
+    RPC_LIMITORDERMANAGER_SERVICE_NAME = "LimitOrderManager"
+
+    RPC_POSITIONMANAGER_PORT = 50002
+    RPC_POSITIONMANAGER_SERVICE_NAME = "PositionManagerServer"
+
+    RPC_CHALLENGEPERIOD_PORT = 50003
+    RPC_CHALLENGEPERIOD_SERVICE_NAME = "ChallengePeriodManagerServer"
+
+    RPC_ELIMINATION_PORT = 50004
+    RPC_ELIMINATION_SERVICE_NAME = "EliminationManagerServer"
+
+    RPC_METAGRAPH_PORT = 50005
+    RPC_METAGRAPH_SERVICE_NAME = "MetagraphServer"
+
+    # Utility Services
+    RPC_POSITIONLOCK_PORT = 50008
+    RPC_POSITIONLOCK_SERVICE_NAME = "PositionLockServer"
+
+    RPC_DEBTLEDGER_PORT = 50009
+    RPC_DEBTLEDGER_SERVICE_NAME = "DebtLedgerManagerServer"
+
+    RPC_ASSETSELECTION_PORT = 50010
+    RPC_ASSETSELECTION_SERVICE_NAME = "AssetSelectionManagerServer"
+
+    @staticmethod
+    def get_rpc_authkey(service_name: str, port: int) -> bytes:
+        """
+        Generate RPC authkey for a service.
+
+        Args:
+            service_name: Service name (e.g., "ChallengePeriodManagerServer")
+            port: Port number (e.g., 50003)
+
+        Returns:
+            bytes: 32-byte authkey for RPC authentication
+        """
+        import hashlib
+        return hashlib.sha256(f"{service_name}_{port}".encode()).digest()[:32]
+
     # Min number of trading days required for scoring
     STATISTICAL_CONFIDENCE_MINIMUM_N_CEIL = 60
     STATISTICAL_CONFIDENCE_MINIMUM_N_FLOOR = 7

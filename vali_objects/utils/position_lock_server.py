@@ -7,6 +7,7 @@ import bittensor as bt
 import threading
 from typing import Tuple, Dict
 from shared_objects.rpc_service_base import RPCServiceBase
+from vali_objects.vali_config import ValiConfig
 
 
 class PositionLockServer:
@@ -226,8 +227,8 @@ class PositionLockManagerClient(RPCServiceBase):
         self.client_only = client_only
 
         super().__init__(
-            service_name="PositionLockServer",
-            port=50008,  # Dedicated port for lock server
+            service_name=ValiConfig.RPC_POSITIONLOCK_SERVICE_NAME,
+            port=ValiConfig.RPC_POSITIONLOCK_PORT,
             running_unit_tests=running_unit_tests,
             enable_health_check=True,
             health_check_interval_s=60,
@@ -250,9 +251,10 @@ class PositionLockManagerClient(RPCServiceBase):
 
             # Use a known authkey (must match what server used)
             # In production, all clients on same host connect to same server
-            import hashlib
-            # Use stable authkey based on port (all clients/servers use same key)
-            self._authkey = hashlib.sha256(f"PositionLockServer_{self.port}".encode()).digest()[:32]
+            self._authkey = ValiConfig.get_rpc_authkey(
+                ValiConfig.RPC_POSITIONLOCK_SERVICE_NAME,
+                ValiConfig.RPC_POSITIONLOCK_PORT
+            )
 
             # Connect to existing server
             self._connect_client()
@@ -274,8 +276,10 @@ class PositionLockManagerClient(RPCServiceBase):
 
         # Store authkey for client-only mode
         # In server mode, we know the authkey - save it for future client-only instances
-        import hashlib
-        self._authkey = hashlib.sha256(f"PositionLockServer_{self.port}".encode()).digest()[:32]
+        self._authkey = ValiConfig.get_rpc_authkey(
+            ValiConfig.RPC_POSITIONLOCK_SERVICE_NAME,
+            ValiConfig.RPC_POSITIONLOCK_PORT
+        )
 
         process = Process(
             target=start_position_lock_server,

@@ -9,9 +9,9 @@ without importing the manager class itself.
 Key principle: Only import shared protocol, never actual manager classes.
 """
 from multiprocessing.managers import BaseManager
-import hashlib
 import bittensor as bt
 from typing import Optional, Dict, List, Tuple
+from vali_objects.vali_config import ValiConfig
 
 
 class ManagerRPCClient:
@@ -47,7 +47,7 @@ class ManagerRPCClient:
         self.address = (host, port)
 
         # Generate authkey (must match server's authkey generation)
-        self._authkey = hashlib.sha256(f"{service_name}_{port}".encode()).digest()[:32]
+        self._authkey = ValiConfig.get_rpc_authkey(service_name, port)
 
         # Connection state
         self._manager = None

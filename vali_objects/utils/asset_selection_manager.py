@@ -13,7 +13,7 @@ from multiprocessing import Process
 
 import template.protocol
 from shared_objects.rpc_service_base import RPCServiceBase
-from vali_objects.vali_config import TradePairCategory
+from vali_objects.vali_config import TradePairCategory, ValiConfig
 
 
 ASSET_CLASS_SELECTION_TIME_MS = 1758326340000
@@ -46,8 +46,8 @@ class AssetSelectionManager(RPCServiceBase):
 
         # Initialize RPCServiceBase (handles connection, process lifecycle, etc.)
         super().__init__(
-            service_name='AssetSelectionManagerServer',
-            port=50010,  # Unique port for AssetSelectionManager
+            service_name=ValiConfig.RPC_ASSETSELECTION_SERVICE_NAME,
+            port=ValiConfig.RPC_ASSETSELECTION_PORT,
             running_unit_tests=running_unit_tests,
             enable_health_check=True,
             health_check_interval_s=60,

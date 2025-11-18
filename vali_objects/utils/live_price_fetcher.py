@@ -43,8 +43,8 @@ class LivePriceFetcherClient(RPCServiceBase):
         # Initialize RPCServiceBase
         RPCServiceBase.__init__(
             self,
-            service_name="LivePriceFetcher",
-            port=50000,
+            service_name=ValiConfig.RPC_LIVEPRICEFETCHER_SERVICE_NAME,
+            port=ValiConfig.RPC_LIVEPRICEFETCHER_PORT,
             running_unit_tests=running_unit_tests,
             enable_health_check=True,
             health_check_interval_s=60,

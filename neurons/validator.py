@@ -52,6 +52,7 @@ from vali_objects.vali_dataclasses.perf_ledger import PerfLedgerManager
 from vali_objects.utils.position_manager import PositionManager
 from vali_objects.utils.challengeperiod_manager import ChallengePeriodManager
 from vali_objects.utils.vali_utils import ValiUtils
+from vali_objects.vali_config import ValiConfig
 
 from vali_objects.utils.plagiarism_detector import PlagiarismDetector
 from vali_objects.utils.validator_contract_manager import ValidatorContractManager
@@ -218,7 +219,7 @@ class Validator(ValidatorBase):
         self.elimination_manager = EliminationManager(
             self.metagraph,
             None,  # position_manager set after self.pm creation
-            challengeperiod_rpc_address=("localhost", 50003),  # CP's RPC server address
+            challengeperiod_rpc_address=("localhost", ValiConfig.RPC_CHALLENGEPERIOD_PORT),
             shutdown_dict=shutdown_dict,
             use_ipc=True,
             shared_queue_websockets=self.shared_queue_websockets,
@@ -335,7 +336,7 @@ class Validator(ValidatorBase):
             contract_manager=self.contract_manager,
             plagiarism_manager=self.plagiarism_manager,
             asset_selection_manager=self.asset_selection_manager,
-            elimination_rpc_address=("localhost", 50004),  # Elim's RPC server address
+            elimination_rpc_address=("localhost", ValiConfig.RPC_ELIMINATION_PORT),
             sync_in_progress=self.sync_in_progress,
             slack_notifier=self.slack_notifier,
             sync_epoch=self.sync_epoch,

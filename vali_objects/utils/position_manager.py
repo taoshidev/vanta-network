@@ -50,8 +50,8 @@ class PositionManager(RPCServiceBase, CacheController):
         # Initialize RPCServiceBase
         RPCServiceBase.__init__(
             self,
-            service_name="PositionManagerServer",
-            port=50002,
+            service_name=ValiConfig.RPC_POSITIONMANAGER_SERVICE_NAME,
+            port=ValiConfig.RPC_POSITIONMANAGER_PORT,
             running_unit_tests=running_unit_tests,
             enable_health_check=True,
             health_check_interval_s=60,

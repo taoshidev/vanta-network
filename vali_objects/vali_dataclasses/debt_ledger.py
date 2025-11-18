@@ -45,6 +45,7 @@ from datetime import datetime, timezone
 
 from time_util.time_util import TimeUtil
 from vali_objects.utils.miner_bucket_enum import MinerBucket
+from vali_objects.vali_config import ValiConfig
 from shared_objects.rpc_service_base import RPCServiceBase
 
 
@@ -525,8 +526,8 @@ class DebtLedgerManager(RPCServiceBase):
 
         # Initialize RPCServiceBase (handles connection, process lifecycle, etc.)
         super().__init__(
-            service_name='DebtLedgerManagerServer',
-            port=50009,
+            service_name=ValiConfig.RPC_DEBTLEDGER_SERVICE_NAME,
+            port=ValiConfig.RPC_DEBTLEDGER_PORT,
             running_unit_tests=running_unit_tests,
             enable_health_check=False,  # Can be enabled later if needed
             slack_notifier=None

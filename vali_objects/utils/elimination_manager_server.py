@@ -55,7 +55,7 @@ class EliminationManagerServer(CacheController):
         if challengeperiod_rpc_address and not running_unit_tests:
             from vali_objects.rpc.manager_rpc_client import ManagerRPCClient
             host, port = challengeperiod_rpc_address
-            self.cp_client = ManagerRPCClient(host, port, "ChallengePeriodManagerServer")
+            self.cp_client = ManagerRPCClient(host, port, ValiConfig.RPC_CHALLENGEPERIOD_SERVICE_NAME)
             connection_success = self.cp_client.connect()
             if connection_success:
                 bt.logging.success(
