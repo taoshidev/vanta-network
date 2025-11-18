@@ -726,7 +726,7 @@ class LimitOrderManager(CacheController):
             return
         try:
             trade_pair_id = order.trade_pair.trade_pair_id
-            if order.src == OrderSource.ORDER_SRC_LIMIT_UNFILLED:
+            if order.src in [OrderSource.ORDER_SRC_LIMIT_UNFILLED, OrderSource.ORDER_SRC_SLTP_UNFILLED]:
                 status = "unfilled"
             else:
                 status = "closed"
