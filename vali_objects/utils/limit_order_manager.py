@@ -416,6 +416,9 @@ class LimitOrderManager(CacheController):
                 for order in hotkey_dict[miner_hotkey]:
                     if order.order_uuid == order_uuid and order.src == OrderSource.ORDER_SRC_LIMIT_UNFILLED:
                         orders_to_cancel.append(order)
+                    elif order.src == OrderSource.ORDER_SRC_SLTP_UNFILLED and order.order_uuid.startswith(order_uuid):
+                        orders_to_cancel.append(order)
+
         return orders_to_cancel
 
     def _find_orders_to_cancel_by_trade_pair(self, miner_hotkey, trade_pair):
