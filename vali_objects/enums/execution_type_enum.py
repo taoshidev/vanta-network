@@ -5,6 +5,7 @@ class ExecutionType(Enum):
     MARKET = "MARKET"
     LIMIT = "LIMIT"
     LIMIT_CANCEL = "LIMIT_CANCEL"
+    BRACKET = "BRACKET"
 
     def __str__(self):
         return self.value

@@ -21,8 +21,9 @@ class OrderSource(IntEnum):
     ORDER_SRC_LIMIT_UNFILLED = 5       # limit order created but not yet filled
     ORDER_SRC_LIMIT_FILLED = 6         # limit order that was filled
     ORDER_SRC_LIMIT_CANCELLED = 7      # limit order that was cancelled
-    ORDER_SRC_SLTP_UNFILLED = 8        # stop loss/take profit order created but not yet filled
-    ORDER_SRC_SLTP_FILLED = 9          # stop loss/take profit order that was filled
+    ORDER_SRC_BRACKET_UNFILLED = 8     # bracket order (stop loss/take profit) created but not yet filled
+    ORDER_SRC_BRACKET_FILLED = 9       # bracket order (stop loss/take profit) that was filled
+    ORDER_SRC_BRACKET_CANCELLED = 10   # bracket order (stop loss/take profit) that was cancelled
 
 # Backward compatibility constants - to be removed after migration
 ORDER_SRC_ORGANIC = OrderSource.ORGANIC

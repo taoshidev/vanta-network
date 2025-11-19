@@ -66,7 +66,8 @@ class TestLimitOrders(TestBase):
         self.live_price_fetcher.get_sorted_price_sources_for_trade_pair = Mock(return_value=None)
 
     def create_test_limit_order(self, order_type=OrderType.LONG, limit_price=49000.0,
-                               trade_pair=None, leverage=0.5, order_uuid=None):
+                               trade_pair=None, leverage=0.5, order_uuid=None,
+                               stop_loss=None, take_profit=None):
         """Helper to create test limit orders"""
         if trade_pair is None:
             trade_pair = self.DEFAULT_TRADE_PAIR
@@ -82,6 +83,8 @@ class TestLimitOrders(TestBase):
             leverage=leverage,
             execution_type=ExecutionType.LIMIT,
             limit_price=limit_price,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
             src=OrderSource.ORDER_SRC_LIMIT_UNFILLED
         )
 
@@ -422,7 +425,7 @@ class TestLimitOrders(TestBase):
         price_source = self.create_test_price_source(50000.0, bid=49900.0, ask=50100.0)
 
         # ask=50100 > limit=50000 -> no trigger
-        trigger = self.limit_order_manager._evaluate_trigger_price(
+        trigger = self.limit_order_manager._evaluate_limit_trigger_price(
             OrderType.LONG,
             None,
             price_source,
@@ -432,7 +435,7 @@ class TestLimitOrders(TestBase):
 
         # ask=50000 = limit=50000 -> trigger at ask
         price_source.ask = 50000.0
-        trigger = self.limit_order_manager._evaluate_trigger_price(
+        trigger = self.limit_order_manager._evaluate_limit_trigger_price(
             OrderType.LONG,
             None,
             price_source,
@@ -442,7 +445,7 @@ class TestLimitOrders(TestBase):
 
         # ask=49900 < limit=50000 -> trigger at ask
         price_source.ask = 49900.0
-        trigger = self.limit_order_manager._evaluate_trigger_price(
+        trigger = self.limit_order_manager._evaluate_limit_trigger_price(
             OrderType.LONG,
             None,
             price_source,
@@ -456,7 +459,7 @@ class TestLimitOrders(TestBase):
         price_source = self.create_test_price_source(50000.0, bid=49900.0, ask=50100.0)
 
         # bid=49900 < limit=50000 -> no trigger
-        trigger = self.limit_order_manager._evaluate_trigger_price(
+        trigger = self.limit_order_manager._evaluate_limit_trigger_price(
             OrderType.SHORT,
             None,
             price_source,
@@ -466,7 +469,7 @@ class TestLimitOrders(TestBase):
 
         # bid=50000 = limit=50000 -> trigger at bid
         price_source.bid = 50000.0
-        trigger = self.limit_order_manager._evaluate_trigger_price(
+        trigger = self.limit_order_manager._evaluate_limit_trigger_price(
             OrderType.SHORT,
             None,
             price_source,
@@ -476,7 +479,7 @@ class TestLimitOrders(TestBase):
 
         # bid=50100 > limit=50000 -> trigger at bid
         price_source.bid = 50100.0
-        trigger = self.limit_order_manager._evaluate_trigger_price(
+        trigger = self.limit_order_manager._evaluate_limit_trigger_price(
             OrderType.SHORT,
             None,
             price_source,
@@ -492,7 +495,7 @@ class TestLimitOrders(TestBase):
         price_source = self.create_test_price_source(50000.0, bid=49900.0, ask=50100.0)
 
         # bid=49900 < limit=50000 -> no trigger
-        trigger = self.limit_order_manager._evaluate_trigger_price(
+        trigger = self.limit_order_manager._evaluate_limit_trigger_price(
             OrderType.FLAT,
             position,
             price_source,
@@ -502,7 +505,7 @@ class TestLimitOrders(TestBase):
 
         # bid=50100 > limit=50000 -> trigger at bid
         price_source.bid = 50100.0
-        trigger = self.limit_order_manager._evaluate_trigger_price(
+        trigger = self.limit_order_manager._evaluate_limit_trigger_price(
             OrderType.FLAT,
             position,
             price_source,
@@ -518,7 +521,7 @@ class TestLimitOrders(TestBase):
         price_source = self.create_test_price_source(50000.0, bid=49900.0, ask=50100.0)
 
         # ask=50100 > limit=50000 -> no trigger
-        trigger = self.limit_order_manager._evaluate_trigger_price(
+        trigger = self.limit_order_manager._evaluate_limit_trigger_price(
             OrderType.FLAT,
             position,
             price_source,
@@ -528,7 +531,7 @@ class TestLimitOrders(TestBase):
 
         # ask=49900 < limit=50000 -> trigger at ask
         price_source.ask = 49900.0
-        trigger = self.limit_order_manager._evaluate_trigger_price(
+        trigger = self.limit_order_manager._evaluate_limit_trigger_price(
             OrderType.FLAT,
             position,
             price_source,
@@ -541,7 +544,7 @@ class TestLimitOrders(TestBase):
         price_source = self.create_test_price_source(50000.0, bid=0, ask=0)
 
         # LONG uses ask (0) -> falls back to open=50000
-        trigger = self.limit_order_manager._evaluate_trigger_price(
+        trigger = self.limit_order_manager._evaluate_limit_trigger_price(
             OrderType.LONG,
             None,
             price_source,
@@ -871,6 +874,343 @@ class TestLimitOrders(TestBase):
         # Verify eliminated miner's orders not loaded
         self.assertNotIn(self.DEFAULT_MINER_HOTKEY,
                         new_manager._limit_orders.get(self.DEFAULT_TRADE_PAIR, {}))
+
+    def test_create_bracket_order_with_both_sltp(self):
+        """Test creating a bracket order with both stop loss and take profit"""
+        # Create parent limit order with SL and TP
+        parent_order = self.create_test_limit_order(
+            limit_price=50000.0,
+            stop_loss=49000.0,
+            take_profit=51000.0
+        )
+
+        # Manually call _create_sltp_orders as it's called after fill
+        self.limit_order_manager._create_sltp_orders(self.DEFAULT_MINER_HOTKEY, parent_order)
+
+        # Verify only ONE bracket order was created
+        orders = self.limit_order_manager._limit_orders[self.DEFAULT_TRADE_PAIR][self.DEFAULT_MINER_HOTKEY]
+        bracket_orders = [o for o in orders if o.order_uuid.endswith('-bracket')]
+        self.assertEqual(len(bracket_orders), 1, "Should create exactly one bracket order")
+
+        # Verify bracket order properties
+        bracket_order = bracket_orders[0]
+        self.assertEqual(bracket_order.execution_type, ExecutionType.BRACKET)
+        self.assertEqual(bracket_order.stop_loss, 49000.0)
+        self.assertEqual(bracket_order.take_profit, 51000.0)
+        self.assertEqual(bracket_order.src, OrderSource.ORDER_SRC_BRACKET_UNFILLED)
+        self.assertEqual(bracket_order.order_type, OrderType.LONG)  # Same as parent
+        self.assertEqual(bracket_order.leverage, parent_order.leverage)  # Same leverage
+
+    def test_create_bracket_order_with_only_sl(self):
+        """Test creating a bracket order with only stop loss"""
+        parent_order = self.create_test_limit_order(
+            limit_price=50000.0,
+            stop_loss=49000.0,
+            take_profit=None
+        )
+
+        self.limit_order_manager._create_sltp_orders(self.DEFAULT_MINER_HOTKEY, parent_order)
+
+        orders = self.limit_order_manager._limit_orders[self.DEFAULT_TRADE_PAIR][self.DEFAULT_MINER_HOTKEY]
+        bracket_orders = [o for o in orders if o.order_uuid.endswith('-bracket')]
+        self.assertEqual(len(bracket_orders), 1)
+
+        bracket_order = bracket_orders[0]
+        self.assertEqual(bracket_order.stop_loss, 49000.0)
+        self.assertIsNone(bracket_order.take_profit)
+
+    def test_create_bracket_order_with_only_tp(self):
+        """Test creating a bracket order with only take profit"""
+        parent_order = self.create_test_limit_order(
+            limit_price=50000.0,
+            stop_loss=None,
+            take_profit=51000.0
+        )
+
+        self.limit_order_manager._create_sltp_orders(self.DEFAULT_MINER_HOTKEY, parent_order)
+
+        orders = self.limit_order_manager._limit_orders[self.DEFAULT_TRADE_PAIR][self.DEFAULT_MINER_HOTKEY]
+        bracket_orders = [o for o in orders if o.order_uuid.endswith('-bracket')]
+        self.assertEqual(len(bracket_orders), 1)
+
+        bracket_order = bracket_orders[0]
+        self.assertIsNone(bracket_order.stop_loss)
+        self.assertEqual(bracket_order.take_profit, 51000.0)
+
+    def test_evaluate_bracket_trigger_price_long_stop_loss(self):
+        """Test bracket order trigger for LONG bracket hitting stop loss"""
+        # LONG bracket order (same type as parent LONG)
+        # SL triggers when bid < SL (price fell)
+        bracket_order = Order(
+            trade_pair=self.DEFAULT_TRADE_PAIR,
+            order_uuid="test-bracket",
+            processed_ms=TimeUtil.now_in_millis(),
+            price=0.0,
+            order_type=OrderType.LONG,  # Same as parent
+            leverage=1.0,
+            execution_type=ExecutionType.BRACKET,
+            stop_loss=48000.0,  # SL below entry
+            take_profit=52000.0,  # TP above entry
+            src=OrderSource.ORDER_SRC_BRACKET_UNFILLED
+        )
+
+        # Create mock position (LONG position being protected by bracket)
+        position = Position(
+            miner_hotkey=self.DEFAULT_MINER_HOTKEY,
+            position_uuid=self.DEFAULT_POSITION_UUID,
+            open_ms=self.DEFAULT_OPEN_MS,
+            trade_pair=self.DEFAULT_TRADE_PAIR,
+            orders=[],
+            position_type=OrderType.LONG,
+            current_return=0.0,
+        )
+
+        # Price falls BELOW stop loss (bid < 48000)
+        price_source = PriceSource(
+            source="test",
+            timespan_ms=1000,
+            open=50000.0,
+            close=47500.0,
+            high=50000.0,
+            low=47500.0,
+            bid=47500.0,  # bid < 48000 triggers stop loss
+            ask=47600.0,
+            volume=1000.0,
+            start_ms=TimeUtil.now_in_millis(),
+            websocket=False,
+            lag_ms=0
+        )
+
+        trigger_price = self.limit_order_manager._evaluate_bracket_trigger_price(
+            bracket_order, position, price_source
+        )
+
+        self.assertIsNotNone(trigger_price)
+        self.assertEqual(trigger_price, 47500.0)
+
+    def test_evaluate_bracket_trigger_price_long_take_profit(self):
+        """Test bracket order trigger for LONG bracket hitting take profit"""
+        # LONG bracket order (same type as parent LONG)
+        # TP triggers when bid > TP (price rose)
+        bracket_order = Order(
+            trade_pair=self.DEFAULT_TRADE_PAIR,
+            order_uuid="test-bracket",
+            processed_ms=TimeUtil.now_in_millis(),
+            price=0.0,
+            order_type=OrderType.LONG,  # Same as parent
+            leverage=1.0,
+            execution_type=ExecutionType.BRACKET,
+            stop_loss=48000.0,
+            take_profit=52000.0,  # TP above entry
+            src=OrderSource.ORDER_SRC_BRACKET_UNFILLED
+        )
+
+        position = Position(
+            miner_hotkey=self.DEFAULT_MINER_HOTKEY,
+            position_uuid=self.DEFAULT_POSITION_UUID,
+            open_ms=self.DEFAULT_OPEN_MS,
+            trade_pair=self.DEFAULT_TRADE_PAIR,
+            orders=[],
+            position_type=OrderType.LONG,
+            current_return=0.0,
+        )
+
+        # Price rises ABOVE take profit (bid > 52000)
+        price_source = PriceSource(
+            source="test",
+            timespan_ms=1000,
+            open=50000.0,
+            close=52500.0,
+            high=52500.0,
+            low=50000.0,
+            bid=52500.0,  # bid > 52000 triggers take profit
+            ask=52600.0,
+            volume=1000.0,
+            start_ms=TimeUtil.now_in_millis(),
+            websocket=False,
+            lag_ms=0
+        )
+
+        trigger_price = self.limit_order_manager._evaluate_bracket_trigger_price(
+            bracket_order, position, price_source
+        )
+
+        self.assertIsNotNone(trigger_price)
+        self.assertEqual(trigger_price, 52500.0)
+
+    def test_evaluate_bracket_trigger_price_short_stop_loss(self):
+        """Test bracket order trigger for SHORT bracket hitting stop loss"""
+        # SHORT bracket order (same type as parent SHORT)
+        # SL triggers when ask > SL (price rose)
+        bracket_order = Order(
+            trade_pair=self.DEFAULT_TRADE_PAIR,
+            order_uuid="test-bracket",
+            processed_ms=TimeUtil.now_in_millis(),
+            price=0.0,
+            order_type=OrderType.SHORT,  # Same as parent
+            leverage=-1.0,
+            execution_type=ExecutionType.BRACKET,
+            stop_loss=52000.0,  # SL above entry
+            take_profit=48000.0,  # TP below entry
+            src=OrderSource.ORDER_SRC_BRACKET_UNFILLED
+        )
+
+        position = Position(
+            miner_hotkey=self.DEFAULT_MINER_HOTKEY,
+            position_uuid=self.DEFAULT_POSITION_UUID,
+            open_ms=self.DEFAULT_OPEN_MS,
+            trade_pair=self.DEFAULT_TRADE_PAIR,
+            orders=[],
+            position_type=OrderType.SHORT,
+            current_return=0.0,
+        )
+
+        # Price rises ABOVE stop loss (ask > 52000)
+        price_source = PriceSource(
+            source="test",
+            timespan_ms=1000,
+            open=50000.0,
+            close=52500.0,
+            high=52500.0,
+            low=50000.0,
+            bid=52400.0,
+            ask=52500.0,  # ask > 52000 triggers stop loss
+            volume=1000.0,
+            start_ms=TimeUtil.now_in_millis(),
+            websocket=False,
+            lag_ms=0
+        )
+
+        trigger_price = self.limit_order_manager._evaluate_bracket_trigger_price(
+            bracket_order, position, price_source
+        )
+
+        self.assertIsNotNone(trigger_price)
+        self.assertEqual(trigger_price, 52500.0)
+
+    def test_evaluate_bracket_trigger_price_short_take_profit(self):
+        """Test bracket order trigger for SHORT bracket hitting take profit"""
+        # SHORT bracket order (same type as parent SHORT)
+        # TP triggers when ask < TP (price fell)
+        bracket_order = Order(
+            trade_pair=self.DEFAULT_TRADE_PAIR,
+            order_uuid="test-bracket",
+            processed_ms=TimeUtil.now_in_millis(),
+            price=0.0,
+            order_type=OrderType.SHORT,  # Same as parent
+            leverage=-1.0,
+            execution_type=ExecutionType.BRACKET,
+            stop_loss=52000.0,  # SL above entry
+            take_profit=48000.0,  # TP below entry
+            src=OrderSource.ORDER_SRC_BRACKET_UNFILLED
+        )
+
+        position = Position(
+            miner_hotkey=self.DEFAULT_MINER_HOTKEY,
+            position_uuid=self.DEFAULT_POSITION_UUID,
+            open_ms=self.DEFAULT_OPEN_MS,
+            trade_pair=self.DEFAULT_TRADE_PAIR,
+            orders=[],
+            position_type=OrderType.SHORT,
+            current_return=0.0,
+        )
+
+        # Price falls BELOW take profit (ask < 48000)
+        price_source = PriceSource(
+            source="test",
+            timespan_ms=1000,
+            open=50000.0,
+            close=47500.0,
+            high=50000.0,
+            low=47500.0,
+            bid=47400.0,
+            ask=47500.0,  # ask < 48000 triggers take profit
+            volume=1000.0,
+            start_ms=TimeUtil.now_in_millis(),
+            websocket=False,
+            lag_ms=0
+        )
+
+        trigger_price = self.limit_order_manager._evaluate_bracket_trigger_price(
+            bracket_order, position, price_source
+        )
+
+        self.assertIsNotNone(trigger_price)
+        self.assertEqual(trigger_price, 47500.0)
+
+    def test_evaluate_bracket_trigger_price_no_trigger(self):
+        """Test bracket order when price doesn't hit either boundary"""
+        # LONG bracket order - same type as parent
+        # SL below entry, TP above entry
+        bracket_order = Order(
+            trade_pair=self.DEFAULT_TRADE_PAIR,
+            order_uuid="test-bracket",
+            processed_ms=TimeUtil.now_in_millis(),
+            price=0.0,
+            order_type=OrderType.LONG,
+            leverage=1.0,
+            execution_type=ExecutionType.BRACKET,
+            stop_loss=48000.0,  # Loss if bid < 48000
+            take_profit=52000.0,  # Profit if bid > 52000
+            src=OrderSource.ORDER_SRC_BRACKET_UNFILLED
+        )
+
+        position = Position(
+            miner_hotkey=self.DEFAULT_MINER_HOTKEY,
+            position_uuid=self.DEFAULT_POSITION_UUID,
+            open_ms=self.DEFAULT_OPEN_MS,
+            trade_pair=self.DEFAULT_TRADE_PAIR,
+            orders=[],
+            position_type=OrderType.LONG,
+            current_return=0.0,
+        )
+
+        # Price stays between SL and TP: 48000 < 50000 < 52000
+        # For LONG bracket: triggers when bid < SL OR bid > TP
+        # bid=50000: not < 48000 (no SL), not > 52000 (no TP) → no trigger
+        price_source = PriceSource(
+            source="test",
+            timespan_ms=1000,
+            open=50000.0,
+            close=50000.0,
+            high=50500.0,
+            low=49500.0,
+            bid=50000.0,  # 48000 < 50000 < 52000, so no trigger
+            ask=50100.0,
+            volume=1000.0,
+            start_ms=TimeUtil.now_in_millis(),
+            websocket=False,
+            lag_ms=0
+        )
+
+        trigger_price = self.limit_order_manager._evaluate_bracket_trigger_price(
+            bracket_order, position, price_source
+        )
+
+        self.assertIsNone(trigger_price)
+
+    def test_cancel_sibling_handles_bracket_orders(self):
+        """Test that _cancel_sibling_sltp_orders properly handles bracket orders"""
+        # Create a bracket order (same type as parent)
+        bracket_order = Order(
+            trade_pair=self.DEFAULT_TRADE_PAIR,
+            order_uuid="parent-123-bracket",
+            processed_ms=TimeUtil.now_in_millis(),
+            price=50000.0,
+            order_type=OrderType.LONG,  # Same as parent
+            leverage=1.0,
+            execution_type=ExecutionType.BRACKET,
+            stop_loss=48000.0,
+            take_profit=52000.0,
+            src=OrderSource.ORDER_SRC_BRACKET_FILLED
+        )
+
+        # Should not raise exception and should return early
+        self.limit_order_manager._cancel_sibling_sltp_orders(
+            self.DEFAULT_MINER_HOTKEY,
+            bracket_order
+        )
+        # Test passes if no exception is raised
 
 
 if __name__ == '__main__':
