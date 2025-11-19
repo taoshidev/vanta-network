@@ -391,6 +391,7 @@ class LimitOrderManager(CacheController):
                     # Attempt to fill
                     if self._attempt_fill_limit_order(miner_hotkey, order, price_sources, now_ms):
                         total_filled += 1
+                        break
 
         bt.logging.info(f"Limit order check complete: checked={total_checked}, filled={total_filled}")
 
@@ -524,6 +525,7 @@ class LimitOrderManager(CacheController):
         except Exception as e:
             bt.logging.info(f"Could not fill limit order [{order.order_uuid}]: {e}. Cancelling order")
             new_src = OrderSource.ORDER_SRC_LIMIT_CANCELLED
+
         finally:
             self._close_limit_order(miner_hotkey, order, new_src, fill_time)
 
