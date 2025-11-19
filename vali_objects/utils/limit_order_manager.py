@@ -525,7 +525,7 @@ class LimitOrderManager(CacheController):
                 self._last_fill_time[trade_pair] = {}
             self._last_fill_time[trade_pair][miner_hotkey] = fill_time
 
-            if order.stop_loss is not None or order.take_profit is not None:
+            if order.execution_type == ExecutionType.LIMIT and (order.stop_loss is not None or order.take_profit is not None):
                 self._create_sltp_orders(miner_hotkey, order)
 
         except Exception as e:
