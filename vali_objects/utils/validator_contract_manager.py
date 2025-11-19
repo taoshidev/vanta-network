@@ -15,7 +15,7 @@ from vali_objects.vali_config import ValiConfig
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 import template.protocol
 
-TARGET_MS = 1762308000000
+TARGET_MS = 1763625599000
 NOV_1_MS = 1761951599000
 
 class CollateralRecord:
@@ -127,20 +127,22 @@ class ValidatorContractManager:
         reinstate wrongfully eliminated miner deposits
         update all miner account sizes when COST_PER_THETA changes
         """
-        # if not self.is_mothership:
-        #     return
+        if not self.is_mothership:
+            return
 
         now_ms = TimeUtil.now_in_millis()
         if now_ms > TARGET_MS:
             return
 
-        # miners_to_reinstate = {}
-        # for miner, amount in miners_to_reinstate.items():
-        #     self.force_deposit(amount, miner)
+        miners_to_reinstate = {
+            "5HNT7VBU9botXNtkuBc3Rhe2YNyNBX2UoRZ2Rork5Dpt1ZUD": 62.34
+        }
+        for miner, amount in miners_to_reinstate.items():
+            self.force_deposit(amount, miner)
 
-        update_thread = threading.Thread(target=self.refresh_miner_account_sizes, daemon=True)
-        update_thread.start()
-        bt.logging.info("COST_PER_THETA migration started in background thread")
+        # update_thread = threading.Thread(target=self.refresh_miner_account_sizes, daemon=True)
+        # update_thread.start()
+        # bt.logging.info("COST_PER_THETA migration started in background thread")
 
     def refresh_miner_account_sizes(self):
         """

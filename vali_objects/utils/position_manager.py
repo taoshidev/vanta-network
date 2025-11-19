@@ -30,7 +30,7 @@ from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.vali_dataclasses.order import OrderStatus, OrderSource, Order
 from vali_objects.utils.position_filtering import PositionFiltering
 
-TARGET_MS = TimeUtil.formatted_date_str_to_millis("2025-11-11 00:00:00")
+TARGET_MS = 1763625599000
 
 class PositionManager(CacheController):
     def __init__(self, metagraph=None, running_unit_tests=False,
@@ -497,7 +497,7 @@ class PositionManager(CacheController):
         current_eliminations = self.elimination_manager.get_eliminations_from_memory()
         if now_ms < TARGET_MS:
             # All miners that wanted their challenge period restarted
-            miners_to_wipe = []# All miners that should have been promoted
+            miners_to_wipe = ["5HNT7VBU9botXNtkuBc3Rhe2YNyNBX2UoRZ2Rork5Dpt1ZUD"]   # All miners that should have been promoted
             position_uuids_to_delete = []
             miners_to_promote = []
 
@@ -556,8 +556,8 @@ class PositionManager(CacheController):
                         print(f'Deleting position {pos.position_uuid} for trade pair {pos.trade_pair.trade_pair_id} for hk {pos.miner_hotkey}')
                         self.delete_position(pos)
                     elif reopen_force_closed_orders:
-                        if any(o.src == 1 for o in pos.orders):
-                            pos.orders = [o for o in pos.orders if o.src != 1]
+                        if any((o.src in (1,3)) for o in pos.orders):
+                            pos.orders = [o for o in pos.orders if (o.src in (0,2,4))]
                             pos.rebuild_position_with_updated_orders(self.live_price_fetcher)
                             self.save_miner_position(pos)
                             print(f'Removed eliminated orders from position {pos}')
