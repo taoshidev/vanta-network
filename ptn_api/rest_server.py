@@ -734,15 +734,25 @@ class PTNRestServer(APIKeyMixin):
             # Check if contract manager is available
             if not self.contract_manager:
                 return jsonify({'error': 'Collateral operations not available'}), 503
-                
+
             try:
                 # Parse JSON request
                 if not request.is_json:
                     return jsonify({'error': 'Content-Type must be application/json'}), 400
-                    
+
                 data = request.get_json()
                 if not data:
                     return jsonify({'error': 'Invalid JSON body'}), 400
+
+                # Check PTNCLI version FIRST - reject outdated versions
+                ptncli_version = data.get('ptncli_version', '0.0.0')
+                ptncli_error = self.check_ptncli_version(ptncli_version)
+                if ptncli_error:
+                    bt.logging.warning(f"PTNCLI version {ptncli_version} rejected (deposit endpoint): {ptncli_error}")
+                    return jsonify({
+                        'error': ptncli_error,
+                        'successfully_processed': False
+                    }), 400
                     
                 # Validate required fields
                 required_fields = ['extrinsic']
@@ -787,6 +797,16 @@ class PTNRestServer(APIKeyMixin):
                 if not data:
                     return jsonify({'error': 'Invalid JSON body'}), 400
 
+                # Check PTNCLI version FIRST - reject outdated versions
+                ptncli_version = data.get('ptncli_version', '0.0.0')
+                ptncli_error = self.check_ptncli_version(ptncli_version)
+                if ptncli_error:
+                    bt.logging.warning(f"PTNCLI version {ptncli_version} rejected (query-withdraw endpoint): {ptncli_error}")
+                    return jsonify({
+                        'error': ptncli_error,
+                        'successfully_processed': False
+                    }), 400
+
                 # Validate required fields for withdrawal query
                 required_fields = ['amount', 'miner_hotkey']
                 for field in required_fields:
@@ -828,16 +848,26 @@ class PTNRestServer(APIKeyMixin):
             # Check if contract manager is available
             if not self.contract_manager:
                 return jsonify({'error': 'Collateral operations not available'}), 503
-                
+
             try:
                 # Parse JSON request
                 if not request.is_json:
                     return jsonify({'error': 'Content-Type must be application/json'}), 400
-                    
+
                 data = request.get_json()
                 if not data:
                     return jsonify({'error': 'Invalid JSON body'}), 400
-                    
+
+                # Check PTNCLI version FIRST - reject outdated versions
+                ptncli_version = data.get('ptncli_version', '0.0.0')
+                ptncli_error = self.check_ptncli_version(ptncli_version)
+                if ptncli_error:
+                    bt.logging.warning(f"PTNCLI version {ptncli_version} rejected (withdraw endpoint): {ptncli_error}")
+                    return jsonify({
+                        'error': ptncli_error,
+                        'successfully_processed': False
+                    }), 400
+
                 # Validate required fields for signed withdrawal
                 required_fields = ['amount', 'miner_coldkey', 'miner_hotkey', 'nonce', 'timestamp', 'signature']
                 for field in required_fields:
@@ -1000,6 +1030,16 @@ class PTNRestServer(APIKeyMixin):
                 if not data:
                     return jsonify({'error': 'Invalid JSON body'}), 400
 
+                # Check PTNCLI version FIRST - reject outdated versions
+                ptncli_version = data.get('ptncli_version', '0.0.0')
+                ptncli_error = self.check_ptncli_version(ptncli_version)
+                if ptncli_error:
+                    bt.logging.warning(f"PTNCLI version {ptncli_version} rejected (asset-selection endpoint): {ptncli_error}")
+                    return jsonify({
+                        'error': ptncli_error,
+                        'successfully_processed': False
+                    }), 400
+
                 # Validate required fields for signed withdrawal
                 required_fields = ['asset_selection', 'miner_coldkey', 'miner_hotkey', 'signature']
                 for field in required_fields:
@@ -1146,6 +1186,33 @@ class PTNRestServer(APIKeyMixin):
             except Exception as e:
                 bt.logging.error(f"Unexpected error reading file {file_path}: {type(e).__name__}: {str(e)}")
                 raise
+
+    @staticmethod
+    def check_ptncli_version(version: str) -> Optional[str]:
+        """
+        Check if PTNCLI version meets minimum requirements.
+        This is now an enforced requirement - requests will be rejected if version is outdated.
+
+        Args:
+            version: PTNCLI version string (e.g., "1.0.5")
+
+        Returns:
+            Error message string if version is outdated or invalid, None if OK
+        """
+        try:
+            # Parse version strings into tuples for comparison
+            current = tuple(int(x) for x in version.split('.')[:3])
+            minimum = tuple(int(x) for x in ValiConfig.PTNCLI_MINIMUM_VERSION.split('.')[:3])
+
+            if current < minimum:
+                return (f"Your PTNCLI version {version} is outdated and no longer supported. "
+                        f"Please upgrade to PTNCLI >= {ValiConfig.PTNCLI_MINIMUM_VERSION}: "
+                        f"pip install --upgrade git+https://github.com/taoshidev/ptncli.git")
+        except (ValueError, AttributeError, IndexError):
+            # Invalid version format - treat as error for security
+            return (f"Invalid PTNCLI version format: {version}. "
+                    f"Please reinstall PTNCLI: pip install --upgrade git+https://github.com/taoshidev/ptncli.git")
+        return None
 
     def run(self):
         """Start the REST server using Waitress."""

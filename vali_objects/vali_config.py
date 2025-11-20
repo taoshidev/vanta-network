@@ -115,6 +115,10 @@ class InterpolatedValueFromDate():
 class ValiConfig:
     # versioning
     VERSION = meta_version
+
+    # PTNCLI version requirements
+    PTNCLI_MINIMUM_VERSION = "1.0.5"  # Minimum required PTNCLI version
+
     DAYS_IN_YEAR_CRYPTO = 365  # annualization factor
     DAYS_IN_YEAR_FOREX = 252
 
