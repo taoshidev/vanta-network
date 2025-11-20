@@ -542,7 +542,7 @@ class ValidatorContractManager:
             withdrawal_amount = amount - slashed_amount
 
             bt.logging.info(
-                f"Processing withdrawal request from {miner_hotkey} for {amount} Theta. Current drawdown: {(1 - drawdown) * 100:.2f}%. {slashed_amount} Theta will be slashed. {withdrawal_amount} Theta will be withdrawn.")
+                f"Processing withdrawal request from {miner_hotkey} for {amount} Theta. Current drawdown: {(1 - drawdown) * 100}%. {slashed_amount} Theta will be slashed. {withdrawal_amount} Theta will be withdrawn.")
             self.slash_miner_collateral(miner_hotkey, slashed_amount)
 
             owner_address = self.get_secret("collateral_owner_address")
@@ -618,8 +618,8 @@ class ValidatorContractManager:
             slash_amount = current_balance_theta * slash_proportion
 
             bt.logging.info(f"Computed slashing for {miner_hotkey}: "
-                            f"Drawdown: {drawdown:.2f}, "
-                            f"Slash: {slash_proportion:.2f} = {slash_amount:.2f} Theta")
+                            f"Drawdown: {drawdown}, "
+                            f"Slash: {slash_proportion} = {slash_amount} Theta")
 
             return slash_amount
 
