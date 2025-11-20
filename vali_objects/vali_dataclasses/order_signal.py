@@ -34,9 +34,22 @@ class Signal(BaseModel):
         """
         Ensure that long orders have positive size, and short orders have negative size,
         applied to all non-None of leverage, value, and quantity.
+        Special handling for BRACKET orders.
         """
         order_type = values['order_type']
+        execution_type = values.get('execution_type', ExecutionType.MARKET)
 
+        # Skip validation for FLAT and BRACKET orders
+        is_flat_order = order_type == OrderType.FLAT or order_type == 'FLAT'
+        is_bracket_order = execution_type == ExecutionType.BRACKET
+
+        # For bracket orders, leverage can be 0 (will be set from position)
+        if is_bracket_order:
+            lev = values.get('leverage', 0)
+            if lev == 0:
+                return values
+
+        # Apply sign correction to leverage, value, and quantity
         for field in ['leverage', 'value', 'quantity']:
             size = values.get(field)
             if size is not None:

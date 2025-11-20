@@ -84,7 +84,8 @@ class MarketOrderManager():
     def _add_order_to_existing_position(self, existing_position, trade_pair, signal_order_type: OrderType,
                                         quantity: float, leverage: float, value: float, order_time_ms: int, miner_hotkey: str,
                                         price_sources, miner_order_uuid: str, miner_repo_version: str, src:OrderSource,
-                                        account_size=None, usd_base_price=None, execution_type=ExecutionType.MARKET, limit_price=None) -> Order:
+                                        account_size=None, usd_base_price=None, execution_type=ExecutionType.MARKET,
+                                        limit_price=None, stop_loss=None, take_profit=None) -> Order:
         # Must be locked by caller
         step_start = TimeUtil.now_in_millis()
 
@@ -112,6 +113,8 @@ class MarketOrderManager():
             ask=best_price_source.ask,
             src=src,
             limit_price=limit_price,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
             execution_type=execution_type
         )
         order_creation_ms = TimeUtil.now_in_millis() - step_start
@@ -310,12 +313,16 @@ class MarketOrderManager():
             created_order = None
             if existing_position:
                 add_order_start = TimeUtil.now_in_millis()
+                limit_price = signal.get("limit_price")
+                stop_loss = signal.get("stop_loss")
+                take_profit = signal.get("take_profit")
+
                 if execution_type == ExecutionType.LIMIT:
                     new_src = OrderSource.ORDER_SRC_LIMIT_FILLED
-                    limit_price = signal.get("limit_price")
+                elif execution_type == ExecutionType.BRACKET:
+                    new_src = OrderSource.ORDER_SRC_BRACKET_FILLED
                 else:
                     new_src = OrderSource.ORGANIC
-                    limit_price = None
 
                 # Calculate price and USD conversions
                 best_price_source = price_sources[0]
@@ -328,7 +335,8 @@ class MarketOrderManager():
                 created_order = self._add_order_to_existing_position(existing_position, trade_pair, signal_order_type,
                                                      quantity, leverage, value, now_ms, miner_hotkey,
                                                      price_sources, miner_order_uuid, miner_repo_version,
-                                                     new_src, account_size, usd_base_price, execution_type, limit_price)
+                                                     new_src, account_size, usd_base_price, execution_type,
+                                                     limit_price, stop_loss, take_profit)
                 add_order_ms = TimeUtil.now_in_millis() - add_order_start
                 bt.logging.info(f"[LOCK_WORK] Add order to position took {add_order_ms}ms")
             else:

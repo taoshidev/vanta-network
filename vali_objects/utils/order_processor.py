@@ -85,7 +85,7 @@ class OrderProcessor:
         take_profit = signal.get("take_profit")
 
         # Validate required fields
-        if not signal_leverage:
+        if signal_leverage is None:
             raise SignalException("Missing required field: leverage")
         if not signal_order_type_str:
             raise SignalException("Missing required field: order_type")
@@ -197,12 +197,9 @@ class OrderProcessor:
             SignalException: If required fields are missing, no position exists, or processing fails
         """
         # Extract signal data
-        leverage = signal.get("leverage")
+        leverage = signal.get("leverage", 0)  # If leverage is None, read leverage from position
         stop_loss = signal.get("stop_loss")
         take_profit = signal.get("take_profit")
-
-        if leverage is None:
-            leverage = 0.0
 
         # Validate that at least one of SL or TP is set
         if stop_loss is None and take_profit is None:
