@@ -23,7 +23,7 @@ from shared_objects.error_utils import ErrorUtils
 class SubtensorWeightSetter(CacheController):
     def __init__(self, metagraph, position_manager: PositionManager,
                  running_unit_tests=False, is_backtesting=False, use_slack_notifier=False,
-                 shutdown_dict=None, weight_request_queue=None, config=None, hotkey=None, contract_manager=None,
+                 shutdown_dict=None, metagraph_updater_rpc=None, config=None, hotkey=None, contract_manager=None,
                  debt_ledger_manager=None, is_mainnet=True):
         super().__init__(metagraph, running_unit_tests=running_unit_tests, is_backtesting=is_backtesting)
         self.position_manager = position_manager
@@ -43,9 +43,11 @@ class SubtensorWeightSetter(CacheController):
         self.debt_ledger_manager = debt_ledger_manager
         self.is_mainnet = is_mainnet
 
-        # IPC setup
+        # Shutdown flag
         self.shutdown_dict = shutdown_dict if shutdown_dict is not None else {}
-        self.weight_request_queue = weight_request_queue
+
+        # RPC client for weight setting (replaces queue)
+        self.metagraph_updater_rpc = metagraph_updater_rpc
 
     @property
     def slack_notifier(self):
@@ -190,16 +192,16 @@ class SubtensorWeightSetter(CacheController):
 
     def run_update_loop(self):
         """
-        Weight setter loop that sends fire-and-forget requests to MetagraphUpdater.
+        Weight setter loop that sends RPC requests to MetagraphUpdater.
         """
         setproctitle(f"vali_{self.__class__.__name__}")
         bt.logging.enable_info()
-        bt.logging.info("Starting weight setter update loop (fire-and-forget IPC mode)")
+        bt.logging.info("Starting weight setter update loop (RPC mode)")
 
         while not self.shutdown_dict:
             try:
                 if self.refresh_allowed(ValiConfig.SET_WEIGHT_REFRESH_TIME_MS):
-                    bt.logging.info("Computing weights for IPC request")
+                    bt.logging.info("Computing weights for RPC request")
                     current_time = TimeUtil.now_in_millis()
 
                     # Compute weights (existing logic)
@@ -207,8 +209,8 @@ class SubtensorWeightSetter(CacheController):
                     self.checkpoint_results = checkpoint_results
                     self.transformed_list = transformed_list
 
-                    if transformed_list and self.weight_request_queue:
-                        # Send weight setting request (fire-and-forget)
+                    if transformed_list and self.metagraph_updater_rpc:
+                        # Send weight setting request via RPC (synchronous with feedback)
                         self._send_weight_request(transformed_list)
                         self.set_last_update_time()
                     else:
@@ -225,7 +227,7 @@ class SubtensorWeightSetter(CacheController):
                                 "Waiting 5 minutes before retry..."
                             )
                         else:
-                            bt.logging.debug("No IPC queue available")
+                            bt.logging.debug("No RPC client available")
 
                         # Always sleep 5 minutes when weights aren't ready to avoid spam
                         time.sleep(300)
@@ -252,25 +254,36 @@ class SubtensorWeightSetter(CacheController):
         bt.logging.info("Weight setter update loop shutting down")
     
     def _send_weight_request(self, transformed_list):
-        """Send weight setting request to MetagraphUpdater (fire-and-forget)"""
+        """Send weight setting request to MetagraphUpdater via RPC (synchronous with feedback)"""
         try:
             uids = [x[0] for x in transformed_list]
             weights = [x[1] for x in transformed_list]
-            
-            # Send request (no response expected)
+
+            # Send request via RPC (synchronous - get success/failure feedback)
             # MetagraphUpdater will use its own config for netuid and wallet
-            request = {
-                'uids': uids,
-                'weights': weights,
-                'version_key': self.subnet_version,
-                'timestamp': TimeUtil.now_in_millis()
-            }
-            
-            self.weight_request_queue.put_nowait(request)
-            bt.logging.info(f"Weight request sent: {len(uids)} UIDs via IPC")
-            
+            result = self.metagraph_updater_rpc.set_weights_rpc(
+                uids=uids,
+                weights=weights,
+                version_key=self.subnet_version
+            )
+
+            if result.get('success'):
+                bt.logging.info(f"✓ Weight request succeeded: {len(uids)} UIDs via RPC")
+            else:
+                error = result.get('error', 'Unknown error')
+                bt.logging.error(f"✗ Weight request failed: {error}")
+
+                # Send failure notification
+                if self.slack_notifier:
+                    self.slack_notifier.send_message(
+                        f"❌ Weight setting failed!\n"
+                        f"Error: {error}\n"
+                        f"Attempted to set {len(uids)} weights",
+                        level="error"
+                    )
+
         except Exception as e:
-            bt.logging.error(f"Error sending weight request: {e}")
+            bt.logging.error(f"Error sending weight request via RPC: {e}")
             bt.logging.error(traceback.format_exc())
 
             # Send error notification
@@ -278,9 +291,9 @@ class SubtensorWeightSetter(CacheController):
                 # Get compact stack trace using shared utility
                 compact_trace = ErrorUtils.get_compact_stacktrace(e)
                 self.slack_notifier.send_message(
-                    f"❌ Weight request IPC error!\n"
+                    f"❌ Weight request RPC error!\n"
                     f"Error: {str(e)}\n"
-                    f"This occurred while sending weight request via IPC\n"
+                    f"This occurred while sending weight request via RPC\n"
                     f"Trace: {compact_trace}",
                     level="error"
                 )

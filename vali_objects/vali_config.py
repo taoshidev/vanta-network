@@ -173,6 +173,9 @@ class ValiConfig:
     RPC_WEBSOCKET_NOTIFIER_PORT = 50014
     RPC_WEBSOCKET_NOTIFIER_SERVICE_NAME = "WebSocketNotifierServer"
 
+    RPC_WEIGHT_SETTER_PORT = 50015
+    RPC_WEIGHT_SETTER_SERVICE_NAME = "WeightSetterServer"
+
     @staticmethod
     def get_rpc_authkey(service_name: str, port: int) -> bytes:
         """

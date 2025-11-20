@@ -555,8 +555,10 @@ class MockSubtensorWeightSetterHelper:
             # Empty dict - weight calculation will handle this gracefully
             mock_manager.debt_ledgers = {}
 
-        # Configure get_all_ledgers() to return the debt_ledgers dict
-        # This is required for weight calculation which calls debt_ledger_manager.get_all_ledgers()
+        # Configure get_all_debt_ledgers() to return the debt_ledgers dict
+        # This is required for weight calculation which calls debt_ledger_manager.get_all_debt_ledgers()
+        mock_manager.get_all_debt_ledgers.return_value = mock_manager.debt_ledgers
+        # Also support old name for backwards compatibility
         mock_manager.get_all_ledgers.return_value = mock_manager.debt_ledgers
 
         return mock_manager

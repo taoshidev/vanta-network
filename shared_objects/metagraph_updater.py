@@ -115,7 +115,7 @@ class WeightFailureTracker:
 
 class MetagraphUpdater(CacheController):
     def __init__(self, config, metagraph, hotkey, is_miner, position_inspector=None, position_manager=None,
-                 shutdown_dict=None, slack_notifier=None, weight_request_queue=None, live_price_fetcher=None):
+                 shutdown_dict=None, slack_notifier=None, live_price_fetcher=None):
         super().__init__(metagraph)
         self.config = config
         self.subtensor = bt.subtensor(config=self.config)
@@ -143,10 +143,11 @@ class MetagraphUpdater(CacheController):
         self.shutdown_dict = shutdown_dict  # Flag to control the loop
         self.slack_notifier = slack_notifier  # Add slack notifier for error reporting
 
-        # Weight setting for validators only
-        self.weight_request_queue = weight_request_queue if not is_miner else None
+        # Weight setting for validators only (RPC-based, no queue)
         self.last_weight_set = 0
         self.weight_failure_tracker = WeightFailureTracker() if not is_miner else None
+        self.rpc_server = None
+        self.rpc_thread = None
 
         # Exponential backoff parameters
         self.min_backoff = 10 if self.round_robin_enabled else 120
@@ -154,15 +155,114 @@ class MetagraphUpdater(CacheController):
         self.backoff_factor = 2  # Double the wait time on each retry
         self.current_backoff = self.min_backoff
         self.consecutive_failures = 0
-        
+
         # Hotkeys cache for fast lookups (refreshed atomically during metagraph updates)
         # No lock needed - set assignment is atomic in Python
         self._hotkeys_cache = set()
 
+        # Start RPC server for validators (allows SubtensorWeightSetter to call set_weights_rpc)
+        if not is_miner:
+            self._start_weight_setter_rpc_server()
+
         # Log mode
         mode = "miner" if is_miner else "validator"
-        weight_mode = "enabled" if self.weight_request_queue else "disabled"
-        bt.logging.info(f"MetagraphUpdater initialized in {mode} mode, weight setting: {weight_mode}")
+        bt.logging.info(f"MetagraphUpdater initialized in {mode} mode, weight setting via RPC")
+
+    def _start_weight_setter_rpc_server(self):
+        """Start RPC server for weight setting requests (validators only)."""
+        from multiprocessing.managers import BaseManager
+
+        # Define RPC manager
+        class WeightSetterRPC(BaseManager):
+            pass
+
+        # Register this instance to handle RPC calls
+        WeightSetterRPC.register(
+            'WeightSetterServer',
+            callable=lambda: self
+        )
+
+        # Start RPC server in a thread
+        address = ("localhost", ValiConfig.RPC_WEIGHT_SETTER_PORT)
+        authkey = ValiConfig.get_rpc_authkey(
+            ValiConfig.RPC_WEIGHT_SETTER_SERVICE_NAME,
+            ValiConfig.RPC_WEIGHT_SETTER_PORT
+        )
+
+        manager = WeightSetterRPC(address=address, authkey=authkey)
+        self.rpc_server = manager.get_server()
+
+        # Run server in daemon thread
+        self.rpc_thread = threading.Thread(
+            target=self.rpc_server.serve_forever,
+            daemon=True,
+            name="WeightSetterRPC"
+        )
+        self.rpc_thread.start()
+        bt.logging.info(f"WeightSetter RPC server started on port {ValiConfig.RPC_WEIGHT_SETTER_PORT}")
+
+    # ==================== RPC Methods (exposed to SubtensorWeightSetter) ====================
+
+    def set_weights_rpc(self, uids, weights, version_key):
+        """
+        RPC method to set weights synchronously (called from SubtensorWeightSetter).
+
+        Args:
+            uids: List of UIDs to set weights for
+            weights: List of weights corresponding to UIDs
+            version_key: Subnet version key
+
+        Returns:
+            dict: {"success": bool, "error": str}
+        """
+        try:
+            # Use our own config for netuid
+            netuid = self.config.netuid
+
+            # Create wallet from our own config
+            wallet = bt.wallet(config=self.config)
+
+            bt.logging.info(f"[RPC] Processing weight setting request for {len(uids)} UIDs")
+
+            # Set weights with retry logic
+            success, error_msg = self._set_weights_with_retry(
+                netuid=netuid,
+                wallet=wallet,
+                uids=uids,
+                weights=weights,
+                version_key=version_key
+            )
+
+            if success:
+                self.last_weight_set = time.time()
+                bt.logging.success("[RPC] Weight setting completed successfully")
+
+                # Track success and check for recovery alerts
+                if self.weight_failure_tracker:
+                    should_send_recovery = self.weight_failure_tracker.track_success()
+                    if should_send_recovery and self.slack_notifier:
+                        self._send_recovery_alert(wallet)
+
+                return {"success": True, "error": None}
+            else:
+                bt.logging.warning(f"[RPC] Weight setting failed: {error_msg}")
+
+                # Track failure and send alerts
+                if self.weight_failure_tracker:
+                    failure_type = self.weight_failure_tracker.classify_failure(error_msg)
+                    self.weight_failure_tracker.track_failure(error_msg, failure_type)
+
+                    if self.weight_failure_tracker.should_alert(failure_type, self.weight_failure_tracker.consecutive_failures):
+                        self._send_weight_failure_alert(error_msg, failure_type, wallet)
+                        self.weight_failure_tracker.last_alert_time = time.time()
+
+                return {"success": False, "error": error_msg}
+
+        except Exception as e:
+            error_msg = f"Error in set_weights_rpc: {e}"
+            bt.logging.error(error_msg)
+            bt.logging.error(traceback.format_exc())
+            return {"success": False, "error": error_msg}
 
     def _current_timestamp(self):
         return time.time()
@@ -292,112 +392,6 @@ class MetagraphUpdater(CacheController):
                 # Wait with exponential backoff
                 time.sleep(self.current_backoff)
 
-    def run_weight_processing_loop(self):
-        """
-        Dedicated loop for processing weight requests using blocking queue.
-        Runs in a separate thread. Blocks until a request arrives (efficient, no polling).
-        """
-        setproctitle(f"weight_processor_{self.hotkey}")
-        bt.logging.enable_info()
-        bt.logging.info("Starting dedicated weight processing loop")
-
-        while not self.shutdown_dict:
-            try:
-                # Process weight requests if we're a validator
-                if self.weight_request_queue:
-                    self._process_weight_requests()
-                else:
-                    time.sleep(5)  # No queue configured, sleep
-
-            except Exception as e:
-                bt.logging.error(f"Error in weight processing loop: {e}")
-                bt.logging.error(traceback.format_exc())
-                time.sleep(10)  # Longer sleep on error
-
-        bt.logging.info("Weight processing loop shutting down")
-
-    def _process_weight_requests(self):
-        """
-        Process pending weight setting requests (validators only).
-        Uses blocking queue.get() to efficiently wait for requests without polling.
-        """
-        try:
-            # Block until a request arrives (timeout 30s to check shutdown_dict periodically)
-            try:
-                request = self.weight_request_queue.get(timeout=30)
-                self._handle_weight_request(request)
-
-                # After processing first request, drain any additional pending requests
-                # (non-blocking to avoid waiting if queue is empty)
-                processed_count = 1
-                while processed_count < 5:  # Process max 5 requests per cycle
-                    try:
-                        request = self.weight_request_queue.get_nowait()
-                        self._handle_weight_request(request)
-                        processed_count += 1
-                    except queue.Empty:
-                        break  # No more pending requests
-
-                if processed_count > 1:
-                    bt.logging.debug(f"Processed {processed_count} weight requests in batch")
-
-            except queue.Empty:
-                # Timeout reached, no requests - this is normal, just loop back
-                pass
-
-        except Exception as e:
-            bt.logging.error(f"Error processing weight requests: {e}")
-            bt.logging.error(traceback.format_exc())
-    
-    def _handle_weight_request(self, request):
-        """Handle a single weight setting request (no response needed)"""
-        try:
-            uids = request['uids']
-            weights = request['weights']
-            version_key = request['version_key']
-            
-            # Use our own config for netuid
-            netuid = self.config.netuid
-            
-            # Create wallet from our own config
-            wallet = bt.wallet(config=self.config)
-            
-            bt.logging.info(f"Processing weight setting request for {len(uids)} UIDs")
-            
-            # Set weights with retry logic
-            success, error_msg = self._set_weights_with_retry(
-                netuid=netuid,
-                wallet=wallet,
-                uids=uids,
-                weights=weights,
-                version_key=version_key
-            )
-            
-            if success:
-                self.last_weight_set = time.time()
-                bt.logging.success("Weight setting completed successfully")
-                
-                # Track success and check for recovery alerts
-                if self.weight_failure_tracker:
-                    should_send_recovery = self.weight_failure_tracker.track_success()
-                    if should_send_recovery and self.slack_notifier:
-                        self._send_recovery_alert(wallet)
-            else:
-                bt.logging.warning(f"Weight setting failed: {error_msg}")
-                
-                # Track failure and send alerts
-                if self.weight_failure_tracker:
-                    failure_type = self.weight_failure_tracker.classify_failure(error_msg)
-                    self.weight_failure_tracker.track_failure(error_msg, failure_type)
-                    
-                    if self.weight_failure_tracker.should_alert(failure_type, self.weight_failure_tracker.consecutive_failures):
-                        self._send_weight_failure_alert(error_msg, failure_type, wallet)
-                        self.weight_failure_tracker.last_alert_time = time.time()
-            
-        except Exception as e:
-            bt.logging.error(f"Error handling weight request: {e}")
-            bt.logging.error(traceback.format_exc())
-    
     def _set_weights_with_retry(self, netuid, wallet, uids, weights, version_key):
         """Set weights with round-robin retry using existing subtensor"""
         max_retries = len(self.round_robin_networks) if self.round_robin_enabled else 1

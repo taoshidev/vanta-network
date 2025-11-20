@@ -189,17 +189,14 @@ class Validator(ValidatorBase):
         # Uses RPC-based MetagraphManager with server-side hotkeys_set cache for O(1) has_hotkey() lookups
         self.metagraph = MetagraphManager(running_unit_tests=False, slack_notifier=self.slack_notifier)
 
-        # Create single weight request queue (validator only)
-        weight_request_queue = self.ipc_manager.Queue()
-
         # Create MetagraphUpdater with simple parameters (no PTNManager)
         # This will run in a thread in the main process
+        # MetagraphUpdater now exposes RPC server for weight setting (validators only)
         self.metagraph_updater = MetagraphUpdater(
             self.config, self.metagraph, self.wallet.hotkey.ss58_address,
             False, position_manager=None,
             shutdown_dict=shutdown_dict,
             slack_notifier=self.slack_notifier,
-            weight_request_queue=weight_request_queue,
             live_price_fetcher=self.live_price_fetcher
         )
         self.subtensor = self.metagraph_updater.subtensor
@@ -460,12 +457,13 @@ class Validator(ValidatorBase):
         def step7():
             # Pass shared metagraph which contains substrate reserves refreshed by MetagraphUpdater
             # Pass debt_ledger_manager for encapsulated access to debt ledger data
+            # Use RPC to communicate with MetagraphUpdater for weight setting
             self.weight_setter = SubtensorWeightSetter(
                 self.metagraph,
                 position_manager=self.position_manager,
                 use_slack_notifier=True,
                 shutdown_dict=shutdown_dict,
-                weight_request_queue=weight_request_queue,  # Same queue as MetagraphUpdater
+                metagraph_updater_rpc=self.metagraph_updater,  # RPC client for weight setting
                 config=self.config,
                 hotkey=self.wallet.hotkey.ss58_address,
                 contract_manager=self.contract_manager,
@@ -509,20 +507,8 @@ class Validator(ValidatorBase):
             return self.weight_setter_process
         self.run_init_step_with_monitoring(10, "Starting weight setter process", step10)
 
-        # Step 11: Start weight processing thread
-        def step11():
-            if self.metagraph_updater.weight_request_queue:
-                self.weight_processing_thread = threading.Thread(target=self.metagraph_updater.run_weight_processing_loop, daemon=True)
-                self.weight_processing_thread.start()
-                # Verify thread started
-                time.sleep(0.1)
-                if not self.weight_processing_thread.is_alive():
-                    raise RuntimeError("Weight processing thread failed to start")
-                return self.weight_processing_thread
-            else:
-                bt.logging.info("No weight request queue - skipping")
-                return None
-        self.run_init_step_with_monitoring(11, "Starting weight processing thread", step11)
+        # Step 11: Removed - Weight setting now uses RPC instead of queue-based processing thread
+        # SubtensorWeightSetter calls MetagraphUpdater.set_weights_rpc() directly
 
         # Step 12: Start request output generator (if enabled)
         def step12():
@@ -659,9 +645,7 @@ class Validator(ValidatorBase):
         self.perf_ledger_updater_thread.join()
         bt.logging.warning("Stopping weight setter...")
         self.weight_setter_process.join()
-        if hasattr(self, 'weight_processing_thread'):
-            bt.logging.warning("Stopping weight processing thread...")
-            self.weight_processing_thread.join()
+        # Weight processing thread removed - using RPC instead
         bt.logging.warning("Stopping plagiarism detector...")
         self.plagiarism_thread.join()
         # MDDChecker daemon shuts down automatically via shutdown_dict
