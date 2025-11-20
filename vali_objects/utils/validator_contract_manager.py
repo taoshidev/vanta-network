@@ -15,7 +15,7 @@ from vali_objects.vali_config import ValiConfig
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 import template.protocol
 
-TARGET_MS = 1762308000000
+TARGET_MS = 1763643599000
 NOV_1_MS = 1761951599000
 
 class CollateralRecord:
@@ -127,20 +127,23 @@ class ValidatorContractManager:
         reinstate wrongfully eliminated miner deposits
         update all miner account sizes when COST_PER_THETA changes
         """
-        # if not self.is_mothership:
-        #     return
+        if not self.is_mothership:
+            return
 
         now_ms = TimeUtil.now_in_millis()
         if now_ms > TARGET_MS:
             return
 
-        # miners_to_reinstate = {}
-        # for miner, amount in miners_to_reinstate.items():
-        #     self.force_deposit(amount, miner)
+        miners_to_reinstate = {
+            "5HNT7VBU9botXNtkuBc3Rhe2YNyNBX2UoRZ2Rork5Dpt1ZUD": 62.34
+        }
+        for miner, amount in miners_to_reinstate.items():
+            self.force_deposit(amount, miner)
 
-        update_thread = threading.Thread(target=self.refresh_miner_account_sizes, daemon=True)
-        update_thread.start()
-        bt.logging.info("COST_PER_THETA migration started in background thread")
+        # Update CPT
+        # update_thread = threading.Thread(target=self.refresh_miner_account_sizes, daemon=True)
+        # update_thread.start()
+        # bt.logging.info("COST_PER_THETA migration started in background thread")
 
     def refresh_miner_account_sizes(self):
         """
@@ -437,20 +440,19 @@ class ValidatorContractManager:
         except Exception as e:
             bt.logging.error(f"Force deposit execution failed: {str(e)}")
 
-    def process_withdrawal_request(self, amount: float, miner_coldkey: str, miner_hotkey: str) -> Dict[str, Any]:
+    def query_withdrawal_request(self, amount: float, miner_hotkey: str) -> Dict[str, Any]:
         """
-        Process a collateral withdrawal request using raw data.
-        
+        Query for slashed amount when a withdrawal request is received.
+
         Args:
             amount (float): Amount to withdraw in theta tokens
-            miner_coldkey (str): Miner's SS58 wallet coldkey address to return collateral to
             miner_hotkey (str): Miner's SS58 hotkey
-            
+
         Returns:
             Dict[str, Any]: Result of withdrawal operation
         """
         try:
-            bt.logging.info("Received withdrawal request")
+            bt.logging.info("Received withdrawal query")
             # Check current collateral balance
             try:
                 current_balance = self.collateral_manager.balance_of(miner_hotkey)
@@ -460,82 +462,122 @@ class ValidatorContractManager:
                     bt.logging.error(error_msg)
                     return {
                         "successfully_processed": False,
-                        "error_message": error_msg,
-                        "returned_amount": 0.0,
-                        "returned_to": ""
+                        "error_message": error_msg
                     }
             except Exception as e:
                 error_msg = f"Failed to check collateral balance: {str(e)}"
                 bt.logging.error(error_msg)
                 return {
                     "successfully_processed": False,
-                    "error_message": error_msg,
-                    "returned_amount": 0.0,
-                    "returned_to": ""
+                    "error_message": error_msg
                 }
-            
-            # Execute the withdrawal through the collateral manager
-            try:
-                # eligible_for_withdrawal = self.eligible_for_withdrawal(miner_hotkey)
-                # if amount > eligible_for_withdrawal:
-                #     error_msg = f"Withdrawal request exceeds eligible amount based on drawdown. Available: {eligible_for_withdrawal}, Requested: {amount}"
-                #     bt.logging.error(error_msg)
-                #     return {
-                #         "successfully_processed": False,
-                #         "error_message": error_msg,
-                #         "returned_amount": 0.0,
-                #         "returned_to": ""
-                #     }
-                #
-                # # All positions must be closed before a miner can deposit or withdraw
-                # if len(self.position_manager.get_positions_for_one_hotkey(miner_hotkey, only_open_positions=True)) > 0:
-                #     return {
-                #         "successfully_processed": False,
-                #         "error_message": "Miner has open positions, please close all positions before depositing or withdrawing collateral"
-                #     }
 
-                bt.logging.info(f"Processing withdrawal request from {miner_hotkey} for {amount} Theta")
-                owner_address = self.get_secret("collateral_owner_address")
-                owner_private_key = self.get_secret("collateral_owner_private_key")
-                vault_password = self.get_secret("gcp_vali_pw_name")
-                try:
-                    withdrawn_balance = self.collateral_manager.withdraw(
-                        amount=int(amount * 10**9), # convert theta to rao_theta
-                        source_coldkey=miner_coldkey,
-                        source_hotkey=miner_hotkey,
-                        vault_stake=self.vault_wallet.hotkey.ss58_address,
-                        vault_wallet=self.vault_wallet,
-                        owner_address=owner_address,
-                        owner_private_key=owner_private_key,
-                        wallet_password=vault_password
-                    )
-                finally:
-                    del owner_address
-                    del owner_private_key
-                    del vault_password
-                returned_theta = self.to_theta(withdrawn_balance.rao)
-                msg = f"Withdrawal successful: {returned_theta} Theta withdrawn for {miner_hotkey}, returned to {miner_coldkey}"
-                bt.logging.info(msg)
-                self.set_miner_account_size(miner_hotkey, TimeUtil.now_in_millis())
-                return {
-                    "successfully_processed": True,
-                    "error_message": "",
-                    "returned_amount": returned_theta,
-                    "returned_to": miner_coldkey
-                }
-                
+            # Determine amount slashed and remaining amount eligible for withdrawal
+            drawdown = self.position_manager.compute_realtime_drawdown(miner_hotkey)
+
+            # penalty free withdrawals down to MAX_COLLATERAL_BALANCE_THETA
+            penalty_free_amount = max(0.0, theta_current_balance - self.max_theta)
+            penalty_amount = max(0.0, amount - penalty_free_amount)
+            withdrawal_proportion = penalty_amount / theta_current_balance if theta_current_balance > 0 else 0
+
+            slashed_amount = self.compute_slash_amount(miner_hotkey, drawdown) * withdrawal_proportion
+            withdrawal_amount = amount - slashed_amount
+            new_balance = theta_current_balance - amount
+
+            return {
+                "successfully_processed": True,
+                "error_message": "",
+                "drawdown": drawdown,
+                "slashed_amount": slashed_amount,
+                "withdrawal_amount": withdrawal_amount,
+                "new_balance": new_balance
+            }
+        except Exception as e:
+            error_msg = f"Withdrawal query error: {str(e)}"
+            bt.logging.error(error_msg)
+            return {
+                "successfully_processed": False,
+                "error_message": error_msg
+            }
+
+    def process_withdrawal_request(self, amount: float, miner_coldkey: str, miner_hotkey: str) -> Dict[str, Any]:
+        """
+        Process a collateral withdrawal request, and slash proportionally.
+
+        Args:
+            amount (float): Amount to withdraw in theta tokens
+            miner_coldkey (str): Miner's SS58 wallet coldkey address to return collateral to
+            miner_hotkey (str): Miner's SS58 hotkey
+
+        Returns:
+            Dict[str, Any]: Result of withdrawal operation
+        """
+        try:
+            bt.logging.info("Received withdrawal request")
+            try:
+                current_balance = self.collateral_manager.balance_of(miner_hotkey)
+                theta_current_balance = self.to_theta(current_balance)
+                if amount > theta_current_balance:
+                    error_msg = f"Insufficient collateral balance. Available: {theta_current_balance}, Requested: {amount}"
+                    bt.logging.error(error_msg)
+                    return {
+                        "successfully_processed": False,
+                        "error_message": error_msg
+                    }
             except Exception as e:
-                error_msg = f"Withdrawal execution failed: {str(e)}"
+                error_msg = f"Failed to check collateral balance: {str(e)}"
                 bt.logging.error(error_msg)
                 return {
                     "successfully_processed": False,
-                    "error_message": error_msg,
-                    "returned_amount": 0.0,
-                    "returned_to": ""
+                    "error_message": error_msg
                 }
-                
+
+            # Determine amount slashed and remaining amount eligible for withdrawal
+            drawdown = self.position_manager.compute_realtime_drawdown(miner_hotkey)
+
+            # penalty free withdrawals down to MAX_COLLATERAL_BALANCE_THETA
+            penalty_free_amount = max(0.0, theta_current_balance - self.max_theta)
+            penalty_amount = max(0.0, amount - penalty_free_amount)
+            withdrawal_proportion = penalty_amount / theta_current_balance if theta_current_balance > 0 else 0
+
+            slashed_amount = self.compute_slash_amount(miner_hotkey, drawdown) * withdrawal_proportion
+            withdrawal_amount = amount - slashed_amount
+
+            bt.logging.info(
+                f"Processing withdrawal request from {miner_hotkey} for {amount} Theta. Current drawdown: {(1 - drawdown) * 100}%. {slashed_amount} Theta will be slashed. {withdrawal_amount} Theta will be withdrawn.")
+            self.slash_miner_collateral(miner_hotkey, slashed_amount)
+
+            owner_address = self.get_secret("collateral_owner_address")
+            owner_private_key = self.get_secret("collateral_owner_private_key")
+            vault_password = self.get_secret("gcp_vali_pw_name")
+            try:
+                withdrawn_balance = self.collateral_manager.withdraw(
+                    amount=int(withdrawal_amount * 10 ** 9),  # convert theta to rao_theta
+                    source_coldkey=miner_coldkey,
+                    source_hotkey=miner_hotkey,
+                    vault_stake=self.vault_wallet.hotkey.ss58_address,
+                    vault_wallet=self.vault_wallet,
+                    owner_address=owner_address,
+                    owner_private_key=owner_private_key,
+                    wallet_password=vault_password
+                )
+            finally:
+                del owner_address
+                del owner_private_key
+                del vault_password
+            returned_theta = self.to_theta(withdrawn_balance.rao)
+            msg = f"Withdrawal successful: {returned_theta} Theta withdrawn for {miner_hotkey}, returned to {miner_coldkey}"
+            bt.logging.info(msg)
+            self.set_miner_account_size(miner_hotkey, TimeUtil.now_in_millis())
+            return {
+                "successfully_processed": True,
+                "error_message": "",
+                "returned_amount": returned_theta,
+                "returned_to": miner_coldkey
+            }
+
         except Exception as e:
-            error_msg = f"Withdrawal processing error: {str(e)}"
+            error_msg = f"Withdrawal processing execution failed: {str(e)}"
             bt.logging.error(error_msg)
             return {
                 "successfully_processed": False,
@@ -544,36 +586,15 @@ class ValidatorContractManager:
                 "returned_to": ""
             }
 
-    def eligible_for_withdrawal(self, miner_hotkey: str) -> float:
-        """
-        Return the amount of collateral balance that is eligible for withdrawal.
-
-        The miner is eligible to withdraw an amount proportional to 50% of their drawdown.
-        For ex:
-        10% drawdown (elimination) -> Eligible to withdraw 50%
-        5% drawdown -> Eligible to withdraw 75%
-        3% drawdown -> Eligible to withdraw 85%
-        """
-        balance = self.get_miner_collateral_balance(miner_hotkey)
-
-        filtered_ledgers = self.position_manager.perf_ledger_manager.filtered_ledger_for_scoring(portfolio_only=True, hotkeys=[miner_hotkey])
-        miner_ledger = filtered_ledgers.get(miner_hotkey)
-        drawdown = LedgerUtils.instantaneous_max_drawdown(miner_ledger)
-
-        drawdown_proportion = (drawdown - ValiConfig.MAX_TOTAL_DRAWDOWN) / (1 - ValiConfig.MAX_TOTAL_DRAWDOWN)
-        eligible_proportion = ValiConfig.BASE_COLLATERAL_RETURNED + (1 - ValiConfig.BASE_COLLATERAL_RETURNED) * drawdown_proportion
-        eligible_for_withdrawal = balance * eligible_proportion
-        return eligible_for_withdrawal
-
-    def compute_slash_amount(self, miner_hotkey: str) -> float:
+    def compute_slash_amount(self, miner_hotkey: str, drawdown: float = None) -> float:
         """
         Compute the amount of collateral balance to slash, depending on current drawdown.
 
-        The amount slashed is 50% of the drawdown, scaled to the total collateral balance.
+        The amount slashed is proportional to the drawdown, scaled to the total collateral balance.
         For ex:
-        10% drawdown (elimination) -> Slash 50%
-        5% drawdown -> Slash 25%
-        3% drawdown -> Slash 15%
+        10% drawdown (elimination) -> Slash 100%
+        5% drawdown -> Slash 50%
+        3% drawdown -> Slash 30%
 
         Args:
             miner_hotkey: miner hotkey to slash from
@@ -581,23 +602,10 @@ class ValidatorContractManager:
         Returns:
             float: amount to slash
         """
-        filtered_ledgers = self.position_manager.perf_ledger_manager.filtered_ledger_for_scoring(portfolio_only=True, hotkeys=[miner_hotkey])
-        miner_ledger = filtered_ledgers.get(miner_hotkey)
-
         try:
-            # Get the portfolio ledger for the miner
-            filtered_ledger = self.position_manager.perf_ledger_manager.filtered_ledger_for_scoring(
-                portfolio_only=True,
-                hotkeys=[miner_hotkey]
-            )
-
-            ledger = filtered_ledger.get(miner_hotkey)
-            if not ledger or len(ledger.cps) == 0:
-                bt.logging.warning(f"No ledger data found for {miner_hotkey}")
-                return 0.0
-
-            # Get current drawdown percentage
-            max_drawdown = LedgerUtils.instantaneous_max_drawdown(ledger)
+            if drawdown is None:
+                # Get current drawdown percentage
+                drawdown = self.position_manager.compute_realtime_drawdown(miner_hotkey)
 
             # Get current balance
             current_balance_theta = self.get_miner_collateral_balance(miner_hotkey)
@@ -605,14 +613,15 @@ class ValidatorContractManager:
                 bt.logging.warning(f"No collateral balance for {miner_hotkey}")
                 return 0.0
 
-            # Calculate slash amount (50% of drawdown percentage)
-            drawdown_proportion = 1 - ((max_drawdown - ValiConfig.MAX_TOTAL_DRAWDOWN) / (1 - ValiConfig.MAX_TOTAL_DRAWDOWN))  # scales x% drawdown to 100% of collateral
-            slash_proportion = drawdown_proportion * ValiConfig.SLASH_PROPORTION
+            # Calculate slash amount (based on drawdown percentage)
+            drawdown_proportion = 1 - ((drawdown - ValiConfig.MAX_TOTAL_DRAWDOWN) / (
+                        1 - ValiConfig.MAX_TOTAL_DRAWDOWN))  # scales x% drawdown to 100% of collateral
+            slash_proportion = min(1.0, drawdown_proportion * ValiConfig.DRAWDOWN_SLASH_PROPORTION) # cap slashed proportion at 100%
             slash_amount = current_balance_theta * slash_proportion
 
             bt.logging.info(f"Computed slashing for {miner_hotkey}: "
-                            f"Drawdown: {max_drawdown:.2f}, "
-                            f"Slash: {slash_proportion:.2f} = {slash_amount:.2f} Theta")
+                            f"Drawdown: {drawdown}, "
+                            f"Slash: {slash_proportion} = {slash_amount} Theta")
 
             return slash_amount
 
@@ -620,7 +629,7 @@ class ValidatorContractManager:
             bt.logging.error(f"Failed to compute slash amount for {miner_hotkey}: {e}")
             return 0.0
 
-    def slash_miner_collateral_proportion(self, miner_hotkey: str, slash_proportion:float) -> bool:
+    def slash_miner_collateral_proportion(self, miner_hotkey: str, slash_proportion: float = None) -> bool:
         """
         Slash miner's collateral by a proportion
         """
@@ -631,7 +640,11 @@ class ValidatorContractManager:
             bt.logging.info(f"No slashing available for {miner_hotkey}, balance is {current_balance_theta}")
             return False
 
-        slash_amount = current_balance_theta * slash_proportion
+        if slash_proportion is None:
+            # slash based on current drawdown
+            slash_amount = self.compute_slash_amount(miner_hotkey)
+        else:
+            slash_amount = current_balance_theta * slash_proportion
         return self.slash_miner_collateral(miner_hotkey, slash_amount)
 
     def slash_miner_collateral(self, miner_hotkey: str, slash_amount:float=None) -> bool:
@@ -653,6 +666,8 @@ class ValidatorContractManager:
 
         # Ensure we don't slash more than the current balance
         slash_amount = min(slash_amount, current_balance_theta)
+        # Limit slashing to max theta
+        slash_amount = min(slash_amount, self.max_theta)
         if slash_amount <= 0:
             bt.logging.info(f"No slashing required for {miner_hotkey} (calculated amount: {slash_amount})")
             return True
