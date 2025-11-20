@@ -171,14 +171,13 @@ class TestRequestOutputGenerator(TestBase):
             subtensor_weight_setter=self.weight_setter,
             plagiarism_detector=self.plagiarism_detector,
             contract_manager=self.contract_manager,
-            ipc_manager=None,
             asset_selection_manager=None,
-            limit_order_manager=None
+            limit_order_manager=None,
+            running_unit_tests=True
         )
         self.assertIsNotNone(rcm)
-        self.assertIs(rcm.position_manager, self.position_manager)
-        self.assertIs(rcm.challengeperiod_manager, self.challengeperiod_manager)
-        self.assertIs(rcm.elimination_manager, self.elimination_manager)
+        self.assertIs(rcm._position_manager, self.position_manager)
+        # Note: challengeperiod_manager and elimination_manager are accessed via RPC, not stored as attributes
 
     def test_miner_statistics_manager_instantiation(self):
         """Test that MinerStatisticsManager can be instantiated."""
@@ -187,10 +186,10 @@ class TestRequestOutputGenerator(TestBase):
             subtensor_weight_setter=self.weight_setter,
             plagiarism_detector=self.plagiarism_detector,
             contract_manager=self.contract_manager,
-            ipc_manager=None
+            running_unit_tests=True
         )
         self.assertIsNotNone(msm)
-        self.assertIs(msm.position_manager, self.position_manager)
+        self.assertIs(msm._position_manager, self.position_manager)
 
     def test_request_output_generator_instantiation(self):
         """Test that RequestOutputGenerator can be instantiated."""
@@ -199,9 +198,9 @@ class TestRequestOutputGenerator(TestBase):
             subtensor_weight_setter=self.weight_setter,
             plagiarism_detector=self.plagiarism_detector,
             contract_manager=self.contract_manager,
-            ipc_manager=None,
             asset_selection_manager=None,
-            limit_order_manager=None
+            limit_order_manager=None,
+            running_unit_tests=True
         )
 
         msm = MinerStatisticsManager(
@@ -209,7 +208,7 @@ class TestRequestOutputGenerator(TestBase):
             subtensor_weight_setter=self.weight_setter,
             plagiarism_detector=self.plagiarism_detector,
             contract_manager=self.contract_manager,
-            ipc_manager=None
+            running_unit_tests=True
         )
 
         rog = RequestOutputGenerator(rcm=rcm, msm=msm)
@@ -231,9 +230,9 @@ class TestRequestOutputGenerator(TestBase):
             subtensor_weight_setter=self.weight_setter,
             plagiarism_detector=self.plagiarism_detector,
             contract_manager=self.contract_manager,
-            ipc_manager=None,
             asset_selection_manager=None,
-            limit_order_manager=None
+            limit_order_manager=None,
+            running_unit_tests=True
         )
 
         # This call exercises the code path that failed in production:
@@ -267,7 +266,7 @@ class TestRequestOutputGenerator(TestBase):
             subtensor_weight_setter=self.weight_setter,
             plagiarism_detector=self.plagiarism_detector,
             contract_manager=self.contract_manager,
-            ipc_manager=None
+            running_unit_tests=True
         )
 
         current_time_ms = TimeUtil.now_in_millis()
@@ -341,9 +340,9 @@ class TestRequestOutputGenerator(TestBase):
             subtensor_weight_setter=self.weight_setter,
             plagiarism_detector=self.plagiarism_detector,
             contract_manager=self.contract_manager,
-            ipc_manager=None,
             asset_selection_manager=None,
-            limit_order_manager=None
+            limit_order_manager=None,
+            running_unit_tests=True
         )
 
         msm = MinerStatisticsManager(
@@ -351,7 +350,7 @@ class TestRequestOutputGenerator(TestBase):
             subtensor_weight_setter=self.weight_setter,
             plagiarism_detector=self.plagiarism_detector,
             contract_manager=self.contract_manager,
-            ipc_manager=None
+            running_unit_tests=True
         )
 
         current_time_ms = TimeUtil.now_in_millis()

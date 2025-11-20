@@ -215,7 +215,14 @@ class WebSocketNotifier(RPCServiceBase):
             bool: True if message was queued successfully, False otherwise
         """
         try:
-            return self._server_proxy.broadcast_position_update_rpc(position, miner_repo_version)
+            miner_hotkey = position.miner_hotkey
+            if miner_hotkey == ValiConfig.DEVELOPMENT_HOTKEY:
+                bt.logging.info(
+                    f"WebSocketNotifier: Skipping broadcast for development hotkey {miner_hotkey}"
+                )
+                return True
+            else:
+                return self._server_proxy.broadcast_position_update_rpc(position, miner_repo_version)
         except Exception as e:
             bt.logging.error(f"WebSocketNotifier: Error broadcasting position update: {e}")
             return False

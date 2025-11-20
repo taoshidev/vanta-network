@@ -175,7 +175,7 @@ class MarketOrderManager():
         self.last_order_time_cache[(miner_hotkey, trade_pair.trade_pair_id)] = order_time_ms
         # NOTE: UUID tracking happens in validator process, not here
 
-        if self.config.serve and miner_hotkey != ValiConfig.DEVELOPMENT_HOTKEY:
+        if self.config.serve:
             # Broadcast position update via RPC to WebSocket clients
             # Skip websocket messages for development hotkey
             step_start = TimeUtil.now_in_millis()
