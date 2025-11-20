@@ -104,12 +104,13 @@ class MarketOrderManager():
                                         quantity: float, leverage: float, value: float, order_time_ms: int, miner_hotkey: str,
                                         price_sources, miner_order_uuid: str, miner_repo_version: str, src:OrderSource,
                                         account_size=None, usd_base_price=None, execution_type=ExecutionType.MARKET,
-                                        limit_price=None, stop_loss=None, take_profit=None) -> Order:
+                                        fill_price=None, limit_price=None, stop_loss=None, take_profit=None) -> Order:
         # Must be locked by caller
         step_start = TimeUtil.now_in_millis()
 
         best_price_source = price_sources[0]
-        price = best_price_source.parse_appropriate_price(order_time_ms, trade_pair.is_forex, signal_order_type, existing_position)
+        # Use fill_price if provided (for limit/bracket orders), otherwise use market price
+        price = fill_price if fill_price else best_price_source.parse_appropriate_price(order_time_ms, trade_pair.is_forex, signal_order_type, existing_position)
 
         if existing_position.account_size <= 0:
             bt.logging.warning(
@@ -337,6 +338,7 @@ class MarketOrderManager():
                 limit_price = signal.get("limit_price")
                 stop_loss = signal.get("stop_loss")
                 take_profit = signal.get("take_profit")
+                fill_price = signal.get("price")
 
                 if execution_type == ExecutionType.LIMIT:
                     new_src = OrderSource.ORDER_SRC_LIMIT_FILLED
@@ -346,8 +348,9 @@ class MarketOrderManager():
                     new_src = OrderSource.ORGANIC
 
                 # Calculate price and USD conversions
+                # Use fill_price if provided, otherwise use market price
                 best_price_source = price_sources[0]
-                price = best_price_source.parse_appropriate_price(now_ms, trade_pair.is_forex, signal_order_type, existing_position)
+                price = fill_price if fill_price else best_price_source.parse_appropriate_price(now_ms, trade_pair.is_forex, signal_order_type, existing_position)
                 usd_base_price = self.live_price_fetcher.get_usd_base_conversion(trade_pair, now_ms, price, signal_order_type, existing_position)
 
                 # Parse order size (supports leverage, value, or quantity)
@@ -357,7 +360,7 @@ class MarketOrderManager():
                                                      quantity, leverage, value, now_ms, miner_hotkey,
                                                      price_sources, miner_order_uuid, miner_repo_version,
                                                      new_src, account_size, usd_base_price, execution_type,
-                                                     limit_price, stop_loss, take_profit)
+                                                     fill_price, limit_price, stop_loss, take_profit)
                 add_order_ms = TimeUtil.now_in_millis() - add_order_start
                 bt.logging.info(f"[LOCK_WORK] Add order to position took {add_order_ms}ms")
             else:

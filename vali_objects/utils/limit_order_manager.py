@@ -173,7 +173,7 @@ class LimitOrderManager(CacheController):
 
         # Fill outside the lock to avoid reentrant lock issue
         if should_fill_immediately:
-            self._fill_limit_order_with_price_source(miner_hotkey, order, price_sources[0], trigger_price)
+            self._fill_limit_order_with_price_source(miner_hotkey, order, price_sources[0], None)
 
         return {"status": "success", "order_uuid": order_uuid}
 
@@ -555,6 +555,7 @@ class LimitOrderManager(CacheController):
         try:
             # Reverse order direction when exeucting BRACKET orders
             order_dict = Order.to_python_dict(order)
+            order_dict['price'] = fill_price
 
             if order.execution_type == ExecutionType.BRACKET:
                 # Get the closing order type (opposite direction)
@@ -586,7 +587,7 @@ class LimitOrderManager(CacheController):
             # Issue 4: Copy values TO original order object rather than reassigning variable
             filled_order = updated_position.orders[-1]
             order.price_sources = filled_order.price_sources
-            order.price = filled_order.price
+            order.price = fill_price if fill_price else filled_order.price
             order.bid = filled_order.bid
             order.ask = filled_order.ask
             order.slippage = filled_order.slippage
@@ -708,7 +709,7 @@ class LimitOrderManager(CacheController):
 
 
     def _evaluate_limit_trigger_price(self, order_type, position, ps, limit_price):
-        """Check if limit price is triggered."""
+        """Check if limit price is triggered. Returns the limit_price if triggered, None otherwise."""
         bid_price = ps.bid if ps.bid > 0 else ps.open
         ask_price = ps.ask if ps.ask > 0 else ps.open
 
@@ -718,9 +719,9 @@ class LimitOrderManager(CacheController):
         sell_type = order_type == OrderType.SHORT or (order_type == OrderType.FLAT and position_type == OrderType.LONG)
 
         if buy_type:
-            return ask_price if ask_price <= limit_price else None
+            return limit_price if ask_price <= limit_price else None
         elif sell_type:
-            return bid_price if bid_price >= limit_price else None
+            return limit_price if bid_price >= limit_price else None
         else:
             return None
 
@@ -748,11 +749,11 @@ class LimitOrderManager(CacheController):
             # Check stop loss first (higher priority on losses)
             if order.stop_loss is not None and bid_price < order.stop_loss:
                 bt.logging.info(f"Bracket order stop loss triggered: bid={bid_price} < SL={order.stop_loss}")
-                return bid_price
+                return order.stop_loss
             # Check take profit
             if order.take_profit is not None and bid_price > order.take_profit:
                 bt.logging.info(f"Bracket order take profit triggered: bid={bid_price} > TP={order.take_profit}")
-                return bid_price
+                return order.take_profit
 
         # For SHORT orders:
         # - Stop loss: triggers when market price > SL (use ask for buying)
@@ -761,11 +762,11 @@ class LimitOrderManager(CacheController):
             # Check stop loss first (higher priority on losses)
             if order.stop_loss is not None and ask_price > order.stop_loss:
                 bt.logging.info(f"Bracket order stop loss triggered: ask={ask_price} > SL={order.stop_loss}")
-                return ask_price
+                return order.stop_loss
             # Check take profit
             if order.take_profit is not None and ask_price < order.take_profit:
                 bt.logging.info(f"Bracket order take profit triggered: ask={ask_price} < TP={order.take_profit}")
-                return ask_price
+                return order.take_profit
 
         return None
 
