@@ -1378,13 +1378,15 @@ class PositionManager(CacheController):
         Compute the realtime drawdown from positions.
         Bypasses perf ledger, since perf ledgers are refreshed in 5 min intervals and may be out of date.
         Used to enable realtime withdrawals based on drawdown.
+
+        Returns proportion of portfolio value as drawdown. 1.0 -> 0% drawdown, 0.9 -> 10% drawdown
         """
         # 1. Get existing perf ledger to access historical max portfolio value
         existing_bundle = self.perf_ledger_manager.get_perf_ledgers(
             portfolio_only=True,
             from_disk=False
         )
-        portfolio_ledger = existing_bundle.get(hotkey, {}).get('portfolio')
+        portfolio_ledger = existing_bundle.get(hotkey)
 
         if not portfolio_ledger or not portfolio_ledger.cps:
             bt.logging.warning(f"No perf ledger found for {hotkey}")
