@@ -498,7 +498,6 @@ class EmissionsLedgerManager:
         running_unit_tests: bool = False,
         slack_webhook_url: Optional[str] = None,
         start_daemon: bool = False,
-        ipc_manager = None,
         validator_hotkey: Optional[str] = None
     ):
         """
@@ -512,7 +511,7 @@ class EmissionsLedgerManager:
             running_unit_tests: Whether this is being run in unit tests
             slack_webhook_url: Optional Slack webhook URL for failure notifications
             start_daemon: If True, automatically start daemon process running run_forever (default: False)
-            ipc_manager: Optional IPC manager for multiprocessing
+            validator_hotkey: Optional validator hotkey for notifications
         """
         # Pickleable attributes
         self.perf_ledger_manager = perf_ledger_manager
@@ -521,8 +520,8 @@ class EmissionsLedgerManager:
         self.rate_limit_per_second = rate_limit_per_second
         self.last_query_time = 0.0
         self.running_unit_tests = running_unit_tests
-        # In-memory ledgers (each ledger contains its own coldkey)
-        self.emissions_ledgers: Dict[str, EmissionsLedger] = ipc_manager.dict() if ipc_manager else {}
+        # In-memory ledgers (normal Python dict - managed within DebtLedgerManagerServer process)
+        self.emissions_ledgers: Dict[str, EmissionsLedger] = {}
         # Daemon control
         self.running = False
         self.daemon_process: Optional[multiprocessing.Process] = None

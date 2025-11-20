@@ -11,7 +11,7 @@ from vanta_api.slack_notifier import SlackNotifier
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 
 
-def start_rest_server(shared_queue, host="127.0.0.1", port=48888, refresh_interval=15, position_manager=None,
+def start_rest_server(host="127.0.0.1", port=48888, refresh_interval=15, position_manager=None,
                       contract_manager=None, miner_statistics_manager=None, request_core_manager=None,
                       asset_selection_manager=None, debt_ledger_manager=None, limit_order_manager=None):
     """Starts the REST API server in a separate process."""
@@ -26,7 +26,6 @@ def start_rest_server(shared_queue, host="127.0.0.1", port=48888, refresh_interv
         print(f"[REST] Step 3/4: Creating VantaRestServer instance...")
         rest_server = VantaRestServer(
             api_keys_file=api_keys_file,
-            shared_queue=shared_queue,
             host=host,
             port=port,
             refresh_interval=refresh_interval,
@@ -47,23 +46,89 @@ def start_rest_server(shared_queue, host="127.0.0.1", port=48888, refresh_interv
         raise
 
 
-def start_websocket_server(shared_queue, host="localhost", port=8765, refresh_interval=15):
-    """Starts the WebSocket server in a separate process."""
+def start_websocket_server(host="localhost", port=8765, refresh_interval=15):
+    """Starts the WebSocket server and RPC server in a separate process."""
+    import threading
+    import multiprocessing
+    import bittensor as bt
+    from multiprocessing.managers import BaseManager
+    from vali_objects.vali_config import ValiConfig
+
     try:
         # Get default API keys file path
         api_keys_file = ValiBkpUtils.get_api_keys_file_path()
 
         print(f"Starting WebSocket server process with host={host}, port={port}")
 
-        # Create and run the WebSocket server with the shared queue
+        # Create WebSocketServer instance (no shared_queue needed anymore)
         print(f"Creating WebSocketServer instance...")
         websocket_server = WebSocketServer(
             api_keys_file=api_keys_file,
-            shared_queue=shared_queue,
+            shared_queue=None,  # No queue needed - using RPC instead
             host=host,
             port=port,
             refresh_interval=refresh_interval
         )
+
+        # Start RPC server in a thread within this process
+        # This allows other processes to broadcast position updates via RPC
+        # Directly expose WebSocketServer via RPC (no intermediate wrapper needed)
+        print(f"Starting WebSocket RPC server thread...")
+        rpc_address = ("localhost", ValiConfig.RPC_WEBSOCKET_NOTIFIER_PORT)
+        rpc_authkey = ValiConfig.get_rpc_authkey(
+            ValiConfig.RPC_WEBSOCKET_NOTIFIER_SERVICE_NAME,
+            ValiConfig.RPC_WEBSOCKET_NOTIFIER_PORT
+        )
+
+        # Define RPC manager class
+        class WebSocketNotifierRPC(BaseManager):
+            pass
+
+        # Register WebSocketServer directly (it has the RPC methods we need)
+        WebSocketNotifierRPC.register(
+            'WebSocketNotifierServer',
+            callable=lambda: websocket_server
+        )
+
+        # Create server_ready event for RPC server
+        server_ready = multiprocessing.Event()
+
+        def run_rpc_server():
+            """Run RPC server in a thread."""
+            try:
+                # Create and start RPC server
+                manager = WebSocketNotifierRPC(address=rpc_address, authkey=rpc_authkey)
+                rpc_server = manager.get_server()
+
+                bt.logging.info(f"[WS_RPC] WebSocket RPC server listening on {rpc_address}")
+
+                # Signal that server is ready
+                server_ready.set()
+                bt.logging.debug("[WS_RPC] Readiness signal sent")
+
+                # Start serving
+                bt.logging.info("[WS_RPC] Starting RPC server")
+                rpc_server.serve_forever()
+            except Exception as e:
+                bt.logging.error(f"[WS_RPC] Error in RPC server: {e}")
+                bt.logging.error(traceback.format_exc())
+
+        # Start RPC server in a daemon thread
+        rpc_thread = threading.Thread(
+            target=run_rpc_server,
+            daemon=True,
+            name="WebSocketRPCServer"
+        )
+        rpc_thread.start()
+        print(f"WebSocket RPC server thread started, waiting for ready signal...")
+
+        # Wait for RPC server to be ready (with timeout)
+        if server_ready.wait(timeout=30):
+            bt.logging.success(f"WebSocket RPC server ready at {rpc_address}")
+        else:
+            bt.logging.warning(f"WebSocket RPC server did not signal ready within 30s (may still be starting)")
+
+        # Run the WebSocket server (this blocks until shutdown)
         print(f"WebSocketServer instance created, calling run()...")
         websocket_server.run()
         print(f"WebSocketServer.run() returned (this shouldn't happen unless shutting down)")
@@ -77,17 +142,16 @@ def start_websocket_server(shared_queue, host="localhost", port=8765, refresh_in
 class APIManager:
     """Manages API services and processes."""
 
-    def __init__(self, shared_queue, refresh_interval=15,
+    def __init__(self, refresh_interval=15,
                  rest_host="127.0.0.1", rest_port=48888,
                  ws_host="localhost", ws_port=8765,
                  position_manager=None, contract_manager=None,
                  miner_statistics_manager=None, request_core_manager=None,
                  asset_selection_manager=None, slack_webhook_url=None, debt_ledger_manager=None,
                  validator_hotkey=None, limit_order_manager=None):
-        """Initialize API management with shared queue and server configurations.
+        """Initialize API management with server configurations.
 
         Args:
-            shared_queue: Multiprocessing.Queue for WebSocket messaging (required)
             refresh_interval: How often to check for API key changes (seconds)
             rest_host: Host address for the REST API server
             rest_port: Port for the REST API server
@@ -98,10 +162,6 @@ class APIManager:
             slack_webhook_url: Slack webhook URL for health alerts (optional)
             validator_hotkey: Validator hotkey for identification in alerts (optional)
         """
-        if shared_queue is None:
-            raise ValueError("shared_queue cannot be None - a valid queue is required")
-
-        self.shared_queue = shared_queue
         self.refresh_interval = refresh_interval
 
         # Server configurations
@@ -208,9 +268,9 @@ class APIManager:
             # Create new process
             self.rest_process = Process(
                 target=start_rest_server,
-                args=(self.shared_queue, self.rest_host, self.rest_port, self.refresh_interval,
+                args=(self.rest_host, self.rest_port, self.refresh_interval,
                       self.position_manager, self.contract_manager, self.miner_statistics_manager,
-                      self.request_core_manager, self.asset_selection_manager, self.debt_ledger_manager),
+                      self.request_core_manager, self.asset_selection_manager, self.debt_ledger_manager, self.limit_order_manager),
                 name="RestServer"
             )
             self.rest_process.start()
@@ -254,7 +314,7 @@ class APIManager:
             # Create new process
             self.ws_process = Process(
                 target=start_websocket_server,
-                args=(self.shared_queue, self.ws_host, self.ws_port, self.refresh_interval),
+                args=(self.ws_host, self.ws_port, self.refresh_interval),
                 name="WebSocketServer"
             )
             self.ws_process.start()
@@ -394,9 +454,9 @@ class APIManager:
         # Start REST server process with host/port configuration
         self.rest_process = Process(
             target=start_rest_server,
-            args=(self.shared_queue, self.rest_host, self.rest_port, self.refresh_interval, self.position_manager,
+            args=(self.rest_host, self.rest_port, self.refresh_interval, self.position_manager,
                   self.contract_manager, self.miner_statistics_manager, self.request_core_manager,
-                  self.asset_selection_manager, self.debt_ledger_manager,  self.limit_order_manager),
+                  self.asset_selection_manager, self.debt_ledger_manager, self.limit_order_manager),
             name="RestServer"
         )
         self.rest_process.start()
@@ -405,7 +465,7 @@ class APIManager:
         # Start WebSocket server process with host/port configuration
         self.ws_process = Process(
             target=start_websocket_server,
-            args=(self.shared_queue, self.ws_host, self.ws_port, self.refresh_interval),
+            args=(self.ws_host, self.ws_port, self.refresh_interval),
             name="WebSocketServer"
         )
         self.ws_process.start()
@@ -457,16 +517,9 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    # Create a manager for the shared queue
-    mp_manager = Manager()
-    shared_queue = mp_manager.Queue()
-
-    # Create test message
-    shared_queue.put({"type": "test", "message": "This is a test message", "timestamp": int(time.time() * 1000)})
-
     # Create and run the API manager with command-line arguments
+    # WebSocket notifications now use RPC instead of multiprocessing.Queue
     api_manager = APIManager(
-        shared_queue=shared_queue,
         rest_host=args.rest_host,
         rest_port=args.rest_port,
         ws_host=args.ws_host,

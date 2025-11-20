@@ -730,9 +730,8 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
             if parallel_mode == ParallelizationMode.MULTIPROCESSING:
                 # Create EliminationManager with IPC support for multiprocessing
                 multiprocessing_elimination_manager = EliminationManager(
-                    self.mmg, None, None,
-                    running_unit_tests=True,
-                    use_ipc=True  # Use IPC-compatible locks for multiprocessing
+                    self.mmg, None, challengeperiod_rpc_address=None,
+                    running_unit_tests=True
                 )
 
                 position_manager = PositionManager(
@@ -1235,9 +1234,8 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
         # Test Multiprocessing mode (already tested extensively above)
         # Create EliminationManager and PositionManager with IPC support to avoid pickling threading locks
         multiprocessing_elimination_manager = EliminationManager(
-            self.mmg, None, None,
-            running_unit_tests=True,
-            use_ipc=True  # Use IPC-compatible locks for multiprocessing
+            self.mmg, None, challengeperiod_rpc_address=None,
+            running_unit_tests=True
         )
 
         multiprocessing_position_manager = PositionManager(

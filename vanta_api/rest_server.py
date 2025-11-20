@@ -576,8 +576,8 @@ class VantaRestServer(APIKeyMixin):
             if not self.is_valid_api_key(api_key):
                 return jsonify({'error': 'Unauthorized access'}), 401
 
-            emissions_ledger_manager = self.debt_ledger_manager.emissions_ledger_manager
-            data = emissions_ledger_manager.get_ledger(minerid)
+            # Use RPC getter to access emissions ledger via debt ledger manager
+            data = self.debt_ledger_manager.get_emissions_ledger(minerid)
 
             if data is None:
                 return jsonify({'error': 'Emissions ledger data not found'}), 404
@@ -636,8 +636,8 @@ class VantaRestServer(APIKeyMixin):
             if not self.is_valid_api_key(api_key):
                 return jsonify({'error': 'Unauthorized access'}), 401
 
-            penalty_ledger_manager = self.debt_ledger_manager.penalty_ledger_manager
-            data = penalty_ledger_manager.get_penalty_ledger(minerid)
+            # Use RPC getter to access penalty ledger via debt ledger manager
+            data = self.debt_ledger_manager.get_penalty_ledger(minerid)
 
             if data is None:
                 return jsonify({'error': 'Penalty ledger data not found'}), 404

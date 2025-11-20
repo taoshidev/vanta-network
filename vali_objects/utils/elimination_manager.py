@@ -39,8 +39,8 @@ class EliminationManager(RPCServiceBase, CacheController):
     """
 
     def __init__(self, metagraph, position_manager, challengeperiod_rpc_address=None,
-                 running_unit_tests=False, shutdown_dict=None, use_ipc=False, is_backtesting=False,
-                 shared_queue_websockets=None, contract_manager=None, position_locks=None,
+                 running_unit_tests=False, shutdown_dict=None, is_backtesting=False,
+                 websocket_notifier=None, contract_manager=None, position_locks=None,
                  sync_in_progress=None, slack_notifier=None, sync_epoch=None, limit_order_manager=None,
                  start_server=True):
         """
@@ -54,9 +54,8 @@ class EliminationManager(RPCServiceBase, CacheController):
                                         Example: ("localhost", 50003)
             running_unit_tests: Whether running in test mode
             shutdown_dict: Shared shutdown flag
-            use_ipc: Legacy parameter (unused)
             is_backtesting: Whether backtesting
-            shared_queue_websockets: Websocket queue
+            websocket_notifier: WebSocketNotifier RPC client for broadcasting position updates
             contract_manager: Contract manager instance
             position_locks: Position locks manager
             sync_in_progress: Sync flag
@@ -87,7 +86,7 @@ class EliminationManager(RPCServiceBase, CacheController):
         self._contract_manager = contract_manager
         self.shutdown_dict = shutdown_dict
         self.is_backtesting = is_backtesting
-        self.shared_queue_websockets = shared_queue_websockets
+        self.websocket_notifier = websocket_notifier
         self.position_locks = position_locks
         self.sync_in_progress = sync_in_progress
         self.sync_epoch = sync_epoch
@@ -238,7 +237,7 @@ class EliminationManager(RPCServiceBase, CacheController):
             running_unit_tests=self.running_unit_tests,
             shutdown_dict=self.shutdown_dict,
             is_backtesting=self.is_backtesting,
-            shared_queue_websockets=self.shared_queue_websockets,
+            websocket_notifier=self.websocket_notifier,
             contract_manager=self.contract_manager,
             position_locks=self.position_locks,
             sync_in_progress=self.sync_in_progress,
@@ -263,7 +262,7 @@ class EliminationManager(RPCServiceBase, CacheController):
                 self.running_unit_tests,
                 self.shutdown_dict,
                 self.is_backtesting,
-                self.shared_queue_websockets,
+                self.websocket_notifier,
                 self.contract_manager,
                 self.position_locks,
                 self.sync_in_progress,

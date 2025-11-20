@@ -170,6 +170,9 @@ class ValiConfig:
     RPC_REQUESTCORE_PORT = 50013
     RPC_REQUESTCORE_SERVICE_NAME = "RequestCoreManagerServer"
 
+    RPC_WEBSOCKET_NOTIFIER_PORT = 50014
+    RPC_WEBSOCKET_NOTIFIER_SERVICE_NAME = "WebSocketNotifierServer"
+
     @staticmethod
     def get_rpc_authkey(service_name: str, port: int) -> bytes:
         """

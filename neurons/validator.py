@@ -7,21 +7,21 @@ import os
 import sys
 import threading
 import signal
-from typing import Tuple
-
-from setproctitle import setproctitle
 
 from vanta_api.api_manager import APIManager
-from neurons.validator_base import ValidatorBase
-from shared_objects.metagraph_manager import MetagraphManager
-from multiprocessing import Manager, Process
-from enum import Enum
+
 
 import template
 import traceback
 import time
 import bittensor as bt
 
+from typing import Tuple
+from setproctitle import setproctitle
+from neurons.validator_base import ValidatorBase
+from shared_objects.metagraph_manager import MetagraphManager
+from multiprocessing import Manager, Process
+from enum import Enum
 from runnable.generate_request_core import RequestCoreManager
 from runnable.generate_request_minerstatistics import MinerStatisticsManager
 from runnable.generate_request_outputs import RequestOutputGenerator
@@ -47,13 +47,13 @@ from vali_objects.utils.subtensor_weight_setter import SubtensorWeightSetter
 from vali_objects.utils.mdd_checker import MDDChecker
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.vali_dataclasses.debt_ledger import DebtLedgerManager
-from vali_objects.vali_dataclasses.order import Order, OrderSource
+from vali_objects.vali_dataclasses.order import Order
 from vali_objects.vali_dataclasses.perf_ledger import PerfLedgerManager
 from vali_objects.utils.position_manager import PositionManager
 from vali_objects.utils.challengeperiod_manager import ChallengePeriodManager
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import ValiConfig
-
+from vanta_api.websocket_notifier import WebSocketNotifier
 from vali_objects.utils.plagiarism_detector import PlagiarismDetector
 from vali_objects.utils.validator_contract_manager import ValidatorContractManager
 from vali_objects.utils.asset_selection_manager import AssetSelectionManager
@@ -130,7 +130,9 @@ class Validator(ValidatorBase):
         self.ipc_manager = Manager()  # General-purpose manager for queues, values, etc.
         bt.logging.info(f"[IPC] Created IPC manager: general (PID: {self.ipc_manager._process.pid})")
 
-        self.shared_queue_websockets = self.ipc_manager.Queue()
+        # Create WebSocketNotifier RPC client for broadcasting position updates to WebSocket clients
+        # Replaces the old shared_queue_websockets multiprocessing.Queue pattern with proper RPC
+        self.websocket_notifier = WebSocketNotifier(running_unit_tests=False, slack_notifier=self.slack_notifier)
 
         # Create shared sync_in_progress flag for cross-process synchronization
         # When True, daemon processes should pause to allow position sync to complete
@@ -227,8 +229,7 @@ class Validator(ValidatorBase):
             None,  # position_manager set after self.pm creation
             challengeperiod_rpc_address=("localhost", ValiConfig.RPC_CHALLENGEPERIOD_PORT),
             shutdown_dict=shutdown_dict,
-            use_ipc=True,
-            shared_queue_websockets=self.shared_queue_websockets,
+            websocket_notifier=self.websocket_notifier,
             contract_manager=self.contract_manager,
             sync_in_progress=self.sync_in_progress,
             slack_notifier=self.slack_notifier,
@@ -280,7 +281,7 @@ class Validator(ValidatorBase):
                                                 elimination_manager=self.elimination_manager,
                                                 challengeperiod_manager=None,
                                                 secrets=self.secrets,
-                                                shared_queue_websockets=self.shared_queue_websockets,
+                                                websocket_notifier=self.websocket_notifier,
                                                 closed_position_daemon=True)
 
         # Use RPC mode for production (centralized lock server, better performance)
@@ -297,7 +298,7 @@ class Validator(ValidatorBase):
                                                     ipc_manager=self.ipc_manager)
 
         self.market_order_manager = MarketOrderManager(self.live_price_fetcher, self.position_locks, self.price_slippage_model,
-               self.config, self.position_manager, self.shared_queue_websockets, self.contract_manager)
+               self.config, self.position_manager, self.websocket_notifier, self.contract_manager)
 
         # Attach the position manager to the other objects that need it (BEFORE creating ChallengePeriodManager)
         for idx, obj in enumerate([self.perf_ledger_manager, self.position_manager, self.position_syncer,
@@ -394,8 +395,7 @@ class Validator(ValidatorBase):
         self.debt_ledger_manager = DebtLedgerManager(self.perf_ledger_manager, self.position_manager, self.contract_manager,
                                      self.asset_selection_manager, challengeperiod_manager=self.challengeperiod_manager,
                                      slack_webhook_url=self.config.slack_error_webhook_url, start_server=True,
-                                     ipc_manager=self.ipc_manager, validator_hotkey=self.wallet.hotkey.ss58_address)
-
+                                     validator_hotkey=self.wallet.hotkey.ss58_address)
 
         self.checkpoint_lock = threading.Lock()
         self.encoded_checkpoint = ""
@@ -546,7 +546,6 @@ class Validator(ValidatorBase):
             if self.config.serve:
                 # Create API Manager with configuration options
                 self.api_manager = APIManager(
-                    shared_queue=self.shared_queue_websockets,
                     ws_host=self.config.api_host,
                     ws_port=self.config.api_ws_port,
                     rest_host=self.config.api_host,

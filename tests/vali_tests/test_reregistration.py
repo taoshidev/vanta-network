@@ -73,9 +73,8 @@ class TestReregistration(TestBase):
         self.elimination_manager = EliminationManager(
             self.mock_metagraph,
             None,  # position_manager set later
-            None,  # challengeperiod_manager set later
+            challengeperiod_rpc_address=None,  # challengeperiod_manager set later via property
             running_unit_tests=True,
-            use_ipc=False,
             contract_manager=self.contract_manager
         )
 
@@ -222,11 +221,12 @@ class TestReregistration(TestBase):
         self.elimination_manager = EliminationManager(
             self.mock_metagraph,
             self.position_manager,
-            self.challengeperiod_manager,
+            challengeperiod_rpc_address=None,  # challengeperiod_manager set via property
             running_unit_tests=True,
-            use_ipc=False,
             contract_manager=self.contract_manager
         )
+        # Set challengeperiod_manager via property (test mode)
+        self.elimination_manager.challengeperiod_manager = self.challengeperiod_manager
 
         # Process once to set previous_metagraph_hotkeys
         self.elimination_manager.process_eliminations(self.position_locks)
@@ -256,11 +256,12 @@ class TestReregistration(TestBase):
         self.elimination_manager = EliminationManager(
             self.mock_metagraph,
             self.position_manager,
-            self.challengeperiod_manager,
+            challengeperiod_rpc_address=None,  # challengeperiod_manager set via property
             running_unit_tests=True,
-            use_ipc=False,
             contract_manager=self.contract_manager
         )
+        # Set challengeperiod_manager via property (test mode)
+        self.elimination_manager.challengeperiod_manager = self.challengeperiod_manager
 
         # Process once to set baseline
         self.elimination_manager.process_eliminations(self.position_locks)
@@ -523,11 +524,12 @@ class TestReregistration(TestBase):
         self.elimination_manager = EliminationManager(
             self.mock_metagraph,
             self.position_manager,
-            self.challengeperiod_manager,
+            challengeperiod_rpc_address=None,  # challengeperiod_manager set via property
             running_unit_tests=True,
-            use_ipc=False,
             contract_manager=self.contract_manager
         )
+        # Set challengeperiod_manager via property (test mode)
+        self.elimination_manager.challengeperiod_manager = self.challengeperiod_manager
 
         self.elimination_manager.process_eliminations(self.position_locks)
 
@@ -555,11 +557,12 @@ class TestReregistration(TestBase):
         self.elimination_manager = EliminationManager(
             self.mock_metagraph,
             self.position_manager,
-            self.challengeperiod_manager,
+            challengeperiod_rpc_address=None,  # challengeperiod_manager set via property
             running_unit_tests=True,
-            use_ipc=False,
             contract_manager=self.contract_manager
         )
+        # Set challengeperiod_manager via property (test mode)
+        self.elimination_manager.challengeperiod_manager = self.challengeperiod_manager
 
         self.elimination_manager.process_eliminations(self.position_locks)
 

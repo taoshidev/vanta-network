@@ -39,7 +39,7 @@ class DebtLedgerManagerServer:
 
     def __init__(self, perf_ledger_manager, position_manager, contract_manager,
                  asset_selection_manager, challengeperiod_manager=None,
-                 slack_webhook_url=None, ipc_manager=None, running_unit_tests=False,
+                 slack_webhook_url=None, running_unit_tests=False,
                  validator_hotkey=None):
         """
         Initialize the server with a normal Python dict for debt ledgers.
@@ -51,7 +51,6 @@ class DebtLedgerManagerServer:
             asset_selection_manager: Asset selection manager instance
             challengeperiod_manager: Challenge period manager instance
             slack_webhook_url: Slack webhook URL for notifications
-            ipc_manager: IPC manager (for sub-ledger managers)
             running_unit_tests: Whether running in unit test mode
             validator_hotkey: Validator hotkey for notifications
         """
@@ -74,14 +73,12 @@ class DebtLedgerManagerServer:
             slack_webhook_url=slack_webhook_url,
             run_daemon=False,  # No daemon - already inside DebtLedgerManagerServer daemon process
             running_unit_tests=running_unit_tests,
-            validator_hotkey=validator_hotkey,
-            ipc_manager=ipc_manager
+            validator_hotkey=validator_hotkey
         )
 
         self.emissions_ledger_manager = EmissionsLedgerManager(
             slack_webhook_url=slack_webhook_url,
             start_daemon=False,
-            ipc_manager=ipc_manager,
             perf_ledger_manager=perf_ledger_manager,
             running_unit_tests=running_unit_tests,
             validator_hotkey=validator_hotkey
@@ -191,6 +188,56 @@ class DebtLedgerManagerServer:
             "total_ledgers": len(self.debt_ledgers),
             "daemon_running": self.running
         }
+
+    # ========================================================================
+    # EMISSIONS LEDGER RPC METHODS (delegate to sub-manager)
+    # ========================================================================
+
+    def get_emissions_ledger_rpc(self, hotkey: str):
+        """
+        Get emissions ledger for a specific hotkey.
+
+        Args:
+            hotkey: The miner's hotkey
+
+        Returns:
+            EmissionsLedger instance, or None if not found (pickled automatically by RPC)
+        """
+        return self.emissions_ledger_manager.get_ledger(hotkey)
+
+    def get_all_emissions_ledgers_rpc(self):
+        """
+        Get all emissions ledgers.
+
+        Returns:
+            Dict mapping hotkey to EmissionsLedger instance (pickled automatically by RPC)
+        """
+        return self.emissions_ledger_manager.get_all_ledgers()
+
+    # ========================================================================
+    # PENALTY LEDGER RPC METHODS (delegate to sub-manager)
+    # ========================================================================
+
+    def get_penalty_ledger_rpc(self, hotkey: str):
+        """
+        Get penalty ledger for a specific hotkey.
+
+        Args:
+            hotkey: The miner's hotkey
+
+        Returns:
+            PenaltyLedger instance, or None if not found (pickled automatically by RPC)
+        """
+        return self.penalty_ledger_manager.get_penalty_ledger(hotkey)
+
+    def get_all_penalty_ledgers_rpc(self):
+        """
+        Get all penalty ledgers.
+
+        Returns:
+            Dict mapping hotkey to PenaltyLedger instance (pickled automatically by RPC)
+        """
+        return self.penalty_ledger_manager.get_all_penalty_ledgers()
 
     # ========================================================================
     # PERSISTENCE METHODS
@@ -792,7 +839,7 @@ class DebtLedgerManagerServer:
 def start_debt_ledger_manager_server(
     address, authkey, perf_ledger_manager, position_manager, contract_manager,
     asset_selection_manager, challengeperiod_manager=None, slack_webhook_url=None,
-    running_unit_tests=False, validator_hotkey=None, ipc_manager=None, ready_event=None
+    running_unit_tests=False, validator_hotkey=None, ready_event=None
 ):
     """
     Start the DebtLedgerManager server process.
@@ -808,7 +855,6 @@ def start_debt_ledger_manager_server(
         slack_webhook_url: Slack webhook URL for notifications
         running_unit_tests: Whether running in test mode
         validator_hotkey: Validator hotkey for notifications
-        ipc_manager: IPC manager (for sub-ledger managers)
         ready_event: Optional multiprocessing.Event to signal when server is ready
     """
     from setproctitle import setproctitle
@@ -826,8 +872,7 @@ def start_debt_ledger_manager_server(
         challengeperiod_manager=challengeperiod_manager,
         slack_webhook_url=slack_webhook_url,
         running_unit_tests=running_unit_tests,
-        validator_hotkey=validator_hotkey,
-        ipc_manager=ipc_manager
+        validator_hotkey=validator_hotkey
     )
 
     # Start daemon thread (runs build_debt_ledgers forever)

@@ -47,7 +47,9 @@ from time_util.time_util import TimeUtil
 from vali_objects.utils.miner_bucket_enum import MinerBucket
 from vali_objects.vali_config import ValiConfig
 from shared_objects.rpc_service_base import RPCServiceBase
-
+from multiprocessing import Process
+from vali_objects.vali_dataclasses.debt_ledger_server import DebtLedgerManagerServer
+from setproctitle import setproctitle
 
 @dataclass
 class DebtCheckpoint:
@@ -498,7 +500,7 @@ class DebtLedgerManager(RPCServiceBase):
     """
 
     def __init__(self, perf_ledger_manager, position_manager, contract_manager, asset_selection_manager,
-                 challengeperiod_manager=None, slack_webhook_url=None, start_server=True, ipc_manager=None, running_unit_tests=False, validator_hotkey=None):
+                 challengeperiod_manager=None, slack_webhook_url=None, start_server=True, running_unit_tests=False, validator_hotkey=None):
         """
         Initialize client and optionally start server process.
 
@@ -510,7 +512,6 @@ class DebtLedgerManager(RPCServiceBase):
             challengeperiod_manager: Challenge period manager instance (passed to server)
             slack_webhook_url: Slack webhook URL for notifications (passed to server)
             start_server: Whether to start the server process
-            ipc_manager: IPC manager (passed to server)
             running_unit_tests: Whether running in unit test mode
             validator_hotkey: Validator hotkey for notifications (passed to server)
         """
@@ -521,7 +522,6 @@ class DebtLedgerManager(RPCServiceBase):
         self._asset_selection_manager = asset_selection_manager
         self._challengeperiod_manager = challengeperiod_manager
         self._slack_webhook_url = slack_webhook_url
-        self._ipc_manager = ipc_manager
         self._validator_hotkey = validator_hotkey
 
         # Initialize RPCServiceBase (handles connection, process lifecycle, etc.)
@@ -557,7 +557,6 @@ class DebtLedgerManager(RPCServiceBase):
             asset_selection_manager=self._asset_selection_manager,
             challengeperiod_manager=self._challengeperiod_manager,
             slack_webhook_url=self._slack_webhook_url,
-            ipc_manager=self._ipc_manager,
             running_unit_tests=self.running_unit_tests,
             validator_hotkey=self._validator_hotkey
         )
@@ -574,11 +573,7 @@ class DebtLedgerManager(RPCServiceBase):
         Returns:
             Process object for the server process
         """
-        from multiprocessing import Process
-        from vali_objects.vali_dataclasses.debt_ledger_server import DebtLedgerManagerServer
-
         def server_main():
-            from setproctitle import setproctitle
             setproctitle(f"vali_{self.service_name}")
 
             # Create server instance
@@ -589,7 +584,6 @@ class DebtLedgerManager(RPCServiceBase):
                 asset_selection_manager=self._asset_selection_manager,
                 challengeperiod_manager=self._challengeperiod_manager,
                 slack_webhook_url=self._slack_webhook_url,
-                ipc_manager=self._ipc_manager,
                 running_unit_tests=self.running_unit_tests,
                 validator_hotkey=self._validator_hotkey
             )
@@ -617,7 +611,7 @@ class DebtLedgerManager(RPCServiceBase):
         """
         return self._server_proxy.get_ledger_rpc(hotkey)
 
-    def get_all_ledgers(self) -> Dict[str, DebtLedger]:
+    def get_all_debt_ledgers(self) -> Dict[str, DebtLedger]:
         """
         Get all debt ledgers.
 
@@ -626,27 +620,66 @@ class DebtLedgerManager(RPCServiceBase):
         """
         return self._server_proxy.get_all_ledgers_rpc()
 
-    def get_ledger_summary(self, hotkey: str) -> Optional[dict]:
+    def health_check(self) -> dict:
+        """Check server health."""
+        return self._server_proxy.health_check_rpc()
+
+    # ============================================================================
+    # EMISSIONS LEDGER METHODS (delegate to server's sub-manager)
+    # ============================================================================
+
+    def get_emissions_ledger(self, hotkey: str):
         """
-        Get summary stats for a specific ledger (efficient - no full checkpoint history).
+        Get emissions ledger for a specific hotkey.
+
+        This method delegates to the server's EmissionsLedgerManager via RPC.
+        Use this instead of accessing emissions_ledger_manager directly (which doesn't work across RPC).
 
         Args:
             hotkey: The miner's hotkey
 
         Returns:
-            Summary dict with cumulative stats
+            EmissionsLedger instance, or None if not found
         """
-        return self._server_proxy.get_ledger_summary_rpc(hotkey)
+        return self._server_proxy.get_emissions_ledger_rpc(hotkey)
 
-    def get_all_summaries(self) -> Dict[str, dict]:
+    def get_all_emissions_ledgers(self) -> Dict:
         """
-        Get summary stats for all ledgers (efficient for UI/status checks).
+        Get all emissions ledgers.
+
+        This method delegates to the server's EmissionsLedgerManager via RPC.
 
         Returns:
-            Dict mapping hotkey to summary dict
+            Dict mapping hotkey to EmissionsLedger instance
         """
-        return self._server_proxy.get_all_summaries_rpc()
+        return self._server_proxy.get_all_emissions_ledgers_rpc()
 
-    def health_check(self) -> dict:
-        """Check server health."""
-        return self._server_proxy.health_check_rpc()
+    # ============================================================================
+    # PENALTY LEDGER METHODS (delegate to server's sub-manager)
+    # ============================================================================
+
+    def get_penalty_ledger(self, hotkey: str):
+        """
+        Get penalty ledger for a specific hotkey.
+
+        This method delegates to the server's PenaltyLedgerManager via RPC.
+        Use this instead of accessing penalty_ledger_manager directly (which doesn't work across RPC).
+
+        Args:
+            hotkey: The miner's hotkey
+
+        Returns:
+            PenaltyLedger instance, or None if not found
+        """
+        return self._server_proxy.get_penalty_ledger_rpc(hotkey)
+
+    def get_all_penalty_ledgers(self) -> Dict:
+        """
+        Get all penalty ledgers.
+
+        This method delegates to the server's PenaltyLedgerManager via RPC.
+
+        Returns:
+            Dict mapping hotkey to PenaltyLedger instance
+        """
+        return self._server_proxy.get_all_penalty_ledgers_rpc()

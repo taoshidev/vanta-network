@@ -42,7 +42,7 @@ class PositionManager(RPCServiceBase, CacheController):
                  secrets=None,
                  live_price_fetcher=None,
                  is_backtesting=False,
-                 shared_queue_websockets=None,
+                 websocket_notifier=None,
                  split_positions_on_disk_load=False,
                  closed_position_daemon=False,
                  slack_notifier=None):
@@ -66,7 +66,7 @@ class PositionManager(RPCServiceBase, CacheController):
         self.perf_ledger_manager = perf_ledger_manager
         self.challengeperiod_manager = challengeperiod_manager
         self.elimination_manager = elimination_manager
-        self.shared_queue_websockets = shared_queue_websockets
+        self.websocket_notifier = websocket_notifier
 
         self.recalibrated_position_uuids = set()
 
@@ -746,8 +746,8 @@ class PositionManager(RPCServiceBase, CacheController):
 
                     position.add_order(flat_order, self.live_price_fetcher)
                     self.save_miner_position(position, delete_open_position_if_exists=True)
-                    if self.shared_queue_websockets:
-                        self.shared_queue_websockets.put(position.to_websocket_dict())
+                    if self.websocket_notifier:
+                        self.websocket_notifier.broadcast_position_update(position)
                     bt.logging.info(
                     f"Position {position.position_uuid} for hotkey {hotkey} and trade pair {position.trade_pair.trade_pair_id} has been closed. Added flat order {flat_order}")
 

@@ -442,6 +442,51 @@ class WebSocketServer(APIKeyMixin):
             bt.logging.error(traceback.format_exc())
             return False
 
+    # ==================== RPC Methods (exposed to other processes) ====================
+
+    def health_check_rpc(self) -> dict:
+        """
+        RPC health check endpoint for monitoring.
+
+        Returns:
+            dict: Health status with connection info and queue size
+        """
+        return {
+            "status": "ok",
+            "timestamp_ms": TimeUtil.now_in_millis(),
+            "connected_clients": len(self.connected_clients),
+            "subscribed_clients": len(self.subscribed_clients),
+            "queue_size": self.message_queue.qsize() if self.message_queue else 0,
+            "queue_maxsize": 1000
+        }
+
+    def broadcast_position_update_rpc(self, position: Position, miner_repo_version: str = None) -> bool:
+        """
+        RPC method to broadcast a position update to all subscribed WebSocket clients.
+
+        This method is called via RPC from other processes (MarketOrderManager,
+        PositionManager, EliminationManager) to notify WebSocket clients of position changes.
+
+        Args:
+            position: Position object to broadcast
+            miner_repo_version: Optional miner repository version for the websocket dict
+
+        Returns:
+            bool: True if message was queued successfully, False otherwise
+        """
+        try:
+            # Convert Position object to websocket dict here (centralized conversion)
+            position_dict = position.to_websocket_dict(miner_repo_version=miner_repo_version)
+
+            # Queue message using existing thread-safe method
+            return self.send_message(position_dict)
+        except Exception as e:
+            bt.logging.error(f"WebSocketServer: Error broadcasting position update: {e}")
+            bt.logging.error(traceback.format_exc())
+            return False
+
+    # ==================== WebSocket Client Handling ====================
+
     async def handle_client(self, websocket) -> None:
         """Handle client connection with authentication and subscriptions.
 

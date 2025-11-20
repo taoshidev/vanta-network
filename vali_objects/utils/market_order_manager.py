@@ -19,13 +19,13 @@ from vali_objects.vali_dataclasses.order import OrderSource, Order
 
 class MarketOrderManager():
     def __init__(self, live_price_fetcher, position_locks, price_slippage_model, config, position_manager,
-                 shared_queue_websockets, contract_manager):
+                 websocket_notifier, contract_manager):
         self.live_price_fetcher = live_price_fetcher
         self.position_locks = position_locks
         self.price_slippage_model = price_slippage_model
         self.config = config
         self.position_manager = position_manager
-        self.shared_queue_websockets = shared_queue_websockets
+        self.websocket_notifier = websocket_notifier
         self.contract_manager = contract_manager
         # Cache to track last order time for each (miner_hotkey, trade_pair) combination
         self.last_order_time_cache = {}  # Key: (miner_hotkey, trade_pair_id), Value: last_order_time_ms
@@ -176,12 +176,14 @@ class MarketOrderManager():
         # NOTE: UUID tracking happens in validator process, not here
 
         if self.config.serve and miner_hotkey != ValiConfig.DEVELOPMENT_HOTKEY:
-            # Add the position to the queue for broadcasting
+            # Broadcast position update via RPC to WebSocket clients
             # Skip websocket messages for development hotkey
             step_start = TimeUtil.now_in_millis()
-            self.shared_queue_websockets.put(existing_position.to_websocket_dict(miner_repo_version=miner_repo_version))
+            success = self.websocket_notifier.broadcast_position_update(
+                existing_position, miner_repo_version=miner_repo_version
+            )
             websocket_ms = TimeUtil.now_in_millis() - step_start
-            bt.logging.info(f"[ADD_ORDER_DETAIL] Websocket queue put took {websocket_ms}ms")
+            bt.logging.info(f"[ADD_ORDER_DETAIL] Websocket RPC broadcast took {websocket_ms}ms (success={success})")
 
         return order
 

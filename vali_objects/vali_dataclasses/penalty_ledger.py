@@ -271,7 +271,6 @@ class PenaltyLedgerManager:
         contract_manager: ValidatorContractManager,
         asset_selection_manager: AssetSelectionManager,
         challengeperiod_manager=None,
-        ipc_manager=None,
         running_unit_tests: bool = False,
         slack_webhook_url=None,
         run_daemon: bool = False,
@@ -286,10 +285,10 @@ class PenaltyLedgerManager:
             contract_manager: Manager for reading miner collateral/account sizes
             asset_selection_manager: Manager for tracking miner asset class selections
             challengeperiod_manager: Optional manager for challenge period status (for real-time status)
-            ipc_manager: Optional IPC manager for multiprocessing
             running_unit_tests: Whether this is being run in unit tests
             slack_webhook_url: Optional Slack webhook URL for failure notifications
             run_daemon: If True, automatically start daemon process (default: False)
+            validator_hotkey: Optional validator hotkey for notifications
         """
         self.position_manager = position_manager
         self.perf_ledger_manager = perf_ledger_manager
@@ -298,8 +297,8 @@ class PenaltyLedgerManager:
         self.challengeperiod_manager = challengeperiod_manager
         self.running_unit_tests = running_unit_tests
 
-        # Storage for penalty checkpoints per miner
-        self.penalty_ledgers: Dict[str, PenaltyLedger] = ipc_manager.dict() if ipc_manager else {}
+        # Storage for penalty checkpoints per miner (normal Python dict - managed within DebtLedgerManagerServer process)
+        self.penalty_ledgers: Dict[str, PenaltyLedger] = {}
 
         # Daemon control
         self.running = False

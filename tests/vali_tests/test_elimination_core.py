@@ -501,8 +501,7 @@ class TestEliminationCore(TestBase):
             self.mock_metagraph,
             self.position_manager,
             challengeperiod_rpc_address=None,  # Not needed in test mode
-            running_unit_tests=True,
-            use_ipc=True
+            running_unit_tests=True
         )
 
         # Test adding elimination

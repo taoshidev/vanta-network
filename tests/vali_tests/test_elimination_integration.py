@@ -81,7 +81,6 @@ class TestEliminationIntegration(TestBase):
             self.live_price_fetcher,
             challengeperiod_rpc_address=None,  # Not needed in test mode
             running_unit_tests=True,
-            use_ipc=False,
             contract_manager=self.contract_manager
         )
         

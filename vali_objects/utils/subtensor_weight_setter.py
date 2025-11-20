@@ -127,7 +127,7 @@ class SubtensorWeightSetter(CacheController):
 
         # Filter debt ledgers to only include specified hotkeys
         # Get all debt ledgers via RPC
-        all_debt_ledgers = self.debt_ledger_manager.get_all_ledgers()
+        all_debt_ledgers = self.debt_ledger_manager.get_all_debt_ledgers()
         filtered_debt_ledgers = {
             hotkey: ledger
             for hotkey, ledger in all_debt_ledgers.items()

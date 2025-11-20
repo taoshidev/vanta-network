@@ -57,8 +57,8 @@ class TestMarketOrderManager(TestBase):
         self.mock_contract_manager = Mock(spec=ValidatorContractManager)
         self.mock_contract_manager.get_miner_account_size = Mock(return_value=self.DEFAULT_ACCOUNT_SIZE)
 
-        # Mock shared queue for websockets
-        self.mock_shared_queue = Mock()
+        # Mock websocket notifier
+        self.mock_websocket_notifier = Mock()
 
         self.market_order_manager = MarketOrderManager(
             live_price_fetcher=self.live_price_fetcher,
@@ -66,7 +66,7 @@ class TestMarketOrderManager(TestBase):
             price_slippage_model=self.price_slippage_model,
             config=Mock(serve=False),
             position_manager=self.position_manager,
-            shared_queue_websockets=self.mock_shared_queue,
+            websocket_notifier=self.mock_websocket_notifier,
             contract_manager=self.mock_contract_manager
         )
 

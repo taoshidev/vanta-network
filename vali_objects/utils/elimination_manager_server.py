@@ -40,7 +40,7 @@ class EliminationManagerServer(CacheController):
 
     def __init__(self, metagraph, position_manager, challengeperiod_rpc_address=None,
                  running_unit_tests=False, shutdown_dict=None, is_backtesting=False,
-                 shared_queue_websockets=None, contract_manager=None, position_locks=None,
+                 websocket_notifier=None, contract_manager=None, position_locks=None,
                  sync_in_progress=None, slack_notifier=None, sync_epoch=None, limit_order_manager=None):
         super().__init__(metagraph=metagraph, is_backtesting=is_backtesting)
         self.position_manager = position_manager
@@ -66,7 +66,7 @@ class EliminationManagerServer(CacheController):
                     f"[ELIM_RPC] Failed to connect to ChallengePeriodManager at {challengeperiod_rpc_address}"
                 )
         self.first_refresh_ran = False
-        self.shared_queue_websockets = shared_queue_websockets
+        self.websocket_notifier = websocket_notifier
         secrets = ValiUtils.get_secrets(running_unit_tests=running_unit_tests)
         self.live_price_fetcher = LivePriceFetcher(secrets, disable_ws=True)
         self.contract_manager = contract_manager
@@ -432,8 +432,8 @@ class EliminationManagerServer(CacheController):
                     return
 
             self.position_manager.save_miner_position(position, delete_open_position_if_exists=True)
-            if self.shared_queue_websockets:
-                self.shared_queue_websockets.put(position.to_websocket_dict())
+            if self.websocket_notifier:
+                self.websocket_notifier.broadcast_position_update(position)
             bt.logging.info(
                 f'Added flat order for miner {hotkey} that has been eliminated. '
                 f'Trade pair: {position.trade_pair.trade_pair_id}. flat order: {flat_order}. '
@@ -924,7 +924,7 @@ class EliminationManagerServer(CacheController):
 def start_elimination_manager_server(
     metagraph, position_manager, challengeperiod_rpc_address,
     running_unit_tests, shutdown_dict, is_backtesting,
-    shared_queue_websockets, contract_manager, position_locks,
+    websocket_notifier, contract_manager, position_locks,
     sync_in_progress, slack_notifier, sync_epoch, limit_order_manager,
     address, authkey, server_ready
 ):
@@ -944,7 +944,7 @@ def start_elimination_manager_server(
         running_unit_tests=running_unit_tests,
         shutdown_dict=shutdown_dict,
         is_backtesting=is_backtesting,
-        shared_queue_websockets=shared_queue_websockets,
+        websocket_notifier=websocket_notifier,
         contract_manager=contract_manager,
         position_locks=position_locks,
         sync_in_progress=sync_in_progress,
