@@ -137,7 +137,7 @@ class LimitOrderManager(CacheController):
 
                 # Use miner-provided leverage if specified, otherwise use position leverage
                 if order.leverage == 0.0:
-                    order.leverage = position.current_position
+                    order.leverage = position.net_leverage
 
             # Validation for LIMIT orders
             if order.execution_type == ExecutionType.LIMIT:
@@ -529,7 +529,13 @@ class LimitOrderManager(CacheController):
                 self._fill_limit_order_with_price_source(miner_hotkey, order, best_price_source, trigger_price)
                 return True
 
-            return False
+            if order.execution_type == ExecutionType.BRACKET and not position:
+                self._close_limit_order(miner_hotkey, order, OrderSource.ORDER_SRC_BRACKET_CANCELLED, now_ms)
+                return False
+
+            # Fill the order using the triggered price_source
+            self._fill_limit_order_with_price_source(miner_hotkey, order, best_price_source, trigger_price)
+            return True
 
         except Exception as e:
             bt.logging.error(f"Error attempting to fill limit order {order.order_uuid}: {e}")
