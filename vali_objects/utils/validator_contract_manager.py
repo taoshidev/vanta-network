@@ -640,7 +640,7 @@ class ValidatorContractManager:
 
         if slash_proportion is None:
             # slash based on current drawdown
-            slash_amount = None
+            slash_amount = self.compute_slash_amount(miner_hotkey)
         else:
             slash_amount = current_balance_theta * slash_proportion
         return self.slash_miner_collateral(miner_hotkey, slash_amount)
