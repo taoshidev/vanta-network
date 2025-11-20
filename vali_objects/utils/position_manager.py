@@ -1286,6 +1286,85 @@ class PositionManager(CacheController):
     def get_miner_hotkeys_with_at_least_one_position(self) -> set[str]:
         return set(self.hotkey_to_positions.keys())
 
+    def compute_realtime_drawdown(self, hotkey: str) -> float:
+        """
+        Compute the realtime drawdown from positions.
+        Bypasses perf ledger, since perf ledgers are refreshed in 5 min intervals and may be out of date.
+        Used to enable realtime withdrawals based on drawdown.
+
+        Returns proportion of portfolio value as drawdown. 1.0 -> 0% drawdown, 0.9 -> 10% drawdown
+        """
+        # 1. Get existing perf ledger to access historical max portfolio value
+        existing_bundle = self.perf_ledger_manager.get_perf_ledgers(
+            portfolio_only=True,
+            from_disk=False
+        )
+        portfolio_ledger = existing_bundle.get(hotkey)
+
+        if not portfolio_ledger or not portfolio_ledger.cps:
+            bt.logging.warning(f"No perf ledger found for {hotkey}")
+            return 1.0
+
+        # 2. Get historical max portfolio value from existing checkpoints
+        portfolio_ledger.init_max_portfolio_value()  # Ensures max_return is set
+        max_portfolio_value = portfolio_ledger.max_return
+
+        # 3. Calculate current portfolio value with live prices
+        current_portfolio_value = self._calculate_current_portfolio_value(hotkey)
+
+        # 4. Calculate current drawdown
+        if max_portfolio_value <= 0:
+            return 1.0
+
+        drawdown = min(1.0, current_portfolio_value / max_portfolio_value)
+
+        print(f"Real-time drawdown for {hotkey}: "
+                f"{(1-drawdown)*100:.2f}% "
+                f"(current: {current_portfolio_value:.4f}, "
+                f"max: {max_portfolio_value:.4f})")
+
+        return drawdown
+
+    def _calculate_current_portfolio_value(self, miner_hotkey: str) -> float:
+        """
+        Calculate current portfolio value with live prices.
+        """
+        positions = self.get_positions_for_one_hotkey(
+            miner_hotkey,
+            only_open_positions=False
+        )
+
+        if not positions:
+            return 1.0  # No positions = starting value
+
+        portfolio_return = 1.0
+        now_ms = TimeUtil.now_in_millis()
+
+        for position in positions:
+            if position.is_open_position:
+                # Get live price for open positions
+                price_sources = self.live_price_fetcher.get_sorted_price_sources_for_trade_pair(
+                    position.trade_pair,
+                    now_ms
+                )
+
+                if price_sources and price_sources[0]:
+                    realtime_price = price_sources[0].close
+                    # Calculate return with fees at this moment
+                    position_return = position.get_open_position_return_with_fees(
+                        realtime_price,
+                        now_ms
+                    )
+                    portfolio_return *= position_return
+                else:
+                    # Fallback to last known return
+                    portfolio_return *= position.return_at_close
+            else:
+                # Use stored return for closed positions
+                portfolio_return *= position.return_at_close
+
+        return portfolio_return
+
     def _log_split_stats(self):
         """Log statistics about position splitting."""
         bt.logging.info("=" * 60)

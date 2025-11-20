@@ -226,10 +226,39 @@ class TestValidatorContractManager(TestBase):
         """Test getting collateral balance for miners"""
         # Mock different balances
         self.mock_collateral_manager_instance.balance_of.return_value = 1500000  # 1.5M rao
-        
+
         # Get balance
         balance = self.contract_manager.get_miner_collateral_balance(self.MINER_1)
         self.assertIsNotNone(balance)
-        
+
         # Verify the mock was called
         self.mock_collateral_manager_instance.balance_of.assert_called_with(self.MINER_1)
+
+    def test_compute_slash_amount_formula_accuracy(self):
+        """Test the exact formula for slash calculation across range of drawdowns"""
+        balance_theta = 1000.0
+        self.contract_manager.get_miner_collateral_balance = MagicMock(return_value=balance_theta)
+
+        # Test cases: (drawdown, expected_drawdown_percentage, expected_slash_proportion)
+        test_cases = [
+            (1.0, 0.0, 0.0),      # 0% drawdown -> 0% slash
+            (0.99, 1.0, 0.1),     # 1% drawdown -> 10% slash
+            (0.98, 2.0, 0.2),     # 2% drawdown -> 20% slash
+            (0.97, 3.0, 0.3),     # 3% drawdown -> 30% slash
+            (0.96, 4.0, 0.4),     # 4% drawdown -> 40% slash
+            (0.95, 5.0, 0.5),     # 5% drawdown -> 50% slash
+            (0.94, 6.0, 0.6),     # 6% drawdown -> 60% slash
+            (0.93, 7.0, 0.7),     # 7% drawdown -> 70% slash
+            (0.92, 8.0, 0.8),     # 8% drawdown -> 80% slash
+            (0.91, 9.0, 0.9),     # 9% drawdown -> 90% slash
+            (0.90, 10.0, 1.0),    # 10% drawdown -> 100% slash (elimination)
+        ]
+
+        for drawdown, dd_pct, expected_proportion in test_cases:
+            with self.subTest(drawdown_pct=dd_pct):
+                slash_amount = self.contract_manager.compute_slash_amount(self.MINER_1, drawdown=drawdown)
+                expected_slash = balance_theta * expected_proportion
+
+                self.assertAlmostEqual(slash_amount, expected_slash, places=1,
+                                       msg=f"{dd_pct}% drawdown should slash {expected_proportion*100}% of balance. "
+                                           f"Expected {expected_slash}, got {slash_amount}")

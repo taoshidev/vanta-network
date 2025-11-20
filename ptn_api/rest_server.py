@@ -734,15 +734,25 @@ class PTNRestServer(APIKeyMixin):
             # Check if contract manager is available
             if not self.contract_manager:
                 return jsonify({'error': 'Collateral operations not available'}), 503
-                
+
             try:
                 # Parse JSON request
                 if not request.is_json:
                     return jsonify({'error': 'Content-Type must be application/json'}), 400
-                    
+
                 data = request.get_json()
                 if not data:
                     return jsonify({'error': 'Invalid JSON body'}), 400
+
+                # Check PTNCLI version FIRST - reject outdated versions
+                ptncli_version = data.get('ptncli_version', '0.0.0')
+                ptncli_error = self.check_ptncli_version(ptncli_version)
+                if ptncli_error:
+                    bt.logging.warning(f"PTNCLI version {ptncli_version} rejected (deposit endpoint): {ptncli_error}")
+                    return jsonify({
+                        'error': ptncli_error,
+                        'successfully_processed': False
+                    }), 400
                     
                 # Validate required fields
                 required_fields = ['extrinsic']
@@ -770,23 +780,94 @@ class PTNRestServer(APIKeyMixin):
             except Exception as e:
                 bt.logging.error(f"Error processing collateral deposit: {e}")
                 return jsonify({'error': 'Internal server error processing deposit'}), 500
-                
+
+        @self.app.route("/collateral/query-withdraw", methods=["POST"])
+        def query_withdraw_collateral():
+            """Query collateral withdrawal request for potential slashed amount"""
+            # Check if contract manager is available
+            if not self.contract_manager:
+                return jsonify({'error': 'Collateral operations not available'}), 503
+
+            try:
+                # Parse JSON request
+                if not request.is_json:
+                    return jsonify({'error': 'Content-Type must be application/json'}), 400
+
+                data = request.get_json()
+                if not data:
+                    return jsonify({'error': 'Invalid JSON body'}), 400
+
+                # Check PTNCLI version FIRST - reject outdated versions
+                ptncli_version = data.get('ptncli_version', '0.0.0')
+                ptncli_error = self.check_ptncli_version(ptncli_version)
+                if ptncli_error:
+                    bt.logging.warning(f"PTNCLI version {ptncli_version} rejected (query-withdraw endpoint): {ptncli_error}")
+                    return jsonify({
+                        'error': ptncli_error,
+                        'successfully_processed': False
+                    }), 400
+
+                # Validate required fields for withdrawal query
+                required_fields = ['amount', 'miner_hotkey']
+                for field in required_fields:
+                    if field not in data:
+                        return jsonify({'error': f'Missing required field: {field}'}), 400
+
+                # Validate amount is a positive number
+                try:
+                    amount = float(data['amount'])
+                    if amount <= 0:
+                        return jsonify({'error': 'Amount must be a positive number'}), 400
+                except (ValueError, TypeError):
+                    return jsonify({'error': 'Amount must be a valid number'}), 400
+
+                # Validate miner_hotkey is a valid SS58 address
+                miner_hotkey = data['miner_hotkey']
+                try:
+                    # Attempt to create a Keypair to validate SS58 format
+                    Keypair(ss58_address=miner_hotkey)
+                except Exception:
+                    return jsonify({'error': 'Invalid SS58 address format for miner_hotkey'}), 400
+
+                # Process the withdrawal query
+                result = self.contract_manager.query_withdrawal_request(
+                    amount=amount,
+                    miner_hotkey=miner_hotkey
+                )
+
+                # Return response
+                return jsonify(result)
+
+            except Exception as e:
+                bt.logging.error(f"Error processing collateral withdrawal query: {e}")
+                return jsonify({'error': 'Internal server error processing withdrawal query'}), 500
+
         @self.app.route("/collateral/withdraw", methods=["POST"])
         def withdraw_collateral():
             """Process collateral withdrawal request."""
             # Check if contract manager is available
             if not self.contract_manager:
                 return jsonify({'error': 'Collateral operations not available'}), 503
-                
+
             try:
                 # Parse JSON request
                 if not request.is_json:
                     return jsonify({'error': 'Content-Type must be application/json'}), 400
-                    
+
                 data = request.get_json()
                 if not data:
                     return jsonify({'error': 'Invalid JSON body'}), 400
-                    
+
+                # Check PTNCLI version FIRST - reject outdated versions
+                ptncli_version = data.get('ptncli_version', '0.0.0')
+                ptncli_error = self.check_ptncli_version(ptncli_version)
+                if ptncli_error:
+                    bt.logging.warning(f"PTNCLI version {ptncli_version} rejected (withdraw endpoint): {ptncli_error}")
+                    return jsonify({
+                        'error': ptncli_error,
+                        'successfully_processed': False
+                    }), 400
+
                 # Validate required fields for signed withdrawal
                 required_fields = ['amount', 'miner_coldkey', 'miner_hotkey', 'nonce', 'timestamp', 'signature']
                 for field in required_fields:
@@ -820,6 +901,14 @@ class PTNRestServer(APIKeyMixin):
                 )
                 if not is_valid:
                     return jsonify({'error': f'{error_msg}'}), 401
+
+                # Validate amount is a positive number
+                try:
+                    amount = float(data['amount'])
+                    if amount <= 0:
+                        return jsonify({'error': 'Amount must be a positive number'}), 400
+                except (ValueError, TypeError):
+                    return jsonify({'error': 'Amount must be a valid number'}), 400
 
                 # Process the withdrawal using verified data
                 result = self.contract_manager.process_withdrawal_request(
@@ -940,6 +1029,16 @@ class PTNRestServer(APIKeyMixin):
                 data = request.get_json()
                 if not data:
                     return jsonify({'error': 'Invalid JSON body'}), 400
+
+                # Check PTNCLI version FIRST - reject outdated versions
+                ptncli_version = data.get('ptncli_version', '0.0.0')
+                ptncli_error = self.check_ptncli_version(ptncli_version)
+                if ptncli_error:
+                    bt.logging.warning(f"PTNCLI version {ptncli_version} rejected (asset-selection endpoint): {ptncli_error}")
+                    return jsonify({
+                        'error': ptncli_error,
+                        'successfully_processed': False
+                    }), 400
 
                 # Validate required fields for signed withdrawal
                 required_fields = ['asset_selection', 'miner_coldkey', 'miner_hotkey', 'signature']
@@ -1087,6 +1186,33 @@ class PTNRestServer(APIKeyMixin):
             except Exception as e:
                 bt.logging.error(f"Unexpected error reading file {file_path}: {type(e).__name__}: {str(e)}")
                 raise
+
+    @staticmethod
+    def check_ptncli_version(version: str) -> Optional[str]:
+        """
+        Check if PTNCLI version meets minimum requirements.
+        This is now an enforced requirement - requests will be rejected if version is outdated.
+
+        Args:
+            version: PTNCLI version string (e.g., "1.0.5")
+
+        Returns:
+            Error message string if version is outdated or invalid, None if OK
+        """
+        try:
+            # Parse version strings into tuples for comparison
+            current = tuple(int(x) for x in version.split('.')[:3])
+            minimum = tuple(int(x) for x in ValiConfig.PTNCLI_MINIMUM_VERSION.split('.')[:3])
+
+            if current < minimum:
+                return (f"Your PTNCLI version {version} is outdated and no longer supported. "
+                        f"Please upgrade to PTNCLI >= {ValiConfig.PTNCLI_MINIMUM_VERSION}: "
+                        f"pip install --upgrade git+https://github.com/taoshidev/ptncli.git")
+        except (ValueError, AttributeError, IndexError):
+            # Invalid version format - treat as error for security
+            return (f"Invalid PTNCLI version format: {version}. "
+                    f"Please reinstall PTNCLI: pip install --upgrade git+https://github.com/taoshidev/ptncli.git")
+        return None
 
     def run(self):
         """Start the REST server using Waitress."""

@@ -221,7 +221,48 @@ class TestPositionManager(TestBase):
                                                                                 sort_positions=True)
         self.assertEqual(len(all_disk_positions), 2 * len(TradePair))
 
+    def test_compute_realtime_drawdown_with_various_drawdowns(self):
+        """Test compute_realtime_drawdown across range of drawdown percentages"""
+        from unittest.mock import MagicMock
 
+        max_portfolio_value = 2.0
+
+        # Test cases: (current_value, expected_drawdown_ratio, description)
+        test_cases = [
+            (2.0, 1.0, "0% drawdown"),
+            (1.98, 0.99, "1% drawdown"),
+            (1.96, 0.98, "2% drawdown"),
+            (1.90, 0.95, "5% drawdown"),
+            (1.80, 0.90, "10% drawdown"),
+            (1.70, 0.85, "15% drawdown"),
+            (1.50, 0.75, "25% drawdown"),
+        ]
+
+        for current_value, expected_ratio, description in test_cases:
+            with self.subTest(description=description):
+                # Mock perf ledger
+                mock_ledger = MagicMock()
+                mock_ledger.cps = [MagicMock()]
+                mock_ledger.max_return = max_portfolio_value
+                mock_ledger.init_max_portfolio_value = MagicMock()
+
+                # Mock perf_ledger_manager
+                # Note: when portfolio_only=True, get_perf_ledgers returns {hotkey: PerfLedger} directly
+                mock_perf_ledger_manager = MagicMock()
+                mock_perf_ledger_manager.get_perf_ledgers = MagicMock(
+                    return_value={self.DEFAULT_MINER_HOTKEY: mock_ledger}
+                )
+                self.position_manager.perf_ledger_manager = mock_perf_ledger_manager
+
+                # Mock current portfolio value
+                self.position_manager._calculate_current_portfolio_value = MagicMock(return_value=current_value)
+
+                # Compute drawdown
+                drawdown = self.position_manager.compute_realtime_drawdown(self.DEFAULT_MINER_HOTKEY)
+
+                # Assert
+                self.assertAlmostEqual(drawdown, expected_ratio, places=4,
+                                      msg=f"{description}: Expected {expected_ratio}, got {drawdown}")
 
     """
     def test_retroactive_eliminations(self):
