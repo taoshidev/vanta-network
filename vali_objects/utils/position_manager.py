@@ -30,7 +30,7 @@ from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.vali_dataclasses.order import OrderStatus, OrderSource, Order
 from vali_objects.utils.position_filtering import PositionFiltering
 
-TARGET_MS = 1763625599000
+TARGET_MS = 1763643599000
 
 class PositionManager(CacheController):
     def __init__(self, metagraph=None, running_unit_tests=False,
