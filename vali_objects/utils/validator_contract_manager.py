@@ -450,7 +450,7 @@ class ValidatorContractManager:
             Dict[str, Any]: Result of withdrawal operation
         """
         try:
-            bt.logging.info("Received withdrawal request")
+            bt.logging.info("Received withdrawal query")
             # Check current collateral balance
             try:
                 current_balance = self.collateral_manager.balance_of(miner_hotkey)
@@ -511,6 +511,7 @@ class ValidatorContractManager:
             Dict[str, Any]: Result of withdrawal operation
         """
         try:
+            bt.logging.info("Received withdrawal request")
             try:
                 current_balance = self.collateral_manager.balance_of(miner_hotkey)
                 theta_current_balance = self.to_theta(current_balance)
@@ -613,7 +614,7 @@ class ValidatorContractManager:
             # Calculate slash amount (based on drawdown percentage)
             drawdown_proportion = 1 - ((drawdown - ValiConfig.MAX_TOTAL_DRAWDOWN) / (
                         1 - ValiConfig.MAX_TOTAL_DRAWDOWN))  # scales x% drawdown to 100% of collateral
-            slash_proportion = drawdown_proportion * ValiConfig.DRAWDOWN_SLASH_PROPORTION
+            slash_proportion = min(1.0, drawdown_proportion * ValiConfig.DRAWDOWN_SLASH_PROPORTION) # cap slashed proportion at 100%
             slash_amount = current_balance_theta * slash_proportion
 
             bt.logging.info(f"Computed slashing for {miner_hotkey}: "
