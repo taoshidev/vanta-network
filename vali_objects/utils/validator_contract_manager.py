@@ -491,7 +491,7 @@ class ValidatorContractManager:
                 "new_balance": new_balance
             }
         except Exception as e:
-            error_msg = f"Withdrawal processing error: {str(e)}"
+            error_msg = f"Withdrawal query error: {str(e)}"
             bt.logging.error(error_msg)
             return {
                 "successfully_processed": False,

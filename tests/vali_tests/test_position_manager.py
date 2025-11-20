@@ -246,12 +246,11 @@ class TestPositionManager(TestBase):
                 mock_ledger.max_return = max_portfolio_value
                 mock_ledger.init_max_portfolio_value = MagicMock()
 
-                mock_bundle = {'portfolio': mock_ledger}
-
                 # Mock perf_ledger_manager
+                # Note: when portfolio_only=True, get_perf_ledgers returns {hotkey: PerfLedger} directly
                 mock_perf_ledger_manager = MagicMock()
                 mock_perf_ledger_manager.get_perf_ledgers = MagicMock(
-                    return_value={self.DEFAULT_MINER_HOTKEY: mock_bundle}
+                    return_value={self.DEFAULT_MINER_HOTKEY: mock_ledger}
                 )
                 self.position_manager.perf_ledger_manager = mock_perf_ledger_manager
 

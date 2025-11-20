@@ -1299,7 +1299,7 @@ class PositionManager(CacheController):
             portfolio_only=True,
             from_disk=False
         )
-        portfolio_ledger = existing_bundle.get(hotkey, {}).get('portfolio')
+        portfolio_ledger = existing_bundle.get(hotkey)
 
         if not portfolio_ledger or not portfolio_ledger.cps:
             bt.logging.warning(f"No perf ledger found for {hotkey}")
