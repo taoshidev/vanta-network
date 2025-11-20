@@ -84,7 +84,7 @@ class LimitOrderManager(CacheController):
 
     def process_limit_order_rpc(self, miner_hotkey, order):
         """
-        RPC method to process a limit order.
+        RPC method to process a limit order or bracket order.
         Args:
             miner_hotkey: The miner's hotkey
             order: Order object (pickled automatically by RPC)
@@ -117,15 +117,39 @@ class LimitOrderManager(CacheController):
                     f"[{total_unfilled}] >= [{ValiConfig.MAX_UNFILLED_LIMIT_ORDERS}]"
                 )
 
-            # Don't need realtime position
+            # Get position for validation
             position = self._get_position_for(miner_hotkey, order)
-            if not position and order.order_type == OrderType.FLAT:
-                raise SignalException(f"No position found for FLAT order")
+
+            # Special handling for BRACKET orders
+            if order.execution_type == ExecutionType.BRACKET:
+                if not position:
+                    raise SignalException(
+                        f"Cannot create bracket order: no open position found for {trade_pair.trade_pair_id}"
+                    )
+
+                order.order_type = position.position_type
+
+                # Use miner-provided leverage if specified, otherwise use position leverage
+                if order.leverage == 0.0:
+                    order.leverage = position.current_position
+
+            # Validation for FLAT orders
+            if order.order_type == OrderType.FLAT:
+                raise SignalException(f"FLAT order is not supported for LIMIT orders")
 
             self._write_to_disk(miner_hotkey, order)
             self._limit_orders[trade_pair][miner_hotkey].append(order)
 
-            bt.logging.info(f"Saved [{miner_hotkey}] limit order [{order_uuid}]")
+            if order.execution_type == ExecutionType.BRACKET:
+                bt.logging.info(
+                    f"BRACKET ORDER | {trade_pair.trade_pair_id} | "
+                    f"{order.order_type.name} | SL={order.stop_loss} TP={order.take_profit}"
+                )
+            else:
+                bt.logging.info(
+                    f"LIMIT ORDER | {trade_pair.trade_pair_id} | "
+                    f"{order.order_type.name} @ {order.limit_price}"
+                )
 
             # Check if order can be filled immediately
             price_sources = self.live_price_fetcher.get_sorted_price_sources_for_trade_pair(trade_pair, order.processed_ms)

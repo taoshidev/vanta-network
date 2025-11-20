@@ -983,6 +983,19 @@ class Validator(ValidatorBase):
                 # UUID tracking happens HERE in validator process (limit_order_manager is separate process)
                 self.uuid_tracker.add(miner_order_uuid)
 
+            elif execution_type == ExecutionType.BRACKET:
+                # Use OrderProcessor to handle BRACKET order
+                order = OrderProcessor.process_bracket_order(
+                    signal, trade_pair, miner_order_uuid, now_ms,
+                    miner_hotkey, self.limit_order_manager
+                )
+
+                # Set synapse response (validator's responsibility)
+                synapse.order_json = order.__str__()
+
+                # UUID tracking happens HERE in validator process (limit_order_manager is separate process)
+                self.uuid_tracker.add(miner_order_uuid)
+
             elif execution_type == ExecutionType.LIMIT_CANCEL:
                 # Use OrderProcessor to handle LIMIT_CANCEL
                 result = OrderProcessor.process_limit_cancel(

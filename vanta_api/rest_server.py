@@ -1170,6 +1170,12 @@ class VantaRestServer(APIKeyMixin):
               -H "Content-Type": application/json" \\
               -d '{"execution_type": "LIMIT", "trade_pair_id": "BTCUSD", "order_type": "LONG", "leverage": 1.0, "limit_price": 50000.0}'
 
+            # Bracket order (requires existing position)
+            curl -X POST http://localhost:48888/development/order \\
+              -H "Authorization: Bearer YOUR_API_KEY" \\
+              -H "Content-Type: application/json" \\
+              -d '{"execution_type": "BRACKET", "trade_pair_id": "BTCUSD", "stop_loss": 48000.0, "take_profit": 52000.0}'
+
             # Cancel specific limit order
             curl -X POST http://localhost:48888/development/order \\
               -H "Authorization: Bearer YOUR_API_KEY" \\
@@ -1257,6 +1263,24 @@ class VantaRestServer(APIKeyMixin):
                     return jsonify({
                         'status': 'success',
                         'execution_type': 'LIMIT',
+                        'order_uuid': order_uuid,
+                        'order': str(order)
+                    })
+
+                elif execution_type == ExecutionType.BRACKET:
+                    # Check if limit order manager is available
+                    if not self.limit_order_manager:
+                        return jsonify({'error': 'Bracket order operations not available'}), 503
+
+                    # Use OrderProcessor to handle BRACKET order
+                    order = OrderProcessor.process_bracket_order(
+                        signal, trade_pair, order_uuid, now_ms,
+                        DEVELOPMENT_HOTKEY, self.limit_order_manager
+                    )
+
+                    return jsonify({
+                        'status': 'success',
+                        'execution_type': 'BRACKET',
                         'order_uuid': order_uuid,
                         'order': str(order)
                     })

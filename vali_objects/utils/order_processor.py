@@ -173,6 +173,72 @@ class OrderProcessor:
         return result
 
     @staticmethod
+    def process_bracket_order(signal: dict, trade_pair, order_uuid: str, now_ms: int,
+                             miner_hotkey: str, limit_order_manager) -> Order:
+        """
+        Process a BRACKET order by creating an Order object and calling limit_order_manager.
+
+        Bracket orders set stop-loss and take-profit on existing positions.
+        The limit_order_manager validates the position exists and forces the order type
+        to match the position direction.
+
+        Args:
+            signal: Signal dictionary with bracket order details
+            trade_pair: Parsed TradePair object
+            order_uuid: Order UUID
+            now_ms: Current timestamp in milliseconds
+            miner_hotkey: Miner's hotkey
+            limit_order_manager: Manager to process the bracket order
+
+        Returns:
+            The created Order object
+
+        Raises:
+            SignalException: If required fields are missing, no position exists, or processing fails
+        """
+        # Extract signal data
+        stop_loss = signal.get("stop_loss")
+        take_profit = signal.get("take_profit")
+        leverage = signal.get("leverage", 0.0)
+
+        # Validate that at least one of SL or TP is set
+        if stop_loss is None and take_profit is None:
+            raise SignalException("Bracket order must specify at least one of stop_loss or take_profit")
+
+        # Parse and validate stop_loss
+        if stop_loss is not None:
+            stop_loss = float(stop_loss)
+            if stop_loss <= 0:
+                raise SignalException("stop_loss must be greater than 0")
+
+        # Parse and validate take_profit
+        if take_profit is not None:
+            take_profit = float(take_profit)
+            if take_profit <= 0:
+                raise SignalException("take_profit must be greater than 0")
+
+        # Create bracket order (order_type will be set by limit_order_manager)
+        order = Order(
+            trade_pair=trade_pair,
+            order_uuid=order_uuid,
+            processed_ms=now_ms,
+            price=0.0,
+            order_type=OrderType.LONG,  # Placeholder - will be overridden by manager
+            leverage=float(leverage),
+            execution_type=ExecutionType.BRACKET,
+            limit_price=None,  # Not used for bracket orders
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            src=OrderSource.ORDER_SRC_BRACKET_UNFILLED
+        )
+
+        # Process the bracket order - manager validates position and sets correct order_type/leverage
+        limit_order_manager.process_limit_order(miner_hotkey, order)
+
+        bt.logging.debug(f"Processed BRACKET order: {order.order_uuid} for {miner_hotkey}")
+        return order
+
+    @staticmethod
     def process_market_order(signal: dict, trade_pair, order_uuid: str, now_ms: int,
                             miner_hotkey: str, miner_repo_version: str,
                             market_order_manager, synapse=None):
