@@ -18,6 +18,7 @@ import template.protocol
 TARGET_MS = 1763643599000
 NOV_1_MS = 1761951599000
 
+
 class CollateralRecord:
     def __init__(self, account_size, account_size_theta, update_time_ms):
         self.account_size = account_size
@@ -50,8 +51,9 @@ class ValidatorContractManager:
     Handles deposit processing, withdrawal validation, and EVM contract operations.
     This class acts as the validator's interface to the collateral system.
     """
-    
-    def __init__(self, config=None, position_manager=None, ipc_manager=None, running_unit_tests=False, is_backtesting=False, metagraph=None):
+
+    def __init__(self, config=None, position_manager=None, ipc_manager=None, running_unit_tests=False,
+                 is_backtesting=False, metagraph=None):
         self.config = config
         self.position_manager = position_manager
         self.secrets = ValiUtils.get_secrets(running_unit_tests=running_unit_tests)
@@ -80,8 +82,9 @@ class ValidatorContractManager:
         self.vault_wallet = None
 
         # Initialize miner account sizes file location
-        self.MINER_ACCOUNT_SIZES_FILE = ValiBkpUtils.get_miner_account_sizes_file_location(running_unit_tests=running_unit_tests)
-        
+        self.MINER_ACCOUNT_SIZES_FILE = ValiBkpUtils.get_miner_account_sizes_file_location(
+            running_unit_tests=running_unit_tests)
+
         # Load existing data from disk or initialize empty
         if ipc_manager:
             self.miner_account_sizes = ipc_manager.dict()
@@ -211,15 +214,18 @@ class ValidatorContractManager:
         return json_dict
 
     @staticmethod
-    def _parse_miner_account_sizes_dict(data_dict: Dict[str, List[Dict[str, Any]]]) -> Dict[str, List[CollateralRecord]]:
+    def _parse_miner_account_sizes_dict(data_dict: Dict[str, List[Dict[str, Any]]]) -> Dict[
+        str, List[CollateralRecord]]:
         """Parse miner account sizes from disk format back to CollateralRecord objects"""
         parsed_dict = {}
         for hotkey, records_data in data_dict.items():
             try:
                 parsed_records = []
                 for record_data in records_data:
-                    if isinstance(record_data, dict) and all(key in record_data for key in ["account_size", "update_time_ms"]):
-                        record = CollateralRecord(record_data["account_size"], record_data["account_size_theta"], record_data["update_time_ms"])
+                    if isinstance(record_data, dict) and all(
+                            key in record_data for key in ["account_size", "update_time_ms"]):
+                        record = CollateralRecord(record_data["account_size"], record_data["account_size_theta"],
+                                                  record_data["update_time_ms"])
                         parsed_records.append(record)
 
                 if parsed_records:  # Only add if we have valid records
@@ -305,16 +311,16 @@ class ValidatorContractManager:
         """
         theta_amount = rao_amount / 10 ** 9  # Convert rao_theta to theta
         return theta_amount
-    
+
     def process_deposit_request(self, extrinsic_hex: str) -> Dict[str, Any]:
         """
         Process a collateral deposit request using raw data.
-        
+
         Args:
             extrinsic_hex (str): Hex-encoded extrinsic data
             amount (float): Amount in theta tokens
             miner_address (str): Miner's SS58 address
-            
+
         Returns:
             Dict[str, Any]: Result of deposit operation
         """
@@ -332,22 +338,24 @@ class ValidatorContractManager:
                     "successfully_processed": False,
                     "error_message": error_msg
                 }
-            
+
             # Execute the deposit through the collateral manager
             try:
-                miner_hotkey = next(arg["value"] for arg in extrinsic.value["call"]["call_args"] if arg["name"] == "hotkey")
-                deposit_amount = next(arg["value"] for arg in extrinsic.value["call"]["call_args"] if arg["name"] == "alpha_amount")
+                miner_hotkey = next(
+                    arg["value"] for arg in extrinsic.value["call"]["call_args"] if arg["name"] == "hotkey")
+                deposit_amount = next(
+                    arg["value"] for arg in extrinsic.value["call"]["call_args"] if arg["name"] == "alpha_amount")
                 deposit_amount_theta = self.to_theta(deposit_amount)
-                
+
                 # Check collateral balance limit before processing
                 try:
                     current_balance_theta = self.to_theta(self.collateral_manager.balance_of(miner_hotkey))
-                    
+
                     if current_balance_theta + deposit_amount_theta > self.max_theta:
                         error_msg = (f"Deposit would exceed maximum balance limit. "
-                                   f"Current: {current_balance_theta:.2f} Theta, "
-                                   f"Deposit: {deposit_amount_theta:.2f} Theta, "
-                                   f"Limit: {self.max_theta} Theta")
+                                     f"Current: {current_balance_theta:.2f} Theta, "
+                                     f"Deposit: {deposit_amount_theta:.2f} Theta, "
+                                     f"Limit: {self.max_theta} Theta")
                         bt.logging.warning(error_msg)
                         return {
                             "successfully_processed": False,
@@ -394,7 +402,7 @@ class ValidatorContractManager:
                     "successfully_processed": True,
                     "error_message": ""
                 }
-                
+
             except Exception as e:
                 error_msg = f"Deposit execution failed: {str(e)}"
                 bt.logging.error(error_msg)
@@ -402,7 +410,7 @@ class ValidatorContractManager:
                     "successfully_processed": False,
                     "error_message": error_msg
                 }
-                
+
         except Exception as e:
             error_msg = f"Deposit processing error: {str(e)}"
             bt.logging.error(error_msg)
@@ -613,8 +621,9 @@ class ValidatorContractManager:
 
             # Calculate slash amount (based on drawdown percentage)
             drawdown_proportion = 1 - ((drawdown - ValiConfig.MAX_TOTAL_DRAWDOWN) / (
-                        1 - ValiConfig.MAX_TOTAL_DRAWDOWN))  # scales x% drawdown to 100% of collateral
-            slash_proportion = min(1.0, drawdown_proportion * ValiConfig.DRAWDOWN_SLASH_PROPORTION) # cap slashed proportion at 100%
+                    1 - ValiConfig.MAX_TOTAL_DRAWDOWN))  # scales x% drawdown to 100% of collateral
+            slash_proportion = min(1.0,
+                                   drawdown_proportion * ValiConfig.DRAWDOWN_SLASH_PROPORTION)  # cap slashed proportion at 100%
             slash_amount = current_balance_theta * slash_proportion
 
             bt.logging.info(f"Computed slashing for {miner_hotkey}: "
@@ -645,7 +654,7 @@ class ValidatorContractManager:
             slash_amount = current_balance_theta * slash_proportion
         return self.slash_miner_collateral(miner_hotkey, slash_amount)
 
-    def slash_miner_collateral(self, miner_hotkey: str, slash_amount:float=None) -> bool:
+    def slash_miner_collateral(self, miner_hotkey: str, slash_amount: float = None) -> bool:
         """
         Slash miner's collateral by a raw theta amount
 
@@ -692,7 +701,7 @@ class ValidatorContractManager:
             bt.logging.error(f"Failed to execute slashing for {miner_hotkey}: {e}")
             return False
 
-    def get_miner_collateral_balance(self, miner_address: str, max_retries: int=4) -> Optional[float]:
+    def get_miner_collateral_balance(self, miner_address: str, max_retries: int = 4) -> Optional[float]:
         """
         Get a miner's current collateral balance in theta tokens.
 
@@ -711,7 +720,8 @@ class ValidatorContractManager:
                 # Check if this is a rate limiting error (429)
                 if "429" in str(e) and attempt < max_retries - 1:
                     wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s, 8s
-                    bt.logging.warning(f"Rate limited getting balance for {miner_address}, retrying in {wait_time}s... (attempt {attempt + 1}/{max_retries})")
+                    bt.logging.warning(
+                        f"Rate limited getting balance for {miner_address}, retrying in {wait_time}s... (attempt {attempt + 1}/{max_retries})")
                     time.sleep(wait_time)
                 else:
                     bt.logging.error(f"Failed to get collateral balance for {miner_address}: {e}")
@@ -734,7 +744,7 @@ class ValidatorContractManager:
             bt.logging.error(f"Failed to get slashed collateral: {e}")
             return 0
 
-    def set_miner_account_size(self, hotkey: str, timestamp_ms: int=None) -> bool:
+    def set_miner_account_size(self, hotkey: str, timestamp_ms: int = None) -> bool:
         """
         Set the account size for a miner. Saves to memory and disk.
         Records are kept in chronological order.
@@ -758,7 +768,7 @@ class ValidatorContractManager:
         if hotkey in self.miner_account_sizes and self.miner_account_sizes[hotkey]:
             last_record = self.miner_account_sizes[hotkey][-1]
             if (last_record.account_size == collateral_record.account_size and
-                last_record.account_size_theta == collateral_record.account_size_theta):
+                    last_record.account_size_theta == collateral_record.account_size_theta):
                 bt.logging.info(f"Skipping save for {hotkey} - new record matches last record")
                 return True
 
@@ -783,8 +793,8 @@ class ValidatorContractManager:
                 f"Updated account size for {hotkey}: ${account_size:,.2f} (valid from {collateral_record.valid_date_str})")
         return True
 
-    def get_miner_account_size(self, hotkey: str, timestamp_ms: int=None, most_recent: bool=False,
-                               records_dict: dict=None, use_account_floor=False) -> float | None:
+    def get_miner_account_size(self, hotkey: str, timestamp_ms: int = None, most_recent: bool = False,
+                               records_dict: dict = None) -> float | None:
         """
         Get the account size for a miner at a given timestamp. Iterate list in reverse chronological order, and return
         the first record whose valid_date_timestamp <= start_of_day_ms
@@ -794,7 +804,6 @@ class ValidatorContractManager:
             timestamp_ms: Timestamp to query for (defaults to now)
             most_recent: If True, return most recent record regardless of timestamp
             records_dict: Optional dict to use instead of self.miner_account_sizes (for cached lookups)
-            use_account_floor: If True, return at least the minimum account size if no records found
 
         Returns:
             Account size in USD, or None if no applicable records
@@ -806,7 +815,7 @@ class ValidatorContractManager:
         source_records = records_dict if records_dict is not None else self.miner_account_sizes
 
         if hotkey not in source_records or not source_records[hotkey]:
-            return ValiConfig.MIN_CAPITAL if use_account_floor else None
+            return None
 
         # Get start of the requested day
         start_of_day_ms = int(
@@ -818,22 +827,18 @@ class ValidatorContractManager:
         # Return most recent record
         if most_recent:
             most_recent_record = source_records[hotkey][-1]
-            ans = most_recent_record.account_size
-            if use_account_floor:
-                ans = max(ans, ValiConfig.MIN_CAPITAL)
-            return ans
+            return most_recent_record.account_size
 
         # Iterate in reversed order, and return the first record that is valid for or before the requested day
         for record in reversed(source_records[hotkey]):
             if record.valid_date_timestamp <= start_of_day_ms:
-                ans = record.account_size
-                if use_account_floor:
-                    ans = max(ans, ValiConfig.MIN_CAPITAL)
-                return ans
+                return record.account_size
 
-        return ValiConfig.MIN_CAPITAL if use_account_floor else None
+        # No applicable records found
+        return None
 
-    def get_all_miner_account_sizes(self, miner_account_sizes:dict[str, List[CollateralRecord]]=None, timestamp_ms:int=None) -> dict[str, float]:
+    def get_all_miner_account_sizes(self, miner_account_sizes: dict[str, List[CollateralRecord]] = None,
+                                    timestamp_ms: int = None) -> dict[str, float]:
         """
         Return a dict of all miner account sizes at a timestamp_ms
         """
@@ -845,11 +850,12 @@ class ValidatorContractManager:
 
         all_miner_account_sizes = {}
         for hotkey in miner_account_sizes.keys():
-            all_miner_account_sizes[hotkey] = self.get_miner_account_size(hotkey, timestamp_ms=timestamp_ms, records_dict=miner_account_sizes)
+            all_miner_account_sizes[hotkey] = self.get_miner_account_size(hotkey, timestamp_ms=timestamp_ms,
+                                                                          records_dict=miner_account_sizes)
         return all_miner_account_sizes
 
     @staticmethod
-    def min_collateral_penalty(collateral:float) -> float:
+    def min_collateral_penalty(collateral: float) -> float:
         """
         Penalize miners who do not reach the min collateral
         """
@@ -862,6 +868,7 @@ class ValidatorContractManager:
         Broadcast CollateralRecord synapse to other validators.
         Runs in a separate thread to avoid blocking the main process.
         """
+
         def run_broadcast():
             try:
                 asyncio.run(self._async_broadcast_collateral_record(hotkey, collateral_record))
@@ -878,9 +885,11 @@ class ValidatorContractManager:
         try:
             # Get other validators to broadcast to
             if self.is_testnet:
-                validator_axons = [n.axon_info for n in self.metagraph.get_neurons() if n.axon_info.ip != ValiConfig.AXON_NO_IP and n.axon_info.hotkey != self.vault_wallet.hotkey.ss58_address]
+                validator_axons = [n.axon_info for n in self.metagraph.neurons if
+                                   n.axon_info.ip != ValiConfig.AXON_NO_IP and n.axon_info.hotkey != self.vault_wallet.hotkey.ss58_address]
             else:
-                validator_axons = [n.axon_info for n in self.metagraph.get_neurons() if n.stake > bt.Balance(ValiConfig.STAKE_MIN) and n.axon_info.ip != ValiConfig.AXON_NO_IP and n.axon_info.hotkey != self.vault_wallet.hotkey.ss58_address]
+                validator_axons = [n.axon_info for n in self.metagraph.neurons if n.stake > bt.Balance(
+                    ValiConfig.STAKE_MIN) and n.axon_info.ip != ValiConfig.AXON_NO_IP and n.axon_info.hotkey != self.vault_wallet.hotkey.ss58_address]
 
             if not validator_axons:
                 bt.logging.debug("No other validators to broadcast CollateralRecord to")
@@ -910,41 +919,16 @@ class ValidatorContractManager:
                     if response.successfully_processed:
                         success_count += 1
                     elif response.error_message:
-                        bt.logging.warning(f"Failed to send CollateralRecord to {response.axon.hotkey}: {response.error_message}")
+                        bt.logging.warning(
+                            f"Failed to send CollateralRecord to {response.axon.hotkey}: {response.error_message}")
 
-                bt.logging.info(f"CollateralRecord broadcast completed: {success_count}/{len(responses)} validators updated")
+                bt.logging.info(
+                    f"CollateralRecord broadcast completed: {success_count}/{len(responses)} validators updated")
 
         except Exception as e:
             bt.logging.error(f"Error in async broadcast collateral record: {e}")
             import traceback
             bt.logging.error(traceback.format_exc())
-
-    def receive_collateral_record(self,
-                                  synapse: template.protocol.CollateralRecord) -> template.protocol.CollateralRecord:
-        """
-        receive collateral record update, and update miner account sizes
-        """
-        try:
-            # Process the collateral record through the contract manager
-            sender_hotkey = synapse.dendrite.hotkey
-            bt.logging.info(f"Received collateral record update from validator hotkey [{sender_hotkey}].")
-            success = self.receive_collateral_record_update(synapse.collateral_record)
-
-            if success:
-                synapse.successfully_processed = True
-                synapse.error_message = ""
-                bt.logging.info(f"Successfully processed CollateralRecord synapse from {sender_hotkey}")
-            else:
-                synapse.successfully_processed = False
-                synapse.error_message = "Failed to process collateral record update"
-                bt.logging.warning(f"Failed to process CollateralRecord synapse from {sender_hotkey}")
-
-        except Exception as e:
-            synapse.successfully_processed = False
-            synapse.error_message = f"Error processing collateral record: {str(e)}"
-            bt.logging.error(f"Exception in receive_collateral_record: {e}")
-
-        return synapse
 
     def receive_collateral_record_update(self, collateral_record_data: dict) -> bool:
         """
@@ -989,7 +973,8 @@ class ValidatorContractManager:
                 # Save to disk
                 self._save_miner_account_sizes_to_disk()
 
-                bt.logging.info(f"Updated miner account size for {hotkey}: ${account_size} (valid from {collateral_record.valid_date_str})")
+                bt.logging.info(
+                    f"Updated miner account size for {hotkey}: ${account_size} (valid from {collateral_record.valid_date_str})")
                 return True
 
         except Exception as e:

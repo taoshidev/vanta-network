@@ -161,6 +161,15 @@ class ValiConfig:
     RPC_ASSETSELECTION_PORT = 50010
     RPC_ASSETSELECTION_SERVICE_NAME = "AssetSelectionManagerServer"
 
+    RPC_CONTRACTMANAGER_PORT = 50011
+    RPC_CONTRACTMANAGER_SERVICE_NAME = "ValidatorContractManagerServer"
+
+    RPC_MINERSTATISTICS_PORT = 50012
+    RPC_MINERSTATISTICS_SERVICE_NAME = "MinerStatisticsManagerServer"
+
+    RPC_REQUESTCORE_PORT = 50013
+    RPC_REQUESTCORE_SERVICE_NAME = "RequestCoreManagerServer"
+
     @staticmethod
     def get_rpc_authkey(service_name: str, port: int) -> bytes:
         """

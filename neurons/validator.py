@@ -210,8 +210,14 @@ class Validator(ValidatorBase):
             slack_notifier=self.slack_notifier
         )
 
-        # Initialize ValidatorContractManager for collateral operations
-        self.contract_manager = ValidatorContractManager(config=self.config, position_manager=None, ipc_manager=self.ipc_manager, metagraph=self.metagraph)
+        # Initialize ValidatorContractManager for collateral operations (uses RPC - no IPC overhead)
+        self.contract_manager = ValidatorContractManager(
+            config=self.config,
+            position_manager=None,
+            metagraph=self.metagraph,
+            shutdown_dict=shutdown_dict,
+            slack_notifier=self.slack_notifier
+        )
 
 
         # Create EliminationManager with RPC address injection (NO circular dependency)
@@ -472,11 +478,10 @@ class Validator(ValidatorBase):
         # Step 8: Initialize RequestCoreManager and MinerStatisticsManager
         def step8():
             self.request_core_manager = RequestCoreManager(self.position_manager, self.weight_setter, self.plagiarism_detector,
-                                                          contract_manager=self.contract_manager, limit_order_manager=self.limit_order_manager, ipc_manager=self.ipc_manager,
+                                                          contract_manager=self.contract_manager, limit_order_manager=self.limit_order_manager,
                                                           asset_selection_manager=self.asset_selection_manager)
             self.miner_statistics_manager = MinerStatisticsManager(self.position_manager, self.weight_setter,
-                                                                   self.plagiarism_detector, contract_manager=self.contract_manager,
-                                                                   ipc_manager=self.ipc_manager)
+                                                                   self.plagiarism_detector, contract_manager=self.contract_manager)
             return (self.request_core_manager, self.miner_statistics_manager)
         self.run_init_step_with_monitoring(8, "Initializing RequestCoreManager and MinerStatisticsManager", step8)
 

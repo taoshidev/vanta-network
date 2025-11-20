@@ -56,21 +56,10 @@ class ChallengePeriodManagerServer(CacheController):
         self.position_manager = position_manager
         self.running_unit_tests = running_unit_tests
 
-        # Create RPC client for EliminationManager (using address injection pattern)
+        # Store RPC address for deferred connection (connect AFTER server signals readiness)
+        # This prevents blocking during __init__ which would cause server startup timeout
+        self.elimination_rpc_address = elimination_rpc_address
         self.elim_client = None
-        if elimination_rpc_address and not running_unit_tests:
-            from vali_objects.rpc.manager_rpc_client import ManagerRPCClient
-            host, port = elimination_rpc_address
-            self.elim_client = ManagerRPCClient(host, port, ValiConfig.RPC_ELIMINATION_SERVICE_NAME)
-            connection_success = self.elim_client.connect()
-            if connection_success:
-                bt.logging.success(
-                    f"[CP_RPC] Connected to EliminationManager at {elimination_rpc_address}"
-                )
-            else:
-                bt.logging.warning(
-                    f"[CP_RPC] Failed to connect to EliminationManager at {elimination_rpc_address}"
-                )
 
         # For test mode: direct reference to elimination manager (set via property on client)
         self.elimination_manager = None
@@ -106,6 +95,49 @@ class ChallengePeriodManagerServer(CacheController):
         self.refreshed_challengeperiod_start_time = False
 
         bt.logging.info("[CP_SERVER] ChallengePeriodManagerServer initialized with local dicts (no IPC)")
+
+    def _ensure_elim_client_connected(self):
+        """
+        Lazy connection to EliminationManager (connect on first use).
+
+        This is called by methods that need to access EliminationManager.
+        Connection is established only when needed, not during server startup.
+
+        Returns:
+            bool: True if connected, False otherwise
+        """
+        # Already connected
+        if self.elim_client is not None:
+            return True
+
+        # No address configured or running in test mode
+        if not self.elimination_rpc_address or self.running_unit_tests:
+            return False
+
+        # Attempt connection
+        from vali_objects.rpc.manager_rpc_client import ManagerRPCClient
+
+        try:
+            bt.logging.info(f"[CP_RPC] Connecting to EliminationManager at {self.elimination_rpc_address}...")
+            host, port = self.elimination_rpc_address
+            self.elim_client = ManagerRPCClient(host, port, ValiConfig.RPC_ELIMINATION_SERVICE_NAME)
+            connection_success = self.elim_client.connect()
+
+            if connection_success:
+                bt.logging.success(
+                    f"[CP_RPC] ✓ Connected to EliminationManager at {self.elimination_rpc_address}"
+                )
+                return True
+            else:
+                bt.logging.warning(
+                    f"[CP_RPC] ✗ Failed to connect to EliminationManager at {self.elimination_rpc_address}"
+                )
+                self.elim_client = None
+                return False
+        except Exception as e:
+            bt.logging.error(f"[CP_RPC] Error connecting to EliminationManager: {e}")
+            self.elim_client = None
+            return False
 
     # ==================== RPC Methods (exposed to client) ====================
 
@@ -559,16 +591,16 @@ class ChallengePeriodManagerServer(CacheController):
             if self.running_unit_tests and self.elimination_manager:
                 # Test mode: use direct reference
                 eliminations = self.elimination_manager.get_eliminations_from_memory()
-            elif self.elim_client:
-                # Production mode: use RPC client (with safe call handling)
+            elif self._ensure_elim_client_connected():
+                # Production mode: use RPC client (with lazy connection)
                 try:
                     eliminations = self.elim_client.call("get_eliminations_from_memory_rpc")
                 except RuntimeError as e:
-                    # RPC not connected - skip this operation entirely
-                    bt.logging.warning(f"Elim client not connected, skipping add_all_miners_to_success: {e}")
+                    # RPC call failed - skip this operation entirely
+                    bt.logging.warning(f"Elim client RPC call failed, skipping add_all_miners_to_success: {e}")
                     return
             else:
-                # No elimination interface available
+                # No elimination interface available (connection failed or not configured)
                 bt.logging.warning("No elimination interface available in add_all_miners_to_success")
                 return
 
@@ -603,17 +635,17 @@ class ChallengePeriodManagerServer(CacheController):
             if self.running_unit_tests and self.elimination_manager:
                 # Test mode: use direct reference
                 eliminations = self.elimination_manager.get_eliminations_from_memory()
-            elif self.elim_client:
-                # Production mode: use RPC client (with safe call handling)
+            elif self._ensure_elim_client_connected():
+                # Production mode: use RPC client (with lazy connection)
                 try:
                     eliminations = self.elim_client.call("get_eliminations_from_memory_rpc")
                 except RuntimeError as e:
-                    # RPC not connected - we CANNOT safely add miners without knowing who's eliminated
+                    # RPC call failed - we CANNOT safely add miners without knowing who's eliminated
                     # Return early to avoid adding eliminated miners to challenge period
-                    bt.logging.warning(f"Elim client not connected, cannot safely add miners to challenge period: {e}")
+                    bt.logging.warning(f"Elim client RPC call failed, cannot safely add miners to challenge period: {e}")
                     return
             else:
-                # No elimination interface available - cannot proceed safely
+                # No elimination interface available (connection failed or not configured)
                 if not self.running_unit_tests:
                     bt.logging.warning("No elimination interface available, cannot safely add miners to challenge period")
                     return
@@ -715,16 +747,16 @@ class ChallengePeriodManagerServer(CacheController):
         if self.running_unit_tests and self.elimination_manager:
             # Test mode: use direct reference
             eliminations = self.elimination_manager.get_eliminations_from_memory()
-        elif self.elim_client:
-            # Production mode: use RPC client (with safe call handling)
+        elif self._ensure_elim_client_connected():
+            # Production mode: use RPC client (with lazy connection)
             try:
                 eliminations = self.elim_client.call("get_eliminations_from_memory_rpc")
             except RuntimeError as e:
-                # RPC not connected - SKIP ENTIRE REFRESH to avoid data corruption
-                bt.logging.warning(f"Elim client not connected, skipping ChallengePeriod refresh to avoid incorrect state: {e}")
+                # RPC call failed - SKIP ENTIRE REFRESH to avoid data corruption
+                bt.logging.warning(f"Elim client RPC call failed, skipping ChallengePeriod refresh to avoid incorrect state: {e}")
                 eliminations_available = False
         else:
-            # No elimination interface available in production - skip refresh
+            # No elimination interface available (connection failed or not configured)
             if not self.running_unit_tests:
                 bt.logging.warning("No elimination interface available, skipping ChallengePeriod refresh")
                 eliminations_available = False
@@ -1185,16 +1217,16 @@ class ChallengePeriodManagerServer(CacheController):
             if self.running_unit_tests and self.elimination_manager:
                 # Test mode: use direct reference
                 eliminations_hotkeys = self.elimination_manager.get_eliminated_hotkeys()
-            elif self.elim_client:
-                # Production mode: use RPC client (with safe call handling)
+            elif self._ensure_elim_client_connected():
+                # Production mode: use RPC client (with lazy connection)
                 try:
                     eliminations_hotkeys = self.elim_client.call("get_eliminated_hotkeys_rpc")
                 except RuntimeError as e:
-                    # RPC not connected - return False to indicate no changes made
-                    bt.logging.warning(f"Elim client not connected in _remove_eliminated_from_memory, skipping: {e}")
+                    # RPC call failed - return False to indicate no changes made
+                    bt.logging.warning(f"Elim client RPC call failed in _remove_eliminated_from_memory, skipping: {e}")
                     return False
             else:
-                # No elimination interface available
+                # No elimination interface available (connection failed or not configured)
                 eliminations_hotkeys = set()
         else:
             eliminations_hotkeys = set([x['hotkey'] for x in eliminations])
@@ -1571,9 +1603,13 @@ def start_challengeperiod_manager_server(
 
     bt.logging.info(f"[CP_SERVER] ChallengePeriodManagerServer listening on {address}")
 
-    # Signal that server is ready
+    # Signal that server is ready (BEFORE connecting to peer services)
+    # This ensures the client doesn't timeout waiting for our server to start
     if server_ready:
         server_ready.set()
+        bt.logging.debug("[CP_SERVER] Readiness signal sent")
 
-    # Serve forever (blocks until shutdown)
+    # Start serving immediately (connection to EliminationManager will happen lazily on first use)
+    # This ensures the server can process RPC requests without waiting for peer services
+    bt.logging.info("[CP_SERVER] Starting RPC server (EliminationManager connection deferred until first use)")
     rpc_server.serve_forever()

@@ -91,6 +91,10 @@ class DebtLedgerManagerServer:
         self.running_unit_tests = running_unit_tests
         self.running = False
 
+        # Cache for pre-compressed debt ledgers (updated on each build)
+        # Stores gzip-compressed JSON bytes for instant RPC access
+        self._compressed_ledgers_cache: bytes = b''
+
         # Load from disk on startup
         self.load_data_from_disk()
 
@@ -166,6 +170,19 @@ class DebtLedgerManagerServer:
                 summaries[hotkey] = summary
         return summaries
 
+    def get_compressed_summaries_rpc(self) -> bytes:
+        """
+        Get pre-compressed debt ledger summaries as gzip bytes from cache.
+
+        This method returns pre-compressed data that was cached during the last
+        ledger build, providing instant RPC access without compression overhead.
+        Similar to MinerStatisticsManager.get_compressed_statistics().
+
+        Returns:
+            Cached compressed gzip bytes of debt ledger summaries JSON (empty bytes if cache not built yet)
+        """
+        return self._compressed_ledgers_cache
+
     def health_check_rpc(self) -> dict:
         """Health check endpoint for RPC monitoring."""
         return {
@@ -178,6 +195,66 @@ class DebtLedgerManagerServer:
     # ========================================================================
     # PERSISTENCE METHODS
     # ========================================================================
+
+    def _update_compressed_ledgers_cache(self):
+        """
+        Update the pre-compressed debt ledgers cache for instant RPC access.
+
+        This method is called after build_debt_ledgers() completes.
+        Caches compressed gzip bytes for zero-latency RPC responses.
+        Pattern matches MinerStatisticsManager.generate_request_minerstatistics().
+        """
+        from vali_objects.utils.vali_bkp_utils import CustomEncoder
+
+        try:
+            # Get all summaries
+            summaries = self.get_all_summaries_rpc()
+
+            # Serialize to JSON using CustomEncoder (handles datetime, BaseModel, etc.)
+            json_str = json.dumps(summaries, cls=CustomEncoder)
+
+            # Compress with gzip and cache
+            self._compressed_ledgers_cache = gzip.compress(json_str.encode('utf-8'))
+
+            bt.logging.info(
+                f"Updated compressed ledgers cache: {len(summaries)} ledgers, "
+                f"{len(self._compressed_ledgers_cache)} bytes"
+            )
+
+        except Exception as e:
+            bt.logging.error(f"Error updating compressed ledgers cache: {e}", exc_info=True)
+            # Keep old cache on error (don't clear it)
+
+    def _write_summaries_to_disk(self):
+        """
+        Write debt ledger summaries to compressed file for backup purposes.
+
+        This is called automatically after build_debt_ledgers() completes.
+        Note: REST server now uses RPC to access summaries directly from memory,
+        but we still write to disk for backup/debugging purposes.
+        """
+        from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
+
+        try:
+            # Build summaries dict
+            summaries = {}
+            for hotkey in self.debt_ledgers:
+                summary = self.get_ledger_summary_rpc(hotkey)
+                if summary:
+                    summaries[hotkey] = summary
+
+            # Write to compressed file (uses CustomEncoder automatically)
+            # Inline path generation (backup copy for debugging/fallback)
+            suffix = "/tests" if self.running_unit_tests else ""
+            summaries_path = ValiConfig.BASE_DIR + f"{suffix}/validation/debt_ledger_summaries.json.gz"
+            ValiBkpUtils.write_compressed_json(summaries_path, summaries)
+
+            bt.logging.info(
+                f"Wrote {len(summaries)} debt ledger summaries to {summaries_path}"
+            )
+
+        except Exception as e:
+            bt.logging.error(f"Error writing summaries to disk: {e}", exc_info=True)
 
     def _get_ledger_path(self) -> str:
         """Get path for debt ledger file."""
@@ -695,6 +772,14 @@ class DebtLedgerManagerServer:
         # Save to disk after atomic swap
         bt.logging.info(f"Saving {len(self.debt_ledgers)} debt ledgers to disk...")
         self.save_to_disk(create_backup=False)
+
+        # Write summaries to compressed file for backup/debugging
+        bt.logging.info("Writing summaries to disk...")
+        self._write_summaries_to_disk()
+
+        # Update compressed ledgers cache for instant RPC access (matches MinerStatisticsManager pattern)
+        bt.logging.info("Updating compressed ledgers cache...")
+        self._update_compressed_ledgers_cache()
 
         # Final summary
         bt.logging.info(

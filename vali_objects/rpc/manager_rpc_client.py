@@ -58,20 +58,24 @@ class ManagerRPCClient:
             f"[ManagerRPCClient] Created client for {service_name} at {host}:{port}"
         )
 
-    def connect(self, max_retries: int = 5, retry_delay: float = 1.0) -> bool:
+    def connect(self, max_retries: int = 60, retry_delay: float = 1.0) -> bool:
         """
         Connect to the remote RPC server.
 
         Args:
-            max_retries: Maximum number of connection attempts
-            retry_delay: Delay between retries in seconds
+            max_retries: Maximum number of connection attempts (default: 60)
+            retry_delay: Delay between retries in seconds (default: 1.0)
 
         Returns:
             bool: True if connected successfully, False otherwise
         """
+        # Threshold for when to start logging warnings (avoid spam during startup)
+        # Default: warn after 30 seconds (30 attempts with 1s delay)
+        warning_threshold = 30
+
         for attempt in range(1, max_retries + 1):
             try:
-                bt.logging.debug(
+                bt.logging.trace(
                     f"[ManagerRPCClient] Attempting to connect to {self.service_name} "
                     f"at {self.address} (attempt {attempt}/{max_retries})"
                 )
@@ -91,17 +95,31 @@ class ManagerRPCClient:
                 self._manager = manager
                 self._connected = True
 
-                bt.logging.success(
-                    f"[ManagerRPCClient] Connected to {self.service_name} at {self.address}"
-                )
+                # If it took multiple attempts, log that we eventually succeeded
+                if attempt > 1:
+                    bt.logging.success(
+                        f"[ManagerRPCClient] Connected to {self.service_name} at {self.address} "
+                        f"after {attempt} attempts"
+                    )
+                else:
+                    bt.logging.success(
+                        f"[ManagerRPCClient] Connected to {self.service_name} at {self.address}"
+                    )
                 return True
 
             except Exception as e:
                 if attempt < max_retries:
-                    bt.logging.warning(
-                        f"[ManagerRPCClient] Connection failed (attempt {attempt}/{max_retries}): {e}. "
-                        f"Retrying in {retry_delay}s..."
-                    )
+                    # Only log warnings after several failed attempts to reduce startup noise
+                    if attempt >= warning_threshold:
+                        bt.logging.warning(
+                            f"[ManagerRPCClient] Connection failed (attempt {attempt}/{max_retries}): {e}. "
+                            f"Retrying in {retry_delay}s..."
+                        )
+                    else:
+                        bt.logging.trace(
+                            f"[ManagerRPCClient] Connection failed (attempt {attempt}/{max_retries}): {e}. "
+                            f"Retrying in {retry_delay}s..."
+                        )
                     time.sleep(retry_delay)
                 else:
                     bt.logging.error(

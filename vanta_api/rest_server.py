@@ -607,12 +607,26 @@ class VantaRestServer(APIKeyMixin):
             if not self.is_valid_api_key(api_key):
                 return jsonify({'error': 'Unauthorized access'}), 401
 
-            data = self.debt_ledger_manager.get_all_ledgers()
+            # Check if debt ledger manager is available
+            if not self.debt_ledger_manager:
+                return jsonify({'error': 'Debt ledger data not available'}), 503
 
-            if data is None:
-                return jsonify({'error': 'Debt ledger data not found'}), 404
-            else:
-                return self._jsonify_with_custom_encoder(data)
+            try:
+                # Get compressed summaries directly from RPC (faster than disk I/O)
+                # RPC call retrieves pre-compressed gzip bytes from memory
+                compressed_data = self.debt_ledger_manager.get_compressed_summaries_rpc()
+
+                if compressed_data is None or len(compressed_data) == 0:
+                    return jsonify({'error': 'Debt ledger data not found'}), 404
+
+                # Return pre-compressed data with gzip header (browser decompresses automatically)
+                return Response(compressed_data, content_type='application/json', headers={
+                    'Content-Encoding': 'gzip'
+                })
+
+            except Exception as e:
+                bt.logging.error(f"Error retrieving debt ledger summaries via RPC: {e}")
+                return jsonify({'error': 'Internal server error retrieving debt ledger data'}), 500
 
         @self.app.route("/penalty-ledger/<minerid>", methods=["GET"])
         def get_penalty_ledger(minerid):
@@ -684,7 +698,7 @@ class VantaRestServer(APIKeyMixin):
             show_checkpoints = request.args.get("checkpoints", "true").lower()
             include_checkpoints = show_checkpoints == "true"
 
-            # Try to use pre-compressed payload for maximum performance
+            # PRIMARY: Try to use pre-compressed payload from memory cache (fastest)
             if self.miner_statistics_manager:
                 compressed_data = self.miner_statistics_manager.get_compressed_statistics(include_checkpoints)
                 if compressed_data:
@@ -693,7 +707,16 @@ class VantaRestServer(APIKeyMixin):
                         'Content-Encoding': 'gzip'
                     })
 
-            # Fallback: get raw data from disk if pre-compressed not available
+            # FALLBACK 1: If no modification needed, serve compressed file directly
+            if show_checkpoints == "true":
+                f_gz = ValiBkpUtils.get_miner_stats_dir() + ".gz"
+                if os.path.exists(f_gz):
+                    compressed_data = self._get_file(f_gz, binary=True)
+                    return Response(compressed_data, content_type='application/json', headers={
+                        'Content-Encoding': 'gzip'
+                    })
+
+            # FALLBACK 2: Decompress and modify if needed (checkpoints=false or no .gz file)
             f = ValiBkpUtils.get_miner_stats_dir()
             data = self._get_file(f)
             if not data:
