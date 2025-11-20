@@ -38,8 +38,8 @@ class EliminationManager(RPCServiceBase, CacheController):
     would already be cleared and their weight would be calculated as normal.
     """
 
-    def __init__(self, metagraph, position_manager, challengeperiod_rpc_address=None,
-                 running_unit_tests=False, shutdown_dict=None, is_backtesting=False,
+    def __init__(self, metagraph, position_manager, running_unit_tests=False,
+                 shutdown_dict=None, is_backtesting=False,
                  websocket_notifier=None, contract_manager=None, position_locks=None,
                  sync_in_progress=None, slack_notifier=None, sync_epoch=None, limit_order_manager=None,
                  start_server=True):
@@ -49,9 +49,6 @@ class EliminationManager(RPCServiceBase, CacheController):
         Args:
             metagraph: Metagraph instance
             position_manager: PositionManager instance
-            challengeperiod_rpc_address: Tuple of (host, port) for ChallengePeriodManager RPC server.
-                                        If None, CP integration will be disabled.
-                                        Example: ("localhost", 50003)
             running_unit_tests: Whether running in test mode
             shutdown_dict: Shared shutdown flag
             is_backtesting: Whether backtesting
@@ -92,9 +89,9 @@ class EliminationManager(RPCServiceBase, CacheController):
         self.sync_epoch = sync_epoch
         self.limit_order_manager = limit_order_manager
 
-        # Store peer RPC address (NOT the object itself)
-        # Server will create its own RPC client to communicate with ChallengePeriodManager
-        self.challengeperiod_rpc_address = challengeperiod_rpc_address
+        # ChallengePeriod RPC address is read from ValiConfig (fixed configuration)
+        # In test mode, CP integration is disabled (address = None)
+        self.challengeperiod_rpc_address = None if running_unit_tests else ("localhost", ValiConfig.RPC_CHALLENGEPERIOD_PORT)
 
         # Local cache for fast lookups (refreshed by background daemon thread)
         self._eliminations_cache = {}  # {hotkey: elimination_dict}

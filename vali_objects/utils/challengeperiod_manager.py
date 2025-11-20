@@ -25,7 +25,6 @@ class ChallengePeriodManager(RPCServiceBase, CacheController):
             contract_manager=None,
             plagiarism_manager=None,
             asset_selection_manager=None,
-            elimination_rpc_address=None,
             *,
             running_unit_tests=False,
             is_backtesting=False,
@@ -45,9 +44,6 @@ class ChallengePeriodManager(RPCServiceBase, CacheController):
             contract_manager: Contract manager
             plagiarism_manager: Plagiarism manager
             asset_selection_manager: Asset selection manager
-            elimination_rpc_address: Tuple of (host, port) for EliminationManager RPC server.
-                                    If None, Elim integration will be disabled.
-                                    Example: ("localhost", 50004)
             running_unit_tests: Whether running in test mode
             is_backtesting: Whether backtesting
             shutdown_dict: Shared shutdown flag
@@ -86,9 +82,9 @@ class ChallengePeriodManager(RPCServiceBase, CacheController):
         self.sync_epoch = sync_epoch
         self.asset_selection_manager = asset_selection_manager
 
-        # Store peer RPC address (NOT the object itself)
-        # Server will create its own RPC client to communicate with EliminationManager
-        self.elimination_rpc_address = elimination_rpc_address
+        # Elimination RPC address is read from ValiConfig (fixed configuration)
+        # In test mode, elimination integration is disabled (address = None)
+        self.elimination_rpc_address = None if running_unit_tests else ("localhost", ValiConfig.RPC_ELIMINATION_PORT)
 
         # Start the RPC service (unless deferred via start_server=False)
         if start_server:

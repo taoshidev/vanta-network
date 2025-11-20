@@ -73,7 +73,6 @@ class TestReregistration(TestBase):
         self.elimination_manager = EliminationManager(
             self.mock_metagraph,
             None,  # position_manager set later
-            challengeperiod_rpc_address=None,  # challengeperiod_manager set later via property
             running_unit_tests=True,
             contract_manager=self.contract_manager
         )
@@ -221,7 +220,6 @@ class TestReregistration(TestBase):
         self.elimination_manager = EliminationManager(
             self.mock_metagraph,
             self.position_manager,
-            challengeperiod_rpc_address=None,  # challengeperiod_manager set via property
             running_unit_tests=True,
             contract_manager=self.contract_manager
         )
@@ -256,7 +254,6 @@ class TestReregistration(TestBase):
         self.elimination_manager = EliminationManager(
             self.mock_metagraph,
             self.position_manager,
-            challengeperiod_rpc_address=None,  # challengeperiod_manager set via property
             running_unit_tests=True,
             contract_manager=self.contract_manager
         )
@@ -524,7 +521,6 @@ class TestReregistration(TestBase):
         self.elimination_manager = EliminationManager(
             self.mock_metagraph,
             self.position_manager,
-            challengeperiod_rpc_address=None,  # challengeperiod_manager set via property
             running_unit_tests=True,
             contract_manager=self.contract_manager
         )
@@ -557,7 +553,6 @@ class TestReregistration(TestBase):
         self.elimination_manager = EliminationManager(
             self.mock_metagraph,
             self.position_manager,
-            challengeperiod_rpc_address=None,  # challengeperiod_manager set via property
             running_unit_tests=True,
             contract_manager=self.contract_manager
         )

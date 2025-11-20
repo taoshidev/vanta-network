@@ -120,7 +120,6 @@ class TestChallengePeriodIntegration(TestBase):
         self.elimination_manager = EliminationManager(
             self.mock_metagraph,
             self.live_price_fetcher,
-            challengeperiod_rpc_address=None,  # Not needed in test mode
             running_unit_tests=True,
             contract_manager=self.contract_manager
         )
@@ -139,7 +138,6 @@ class TestChallengePeriodIntegration(TestBase):
             perf_ledger_manager=self.ledger_manager,
             contract_manager=self.contract_manager,
             plagiarism_manager=self.plagiarism_manager,
-            elimination_rpc_address=None,  # Not needed in test mode
             running_unit_tests=True
         )
         self.position_manager.perf_ledger_manager = self.ledger_manager

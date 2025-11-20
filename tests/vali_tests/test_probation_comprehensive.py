@@ -79,7 +79,6 @@ class TestProbationComprehensive(TestBase):
         self.elimination_manager = EliminationManager(
             self.mock_metagraph,
             None,
-            challengeperiod_rpc_address=None,  # Not needed in test mode
             running_unit_tests=True,
             contract_manager=self.contract_manager
         )
@@ -98,7 +97,6 @@ class TestProbationComprehensive(TestBase):
             perf_ledger_manager=self.ledger_manager,
             contract_manager=self.contract_manager,
             plagiarism_manager=self.plagiarism_manager,
-            elimination_rpc_address=None,  # Not needed in test mode
             running_unit_tests=True
         )
         self.weight_setter = SubtensorWeightSetter(self.mock_metagraph,
@@ -381,7 +379,6 @@ class TestProbationComprehensive(TestBase):
             self.mock_metagraph,
             position_manager=self.position_manager,
             perf_ledger_manager=self.ledger_manager,
-            elimination_rpc_address=None,  # Not needed in test mode
             running_unit_tests=True
         )
 

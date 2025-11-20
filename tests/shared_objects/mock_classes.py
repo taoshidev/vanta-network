@@ -52,8 +52,8 @@ class MockPlagiarismDetector(PlagiarismDetector):
 
 
 class MockChallengePeriodManager(ChallengePeriodManager):
-    def __init__(self, metagraph, position_manager, contract_manager, plagiarism_manager, elimination_rpc_address=None):
-        super().__init__(metagraph, running_unit_tests=True, position_manager=position_manager, contract_manager=contract_manager, plagiarism_manager=plagiarism_manager, elimination_rpc_address=elimination_rpc_address)
+    def __init__(self, metagraph, position_manager, contract_manager, plagiarism_manager):
+        super().__init__(metagraph, running_unit_tests=True, position_manager=position_manager, contract_manager=contract_manager, plagiarism_manager=plagiarism_manager)
 
 class MockLivePriceFetcher(LivePriceFetcher):
     def __init__(self, secrets, disable_ws):

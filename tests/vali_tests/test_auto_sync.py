@@ -50,7 +50,6 @@ class TestPositions(TestBase):
             account_size=self.DEFAULT_ACCOUNT_SIZE,
         )
         self.mock_metagraph = MockMetagraph([self.DEFAULT_MINER_HOTKEY])
-        self.elimination_manager = EliminationManager(self.mock_metagraph, None, challengeperiod_rpc_address=None, running_unit_tests=True)
         secrets = ValiUtils.get_secrets(running_unit_tests=True)
         self.live_price_fetcher = MockLivePriceFetcher(secrets=secrets, disable_ws=True)
         self.position_manager = PositionManager(metagraph=self.mock_metagraph, running_unit_tests=True,
@@ -1298,7 +1297,6 @@ class TestPositions(TestBase):
         self.position_manager.challengeperiod_manager = ChallengePeriodManager(
             metagraph=self.mock_metagraph,
             position_manager=self.position_manager,
-            elimination_rpc_address=None,  # Not needed in test mode
             running_unit_tests=True
         )
         
@@ -3099,7 +3097,6 @@ class TestOverlapDetection(TestBase):
         self.DEFAULT_TRADE_PAIR = TradePair.BTCUSD
 
         self.mock_metagraph = MockMetagraph([self.DEFAULT_MINER_HOTKEY])
-        self.elimination_manager = EliminationManager(self.mock_metagraph, None, challengeperiod_rpc_address=None, running_unit_tests=True)
         secrets = ValiUtils.get_secrets(running_unit_tests=True)
         self.live_price_fetcher = MockLivePriceFetcher(secrets=secrets, disable_ws=True)
         self.position_manager = PositionManager(

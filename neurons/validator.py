@@ -130,10 +130,6 @@ class Validator(ValidatorBase):
         self.ipc_manager = Manager()  # General-purpose manager for queues, values, etc.
         bt.logging.info(f"[IPC] Created IPC manager: general (PID: {self.ipc_manager._process.pid})")
 
-        # Create WebSocketNotifier RPC client for broadcasting position updates to WebSocket clients
-        # Replaces the old shared_queue_websockets multiprocessing.Queue pattern with proper RPC
-        self.websocket_notifier = WebSocketNotifier(running_unit_tests=False, slack_notifier=self.slack_notifier)
-
         # Create shared sync_in_progress flag for cross-process synchronization
         # When True, daemon processes should pause to allow position sync to complete
         self.sync_in_progress = self.ipc_manager.Value('b', False)
@@ -167,6 +163,14 @@ class Validator(ValidatorBase):
             webhook_url=getattr(self.config, 'slack_webhook_url', None),
             error_webhook_url=getattr(self.config, 'slack_error_webhook_url', None),
             is_miner=False  # This is a validator
+        )
+
+        # Create WebSocketNotifier RPC client for broadcasting position updates to WebSocket clients
+        # Connection to server is deferred until first use (server started by api_manager in step 13)
+        # If --serve is not enabled, broadcasts are silently skipped
+        self.websocket_notifier = WebSocketNotifier(
+            running_unit_tests=False,
+            slack_notifier=self.slack_notifier
         )
 
         # Create LivePriceFetcher client with Slack notifier for crash notifications
@@ -219,12 +223,11 @@ class Validator(ValidatorBase):
         )
 
 
-        # Create EliminationManager with RPC address injection (NO circular dependency)
-        # Pass ChallengePeriodManager's RPC server address for client connection
+        # Create EliminationManager (NO circular dependency - RPC addresses from ValiConfig)
+        # EliminationManager reads RPC_CHALLENGEPERIOD_PORT from ValiConfig internally
         self.elimination_manager = EliminationManager(
             self.metagraph,
             None,  # position_manager set after self.pm creation
-            challengeperiod_rpc_address=("localhost", ValiConfig.RPC_CHALLENGEPERIOD_PORT),
             shutdown_dict=shutdown_dict,
             websocket_notifier=self.websocket_notifier,
             contract_manager=self.contract_manager,
@@ -307,32 +310,34 @@ class Validator(ValidatorBase):
 
         #force_validator_to_restore_from_checkpoint(self.wallet.hotkey.ss58_address, self.metagraph, self.config, self.secrets)
 
-        # RPC ADDRESS INJECTION PATTERN - No circular dependencies!
+        # RPC ARCHITECTURE - No circular dependencies!
         #
         # Architecture:
-        # - EliminationManager has challengeperiod_rpc_address=("localhost", 50003)
-        # - ChallengePeriodManager has elimination_rpc_address=("localhost", 50004)
+        # - EliminationManager reads RPC_CHALLENGEPERIOD_PORT from ValiConfig
+        # - ChallengePeriodManager reads RPC_ELIMINATION_PORT from ValiConfig
         # - Each server creates its own RPC client to communicate with peer
         # - No object references passed between managers
         # - Servers can start in any order (no initialization dependency)
+        # - RPC addresses are centralized in ValiConfig (single source of truth)
         #
-        # Benefits over old approach:
-        # 1. NO circular dependencies (just simple address tuples)
-        # 2. NO pickle issues (tuples pickle normally)
+        # Benefits:
+        # 1. NO circular dependencies (managers read config directly)
+        # 2. NO pickle issues (addresses are simple tuples)
         # 3. Order independent initialization (servers start independently)
         # 4. Clean separation of concerns (RPC protocol defines interface)
-        # 5. Easy to test (mock RPC clients in tests)
+        # 5. Easy to test (config controls test vs production addresses)
+        # 6. Reduced boilerplate (no address passing through constructors)
         #
         # Initialization sequence:
-        # 1. Both managers already created with RPC addresses (line 221 for elimination_manager)
-        # 2. Create ChallengePeriodManager with elimination_rpc_address
+        # 1. Both managers already created (line 221 for elimination_manager)
+        # 2. Create ChallengePeriodManager (reads elimination port from ValiConfig)
         # 3. Wire up position_manager dependency
         # 4. Initialize ChallengePeriodManager server (creates elim_client internally)
         # 5. Initialize EliminationManager server (creates cp_client internally)
         # 6. Start both daemons
 
-        # Step 1: Create ChallengePeriodManager with RPC address injection (NO circular dependency)
-        # Pass EliminationManager's RPC server address for client connection
+        # Step 1: Create ChallengePeriodManager (NO circular dependency - RPC addresses from ValiConfig)
+        # ChallengePeriodManager reads RPC_ELIMINATION_PORT from ValiConfig internally
         self.challengeperiod_manager = ChallengePeriodManager(
             self.metagraph,
             perf_ledger_manager=self.perf_ledger_manager,
@@ -340,14 +345,13 @@ class Validator(ValidatorBase):
             contract_manager=self.contract_manager,
             plagiarism_manager=self.plagiarism_manager,
             asset_selection_manager=self.asset_selection_manager,
-            elimination_rpc_address=("localhost", ValiConfig.RPC_ELIMINATION_PORT),
             sync_in_progress=self.sync_in_progress,
             slack_notifier=self.slack_notifier,
             sync_epoch=self.sync_epoch,
             start_server=False,  # Defer server initialization
             start_daemon=False   # Defer daemon start
         )
-        bt.logging.info("[INIT] ChallengePeriodManager created with elimination_rpc_address (no circular dependency)")
+        bt.logging.info("[INIT] ChallengePeriodManager created (RPC addresses from ValiConfig)")
 
         # Step 2: Wire up position_manager dependency only (NO circular dependency with elimination_manager!)
         self.position_manager.challengeperiod_manager = self.challengeperiod_manager
@@ -563,6 +567,35 @@ class Validator(ValidatorBase):
                 bt.logging.info("API services not enabled - skipping")
                 return None
         self.run_init_step_with_monitoring(13, "Starting API services (if enabled)", step13)
+
+        # Connect WebSocketNotifier with retry logic to avoid race condition
+        # The WebSocket RPC server starts in a separate process, which can take several seconds.
+        # Use exponential backoff to wait for server readiness.
+        if self.config.serve:
+            bt.logging.info("[WS_CONNECT] Waiting for WebSocket RPC server to be ready...")
+            max_attempts = 5
+            connected = False
+            for attempt in range(max_attempts):
+                # Reset _server_unavailable flag to allow retry
+                self.websocket_notifier._server_unavailable = False
+
+                if self.websocket_notifier.ensure_connected():
+                    bt.logging.success(f"[WS_CONNECT] Connected to WebSocket RPC server on attempt {attempt + 1}/{max_attempts}")
+                    connected = True
+                    break
+
+                # Exponential backoff: 1s, 2s, 4s, 8s, 16s (total: 31s max)
+                if attempt < max_attempts - 1:
+                    sleep_time = 2 ** attempt
+                    bt.logging.debug(f"[WS_CONNECT] Connection attempt {attempt + 1} failed, retrying in {sleep_time}s...")
+                    time.sleep(sleep_time)
+
+            if not connected:
+                bt.logging.warning("[WS_CONNECT] WebSocket RPC server not available after 5 attempts (will retry on first broadcast)")
+                # Reset flag to allow first broadcast to retry
+                self.websocket_notifier._server_unavailable = False
+        else:
+            bt.logging.debug("[WS_CONNECT] --serve not enabled, WebSocket RPC connection skipped")
 
         # Step 14: LivePriceFetcher RPC health checker
         # Health checking is automatically started in LivePriceFetcherClient.__init__ via RPCServiceBase

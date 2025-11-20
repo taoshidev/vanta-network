@@ -70,7 +70,6 @@ class TestMDDChecker(TestBase):
         self.MINER_HOTKEY = "test_miner"
         self.mock_metagraph = MockMetagraph([self.MINER_HOTKEY])
         self.live_price_fetcher = LivePriceFetcher(secrets=secrets, disable_ws=True)
-        self.elimination_manager = EliminationManager(self.mock_metagraph, None, challengeperiod_rpc_address=None, running_unit_tests=True)
         self.perf_ledger_manager = PerfLedgerManager(metagraph=self.mock_metagraph,
                                                      live_price_fetcher=self.live_price_fetcher,
                                                      running_unit_tests=True)

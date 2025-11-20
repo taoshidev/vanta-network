@@ -40,7 +40,6 @@ class TestPlagiarismUnit(TestBase):
         self.MINER_HOTKEY4 = "test_miner4"
         self.mock_metagraph = MockMetagraph([self.MINER_HOTKEY1, self.MINER_HOTKEY2, self.MINER_HOTKEY3, self.MINER_HOTKEY4])
         self.current_time = ValiConfig.PLAGIARISM_LOOKBACK_RANGE_MS
-        self.elimination_manager = EliminationManager(self.mock_metagraph, None, challengeperiod_rpc_address=None, running_unit_tests=True)
         secrets = ValiUtils.get_secrets(running_unit_tests=True)
         self.live_price_fetcher = MockLivePriceFetcher(secrets=secrets, disable_ws=True)
         self.position_manager = PositionManager(metagraph=self.mock_metagraph, running_unit_tests=True,

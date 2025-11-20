@@ -33,7 +33,6 @@ class TestMarketOrderManager(TestBase):
         self.DEFAULT_ACCOUNT_SIZE = 1000.0
 
         self.mock_metagraph = MockMetagraph([self.DEFAULT_MINER_HOTKEY])
-        self.elimination_manager = EliminationManager(self.mock_metagraph, None, challengeperiod_rpc_address=None, running_unit_tests=True)
         self.perf_ledger_manager = PerfLedgerManager(self.mock_metagraph, running_unit_tests=True)
 
         self.position_manager = PositionManager(

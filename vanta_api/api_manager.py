@@ -94,24 +94,43 @@ def start_websocket_server(host="localhost", port=8765, refresh_interval=15):
         server_ready = multiprocessing.Event()
 
         def run_rpc_server():
-            """Run RPC server in a thread."""
-            try:
-                # Create and start RPC server
-                manager = WebSocketNotifierRPC(address=rpc_address, authkey=rpc_authkey)
-                rpc_server = manager.get_server()
+            """Run RPC server in a thread with retry logic for 'Address already in use' errors."""
+            max_attempts = 5
+            for attempt in range(max_attempts):
+                try:
+                    # Create and start RPC server
+                    manager = WebSocketNotifierRPC(address=rpc_address, authkey=rpc_authkey)
+                    rpc_server = manager.get_server()
 
-                bt.logging.info(f"[WS_RPC] WebSocket RPC server listening on {rpc_address}")
+                    bt.logging.info(f"[WS_RPC] WebSocket RPC server listening on {rpc_address}")
 
-                # Signal that server is ready
-                server_ready.set()
-                bt.logging.debug("[WS_RPC] Readiness signal sent")
+                    # Signal that server is ready
+                    server_ready.set()
+                    bt.logging.debug("[WS_RPC] Readiness signal sent")
 
-                # Start serving
-                bt.logging.info("[WS_RPC] Starting RPC server")
-                rpc_server.serve_forever()
-            except Exception as e:
-                bt.logging.error(f"[WS_RPC] Error in RPC server: {e}")
-                bt.logging.error(traceback.format_exc())
+                    # Start serving
+                    bt.logging.info("[WS_RPC] Starting RPC server")
+                    rpc_server.serve_forever()
+                    break  # Exit loop if successful
+
+                except OSError as e:
+                    if e.errno == 98 and attempt < max_attempts - 1:  # Address already in use
+                        # Retry with exponential backoff
+                        sleep_time = 2 ** attempt  # 1s, 2s, 4s, 8s, 16s
+                        bt.logging.warning(
+                            f"[WS_RPC] Port {rpc_address[1]} already in use (attempt {attempt + 1}/{max_attempts}). "
+                            f"Retrying in {sleep_time}s... (previous process may still be cleaning up)"
+                        )
+                        time.sleep(sleep_time)
+                    else:
+                        # Final attempt failed or different error
+                        bt.logging.error(f"[WS_RPC] Failed to bind RPC server after {attempt + 1} attempts: {e}")
+                        bt.logging.error(traceback.format_exc())
+                        break
+                except Exception as e:
+                    bt.logging.error(f"[WS_RPC] Error in RPC server: {e}")
+                    bt.logging.error(traceback.format_exc())
+                    break
 
         # Start RPC server in a daemon thread
         rpc_thread = threading.Thread(

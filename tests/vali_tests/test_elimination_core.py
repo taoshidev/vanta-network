@@ -73,7 +73,6 @@ class TestEliminationCore(TestBase):
         self.elimination_manager = EliminationManager(
             self.mock_metagraph,
             self.live_price_fetcher,  # position_manager (set properly later)
-            challengeperiod_rpc_address=None,  # Not needed in test mode
             running_unit_tests=True,
             contract_manager=self.contract_manager
         )
@@ -97,7 +96,6 @@ class TestEliminationCore(TestBase):
             position_manager=self.position_manager,
             perf_ledger_manager=self.ledger_manager,
             plagiarism_manager=self.plagiarism_manager,
-            elimination_rpc_address=None,  # Not needed in test mode
             running_unit_tests=True
         )
         # In test mode, still set direct reference for compatibility
@@ -500,7 +498,6 @@ class TestEliminationCore(TestBase):
         ipc_elimination_manager = EliminationManager(
             self.mock_metagraph,
             self.position_manager,
-            challengeperiod_rpc_address=None,  # Not needed in test mode
             running_unit_tests=True
         )
 
@@ -616,7 +613,6 @@ class TestEliminationCore(TestBase):
         new_manager = EliminationManager(
             self.mock_metagraph,
             self.position_manager,
-            challengeperiod_rpc_address=None,  # Not needed in test mode
             running_unit_tests=True,
             contract_manager=self.contract_manager
         )

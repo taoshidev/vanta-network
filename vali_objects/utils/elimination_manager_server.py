@@ -81,11 +81,20 @@ class EliminationManagerServer(CacheController):
         self.departed_hotkeys: Dict[str, dict] = {}
         self.eliminations_lock = threading.Lock()
 
-        # Populate from disk
+        # Populate from disk, filtering out development hotkey
         eliminations_from_disk = self.get_eliminations_from_disk()
+        filtered_count = 0
         for elim in eliminations_from_disk:
             hotkey = elim['hotkey']
+            # Skip development hotkey - it should never be eliminated
+            if hotkey == ValiConfig.DEVELOPMENT_HOTKEY:
+                filtered_count += 1
+                bt.logging.debug(f"[ELIM_INIT] Filtered out DEVELOPMENT_HOTKEY from eliminations during disk load")
+                continue
             self.eliminations[hotkey] = elim
+
+        if filtered_count > 0:
+            bt.logging.info(f"[ELIM_INIT] Filtered out {filtered_count} DEVELOPMENT_HOTKEY elimination(s) from disk load")
 
         if len(self.eliminations) == 0:
             ValiBkpUtils.write_file(

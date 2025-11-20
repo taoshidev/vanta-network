@@ -72,7 +72,6 @@ class TestEliminationPersistenceRecovery(TestBase):
         self.elimination_manager = EliminationManager(
             self.mock_metagraph,
             self.position_manager,
-            challengeperiod_rpc_address=None,  # Not needed in test mode
             running_unit_tests=True
         )
         
@@ -83,7 +82,6 @@ class TestEliminationPersistenceRecovery(TestBase):
             self.mock_metagraph,
             position_manager=self.position_manager,
             perf_ledger_manager=self.perf_ledger_manager,
-            elimination_rpc_address=None,  # Not needed in test mode
             running_unit_tests=True
         )
         
@@ -203,7 +201,6 @@ class TestEliminationPersistenceRecovery(TestBase):
         new_elimination_manager = EliminationManager(
             self.mock_metagraph,
             self.position_manager,
-            challengeperiod_rpc_address=None,  # Not needed in test mode
             running_unit_tests=True
         )
         new_elimination_manager.challengeperiod_manager = self.challengeperiod_manager
@@ -269,7 +266,6 @@ class TestEliminationPersistenceRecovery(TestBase):
         restored_elimination_manager = EliminationManager(
             self.mock_metagraph,
             self.position_manager,
-            challengeperiod_rpc_address=None,  # Not needed in test mode
             running_unit_tests=True
         )
         restored_elimination_manager.challengeperiod_manager = self.challengeperiod_manager
@@ -296,7 +292,6 @@ class TestEliminationPersistenceRecovery(TestBase):
             em1 = EliminationManager(
                 self.mock_metagraph,
                 self.position_manager,
-                challengeperiod_rpc_address=None,  # Not needed in test mode
                 running_unit_tests=True
             )
             em1.challengeperiod_manager = self.challengeperiod_manager
@@ -323,7 +318,6 @@ class TestEliminationPersistenceRecovery(TestBase):
         em2 = EliminationManager(
             self.mock_metagraph,
             self.position_manager,
-            challengeperiod_rpc_address=None,  # Not needed in test mode
             running_unit_tests=True
         )
         em2.challengeperiod_manager = self.challengeperiod_manager
@@ -371,7 +365,6 @@ class TestEliminationPersistenceRecovery(TestBase):
         em1 = EliminationManager(
             self.mock_metagraph,
             self.position_manager,
-            challengeperiod_rpc_address=None,  # Not needed in test mode
             running_unit_tests=True
         )
         em1.challengeperiod_manager = self.challengeperiod_manager
@@ -380,7 +373,6 @@ class TestEliminationPersistenceRecovery(TestBase):
         em2 = EliminationManager(
             self.mock_metagraph,
             self.position_manager,
-            challengeperiod_rpc_address=None,  # Not needed in test mode
             running_unit_tests=True
         )
         em2.challengeperiod_manager = self.challengeperiod_manager
@@ -460,7 +452,6 @@ class TestEliminationPersistenceRecovery(TestBase):
         em = EliminationManager(
             self.mock_metagraph,
             self.position_manager,
-            challengeperiod_rpc_address=None,  # Not needed in test mode
             running_unit_tests=True
         )
         em.challengeperiod_manager = self.challengeperiod_manager

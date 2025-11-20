@@ -571,6 +571,13 @@ class PerfLedgerManager(CacheController):
         self.running_unit_tests = running_unit_tests
         self.position_manager = position_manager
 
+        # Log whether we're using an existing PositionManager or not
+        if self.position_manager is not None:
+            bt.logging.success("[PERF_LEDGER] Using existing PositionManager (can access positions via RPC)")
+        else:
+            bt.logging.warning("[PERF_LEDGER] No PositionManager provided (will rely on disk-loaded data only)")
+
+        self.contract_manager = contract_manager
         self.cached_miner_account_sizes = {}  # Deepcopy of contract_manager.miner_account_sizes
         self.cache_last_refreshed_date = None  # 'YYYY-MM-DD' format, refresh daily
         self.pds = live_price_fetcher.polygon_data_service if live_price_fetcher else None  # Load it later once the process starts so ipc works.
@@ -597,13 +604,16 @@ class PerfLedgerManager(CacheController):
         self.target_ledger_window_ms = target_ledger_window_ms
         bt.logging.info(f"Running performance ledger manager with mode {self.parallel_mode.name}")
         if self.is_backtesting or self.parallel_mode != ParallelizationMode.SERIAL:
-            pass
+            bt.logging.debug("[PERF_LEDGER] Skipping disk load (backtesting or non-SERIAL mode)")
         else:
+            bt.logging.info("[PERF_LEDGER] Loading initial performance ledgers from disk...")
             initial_perf_ledgers = self.get_perf_ledgers(from_disk=True, portfolio_only=False)
+            bt.logging.success(f"[PERF_LEDGER] Loaded {len(initial_perf_ledgers)} performance ledger bundles from disk")
             for k, v in initial_perf_ledgers.items():
                 self.hotkey_to_perf_bundle[k] = v
             # ipc list does not update the object without using __setitem__
             temp = self.get_perf_ledger_eliminations(first_fetch=True)
+            bt.logging.info(f"[PERF_LEDGER] Loaded {len(temp)} pl elimination rows from disk")
             self.pl_elimination_rows.extend(temp)
             for i, x in enumerate(temp):
                 self.pl_elimination_rows[i] = x

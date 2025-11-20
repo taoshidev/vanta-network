@@ -79,7 +79,6 @@ class TestPerfLedgerEliminations(TestBase):
         self.elimination_manager = EliminationManager(
             self.mock_metagraph,
             self.live_price_fetcher,  # live_price_fetcher
-            challengeperiod_rpc_address=None,  # Not needed in test mode
             running_unit_tests=True,
             contract_manager=self.contract_manager
         )
@@ -97,7 +96,6 @@ class TestPerfLedgerEliminations(TestBase):
             self.mock_metagraph,
             position_manager=self.position_manager,
             perf_ledger_manager=self.perf_ledger_manager,
-            elimination_rpc_address=None,  # Not needed in test mode
             running_unit_tests=True
         )
         

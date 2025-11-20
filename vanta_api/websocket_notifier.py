@@ -21,11 +21,9 @@ class WebSocketNotifier(RPCServiceBase):
         """
         Initialize WebSocketNotifier.
 
-        Args:
-            running_unit_tests: Whether running in test mode
-            start_server: Whether to start RPC server (not used - server is started by api_manager)
+        Connection to RPC server is deferred until first use.
+        If server is not available (--serve not enabled), broadcasts are silently skipped.
         """
-
         # Initialize RPCServiceBase
         RPCServiceBase.__init__(
             self,
@@ -39,14 +37,11 @@ class WebSocketNotifier(RPCServiceBase):
             slack_notifier=slack_notifier
         )
 
-        # Don't start server here - the server is started by api_manager in the websocket process
-        # This client is used by other processes (market_order_manager, position_manager, etc.)
-        # to connect to the existing server
+        # Track if server is unavailable to avoid repeated connection attempts
+        self._server_unavailable = False
 
-        # Connect to existing server
-        if not running_unit_tests:
-            self._connect_client()
-            bt.logging.info(f"WebSocketNotifier: Connected to RPC server at {self._address}")
+        # Don't connect here - connection happens on first broadcast
+        # Server is started by api_manager (if --serve is enabled)
 
     def _create_direct_server(self):
         """
@@ -121,108 +116,65 @@ class WebSocketNotifier(RPCServiceBase):
     def __setstate__(self, state):
         """
         Restore object after unpickling (in child process).
-
-        Automatically reconnects to existing RPC server running in the websocket server process.
+        Connection to RPC server is deferred until first use.
         """
-        import os
-
-        msg = (
-            f"[WS_NOTIFIER_UNPICKLE] __setstate__ called in PID {os.getpid()}, "
-            f"running_unit_tests={state.get('running_unit_tests', 'UNKNOWN')}"
-        )
-        bt.logging.info(msg)
-        print(msg, flush=True)
-
         self.__dict__.update(state)
+
+        # Initialize tracking attribute
+        if not hasattr(self, '_server_unavailable'):
+            self._server_unavailable = False
 
         # In test mode, create mock server instance
         if self.running_unit_tests:
-            bt.logging.info("[WS_NOTIFIER_UNPICKLE] Test mode - creating mock server instance")
             self._server_proxy = self._create_direct_server()
-            bt.logging.success(
-                f"[WS_NOTIFIER_UNPICKLE] Mock server created, type: {type(self._server_proxy)}"
-            )
-            return
+        # In production, connection happens on first use
 
-        # Reconnect to existing RPC server
-        msg_reconnect = f"[WS_NOTIFIER_UNPICKLE] Production mode - reconnecting to RPC server on port {self.port}"
-        bt.logging.info(msg_reconnect)
-        print(msg_reconnect, flush=True)
-
-        self._connect_client_only()
-
-        # Verify connection succeeded
-        if self._server_proxy is None:
-            msg_error = "[WS_NOTIFIER_UNPICKLE] CRITICAL: _server_proxy is still None after _connect_client_only()!"
-            bt.logging.error(msg_error)
-            print(msg_error, flush=True)
-        else:
-            msg_success = f"[WS_NOTIFIER_UNPICKLE] _server_proxy successfully set: {type(self._server_proxy)}"
-            bt.logging.success(msg_success)
-            print(msg_success, flush=True)
-
-    def _connect_client_only(self):
+    def ensure_connected(self) -> bool:
         """
-        Connect to existing RPC server (client-only mode for child processes).
-
-        This is called when websocket_notifier is unpickled in a child process.
+        Ensure client is connected to RPC server. Connects if not already connected.
+        If server is unavailable (--serve not enabled), returns False and broadcasts are skipped.
         """
-        bt.logging.info(
-            f"[WS_NOTIFIER_UNPICKLE] Starting client-only reconnection on port {self.port}"
-        )
+        if self.running_unit_tests:
+            if self._server_proxy is None:
+                self._server_proxy = self._create_direct_server()
+            return True
 
-        # Use stable authkey (must match what server used)
-        if not hasattr(self, '_authkey'):
-            self._authkey = ValiConfig.get_rpc_authkey(self.service_name, self.port)
-            bt.logging.debug(f"[WS_NOTIFIER_UNPICKLE] Generated authkey from port {self.port}")
+        # Already connected
+        if self._server_proxy is not None:
+            return True
 
-        # Connect to existing server (inherited from RPCServiceBase)
+        # Server previously determined to be unavailable
+        if self._server_unavailable:
+            return False
+
+        # Try to connect once
         try:
-            bt.logging.info(f"[WS_NOTIFIER_UNPICKLE] Attempting to connect to {self._address}")
             self._connect_client()
-            bt.logging.success(
-                f"[WS_NOTIFIER_UNPICKLE] ✓ Client-only mode connected to existing RPC server at {self._address}"
-            )
-            bt.logging.info(f"[WS_NOTIFIER_UNPICKLE] _server_proxy type: {type(self._server_proxy)}")
-        except Exception as e:
-            error_trace = traceback.format_exc()
-            bt.logging.error(
-                f"[WS_NOTIFIER_UNPICKLE] ✗ Failed to reconnect in client-only mode: {e}\n"
-                f"Address: {self._address}\n"
-                f"Port: {self.port}\n"
-                f"Traceback:\n{error_trace}"
-            )
-            # Don't raise - allow child process to continue, but log the error
-            # The _server_proxy will be None and methods will fail with clearer errors
-            bt.logging.error(
-                "[WS_NOTIFIER_UNPICKLE] Child process will not be able to broadcast WebSocket updates. "
-                "This likely means the RPC server is not running or not accessible from this process."
-            )
+            bt.logging.success(f"WebSocketNotifier: Connected to RPC server at {self._address}")
+            return True
+        except Exception:
+            # Server not available (--serve not enabled), silently skip broadcasts
+            self._server_unavailable = True
+            bt.logging.debug("WebSocketNotifier: Server not available, broadcasts will be skipped")
+            return False
 
     # ==================== Client Methods (proxy to RPC) ====================
     def broadcast_position_update(self, position: Position, miner_repo_version: str = None) -> bool:
         """
         Broadcast a position update to all subscribed WebSocket clients.
-
-        This method is called from other processes (MarketOrderManager, PositionManager,
-        EliminationManager) to notify WebSocket clients of position changes.
-
-        Args:
-            position: Position object to broadcast
-            miner_repo_version: Optional miner repository version for the websocket dict
-
-        Returns:
-            bool: True if message was queued successfully, False otherwise
+        If server not available (--serve not enabled), silently returns False.
         """
+        # Skip broadcast for development hotkey
+        if position.miner_hotkey == ValiConfig.DEVELOPMENT_HOTKEY:
+            return True
+
+        # Server not available (--serve not enabled)
+        if not self.ensure_connected():
+            return False
+
         try:
-            miner_hotkey = position.miner_hotkey
-            if miner_hotkey == ValiConfig.DEVELOPMENT_HOTKEY:
-                bt.logging.info(
-                    f"WebSocketNotifier: Skipping broadcast for development hotkey {miner_hotkey}"
-                )
-                return True
-            else:
-                return self._server_proxy.broadcast_position_update_rpc(position, miner_repo_version)
+            return self._server_proxy.broadcast_position_update_rpc(position, miner_repo_version)
         except Exception as e:
-            bt.logging.error(f"WebSocketNotifier: Error broadcasting position update: {e}")
+            bt.logging.debug(f"WebSocketNotifier: Broadcast failed: {e}")
+            self._server_unavailable = True
             return False
