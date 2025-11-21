@@ -271,7 +271,11 @@ class LimitOrderManager(CacheController):
                             "limit_price": order.limit_price,
                             "price": order.price,
                             "leverage": order.leverage,
-                            "src": order.src
+                            "src": order.src,
+                            "execution_type": order.execution_type.name,
+                            "order_uuid": order.order_uuid,
+                            "stop_loss": order.stop_loss,
+                            "take_profit": order.take_profit
                         }
                         order_list.append(data)
             return order_list if order_list else None
