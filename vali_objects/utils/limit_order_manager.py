@@ -155,12 +155,12 @@ class LimitOrderManager(CacheController):
 
             if order.execution_type == ExecutionType.BRACKET:
                 bt.logging.info(
-                    f"BRACKET ORDER | {trade_pair.trade_pair_id} | "
+                    f"INCOMING BRACKET ORDER | {trade_pair.trade_pair_id} | "
                     f"{order.order_type.name} | SL={order.stop_loss} TP={order.take_profit}"
                 )
             else:
                 bt.logging.info(
-                    f"LIMIT ORDER | {trade_pair.trade_pair_id} | "
+                    f"INCOMING LIMIT ORDER | {trade_pair.trade_pair_id} | "
                     f"{order.order_type.name} @ {order.limit_price}"
                 )
 
@@ -177,6 +177,8 @@ class LimitOrderManager(CacheController):
             fill_error = self._fill_limit_order_with_price_source(miner_hotkey, order, price_sources[0], None)
             if fill_error:
                 raise SignalException(fill_error)
+
+            bt.logging.info(f"Filled order {order_uuid} @ market price {price_sources[0].close}")
 
         return {"status": "success", "order_uuid": order_uuid}
 
@@ -818,7 +820,7 @@ class LimitOrderManager(CacheController):
             if hotkey in eliminated_hotkeys:
                 continue
 
-            miner_order_dicts = ValiBkpUtils.get_limit_orders(hotkey, self.running_unit_tests)
+            miner_order_dicts = ValiBkpUtils.get_limit_orders(hotkey, True, running_unit_tests=self.running_unit_tests)
             for order_dict in miner_order_dicts:
                 try:
                     order = Order.from_dict(order_dict)
