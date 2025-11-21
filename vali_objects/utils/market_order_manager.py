@@ -4,6 +4,7 @@ Modularize the logic that was originally in validator.py. No IPC communication h
 """
 import time
 import uuid
+import threading
 
 from time_util.time_util import TimeUtil
 from vali_objects.enums.execution_type_enum import ExecutionType
@@ -19,7 +20,7 @@ from vali_objects.vali_dataclasses.order import OrderSource, Order
 
 class MarketOrderManager():
     def __init__(self, live_price_fetcher, position_locks, price_slippage_model, config, position_manager,
-                 websocket_notifier, contract_manager):
+                 websocket_notifier, contract_manager, slack_notifier=None, start_slippage_thread=True):
         self.live_price_fetcher = live_price_fetcher
         self.position_locks = position_locks
         self.price_slippage_model = price_slippage_model
@@ -29,6 +30,24 @@ class MarketOrderManager():
         self.contract_manager = contract_manager
         # Cache to track last order time for each (miner_hotkey, trade_pair) combination
         self.last_order_time_cache = {}  # Key: (miner_hotkey, trade_pair_id), Value: last_order_time_ms
+
+        # Start slippage feature refresher thread (disabled in tests)
+        # This thread refreshes slippage features daily and pre-populates tomorrow's features
+        if start_slippage_thread:
+            self.slippage_refresher = PriceSlippageModel.FeatureRefresher(
+                price_slippage_model=self.price_slippage_model,
+                slack_notifier=slack_notifier
+            )
+            self.slippage_refresher_thread = threading.Thread(
+                target=self.slippage_refresher.run_update_loop,
+                daemon=True,
+                name="SlippageRefresher"
+            )
+            self.slippage_refresher_thread.start()
+            bt.logging.info("Slippage feature refresher thread started")
+        else:
+            self.slippage_refresher = None
+            self.slippage_refresher_thread = None
 
 
     def _get_or_create_open_position_from_new_order(self, trade_pair: TradePair, order_type: OrderType, order_time_ms: int,

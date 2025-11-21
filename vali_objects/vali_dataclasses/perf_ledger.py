@@ -571,12 +571,6 @@ class PerfLedgerManager(CacheController):
         self.running_unit_tests = running_unit_tests
         self.position_manager = position_manager
 
-        # Log whether we're using an existing PositionManager or not
-        if self.position_manager is not None:
-            bt.logging.success("[PERF_LEDGER] Using existing PositionManager (can access positions via RPC)")
-        else:
-            bt.logging.warning("[PERF_LEDGER] No PositionManager provided (will rely on disk-loaded data only)")
-
         self.contract_manager = contract_manager
         self.cached_miner_account_sizes = {}  # Deepcopy of contract_manager.miner_account_sizes
         self.cache_last_refreshed_date = None  # 'YYYY-MM-DD' format, refresh daily

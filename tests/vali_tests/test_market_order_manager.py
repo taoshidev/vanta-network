@@ -66,7 +66,8 @@ class TestMarketOrderManager(TestBase):
             config=Mock(serve=False),
             position_manager=self.position_manager,
             websocket_notifier=self.mock_websocket_notifier,
-            contract_manager=self.mock_contract_manager
+            contract_manager=self.mock_contract_manager,
+            start_slippage_thread=False  # Disable thread in tests
         )
 
         self.position_manager.clear_all_miner_positions()

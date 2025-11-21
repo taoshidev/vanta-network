@@ -178,8 +178,7 @@ class PriceSlippageModel:
 
 
     @classmethod
-    def refresh_features_daily(cls, time_ms: int = None, write_to_disk: bool = True,
-                              allow_blocking: bool = False):
+    def refresh_features_daily(cls, time_ms: int = None, write_to_disk: bool = True, allow_blocking: bool = False):
         """
         Calculate and store model features (average daily volume and annualized volatility) for new days.
 

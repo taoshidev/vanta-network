@@ -298,7 +298,7 @@ class Validator(ValidatorBase):
                                                     ipc_manager=self.ipc_manager)
 
         self.market_order_manager = MarketOrderManager(self.live_price_fetcher, self.position_locks, self.price_slippage_model,
-               self.config, self.position_manager, self.websocket_notifier, self.contract_manager)
+               self.config, self.position_manager, self.websocket_notifier, self.contract_manager, self.slack_notifier)
 
         # Attach the position manager to the other objects that need it (BEFORE creating ChallengePeriodManager)
         for idx, obj in enumerate([self.perf_ledger_manager, self.position_manager, self.position_syncer,
@@ -602,31 +602,15 @@ class Validator(ValidatorBase):
         # with enable_health_check=True, health_check_interval_s=60, enable_auto_restart=True
         bt.logging.info("Step 14: LivePriceFetcher RPC health checker already started")
 
-        # Step 15: Start price slippage feature refresher process
-        def step15():
-            self.slippage_refresher = PriceSlippageModel.FeatureRefresher(
-                price_slippage_model=self.price_slippage_model,
-                slack_notifier=self.slack_notifier
-            )
-            self.slippage_refresher_process = Process(target=self.slippage_refresher.run_update_loop, daemon=True)
-            self.slippage_refresher_process.start()
-            # Verify process started
-            time.sleep(0.1)
-            if not self.slippage_refresher_process.is_alive():
-                raise RuntimeError("Slippage refresher process failed to start")
-            bt.logging.info(f"Slippage refresher process started with PID: {self.slippage_refresher_process.pid}")
-            return self.slippage_refresher_process
-        self.run_init_step_with_monitoring(15, "Starting price slippage feature refresher process", step15)
-
         # Signal watchdog that initialization is complete
-        self.init_watchdog['current_step'] = 16
-        bt.logging.info("[INIT] All 15 initialization steps completed successfully!")
+        self.init_watchdog['current_step'] = 15
+        bt.logging.info("[INIT] All initialization steps completed successfully!")
 
         # Send success notification to Slack
         if self.slack_notifier:
             self.slack_notifier.send_message(
                 f"✅ Validator Initialization Complete!\n"
-                f"All 15 initialization steps completed successfully\n"
+                f"All initialization steps completed successfully\n"
                 f"Hotkey: {self.wallet.hotkey.ss58_address}\n"
                 f"API services: {'Enabled' if self.config.serve else 'Disabled'}",
                 level="info"
@@ -685,8 +669,7 @@ class Validator(ValidatorBase):
         # ChallengePeriodManager daemon shuts down automatically via shutdown_dict
         # EliminationManager and ChallengePeriodManager RPC servers shutdown automatically via shutdown_dict
         # LivePriceFetcher RPC health checker shuts down automatically via RPCServiceBase
-        bt.logging.warning("Stopping slippage refresher...")
-        self.slippage_refresher_process.join()
+        # Slippage refresher thread shuts down automatically (daemon thread)
         if self.rog_thread:
             bt.logging.warning("Stopping request output generator...")
             self.rog_thread.join()
