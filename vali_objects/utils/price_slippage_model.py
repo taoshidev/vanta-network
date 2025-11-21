@@ -1,6 +1,9 @@
 import math
 import time
 import threading
+from setproctitle import setproctitle
+from shared_objects.error_utils import ErrorUtils
+import traceback
 from collections import defaultdict
 from zoneinfo import ZoneInfo
 
@@ -216,20 +219,94 @@ class PriceSlippageModel:
                 )
                 return cls._get_fallback_features(current_date)
 
+        # CRITICAL: If allow_blocking=False and features missing, use fallback
+        # This should NEVER happen with pre-population, but serves as safety net
+        if not allow_blocking:
+            bt.logging.error(
+                f"[FEATURE_MISSING] Features not available for {current_date} and allow_blocking=False! "
+                f"Pre-population failed. Using fallback. THIS SHOULD NOT HAPPEN - investigate daemon!"
+            )
+            return cls._get_fallback_features(current_date)
+
+        # Delegate to shared helper
+        return cls._calculate_and_store_features(current_date, time_ms, write_to_disk)
+
+    @classmethod
+    def pre_populate_next_day(cls, write_to_disk: bool = True) -> bool:
+        """
+        Pre-calculate slippage features for tomorrow using today's historical data.
+
+        This ensures features are ready when the day rolls over at 00:00 UTC,
+        eliminating the need for fallback data on first order of the day.
+
+        Strategy:
+        - Calculate features for tomorrow (current_date + 1 day)
+        - Use historical data up to today (features are predictive, not reactive)
+        - Store in cls.features with tomorrow's date as key
+
+        Should be called daily at 22:00 UTC (after US markets close at 20:00 UTC).
+
+        Returns:
+            True if features were successfully pre-populated, False otherwise
+        """
+        now_ms = TimeUtil.now_in_millis()
+        current_date = TimeUtil.millis_to_short_date_str(now_ms)
+
+        # Calculate tomorrow's date
+        tomorrow_ms = now_ms + (24 * 60 * 60 * 1000)  # Add 1 day
+        tomorrow_date = TimeUtil.millis_to_short_date_str(tomorrow_ms)
+
+        # Check if tomorrow's features already exist
+        if tomorrow_date in cls.features:
+            bt.logging.debug(
+                f"[FEATURE_PREPOP] Features for {tomorrow_date} already exist, skipping"
+            )
+            return True
+
+        # Check if another process is already pre-populating
+        if cls._refresh_in_progress and cls._refresh_current_date == tomorrow_date:
+            bt.logging.debug(
+                f"[FEATURE_PREPOP] Pre-population already in progress for {tomorrow_date}"
+            )
+            return False
+
+        bt.logging.info(
+            f"[FEATURE_PREPOP] Pre-populating features for {tomorrow_date} "
+            f"(current date: {current_date})"
+        )
+
+        # Delegate to shared helper
+        # Use tomorrow_ms as the processed_ms - this tells get_features to calculate
+        # features AS IF we're on tomorrow, using historical data up to today
+        return cls._calculate_and_store_features(tomorrow_date, tomorrow_ms, write_to_disk)
+
+    @classmethod
+    def _calculate_and_store_features(cls, target_date: str, target_ms: int, write_to_disk: bool) -> bool:
+        """
+        Core feature calculation and storage logic used by both refresh and pre-population.
+
+        Args:
+            target_date: Date string for the features (e.g., "2025-01-15")
+            target_ms: Timestamp to use for feature calculation
+            write_to_disk: Whether to persist features to disk
+
+        Returns:
+            True if features were successfully calculated and stored, False otherwise
+        """
         # Set flag to indicate refresh in progress (atomic)
         cls._refresh_in_progress = True
-        cls._refresh_current_date = current_date
+        cls._refresh_current_date = target_date
 
         try:
             bt.logging.info(
-                f"Calculating avg daily volume and annualized volatility for new day UTC {current_date}"
+                f"Calculating avg daily volume and annualized volatility for {target_date}"
             )
             trade_pairs = [tp for tp in TradePair if tp.is_forex or tp.is_equities]
-            tp_to_adv, tp_to_vol = cls.get_features(trade_pairs=trade_pairs, processed_ms=time_ms)
+            tp_to_adv, tp_to_vol = cls.get_features(trade_pairs=trade_pairs, processed_ms=target_ms)
 
             if tp_to_adv and tp_to_vol:
                 # Atomic dict write - no lock needed
-                cls.features[current_date] = {
+                cls.features[target_date] = {
                     "adv": tp_to_adv,
                     "vol": tp_to_vol
                 }
@@ -237,17 +314,25 @@ class PriceSlippageModel:
                 if write_to_disk:
                     cls.write_features_from_memory_to_disk()
 
-                bt.logging.info(
-                    f"Completed refreshing avg daily volume and annualized volatility for new day UTC {current_date}"
+                bt.logging.success(
+                    f"✅ Successfully calculated features for {target_date}. "
+                    f"Features now available for {len(cls.features)} dates."
                 )
-                cls.last_refresh_time_ms = time_ms
+                cls.last_refresh_time_ms = TimeUtil.now_in_millis()
                 return True
             else:
                 bt.logging.warning(
-                    f"Skipping feature update for {current_date} due to missing data. "
+                    f"Failed to calculate features for {target_date}. "
                     f"tp_to_adv: {bool(tp_to_adv)}, tp_to_vol: {bool(tp_to_vol)}"
                 )
                 return False
+
+        except Exception as e:
+            bt.logging.error(f"Error calculating features for {target_date}: {e}")
+            import traceback
+            bt.logging.error(traceback.format_exc())
+            return False
+
         finally:
             # Clear flag (atomic)
             cls._refresh_in_progress = False
@@ -409,10 +494,6 @@ class PriceSlippageModel:
             self.slack_notifier = slack_notifier
 
         def run_update_loop(self):
-            from setproctitle import setproctitle
-            from shared_objects.error_utils import ErrorUtils
-            import traceback
-
             setproctitle("vali_SlippageRefresher")
             bt.logging.info("PriceSlippageFeatureRefresher daemon started")
 
@@ -469,13 +550,40 @@ class PriceSlippageModel:
             # Run indefinitely - process will terminate when main process exits (daemon=True)
             while True:
                 try:
-                    # Refresh features with blocking allowed (daemon can afford to wait/retry)
+                    # 1. Refresh features for TODAY (if new day)
                     # The method has built-in date checking and will only update if it's a new day
                     self.price_slippage_model.refresh_features_daily(allow_blocking=True)
 
+                    # 2. Pre-populate TOMORROW's features at 22:00 UTC (after US markets close)
+                    # This ensures features are ready when day rolls over at 00:00 UTC
+                    current_datetime = TimeUtil.millis_to_datetime(TimeUtil.now_in_millis())
+                    current_hour_utc = current_datetime.hour
+
+                    if current_hour_utc == 22:
+                        # Pre-population window: 22:00-22:59 UTC
+                        bt.logging.info("[FEATURE_PREPOP] Entering pre-population window (22:00 UTC)")
+                        success = PriceSlippageModel.pre_populate_next_day(write_to_disk=True)
+
+                        if success:
+                            bt.logging.success(
+                                "[FEATURE_PREPOP] Tomorrow's features pre-populated successfully"
+                            )
+                        else:
+                            bt.logging.warning(
+                                "[FEATURE_PREPOP] Failed to pre-populate tomorrow's features, "
+                                "will retry in next cycle"
+                            )
+
+                            # Send Slack alert if pre-population fails
+                            if self.slack_notifier:
+                                self.slack_notifier.send_message(
+                                    "⚠️ Slippage feature pre-population failed!\n"
+                                    "Tomorrow's first orders may use fallback data.\n"
+                                    "Check daemon logs for details.",
+                                    level="warning"
+                                )
+
                     # Sleep for 10 minutes between checks
-                    # The refresh_features_daily method has built-in logic to only
-                    # refresh once per day, so checking every 10 minutes is fine
                     time.sleep(10 * 60)
 
                 except Exception as e:

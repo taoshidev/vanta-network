@@ -37,6 +37,11 @@ class WebSocketNotifier(RPCServiceBase):
             slack_notifier=slack_notifier
         )
 
+        # Set authkey for RPC authentication
+        # RPCServiceBase.__init__ sets this to None, but we need actual authkey for client connections
+        # We don't call _start_rpc_mode() because we're client-only (server is in api_manager)
+        self._authkey = ValiConfig.get_rpc_authkey(self.service_name, self.port)
+
         # Track if server is unavailable to avoid repeated connection attempts
         self._server_unavailable = False
 
@@ -120,9 +125,11 @@ class WebSocketNotifier(RPCServiceBase):
         """
         self.__dict__.update(state)
 
-        # Initialize tracking attribute
-        if not hasattr(self, '_server_unavailable'):
-            self._server_unavailable = False
+        # _authkey is automatically restored from pickle (bytes are picklable)
+        # _server_process, _client_manager, _server_proxy are set to None by __getstate__
+
+        # Reset server unavailable flag (child process should try connecting itself)
+        self._server_unavailable = False
 
         # In test mode, create mock server instance
         if self.running_unit_tests:
@@ -147,7 +154,7 @@ class WebSocketNotifier(RPCServiceBase):
         if self._server_unavailable:
             return False
 
-        # Try to connect once
+        # Try to connect once (authkey already set in __init__)
         try:
             self._connect_client()
             bt.logging.success(f"WebSocketNotifier: Connected to RPC server at {self._address}")

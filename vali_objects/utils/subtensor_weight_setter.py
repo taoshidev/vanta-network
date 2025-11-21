@@ -273,14 +273,9 @@ class SubtensorWeightSetter(CacheController):
                 error = result.get('error', 'Unknown error')
                 bt.logging.error(f"✗ Weight request failed: {error}")
 
-                # Send failure notification
-                if self.slack_notifier:
-                    self.slack_notifier.send_message(
-                        f"❌ Weight setting failed!\n"
-                        f"Error: {error}\n"
-                        f"Attempted to set {len(uids)} weights",
-                        level="error"
-                    )
+                # NOTE: Don't send Slack alert here - MetagraphUpdater handles alerting
+                # with proper benign error filtering (e.g., "too soon to commit weights").
+                # Alerting here would create duplicate spam for normal/expected failures.
 
         except Exception as e:
             bt.logging.error(f"Error sending weight request via RPC: {e}")
