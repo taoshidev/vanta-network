@@ -44,6 +44,7 @@ class PlagiarismDetector(CacheController):
     def run_update_loop(self):
         setproctitle(f"vali_{self.__class__.__name__}")
         bt.logging.enable_info()
+        time.sleep(120) # Initial delay to allow other components to start up faster
         while not self.shutdown_dict:
             try:
                 if self.refresh_allowed(ValiConfig.PLAGIARISM_REFRESH_TIME_MS):

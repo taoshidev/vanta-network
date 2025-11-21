@@ -134,30 +134,15 @@ class MDDChecker(CacheController):
             filter_eliminations=True,  # Automatically fetch and filter eliminations internally
             sort_positions=True
         )
-        ipc_ms = (time.perf_counter() - ipc_start) * 1000
+        rpc_ms = (time.perf_counter() - ipc_start) * 1000
 
         # Verify position data freshness
         now_ms = TimeUtil.now_in_millis()
         total_positions = sum(len(positions) for positions in hotkey_to_positions.values())
-        newest_order_age_ms = 0
-        oldest_order_age_ms = 0
-        if total_positions > 0:
-            all_orders = []
-            for positions in hotkey_to_positions.values():
-                for pos in positions:
-                    if pos.orders:
-                        all_orders.extend([order.processed_ms for order in pos.orders])
-            if all_orders:
-                newest_order_ms = max(all_orders)
-                oldest_order_ms = min(all_orders)
-                newest_order_age_ms = now_ms - newest_order_ms
-                oldest_order_age_ms = now_ms - oldest_order_ms
 
         bt.logging.info(
-            f"[MDD_IPC_TIMING] get_positions_for_hotkeys IPC read={ipc_ms:.2f}ms, "
-            f"total_positions={total_positions}, "
-            f"newest_order_age={newest_order_age_ms/1000:.1f}s, "
-            f"oldest_order_age={oldest_order_age_ms/1000:.1f}s"
+            f"[MDD_IPC_TIMING] get_positions_for_hotkeys RPC read={rpc_ms:.2f}ms, "
+            f"total_positions={total_positions} "
         )
         tp_to_price_sources = self.get_sorted_price_sources(hotkey_to_positions)
 

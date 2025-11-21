@@ -314,12 +314,16 @@ class TestLimitOrders(TestBase):
         self.assertEqual(result["status"], "cancelled")
         self.assertEqual(result["num_cancelled"], 1)
 
-        # Verify order1 is cancelled, order2 still unfilled
+        # Verify order1 removed from memory (Issue 8 fix), order2 still unfilled
         orders = self.limit_order_manager._limit_orders[self.DEFAULT_TRADE_PAIR][self.DEFAULT_MINER_HOTKEY]
-        order1_in_list = next(o for o in orders if o.order_uuid == "order1")
-        order2_in_list = next(o for o in orders if o.order_uuid == "order2")
 
-        self.assertEqual(order1_in_list.src, OrderSource.ORDER_SRC_LIMIT_CANCELLED)
+        # order1 should be removed
+        order1_exists = any(o.order_uuid == "order1" for o in orders)
+        self.assertFalse(order1_exists, "Cancelled order should be removed from memory")
+
+        # order2 should still be unfilled
+        order2_in_list = next((o for o in orders if o.order_uuid == "order2"), None)
+        self.assertIsNotNone(order2_in_list)
         self.assertEqual(order2_in_list.src, OrderSource.ORDER_SRC_LIMIT_UNFILLED)
 
     def test_cancel_limit_order_rpc_all_for_trade_pair(self):
@@ -342,10 +346,9 @@ class TestLimitOrders(TestBase):
         self.assertEqual(result["status"], "cancelled")
         self.assertEqual(result["num_cancelled"], 3)
 
-        # Verify all cancelled
-        orders = self.limit_order_manager._limit_orders[self.DEFAULT_TRADE_PAIR][self.DEFAULT_MINER_HOTKEY]
-        for order in orders:
-            self.assertEqual(order.src, OrderSource.ORDER_SRC_LIMIT_CANCELLED)
+        # Verify all cancelled orders removed from memory (Issue 8 fix)
+        orders = self.limit_order_manager._limit_orders.get(self.DEFAULT_TRADE_PAIR, {}).get(self.DEFAULT_MINER_HOTKEY, [])
+        self.assertEqual(len(orders), 0, "All cancelled orders should be removed from memory")
 
     def test_cancel_limit_order_rpc_nonexistent(self):
         """Test cancelling non-existent order raises exception"""
@@ -607,9 +610,9 @@ class TestLimitOrders(TestBase):
         self.assertEqual(order.ask, 49000.0)
         self.assertEqual(order.slippage, 10.0)
 
-        # Verify _close_limit_order was called (order should be FILLED)
-        orders = self.limit_order_manager._limit_orders[self.DEFAULT_TRADE_PAIR][self.DEFAULT_MINER_HOTKEY]
-        self.assertEqual(orders[0].src, OrderSource.ORDER_SRC_LIMIT_FILLED)
+        # Verify filled order removed from memory (Issue 8 fix)
+        orders = self.limit_order_manager._limit_orders.get(self.DEFAULT_TRADE_PAIR, {}).get(self.DEFAULT_MINER_HOTKEY, [])
+        self.assertEqual(len(orders), 0, "Filled orders should be removed from memory")
 
     def test_fill_limit_order_error_cancels(self):
         """Test limit order is cancelled when fill fails"""
@@ -636,9 +639,9 @@ class TestLimitOrders(TestBase):
             49000.0
         )
 
-        # Verify order was cancelled
-        orders = self.limit_order_manager._limit_orders[self.DEFAULT_TRADE_PAIR][self.DEFAULT_MINER_HOTKEY]
-        self.assertEqual(orders[0].src, OrderSource.ORDER_SRC_LIMIT_CANCELLED)
+        # Verify order was cancelled and removed from memory (Issue 8 fix)
+        orders = self.limit_order_manager._limit_orders.get(self.DEFAULT_TRADE_PAIR, {}).get(self.DEFAULT_MINER_HOTKEY, [])
+        self.assertEqual(len(orders), 0, "Cancelled orders should be removed from memory")
 
     def test_fill_limit_order_exception_cancels(self):
         """Test limit order is cancelled when exception occurs"""
@@ -661,9 +664,9 @@ class TestLimitOrders(TestBase):
             49000.0
         )
 
-        # Verify order was cancelled
-        orders = self.limit_order_manager._limit_orders[self.DEFAULT_TRADE_PAIR][self.DEFAULT_MINER_HOTKEY]
-        self.assertEqual(orders[0].src, OrderSource.ORDER_SRC_LIMIT_CANCELLED)
+        # Verify order was cancelled and removed from memory (Issue 8 fix)
+        orders = self.limit_order_manager._limit_orders.get(self.DEFAULT_TRADE_PAIR, {}).get(self.DEFAULT_MINER_HOTKEY, [])
+        self.assertEqual(len(orders), 0, "Cancelled orders should be removed from memory")
 
     # ============================================================================
     # Test Daemon: check_and_fill_limit_orders
@@ -681,10 +684,9 @@ class TestLimitOrders(TestBase):
             self.DEFAULT_MINER_HOTKEY: [order]
         }
 
-        # Mock market closed
-        self.live_price_fetcher.is_market_open = Mock(return_value=False)
-
-        self.limit_order_manager.check_and_fill_limit_orders()
+        # Mock market closed - use patch to ensure no real API calls
+        with patch.object(self.live_price_fetcher, 'is_market_open', return_value=False):
+            self.limit_order_manager.check_and_fill_limit_orders()
 
         # Order should remain unfilled
         orders = self.limit_order_manager._limit_orders[self.DEFAULT_TRADE_PAIR][self.DEFAULT_MINER_HOTKEY]
@@ -697,18 +699,28 @@ class TestLimitOrders(TestBase):
             self.DEFAULT_MINER_HOTKEY: [order]
         }
 
-        # Mock market open but no prices
-        self.live_price_fetcher.is_market_open = Mock(return_value=True)
-        self.live_price_fetcher.get_sorted_price_sources_for_trade_pair = Mock(return_value=None)
-
-        self.limit_order_manager.check_and_fill_limit_orders()
+        # Mock market open but no prices - use patch to ensure no real API calls
+        with patch.object(self.live_price_fetcher, 'is_market_open', return_value=True):
+            with patch.object(self.live_price_fetcher, 'get_sorted_price_sources_for_trade_pair', return_value=None):
+                self.limit_order_manager.check_and_fill_limit_orders()
 
         # Order should remain unfilled
         orders = self.limit_order_manager._limit_orders[self.DEFAULT_TRADE_PAIR][self.DEFAULT_MINER_HOTKEY]
         self.assertEqual(orders[0].src, OrderSource.ORDER_SRC_LIMIT_UNFILLED)
 
     def test_check_and_fill_limit_orders_triggers_and_fills(self):
-        """Test daemon successfully checks and fills triggered orders"""
+        """
+        INTEGRATION TEST: Test full daemon code flow including Issue 8 fix.
+
+        This tests the complete production path:
+        1. check_and_fill_limit_orders() iterates through orders
+        2. Checks market status and price sources
+        3. _attempt_fill_limit_order() evaluates trigger conditions
+        4. _fill_limit_order_with_price_source() processes the fill
+        5. _close_limit_order() removes filled orders from memory (Issue 8 fix)
+
+        Mocks external dependencies (API calls, disk I/O) to work in CI.
+        """
         order = self.create_test_limit_order(
             order_type=OrderType.LONG,
             limit_price=50000.0
@@ -718,25 +730,46 @@ class TestLimitOrders(TestBase):
             self.DEFAULT_MINER_HOTKEY: [order]
         }
 
-        # Mock market open with triggering price
-        self.live_price_fetcher.is_market_open = Mock(return_value=True)
-        trigger_price_source = self.create_test_price_source(49000.0, bid=49000.0, ask=49000.0)
-        self.live_price_fetcher.get_sorted_price_sources_for_trade_pair = Mock(
-            return_value=[trigger_price_source]
-        )
+        # Verify order is in memory before daemon runs
+        orders_before = self.limit_order_manager._limit_orders[self.DEFAULT_TRADE_PAIR][self.DEFAULT_MINER_HOTKEY]
+        self.assertEqual(len(orders_before), 1, "Order should be in memory before fill")
+        self.assertEqual(orders_before[0].src, OrderSource.ORDER_SRC_LIMIT_UNFILLED)
 
-        # Mock successful fill
+        # Create mocked price source (ask=49000 < limit=50000 triggers LONG order)
+        trigger_price_source = self.create_test_price_source(49000.0, bid=49000.0, ask=49000.0)
+
+        # Mock successful fill from market_order_manager
         filled_order = deepcopy(order)
         filled_order.price = 49000.0
+        filled_order.src = OrderSource.ORDER_SRC_LIMIT_FILLED
         mock_position = self.create_test_position()
         mock_position.orders = [filled_order]
         self.mock_market_order_manager._process_market_order.return_value = (None, mock_position, None)
 
-        self.limit_order_manager.check_and_fill_limit_orders()
+        # Mock all external dependencies to work in CI
+        with patch.object(self.limit_order_manager, '_write_to_disk'):
+            with patch('os.path.exists', return_value=False):
+                with patch.object(self.live_price_fetcher, 'is_market_open', return_value=True):
+                    with patch.object(self.live_price_fetcher, 'get_sorted_price_sources_for_trade_pair',
+                                    return_value=[trigger_price_source]):
+                        # Run the FULL daemon code flow
+                        self.limit_order_manager.check_and_fill_limit_orders()
 
-        # Verify order was filled
-        orders = self.limit_order_manager._limit_orders[self.DEFAULT_TRADE_PAIR][self.DEFAULT_MINER_HOTKEY]
-        self.assertEqual(orders[0].src, OrderSource.ORDER_SRC_LIMIT_FILLED)
+        # Verify the complete integration:
+        # 1. Market was checked as open
+        # 2. Price sources were fetched
+        # 3. Order was evaluated and filled
+        # 4. Order was removed from memory (Issue 8 fix)
+        orders_after = self.limit_order_manager._limit_orders.get(self.DEFAULT_TRADE_PAIR, {}).get(self.DEFAULT_MINER_HOTKEY, [])
+        self.assertEqual(len(orders_after), 0, "Filled orders should be removed from memory (Issue 8 fix)")
+
+        # Verify market_order_manager was called (actual fill happened)
+        self.mock_market_order_manager._process_market_order.assert_called_once()
+
+        # Verify fill time was tracked
+        self.assertIn(self.DEFAULT_TRADE_PAIR, self.limit_order_manager._last_fill_time)
+        self.assertIn(self.DEFAULT_MINER_HOTKEY, self.limit_order_manager._last_fill_time[self.DEFAULT_TRADE_PAIR])
+        self.assertGreater(self.limit_order_manager._last_fill_time[self.DEFAULT_TRADE_PAIR][self.DEFAULT_MINER_HOTKEY], 0)
 
     def test_check_and_fill_limit_orders_skips_filled_orders(self):
         """Test daemon skips already filled orders"""
@@ -747,13 +780,11 @@ class TestLimitOrders(TestBase):
             self.DEFAULT_MINER_HOTKEY: [order]
         }
 
-        # Mock market open with triggering price
-        self.live_price_fetcher.is_market_open = Mock(return_value=True)
-        self.live_price_fetcher.get_sorted_price_sources_for_trade_pair = Mock(
-            return_value=[self.create_test_price_source(40000.0)]
-        )
-
-        self.limit_order_manager.check_and_fill_limit_orders()
+        # Mock market open with triggering price - use patch to ensure no real API calls
+        with patch.object(self.live_price_fetcher, 'is_market_open', return_value=True):
+            with patch.object(self.live_price_fetcher, 'get_sorted_price_sources_for_trade_pair',
+                            return_value=[self.create_test_price_source(40000.0)]):
+                self.limit_order_manager.check_and_fill_limit_orders()
 
         # Verify _process_market_order was NOT called
         self.mock_market_order_manager._process_market_order.assert_not_called()
@@ -1198,6 +1229,273 @@ class TestLimitOrders(TestBase):
     # method no longer exists. The bracket order system has been refactored to use a single
     # bracket order with both SL and TP instead of separate orders, so sibling cancellation
     # is no longer needed.
+
+    # ============================================================================
+    # Test Design Behavior: Fill Interval Enforcement
+    # ============================================================================
+
+    def test_fill_interval_enforcement_only_one_order_per_interval(self):
+        """
+        Test DESIGN BEHAVIOR: Only one order per trade pair per hotkey can fill within the interval.
+
+        This enforces LIMIT_ORDER_FILL_INTERVAL_MS rate limiting by breaking after the first fill.
+        Even if multiple orders are triggered, only the first one fills, and subsequent orders
+        must wait for the next interval.
+        """
+        # Create multiple orders that would all trigger
+        order1 = self.create_test_limit_order(
+            order_uuid="order1",
+            order_type=OrderType.LONG,
+            limit_price=50000.0
+        )
+        order2 = self.create_test_limit_order(
+            order_uuid="order2",
+            order_type=OrderType.LONG,
+            limit_price=50000.0
+        )
+        order3 = self.create_test_limit_order(
+            order_uuid="order3",
+            order_type=OrderType.LONG,
+            limit_price=50000.0
+        )
+
+        # Store all orders
+        self.limit_order_manager._limit_orders[self.DEFAULT_TRADE_PAIR] = {
+            self.DEFAULT_MINER_HOTKEY: [order1, order2, order3]
+        }
+
+        # Mock successful fills
+        filled_order = deepcopy(order1)
+        filled_order.price = 49000.0
+        mock_position = self.create_test_position()
+        mock_position.orders = [filled_order]
+        self.mock_market_order_manager._process_market_order.return_value = (None, mock_position, None)
+
+        # Mock all external dependencies to work in CI
+        trigger_price_source = self.create_test_price_source(49000.0, bid=49000.0, ask=49000.0)
+        with patch.object(self.limit_order_manager, '_write_to_disk'):
+            with patch('os.path.exists', return_value=False):
+                with patch.object(self.live_price_fetcher, 'is_market_open', return_value=True):
+                    with patch.object(self.live_price_fetcher, 'get_sorted_price_sources_for_trade_pair',
+                                    return_value=[trigger_price_source]):
+                        # Run daemon check
+                        self.limit_order_manager.check_and_fill_limit_orders()
+
+        # Verify ONLY the first order was filled (and removed from memory due to Issue 8 fix)
+        # The other two should remain unfilled
+        orders = self.limit_order_manager._limit_orders[self.DEFAULT_TRADE_PAIR][self.DEFAULT_MINER_HOTKEY]
+
+        # After Issue 8 fix: filled order is removed, so only 2 unfilled orders remain
+        self.assertEqual(len(orders), 2, "Two unfilled orders should remain (filled order removed)")
+
+        # Verify both remaining orders are unfilled
+        for order in orders:
+            self.assertEqual(order.src, OrderSource.ORDER_SRC_LIMIT_UNFILLED,
+                           "Remaining orders should be unfilled")
+
+        # Verify _process_market_order was called exactly once
+        self.assertEqual(self.mock_market_order_manager._process_market_order.call_count, 1,
+                        "Market order manager should only be called once per interval")
+
+    def test_fill_interval_enforcement_multiple_miners_independent(self):
+        """
+        Test that fill interval enforcement is per (trade_pair, hotkey) pair.
+        Multiple miners can fill on the same trade pair in the same interval.
+        """
+        miner2 = "miner2"
+        self.mock_metagraph.hotkeys.append(miner2)
+
+        # Create orders for two different miners
+        order1 = self.create_test_limit_order(
+            order_uuid="miner1_order",
+            order_type=OrderType.LONG,
+            limit_price=50000.0
+        )
+        order2 = self.create_test_limit_order(
+            order_uuid="miner2_order",
+            order_type=OrderType.LONG,
+            limit_price=50000.0
+        )
+
+        # Store orders
+        self.limit_order_manager._limit_orders[self.DEFAULT_TRADE_PAIR] = {
+            self.DEFAULT_MINER_HOTKEY: [order1],
+            miner2: [order2]
+        }
+
+        # Mock successful fills
+        mock_position = self.create_test_position()
+        self.mock_market_order_manager._process_market_order.return_value = (None, mock_position, None)
+
+        # Mock all external dependencies to work in CI
+        trigger_price_source = self.create_test_price_source(49000.0, bid=49000.0, ask=49000.0)
+        with patch.object(self.limit_order_manager, '_write_to_disk'):
+            with patch('os.path.exists', return_value=False):
+                with patch.object(self.live_price_fetcher, 'is_market_open', return_value=True):
+                    with patch.object(self.live_price_fetcher, 'get_sorted_price_sources_for_trade_pair',
+                                    return_value=[trigger_price_source]):
+                        # Run daemon check
+                        self.limit_order_manager.check_and_fill_limit_orders()
+
+        # Verify BOTH miners' orders were filled and removed from memory (Issue 8 fix)
+        # Different hotkeys = independent intervals, so both can fill in same daemon run
+        miner1_orders = self.limit_order_manager._limit_orders.get(self.DEFAULT_TRADE_PAIR, {}).get(self.DEFAULT_MINER_HOTKEY, [])
+        miner2_orders = self.limit_order_manager._limit_orders.get(self.DEFAULT_TRADE_PAIR, {}).get(miner2, [])
+
+        self.assertEqual(len(miner1_orders), 0, "Miner1's filled order should be removed from memory")
+        self.assertEqual(len(miner2_orders), 0, "Miner2's filled order should be removed from memory")
+
+        # Verify _process_market_order was called twice (once per miner)
+        self.assertEqual(self.mock_market_order_manager._process_market_order.call_count, 2)
+
+    # ============================================================================
+    # Test Design Behavior: Partial UUID Matching for Bracket Orders
+    # ============================================================================
+
+    def test_cancel_bracket_order_using_parent_uuid(self):
+        """
+        Test DESIGN BEHAVIOR: Bracket orders can be cancelled using parent order UUID.
+
+        When a limit order with SL/TP fills, it creates a bracket order with UUID:
+        "{parent_uuid}-bracket"
+
+        Miners can cancel this bracket order by providing just the parent UUID,
+        which uses startswith() matching.
+        """
+        # Create parent limit order with SL/TP
+        parent_order = self.create_test_limit_order(
+            order_uuid="parent123",
+            limit_price=50000.0,
+            stop_loss=49000.0,
+            take_profit=51000.0
+        )
+
+        # Manually create bracket order (as would happen after fill)
+        self.limit_order_manager._create_sltp_orders(self.DEFAULT_MINER_HOTKEY, parent_order)
+
+        # Verify bracket order exists with correct UUID
+        orders = self.limit_order_manager._limit_orders[self.DEFAULT_TRADE_PAIR][self.DEFAULT_MINER_HOTKEY]
+        bracket_orders = [o for o in orders if o.execution_type == ExecutionType.BRACKET]
+        self.assertEqual(len(bracket_orders), 1)
+        self.assertEqual(bracket_orders[0].order_uuid, "parent123-bracket")
+
+        # Cancel using PARENT UUID (not the full bracket UUID)
+        result = self.limit_order_manager.cancel_limit_order_rpc(
+            self.DEFAULT_MINER_HOTKEY,
+            self.DEFAULT_TRADE_PAIR.trade_pair_id,
+            "parent123",  # Using parent UUID, not "parent123-bracket"
+            TimeUtil.now_in_millis()
+        )
+
+        # Verify bracket order was cancelled
+        self.assertEqual(result["status"], "cancelled")
+        self.assertEqual(result["num_cancelled"], 1)
+
+        # Verify the bracket order has been removed from memory (Issue 8 fix)
+        # Cancelled orders are persisted to disk but removed from active memory
+        orders = self.limit_order_manager._limit_orders.get(self.DEFAULT_TRADE_PAIR, {}).get(self.DEFAULT_MINER_HOTKEY, [])
+        bracket_orders = [o for o in orders if o.order_uuid == "parent123-bracket"]
+        self.assertEqual(len(bracket_orders), 0, "Cancelled bracket order should be removed from memory")
+
+    def test_cancel_bracket_order_using_full_uuid(self):
+        """
+        Test that bracket orders can also be cancelled using the full UUID.
+        """
+        # Create bracket order
+        parent_order = self.create_test_limit_order(
+            order_uuid="parent456",
+            limit_price=50000.0,
+            stop_loss=49000.0
+        )
+
+        self.limit_order_manager._create_sltp_orders(self.DEFAULT_MINER_HOTKEY, parent_order)
+
+        # Cancel using FULL bracket UUID
+        result = self.limit_order_manager.cancel_limit_order_rpc(
+            self.DEFAULT_MINER_HOTKEY,
+            self.DEFAULT_TRADE_PAIR.trade_pair_id,
+            "parent456-bracket",  # Using full bracket UUID
+            TimeUtil.now_in_millis()
+        )
+
+        # Verify cancellation succeeded
+        self.assertEqual(result["status"], "cancelled")
+        self.assertEqual(result["num_cancelled"], 1)
+
+    def test_cancel_parent_uuid_does_not_affect_regular_limit_orders(self):
+        """
+        Test that partial UUID matching only applies to BRACKET orders.
+        Regular limit orders require exact UUID match.
+        """
+        # Create two regular limit orders with similar UUIDs
+        order1 = self.create_test_limit_order(order_uuid="order123")
+        order2 = self.create_test_limit_order(order_uuid="order123-extra")
+
+        self.limit_order_manager.process_limit_order_rpc(
+            self.DEFAULT_MINER_HOTKEY,
+            order1
+        )
+        self.limit_order_manager.process_limit_order_rpc(
+            self.DEFAULT_MINER_HOTKEY,
+            order2
+        )
+
+        # Try to cancel using partial UUID "order123"
+        result = self.limit_order_manager.cancel_limit_order_rpc(
+            self.DEFAULT_MINER_HOTKEY,
+            self.DEFAULT_TRADE_PAIR.trade_pair_id,
+            "order123",
+            TimeUtil.now_in_millis()
+        )
+
+        # Should only cancel the exact match, not the one with prefix
+        self.assertEqual(result["num_cancelled"], 1)
+
+        # Verify only order1 was cancelled (removed from memory), order2 remains unfilled
+        orders = self.limit_order_manager._limit_orders[self.DEFAULT_TRADE_PAIR][self.DEFAULT_MINER_HOTKEY]
+
+        # order1 should be removed from memory (cancelled orders are cleaned up)
+        order1_exists = any(o.order_uuid == "order123" for o in orders)
+        self.assertFalse(order1_exists, "Cancelled order should be removed from memory")
+
+        # order2 should still be unfilled
+        order2_in_list = next((o for o in orders if o.order_uuid == "order123-extra"), None)
+        self.assertIsNotNone(order2_in_list, "Unfilled order should remain in memory")
+        self.assertEqual(order2_in_list.src, OrderSource.ORDER_SRC_LIMIT_UNFILLED)
+
+    def test_bracket_order_uuid_format(self):
+        """
+        Test DESIGN BEHAVIOR: Bracket order UUID format is always "{parent_uuid}-bracket".
+
+        This consistent format enables the partial UUID matching for cancellation.
+        """
+        test_cases = [
+            ("abc123", "abc123-bracket"),
+            ("order-xyz-789", "order-xyz-789-bracket"),
+            ("simple", "simple-bracket"),
+        ]
+
+        for parent_uuid, expected_bracket_uuid in test_cases:
+            with self.subTest(parent_uuid=parent_uuid):
+                # Clear previous orders
+                self.limit_order_manager._limit_orders.clear()
+
+                # Create parent order
+                parent_order = self.create_test_limit_order(
+                    order_uuid=parent_uuid,
+                    limit_price=50000.0,
+                    stop_loss=49000.0
+                )
+
+                # Create bracket order
+                self.limit_order_manager._create_sltp_orders(self.DEFAULT_MINER_HOTKEY, parent_order)
+
+                # Verify bracket UUID format
+                orders = self.limit_order_manager._limit_orders[self.DEFAULT_TRADE_PAIR][self.DEFAULT_MINER_HOTKEY]
+                bracket_orders = [o for o in orders if o.execution_type == ExecutionType.BRACKET]
+
+                self.assertEqual(len(bracket_orders), 1)
+                self.assertEqual(bracket_orders[0].order_uuid, expected_bracket_uuid)
 
 
 if __name__ == '__main__':
