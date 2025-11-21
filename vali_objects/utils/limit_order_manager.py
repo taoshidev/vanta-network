@@ -168,6 +168,7 @@ class LimitOrderManager(CacheController):
             price_sources = self.live_price_fetcher.get_sorted_price_sources_for_trade_pair(trade_pair, order.processed_ms)
             if price_sources:
                 trigger_price = self._evaluate_trigger_price(order, position, price_sources[0])
+
                 if trigger_price:
                     should_fill_immediately = True
 
@@ -552,6 +553,10 @@ class LimitOrderManager(CacheController):
                 if trigger_price is not None:
                     should_fill = True
 
+            if order.execution_type == ExecutionType.BRACKET and not position:
+                self._close_limit_order(miner_hotkey, order, OrderSource.ORDER_SRC_BRACKET_CANCELLED, now_ms)
+                return False
+
             # Fill OUTSIDE the lock to avoid deadlock with _close_limit_order
             # Note: There's a small window where order could be cancelled between check and fill,
             # but _fill_limit_order_with_price_source handles this gracefully
@@ -559,13 +564,7 @@ class LimitOrderManager(CacheController):
                 self._fill_limit_order_with_price_source(miner_hotkey, order, best_price_source, trigger_price)
                 return True
 
-            if order.execution_type == ExecutionType.BRACKET and not position:
-                self._close_limit_order(miner_hotkey, order, OrderSource.ORDER_SRC_BRACKET_CANCELLED, now_ms)
-                return False
-
-            # Fill the order using the triggered price_source
-            self._fill_limit_order_with_price_source(miner_hotkey, order, best_price_source, trigger_price)
-            return True
+            return False
 
         except Exception as e:
             bt.logging.error(f"Error attempting to fill limit order {order.order_uuid}: {e}")
