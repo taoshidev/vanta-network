@@ -412,7 +412,8 @@ class LimitOrderManager(CacheController):
                 continue
 
             # Get price sources for this trade pair
-            price_sources = self.live_price_fetcher.get_sorted_price_sources_for_trade_pair(trade_pair, now_ms)
+            # price_sources = self.live_price_fetcher.get_sorted_price_sources_for_trade_pair(trade_pair, now_ms)
+            price_sources = self._get_best_price_source(trade_pair, now_ms)
             if not price_sources:
                 bt.logging.debug(f"No price sources for {trade_pair.trade_pair_id}, skipping")
                 continue
@@ -493,6 +494,31 @@ class LimitOrderManager(CacheController):
                 if order.src == OrderSource.ORDER_SRC_LIMIT_UNFILLED:
                     orders_to_cancel.append(order)
         return orders_to_cancel
+
+    def _get_best_price_source(self, trade_pair, now_ms):
+        """
+        Get the best price source for a trade pair at a given time.
+        Uses the median price source to avoid outliers.
+
+        Args:
+            trade_pair: TradePair to get price for
+            now_ms: Current timestamp in milliseconds
+
+        Returns:
+            The median price source, or None if no price sources available
+        """
+        end_ms = now_ms
+        start_ms = now_ms - ValiConfig.LIMIT_ORDER_PRICE_BUFFER_MS
+        price_sources = self.live_price_fetcher.get_ws_price_sources_in_window(trade_pair, start_ms, end_ms)
+
+        if not price_sources:
+            return None
+
+        # Sort price sources by close price and return median
+        sorted_sources = sorted(price_sources, key=lambda ps: ps.close)
+        median_index = len(sorted_sources) // 2
+        return [sorted_sources[median_index]]
+
 
     def _attempt_fill_limit_order(self, miner_hotkey, order, price_sources, now_ms):
         """
