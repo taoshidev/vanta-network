@@ -174,7 +174,9 @@ class LimitOrderManager(CacheController):
 
         # Fill outside the lock to avoid reentrant lock issue
         if should_fill_immediately:
-            self._fill_limit_order_with_price_source(miner_hotkey, order, price_sources[0], None)
+            fill_error = self._fill_limit_order_with_price_source(miner_hotkey, order, price_sources[0], None)
+            if fill_error:
+                raise SignalException(fill_error)
 
         return {"status": "success", "order_uuid": order_uuid}
 
@@ -572,9 +574,10 @@ class LimitOrderManager(CacheController):
             return False
 
     def _fill_limit_order_with_price_source(self, miner_hotkey, order, price_source, fill_price):
-        """Fill a limit order and update position."""
+        """Fill a limit order and update position. Returns error message on failure, None on success."""
         trade_pair = order.trade_pair
         fill_time = price_source.start_ms
+        error_msg = None
 
         if order.src == OrderSource.ORDER_SRC_BRACKET_UNFILLED:
             new_src = OrderSource.ORDER_SRC_BRACKET_FILLED
@@ -633,11 +636,14 @@ class LimitOrderManager(CacheController):
                 self._create_sltp_orders(miner_hotkey, order)
 
         except Exception as e:
-            bt.logging.info(f"Could not fill limit order [{order.order_uuid}]: {e}. Cancelling order")
+            error_msg = f"Could not fill limit order [{order.order_uuid}]: {e}. Cancelling order"
+            bt.logging.info(error_msg)
             new_src = OrderSource.ORDER_SRC_LIMIT_CANCELLED
 
         finally:
             self._close_limit_order(miner_hotkey, order, new_src, fill_time)
+
+        return error_msg
 
     def _close_limit_order(self, miner_hotkey, order, src, time_ms):
         """Mark order as closed and update disk."""
