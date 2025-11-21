@@ -39,7 +39,6 @@ class PositionManager(CacheController):
                  is_mothership=False, perf_ledger_manager=None,
                  challengeperiod_manager=None,
                  elimination_manager=None,
-                 contract_manager=None,
                  secrets=None,
                  ipc_manager=None,
                  live_price_fetcher=None,
@@ -65,12 +64,6 @@ class PositionManager(CacheController):
 
         # Track splitting statistics
         self.split_stats = defaultdict(self._default_split_stats)
-
-        self.contract_manager = contract_manager
-        if contract_manager:
-            self.cached_miner_account_sizes = deepcopy(self.contract_manager.miner_account_sizes)
-        else:
-            self.cached_miner_account_sizes = {}
 
         if ipc_manager:
             self.hotkey_to_positions = ipc_manager.dict()
@@ -919,8 +912,7 @@ class PositionManager(CacheController):
     def verify_open_position_write(self, miner_dir, updated_position):
         all_files = ValiBkpUtils.get_all_files_in_dir(miner_dir)
         # Print all files found for dir
-        # CRITICAL: Skip migration to avoid infinite recursion
-        positions = [self._get_position_from_disk(file, skip_migration=True) for file in all_files]
+        positions = [self._get_position_from_disk(file) for file in all_files]
         if len(positions) == 0:
             return  # First time open position is being saved
         if len(positions) > 1:
@@ -941,8 +933,7 @@ class PositionManager(CacheController):
             return
 
         cdf = miner_dir[:-5] + 'closed/'
-        # CRITICAL: Skip migration to avoid infinite recursion
-        positions.extend([self._get_position_from_disk(file, skip_migration=True) for file in ValiBkpUtils.get_all_files_in_dir(cdf)])
+        positions.extend([self._get_position_from_disk(file) for file in ValiBkpUtils.get_all_files_in_dir(cdf)])
 
         temp = self.hotkey_to_positions.get(updated_position.miner_hotkey, [])
         positions_memory_by_position_uuid = {}
@@ -1181,54 +1172,7 @@ class PositionManager(CacheController):
             ans["positions"].append(position_dict)
         return ans
 
-    def _get_account_size_for_order(self, position, order):
-        """
-        temp method:
-        Get the miner's account size for an order
-        """
-        COLLATERAL_START_TIME_MS = 1755302399000
-        if order.processed_ms < COLLATERAL_START_TIME_MS:
-            return ValiConfig.DEFAULT_CAPITAL
-
-        if not self.contract_manager:
-            return ValiConfig.DEFAULT_CAPITAL
-
-        account_size = self.contract_manager.get_miner_account_size(
-                position.miner_hotkey, order.processed_ms, records_dict=self.cached_miner_account_sizes)
-        return account_size if account_size is not None else ValiConfig.MIN_CAPITAL
-
-    def _migrate_order_quantities(self, position: Position) -> int:
-        """
-        temp method:
-        Migrate old orders that only have leverage to include quantity.
-        Returns number of orders migrated.
-        """
-        migrated_count = 0
-
-        for order in position.orders:
-            if order.quote_usd_rate == 1 or order.usd_base_rate == 1:
-                order.quote_usd_rate = self.live_price_fetcher.get_quote_usd_conversion(order, position.orders[0].order_type)
-                order.usd_base_rate = self.live_price_fetcher.get_usd_base_conversion(order.trade_pair, order.processed_ms, order.price, order.order_type, position.orders[0].order_type)
-
-            if order.quantity is None and order.leverage is not None:
-                order.value = order.leverage * position.account_size
-                if order.price == 0:
-                    order.quantity = 0
-                else:
-                    order.quantity = (order.value * order.usd_base_rate) / position.trade_pair.lot_size
-
-                migrated_count += 1
-
-        if migrated_count > 0:
-            bt.logging.info(
-                f"Migrated order {position.orders[0].order_uuid}: "
-                f"leverage={position.orders[0].leverage} → quantity={position.orders[0].quantity}. "
-                f"Total order migrations for {position.position_uuid}: {migrated_count}"
-            )
-
-        return migrated_count
-
-    def _get_position_from_disk(self, file, skip_migration=False) -> Position:
+    def _get_position_from_disk(self, file) -> Position:
         # wrapping here to allow simpler error handling & original for other error handling
         # Note one position always corresponds to one file.
         file_string = None
@@ -1237,36 +1181,6 @@ class PositionManager(CacheController):
             ans = Position.model_validate_json(file_string)
             if not ans.orders:
                 bt.logging.warning(f"Anomalous position has no orders: {ans.to_dict()}")
-            else:
-                # temp logic:
-                # populate order quantity and value field for historical orders.
-                needs_order_migration = any(o.quantity is None and o.leverage is not None for o in ans.orders)
-
-                # check if account_size needs migration
-                needs_account_size_migration = (ans.account_size == 0 or ans.account_size is None)
-
-                if not skip_migration and (needs_order_migration or needs_account_size_migration):
-                    # Fix account_size first (needed for order quantity calculation)
-                    if needs_account_size_migration and ans.orders:
-                        ans.account_size = self._get_account_size_for_order(ans, ans.orders[0])
-                        bt.logging.info(
-                            f"Migrated account_size for position {ans.position_uuid}: "
-                            f"0 → {ans.account_size}"
-                        )
-                    # migrate order quantities if needed
-                    if needs_order_migration:
-                        self._migrate_order_quantities(ans)
-
-                    # Rebuild to recalculate all position-level fields
-                    ans.rebuild_position_with_updated_orders(self.live_price_fetcher)
-                    if not self.is_backtesting:
-                        miner_dir = ValiBkpUtils.get_partitioned_miner_positions_dir(
-                            ans.miner_hotkey, ans.trade_pair.trade_pair_id,
-                            order_status=OrderStatus.OPEN if ans.is_open_position else OrderStatus.CLOSED,
-                            running_unit_tests=self.running_unit_tests
-                        )
-                        ValiBkpUtils.write_file(miner_dir + ans.position_uuid, ans)
-                    # self.save_miner_position(ans, delete_open_position_if_exists=False)
             return ans
         except FileNotFoundError:
             raise ValiFileMissingException(f"Vali position file is missing {file}")

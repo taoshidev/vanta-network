@@ -234,7 +234,6 @@ class Validator:
                                                 perf_ledger_manager=self.perf_ledger_manager,
                                                 elimination_manager=self.elimination_manager,
                                                 challengeperiod_manager=None,
-                                                contract_manager=self.contract_manager,
                                                 secrets=self.secrets,
                                                 shared_queue_websockets=self.shared_queue_websockets,
                                                 closed_position_daemon=True)
