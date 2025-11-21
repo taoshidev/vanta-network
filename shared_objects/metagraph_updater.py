@@ -777,25 +777,29 @@ class MetagraphUpdater(CacheController):
                 # Use modularized round-robin switching
                 bt.logging.warning(f"Switching to next network in round-robin due to consecutive failures")
                 self._switch_to_next_network(cleanup_connection=False, create_new_subtensor=False)
-            
+
             # CRITICAL: Close existing connection before creating new one to prevent file descriptor leak
             self._cleanup_subtensor_connection()
             self.subtensor = bt.subtensor(config=self.config)
+
         recently_acked_miners = None
         recently_acked_validators = None
         if self.is_miner:
             recently_acked_validators = self.position_inspector.get_recently_acked_validators()
         else:
-            if self.position_manager:
-                recently_acked_miners = self.position_manager.get_recently_updated_miner_hotkeys()
-            else:
-                recently_acked_miners = []
+            # REMOVED: Expensive filesystem scan (127s) for unused log_metagraph_state() feature
+            # if self.position_manager:
+            #     recently_acked_miners = self.position_manager.get_recently_updated_miner_hotkeys()
+            # else:
+            #     recently_acked_miners = []
+            recently_acked_miners = []
 
         hotkeys_before = set(self.metagraph.get_hotkeys())
-        
+
         # Synchronize with weight setting operations to prevent WebSocket concurrency errors
         with get_subtensor_lock():
             metagraph_clone = self.subtensor.metagraph(self.config.netuid)
+
         assert hasattr(metagraph_clone, 'hotkeys'), "Metagraph clone does not have hotkeys attribute"
         bt.logging.info("Updating metagraph...")
         # metagraph_clone.sync(subtensor=self.subtensor) The call to subtensor.metagraph() already syncs the metagraph.
