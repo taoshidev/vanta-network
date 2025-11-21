@@ -22,7 +22,6 @@ from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.position import Position
 from vali_objects.utils.elimination_manager import EliminationManager
 from vali_objects.utils.position_manager import PositionManager
-from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair
 from vali_objects.vali_dataclasses.order import Order
@@ -41,24 +40,27 @@ class TestPerfLedgerCore(TestBase):
 
     def setUp(self):
         super().setUp()
-        # Clear ALL test miner positions BEFORE creating PositionManager
-        ValiBkpUtils.clear_directory(
-            ValiBkpUtils.get_miner_dir(running_unit_tests=True)
-        )
-
         secrets = ValiUtils.get_secrets(running_unit_tests=True)
         self.live_price_fetcher = MockLivePriceFetcher(secrets=secrets, disable_ws=True)
         self.test_hotkey = "test_miner_core"
         self.now_ms = TimeUtil.now_in_millis()
-        self.DEFAULT_ACCOUNT_SIZE = 100_000
-        
+
         self.mmg = MockMetagraph(hotkeys=[self.test_hotkey])
+
+        # Initialize elimination_manager first (circular dependency pattern)
+        self.elimination_manager = EliminationManager(
+            metagraph=self.mmg,
+            position_manager=None,  # Set later due to circular dependency
+            running_unit_tests=True
+        )
+
         self.position_manager = PositionManager(
             metagraph=self.mmg,
             running_unit_tests=True,
             elimination_manager=self.elimination_manager,
             live_price_fetcher=self.live_price_fetcher
         )
+        self.elimination_manager.position_manager = self.position_manager
         self.position_manager.clear_all_miner_positions()
 
     def validate_perf_ledger(self, ledger: PerfLedger, expected_init_time: int = None):
@@ -450,7 +452,6 @@ class TestPerfLedgerCore(TestBase):
             orders=[open_order, close_order],
             position_type=OrderType.FLAT,
             is_closed_position=True,
-            account_size=self.DEFAULT_ACCOUNT_SIZE,
         )
         
         position.rebuild_position_with_updated_orders(self.live_price_fetcher)

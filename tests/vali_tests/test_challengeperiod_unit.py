@@ -95,6 +95,12 @@ class TestChallengePeriodUnit(TestBase):
         # Initialize system components
         self.mock_metagraph = MockMetagraph(self.MINER_NAMES)
 
+        # Initialize elimination_manager first (circular dependency pattern)
+        self.elimination_manager = EliminationManager(
+            metagraph=self.mock_metagraph,
+            position_manager=None,
+            running_unit_tests=True
+        )
 
         self.position_manager = MockPositionManager(self.mock_metagraph,
                                                     perf_ledger_manager=None,

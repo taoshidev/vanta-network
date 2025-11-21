@@ -73,6 +73,14 @@ class TestMDDChecker(TestBase):
         self.perf_ledger_manager = PerfLedgerManager(metagraph=self.mock_metagraph,
                                                      live_price_fetcher=self.live_price_fetcher,
                                                      running_unit_tests=True)
+
+        # Initialize elimination_manager first (circular dependency pattern)
+        self.elimination_manager = EliminationManager(
+            metagraph=self.mock_metagraph,
+            position_manager=None,
+            running_unit_tests=True
+        )
+
         self.position_manager = PositionManager(metagraph=self.mock_metagraph, running_unit_tests=True,
                                                 perf_ledger_manager=self.perf_ledger_manager, elimination_manager=self.elimination_manager)
         self.elimination_manager.position_manager = self.position_manager

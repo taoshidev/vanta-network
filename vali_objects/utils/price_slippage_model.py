@@ -32,6 +32,7 @@ class PriceSlippageModel:
     is_backtesting = False
     fetch_slippage_data = False
     recalculate_slippage = False
+    capital = ValiConfig.DEFAULT_CAPITAL
     last_refresh_time_ms = 0
 
     # Refresh coordination (no lock needed - dict writes are atomic)
@@ -39,7 +40,7 @@ class PriceSlippageModel:
     _refresh_current_date = None
 
     def __init__(self, live_price_fetcher=None, running_unit_tests=False, is_backtesting=False,
-                 fetch_slippage_data=False, recalculate_slippage=False):
+                 fetch_slippage_data=False, recalculate_slippage=False, capital=ValiConfig.DEFAULT_CAPITAL):
         if not PriceSlippageModel.parameters:
             PriceSlippageModel.holidays_nyse = holidays.financial_holidays('NYSE')
             PriceSlippageModel.parameters = self.read_slippage_model_parameters()
@@ -52,9 +53,10 @@ class PriceSlippageModel:
         PriceSlippageModel.is_backtesting = is_backtesting
         PriceSlippageModel.fetch_slippage_data = fetch_slippage_data
         PriceSlippageModel.recalculate_slippage = recalculate_slippage
+        PriceSlippageModel.capital = capital
 
     @classmethod
-    def calculate_slippage(cls, bid:float, ask:float, order:Order):
+    def calculate_slippage(cls, bid:float, ask:float, order:Order, capital:float=None):
         """
         returns the percentage slippage of the current order.
         each asset class uses a unique model
@@ -64,19 +66,23 @@ class PriceSlippageModel:
 
         trade_pair = order.trade_pair
         if bid * ask == 0:
-            if not trade_pair.is_crypto:  # For now, crypto does not have bid/ask data
+            if not trade_pair.is_crypto:  # For now, crypto does not have slippage
                 bt.logging.warning(f'Tried to calculate slippage with bid: {bid} and ask: {ask}. order: {order}. Returning 0')
-            return 0  # Need valid bid and ask.
-        if abs(order.value) <= 1000:
-            return 0
-        cls.refresh_features_daily(order.processed_ms, write_to_disk=not cls.is_backtesting)
+                return 0  # Need valid bid and ask.
+        if capital is None:
+            capital = ValiConfig.MIN_CAPITAL
+        size = abs(order.value)
+        if size <= 1000:
+            return 0  # assume 0 slippage when order size is under 1k
+        if cls.is_backtesting:
+            cls.refresh_features_daily(order.processed_ms, write_to_disk=False)
 
         if trade_pair.is_equities:
             slippage_percentage = cls.calc_slippage_equities(bid, ask, order)
         elif trade_pair.is_forex:
             slippage_percentage = cls.calc_slippage_forex(bid, ask, order)
         elif trade_pair.is_crypto:
-            slippage_percentage = cls.calc_slippage_crypto(order)
+            slippage_percentage = cls.calc_slippage_crypto(order, capital)
         else:
             raise ValueError(f"Invalid trade pair {trade_pair.trade_pair_id} to calculate slippage")
         return float(np.clip(slippage_percentage, 0.0, 0.03))
@@ -91,6 +97,18 @@ class PriceSlippageModel:
         slippage percentage = 0.433 * spread/mid_price + 0.335 * sqrt(annualized_volatility**2 / 3 / 250) * sqrt(volume / (0.3 * estimated daily volume))
         """
         order_date = TimeUtil.millis_to_short_date_str(order.processed_ms)
+
+        # Check if features are available for this date
+        if order_date not in cls.features:
+            bt.logging.error(f"Features not found for date {order_date} in equities slippage calculation")
+            return 0.0001  # Return minimal slippage as fallback
+
+        # Check if volatility and volume data exist for this trade pair
+        if (order.trade_pair.trade_pair_id not in cls.features[order_date].get("vol", {}) or
+            order.trade_pair.trade_pair_id not in cls.features[order_date].get("adv", {})):
+            bt.logging.error(f"Features not found for trade pair {order.trade_pair.trade_pair_id} on {order_date}")
+            return 0.0001  # Return minimal slippage as fallback
+
         annualized_volatility = cls.features[order_date]["vol"][order.trade_pair.trade_pair_id]
         avg_daily_volume = cls.features[order_date]["adv"][order.trade_pair.trade_pair_id]
         spread = ask - bid
@@ -130,6 +148,18 @@ class PriceSlippageModel:
                 return 0.0002       # 2 bps
 
         order_date = TimeUtil.millis_to_short_date_str(order.processed_ms)
+
+        # Check if features are available for this date
+        if order_date not in cls.features:
+            bt.logging.error(f"Features not found for date {order_date} in forex slippage calculation")
+            return 0.0002  # Return 2 bps slippage as fallback
+
+        # Check if volatility and volume data exist for this trade pair
+        if (order.trade_pair.trade_pair_id not in cls.features[order_date].get("vol", {}) or
+            order.trade_pair.trade_pair_id not in cls.features[order_date].get("adv", {})):
+            bt.logging.error(f"Features not found for trade pair {order.trade_pair.trade_pair_id} on {order_date}")
+            return 0.0002  # Return 2 bps slippage as fallback
+
         annualized_volatility = cls.features[order_date]["vol"][order.trade_pair.trade_pair_id]
         avg_daily_volume = cls.features[order_date]["adv"][order.trade_pair.trade_pair_id]
         spread = ask - bid
@@ -139,7 +169,13 @@ class PriceSlippageModel:
 
         size = abs(order.value)
         base, _ = order.trade_pair.trade_pair.split("/")
-        base_to_usd_conversion = cls.live_price_fetcher.get_currency_conversion(base=base, quote="USD") if base != "USD" else 1  # TODO: fallback?
+        if base != "USD":
+            base_to_usd_conversion = cls.live_price_fetcher.get_currency_conversion(base=base, quote="USD")
+            if base_to_usd_conversion is None or base_to_usd_conversion == 0:
+                bt.logging.error(f"Invalid currency conversion for {base}/USD (returned {base_to_usd_conversion})")
+                return 0.0002  # Return 2 bps slippage as fallback
+        else:
+            base_to_usd_conversion = 1
         # print(base_to_usd_conversion)
         volume_standard_lots = size / (100_000 * base_to_usd_conversion)  # Volume expressed in terms of standard lots (1 std lot = 100,000 base currency)
 
@@ -151,20 +187,34 @@ class PriceSlippageModel:
         return slippage_pct
 
     @classmethod
-    def calc_slippage_crypto(cls, order:Order) -> float:
+    def calc_slippage_crypto(cls, order:Order, capital:float) -> float:
         """
-        V2: price slippage model
-
-        V1: 0.2 bps for majors, 2 bps for alts
+        slippage values for crypto
         """
         if order.processed_ms > SLIPPAGE_V2_TIME_MS:
             side = "long" if order.leverage > 0 else "short"
-            slippage_size_buckets = cls.slippage_estimates["crypto"][order.trade_pair.trade_pair_id+"C"][side]
+            size = abs(order.value)
+
+            # Check if slippage estimates are loaded
+            if "crypto" not in cls.slippage_estimates:
+                bt.logging.error(f"Crypto slippage estimates not loaded")
+                return 0.0001  # Return minimal slippage as fallback
+
+            trade_pair_key = order.trade_pair.trade_pair_id + "C"
+            if trade_pair_key not in cls.slippage_estimates["crypto"]:
+                bt.logging.error(f"Slippage estimates not found for crypto trade pair {trade_pair_key}")
+                return 0.0001  # Return minimal slippage as fallback
+
+            if side not in cls.slippage_estimates["crypto"][trade_pair_key]:
+                bt.logging.error(f"Slippage estimates not found for side {side} on trade pair {trade_pair_key}")
+                return 0.0001  # Return minimal slippage as fallback
+
+            slippage_size_buckets = cls.slippage_estimates["crypto"][trade_pair_key][side]
             last_slippage = 0
             for bucket, slippage in slippage_size_buckets.items():
                 low, high = bucket[1:-1].split(",")
                 last_slippage = slippage
-                if int(low) <= abs(order.value) < int(high):
+                if int(low) <= size < int(high):
                     return last_slippage * 3     # conservative 3x multiplier on slippage
             return last_slippage * 3
 
@@ -370,11 +420,14 @@ class PriceSlippageModel:
         """
         return dict of features (avg daily volume and annualized volatility) for each trade pair
         """
-        tp_to_adv = defaultdict()
-        tp_to_vol = defaultdict()
+        tp_to_adv = {}
+        tp_to_vol = {}
         for trade_pair in trade_pairs:
             try:
                 bars_df = cls.get_bars_with_features(trade_pair, processed_ms, adv_lookback_window, calc_vol_window)
+                if bars_df.empty:
+                    bt.logging.warning(f"Empty DataFrame returned for trade pair {trade_pair.trade_pair_id}, skipping")
+                    continue
                 row_selected = bars_df.iloc[-1]
                 annualized_volatility = row_selected['annualized_vol']
                 avg_daily_volume = row_selected[f'adv_last_{adv_lookback_window}_days']
@@ -403,6 +456,9 @@ class PriceSlippageModel:
             print(f"Error fetching data from Polygon: {e}")
 
         bars_pd = pd.DataFrame(aggs)
+        if bars_pd.empty:
+            bt.logging.warning(f"No data returned for trade pair {trade_pair.trade_pair_id} from {start_date} to {order_date}")
+            return bars_pd  # Return empty DataFrame
         bars_pd['datetime'] = pd.to_datetime(bars_pd['timestamp'], unit='ms').dt.strftime('%Y-%m-%d')
         bars_pd[f'adv_last_{adv_lookback_window}_days'] = (bars_pd['volume'].rolling(window=adv_lookback_window + 1).sum() - bars_pd['volume']) / adv_lookback_window  # excluding the current day when calculating adv
         bars_pd['daily_returns'] = np.log(bars_pd["close"] / bars_pd["close"].shift(1))
@@ -476,7 +532,7 @@ class PriceSlippageModel:
                         bid = best_price_source.bid
                         ask = best_price_source.ask
 
-                    slippage = self.calculate_slippage(bid, ask, o)
+                    slippage = self.calculate_slippage(bid, ask, o, capital=self.capital)
                     o.bid = bid
                     o.ask = ask
                     o.slippage = slippage
@@ -612,6 +668,6 @@ if __name__ == "__main__":
     equities_order_buy = Order(price=100, processed_ms=TimeUtil.now_in_millis() - 1000 * 200,
                                     order_uuid="test_order",
                                     trade_pair=TradePair.NVDA,
-                                    order_type=OrderType.LONG, quantity=1)
+                                    order_type=OrderType.LONG, leverage=1)
     slippage_buy = PriceSlippageModel.calculate_slippage(bid=99, ask=100, order=equities_order_buy)
     print(slippage_buy)

@@ -52,6 +52,14 @@ class TestPositions(TestBase):
         self.mock_metagraph = MockMetagraph([self.DEFAULT_MINER_HOTKEY])
         secrets = ValiUtils.get_secrets(running_unit_tests=True)
         self.live_price_fetcher = MockLivePriceFetcher(secrets=secrets, disable_ws=True)
+
+        # Initialize elimination_manager first (circular dependency pattern)
+        self.elimination_manager = EliminationManager(
+            metagraph=self.mock_metagraph,
+            position_manager=None,  # Set later due to circular dependency
+            running_unit_tests=True
+        )
+
         self.position_manager = PositionManager(metagraph=self.mock_metagraph, running_unit_tests=True,
                                                 elimination_manager=self.elimination_manager, live_price_fetcher=self.live_price_fetcher)
         self.elimination_manager.position_manager = self.position_manager
@@ -689,7 +697,7 @@ class TestPositions(TestBase):
         orders = [deepcopy(self.default_order) for _ in range(3)]
         for i, o in enumerate(orders):
             # Ensure they are in the future
-            o.order_uuid = i
+            o.order_uuid = str(i)
             o.processed_ms = self.default_order.processed_ms + 2 * AUTO_SYNC_ORDER_LAG_MS
         dp1.orders = orders
         disk_positions = self.positions_to_disk_data([dp1])
@@ -732,7 +740,7 @@ class TestPositions(TestBase):
         orders = [deepcopy(self.default_order) for _ in range(3)]
         for i, o in enumerate(orders):
             # Ensure they are in the future
-            o.order_uuid = o.order_uuid if i == 0 else i
+            o.order_uuid = o.order_uuid if i == 0 else str(i)
             o.processed_ms = self.default_order.processed_ms + 2 * AUTO_SYNC_ORDER_LAG_MS
         dp1.orders = orders
         disk_positions = self.positions_to_disk_data([dp1])
@@ -773,7 +781,7 @@ class TestPositions(TestBase):
         dp1 = deepcopy(self.default_position)
         orders = [deepcopy(self.default_order) for _ in range(3)]
         for i, o in enumerate(orders):
-            o.order_uuid = o.order_uuid if i == 0 else i
+            o.order_uuid = o.order_uuid if i == 0 else str(i)
 
             # Will still allow for a match
             if i == 0:
@@ -981,7 +989,7 @@ class TestPositions(TestBase):
         dp1 = deepcopy(self.default_position)
         orders = [deepcopy(self.default_order) for _ in range(3)]
         for i, o in enumerate(orders):
-            o.order_uuid = o.order_uuid if i == 0 else i
+            o.order_uuid = o.order_uuid if i == 0 else str(i)
 
             # Will still allow for a match
             if i == 0:
@@ -3099,6 +3107,14 @@ class TestOverlapDetection(TestBase):
         self.mock_metagraph = MockMetagraph([self.DEFAULT_MINER_HOTKEY])
         secrets = ValiUtils.get_secrets(running_unit_tests=True)
         self.live_price_fetcher = MockLivePriceFetcher(secrets=secrets, disable_ws=True)
+
+        # Initialize elimination_manager first (circular dependency pattern)
+        self.elimination_manager = EliminationManager(
+            metagraph=self.mock_metagraph,
+            position_manager=None,  # Set later due to circular dependency
+            running_unit_tests=True
+        )
+
         self.position_manager = PositionManager(
             metagraph=self.mock_metagraph,
             running_unit_tests=True,

@@ -75,10 +75,19 @@ class TestPerfLedgers(TestBase):
         )
         self.default_usdjpy_position.rebuild_position_with_updated_orders(self.live_price_fetcher)
         mmg = MockMetagraph(hotkeys=[self.DEFAULT_MINER_HOTKEY])
-        position_manager = PositionManager(metagraph=mmg, running_unit_tests=True, 
-                                          elimination_manager=None, live_price_fetcher=self.live_price_fetcher)
-        elimination_manager = EliminationManager(mmg, position_manager, None, running_unit_tests=True)
-        position_manager.elimination_manager = elimination_manager
+        # Initialize elimination_manager first (circular dependency pattern)
+        elimination_manager = EliminationManager(
+            metagraph=mmg,
+            position_manager=None,
+            running_unit_tests=True
+        )
+        position_manager = PositionManager(
+            metagraph=mmg,
+            running_unit_tests=True,
+            elimination_manager=elimination_manager,
+            live_price_fetcher=self.live_price_fetcher
+        )
+        elimination_manager.position_manager = position_manager
         position_manager.clear_all_miner_positions()
 
         for p in [self.default_usdjpy_position, self.default_nvda_position, self.default_btc_position]:

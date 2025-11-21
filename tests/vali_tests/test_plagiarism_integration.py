@@ -39,8 +39,16 @@ class TestPlagiarismIntegration(TestBase):
         self.mock_metagraph = MockMetagraph(self.MINER_NAMES)
         self.current_time = ValiConfig.PLAGIARISM_LOOKBACK_RANGE_MS
 
+        # Initialize elimination_manager first (circular dependency pattern)
+        self.elimination_manager = EliminationManager(
+            metagraph=self.mock_metagraph,
+            position_manager=None,  # Set later due to circular dependency
+            running_unit_tests=True
+        )
+
         self.position_manager = MockPositionManager(metagraph=self.mock_metagraph, perf_ledger_manager=None,
                                                     elimination_manager=self.elimination_manager)
+        self.elimination_manager.position_manager = self.position_manager
         self.plagiarism_detector = MockPlagiarismDetector(self.mock_metagraph, self.position_manager)
 
         self.DEFAULT_TEST_POSITION_UUID = "test_position"

@@ -342,12 +342,13 @@ class TestReregistration(TestBase):
 
         # Create new elimination manager (simulate restart)
         new_elimination_manager = EliminationManager(
-            self.mock_metagraph,
-            self.position_manager,
-            self.challengeperiod_manager,
+            metagraph=self.mock_metagraph,
+            position_manager=self.position_manager,
             running_unit_tests=True,
             contract_manager=self.contract_manager
         )
+        # Set challengeperiod_manager via property (test mode)
+        new_elimination_manager.challengeperiod_manager = self.challengeperiod_manager
 
         # Verify departed hotkeys were loaded from disk
         self.assertEqual(len(new_elimination_manager.get_departed_hotkeys()), 2)

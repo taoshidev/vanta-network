@@ -42,7 +42,6 @@ from shared_objects.error_utils import ErrorUtils
 from miner_objects.slack_notifier import SlackNotifier
 from vali_objects.utils.elimination_manager import EliminationManager
 from vali_objects.utils.live_price_fetcher import LivePriceFetcherClient
-from vali_objects.utils.price_slippage_model import PriceSlippageModel
 from vali_objects.utils.subtensor_weight_setter import SubtensorWeightSetter
 from vali_objects.utils.mdd_checker import MDDChecker
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
@@ -52,7 +51,6 @@ from vali_objects.vali_dataclasses.perf_ledger import PerfLedgerManager
 from vali_objects.utils.position_manager import PositionManager
 from vali_objects.utils.challengeperiod_manager import ChallengePeriodManager
 from vali_objects.utils.vali_utils import ValiUtils
-from vali_objects.vali_config import ValiConfig
 from vanta_api.websocket_notifier import WebSocketNotifier
 from vali_objects.utils.plagiarism_detector import PlagiarismDetector
 from vali_objects.utils.validator_contract_manager import ValidatorContractManager
@@ -180,8 +178,6 @@ class Validator(ValidatorBase):
             slack_notifier=self.slack_notifier
         )
 
-        self.price_slippage_model = PriceSlippageModel(live_price_fetcher=self.live_price_fetcher)
-
         # Track last error notification time to prevent spam
         self.last_error_notification_time = 0
         self.error_notification_cooldown = 300  # 5 minutes between error notifications
@@ -297,7 +293,7 @@ class Validator(ValidatorBase):
         self.plagiarism_manager = PlagiarismManager(slack_notifier=self.slack_notifier,
                                                     ipc_manager=self.ipc_manager)
 
-        self.market_order_manager = MarketOrderManager(self.live_price_fetcher, self.position_locks, self.price_slippage_model,
+        self.market_order_manager = MarketOrderManager(self.live_price_fetcher, self.position_locks,
                self.config, self.position_manager, self.websocket_notifier, self.contract_manager, self.slack_notifier)
 
         # Attach the position manager to the other objects that need it (BEFORE creating ChallengePeriodManager)
@@ -603,7 +599,7 @@ class Validator(ValidatorBase):
         bt.logging.info("Step 14: LivePriceFetcher RPC health checker already started")
 
         # Signal watchdog that initialization is complete
-        self.init_watchdog['current_step'] = 15
+        self.init_watchdog['current_step'] = 'completed'
         bt.logging.info("[INIT] All initialization steps completed successfully!")
 
         # Send success notification to Slack

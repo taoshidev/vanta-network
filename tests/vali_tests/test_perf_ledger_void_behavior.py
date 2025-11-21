@@ -49,12 +49,21 @@ class TestPerfLedgerVoidBehavior(TestBase):
         secrets = ValiUtils.get_secrets(running_unit_tests=True)
         self.live_price_fetcher = LivePriceFetcher(secrets=secrets, disable_ws=True)
         self.mmg = MockMetagraph(hotkeys=[self.test_hotkey])
+
+        # Initialize elimination_manager first (circular dependency pattern)
+        self.elimination_manager = EliminationManager(
+            metagraph=self.mmg,
+            position_manager=None,
+            running_unit_tests=True
+        )
+
         self.position_manager = PositionManager(
             metagraph=self.mmg,
             running_unit_tests=True,
             elimination_manager=self.elimination_manager,
             live_price_fetcher=self.live_price_fetcher
         )
+        self.elimination_manager.position_manager = self.position_manager
         self.position_manager.clear_all_miner_positions()
 
     def validate_void_checkpoint(self, cp: PerfCheckpoint, context: str = ""):

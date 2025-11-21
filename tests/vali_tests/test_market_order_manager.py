@@ -14,7 +14,6 @@ from vali_objects.utils.elimination_manager import EliminationManager
 from vali_objects.utils.market_order_manager import MarketOrderManager
 from vali_objects.utils.position_lock import PositionLocks
 from vali_objects.utils.position_manager import PositionManager
-from vali_objects.utils.price_slippage_model import PriceSlippageModel
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.utils.validator_contract_manager import ValidatorContractManager
 from vali_objects.vali_config import TradePair, ValiConfig
@@ -35,22 +34,25 @@ class TestMarketOrderManager(TestBase):
         self.mock_metagraph = MockMetagraph([self.DEFAULT_MINER_HOTKEY])
         self.perf_ledger_manager = PerfLedgerManager(self.mock_metagraph, running_unit_tests=True)
 
+        # Initialize elimination_manager first (circular dependency pattern)
+        self.elimination_manager = EliminationManager(
+            metagraph=self.mock_metagraph,
+            position_manager=None,
+            running_unit_tests=True
+        )
+
         self.position_manager = PositionManager(
             metagraph=self.mock_metagraph,
             perf_ledger_manager=self.perf_ledger_manager,
             elimination_manager=self.elimination_manager,
             running_unit_tests=True
         )
+        self.elimination_manager.position_manager = self.position_manager
 
         self.position_locks = PositionLocks({}, use_ipc=False)
 
         secrets = ValiUtils.get_secrets(running_unit_tests=True)
         self.live_price_fetcher = MockLivePriceFetcher(secrets=secrets, disable_ws=True)
-
-        self.price_slippage_model = PriceSlippageModel(
-            live_price_fetcher=self.live_price_fetcher,
-            running_unit_tests=True
-        )
 
         # Mock contract manager
         self.mock_contract_manager = Mock(spec=ValidatorContractManager)
@@ -62,12 +64,11 @@ class TestMarketOrderManager(TestBase):
         self.market_order_manager = MarketOrderManager(
             live_price_fetcher=self.live_price_fetcher,
             position_locks=self.position_locks,
-            price_slippage_model=self.price_slippage_model,
             config=Mock(serve=False),
             position_manager=self.position_manager,
             websocket_notifier=self.mock_websocket_notifier,
             contract_manager=self.mock_contract_manager,
-            start_slippage_thread=False  # Disable thread in tests
+            running_unit_tests=True,
         )
 
         self.position_manager.clear_all_miner_positions()

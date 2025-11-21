@@ -68,12 +68,15 @@ class TestAutoSyncTxtFiles(TestBase):
         secrets = ValiUtils.get_secrets(running_unit_tests=True)
         self.live_price_fetcher = MockLivePriceFetcher(secrets=secrets, disable_ws=True)
         
-        # Initialize managers
+        # Initialize managers (circular dependency pattern)
         self.elimination_manager = EliminationManager(
+            metagraph=self.mock_metagraph,
+            position_manager=None,
+            running_unit_tests=True
         )
         self.position_manager = PositionManager(
-            metagraph=self.mock_metagraph, 
-            running_unit_tests=True, 
+            metagraph=self.mock_metagraph,
+            running_unit_tests=True,
             elimination_manager=self.elimination_manager
         )
         self.elimination_manager.position_manager = self.position_manager

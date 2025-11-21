@@ -33,12 +33,20 @@ class TestLimitOrders(TestBase):
         self.mock_metagraph = MockMetagraph([self.DEFAULT_MINER_HOTKEY])
         self.perf_ledger_manager = PerfLedgerManager(self.mock_metagraph, running_unit_tests=True)
 
+        # Initialize elimination_manager first (circular dependency pattern)
+        self.elimination_manager = EliminationManager(
+            metagraph=self.mock_metagraph,
+            position_manager=None,
+            running_unit_tests=True
+        )
+
         self.position_manager = PositionManager(
             metagraph=self.mock_metagraph,
             perf_ledger_manager=self.perf_ledger_manager,
             elimination_manager=self.elimination_manager,
             running_unit_tests=True
         )
+        self.elimination_manager.position_manager = self.position_manager
 
         self.position_locks = PositionLocks({}, use_ipc=False)
 
@@ -188,10 +196,10 @@ class TestLimitOrders(TestBase):
                 self.DEFAULT_MINER_HOTKEY,
                 flat_order
             )
-        self.assertIn("No position found for FLAT order", str(context.exception))
+        self.assertIn("FLAT order is not supported for LIMIT orders", str(context.exception))
 
     def test_process_limit_order_rpc_flat_with_position(self):
-        """Test FLAT limit order acceptance when position exists"""
+        """Test FLAT limit order rejection even when position exists"""
         position = self.create_test_position(position_type=OrderType.LONG)
         self.position_manager.save_miner_position(position)
 
@@ -200,14 +208,12 @@ class TestLimitOrders(TestBase):
             limit_price=51000.0
         )
 
-        result = self.limit_order_manager.process_limit_order_rpc(
-            self.DEFAULT_MINER_HOTKEY,
-            flat_order
-        )
-
-        self.assertEqual(result["status"], "success")
-        orders = self.limit_order_manager._limit_orders[self.DEFAULT_TRADE_PAIR][self.DEFAULT_MINER_HOTKEY]
-        self.assertEqual(orders[0].order_type, OrderType.FLAT)
+        with self.assertRaises(SignalException) as context:
+            self.limit_order_manager.process_limit_order_rpc(
+                self.DEFAULT_MINER_HOTKEY,
+                flat_order
+            )
+        self.assertIn("FLAT order is not supported for LIMIT orders", str(context.exception))
 
     def test_process_limit_order_rpc_immediate_fill(self):
         """Test limit order is filled immediately when price already triggered"""
@@ -1188,28 +1194,10 @@ class TestLimitOrders(TestBase):
 
         self.assertIsNone(trigger_price)
 
-    def test_cancel_sibling_handles_bracket_orders(self):
-        """Test that _cancel_sibling_sltp_orders properly handles bracket orders"""
-        # Create a bracket order (same type as parent)
-        bracket_order = Order(
-            trade_pair=self.DEFAULT_TRADE_PAIR,
-            order_uuid="parent-123-bracket",
-            processed_ms=TimeUtil.now_in_millis(),
-            price=50000.0,
-            order_type=OrderType.LONG,  # Same as parent
-            leverage=1.0,
-            execution_type=ExecutionType.BRACKET,
-            stop_loss=48000.0,
-            take_profit=52000.0,
-            src=OrderSource.ORDER_SRC_BRACKET_FILLED
-        )
-
-        # Should not raise exception and should return early
-        self.limit_order_manager._cancel_sibling_sltp_orders(
-            self.DEFAULT_MINER_HOTKEY,
-            bracket_order
-        )
-        # Test passes if no exception is raised
+    # NOTE: test_cancel_sibling_handles_bracket_orders removed because _cancel_sibling_sltp_orders
+    # method no longer exists. The bracket order system has been refactored to use a single
+    # bracket order with both SL and TP instead of separate orders, so sibling cancellation
+    # is no longer needed.
 
 
 if __name__ == '__main__':

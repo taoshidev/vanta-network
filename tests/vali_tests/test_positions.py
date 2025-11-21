@@ -57,6 +57,14 @@ class TestPositions(TestBase):
             account_size=self.DEFAULT_ACCOUNT_SIZE,
         )
         self.mock_metagraph = MockMetagraph([self.DEFAULT_MINER_HOTKEY])
+
+        # Initialize elimination_manager first (circular dependency pattern)
+        self.elimination_manager = EliminationManager(
+            metagraph=self.mock_metagraph,
+            position_manager=None,  # Set later due to circular dependency
+            running_unit_tests=True
+        )
+
         self.position_manager = PositionManager(metagraph=self.mock_metagraph, running_unit_tests=True,
                                                 elimination_manager=self.elimination_manager, secrets=secrets,
                                                 live_price_fetcher=self.live_price_fetcher)
@@ -2693,7 +2701,7 @@ class TestPositions(TestBase):
         #print(f"position json: {position_json}")
         dict_repr = position.to_dict()  # Make sure no side effects in the recreated object...
 
-        recreated_object = Position.parse_raw(position_json)  #Position(**json.loads(position_json))
+        recreated_object = Position.model_validate_json(position_json)  #Position(**json.loads(position_json))
         #print(f"recreated object str repr: {recreated_object}")
         #print("recreated object:", recreated_object)
         self.assertTrue(PositionManager.positions_are_the_same(position, recreated_object))

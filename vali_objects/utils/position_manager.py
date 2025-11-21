@@ -803,9 +803,12 @@ class PositionManager(RPCServiceBase, CacheController):
         # Get attributes programmatically.
         comparing_to_dict = isinstance(position2, dict)
         for attr in dir(position1):
+            # Skip Pydantic internal attributes to avoid deprecation warnings
+            if attr.startswith("_") or (attr in ('model_computed_fields', 'model_config', 'model_fields', 'model_fields_set', '__fields__', 'newest_order_age_ms')):
+                continue
+
             attr_is_property = isinstance(getattr(type(position1), attr, None), property)
-            if attr.startswith("_") or callable(getattr(position1, attr)) or (comparing_to_dict and attr_is_property) \
-                    or (attr in ('model_computed_fields', 'model_config', 'model_fields', 'model_fields_set', 'newest_order_age_ms')):
+            if callable(getattr(position1, attr)) or (comparing_to_dict and attr_is_property):
                 continue
 
             value1 = getattr(position1, attr)

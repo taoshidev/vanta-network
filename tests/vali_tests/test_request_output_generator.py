@@ -63,9 +63,8 @@ class TestRequestOutputGenerator(TestBase):
 
         # Initialize managers in the correct order to handle circular dependencies
         self.elimination_manager = EliminationManager(
-            self.mock_metagraph,
-            self.live_price_fetcher,
-            None,
+            metagraph=self.mock_metagraph,
+            position_manager=None,  # Set later due to circular dependency
             running_unit_tests=True,
             contract_manager=self.contract_manager
         )

@@ -25,7 +25,7 @@ class CustomEncoder(json.JSONEncoder):
         if isinstance(obj, TradePair) or isinstance(obj, OrderType) or isinstance(obj, ExecutionType):
             return obj.__json__()
         elif isinstance(obj, BaseModel):
-            return obj.dict()
+            return obj.model_dump()
         elif hasattr(obj, 'to_dict'):
             return obj.to_dict()
         elif isinstance(obj, DictProxy):

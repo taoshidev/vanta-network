@@ -42,16 +42,16 @@ class ValidatorBase:
         self.init_watchdog['start_time'] = time.time()
         self.init_watchdog['alerted'] = False
 
-        bt.logging.info(f"[INIT] Step {step_num}/15: {step_desc}...")
+        bt.logging.info(f"[INIT] Step {step_num}: {step_desc}...")
         start_time = time.time()
         try:
             result = step_func()
             elapsed = time.time() - start_time
-            bt.logging.info(f"[INIT] Step {step_num}/15 complete: {step_desc} (took {elapsed:.2f}s)")
+            bt.logging.info(f"[INIT] Step {step_num} complete: {step_desc} (took {elapsed:.2f}s)")
             return result
         except Exception as e:
             elapsed = time.time() - start_time
-            error_msg = f"[INIT] Step {step_num}/15 FAILED: {step_desc} after {elapsed:.2f}s - {str(e)}"
+            error_msg = f"[INIT] Step {step_num} FAILED: {step_desc} after {elapsed:.2f}s - {str(e)}"
             bt.logging.error(error_msg)
             bt.logging.error(traceback.format_exc())
 
@@ -59,7 +59,7 @@ class ValidatorBase:
             if self.slack_notifier:
                 self.slack_notifier.send_message(
                     f"🚨 Validator Initialization Failed!\n"
-                    f"Step: {step_num}/15 - {step_desc}\n"
+                    f"Step {step_num}: {step_desc}\n"
                     f"Error: {str(e)}\n"
                     f"Hotkey: {self.wallet.hotkey.ss58_address}\n"
                     f"Time elapsed: {elapsed:.2f}s\n"
@@ -73,9 +73,9 @@ class ValidatorBase:
 
         """Background thread that monitors for hung initialization steps"""
         HANG_TIMEOUT = 60  # Alert after 60 seconds on a single step
-        while self.init_watchdog['current_step'] <= 15:
+        while self.init_watchdog['current_step'] != 'completed':
             time.sleep(5)  # Check every 5 seconds
-            if self.init_watchdog['current_step'] > 15:
+            if self.init_watchdog['current_step'] == 'completed':
                 break  # Initialization complete
 
             elapsed = time.time() - self.init_watchdog['start_time']
@@ -83,7 +83,7 @@ class ValidatorBase:
                 self.init_watchdog['alerted'] = True
                 hang_msg = (
                     f"⚠️ Validator Initialization Hang Detected!\n"
-                    f"Step {self.init_watchdog['current_step']}/15 has been running for {elapsed:.1f}s\n"
+                    f"Step {self.init_watchdog['current_step']} has been running for {elapsed:.1f}s\n"
                     f"Step: {self.init_watchdog['step_desc']}\n"
                     f"Hotkey: {self.wallet.hotkey.ss58_address}\n"
                     f"Timeout threshold: {HANG_TIMEOUT}s\n"

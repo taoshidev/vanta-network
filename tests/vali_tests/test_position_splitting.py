@@ -27,6 +27,13 @@ class TestPositionSplitting(TestBase):
         self.live_price_fetcher = MockLivePriceFetcher(secrets=secrets, disable_ws=True)
         self.DEFAULT_MINER_HOTKEY = "test_miner"
         self.mock_metagraph = MockMetagraph([self.DEFAULT_MINER_HOTKEY])
+
+        # Initialize elimination_manager (circular dependency pattern)
+        self.elimination_manager = EliminationManager(
+            metagraph=self.mock_metagraph,
+            position_manager=None,  # Set later due to circular dependency
+            running_unit_tests=True
+        )
         
     def create_position_with_orders(self, orders_data):
         """Helper to create a position with specified orders."""

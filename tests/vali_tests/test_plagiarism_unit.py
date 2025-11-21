@@ -42,6 +42,14 @@ class TestPlagiarismUnit(TestBase):
         self.current_time = ValiConfig.PLAGIARISM_LOOKBACK_RANGE_MS
         secrets = ValiUtils.get_secrets(running_unit_tests=True)
         self.live_price_fetcher = MockLivePriceFetcher(secrets=secrets, disable_ws=True)
+
+        # Initialize elimination_manager first (circular dependency pattern)
+        self.elimination_manager = EliminationManager(
+            metagraph=self.mock_metagraph,
+            position_manager=None,
+            running_unit_tests=True
+        )
+
         self.position_manager = PositionManager(metagraph=self.mock_metagraph, running_unit_tests=True,
                                                 elimination_manager=self.elimination_manager,
                                                 live_price_fetcher=self.live_price_fetcher)

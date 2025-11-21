@@ -19,11 +19,11 @@ from vali_objects.vali_dataclasses.order import OrderSource, Order
 
 
 class MarketOrderManager():
-    def __init__(self, live_price_fetcher, position_locks, price_slippage_model, config, position_manager,
-                 websocket_notifier, contract_manager, slack_notifier=None, start_slippage_thread=True):
+    def __init__(self, live_price_fetcher, position_locks, config, position_manager,
+                 websocket_notifier, contract_manager, slack_notifier=None, running_unit_tests=False):
         self.live_price_fetcher = live_price_fetcher
         self.position_locks = position_locks
-        self.price_slippage_model = price_slippage_model
+        self.price_slippage_model = PriceSlippageModel(live_price_fetcher=self.live_price_fetcher, running_unit_tests=running_unit_tests)
         self.config = config
         self.position_manager = position_manager
         self.websocket_notifier = websocket_notifier
@@ -33,7 +33,7 @@ class MarketOrderManager():
 
         # Start slippage feature refresher thread (disabled in tests)
         # This thread refreshes slippage features daily and pre-populates tomorrow's features
-        if start_slippage_thread:
+        if not running_unit_tests:
             self.slippage_refresher = PriceSlippageModel.FeatureRefresher(
                 price_slippage_model=self.price_slippage_model,
                 slack_notifier=slack_notifier

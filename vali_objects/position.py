@@ -76,7 +76,7 @@ class Position(BaseModel):
             if not isinstance(order, Order):
                 order['trade_pair'] = trade_pair
             else:
-                order = order.copy(update={'trade_pair': trade_pair})
+                order = order.model_copy(update={'trade_pair': trade_pair})
 
             updated_orders.append(order)
         values['orders'] = updated_orders
@@ -245,7 +245,7 @@ class Position(BaseModel):
         return d
 
     def to_dict(self):
-        d = deepcopy(self.dict())
+        d = deepcopy(self.model_dump())
         return self._handle_trade_pair_encoding(d)
 
     def compact_dict_no_orders(self):
@@ -272,7 +272,7 @@ class Position(BaseModel):
         return self.to_json_string()
 
     def to_copyable_str(self):
-        ans = self.dict()
+        ans = self.model_dump()
         ans['trade_pair'] = f'TradePair.{self.trade_pair.trade_pair_id}'
         ans['position_type'] = f'OrderType.{self.position_type.name}'
         for o in ans['orders']:
@@ -286,9 +286,9 @@ class Position(BaseModel):
 
 
     def to_json_string(self) -> str:
-        # Using pydantic's json method with built-in validation
-        json_str = self.json()
-        # Unfortunately, we can't tell pydantic v1 to strip certain fields so we do that here
+        # Using pydantic's model_dump_json method with built-in validation
+        json_str = self.model_dump_json()
+        # Unfortunately, we can't tell pydantic v2 to strip certain fields so we do that here
         json_loaded = json.loads(json_str)
         json_compressed = self._handle_trade_pair_encoding(json_loaded)
         return json.dumps(json_compressed)

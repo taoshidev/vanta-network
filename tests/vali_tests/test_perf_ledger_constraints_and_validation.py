@@ -20,7 +20,6 @@ from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.position import Position
 from vali_objects.utils.elimination_manager import EliminationManager
 from vali_objects.utils.position_manager import PositionManager
-from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair
 from vali_objects.vali_dataclasses.order import Order
@@ -38,24 +37,27 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
 
     def setUp(self):
         super().setUp()
-        # Clear ALL test miner positions BEFORE creating PositionManager
-        ValiBkpUtils.clear_directory(
-            ValiBkpUtils.get_miner_dir(running_unit_tests=True)
-        )
-
         self.test_hotkey = "test_miner_constraints"
         self.now_ms = TimeUtil.now_in_millis()
         secrets = ValiUtils.get_secrets(running_unit_tests=True)
         self.live_price_fetcher = MockLivePriceFetcher(secrets=secrets, disable_ws=True)
-        self.DEFAULT_ACCOUNT_SIZE = 100_000
 
         self.mmg = MockMetagraph(hotkeys=[self.test_hotkey])
+
+        # Initialize elimination_manager first (circular dependency pattern)
+        self.elimination_manager = EliminationManager(
+            metagraph=self.mmg,
+            position_manager=None,  # Set later due to circular dependency
+            running_unit_tests=True
+        )
+
         self.position_manager = PositionManager(
             metagraph=self.mmg,
             running_unit_tests=True,
             elimination_manager=self.elimination_manager,
             live_price_fetcher=self.live_price_fetcher
         )
+        self.elimination_manager.position_manager = self.position_manager
         self.position_manager.clear_all_miner_positions()
 
     def validate_perf_ledger(self, ledger: PerfLedger, expected_init_time: int = None):
@@ -243,7 +245,6 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
             open_ms=base_time,
             close_ms=None,  # Still open
             trade_pair=TradePair.BTCUSD,
-            account_size=self.DEFAULT_ACCOUNT_SIZE,
             orders=[
                 Order(
                     price=50000.0,
@@ -264,7 +265,6 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
             open_ms=base_time + 1000,  # Different timestamp to avoid duplicate time constraint
             close_ms=None,  # Still open
             trade_pair=TradePair.BTCUSD,
-            account_size=self.DEFAULT_ACCOUNT_SIZE,
             orders=[
                 Order(
                     price=50100.0,
@@ -729,6 +729,8 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
             if parallel_mode == ParallelizationMode.MULTIPROCESSING:
                 # Create EliminationManager with IPC support for multiprocessing
                 multiprocessing_elimination_manager = EliminationManager(
+                    metagraph=self.mmg,
+                    position_manager=None,  # Set later due to circular dependency
                     running_unit_tests=True
                 )
 
@@ -738,6 +740,7 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
                     elimination_manager=multiprocessing_elimination_manager,
                     live_price_fetcher=self.live_price_fetcher
                 )
+                multiprocessing_elimination_manager.position_manager = position_manager
             else:
                 position_manager = self.position_manager
 
@@ -940,11 +943,20 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
         # Create multiple test miners
         test_hotkeys = ["rss_miner_1", "rss_miner_2", "rss_miner_3"]
         mmg = MockMetagraph(hotkeys=test_hotkeys)
+
+        # Create elimination_manager for this test
+        elimination_manager = EliminationManager(
+            metagraph=mmg,
+            position_manager=None,  # Set later due to circular dependency
+            running_unit_tests=True
+        )
+
         position_manager = PositionManager(
             metagraph=mmg,
             running_unit_tests=True,
             elimination_manager=elimination_manager,
         )
+        elimination_manager.position_manager = position_manager
         
         # Test RSS enabled vs disabled
         base_time = self.now_ms - (10 * MS_IN_24_HOURS)
@@ -1231,6 +1243,8 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
         # Test Multiprocessing mode (already tested extensively above)
         # Create EliminationManager and PositionManager with IPC support to avoid pickling threading locks
         multiprocessing_elimination_manager = EliminationManager(
+            metagraph=self.mmg,
+            position_manager=None,  # Set later due to circular dependency
             running_unit_tests=True
         )
 
@@ -1240,6 +1254,7 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
             elimination_manager=multiprocessing_elimination_manager,
             live_price_fetcher=self.live_price_fetcher
         )
+        multiprocessing_elimination_manager.position_manager = multiprocessing_position_manager
         # Copy the position from the test's position_manager
         multiprocessing_position_manager.save_miner_position(position)
 
@@ -1696,7 +1711,6 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
             orders=[open_order, close_order],
             position_type=OrderType.FLAT,
             is_closed_position=True,
-            account_size=self.DEFAULT_ACCOUNT_SIZE,
         )
         
         position.rebuild_position_with_updated_orders(self.live_price_fetcher)
@@ -1793,7 +1807,6 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
                 position_uuid=f"{tp.trade_pair_id}_tracking_test",
                 open_ms=base_time,
                 trade_pair=tp,
-                account_size=self.DEFAULT_ACCOUNT_SIZE,
                 orders=[Order(
                     price=start_price,
                     processed_ms=base_time,
@@ -1915,7 +1928,6 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
             open_ms=base_time - 7200000,  # 2 hours before base
             close_ms=base_time - 3600000,  # 1 hour before base
             trade_pair=TradePair.ETHUSD,
-            account_size=self.DEFAULT_ACCOUNT_SIZE,
             orders=[
                 Order(
                     price=2950.0,
@@ -2005,7 +2017,6 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
             position_uuid="btc_test",
             open_ms=1000000000000,
             trade_pair=TradePair.BTCUSD,
-            account_size=self.DEFAULT_ACCOUNT_SIZE,
             orders=[Order(
                 price=50000.0,  # Original order price
                 processed_ms=1000000000000,
@@ -2023,7 +2034,6 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
             position_uuid="eth_test",
             open_ms=1000000000000,
             trade_pair=TradePair.ETHUSD,
-            account_size=self.DEFAULT_ACCOUNT_SIZE,
             orders=[Order(
                 price=3000.0,  # Original order price
                 processed_ms=1000000000000,
@@ -2093,7 +2103,6 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
             trade_pair=TradePair.BTCUSD,
             orders=[],
             position_type=OrderType.LONG,
-            account_size=self.DEFAULT_ACCOUNT_SIZE,
         )
         
         # Add multiple orders at different times
