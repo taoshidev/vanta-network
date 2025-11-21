@@ -122,6 +122,12 @@ class ValiBkpUtils:
     @staticmethod
     def get_perf_ledgers_path(running_unit_tests=False) -> str:
         suffix = "/tests" if running_unit_tests else ""
+        return ValiConfig.BASE_DIR + f"{suffix}/validation/perf_ledgers.pkl"
+
+    @staticmethod
+    def get_perf_ledgers_path_compressed_json(running_unit_tests=False) -> str:
+        """Get compressed JSON perf_ledgers path for backward compatibility fallback."""
+        suffix = "/tests" if running_unit_tests else ""
         return ValiConfig.BASE_DIR + f"{suffix}/validation/perf_ledgers.json.gz"
 
     @staticmethod
@@ -367,6 +373,21 @@ class ValiBkpUtils:
         with gzip.open(temp_path, 'wt', encoding='utf-8') as f:
             json.dump(data, f, cls=CustomEncoder)
         shutil.move(temp_path, file_path)
+
+    @staticmethod
+    def write_pickle(file_path: str, data: dict) -> None:
+        """Write pickle data (atomic write via temp file)."""
+        temp_path = file_path + ".tmp"
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        with open(temp_path, 'wb') as f:
+            pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
+        shutil.move(temp_path, file_path)
+
+    @staticmethod
+    def read_pickle(file_path: str) -> dict:
+        """Read pickle data."""
+        with open(file_path, 'rb') as f:
+            return pickle.load(f)
 
     @staticmethod
     def read_compressed_json(file_path: str) -> dict:

@@ -485,14 +485,14 @@ class Validator(ValidatorBase):
 
         # Step 9: Start perf ledger updater process
         def step9():
-            self.perf_ledger_updater_thread = Process(target=self.perf_ledger_manager.run_update_loop, daemon=True)
-            self.perf_ledger_updater_thread.start()
+            self.perf_ledger_updater_process = Process(target=self.perf_ledger_manager.run_update_loop, daemon=True)
+            self.perf_ledger_updater_process.start()
             # Verify process started
             time.sleep(0.1)  # Give process a moment to start
-            if not self.perf_ledger_updater_thread.is_alive():
+            if not self.perf_ledger_updater_process.is_alive():
                 raise RuntimeError("Perf ledger updater process failed to start")
-            bt.logging.info(f"Process started with PID: {self.perf_ledger_updater_thread.pid}")
-            return self.perf_ledger_updater_thread
+            bt.logging.info(f"Process started with PID: {self.perf_ledger_updater_process.pid}")
+            return self.perf_ledger_updater_process
         self.run_init_step_with_monitoring(9, "Starting perf ledger updater process", step9)
 
         # Step 10: Start weight setter process
