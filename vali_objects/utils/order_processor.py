@@ -59,7 +59,7 @@ class OrderProcessor:
 
     @staticmethod
     def process_limit_order(signal: dict, trade_pair, order_uuid: str, now_ms: int,
-                           miner_hotkey: str, limit_order_manager) -> Order:
+                           miner_hotkey: str, limit_order_client) -> Order:
         """
         Process a LIMIT order by creating an Order object and calling limit_order_manager.
 
@@ -69,7 +69,7 @@ class OrderProcessor:
             order_uuid: Order UUID
             now_ms: Current timestamp in milliseconds
             miner_hotkey: Miner's hotkey
-            limit_order_manager: Manager to process the limit order
+            limit_order_client: Client to process the limit order
 
         Returns:
             The created Order object
@@ -87,11 +87,21 @@ class OrderProcessor:
         stop_loss = signal.get("stop_loss")
         take_profit = signal.get("take_profit")
 
+        # Convert size fields to float if provided (needed for proper validation in Order model)
+        if leverage is not None:
+            leverage = float(leverage)
+        if value is not None:
+            value = float(value)
+        if quantity is not None:
+            quantity = float(quantity)
+
         # Validate required fields
         if not signal_order_type_str:
             raise SignalException("Missing required field: order_type")
         if not limit_price:
             raise SignalException("must set limit_price for limit order")
+        if leverage is None:
+            raise SignalException("Missing required field: leverage")
 
         # Parse order type
         try:
@@ -99,6 +109,7 @@ class OrderProcessor:
         except ValueError as e:
             raise SignalException(f"Invalid order_type: {str(e)}")
 
+        # Convert remaining numeric fields to float
         limit_price = float(limit_price)
 
         if stop_loss is not None:
@@ -139,16 +150,16 @@ class OrderProcessor:
         )
 
         # Process the limit order (may throw SignalException)
-        limit_order_manager.process_limit_order(miner_hotkey, order)
+        limit_order_client.process_limit_order(miner_hotkey, order)
 
         bt.logging.debug(f"Processed LIMIT order: {order.order_uuid} for {miner_hotkey}")
         return order
 
     @staticmethod
     def process_limit_cancel(signal: dict, trade_pair, order_uuid: str, now_ms: int,
-                            miner_hotkey: str, limit_order_manager) -> dict:
+                            miner_hotkey: str, limit_order_client) -> dict:
         """
-        Process a LIMIT_CANCEL operation by calling limit_order_manager.
+        Process a LIMIT_CANCEL operation by calling limit_order_client.
 
         Args:
             signal: Signal dictionary (order_uuid may be in here for specific cancel)
@@ -156,10 +167,10 @@ class OrderProcessor:
             order_uuid: Order UUID to cancel (or None/empty for cancel all)
             now_ms: Current timestamp in milliseconds
             miner_hotkey: Miner's hotkey
-            limit_order_manager: Manager to process the cancellation
+            limit_order_client: Client to process the cancellation
 
         Returns:
-            Result dictionary from limit_order_manager
+            Result dictionary from limit_order_client
 
         Raises:
             SignalException: If cancellation fails
@@ -168,7 +179,7 @@ class OrderProcessor:
         trade_pair_id = trade_pair.trade_pair_id if trade_pair else None
 
         # Call cancel limit order (may throw SignalException)
-        result = limit_order_manager.cancel_limit_order(
+        result = limit_order_client.cancel_limit_order(
             miner_hotkey,
             trade_pair_id,
             order_uuid,
@@ -180,7 +191,7 @@ class OrderProcessor:
 
     @staticmethod
     def process_bracket_order(signal: dict, trade_pair, order_uuid: str, now_ms: int,
-                             miner_hotkey: str, limit_order_manager) -> Order:
+                             miner_hotkey: str, limit_order_client) -> Order:
         """
         Process a BRACKET order by creating an Order object and calling limit_order_manager.
 
@@ -194,7 +205,7 @@ class OrderProcessor:
             order_uuid: Order UUID
             now_ms: Current timestamp in milliseconds
             miner_hotkey: Miner's hotkey
-            limit_order_manager: Manager to process the bracket order
+            limit_order_client: Client to process the bracket order
 
         Returns:
             The created Order object
@@ -203,12 +214,19 @@ class OrderProcessor:
             SignalException: If required fields are missing, no position exists, or processing fails
         """
         # Extract signal data
-        leverage = signal.get("leverage")  # If leverage is None, read leverage from position
+        leverage = signal.get("leverage", 0.0)  # Default to 0.0 if not provided
         value = signal.get("value")
         quantity = signal.get("quantity")
 
         stop_loss = signal.get("stop_loss")
         take_profit = signal.get("take_profit")
+
+        # Convert size fields to float if provided (needed for proper validation in Order model)
+        leverage = float(leverage)
+        if value is not None:
+            value = float(value)
+        if quantity is not None:
+            quantity = float(quantity)
 
         # Validate that at least one of SL or TP is set
         if stop_loss is None and take_profit is None:
@@ -244,7 +262,7 @@ class OrderProcessor:
         )
 
         # Process the bracket order - manager validates position and sets correct order_type/leverage
-        limit_order_manager.process_limit_order(miner_hotkey, order)
+        limit_order_client.process_limit_order(miner_hotkey, order)
 
         bt.logging.debug(f"Processed BRACKET order: {order.order_uuid} for {miner_hotkey}")
         return order
@@ -252,7 +270,7 @@ class OrderProcessor:
     @staticmethod
     def process_market_order(signal: dict, trade_pair, order_uuid: str, now_ms: int,
                             miner_hotkey: str, miner_repo_version: str,
-                            market_order_manager, synapse=None):
+                            market_order_manager) -> tuple:
         """
         Process a MARKET order by calling market_order_manager.
 
@@ -264,27 +282,19 @@ class OrderProcessor:
             miner_hotkey: Miner's hotkey
             miner_repo_version: Version of miner repo
             market_order_manager: Manager to process the market order
-            synapse: Optional synapse object (for validator path)
 
         Returns:
-            For validator path (synapse): Order object (or None if no order created)
-            For REST API path: Tuple of (error_message, updated_position, created_order)
+            Tuple of (error_message, updated_position, created_order):
+                - error_message: Empty string if success, error string if failed
+                - updated_position: Position object if successful, None otherwise
+                - created_order: Order object if successful, None otherwise
 
         Raises:
-            SignalException: If processing fails
+            SignalException: If processing fails with validation error
         """
-        if synapse:
-            # Validator path: use synapse-based method
-            created_order = market_order_manager.process_market_order(
-                synapse, order_uuid, miner_repo_version, trade_pair,
-                now_ms, signal, miner_hotkey
-            )
-            # Error checking happens via synapse.error_message
-            return created_order
-        else:
-            # REST API path: use direct method
-            err_msg, updated_position, created_order = market_order_manager._process_market_order(
-                order_uuid, miner_repo_version, trade_pair,
-                now_ms, signal, miner_hotkey, price_sources=None
-            )
-            return err_msg, updated_position, created_order
+        # Use direct method for consistent interface across validator and REST API
+        err_msg, updated_position, created_order = market_order_manager._process_market_order(
+            order_uuid, miner_repo_version, trade_pair,
+            now_ms, signal, miner_hotkey, price_sources=None
+        )
+        return err_msg, updated_position, created_order

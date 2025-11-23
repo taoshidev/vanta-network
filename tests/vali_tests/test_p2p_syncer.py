@@ -8,8 +8,8 @@ from tests.vali_tests.base_objects.test_base import TestBase
 from time_util.time_util import TimeUtil
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.position import Position
-from vali_objects.utils.elimination_manager import EliminationManager
-from vali_objects.utils.live_price_fetcher import LivePriceFetcher
+from vali_objects.utils.elimination_server import EliminationServer
+from vali_objects.utils.live_price_server import LivePriceFetcherServer
 from vali_objects.utils.p2p_syncer import P2PSyncer
 from vali_objects.utils.position_manager import PositionManager
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
@@ -28,7 +28,7 @@ class TestPositions(TestBase):
         )
 
         secrets = ValiUtils.get_secrets(running_unit_tests=True)
-        self.live_price_fetcher = LivePriceFetcher(secrets=secrets, disable_ws=True)
+        self.live_price_fetcher = LivePriceFetcherServer(secrets=secrets, disable_ws=True)
         self.DEFAULT_MINER_HOTKEY = "test_miner"
         self.DEFAULT_POSITION_UUID = "test_position"
         self.DEFAULT_ORDER_UUID = "test_order"
@@ -52,17 +52,17 @@ class TestPositions(TestBase):
 
         self.mock_metagraph = MockMetagraph([self.DEFAULT_MINER_HOTKEY])
 
-        # Initialize elimination_manager first (circular dependency pattern)
-        self.elimination_manager = EliminationManager(
+        # Create position manager first (it creates its own EliminationClient internally)
+        self.position_manager = PositionManager(metagraph=self.mock_metagraph, running_unit_tests=True)
+
+        # Create elimination server and connect it to the position manager's client
+        self.elimination_server = EliminationServer(
             metagraph=self.mock_metagraph,
-            position_manager=None,
+            position_manager=self.position_manager,
             running_unit_tests=True
         )
-
-        self.position_manager = PositionManager(metagraph=self.mock_metagraph, running_unit_tests=True,
-                                                elimination_manager=self.elimination_manager)
+        self.position_manager.elimination_client.set_direct_server(self.elimination_server)
         self.position_manager.clear_all_miner_positions()
-        self.elimination_manager.position_manager = self.position_manager
 
         self.default_open_position = Position(
             miner_hotkey=self.DEFAULT_MINER_HOTKEY,

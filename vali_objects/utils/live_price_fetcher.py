@@ -1,201 +1,60 @@
-from multiprocessing.managers import BaseManager
-from multiprocessing import Process
 import time
-import uuid
 from typing import List, Tuple, Dict
 
 import numpy as np
 from data_generator.tiingo_data_service import TiingoDataService
 from data_generator.polygon_data_service import PolygonDataService
-from time_util.time_util import TimeUtil, UnifiedMarketCalendar
-from setproctitle import setproctitle
-from shared_objects.error_utils import ErrorUtils
-from shared_objects.rpc_service_base import RPCServiceBase
-import traceback
-from vali_objects.vali_config import TradePair, ValiConfig
-from vali_objects.position import Position
+from time_util.time_util import TimeUtil
 from vali_objects.utils.vali_utils import ValiUtils
+from vali_objects.vali_config import TradePair, ValiConfig
 import bittensor as bt
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 from vali_objects.vali_dataclasses.order import OrderSource
 from vali_objects.vali_dataclasses.price_source import PriceSource
-from statistics import median
-
-class LivePriceFetcherClient(RPCServiceBase):
-    """
-    Wrapper around the LivePriceFetcher RPC client that performs periodic health checks.
-    Health checks run inline on the main thread when methods are called.
-    """
-
-    def __init__(self, secrets, disable_ws=False, ipc_manager=None, is_backtesting=False, slack_notifier=None, running_unit_tests=False):
-        """
-        Initialize client and start the server process.
-
-        Args:
-            secrets: Dictionary containing API keys for data services
-            disable_ws: Whether to disable websocket connections
-            ipc_manager: IPC manager for shared memory
-            is_backtesting: Whether running in backtesting mode
-            slack_notifier: SlackNotifier instance for error notifications
-            running_unit_tests: Whether running in unit test mode
-        """
-        # Initialize RPCServiceBase
-        RPCServiceBase.__init__(
-            self,
-            service_name=ValiConfig.RPC_LIVEPRICEFETCHER_SERVICE_NAME,
-            port=ValiConfig.RPC_LIVEPRICEFETCHER_PORT,
-            running_unit_tests=running_unit_tests,
-            enable_health_check=True,
-            health_check_interval_s=60,
-            max_consecutive_failures=3,
-            enable_auto_restart=True,
-            slack_notifier=slack_notifier
-        )
-
-        # Store dependencies for server creation
-        self._secrets = secrets
-        self._disable_ws = disable_ws
-        self._ipc_manager = ipc_manager
-        self._is_backtesting = is_backtesting
-
-        # Market calendar for local (non-RPC) market hours checking
-        self._market_calendar = UnifiedMarketCalendar()
-
-        # Start the RPC service
-        self._initialize_service()
-
-        # Store reference for backward compatibility
-        self._client = self._server_proxy
-
-    def _create_direct_server(self):
-        """Create direct in-memory instance for tests"""
-        return LivePriceFetcher(
-            self._secrets,
-            disable_ws=self._disable_ws,
-            ipc_manager=self._ipc_manager,
-            is_backtesting=self._is_backtesting
-        )
-
-    def _start_server_process(self, address, authkey, server_ready):
-        """Start RPC server in separate process"""
-        def server_main():
-            from setproctitle import setproctitle
-            setproctitle("vali_LivePriceFetcher")
-
-            # Create server instance
-            server_instance = LivePriceFetcher(
-                self._secrets,
-                disable_ws=self._disable_ws,
-                ipc_manager=self._ipc_manager,
-                is_backtesting=self._is_backtesting
-            )
-
-            # Serve RPC
-            self._serve_rpc(server_instance, address, authkey, server_ready)
-
-        process = Process(target=server_main, daemon=True)
-        process.start()
-        return process
-
-    def is_market_open(self, trade_pair: TradePair, time_ms=None) -> bool:
-        """
-        Check if market is open for a trade pair. Executes locally (no RPC).
-
-        Args:
-            trade_pair: The trade pair to check
-            time_ms: Optional timestamp in milliseconds (defaults to now)
-
-        Returns:
-            bool: True if market is open, False otherwise
-        """
-        if time_ms is None:
-            time_ms = TimeUtil.now_in_millis()
-        return self._market_calendar.is_market_open(trade_pair, time_ms)
-
-    def get_unsupported_trade_pairs(self):
-        """
-        Return static tuple of unsupported trade pairs. Executes locally (no RPC).
-
-        These trade pairs are permanently unsupported (not temporarily halted),
-        so we can return them directly without any RPC call.
-
-        Returns:
-            Tuple of TradePair constants that are unsupported
-        """
-        # Return ValiConfig constant (saves ~92ms per order!)
-        return ValiConfig.UNSUPPORTED_TRADE_PAIRS
-
-    def __getattr__(self, name):
-        """
-        Proxy all method calls to the underlying client.
-        """
-        # Proxy the call to the underlying client (which is _server_proxy from RPCServiceBase)
-        return getattr(self._server_proxy, name)
-
-    class HealthChecker:
-        """Daemon process that continuously monitors LivePriceFetcher server health"""
-
-        def __init__(self, live_price_fetcher_client, slack_notifier=None):
-            self.live_price_fetcher_client = live_price_fetcher_client
-            self.slack_notifier = slack_notifier
-
-        def run_update_loop(self):
-
-            setproctitle("vali_HealthChecker")
-            bt.logging.info("LivePriceFetcherHealthChecker daemon started")
-
-            # Run indefinitely - process will terminate when main process exits (daemon=True)
-            while True:
-                try:
-                    current_time = TimeUtil.now_in_millis()
-                    self.live_price_fetcher_client.health_check(current_time)
-
-                    # Sleep for 60 seconds between health checks
-                    # The health_check method has its own rate limiting (60s interval)
-                    # so this ensures we check approximately every minute
-                    time.sleep(60)
-
-                except Exception as e:
-                    error_traceback = traceback.format_exc()
-                    bt.logging.error(f"Error in LivePriceFetcherHealthChecker: {e}")
-                    bt.logging.error(error_traceback)
-
-                    # Send Slack notification
-                    if self.slack_notifier:
-                        error_message = ErrorUtils.format_error_for_slack(
-                            error=e,
-                            traceback_str=error_traceback,
-                            include_operation=True,
-                            include_timestamp=True
-                        )
-                        self.slack_notifier.send_message(
-                            f"❌ LivePriceFetcherHealthChecker Error!\n{error_message}",
-                            level="error"
-                        )
-
-                    # Sleep before retrying
-                    time.sleep(60)
 
 
 class LivePriceFetcher:
-    def __init__(self, secrets, disable_ws=False, ipc_manager=None, is_backtesting=False):
+    def __init__(self, secrets, disable_ws=False, is_backtesting=False, running_unit_tests=False):
         self.is_backtesting = is_backtesting
+        self.running_unit_tests = running_unit_tests
         self.last_health_check_ms = 0
         if "tiingo_apikey" in secrets:
             self.tiingo_data_service = TiingoDataService(api_key=secrets["tiingo_apikey"], disable_ws=disable_ws,
-                                                         ipc_manager=ipc_manager)
+                                                         running_unit_tests=running_unit_tests)
         else:
             raise Exception("Tiingo API key not found in secrets.json")
         if "polygon_apikey" in secrets:
             self.polygon_data_service = PolygonDataService(api_key=secrets["polygon_apikey"], disable_ws=disable_ws,
-                                                           ipc_manager=ipc_manager, is_backtesting=is_backtesting)
+                                                           is_backtesting=is_backtesting, running_unit_tests=running_unit_tests)
         else:
             raise Exception("Polygon API key not found in secrets.json")
 
     def stop_all_threads(self):
         self.tiingo_data_service.stop_threads()
         self.polygon_data_service.stop_threads()
+
+    def set_test_price_source(self, trade_pair: TradePair, price_source: PriceSource) -> None:
+        """
+        Test-only method to inject price sources for specific trade pairs.
+        Delegates to PolygonDataService.
+        """
+        self.polygon_data_service.set_test_price_source(trade_pair, price_source)
+
+    def clear_test_price_sources(self) -> None:
+        """Clear all test price sources. Delegates to PolygonDataService."""
+        self.polygon_data_service.clear_test_price_sources()
+
+    def set_test_market_open(self, is_open: bool) -> None:
+        """
+        Test-only method to override market open status.
+        When set, all markets will return this status regardless of actual time.
+        """
+        self.polygon_data_service.set_test_market_open(is_open)
+
+    def clear_test_market_open(self) -> None:
+        """Clear market open override and use real calendar."""
+        self.polygon_data_service.clear_test_market_open()
 
     def health_check(self) -> dict:
         """
@@ -368,10 +227,10 @@ class LivePriceFetcher:
 
         # Function to calculate bounds
         def calculate_bounds(prices):
-            median = np.median(prices)
+            median_val = np.median(prices)
             # Calculate bounds as 5% less than and more than the median
-            lower_bound = median * 0.95
-            upper_bound = median * 1.05
+            lower_bound = median_val * 0.95
+            upper_bound = median_val * 1.05
             return lower_bound, upper_bound
 
         # Calculate bounds for each price type
@@ -393,55 +252,12 @@ class LivePriceFetcher:
         filtered_data.sort(key=lambda x: x.start_ms, reverse=True)
         return filtered_data
 
-    def parse_price_from_candle_data(self, data: List[PriceSource], trade_pair: TradePair) -> float | None:
-        if not data or len(data) == 0:
-            # Market is closed for this trade pair
-            bt.logging.trace(f"No ps data to parse for realtime price for trade pair {trade_pair.trade_pair_id}. data: {data}")
-            return None
-
-        # Data by timestamp in ascending order so that the largest timestamp is first
-        return data[0].close
 
     def get_quote(self, trade_pair: TradePair, processed_ms: int) -> (float, float, int):
         """
         returns the bid and ask quote for a trade_pair at processed_ms. Only Polygon supports point-in-time bid/ask.
         """
         return self.polygon_data_service.get_quote(trade_pair, processed_ms)
-
-    def parse_extreme_price_in_window(self, candle_data: Dict[TradePair, List[PriceSource]], open_position: Position, parse_min: bool = True) -> Tuple[float, PriceSource] | Tuple[None, None]:
-        trade_pair = open_position.trade_pair
-        dat = candle_data.get(trade_pair)
-        if dat is None:
-            # Market is closed for this trade pair
-            return None, None
-
-        min_allowed_timestamp_ms = open_position.orders[-1].processed_ms
-        prices = []
-        corresponding_sources = []
-
-        for a in dat:
-            if a.end_ms < min_allowed_timestamp_ms:
-                continue
-            price = a.low if parse_min else a.high
-            if price is not None:
-                prices.append(price)
-                corresponding_sources.append(a)
-
-        if not prices:
-            return None, None
-
-        if len(prices) % 2 == 1:
-            med_price = median(prices)  # Direct median if the list is odd
-        else:
-            # If even, choose the lower middle element to ensure it exists in the list
-            sorted_prices = sorted(prices)
-            middle_index = len(sorted_prices) // 2 - 1
-            med_price = sorted_prices[middle_index]
-
-        med_index = prices.index(med_price)
-        med_source = corresponding_sources[med_index]
-
-        return med_price, med_source
 
     def get_candles(self, trade_pairs, start_time_ms, end_time_ms) -> dict:
         ans = {}
@@ -599,6 +415,7 @@ class LivePriceFetcher:
         bt.logging.error(f"Unable to fetch USD to base currency {trade_pair.base} conversion at time {time_ms}.")
         return 1.0
 
+
 if __name__ == "__main__":
     secrets = ValiUtils.get_secrets()
     live_price_fetcher = LivePriceFetcher(secrets, disable_ws=True)
@@ -607,9 +424,10 @@ if __name__ == "__main__":
     time.sleep(100000)
 
     trade_pairs = [TradePair.BTCUSD, TradePair.ETHUSD, ]
+    now_ms = TimeUtil.now_in_millis()
     while True:
         for tp in TradePair:
-            print(f"{tp.trade_pair}: {live_price_fetcher.get_close(tp)}")
+            print(f"{tp.trade_pair}: {live_price_fetcher.get_close_at_date(tp, now_ms)}")
         time.sleep(10)
     # ans = live_price_fetcher.get_closes(trade_pairs)
     # for k, v in ans.items():

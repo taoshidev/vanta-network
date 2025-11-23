@@ -14,7 +14,6 @@ import bittensor as bt
 
 from time_util.time_util import TimeUtil
 from vali_objects.enums.order_type_enum import OrderType
-from vali_objects.utils.live_price_fetcher import LivePriceFetcher
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair, ValiConfig, ForexSubcategory
@@ -26,7 +25,7 @@ class PriceSlippageModel:
     features = defaultdict(dict)
     parameters: dict = {}
     slippage_estimates: dict = {}
-    live_price_fetcher: LivePriceFetcher = None
+    live_price_fetcher = None  # LivePriceFetcherClient - created on first use
     holidays_nyse = None
     eastern_tz = ZoneInfo("America/New_York")
     is_backtesting = False
@@ -34,21 +33,22 @@ class PriceSlippageModel:
     recalculate_slippage = False
     capital = ValiConfig.DEFAULT_CAPITAL
     last_refresh_time_ms = 0
+    _running_unit_tests = False
 
     # Refresh coordination (no lock needed - dict writes are atomic)
     _refresh_in_progress = False
     _refresh_current_date = None
 
-    def __init__(self, live_price_fetcher=None, running_unit_tests=False, is_backtesting=False,
+    def __init__(self, running_unit_tests=False, is_backtesting=False,
                  fetch_slippage_data=False, recalculate_slippage=False, capital=ValiConfig.DEFAULT_CAPITAL):
+        PriceSlippageModel._running_unit_tests = running_unit_tests
         if not PriceSlippageModel.parameters:
             PriceSlippageModel.holidays_nyse = holidays.financial_holidays('NYSE')
             PriceSlippageModel.parameters = self.read_slippage_model_parameters()
 
-            if live_price_fetcher is None:
-                secrets = ValiUtils.get_secrets(running_unit_tests=running_unit_tests)
-                live_price_fetcher = LivePriceFetcher(secrets, disable_ws=False)
-            PriceSlippageModel.live_price_fetcher = live_price_fetcher
+            # Create own LivePriceFetcherClient (forward compatibility - no parameter passing)
+            from vali_objects.utils.live_price_server import LivePriceFetcherClient
+            PriceSlippageModel.live_price_fetcher = LivePriceFetcherClient(running_unit_tests=running_unit_tests)
 
         PriceSlippageModel.is_backtesting = is_backtesting
         PriceSlippageModel.fetch_slippage_data = fetch_slippage_data

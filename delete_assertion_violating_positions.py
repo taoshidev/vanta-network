@@ -21,7 +21,7 @@ import bittensor as bt
 from vali_objects.position import Position
 from vali_objects.utils.position_manager import PositionManager
 from vali_objects.vali_dataclasses.perf_ledger import PerfLedgerManager
-from vali_objects.utils.live_price_fetcher import LivePriceFetcher
+from vali_objects.utils.live_price_server import LivePriceFetcherServer
 from vali_utils import ValiUtils
 
 
@@ -157,7 +157,7 @@ def identify_and_delete_violating_positions(
                 # Actually delete the positions
                 for pos in positions_to_delete:
                     try:
-                        position_manager.delete_position(pos)
+                        position_manager.delete_position(pos.miner_hotkey, pos.position_uuid)
                         stats['deleted_positions'] += 1
                         bt.logging.success(
                             f"  Deleted position {pos.position_uuid} "
@@ -213,7 +213,7 @@ def main():
     # Initialize managers
     bt.logging.info("Initializing managers...")
     secrets = ValiUtils.get_secrets()
-    live_price_fetcher = LivePriceFetcher(secrets, disable_ws=True)
+    live_price_fetcher = LivePriceFetcherServer(secrets, disable_ws=True)
     perf_ledger_manager = PerfLedgerManager(None)
     position_manager = PositionManager(
         perf_ledger_manager=perf_ledger_manager,

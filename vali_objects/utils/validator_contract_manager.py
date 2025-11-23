@@ -1,22 +1,35 @@
+# developer: jbonilla
+# Copyright (c) 2024 Taoshi Inc
+"""
+ValidatorContractManager - Business logic for contract/collateral management.
+
+This manager handles all collateral operations including:
+- Deposit/withdrawal processing
+- Account size tracking
+- Slashing calculations
+- Collateral record broadcasting
+
+The manager contains NO RPC infrastructure - that lives in ContractServer.
+This is pure business logic that can be tested independently.
+"""
 import threading
 from datetime import timezone, datetime, timedelta
 import bittensor as bt
-from bittensor_wallet import Wallet
 from collateral_sdk import CollateralManager, Network
 from typing import Dict, Any, Optional, List
-import traceback
 import asyncio
-import json
 import time
 from time_util.time_util import TimeUtil
-from vali_objects.utils.ledger_utils import LedgerUtils
+from shared_objects.metagraph_server import MetagraphClient
+from vali_objects.utils.position_manager_client import PositionManagerClient
 from vali_objects.utils.vali_utils import ValiUtils
-from vali_objects.vali_config import ValiConfig
+from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 import template.protocol
+from vali_objects.vali_dataclasses.perf_ledger_server import PerfLedgerClient
 
-TARGET_MS = 1763643599000
-NOV_1_MS = 1761951599000
+
+# ==================== Data Classes ====================
 
 
 class CollateralRecord:
@@ -45,22 +58,70 @@ class CollateralRecord:
         return str(vars(self))
 
 
+
+# ==================== Constants ====================
+
+TARGET_MS = 1762308000000
+NOV_1_MS = 1761951599000
+
+
+# ==================== Manager Implementation ====================
+
 class ValidatorContractManager:
     """
-    Manages collateral contract interactions for validators.
-    Handles deposit processing, withdrawal validation, and EVM contract operations.
-    This class acts as the validator's interface to the collateral system.
+    Business logic for contract/collateral management.
+
+    This manager contains ALL business logic for:
+    - Deposit/withdrawal processing
+    - Account size tracking and disk persistence
+    - Slashing calculations based on drawdown
+    - Collateral record broadcasting to validators
+
+    NO RPC infrastructure here - pure business logic only.
+    ContractServer wraps this manager and exposes methods via RPC.
     """
 
-    def __init__(self, config=None, position_manager=None, ipc_manager=None, running_unit_tests=False,
-                 is_backtesting=False, metagraph=None):
+    def __init__(
+        self,
+        config=None,
+        running_unit_tests=False,
+        is_backtesting=False,
+        connection_mode: RPCConnectionMode = RPCConnectionMode.RPC
+    ):
+        """
+        Initialize ValidatorContractManager.
+
+        Creates own RPC clients internally (forward compatibility pattern):
+        - PositionManagerClient
+        - PerfLedgerClient
+        - MetagraphClient
+
+        Args:
+            config: Bittensor config
+            running_unit_tests: Whether running in test mode
+            is_backtesting: Whether backtesting
+            connection_mode: RPC or LOCAL mode
+        """
+        self.running_unit_tests = running_unit_tests
         self.config = config
-        self.position_manager = position_manager
+        self.is_backtesting = is_backtesting
+        self.connection_mode = connection_mode
         self.secrets = ValiUtils.get_secrets(running_unit_tests=running_unit_tests)
         self.is_mothership = 'ms' in self.secrets
-        self.is_backtesting = is_backtesting
-        self.metagraph = metagraph
-        self._account_sizes_lock = None
+
+        # Create RPC clients (forward compatibility - no parameter passing)
+        self._position_client = PositionManagerClient(
+            port=ValiConfig.RPC_POSITIONMANAGER_PORT,
+            connection_mode=connection_mode
+        )
+        self._perf_ledger_client = PerfLedgerClient(connection_mode=connection_mode)
+        self._metagraph_client = MetagraphClient(connection_mode=connection_mode)
+
+        # Locking strategy - EAGER initialization (not lazy!)
+        # RLock allows same thread to acquire lock multiple times (needed for nested calls)
+        self._account_sizes_lock = threading.RLock()
+        # Lock for disk I/O serialization to prevent concurrent file writes
+        self._disk_lock = threading.Lock()
 
         # Store network type for dynamic max_theta property
         if config is not None:
@@ -78,35 +139,25 @@ class ValidatorContractManager:
 
         # GCP secret manager
         self._gcp_secret_manager_client = None
+
         # Initialize vault wallet as None for all validators
         self.vault_wallet = None
 
         # Initialize miner account sizes file location
         self.MINER_ACCOUNT_SIZES_FILE = ValiBkpUtils.get_miner_account_sizes_file_location(
-            running_unit_tests=running_unit_tests)
+            running_unit_tests=running_unit_tests
+        )
 
-        # Load existing data from disk or initialize empty
-        if ipc_manager:
-            self.miner_account_sizes = ipc_manager.dict()
-        else:
-            self.miner_account_sizes: Dict[str, List[CollateralRecord]] = {}
+        # Use normal Python dict (no IPC overhead)
+        self.miner_account_sizes: Dict[str, List[CollateralRecord]] = {}
         self._load_miner_account_sizes_from_disk()
         self.setup()
 
-    @property
-    def account_sizes_lock(self):
-        if not self._account_sizes_lock:
-            self._account_sizes_lock = threading.RLock()
-        return self._account_sizes_lock
+    # ==================== Properties ====================
 
     @property
     def max_theta(self) -> float:
-        """
-        Get the current maximum collateral balance limit in theta tokens.
-
-        Returns:
-            float: Maximum balance limit based on network type and current date
-        """
+        """Get the current maximum collateral balance limit in theta tokens."""
         if self.is_testnet:
             return ValiConfig.MAX_COLLATERAL_BALANCE_TESTNET
         else:
@@ -114,16 +165,14 @@ class ValidatorContractManager:
 
     @property
     def min_theta(self) -> float:
-        """
-        Get the current minimum collateral balance limit in theta tokens.
-
-        Returns:
-            float: Minimum balance limit based on network type and current date
-        """
+        """Get the current minimum collateral balance limit in theta tokens."""
         if self.is_testnet:
             return ValiConfig.MIN_COLLATERAL_BALANCE_TESTNET
         else:
             return ValiConfig.MIN_COLLATERAL_BALANCE_THETA
+
+
+    # ==================== Setup Methods ====================
 
     def setup(self):
         """
@@ -151,7 +200,13 @@ class ValidatorContractManager:
         refresh miner account sizes for new CPT
         """
         update_count = 0
-        for hotkey in list(self.miner_account_sizes.keys()):
+
+        # Acquire lock and copy keys to avoid iterator invalidation
+        with self._account_sizes_lock:
+            hotkeys = list(self.miner_account_sizes.keys())
+
+        # Process each miner (set_miner_account_size will acquire lock for each)
+        for hotkey in hotkeys:
             try:
                 prev_acct_size = self.get_miner_account_size(hotkey)
                 bt.logging.info(f"Current account size for {hotkey}: ${prev_acct_size:,.2f}")
@@ -177,23 +232,33 @@ class ValidatorContractManager:
             bt.logging.warning(f"Failed to load vault wallet: {e}")
 
     def _load_miner_account_sizes_from_disk(self):
-        """Load miner account sizes from disk during initialization"""
-        try:
-            disk_data = ValiUtils.get_vali_json_file_dict(self.MINER_ACCOUNT_SIZES_FILE)
-            parsed_data = self._parse_miner_account_sizes_dict(disk_data)
-            self.miner_account_sizes.clear()
-            self.miner_account_sizes.update(parsed_data)
-            bt.logging.info(f"Loaded {len(self.miner_account_sizes)} miner account size records from disk")
-        except Exception as e:
-            bt.logging.warning(f"Failed to load miner account sizes from disk: {e}")
+        """Load miner account sizes from disk during initialization - protected by locks"""
+        with self._disk_lock:
+            try:
+                disk_data = ValiUtils.get_vali_json_file_dict(self.MINER_ACCOUNT_SIZES_FILE)
+                parsed_data = self._parse_miner_account_sizes_dict(disk_data)
+
+                # Acquire account_sizes_lock to update the dict
+                with self._account_sizes_lock:
+                    self.miner_account_sizes.clear()
+                    self.miner_account_sizes.update(parsed_data)
+
+                bt.logging.info(f"Loaded {len(self.miner_account_sizes)} miner account size records from disk")
+            except Exception as e:
+                bt.logging.warning(f"Failed to load miner account sizes from disk: {e}")
+
+    def re_init_account_sizes(self):
+        """Public method to reload account sizes from disk (useful for tests)"""
+        self._load_miner_account_sizes_from_disk()
 
     def _save_miner_account_sizes_to_disk(self):
-        """Save miner account sizes to disk"""
-        try:
-            data_dict = self.miner_account_sizes_dict()
-            ValiBkpUtils.write_file(self.MINER_ACCOUNT_SIZES_FILE, data_dict)
-        except Exception as e:
-            bt.logging.error(f"Failed to save miner account sizes to disk: {e}")
+        """Save miner account sizes to disk - protected by _disk_lock to prevent concurrent writes"""
+        with self._disk_lock:
+            try:
+                data_dict = self.miner_account_sizes_dict()
+                ValiBkpUtils.write_file(self.MINER_ACCOUNT_SIZES_FILE, data_dict)
+            except Exception as e:
+                bt.logging.error(f"Failed to save miner account sizes to disk: {e}")
 
     def miner_account_sizes_dict(self, most_recent_only: bool = False) -> Dict[str, List[Dict[str, Any]]]:
         """Convert miner account sizes to checkpoint format for backup/sync
@@ -204,14 +269,15 @@ class ValidatorContractManager:
         Returns:
             Dictionary with hotkeys as keys and list of record dicts as values
         """
-        json_dict = {}
-        for hotkey, records in self.miner_account_sizes.items():
-            if most_recent_only and records:
-                # Only include the most recent (last) record
-                json_dict[hotkey] = [vars(records[-1])]
-            else:
-                json_dict[hotkey] = [vars(record) for record in records]
-        return json_dict
+        with self._account_sizes_lock:
+            json_dict = {}
+            for hotkey, records in self.miner_account_sizes.items():
+                if most_recent_only and records:
+                    # Only include the most recent (last) record
+                    json_dict[hotkey] = [vars(records[-1])]
+                else:
+                    json_dict[hotkey] = [vars(record) for record in records]
+            return json_dict
 
     @staticmethod
     def _parse_miner_account_sizes_dict(data_dict: Dict[str, List[Dict[str, Any]]]) -> Dict[
@@ -235,14 +301,29 @@ class ValidatorContractManager:
 
         return parsed_dict
 
-    def sync_miner_account_sizes_data(self, account_sizes_data: Dict[str, List[Dict[str, Any]]]):
-        """Sync miner account sizes data from external source (backup/sync)"""
-        if not account_sizes_data:
-            bt.logging.warning("miner_account_sizes_data appears empty or invalid")
-            return
+    def health_check(self) -> dict:
+        """Health check for monitoring."""
+        return {
+            "status": "ok",
+            "timestamp_ms": TimeUtil.now_in_millis(),
+            "num_account_records": len(self.miner_account_sizes)
+        }
 
+    def sync_miner_account_sizes_data(self, account_sizes_data: Dict[str, List[Dict[str, Any]]]):
+        """
+        Sync miner account sizes data from external source (backup/sync).
+        If empty dict is passed, clears all account sizes (useful for tests).
+        """
         try:
-            with self.account_sizes_lock:
+            with self._account_sizes_lock:
+                if not account_sizes_data:
+                    assert self.running_unit_tests, "Empty account sizes data can only be used in test mode"
+                    # Empty dict = clear all data (useful for test cleanup)
+                    bt.logging.info("Clearing all miner account sizes")
+                    self.miner_account_sizes.clear()
+                    self._save_miner_account_sizes_to_disk()
+                    return
+
                 synced_data = self._parse_miner_account_sizes_dict(account_sizes_data)
                 self.miner_account_sizes.clear()
                 self.miner_account_sizes.update(synced_data)
@@ -479,7 +560,7 @@ class ValidatorContractManager:
                 }
 
             # Determine amount slashed and remaining amount eligible for withdrawal
-            drawdown = self.position_manager.compute_realtime_drawdown(miner_hotkey)
+            drawdown = self._position_client.compute_realtime_drawdown(miner_hotkey)
 
             # penalty free withdrawals down to MAX_COLLATERAL_BALANCE_THETA
             penalty_free_amount = max(0.0, theta_current_balance - self.max_theta)
@@ -539,7 +620,7 @@ class ValidatorContractManager:
                 }
 
             # Determine amount slashed and remaining amount eligible for withdrawal
-            drawdown = self.position_manager.compute_realtime_drawdown(miner_hotkey)
+            drawdown = self._position_client.compute_realtime_drawdown(miner_hotkey)
 
             # penalty free withdrawals down to MAX_COLLATERAL_BALANCE_THETA
             penalty_free_amount = max(0.0, theta_current_balance - self.max_theta)
@@ -611,7 +692,7 @@ class ValidatorContractManager:
         try:
             if drawdown is None:
                 # Get current drawdown percentage
-                drawdown = self.position_manager.compute_realtime_drawdown(miner_hotkey)
+                drawdown = self._position_client.compute_realtime_drawdown(miner_hotkey)
 
             # Get current balance
             current_balance_theta = self.get_miner_collateral_balance(miner_hotkey)
@@ -753,35 +834,40 @@ class ValidatorContractManager:
             hotkey: Miner's hotkey (SS58 address)
             timestamp_ms: Timestamp for the record (defaults to now)
         """
-        if timestamp_ms is None:
-            timestamp_ms = TimeUtil.now_in_millis()
-
+        # Get collateral balance outside lock (external RPC call)
         collateral_balance = self.get_miner_collateral_balance(hotkey)
         if collateral_balance is None:
             bt.logging.warning(f"Could not retrieve collateral balance for {hotkey}")
             return False
 
-        account_size = min(ValiConfig.MAX_COLLATERAL_BALANCE_THETA, collateral_balance) * ValiConfig.COST_PER_THETA
-        collateral_record = CollateralRecord(account_size, collateral_balance, timestamp_ms)
+        # CRITICAL SECTION: Acquire lock for timestamp + record creation + append + save
+        # Timestamp MUST be generated inside lock to ensure chronological ordering
+        with self._account_sizes_lock:
+            # Generate timestamp inside lock if not provided
+            # This ensures records are added in strictly chronological order
+            if timestamp_ms is None:
+                timestamp_ms = TimeUtil.now_in_millis()
 
-        # Skip if the new record matches the last existing record
-        if hotkey in self.miner_account_sizes and self.miner_account_sizes[hotkey]:
-            last_record = self.miner_account_sizes[hotkey][-1]
-            if (last_record.account_size == collateral_record.account_size and
-                    last_record.account_size_theta == collateral_record.account_size_theta):
-                bt.logging.info(f"Skipping save for {hotkey} - new record matches last record")
-                return True
+            account_size = min(ValiConfig.MAX_COLLATERAL_BALANCE_THETA, collateral_balance) * ValiConfig.COST_PER_THETA
+            collateral_record = CollateralRecord(account_size, collateral_balance, timestamp_ms)
+            # Skip if the new record matches the last existing record
+            if hotkey in self.miner_account_sizes and self.miner_account_sizes[hotkey]:
+                last_record = self.miner_account_sizes[hotkey][-1]
+                if (last_record.account_size == collateral_record.account_size and
+                        last_record.account_size_theta == collateral_record.account_size_theta):
+                    bt.logging.info(f"Skipping save for {hotkey} - new record matches last record")
+                    return True
 
-        if hotkey not in self.miner_account_sizes:
-            self.miner_account_sizes[hotkey] = []
+            if hotkey not in self.miner_account_sizes:
+                self.miner_account_sizes[hotkey] = []
 
-        # Add the new record, IPC dict requires reassignment of entire k, v pair
-        self.miner_account_sizes[hotkey] = self.miner_account_sizes[hotkey] + [collateral_record]
+            # Add the new record, IPC dict requires reassignment of entire k, v pair
+            self.miner_account_sizes[hotkey] = self.miner_account_sizes[hotkey] + [collateral_record]
 
-        # Save to disk
-        self._save_miner_account_sizes_to_disk()
+            # Save to disk (still inside account_sizes_lock, but _save will acquire _disk_lock)
+            self._save_miner_account_sizes_to_disk()
 
-        # Broadcast collateral record to other validators
+        # Broadcast OUTSIDE lock to avoid holding lock during network I/O
         if self.is_mothership:
             self._broadcast_collateral_record_update_to_validators(hotkey, collateral_record)
 
@@ -794,7 +880,7 @@ class ValidatorContractManager:
         return True
 
     def get_miner_account_size(self, hotkey: str, timestamp_ms: int = None, most_recent: bool = False,
-                               records_dict: dict = None) -> float | None:
+                               records_dict: dict = None, use_account_floor: bool = False) -> float | None:
         """
         Get the account size for a miner at a given timestamp. Iterate list in reverse chronological order, and return
         the first record whose valid_date_timestamp <= start_of_day_ms
@@ -804,38 +890,56 @@ class ValidatorContractManager:
             timestamp_ms: Timestamp to query for (defaults to now)
             most_recent: If True, return most recent record regardless of timestamp
             records_dict: Optional dict to use instead of self.miner_account_sizes (for cached lookups)
+            use_account_floor: If True, return MIN_CAPITAL instead of None when no records exist
 
         Returns:
-            Account size in USD, or None if no applicable records
+            Account size in USD, or None if no applicable records (or MIN_CAPITAL if use_account_floor=True)
         """
         if timestamp_ms is None:
             timestamp_ms = TimeUtil.now_in_millis()
 
         # Use provided records_dict or default to self.miner_account_sizes
-        source_records = records_dict if records_dict is not None else self.miner_account_sizes
+        # If using external dict, assume caller handles locking
+        # If using self.miner_account_sizes, acquire lock
+        if records_dict is not None:
+            source_records = records_dict
+            lock_needed = False
+        else:
+            source_records = self.miner_account_sizes
+            lock_needed = True
 
-        if hotkey not in source_records or not source_records[hotkey]:
-            return None
+        def _get_account_size_locked():
+            """Inner function with the actual logic"""
+            if hotkey not in source_records or not source_records[hotkey]:
+                # Use account floor if requested (for miners without collateral records)
+                return ValiConfig.MIN_CAPITAL if use_account_floor else None
 
-        # Get start of the requested day
-        start_of_day_ms = int(
-            datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc)
-            .replace(hour=0, minute=0, second=0, microsecond=0)
-            .timestamp() * 1000
-        )
+            # Get start of the requested day
+            start_of_day_ms = int(
+                datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc)
+                .replace(hour=0, minute=0, second=0, microsecond=0)
+                .timestamp() * 1000
+            )
 
-        # Return most recent record
-        if most_recent:
-            most_recent_record = source_records[hotkey][-1]
-            return most_recent_record.account_size
+            # Return most recent record
+            if most_recent:
+                most_recent_record = source_records[hotkey][-1]
+                return most_recent_record.account_size
 
-        # Iterate in reversed order, and return the first record that is valid for or before the requested day
-        for record in reversed(source_records[hotkey]):
-            if record.valid_date_timestamp <= start_of_day_ms:
-                return record.account_size
+            # Iterate in reversed order, and return the first record that is valid for or before the requested day
+            for record in reversed(source_records[hotkey]):
+                if record.valid_date_timestamp <= start_of_day_ms:
+                    return record.account_size
 
-        # No applicable records found
-        return None
+            # No applicable records found - use account floor if requested
+            return ValiConfig.MIN_CAPITAL if use_account_floor else None
+
+        # Execute with or without lock depending on source
+        if lock_needed:
+            with self._account_sizes_lock:
+                return _get_account_size_locked()
+        else:
+            return _get_account_size_locked()
 
     def get_all_miner_account_sizes(self, miner_account_sizes: dict[str, List[CollateralRecord]] = None,
                                     timestamp_ms: int = None) -> dict[str, float]:
@@ -848,8 +952,13 @@ class ValidatorContractManager:
         if timestamp_ms is None:
             timestamp_ms = TimeUtil.now_in_millis()
 
+        # Acquire lock and copy keys to avoid iterator invalidation
+        with self._account_sizes_lock:
+            hotkeys = list(miner_account_sizes.keys())
+
+        # Now iterate over the copy (get_miner_account_size will acquire lock for each call)
         all_miner_account_sizes = {}
-        for hotkey in miner_account_sizes.keys():
+        for hotkey in hotkeys:
             all_miner_account_sizes[hotkey] = self.get_miner_account_size(hotkey, timestamp_ms=timestamp_ms,
                                                                           records_dict=miner_account_sizes)
         return all_miner_account_sizes
@@ -885,10 +994,10 @@ class ValidatorContractManager:
         try:
             # Get other validators to broadcast to
             if self.is_testnet:
-                validator_axons = [n.axon_info for n in self.metagraph.neurons if
+                validator_axons = [n.axon_info for n in self._metagraph_client.neurons if
                                    n.axon_info.ip != ValiConfig.AXON_NO_IP and n.axon_info.hotkey != self.vault_wallet.hotkey.ss58_address]
             else:
-                validator_axons = [n.axon_info for n in self.metagraph.neurons if n.stake > bt.Balance(
+                validator_axons = [n.axon_info for n in self._metagraph_client.neurons if n.stake > bt.Balance(
                     ValiConfig.STAKE_MIN) and n.axon_info.ip != ValiConfig.AXON_NO_IP and n.axon_info.hotkey != self.vault_wallet.hotkey.ss58_address]
 
             if not validator_axons:
@@ -943,7 +1052,7 @@ class ValidatorContractManager:
         try:
             if self.is_mothership:
                 return False
-            with self.account_sizes_lock:
+            with self._account_sizes_lock:
                 # Extract data from the synapse
                 hotkey = collateral_record_data.get("hotkey")
                 account_size = collateral_record_data.get("account_size")

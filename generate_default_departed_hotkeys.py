@@ -202,7 +202,7 @@ def main():
         print(f"  • {hotkey[:16]}... (eliminated: {reason}, {TimeUtil.millis_to_formatted_date_str(elim_time_ms)})")
 
     # Prepare the file data
-    from vali_objects.utils.elimination_manager import DEPARTED_HOTKEYS_KEY
+    from vali_objects.utils.elimination_server import DEPARTED_HOTKEYS_KEY
     file_data = {
         DEPARTED_HOTKEYS_KEY: departed_dict
     }

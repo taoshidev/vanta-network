@@ -8,13 +8,19 @@ from time_util.time_util import TimeUtil
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.position import Position
 import bittensor as bt
+from shared_objects.shutdown_coordinator import ShutdownCoordinator
+from vali_objects.utils.challengeperiod_client import ChallengePeriodClient
 
 from vali_objects.utils.challengeperiod_manager import ChallengePeriodManager
-from vali_objects.utils.live_price_fetcher import LivePriceFetcher
+from vali_objects.utils.elimination_client import EliminationClient
+from vali_objects.utils.live_price_server import LivePriceFetcherClient
 from vali_objects.utils.miner_bucket_enum import MinerBucket
 from vali_objects.utils.position_manager import PositionManager
+from vali_objects.utils.position_manager_client import PositionManagerClient
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair
+from vali_objects.vali_dataclasses.perf_ledger_server import PerfLedgerClient
+from vali_objects.utils.asset_selection_client import AssetSelectionClient
 
 AUTO_SYNC_ORDER_LAG_MS = 1000 * 60 * 60 * 24
 
@@ -32,33 +38,36 @@ class PositionSyncResultException(Exception):
         super().__init__(self.message)
 
 class ValidatorSyncBase():
-    def __init__(self, shutdown_dict=None, signal_sync_lock=None, signal_sync_condition=None,
-                 n_orders_being_processed=None, running_unit_tests=False, position_manager=None,
-                 ipc_manager=None, enable_position_splitting = False, verbose=False, contract_manager=None,
-                 live_price_fetcher=None, asset_selection_manager=None, limit_order_manager=None
+    def __init__(self, signal_sync_lock=None, signal_sync_condition=None,
+                 n_orders_being_processed=None, running_unit_tests=False,
+                 enable_position_splitting=False, verbose=False
 ):
         self.verbose = verbose
+        self.running_unit_tests = running_unit_tests
         secrets = ValiUtils.get_secrets(running_unit_tests=running_unit_tests)
         self.is_mothership = 'ms' in secrets
         self.SYNC_LOOK_AROUND_MS = 1000 * 60 * 3
         self.enable_position_splitting = enable_position_splitting
-        self.position_manager = position_manager
-        self.contract_manager = contract_manager
-        self.asset_selection_manager = asset_selection_manager
-        self.limit_order_manager = limit_order_manager
-        self.shutdown_dict = shutdown_dict
+        self._elimination_client = EliminationClient(running_unit_tests=running_unit_tests)
+        self._position_manager_client = PositionManagerClient(running_unit_tests=running_unit_tests)
+        # Create own ContractClient (forward compatibility - no parameter passing)
+        from vali_objects.utils.contract_server import ContractClient
+        self._contract_client = ContractClient(running_unit_tests=running_unit_tests)
         self.last_signal_sync_time_ms = 0
         self.signal_sync_lock = signal_sync_lock
         self.signal_sync_condition = signal_sync_condition
         self.n_orders_being_processed = n_orders_being_processed
-        if live_price_fetcher:
-            self.live_price_fetcher = live_price_fetcher
-        else:
-            self.live_price_fetcher = LivePriceFetcher(secrets, disable_ws=True)
-        if ipc_manager:
-            self.perf_ledger_hks_to_invalidate = ipc_manager.dict()
-        else:
-            self.perf_ledger_hks_to_invalidate = {}  # {hk: timestamp_ms}
+        self._challenge_period_client = ChallengePeriodClient(running_unit_tests=running_unit_tests)
+        # Create own LivePriceFetcherClient (forward compatibility - no parameter passing)
+        self._live_price_client = LivePriceFetcherClient(running_unit_tests=running_unit_tests)
+        # Create own PerfLedgerClient (forward compatibility - no parameter passing)
+        # This replaces the old ipc_manager.dict() pattern for perf_ledger_hks_to_invalidate
+        self._perf_ledger_client = PerfLedgerClient(running_unit_tests=running_unit_tests)
+        # Create own AssetSelectionClient (forward compatibility - no parameter passing)
+        self._asset_selection_client = AssetSelectionClient(running_unit_tests=running_unit_tests)
+        # Create own LimitOrderClient (forward compatibility - no parameter passing)
+        from vali_objects.utils.limit_order_server import LimitOrderClient
+        self._limit_order_client = LimitOrderClient(running_unit_tests=running_unit_tests)
         self.init_data()
 
     def init_data(self):
@@ -75,7 +84,33 @@ class ValidatorSyncBase():
         self.miners_with_position_insertions = set()
         self.miners_with_position_matches = set()
         self.miners_with_position_updates = set()
-        self.perf_ledger_hks_to_invalidate.clear()
+        # Clear perf ledger invalidations via RPC
+        self._perf_ledger_client.clear_perf_ledger_hks_to_invalidate()
+
+    @property
+    def live_price_fetcher(self):
+        """Get live price fetcher client."""
+        return self._live_price_client
+
+    @property
+    def perf_ledger_client(self):
+        """Get perf ledger client (forward compatibility - created internally)."""
+        return self._perf_ledger_client
+
+    @property
+    def perf_ledger_hks_to_invalidate(self) -> dict:
+        """
+        Get hotkeys to invalidate from PerfLedgerServer via RPC.
+
+        This property provides backward compatibility for code and tests that access
+        perf_ledger_hks_to_invalidate directly. The data is now managed by PerfLedgerServer.
+        """
+        return self._perf_ledger_client.get_perf_ledger_hks_to_invalidate()
+
+    @property
+    def contract_manager(self):
+        """Get contract client (forward compatibility - created internally)."""
+        return self._contract_client
 
     def sync_positions(self, shadow_mode, candidate_data=None, disk_positions=None) -> dict[str: list[Position]]:
         t0 = time.time()
@@ -106,41 +141,41 @@ class ValidatorSyncBase():
         disk_positions_provided = disk_positions is not None
 
         if disk_positions is None:
-            disk_positions = self.position_manager.get_positions_for_all_miners(sort_positions=True)
+            disk_positions = self._position_manager_client.get_positions_for_all_miners(sort_positions=True)
 
         # Detect and delete overlapping positions before sync
         if not shadow_mode:
             overlap_stats = self.detect_and_delete_overlapping_positions(disk_positions)
             # Reload positions after deletions ONLY if we loaded them ourselves
             if overlap_stats['positions_deleted'] > 0 and not disk_positions_provided:
-                disk_positions = self.position_manager.get_positions_for_all_miners(sort_positions=True)
+                disk_positions = self._position_manager_client.get_positions_for_all_miners(sort_positions=True)
 
         eliminations = candidate_data['eliminations']
         if not self.is_mothership:
-            # Get current eliminations before sync
-            old_eliminated_hotkeys = set(x['hotkey'] for x in self.position_manager.elimination_manager.get_eliminations_from_memory())
+            # Get current eliminations before sync (use PositionManager's internal elimination client)
+            old_eliminated_hotkeys = set(x['hotkey'] for x in self._elimination_client.get_eliminations_from_memory())
 
             # Sync eliminations and get removed hotkeys
-            removed = self.position_manager.elimination_manager.sync_eliminations(eliminations)
+            removed = self._elimination_client.sync_eliminations(eliminations)
 
             # Get new eliminations after sync
             new_eliminated_hotkeys = set(x['hotkey'] for x in eliminations)
             newly_eliminated = new_eliminated_hotkeys - old_eliminated_hotkeys
 
-            # Invalidate perf ledgers for both removed and newly eliminated miners
+            # Invalidate perf ledgers for both removed and newly eliminated miners via RPC
             for hk in removed:
-                self.perf_ledger_hks_to_invalidate[hk] = 0
+                self._perf_ledger_client.set_hotkey_to_invalidate(hk, 0)
             for hk in newly_eliminated:
-                self.perf_ledger_hks_to_invalidate[hk] = 0
+                self._perf_ledger_client.set_hotkey_to_invalidate(hk, 0)
 
         limit_orders_data = candidate_data.get('limit_orders', {})
         if limit_orders_data:
-            self.limit_order_manager.sync_limit_orders(limit_orders_data)
+            self._limit_order_client.sync_limit_orders(limit_orders_data)
 
         challengeperiod_data = candidate_data.get('challengeperiod', {})
         if challengeperiod_data:  # Only in autosync as of now.
-            orig_testing_keys = set(self.position_manager.challengeperiod_manager.get_hotkeys_by_bucket(MinerBucket.CHALLENGE))
-            orig_success_keys = set(self.position_manager.challengeperiod_manager.get_hotkeys_by_bucket(MinerBucket.MAINCOMP))
+            orig_testing_keys = set(self._challenge_period_client.get_hotkeys_by_bucket(MinerBucket.CHALLENGE))
+            orig_success_keys = set(self._challenge_period_client.get_hotkeys_by_bucket(MinerBucket.MAINCOMP))
 
             challengeperiod_dict = ChallengePeriodManager.parse_checkpoint_dict(challengeperiod_data)
             new_testing_keys = {
@@ -157,7 +192,7 @@ class ValidatorSyncBase():
                             f"Challengeperiod success sync keys added: {new_success_keys - orig_success_keys}\n"
                             f"Challengeperiod success sync keys removed: {orig_success_keys - new_success_keys}")
             if not shadow_mode:
-                self.position_manager.challengeperiod_manager.sync_challenge_period_data(challengeperiod_data)
+                self._challenge_period_client.sync_challenge_period_data(challengeperiod_data)
 
         # Sync miner account sizes if available and contract manager is present
         miner_account_sizes_data = candidate_data.get('miner_account_sizes', {})
@@ -171,7 +206,7 @@ class ValidatorSyncBase():
         eliminated_hotkeys = set([e['hotkey'] for e in eliminations])
         # For a healthy validator, the existing positions will always be a superset of the candidate positions
         for hotkey, positions in candidate_hk_to_positions.items():
-            if self.shutdown_dict:
+            if ShutdownCoordinator.is_shutdown():
                 return
             if hotkey in eliminated_hotkeys:
                 self.global_stats['n_miners_skipped_eliminated'] += 1
@@ -186,7 +221,7 @@ class ValidatorSyncBase():
             existing_positions_by_trade_pair = self.partition_positions_by_trade_pair(disk_positions.get(hotkey, []))
             unified_trade_pairs = set(candidate_positions_by_trade_pair.keys()) | set(existing_positions_by_trade_pair.keys())
             for trade_pair in unified_trade_pairs:
-                if self.shutdown_dict:
+                if ShutdownCoordinator.is_shutdown():
                     return
                 candidate_positions = candidate_positions_by_trade_pair.get(trade_pair, [])
                 existing_positions = existing_positions_by_trade_pair.get(trade_pair, [])
@@ -194,9 +229,8 @@ class ValidatorSyncBase():
                 try:
                     position_to_sync_status, min_timestamp_of_change, stats = self.resolve_positions(candidate_positions, existing_positions, trade_pair, hotkey, hard_snap_cutoff_ms)
                     if min_timestamp_of_change != float('inf'):
-                        self.perf_ledger_hks_to_invalidate[hotkey] = (
-                            min_timestamp_of_change) if hotkey not in self.perf_ledger_hks_to_invalidate else (
-                            min(self.perf_ledger_hks_to_invalidate[hotkey], min_timestamp_of_change))
+                        # Update hotkey invalidation timestamp via RPC (uses min logic internally)
+                        self._perf_ledger_client.update_hotkey_to_invalidate(hotkey, min_timestamp_of_change)
                         if not shadow_mode:
                             self.write_modifications(position_to_sync_status, stats)
                 except Exception as e:
@@ -212,13 +246,11 @@ class ValidatorSyncBase():
 
         # Sync asset selections if available
         asset_selections_data = candidate_data.get('asset_selections', {})
-        if asset_selections_data and self.asset_selection_manager:
+        if asset_selections_data:
             bt.logging.info(f"Syncing {len(asset_selections_data)} miner asset selections from auto sync")
             if not shadow_mode:
                 bt.logging.info(f"Syncing {len(asset_selections_data)} miner asset selection records from auto sync")
-                self.asset_selection_manager.sync_miner_asset_selection_data(asset_selections_data)
-        elif asset_selections_data:
-            bt.logging.warning("Asset selections data found but no AssetSelectionManager available for sync")
+                self._asset_selection_client.sync_miner_asset_selection_data(asset_selections_data)
 
         # Reorganized stats with clear, grouped naming
         # Overview
@@ -318,7 +350,7 @@ class ValidatorSyncBase():
             if sync_status == PositionSyncResult.DELETED:
                 deleted -= 1
                 if not self.is_mothership:
-                    self.position_manager.delete_position(position)
+                    self._position_manager_client.delete_position(position.miner_hotkey, position.position_uuid)
 
         # Handle multiple open positions for a hotkey - track across ALL sync statuses to prevent duplicates
         prev_open_position = None
@@ -329,7 +361,7 @@ class ValidatorSyncBase():
                     for p in positions:
                         if p.is_open_position:
                             prev_open_position = self.close_older_open_position(p, prev_open_position)
-                        self.position_manager.overwrite_position_on_disk(p)
+                        self._position_manager_client.save_miner_position(p)
                 kept_and_matched -= 1
 
         # Insertions happen last so that there is no double open position issue
@@ -342,7 +374,7 @@ class ValidatorSyncBase():
                     for p in positions:
                         if p.is_open_position:
                             prev_open_position = self.close_older_open_position(p, prev_open_position)
-                        self.position_manager.overwrite_position_on_disk(p)
+                        self._position_manager_client.save_miner_position(p)
 
         # Handle NOTHING status positions
         # Do NOT reset prev_open_position - we need to track it across all sync statuses
@@ -354,7 +386,7 @@ class ValidatorSyncBase():
                     for p in positions:
                         if p.is_open_position:
                             prev_open_position = self.close_older_open_position(p, prev_open_position)
-                        self.position_manager.overwrite_position_on_disk(p)
+                        self._position_manager_client.save_miner_position(p)
 
         if kept_and_matched != 0:
             raise PositionSyncResultException(f"kept_and_matched: {kept_and_matched} stats {stats}")
@@ -386,7 +418,7 @@ class ValidatorSyncBase():
         flat_order = Position.generate_fake_flat_order(position_to_close, close_time_ms, self.live_price_fetcher)
         position_to_close.orders.append(flat_order)
         position_to_close.close_out_position(close_time_ms)
-        self.position_manager.overwrite_position_on_disk(position_to_close)
+        self._position_manager_client.overwrite_position_on_disk(position_to_close)
         return position_to_keep  # Return the one to keep open
 
 
@@ -636,7 +668,7 @@ class ValidatorSyncBase():
                     else:
                         position_to_sync_status[e] = PositionSyncResult.NOTHING
                         # Check if position actually needs splitting before forcing write_modifications
-                        if self.position_manager and self.position_manager._position_needs_splitting(e):
+                        if self._position_manager_client and self._position_manager_client._position_needs_splitting(e):
                             # Force write_modifications to be called for position splitting
                             min_timestamp_of_change = min(min_timestamp_of_change, e.open_ms)
                     ret.append(e)
@@ -676,7 +708,7 @@ class ValidatorSyncBase():
                     else:
                         position_to_sync_status[e] = PositionSyncResult.NOTHING
                         # Check if position actually needs splitting before forcing write_modifications
-                        if self.position_manager and self.position_manager._position_needs_splitting(e):
+                        if self._position_manager_client and self._position_manager_client._position_needs_splitting(e):
                             # Force write_modifications to be called for position splitting
                             min_timestamp_of_change = min(min_timestamp_of_change, e.open_ms)
                     matched_candidates_by_uuid |= {c.position_uuid}
@@ -802,12 +834,12 @@ class ValidatorSyncBase():
         Delegates position splitting to the PositionManager.
         This maintains the autosync logic while using the centralized splitting implementation.
         """
-        if not self.position_manager or not self.enable_position_splitting:
+        if not self._position_manager_client or not self.enable_position_splitting:
             # If no position manager or splitting disabled, return position as-is
             return [position]
 
         # Use the position manager's split method
-        positions, split_info = self.position_manager.split_position_on_flat(position, track_stats=False)
+        positions, split_info = self._position_manager_client.split_position_on_flat(position, track_stats=False)
 
         # Track statistics for autosync
         if len(positions) > 1:
@@ -891,7 +923,8 @@ class ValidatorSyncBase():
 
                     for position_uuid in positions_to_delete:
                         if not self.is_mothership:
-                            self.position_manager.delete_position(uuid_to_position[position_uuid])
+                            position = uuid_to_position[position_uuid]
+                            self._position_manager_client.delete_position(position.miner_hotkey, position.position_uuid)
                         stats['positions_deleted'] += 1
 
                     bt.logging.warning(

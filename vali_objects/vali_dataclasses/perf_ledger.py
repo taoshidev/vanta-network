@@ -4,7 +4,9 @@ import os
 import time
 import traceback
 import datetime
-from datetime import timezone
+
+from data_generator.polygon_data_service import PolygonDataService
+from vali_objects.vali_config import RPCConnectionMode
 from collections import defaultdict, Counter
 from copy import deepcopy
 from enum import Enum
@@ -13,18 +15,19 @@ import bittensor as bt
 from setproctitle import setproctitle
 from vali_objects.utils.position_source import PositionSourceManager, PositionSource
 from shared_objects.sn8_multiprocessing import ParallelizationMode, get_spark_session, get_multiprocessing_pool
-from shared_objects.mock_metagraph import MockMetagraph
 from time_util.time_util import MS_IN_8_HOURS, MS_IN_24_HOURS, timeme
 import vali_objects.position as position_file
-
+from shared_objects.metagraph_server import MetagraphClient
+from vali_objects.utils.elimination_client import EliminationClient
+from vali_objects.utils.position_manager_client import PositionManagerClient
+from shared_objects.common_data_server import CommonDataClient
 from shared_objects.cache_controller import CacheController
+from shared_objects.shutdown_coordinator import ShutdownCoordinator
 from time_util.time_util import TimeUtil, UnifiedMarketCalendar
-from vali_objects.utils.elimination_manager import EliminationManager, EliminationReason
-from vali_objects.utils.position_manager import PositionManager
 from vali_objects.vali_config import ValiConfig
 from vali_objects.position import Position
 from vali_objects.enums.order_type_enum import OrderType
-from vali_objects.utils.live_price_fetcher import LivePriceFetcher
+from vali_objects.utils.live_price_server import LivePriceFetcherClient
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
 
@@ -137,6 +140,24 @@ class PerfCheckpoint:
         # Store any extra fields (equivalent to model_config extra="allow")
         for key, value in kwargs.items():
             setattr(self, key, value)
+
+    def __setstate__(self, state):
+        """
+        Handle unpickling of old PerfCheckpoint objects that don't have new PNL fields.
+        This provides backward compatibility when loading old checkpoint files.
+        """
+        # Set all attributes from pickled state
+        self.__dict__.update(state)
+
+        # Add missing PNL fields with default values if they don't exist
+        if not hasattr(self, 'prev_portfolio_realized_pnl'):
+            self.prev_portfolio_realized_pnl = 0.0
+        if not hasattr(self, 'prev_portfolio_unrealized_pnl'):
+            self.prev_portfolio_unrealized_pnl = 0.0
+        if not hasattr(self, 'realized_pnl'):
+            self.realized_pnl = 0.0
+        if not hasattr(self, 'unrealized_pnl'):
+            self.unrealized_pnl = 0.0
 
     def __eq__(self, other):
         """Equality comparison (replaces BaseModel's automatic __eq__)"""
@@ -370,13 +391,15 @@ class PerfLedger():
 
             while now_ms - current_boundary > self.target_cp_duration_ms:
                 current_boundary += self.target_cp_duration_ms
+                # Use getattr() to safely handle old checkpoints without realized_pnl/unrealized_pnl
+                prev_cp = self.cps[-1]
                 new_cp = PerfCheckpoint(
                     last_update_ms=current_boundary,
                     prev_portfolio_ret=last_portfolio_return,  # Keep constant during void
-                    prev_portfolio_realized_pnl=self.cps[-1].prev_portfolio_realized_pnl,
-                    prev_portfolio_unrealized_pnl=self.cps[-1].prev_portfolio_unrealized_pnl,
-                    prev_portfolio_spread_fee=self.cps[-1].prev_portfolio_spread_fee,
-                    prev_portfolio_carry_fee=self.cps[-1].prev_portfolio_carry_fee,
+                    prev_portfolio_realized_pnl=getattr(prev_cp, 'prev_portfolio_realized_pnl', 0.0),
+                    prev_portfolio_unrealized_pnl=getattr(prev_cp, 'prev_portfolio_unrealized_pnl', 0.0),
+                    prev_portfolio_spread_fee=prev_cp.prev_portfolio_spread_fee,
+                    prev_portfolio_carry_fee=prev_cp.prev_portfolio_carry_fee,
                     accum_ms=self.target_cp_duration_ms,
                     open_ms=0,  # No market data for void periods
                     mdd=prev_mdd,
@@ -393,13 +416,15 @@ class PerfLedger():
             # Calculate MDD for this checkpoint period based on the change from boundary to now
             # MDD should be the worst decline within this checkpoint period
 
+            # Use getattr() to safely handle old checkpoints without realized_pnl/unrealized_pnl
+            prev_cp = self.cps[-1]
             new_cp = PerfCheckpoint(
                 last_update_ms=now_ms,
                 prev_portfolio_ret=last_portfolio_return, # old for now, update below
-                prev_portfolio_realized_pnl=self.cps[-1].prev_portfolio_realized_pnl,
-                prev_portfolio_unrealized_pnl=self.cps[-1].prev_portfolio_unrealized_pnl,
-                prev_portfolio_spread_fee=self.cps[-1].prev_portfolio_spread_fee,  # old for now update below
-                prev_portfolio_carry_fee=self.cps[-1].prev_portfolio_carry_fee,    # old for now update below
+                prev_portfolio_realized_pnl=getattr(prev_cp, 'prev_portfolio_realized_pnl', 0.0),
+                prev_portfolio_unrealized_pnl=getattr(prev_cp, 'prev_portfolio_unrealized_pnl', 0.0),
+                prev_portfolio_spread_fee=prev_cp.prev_portfolio_spread_fee,  # old for now update below
+                prev_portfolio_carry_fee=prev_cp.prev_portfolio_carry_fee,    # old for now update below
                 carry_fee_loss=0, # 0 for now, update below
                 spread_fee_loss=0, # 0 for now, update below
                 n_updates = 0, # 0 for now, update below
@@ -441,8 +466,17 @@ class PerfLedger():
             n_updates = 0
 
         # Calculate deltas from previous checkpoint
-        delta_realized = current_realized_pnl_usd - current_cp.prev_portfolio_realized_pnl
-        delta_unrealized = current_unrealized_pnl_usd - current_cp.prev_portfolio_unrealized_pnl
+        # Use getattr() to safely handle old checkpoints without realized_pnl/unrealized_pnl
+        prev_realized_pnl = getattr(current_cp, 'prev_portfolio_realized_pnl', 0.0)
+        prev_unrealized_pnl = getattr(current_cp, 'prev_portfolio_unrealized_pnl', 0.0)
+        delta_realized = current_realized_pnl_usd - prev_realized_pnl
+        delta_unrealized = current_unrealized_pnl_usd - prev_unrealized_pnl
+
+        # Ensure current_cp has these attributes (for old checkpoints)
+        if not hasattr(current_cp, 'realized_pnl'):
+            current_cp.realized_pnl = 0.0
+        if not hasattr(current_cp, 'unrealized_pnl'):
+            current_cp.unrealized_pnl = 0.0
 
         current_cp.realized_pnl += delta_realized
         current_cp.unrealized_pnl += delta_unrealized
@@ -541,40 +575,63 @@ class PerfLedger():
         return checkpoint
 
 class PerfLedgerManager(CacheController):
-    def __init__(self, metagraph, ipc_manager=None, running_unit_tests=False, shutdown_dict=None,
-                 perf_ledger_hks_to_invalidate=None, live_price_fetcher=None, position_manager=None,
-                 use_slippage=None,
+    def __init__(self, connection_mode: "RPCConnectionMode" = RPCConnectionMode.RPC,
+                 use_slippage=None, running_unit_tests=False,
                  enable_rss=True, is_backtesting=False, parallel_mode=ParallelizationMode.SERIAL, secrets=None,
-                 build_portfolio_ledgers_only=False, target_ledger_window_ms=ValiConfig.TARGET_LEDGER_WINDOW_MS,
-                 is_testing=False):
-        super().__init__(metagraph=metagraph, running_unit_tests=running_unit_tests, is_backtesting=is_backtesting)
-        self.shutdown_dict = shutdown_dict
-        self.live_price_fetcher = live_price_fetcher
+                 build_portfolio_ledgers_only=False, target_ledger_window_ms=ValiConfig.TARGET_LEDGER_WINDOW_MS):
+        super().__init__(running_unit_tests=running_unit_tests, is_backtesting=is_backtesting, connection_mode=connection_mode)
+
+
+
+        self.connection_mode = connection_mode
+        self.perf_ledger_hks_to_invalidate = {}
+
+
+        super().__init__(running_unit_tests=running_unit_tests, is_backtesting=is_backtesting)
         self.running_unit_tests = running_unit_tests
         self.enable_rss = enable_rss
         self.parallel_mode = parallel_mode
         self.use_slippage = use_slippage
-        self.is_testing = is_testing
         position_file.ALWAYS_USE_SLIPPAGE = use_slippage
         self.build_portfolio_ledgers_only = build_portfolio_ledgers_only
-        if perf_ledger_hks_to_invalidate is None:
-            self.perf_ledger_hks_to_invalidate = {}
-        else:
-            self.perf_ledger_hks_to_invalidate = perf_ledger_hks_to_invalidate
 
-        if ipc_manager:
-            self.pl_elimination_rows = ipc_manager.list()
-            self.hotkey_to_perf_bundle = ipc_manager.dict()
-        else:
-            self.pl_elimination_rows = []
-            self.hotkey_to_perf_bundle = {}
+
+        self.pl_elimination_rows = []
+        self.hotkey_to_perf_bundle = {}
         self.running_unit_tests = running_unit_tests
-        self.position_manager = position_manager
+
+        self._position_manager_client = PositionManagerClient(
+            connect_immediately=False
+        )
+
+        # Create own ContractClient (forward compatibility - no parameter passing)
+        # Lazy import to avoid circular dependency:
+        # elimination_server -> contract_server -> ledger_utils -> perf_ledger -> contract_server
+        from vali_objects.utils.contract_server import ContractClient
+        self._contract_client = ContractClient(
+            port=ValiConfig.RPC_CONTRACTMANAGER_PORT,
+            connect_immediately=False,
+            connection_mode=connection_mode
+        )
+
+        # Create own EliminationClient (forward compatibility - no parameter passing)
+        self._elimination_client = EliminationClient(
+            port=ValiConfig.RPC_ELIMINATION_PORT,
+            connect_immediately=False,
+            connection_mode=connection_mode
+        )
+
+        self._common_data_client = CommonDataClient(
+            connect_immediately=False,  # Lazy connect on first use
+            connection_mode=connection_mode
+        )
 
         self.cached_miner_account_sizes = {}  # Deepcopy of contract_manager.miner_account_sizes
         self.cache_last_refreshed_date = None  # 'YYYY-MM-DD' format, refresh daily
-        self.pds = live_price_fetcher.polygon_data_service if live_price_fetcher else None  # Load it later once the process starts so ipc works.
-        self.live_price_fetcher = live_price_fetcher  # For unit tests only
+        self.pds = None  # Load it later once the process starts so ipc works.
+
+        # Create own LivePriceFetcherClient (forward compatibility - no parameter passing)
+        self._live_price_client = LivePriceFetcherClient(running_unit_tests=running_unit_tests)
 
         # Every update, pick a hotkey to rebuild in case polygon 1s candle data changed.
         self.trade_pair_to_price_info = {'second':{}, 'minute':{}}
@@ -616,6 +673,10 @@ class PerfLedgerManager(CacheController):
         else:
             self.secrets = ValiUtils.get_secrets(running_unit_tests=self.running_unit_tests)
 
+    @property
+    def contract_manager(self):
+        """Backward compatibility property that maps to _contract_client."""
+        return self._contract_client
 
     def clear_all_ledger_data(self):
         # Clear in-memory and on-disk ledgers. Only for unit tests.
@@ -624,27 +685,69 @@ class PerfLedgerManager(CacheController):
         self.clear_perf_ledgers_from_disk()  # Also clears in-memory
         self.pl_elimination_rows.clear()
         self.clear_perf_ledger_eliminations_from_disk()
+        self.perf_ledger_hks_to_invalidate.clear()  # Clear invalidation list for test isolation
+
+    def re_init_perf_ledger_data(self):
+        """
+        Reinitialize perf ledger data by reloading from disk.
+        This is useful after clear_all_ledger_data() + save_perf_ledgers() to ensure
+        all internal state (caches, counters, etc.) is properly reset.
+        Only for unit tests.
+        """
+        assert self.running_unit_tests, 'this is only valid for unit tests'
+
+        # Reload ledgers from disk into memory cache
+        ledgers_from_disk = self.get_perf_ledgers(portfolio_only=False, from_disk=True)
+        self.hotkey_to_perf_bundle.clear()
+        for hk, bundle in ledgers_from_disk.items():
+            self.hotkey_to_perf_bundle[hk] = bundle
+
+        bt.logging.info(f"Reinitialized {len(self.hotkey_to_perf_bundle)} perf ledgers from disk")
 
     def __getstate__(self):
         """
         Custom pickle method to exclude unpicklable attributes.
 
         When using multiprocessing, the PerfLedgerManager needs to be pickled,
-        but position_manager contains RPC clients with threading locks that cannot be pickled.
-        These managers are not needed during parallel processing (positions are passed directly),
+        but clients contain RPC connections with threading locks that cannot be pickled.
+        These clients are not needed during parallel processing (positions are passed directly),
         so we exclude them from pickling.
         """
         state = self.__dict__.copy()
         # Remove unpicklable attributes that aren't needed during parallel processing
-        state['position_manager'] = None
-        state['contract_manager'] = None
-        state['live_price_fetcher'] = None
+        state['_metagraph_client'] = None
+        state['_position_manager_client'] = None
+        state['_contract_client'] = None
+        state['_elimination_client'] = None
+        state['_common_data_client'] = None
+        state['_live_price_client'] = None
         state['pds'] = None
         return state
 
     def __setstate__(self, state):
         """Restore state from pickle, with excluded attributes set to None."""
         self.__dict__.update(state)
+
+    # ==================== Client Properties (forward compatibility) ====================
+
+    @property
+    def metagraph(self):
+        """Get metagraph client (forward compatibility - created internally)."""
+        return self._metagraph_client
+
+    @metagraph.setter
+    def metagraph(self, value):
+        """
+        Setter to handle base class CacheController assignment.
+        We ignore the value since we use our internal _metagraph_client instead.
+        """
+        # CacheController.__init__ sets self.metagraph = metagraph (usually None)
+        # We ignore this since we use _metagraph_client created in __init__
+        pass
+
+    def _is_shutdown(self):
+        """Check if shutdown has been signaled via ShutdownCoordinator."""
+        return ShutdownCoordinator.is_shutdown()
 
     @staticmethod
     def print_bundles(ans: dict[str, dict[str, PerfLedger]]):
@@ -667,11 +770,19 @@ class PerfLedgerManager(CacheController):
         if self.build_portfolio_ledgers_only:
             return False
         ans = False
-        if 'initialization_time_ms' in ledger_value:
+
+        # Handle both PerfLedger objects (from pickle) and dicts (from JSON)
+        if isinstance(ledger_value, PerfLedger):
+            # Direct PerfLedger object = V1 format
             ans = True
-        # "Faked" v2 ledger
-        elif TP_ID_PORTFOLIO in ledger_value and len(ledger_value) == 1:
-            ans = True
+        elif isinstance(ledger_value, dict):
+            # Dict could be V1 ledger dict or V1 with single portfolio key
+            if 'initialization_time_ms' in ledger_value:
+                ans = True
+            # "Faked" v2 ledger (single portfolio key)
+            elif TP_ID_PORTFOLIO in ledger_value and len(ledger_value) == 1:
+                ans = True
+
         return ans
 
 
@@ -704,10 +815,16 @@ class PerfLedgerManager(CacheController):
                         ret[hk] = possible_bundles if isinstance(possible_bundles, PerfLedger) else PerfLedger.from_dict(possible_bundles)
                     else:
                         # Incompatible but we can fake it for now.
-                        if 'initialization_time_ms' in possible_bundles:
-                            ledger = possible_bundles if isinstance(possible_bundles, PerfLedger) else PerfLedger.from_dict(possible_bundles)
+                        # Handle both PerfLedger objects (from pickle) and dicts (from JSON)
+                        if isinstance(possible_bundles, PerfLedger):
+                            # Direct PerfLedger object = portfolio ledger
+                            ret[hk] = {TP_ID_PORTFOLIO: possible_bundles}
+                        elif isinstance(possible_bundles, dict) and 'initialization_time_ms' in possible_bundles:
+                            # V1 dict format - convert to PerfLedger
+                            ledger = PerfLedger.from_dict(possible_bundles)
                             ret[hk] = {TP_ID_PORTFOLIO: ledger}
-                        elif TP_ID_PORTFOLIO in possible_bundles:
+                        elif isinstance(possible_bundles, dict) and TP_ID_PORTFOLIO in possible_bundles:
+                            # Faked V2 dict format with single portfolio key
                             portfolio_data = possible_bundles[TP_ID_PORTFOLIO]
                             ledger = portfolio_data if isinstance(portfolio_data, PerfLedger) else PerfLedger.from_dict(portfolio_data)
                             ret[hk] = {TP_ID_PORTFOLIO: ledger}
@@ -734,35 +851,50 @@ class PerfLedgerManager(CacheController):
             self,
             portfolio_only: bool = False,
             hotkeys: List[str] = None
-    ) -> dict[str, PerfLedger]:
+    ) -> dict[str, dict[str, PerfLedger]] | dict[str, PerfLedger]:
         """
         Filter the ledger for a set of hotkeys.
         """
 
         if hotkeys is None:
-            hotkeys = self.metagraph.get_hotkeys()
+            hotkeys = self._metagraph_client.get_hotkeys()
 
         # Build filtered ledger for all miners with positions
         filtered_ledger = {}
-        for hotkey, miner_portfolio_ledger in self.get_perf_ledgers(portfolio_only=False).items():
-            if hotkey not in hotkeys:
-                continue
 
-            if hotkey in self.perf_ledger_hks_to_invalidate:
-                bt.logging.warning(f"Skipping hotkey {hotkey} in filtered_ledger_for_scoring due to invalidation.")
-                continue
+        if portfolio_only:
+            # When portfolio_only=True, get_perf_ledgers() returns dict[hotkey, PerfLedger]
+            for hotkey, perf_ledger in self.get_perf_ledgers(portfolio_only=True).items():
+                if hotkey not in hotkeys:
+                    continue
 
-            if miner_portfolio_ledger is None:
-                continue
+                if hotkey in self.perf_ledger_hks_to_invalidate:
+                    bt.logging.warning(f"Skipping hotkey {hotkey} in filtered_ledger_for_scoring due to invalidation.")
+                    continue
 
-            miner_overall_ledger = miner_portfolio_ledger.get("portfolio", PerfLedger())
-            if len(miner_overall_ledger.cps) == 0:
-                continue
+                if perf_ledger is None or len(perf_ledger.cps) == 0:
+                    continue
 
-            if portfolio_only:
-                filtered_ledger[hotkey] = miner_overall_ledger
-            else:
-                filtered_ledger[hotkey] = miner_portfolio_ledger
+                filtered_ledger[hotkey] = perf_ledger
+        else:
+            # When portfolio_only=False, get_perf_ledgers() returns dict[hotkey, dict[asset_class, PerfLedger]]
+            for hotkey, asset_ledgers in self.get_perf_ledgers(portfolio_only=False).items():
+                if hotkey not in hotkeys:
+                    continue
+
+                if hotkey in self.perf_ledger_hks_to_invalidate:
+                    bt.logging.warning(f"Skipping hotkey {hotkey} in filtered_ledger_for_scoring due to invalidation.")
+                    continue
+
+                if asset_ledgers is None:
+                    continue
+
+                # Ensure we have the portfolio ledger with checkpoints
+                miner_overall_ledger = asset_ledgers.get(TP_ID_PORTFOLIO, PerfLedger())
+                if len(miner_overall_ledger.cps) == 0:
+                    continue
+
+                filtered_ledger[hotkey] = asset_ledgers
 
         return filtered_ledger
 
@@ -819,7 +951,7 @@ class PerfLedgerManager(CacheController):
     def run_update_loop(self):
         setproctitle(f"vali_{self.__class__.__name__}")
         bt.logging.enable_info()
-        while not self.shutdown_dict:
+        while not self._is_shutdown():
             try:
                 if self.refresh_allowed(ValiConfig.PERF_LEDGER_REFRESH_TIME_MS):
                     self.update()
@@ -843,9 +975,9 @@ class PerfLedgerManager(CacheController):
                 new_orders.append(o)
 
         position_at_start_timestamp.orders = new_orders[:-1]
-        position_at_start_timestamp.rebuild_position_with_updated_orders(self.live_price_fetcher)
+        position_at_start_timestamp.rebuild_position_with_updated_orders(self._live_price_client)
         position_at_end_timestamp.orders = new_orders
-        position_at_end_timestamp.rebuild_position_with_updated_orders(self.live_price_fetcher)
+        position_at_end_timestamp.rebuild_position_with_updated_orders(self._live_price_client)
         # Handle position that was forced closed due to realtime data (liquidated)
         if len(new_orders) == len(position.orders) and position.return_at_close == 0:
             position_at_end_timestamp.return_at_close = 0
@@ -1042,7 +1174,7 @@ class PerfLedgerManager(CacheController):
         #t0 = time.time()
         #print(f"Starting #{requested_seconds} candle fetch for {tp.trade_pair}")
         if self.pds is None:
-            if self.is_testing:
+            if self.running_unit_tests:
                 # Create a minimal mock data service for testing
                 from unittest.mock import Mock
                 self.pds = Mock()
@@ -1050,8 +1182,8 @@ class PerfLedgerManager(CacheController):
                 self.pds.tp_to_mfs = {}
             else:
                 # Production path - create real price fetcher
-                live_price_fetcher = LivePriceFetcher(self.secrets, disable_ws=True)
-                self.pds = live_price_fetcher.polygon_data_service
+                self.pds = PolygonDataService(api_key=self.secrets["polygon_apikey"], disable_ws=True, is_backtesting=self.is_backtesting)
+
 
         price_info_raw = self.pds.unified_candle_fetcher(
             trade_pair=tp, start_timestamp_ms=start_time_ms, end_timestamp_ms=end_time_ms, timespan=mode)
@@ -1105,7 +1237,7 @@ class PerfLedgerManager(CacheController):
             tp_ids_to_build = [TP_ID_PORTFOLIO] if self.build_portfolio_ledgers_only else [tp_id, TP_ID_PORTFOLIO]
 
             for historical_position in historical_positions:
-                if self.shutdown_dict:
+                if self._is_shutdown():
                     return tp_to_return, tp_to_realized_pnl, tp_to_unrealized_pnl, tp_to_any_open, tp_to_spread_fee, tp_to_carry_fee
 
                 # Calculate fees for this position
@@ -1147,10 +1279,10 @@ class PerfLedgerManager(CacheController):
                 if historical_position.is_open_position and price_at_t_ms is not None:
                     # Always update returns for open positions when we have a price
                     # This ensures returns are always current and prevents stale values
-                    historical_position.set_returns(price_at_t_ms, self.live_price_fetcher, time_ms=t_ms, total_fees=position_spread_fee * position_carry_fee)
+                    historical_position.set_returns(price_at_t_ms, self._live_price_client, time_ms=t_ms, total_fees=position_spread_fee * position_carry_fee)
                 else:
                     # Closed positions or no price available - just update fees
-                    historical_position.set_returns_with_updated_fees(position_spread_fee * position_carry_fee, t_ms, self.live_price_fetcher)
+                    historical_position.set_returns_with_updated_fees(position_spread_fee * position_carry_fee, t_ms, self._live_price_client)
 
                 # Track last known prices for portfolio ledger to maintain continuity
                 if price_at_t_ms is not None:
@@ -1193,7 +1325,7 @@ class PerfLedgerManager(CacheController):
         if portfolio_return == 0:
             bt.logging.warning(f"Portfolio value is {portfolio_return} for miner {miner_hotkey} at {t_ms}. Eliminating miner.")
             portfolio_pl = perf_ledger_bundle[TP_ID_PORTFOLIO]
-            elimination_row = self.generate_elimination_row(miner_hotkey, 0.0, EliminationReason.LIQUIDATED.value, t_ms=t_ms, price_info=portfolio_pl.last_known_prices, return_info={'dd_stats': {}, 'returns': self.trade_pair_to_position_ret})
+            elimination_row = self.generate_elimination_row(miner_hotkey, 0.0, "LIQUIDATED", t_ms=t_ms, price_info=portfolio_pl.last_known_prices, return_info={'dd_stats': {}, 'returns': self.trade_pair_to_position_ret})
             self.candidate_pl_elimination_rows.append(elimination_row)
             self.candidate_pl_elimination_rows[-1] = elimination_row  # Trigger the update on the multiprocessing Manager
             #self.hk_to_dd_stats[miner_hotkey]['eliminated'] = True
@@ -1433,6 +1565,11 @@ class PerfLedgerManager(CacheController):
         portfolio_pl = perf_ledger_bundle[TP_ID_PORTFOLIO]
         is_first_update = len(portfolio_pl.cps) == 0
 
+        # Check if we need to build the ledger forward in time
+        # If start_time > end_time, this batch has already been processed
+        # BUT: We still need to initialize any new trade pair ledgers before returning
+        skip_time_advancement = start_time_ms > end_time_ms
+
 
         # For non-first updates, validate that we're continuing from where we left off
         # We should always start from the ledger's last update time
@@ -1502,6 +1639,14 @@ class PerfLedgerManager(CacheController):
                     f"Last update: {TimeUtil.millis_to_formatted_date_str(perf_ledger.last_update_ms)}, "
                     f"Start time: {TimeUtil.millis_to_formatted_date_str(start_time_ms)}"
                 )
+
+        # If we skipped time advancement (batch already processed), return now
+        # We've already initialized any new trade pairs above, so we're done
+        if skip_time_advancement:
+            bt.logging.debug(f"Skipping time advancement for miner {miner_hotkey} "
+                           f"(batch already processed at {TimeUtil.millis_to_formatted_date_str(end_time_ms)})")
+            return False
+
         if portfolio_pl.initialization_time_ms == end_time_ms:
             return False  # Can only build perf ledger between orders or after all orders have passed.
 
@@ -1542,6 +1687,7 @@ class PerfLedgerManager(CacheController):
                                       tp_spread_fee, tp_carry_fee, initial_tp_to_realized_pnl[tp_id], initial_tp_to_unrealized_pnl[tp_id],
                                       tp_debug=tp_id + '_shortcut', debug_dict=dd)
 
+
                 perf_ledger.purge_old_cps()
             return False
 
@@ -1562,14 +1708,7 @@ class PerfLedgerManager(CacheController):
         default_mode = self.get_default_update_mode(start_time_ms, end_time_ms, n_open_positions)
 
         accumulated_time_ms = 0
-        # Validate time range
-        if start_time_ms > end_time_ms:
-            bt.logging.error(f"Invalid time range in build_perf_ledger:")
-            bt.logging.error(f"  start_time_ms: {start_time_ms} ({TimeUtil.millis_to_formatted_date_str(start_time_ms)})")
-            bt.logging.error(f"  end_time_ms: {end_time_ms} ({TimeUtil.millis_to_formatted_date_str(end_time_ms)})")
-            bt.logging.error(f"  Miner: {miner_hotkey}")
-            raise ValueError(f"start_time_ms ({start_time_ms}) cannot be greater than end_time_ms ({end_time_ms})")
-        
+
         # Initialize tracking for time increments
         self._last_loop_t_ms = {}
         self._last_ledger_update_ms = {}
@@ -1592,6 +1731,7 @@ class PerfLedgerManager(CacheController):
 
             perf_ledger.update_pl(current_return, start_time_ms, miner_hotkey, TradePairReturnStatus.TP_NO_OPEN_POSITIONS,
                                   current_spread_fee, current_carry_fee, tp_to_closed_pos_realized_pnl[tp_id], tp_to_closed_pos_unrealized_pnl[tp_id])
+
 
         # Check if the while loop will execute at all
         if start_time_ms + accumulated_time_ms >= end_time_ms:
@@ -1678,6 +1818,7 @@ class PerfLedgerManager(CacheController):
                                       current_spread_fee, current_carry_fee,
                                       tp_to_realized_pnl[tp_id], tp_to_unrealized_pnl[tp_id],
                                       tp_debug=tp_id)
+
 
                 # Verify the ledger was updated to current t_ms
                 assert perf_ledger.last_update_ms == t_ms, (
@@ -1809,7 +1950,7 @@ class PerfLedgerManager(CacheController):
                         # Calculate the return at the last known price point
                         position_spread_fee, _ = self.position_uuid_to_cache[position.position_uuid].get_spread_fee(position, t_ms)
                         position_carry_fee, _ = self.position_uuid_to_cache[position.position_uuid].get_carry_fee(t_ms, position)
-                        position.set_returns(last_price, self.live_price_fetcher, time_ms=t_ms, total_fees=position_spread_fee * position_carry_fee)
+                        position.set_returns(last_price, self._live_price_client, time_ms=t_ms, total_fees=position_spread_fee * position_carry_fee)
 
                         # Store info for aggregate logging with both price and return changes
                         new_return = position.return_at_close
@@ -1850,9 +1991,7 @@ class PerfLedgerManager(CacheController):
     def update_one_perf_ledger_bundle(self, hotkey_i: int, n_hotkeys: int, hotkey: str, positions: List[Position],
                                       now_ms: int,
                                       existing_perf_ledger_bundles: dict[str, dict[str, PerfLedger]]) -> None | dict[str, PerfLedger]:
-        # Not-pickleable. Make it here.
-        if not self.live_price_fetcher:
-            self.live_price_fetcher = LivePriceFetcher(self.secrets, disable_ws=True)
+        # live_price_fetcher is now created in __init__ - no conditional needed
         eliminated = False
         self.n_api_calls = 0
         self.mode_to_n_updates = {'second': 0, 'minute': 0}
@@ -1997,10 +2136,13 @@ class PerfLedgerManager(CacheController):
             # Building from a checkpoint ledger. Skip until we get to the new order(s).
             portfolio_ledger = perf_ledger_bundle_candidate[TP_ID_PORTFOLIO]
             portfolio_last_update_ms = portfolio_ledger.last_update_ms
+
             if portfolio_last_update_ms == 0:
                 # If no checkpoints exist, use initialization time
                 portfolio_last_update_ms = portfolio_ledger.initialization_time_ms
 
+            # Skip batches that are strictly before the last update
+            # (batches at the same timestamp will be handled by build_perf_ledger)
             if batch_order_timestamp < portfolio_last_update_ms:
                 continue
 
@@ -2118,7 +2260,7 @@ class PerfLedgerManager(CacheController):
         for i, x in enumerate(self.candidate_pl_elimination_rows):
             self.pl_elimination_rows[i] = x
 
-        if self.shutdown_dict:
+        if self._is_shutdown():
             return
 
         self.save_perf_ledgers(existing_perf_ledgers)
@@ -2129,15 +2271,12 @@ class PerfLedgerManager(CacheController):
         #testing_one_hotkey = '5GzYKUYSD5d7TJfK4jsawtmS2bZDgFuUYw8kdLdnEDxSykTU'
         hotkeys_with_no_positions = set()
         if testing_one_hotkey:
-            hotkey_to_positions = self.position_manager.get_positions_for_hotkeys(
+            hotkey_to_positions = self._position_manager_client.get_positions_for_hotkeys(
                 [testing_one_hotkey], sort_positions=True
             )
         else:
-            # Not-pickleable. Make it here.
-            if not self.live_price_fetcher:
-                self.live_price_fetcher = LivePriceFetcher(self.secrets, disable_ws=True)
-            eliminations = self.position_manager.elimination_manager.get_eliminations_from_memory()
-            hotkey_to_positions = self.position_manager.get_positions_for_all_miners(sort_positions=True, eliminations=eliminations)
+            # live_price_fetcher is now created in __init__ - no conditional needed
+            hotkey_to_positions = self._position_manager_client.get_positions_for_all_miners(sort_positions=True, filter_eliminations=True)
             n_positions_total = 0
             n_hotkeys_total = len(hotkey_to_positions)
             # Keep only hotkeys with positions
@@ -2145,7 +2284,7 @@ class PerfLedgerManager(CacheController):
                 # Rebuild closed positions to ensure returns are accurate WRT latest fee structure and retro prices.
                 for p in positions:
                     if p.is_closed_position:
-                        p.rebuild_position_with_updated_orders(self.live_price_fetcher)
+                        p.rebuild_position_with_updated_orders(self._live_price_client)
                 n_positions = len(positions)
                 n_positions_total += n_positions
                 if n_positions == 0:
@@ -2163,8 +2302,8 @@ class PerfLedgerManager(CacheController):
         return self.update_all_perf_ledgers(hotkey_to_positions, existing_perf_ledgers, t_ms)
 
     @timeme
-    def update(self, testing_one_hotkey=None, regenerate_all_ledgers=True, t_ms=None):  # TEMPORARY: Force full rebuild
-        assert self.position_manager.elimination_manager.metagraph, "Metagraph must be loaded before updating perf ledgers"
+    def update(self, testing_one_hotkey=None, regenerate_all_ledgers=False, t_ms=None):
+        # Use PerfLedgerManager's own metagraph client (forward compatibility)
         assert self.metagraph, "Metagraph must be loaded before updating perf ledgers"
         perf_ledger_bundles = self.get_perf_ledgers(portfolio_only=False)
         if self.is_backtesting:
@@ -2187,7 +2326,7 @@ class PerfLedgerManager(CacheController):
         hotkeys_ordered_by_last_trade = sorted(hotkey_to_positions.keys(), key=sort_key, reverse=True)
 
         # Remove keys from perf ledgers if they aren't inx the metagraph anymore
-        metagraph_hotkeys = set(self.metagraph.get_hotkeys())
+        metagraph_hotkeys = set(self._metagraph_client.get_hotkeys())
         hotkeys_to_delete = set([x for x in hotkeys_with_no_positions if x in perf_ledger_bundles])
         rss_modified = False
         # Recently re-registered
@@ -2228,7 +2367,6 @@ class PerfLedgerManager(CacheController):
             elif self.enable_rss and not rss_modified and hotkey not in self.random_security_screenings:
                 rss_modified = True
                 self.random_security_screenings.add(hotkey)
-                #bt.logging.info(f"perf ledger PLM added {hotkey} with {len(hotkey_to_positions.get(hotkey, []))} positions to rss.")
                 hotkeys_to_delete.add(hotkey)
 
         # Start over again
@@ -2415,7 +2553,6 @@ class PerfLedgerManager(CacheController):
         # Create a temporary manager for processing
         # This is to avoid sharing state between executors
         worker_plm = PerfLedgerManager(
-            metagraph=MockMetagraph(hotkeys=[hotkey]),
             parallel_mode=self.parallel_mode,
             enable_rss=False,  # full rebuilds not necessary as we are building from scratch already
             secrets=self.secrets,
@@ -2423,7 +2560,6 @@ class PerfLedgerManager(CacheController):
             target_ledger_window_ms=self.target_ledger_window_ms,
             is_backtesting=is_backtesting,
             use_slippage=self.use_slippage,
-            is_testing=self.is_testing,  # Pass testing flag to worker
         )
         worker_plm.now_ms = now_ms
 
@@ -2554,23 +2690,20 @@ if __name__ == "__main__":
             hotkeys_to_process = list(hk_to_positions.keys())
             bt.logging.info(f"Loaded positions for {len(hotkeys_to_process)} miners from {source_type.value}")
 
-    # Initialize metagraph and managers with appropriate hotkeys
-    mmg = MockMetagraph(hotkeys=hotkeys_to_process)
-    elimination_manager = EliminationManager(mmg, None, None)
-    position_manager = PositionManager(metagraph=mmg, running_unit_tests=False, elimination_manager=elimination_manager, is_backtesting=True)
-
-    # Save loaded positions to position manager if using alternative source
+    # Save loaded positions if using alternative source
     if hk_to_positions:
+        position_manager_client = PositionManagerClient(connect_immediately=False)
         position_count = 0
         for hk, positions in hk_to_positions.items():
             for pos in positions:
                 if crypto_only and not pos.trade_pair.is_crypto:
                     continue
-                position_manager.save_miner_position(pos)
+                position_manager_client.save_miner_position(pos)
                 position_count += 1
         bt.logging.info(f"Saved {position_count} positions to position manager")
 
-    perf_ledger_manager = PerfLedgerManager(mmg, position_manager=position_manager, running_unit_tests=False,
+    # PerfLedgerManager creates its own MetagraphClient and PositionManagerClient internally
+    perf_ledger_manager = PerfLedgerManager(running_unit_tests=False,
                                             enable_rss=False, parallel_mode=parallel_mode,
                                             build_portfolio_ledgers_only=build_portfolio_ledgers_only)
 
@@ -2597,8 +2730,3 @@ if __name__ == "__main__":
                                     existing_perf_ledgers, parallel_mode=parallel_mode, top_n_miners=top_n_miners)
 
         PerfLedgerManager.print_bundles(updated_perf_ledgers)
-        # Stop Spark session if we created it
-        #if spark and should_close:
-        #    t0 = time.time()
-        #    spark.stop()
-        #    print('closed spark session in  ', time.time() - t0)

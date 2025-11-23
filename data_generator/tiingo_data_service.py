@@ -102,12 +102,13 @@ class _TiingoPseudoClient:
 
 class TiingoDataService(BaseDataService):
 
-    def __init__(self, api_key, disable_ws=False, ipc_manager=None):
+    def __init__(self, api_key, disable_ws=False, running_unit_tests=False):
         self.init_time = time.time()
         self._api_key = api_key
         self.disable_ws = disable_ws
+        self.running_unit_tests = running_unit_tests
 
-        super().__init__(provider_name=TIINGO_PROVIDER_NAME, ipc_manager=ipc_manager)
+        super().__init__(provider_name=TIINGO_PROVIDER_NAME)
 
         self.MARKET_STATUS = None
 
@@ -127,10 +128,7 @@ class TiingoDataService(BaseDataService):
         if disable_ws:
             self.websocket_manager_thread = None
         else:
-            if ipc_manager:
-                self.websocket_manager_thread = Process(target=self.websocket_manager, daemon=True)
-            else:
-                self.websocket_manager_thread = threading.Thread(target=self.websocket_manager, daemon=True)
+            self.websocket_manager_thread = threading.Thread(target=self.websocket_manager, daemon=True)
             self.websocket_manager_thread.start()
 
     def _close_ws_for_category(self, tpc: TradePairCategory, loop):
@@ -194,10 +192,7 @@ class TiingoDataService(BaseDataService):
                 #print(tp.trade_pair, start_timestamp_orig, start_timestamp)
                 #print(f'Received forex message {symbol} price {new_price} time {TimeUtil.millis_to_formatted_date_str(start_timestamp)}')
                 #print(m, symbol in self.trade_pair_to_recent_events, self.trade_pair_to_recent_events[symbol].timestamp_exists(start_timestamp))
-                if self.using_ipc and symbol in self.trade_pair_to_recent_events_realtime and self.trade_pair_to_recent_events_realtime[symbol].timestamp_exists(start_timestamp):
-                    self.trade_pair_to_recent_events_realtime[symbol].update_prices_for_median(start_timestamp, bid_price)
-                    return None
-                elif not self.using_ipc and symbol in self.trade_pair_to_recent_events and self.trade_pair_to_recent_events[symbol].timestamp_exists(start_timestamp):
+                if symbol in self.trade_pair_to_recent_events and self.trade_pair_to_recent_events[symbol].timestamp_exists(start_timestamp):
                     self.trade_pair_to_recent_events[symbol].update_prices_for_median(start_timestamp, bid_price)
                     return None
 
@@ -302,16 +297,11 @@ class TiingoDataService(BaseDataService):
         self.closed_market_prices[tp] = None
 
         self.latest_websocket_events[symbol] = ps1
-        if not self.using_ipc and symbol not in self.trade_pair_to_recent_events:
+        if symbol not in self.trade_pair_to_recent_events:
             self.trade_pair_to_recent_events[symbol] = RecentEventTracker()
-        elif self.using_ipc and symbol not in self.trade_pair_to_recent_events_realtime:
-            self.trade_pair_to_recent_events_realtime[symbol] = RecentEventTracker()
 
-        if self.using_ipc:
-            self.trade_pair_to_recent_events_realtime[symbol].add_event(ps1, tp.is_forex,
-                                                           f"{self.provider_name}:{tp.trade_pair}")
-        else:
-            self.trade_pair_to_recent_events[symbol].add_event(ps1, tp.is_forex,
+
+        self.trade_pair_to_recent_events[symbol].add_event(ps1, tp.is_forex,
                                                            f"{self.provider_name}:{tp.trade_pair}")
 
         if DEBUG:

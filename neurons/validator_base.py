@@ -1,6 +1,5 @@
 import argparse
 import os
-import threading
 import time
 import traceback
 from typing import Tuple
@@ -13,85 +12,43 @@ from time_util.time_util import timeme
 
 
 class ValidatorBase:
-    def __init__(self, wallet, config, metagraph, p2p_syncer, contract_manager, asset_selection_manager, slack_notifier=None):
+    def __init__(self, wallet, config, metagraph, p2p_syncer, asset_selection_client, subtensor=None, slack_notifier=None):
         self.wallet = wallet
         self.config = config
-        self.metagraph = metagraph
+        self.metagraph_server = metagraph
         self.slack_notifier = slack_notifier
         self.p2p_syncer = p2p_syncer
-        self.contract_manager = contract_manager
-        self.asset_selection_manager = asset_selection_manager
-        self.init_watchdog = {'current_step': 0, 'start_time': time.time(), 'step_desc': 'Starting', 'alerted': False}
+        self.asset_selection_client = asset_selection_client
+        self.subtensor = subtensor
+
+        # Create own ContractClient (forward compatibility - no parameter passing)
+        from vali_objects.utils.contract_server import ContractClient
+        self._contract_client = ContractClient(running_unit_tests=False)
+
         self.wire_axon()
 
         # Each hotkey gets a unique identity (UID) in the network for differentiation.
-        my_subnet_uid = self.metagraph.get_hotkeys().index(self.wallet.hotkey.ss58_address)
+        my_subnet_uid = self.metagraph_server.get_hotkeys().index(self.wallet.hotkey.ss58_address)
         bt.logging.info(f"Running validator on uid: {my_subnet_uid}")
 
-        # Start watchdog thread
-        watchdog_thread = threading.Thread(target=self.initialization_watchdog, daemon=True)
-        watchdog_thread.start()
+    @property
+    def contract_manager(self):
+        """Get contract client (forward compatibility - created internally)."""
+        return self._contract_client
 
+    def receive_signal(self, synapse: template.protocol.SendSignal) -> template.protocol.SendSignal:
+        """
+        Abstract method - must be implemented by child class.
+        Handles incoming trading signals from miners.
+        """
+        raise NotImplementedError("Child class must implement receive_signal()")
 
-    # Helper function to run initialization steps with timeout and error handling
-    def run_init_step_with_monitoring(self, step_num, step_desc, step_func, timeout_seconds=30):
-        """Execute an initialization step with timeout monitoring and error handling"""
-        # Update watchdog state
-        self.init_watchdog['current_step'] = step_num
-        self.init_watchdog['step_desc'] = step_desc
-        self.init_watchdog['start_time'] = time.time()
-        self.init_watchdog['alerted'] = False
-
-        bt.logging.info(f"[INIT] Step {step_num}: {step_desc}...")
-        start_time = time.time()
-        try:
-            result = step_func()
-            elapsed = time.time() - start_time
-            bt.logging.info(f"[INIT] Step {step_num} complete: {step_desc} (took {elapsed:.2f}s)")
-            return result
-        except Exception as e:
-            elapsed = time.time() - start_time
-            error_msg = f"[INIT] Step {step_num} FAILED: {step_desc} after {elapsed:.2f}s - {str(e)}"
-            bt.logging.error(error_msg)
-            bt.logging.error(traceback.format_exc())
-
-            # Send Slack alert
-            if self.slack_notifier:
-                self.slack_notifier.send_message(
-                    f"🚨 Validator Initialization Failed!\n"
-                    f"Step {step_num}: {step_desc}\n"
-                    f"Error: {str(e)}\n"
-                    f"Hotkey: {self.wallet.hotkey.ss58_address}\n"
-                    f"Time elapsed: {elapsed:.2f}s\n"
-                    f"The validator may be hung or unable to start properly.",
-                    level="error"
-                )
-            raise
-
-    def initialization_watchdog(self):
-        # Watchdog thread to detect hung initialization steps
-
-        """Background thread that monitors for hung initialization steps"""
-        HANG_TIMEOUT = 60  # Alert after 60 seconds on a single step
-        while self.init_watchdog['current_step'] != 'completed':
-            time.sleep(5)  # Check every 5 seconds
-            if self.init_watchdog['current_step'] == 'completed':
-                break  # Initialization complete
-
-            elapsed = time.time() - self.init_watchdog['start_time']
-            if elapsed > HANG_TIMEOUT and not self.init_watchdog['alerted']:
-                self.init_watchdog['alerted'] = True
-                hang_msg = (
-                    f"⚠️ Validator Initialization Hang Detected!\n"
-                    f"Step {self.init_watchdog['current_step']} has been running for {elapsed:.1f}s\n"
-                    f"Step: {self.init_watchdog['step_desc']}\n"
-                    f"Hotkey: {self.wallet.hotkey.ss58_address}\n"
-                    f"Timeout threshold: {HANG_TIMEOUT}s\n"
-                    f"The validator may be stuck and require manual restart."
-                )
-                bt.logging.error(hang_msg)
-                if self.slack_notifier:
-                    self.slack_notifier.send_message(hang_msg, level="error")
+    def get_positions(self, synapse: template.protocol.GetPositions) -> template.protocol.GetPositions:
+        """
+        Abstract method - must be implemented by child class.
+        Handles position inspection requests from miners.
+        """
+        raise NotImplementedError("Child class must implement get_positions()")
 
     @timeme
     def blacklist_fn(self, synapse, metagraph) -> Tuple[bool, str]:
@@ -188,19 +145,19 @@ class ValidatorBase:
         bt.logging.info("Attaching forward function to axon.")
 
         def rs_blacklist_fn(synapse: template.protocol.SendSignal) -> Tuple[bool, str]:
-            return self.blacklist_fn(synapse, self.metagraph)
+            return self.blacklist_fn(synapse, self.metagraph_server)
 
         def gp_blacklist_fn(synapse: template.protocol.GetPositions) -> Tuple[bool, str]:
-            return self.blacklist_fn(synapse, self.metagraph)
+            return self.blacklist_fn(synapse, self.metagraph_server)
 
         def rc_blacklist_fn(synapse: template.protocol.ValidatorCheckpoint) -> Tuple[bool, str]:
-            return self.blacklist_fn(synapse, self.metagraph)
+            return self.blacklist_fn(synapse, self.metagraph_server)
 
         def cr_blacklist_fn(synapse: template.protocol.CollateralRecord) -> Tuple[bool, str]:
-            return self.blacklist_fn(synapse, self.metagraph)
+            return self.blacklist_fn(synapse, self.metagraph_server)
 
         def as_blacklist_fn(synapse: template.protocol.AssetSelection) -> Tuple[bool, str]:
-            return self.blacklist_fn(synapse, self.metagraph)
+            return self.blacklist_fn(synapse, self.metagraph_server)
 
         self.axon.attach(
             forward_fn=self.receive_signal,
@@ -219,7 +176,7 @@ class ValidatorBase:
             blacklist_fn=cr_blacklist_fn
         )
         self.axon.attach(
-            forward_fn=self.asset_selection_manager.receive_asset_selection,
+            forward_fn=self.asset_selection_client.receive_asset_selection,
             blacklist_fn=as_blacklist_fn
         )
 

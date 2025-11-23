@@ -1,107 +1,63 @@
 """
-Debt Ledger Manager Server - RPC server for managing debt ledger data.
+Debt Ledger Server - RPC server wrapper for DebtLedgerManager.
 
-This server process manages debt ledgers in a normal Python dict (not IPC),
-runs a daemon thread that continuously builds/updates ledgers, and serves
-read-only RPC requests from clients.
+This server wraps DebtLedgerManager with RPC infrastructure, following the
+established Server/Manager pattern (like PerfLedgerServer/PerfLedgerManager).
+
+Architecture:
+- DebtLedgerManager: Pure business logic (in debt_ledger.py)
+- DebtLedgerServer: Lightweight RPC wrapper (this file)
+
+The server maintains self._manager and delegates all business logic to it.
 """
-import os
 import bittensor as bt
-import signal
 import time
-import gzip
-import json
-import shutil
-from datetime import datetime, timezone
-from multiprocessing.managers import BaseManager
 from typing import Dict, Optional
 
-from vanta_api.slack_notifier import SlackNotifier
-from time_util.time_util import TimeUtil
-from vali_objects.vali_config import ValiConfig
-from vali_objects.vali_dataclasses.emissions_ledger import EmissionsLedgerManager
-from vali_objects.vali_dataclasses.penalty_ledger import PenaltyLedgerManager
-from vali_objects.vali_dataclasses.perf_ledger import TP_ID_PORTFOLIO
+from shared_objects.rpc_client_base import RPCClientBase
+from vali_objects.vali_config import ValiConfig, RPCConnectionMode
+from shared_objects.rpc_server_base import RPCServerBase
 
-
-class DebtLedgerManagerServer:
+class DebtLedgerClient(RPCClientBase):
     """
-    Server process that manages debt ledgers in a normal Python dict.
+    Lightweight RPC client for DebtLedgerServer.
 
-    Responsibilities:
-    - Hold debt ledgers in normal Python dict (not IPC)
-    - Run daemon thread that continuously builds/updates ledgers
-    - Serve read-only RPC requests from clients
-    - Handle persistence (save/load from disk)
+    Can be created in ANY process. No server ownership.
+    Forward compatibility - consumers create their own client instance.
+
+    Example:
+        client = DebtLedgerClient()
+        ledgers = client.get_all_debt_ledgers()
     """
 
-    DEFAULT_CHECK_INTERVAL_SECONDS = 3600 * 12  # 12 hours
-
-    def __init__(self, perf_ledger_manager, position_manager, contract_manager,
-                 asset_selection_manager, challengeperiod_manager=None,
-                 slack_webhook_url=None, running_unit_tests=False,
-                 validator_hotkey=None):
+    def __init__(
+            self,
+            port: int = None,
+            connection_mode: RPCConnectionMode = RPCConnectionMode.RPC,
+            connect_immediately: bool = False,
+            running_unit_tests: bool = False
+    ):
         """
-        Initialize the server with a normal Python dict for debt ledgers.
+        Initialize DebtLedger client.
 
         Args:
-            perf_ledger_manager: Performance ledger manager instance
-            position_manager: Position manager instance
-            contract_manager: Contract manager instance
-            asset_selection_manager: Asset selection manager instance
-            challengeperiod_manager: Challenge period manager instance
-            slack_webhook_url: Slack webhook URL for notifications
-            running_unit_tests: Whether running in unit test mode
-            validator_hotkey: Validator hotkey for notifications
+            port: Port number of the DebtLedger server (default: ValiConfig.RPC_DEBTLEDGER_PORT)
+            connection_mode: RPCConnectionMode enum specifying connection behavior:
+                - LOCAL (0): Direct mode - bypass RPC, use set_direct_server()
+                - RPC (1): Normal RPC mode - connect via network
+            connect_immediately: If True, connect in __init__. If False, call connect() later.
         """
-        # SOURCE OF TRUTH: Normal Python dict (NOT IPC dict!)
-        # Structure: hotkey -> DebtLedger
-        self.debt_ledgers: Dict[str, 'DebtLedger'] = {}
-
-        self.perf_ledger_manager = perf_ledger_manager
-
-        # IMPORTANT: PenaltyLedgerManager runs WITHOUT its own daemon process (run_daemon=False)
-        # because DebtLedgerManagerServer itself is already a daemon process, and daemon processes
-        # cannot spawn child processes. The DebtLedgerManagerServer daemon thread calls
-        # penalty_ledger_manager methods directly when needed.
-        self.penalty_ledger_manager = PenaltyLedgerManager(
-            position_manager=position_manager,
-            perf_ledger_manager=perf_ledger_manager,
-            contract_manager=contract_manager,
-            asset_selection_manager=asset_selection_manager,
-            challengeperiod_manager=challengeperiod_manager,
-            slack_webhook_url=slack_webhook_url,
-            run_daemon=False,  # No daemon - already inside DebtLedgerManagerServer daemon process
-            running_unit_tests=running_unit_tests,
-            validator_hotkey=validator_hotkey
-        )
-
-        self.emissions_ledger_manager = EmissionsLedgerManager(
-            slack_webhook_url=slack_webhook_url,
-            start_daemon=False,
-            perf_ledger_manager=perf_ledger_manager,
-            running_unit_tests=running_unit_tests,
-            validator_hotkey=validator_hotkey
-        )
-
-        self.slack_notifier = SlackNotifier(webhook_url=slack_webhook_url, hotkey=validator_hotkey)
         self.running_unit_tests = running_unit_tests
-        self.running = False
+        super().__init__(
+            service_name=ValiConfig.RPC_DEBTLEDGER_SERVICE_NAME,
+            port=port or ValiConfig.RPC_DEBTLEDGER_PORT,
+            connect_immediately=connect_immediately,
+            connection_mode=connection_mode
+        )
 
-        # Cache for pre-compressed debt ledgers (updated on each build)
-        # Stores gzip-compressed JSON bytes for instant RPC access
-        self._compressed_ledgers_cache: bytes = b''
+    # ==================== Client Methods ====================
 
-        # Load from disk on startup
-        self.load_data_from_disk()
-
-        bt.logging.success("DebtLedgerManagerServer initialized with normal Python dict")
-
-    # ========================================================================
-    # RPC METHODS (called by client via RPC)
-    # ========================================================================
-
-    def get_ledger_rpc(self, hotkey: str):
+    def get_ledger(self, hotkey: str):
         """
         Get debt ledger for a specific hotkey.
 
@@ -109,22 +65,52 @@ class DebtLedgerManagerServer:
             hotkey: The miner's hotkey
 
         Returns:
-            DebtLedger instance, or None if not found (pickled automatically by RPC)
+            DebtLedger instance, or None if not found
         """
-        return self.debt_ledgers.get(hotkey)
+        try:
+            return self._server.get_ledger_rpc(hotkey)
+        except Exception as e:
+            bt.logging.debug(f"DebtLedgerClient: Get ledger failed: {e}")
+            return None
 
-    def get_all_ledgers_rpc(self):
+    def get_compressed_summaries_rpc(self) -> bytes | None:
+        """
+        Get pre-compressed debt ledger summaries as gzip bytes from cache.
+
+        Returns:
+            Cached compressed gzip bytes of debt ledger summaries JSON
+        """
+        try:
+            return self._server.get_compressed_summaries_rpc()
+        except Exception as e:
+            bt.logging.debug(f"DebtLedgerClient: Get compressed summaries failed: {e}")
+            return None
+
+    def get_all_ledgers(self):
         """
         Get all debt ledgers.
 
         Returns:
-            Dict mapping hotkey to DebtLedger instance (pickled automatically by RPC)
+            Dict mapping hotkey to DebtLedger instance
         """
-        return self.debt_ledgers
+        try:
+            return self._server.get_all_ledgers_rpc()
+        except Exception as e:
+            bt.logging.debug(f"DebtLedgerClient: Get all ledgers failed: {e}")
+            return {}
 
-    def get_ledger_summary_rpc(self, hotkey: str) -> Optional[dict]:
+    def get_all_debt_ledgers(self):
         """
-        Get summary stats for a specific ledger (avoids sending full checkpoint history).
+        Get all debt ledgers (alias for get_all_ledgers for backward compatibility).
+
+        Returns:
+            Dict mapping hotkey to DebtLedger instance
+        """
+        return self.get_all_ledgers()
+
+    def get_ledger_summary(self, hotkey: str):
+        """
+        Get summary stats for a specific ledger.
 
         Args:
             hotkey: The miner's hotkey
@@ -132,68 +118,69 @@ class DebtLedgerManagerServer:
         Returns:
             Summary dict with cumulative stats and latest checkpoint
         """
-        ledger = self.debt_ledgers.get(hotkey)
-        if not ledger:
+        try:
+            return self._server.get_ledger_summary_rpc(hotkey)
+        except Exception as e:
+            bt.logging.debug(f"DebtLedgerClient: Get ledger summary failed: {e}")
             return None
 
-        latest = ledger.get_latest_checkpoint()
-        if not latest:
-            return None
 
-        return {
-            'hotkey': hotkey,
-            'total_checkpoints': len(ledger.checkpoints),
-            'cumulative_emissions_alpha': ledger.get_cumulative_emissions_alpha(),
-            'cumulative_emissions_tao': ledger.get_cumulative_emissions_tao(),
-            'cumulative_emissions_usd': ledger.get_cumulative_emissions_usd(),
-            'portfolio_return': ledger.get_current_portfolio_return(),
-            'weighted_score': ledger.get_current_weighted_score(),
-            'latest_checkpoint_ms': latest.timestamp_ms,
-            'net_pnl': latest.realized_pnl + latest.unrealized_pnl,
-            'total_fees': latest.total_fees,
-        }
-
-    def get_all_summaries_rpc(self) -> Dict[str, dict]:
+    def get_all_summaries(self):
         """
-        Get summary stats for all ledgers (efficient for UI/status checks).
+        Get summary stats for all ledgers.
 
         Returns:
             Dict mapping hotkey to summary dict
         """
-        summaries = {}
-        for hotkey in self.debt_ledgers:
-            summary = self.get_ledger_summary_rpc(hotkey)
-            if summary:
-                summaries[hotkey] = summary
-        return summaries
+        try:
+            return self._server.get_all_summaries_rpc()
+        except Exception as e:
+            bt.logging.debug(f"DebtLedgerClient: Get all summaries failed: {e}")
+            return {}
 
-    def get_compressed_summaries_rpc(self) -> bytes:
+    def get_compressed_summaries(self):
         """
         Get pre-compressed debt ledger summaries as gzip bytes from cache.
 
-        This method returns pre-compressed data that was cached during the last
-        ledger build, providing instant RPC access without compression overhead.
-        Similar to MinerStatisticsManager.get_compressed_statistics().
+        Returns:
+            Cached compressed gzip bytes of debt ledger summaries JSON
+        """
+        try:
+            return self._server.get_compressed_summaries_rpc()
+        except Exception as e:
+            bt.logging.debug(f"DebtLedgerClient: Get compressed summaries failed: {e}")
+            return None
+
+    def health_check(self):
+        """
+        Health check endpoint for monitoring.
 
         Returns:
-            Cached compressed gzip bytes of debt ledger summaries JSON (empty bytes if cache not built yet)
+            dict: Health status, or None if server unavailable
         """
-        return self._compressed_ledgers_cache
+        try:
+            return self._server.health_check_rpc()
+        except Exception as e:
+            bt.logging.debug(f"DebtLedgerClient: Health check failed: {e}")
+            return None
 
-    def health_check_rpc(self) -> dict:
-        """Health check endpoint for RPC monitoring."""
-        return {
-            "status": "ok",
-            "timestamp_ms": TimeUtil.now_in_millis(),
-            "total_ledgers": len(self.debt_ledgers),
-            "daemon_running": self.running
-        }
+    def build_debt_ledgers(self, verbose: bool = False, delta_update: bool = True):
+        """
+        Build or update debt ledgers (RPC method for testing/manual use).
 
-    # ========================================================================
-    # EMISSIONS LEDGER RPC METHODS (delegate to sub-manager)
-    # ========================================================================
+        Args:
+            verbose: Enable detailed logging
+            delta_update: If True, only process new checkpoints. If False, rebuild from scratch.
+        """
+        try:
+            return self._server.build_debt_ledgers_rpc(verbose=verbose, delta_update=delta_update)
+        except Exception as e:
+            bt.logging.debug(f"DebtLedgerClient: Build debt ledgers failed: {e}")
+            return None
 
-    def get_emissions_ledger_rpc(self, hotkey: str):
+    # ==================== Emissions Ledger Methods ====================
+
+    def get_emissions_ledger(self, hotkey: str):
         """
         Get emissions ledger for a specific hotkey.
 
@@ -201,24 +188,44 @@ class DebtLedgerManagerServer:
             hotkey: The miner's hotkey
 
         Returns:
-            EmissionsLedger instance, or None if not found (pickled automatically by RPC)
+            EmissionsLedger instance, or None if not found
         """
-        return self.emissions_ledger_manager.get_ledger(hotkey)
+        try:
+            return self._server.get_emissions_ledger_rpc(hotkey)
+        except Exception as e:
+            bt.logging.debug(f"DebtLedgerClient: Get emissions ledger failed: {e}")
+            return None
 
-    def get_all_emissions_ledgers_rpc(self):
+    def get_all_emissions_ledgers(self):
         """
         Get all emissions ledgers.
 
         Returns:
-            Dict mapping hotkey to EmissionsLedger instance (pickled automatically by RPC)
+            Dict mapping hotkey to EmissionsLedger instance
         """
-        return self.emissions_ledger_manager.get_all_ledgers()
+        try:
+            return self._server.get_all_emissions_ledgers_rpc()
+        except Exception as e:
+            bt.logging.debug(f"DebtLedgerClient: Get all emissions ledgers failed: {e}")
+            return {}
 
-    # ========================================================================
-    # PENALTY LEDGER RPC METHODS (delegate to sub-manager)
-    # ========================================================================
+    def set_emissions_ledger(self, hotkey: str, emissions_ledger):
+        """
+        Set emissions ledger for a specific hotkey (test-only).
 
-    def get_penalty_ledger_rpc(self, hotkey: str):
+        Args:
+            hotkey: The miner's hotkey
+            emissions_ledger: EmissionsLedger instance
+        """
+        try:
+            return self._server.set_emissions_ledger_rpc(hotkey, emissions_ledger)
+        except Exception as e:
+            bt.logging.debug(f"DebtLedgerClient: Set emissions ledger failed: {e}")
+            return None
+
+    # ==================== Penalty Ledger Methods ====================
+
+    def get_penalty_ledger(self, hotkey: str):
         """
         Get penalty ledger for a specific hotkey.
 
@@ -226,680 +233,332 @@ class DebtLedgerManagerServer:
             hotkey: The miner's hotkey
 
         Returns:
-            PenaltyLedger instance, or None if not found (pickled automatically by RPC)
+            PenaltyLedger instance, or None if not found
         """
-        return self.penalty_ledger_manager.get_penalty_ledger(hotkey)
+        try:
+            return self._server.get_penalty_ledger_rpc(hotkey)
+        except Exception as e:
+            bt.logging.debug(f"DebtLedgerClient: Get penalty ledger failed: {e}")
+            return None
 
-    def get_all_penalty_ledgers_rpc(self):
+    def get_all_penalty_ledgers(self):
         """
         Get all penalty ledgers.
 
         Returns:
-            Dict mapping hotkey to PenaltyLedger instance (pickled automatically by RPC)
+            Dict mapping hotkey to PenaltyLedger instance
         """
-        return self.penalty_ledger_manager.get_all_penalty_ledgers()
-
-    # ========================================================================
-    # PERSISTENCE METHODS
-    # ========================================================================
-
-    def _update_compressed_ledgers_cache(self):
-        """
-        Update the pre-compressed debt ledgers cache for instant RPC access.
-
-        This method is called after build_debt_ledgers() completes.
-        Caches compressed gzip bytes for zero-latency RPC responses.
-        Pattern matches MinerStatisticsManager.generate_request_minerstatistics().
-        """
-        from vali_objects.utils.vali_bkp_utils import CustomEncoder
-
         try:
-            # Get all summaries
-            summaries = self.get_all_summaries_rpc()
-
-            # Serialize to JSON using CustomEncoder (handles datetime, BaseModel, etc.)
-            json_str = json.dumps(summaries, cls=CustomEncoder)
-
-            # Compress with gzip and cache
-            self._compressed_ledgers_cache = gzip.compress(json_str.encode('utf-8'))
-
-            bt.logging.info(
-                f"Updated compressed ledgers cache: {len(summaries)} ledgers, "
-                f"{len(self._compressed_ledgers_cache)} bytes"
-            )
-
+            return self._server.get_all_penalty_ledgers_rpc()
         except Exception as e:
-            bt.logging.error(f"Error updating compressed ledgers cache: {e}", exc_info=True)
-            # Keep old cache on error (don't clear it)
+            bt.logging.debug(f"DebtLedgerClient: Get all penalty ledgers failed: {e}")
+            return {}
 
-    def _write_summaries_to_disk(self):
+    def build_penalty_ledgers(self, verbose: bool = False, delta_update: bool = True):
         """
-        Write debt ledger summaries to compressed file for backup purposes.
-
-        This is called automatically after build_debt_ledgers() completes.
-        Note: REST server now uses RPC to access summaries directly from memory,
-        but we still write to disk for backup/debugging purposes.
-        """
-        from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
-
-        try:
-            # Build summaries dict
-            summaries = {}
-            for hotkey in self.debt_ledgers:
-                summary = self.get_ledger_summary_rpc(hotkey)
-                if summary:
-                    summaries[hotkey] = summary
-
-            # Write to compressed file (uses CustomEncoder automatically)
-            # Inline path generation (backup copy for debugging/fallback)
-            suffix = "/tests" if self.running_unit_tests else ""
-            summaries_path = ValiConfig.BASE_DIR + f"{suffix}/validation/debt_ledger_summaries.json.gz"
-            ValiBkpUtils.write_compressed_json(summaries_path, summaries)
-
-            bt.logging.info(
-                f"Wrote {len(summaries)} debt ledger summaries to {summaries_path}"
-            )
-
-        except Exception as e:
-            bt.logging.error(f"Error writing summaries to disk: {e}", exc_info=True)
-
-    def _get_ledger_path(self) -> str:
-        """Get path for debt ledger file."""
-        suffix = "/tests" if self.running_unit_tests else ""
-        base_path = ValiConfig.BASE_DIR + f"{suffix}/validation/debt_ledger.json"
-        return base_path + ".gz"
-
-    def save_to_disk(self, create_backup: bool = True):
-        """
-        Save debt ledgers to disk with atomic write (JSON format).
+        Build penalty ledgers (RPC method for testing/manual use).
 
         Args:
-            create_backup: Whether to create timestamped backup before overwrite
+            verbose: Enable detailed logging
+            delta_update: If True, only process new checkpoints. If False, rebuild from scratch.
         """
-        if not self.debt_ledgers:
-            bt.logging.warning("No debt ledgers to save")
-            return
+        try:
+            return self._server.build_penalty_ledgers_rpc(verbose=verbose, delta_update=delta_update)
+        except Exception as e:
+            bt.logging.debug(f"DebtLedgerClient: Build penalty ledgers failed: {e}")
+            return None
 
-        ledger_path = self._get_ledger_path()
 
-        # Build data structure with JSON serialization
-        data = {
-            "format_version": "1.0",
-            "last_update_ms": int(time.time() * 1000),
-            "ledgers": {hotkey: ledger.to_dict() for hotkey, ledger in self.debt_ledgers.items()}
-        }
+class DebtLedgerServer(RPCServerBase):
+    """
+    RPC server wrapper for DebtLedgerManager.
 
-        # Atomic write: temp file -> move
-        self._write_compressed(ledger_path, data)
+    Responsibilities:
+    - Provide RPC infrastructure (inherits from RPCServerBase)
+    - Expose RPC methods that delegate to self._manager
+    - Run daemon thread that calls self._manager.build_debt_ledgers()
+    - Handle graceful shutdown
 
-        bt.logging.info(f"Saved {len(self.debt_ledgers)} debt ledgers to {ledger_path}")
+    The actual business logic lives in DebtLedgerManager (debt_ledger.py).
+    """
+    service_name = ValiConfig.RPC_DEBTLEDGER_SERVICE_NAME
+    service_port = ValiConfig.RPC_DEBTLEDGER_PORT
 
-    def load_data_from_disk(self) -> int:
+    def __init__(self, slack_webhook_url=None, running_unit_tests=False,
+                 validator_hotkey=None, start_server=True, start_daemon=True,
+                 is_backtesting=False, connection_mode=RPCConnectionMode.RPC):
         """
-        Load existing ledgers from disk (JSON format).
+        Initialize the server with RPC infrastructure.
 
-        Returns:
-            Number of ledgers loaded
+        Args:
+            slack_webhook_url: Slack webhook URL for notifications
+            running_unit_tests: Whether running in unit test mode
+            validator_hotkey: Validator hotkey for notifications
+            start_server: Whether to start RPC server
+            start_daemon: Whether to start daemon thread
+            is_backtesting: Whether running in backtesting mode (unused, for compatibility)
+            connection_mode: RPC connection mode
         """
-        from vali_objects.vali_dataclasses.debt_ledger import DebtLedger
 
-        ledger_path = self._get_ledger_path()
-
-        if not os.path.exists(ledger_path):
-            bt.logging.info("No existing debt ledger file found")
-            return 0
-
-        # Load data
-        data = self._read_compressed(ledger_path)
-
-        # Extract metadata
-        metadata = {
-            "last_update_ms": data.get("last_update_ms"),
-            "format_version": data.get("format_version", "1.0")
-        }
-
-        # Reconstruct ledgers from JSON
-        for hotkey, ledger_dict in data.get("ledgers", {}).items():
-            ledger = DebtLedger.from_dict(ledger_dict)
-            self.debt_ledgers[hotkey] = ledger
-
-        bt.logging.info(
-            f"Loaded {len(self.debt_ledgers)} debt ledgers, "
-            f"metadata: {metadata}, "
-            f"last update: {TimeUtil.millis_to_formatted_date_str(metadata.get('last_update_ms', 0))}"
+        # Create the manager first (needed before RPCServerBase init for daemon)
+        from vali_objects.vali_dataclasses.debt_ledger import DebtLedgerManager
+        self._manager = DebtLedgerManager(
+            slack_webhook_url=slack_webhook_url,
+            running_unit_tests=running_unit_tests,
+            validator_hotkey=validator_hotkey,
+            connection_mode=connection_mode
         )
 
-        return len(self.debt_ledgers)
+        # Initialize RPCServerBase with standard daemon pattern
+        # Check interval: 12 hours (matching DEFAULT_CHECK_INTERVAL_SECONDS)
+        # hang_timeout_s: Dynamically set to 2x interval to prevent false alarms during normal sleep
+        # Backoff values auto-calculated: 300s initial (5 min), 3600s max (1 hour) for heavyweight daemon
+        daemon_interval_s = self._manager.DEFAULT_CHECK_INTERVAL_SECONDS  # 12 hours (43200s)
+        hang_timeout_s = daemon_interval_s * 2.0  # 24 hours (2x interval)
 
-    def _write_compressed(self, path: str, data: dict):
-        """Write JSON data compressed with gzip (atomic write via temp file)."""
-        temp_path = path + ".tmp"
-        with gzip.open(temp_path, 'wt', encoding='utf-8') as f:
-            json.dump(data, f)
-        shutil.move(temp_path, path)
+        super().__init__(
+            service_name=ValiConfig.RPC_DEBTLEDGER_SERVICE_NAME,
+            port=ValiConfig.RPC_DEBTLEDGER_PORT,
+            connection_mode=connection_mode,
+            slack_notifier=self._manager.slack_notifier,  # Use manager's slack_notifier for daemon alerts
+            start_server=start_server,
+            start_daemon=start_daemon,
+            daemon_interval_s=daemon_interval_s,
+            hang_timeout_s=hang_timeout_s,
+            daemon_stagger_s=120.0    # Stagger startup by 2 minutes to avoid IPC contention
+        )
 
-    def _read_compressed(self, path: str) -> dict:
-        """Read compressed JSON data."""
-        with gzip.open(path, 'rt', encoding='utf-8') as f:
-            return json.load(f)
+        self.running_unit_tests = running_unit_tests
+
+        bt.logging.success("DebtLedgerServer initialized with self._manager pattern")
 
     # ========================================================================
-    # DAEMON MODE (runs in background thread)
+    # PROPERTIES (forward to manager)
     # ========================================================================
 
-    def run_daemon_forever(self, check_interval_seconds: Optional[int] = None, verbose: bool = False):
+    @property
+    def contract_manager(self):
+        """Get contract client from manager."""
+        return self._manager.contract_manager
+
+    @property
+    def debt_ledgers(self):
+        """Get debt ledgers dict from manager (for backward compatibility)."""
+        return self._manager.debt_ledgers
+
+    @property
+    def penalty_ledger_manager(self):
+        """Get penalty ledger manager from manager (for backward compatibility)."""
+        return self._manager.penalty_ledger_manager
+
+    @property
+    def emissions_ledger_manager(self):
+        """Get emissions ledger manager from manager (for backward compatibility)."""
+        return self._manager.emissions_ledger_manager
+
+    # ========================================================================
+    # RPCServerBase ABSTRACT METHODS
+    # ========================================================================
+
+    def run_daemon_iteration(self) -> None:
         """
-        Run as daemon - continuously update debt ledgers forever.
+        Single iteration of daemon work - update all ledgers.
 
-        This runs in a background thread and is the ONLY writer to self.debt_ledgers.
-        All updates happen server-side with direct dict access (no IPC overhead).
+        This method is called by RPCServerBase's standard daemon loop.
+        Updates penalty → emissions → debt ledgers in sequence.
 
-        Checks for new performance/emissions/penalty data at regular intervals and performs full rebuilds.
-        Handles graceful shutdown on SIGINT/SIGTERM.
+        Note: Exception handling, exponential backoff, and startup stagger are handled by the base class.
+              Exceptions will bubble up to RPCServerBase._daemon_loop() for proper retry logic.
+        """
+        if self._is_shutdown():
+            return
 
-        Features:
-        - Full rebuilds (debt ledgers are derived from emissions + penalties + performance)
-        - Periodic refresh (default: every 12 hours)
-        - Graceful shutdown
-        - Automatic retry on failures
+        bt.logging.info("="*80)
+        bt.logging.info("Starting coordinated ledger update cycle...")
+        bt.logging.info("="*80)
+        start_time = time.time()
+
+        # IMPORTANT: Update sub-ledgers FIRST in correct order before building debt ledgers
+        # This ensures debt ledgers have the latest data from all sources
+
+        # Step 1: Update penalty ledgers
+        bt.logging.info("Step 1/3: Updating penalty ledgers...")
+        penalty_start = time.time()
+        self._manager.penalty_ledger_manager.build_penalty_ledgers(delta_update=True)
+        bt.logging.info(f"Penalty ledgers updated in {time.time() - penalty_start:.2f}s")
+
+        # Step 2: Update emissions ledgers
+        bt.logging.info("Step 2/3: Updating emissions ledgers...")
+        emissions_start = time.time()
+        self._manager.emissions_ledger_manager.build_delta_update()
+        bt.logging.info(f"Emissions ledgers updated in {time.time() - emissions_start:.2f}s")
+
+        # Step 3: Build debt ledgers (full rebuild)
+        bt.logging.info("Step 3/3: Building debt ledgers (full rebuild)...")
+        debt_start = time.time()
+        self._manager.build_debt_ledgers(verbose=False, delta_update=False)
+        bt.logging.info(f"Debt ledgers built in {time.time() - debt_start:.2f}s")
+
+        elapsed = time.time() - start_time
+        bt.logging.info("="*80)
+        bt.logging.info(f"Complete update cycle finished in {elapsed:.2f}s")
+        bt.logging.info("="*80)
+
+    # ========================================================================
+    # RPC METHODS (delegate to manager)
+    # ========================================================================
+
+    def get_ledger_rpc(self, hotkey: str):
+        """
+        Get debt ledger for a specific hotkey (RPC method).
 
         Args:
-            check_interval_seconds: How often to check for new checkpoints (default: 12 hours)
-            verbose: Enable detailed logging
+            hotkey: The miner's hotkey
+
+        Returns:
+            DebtLedger instance, or None if not found (pickled automatically by RPC)
         """
-        if check_interval_seconds is None:
-            check_interval_seconds = self.DEFAULT_CHECK_INTERVAL_SECONDS
+        return self._manager.get_ledger(hotkey)
 
-        self.running = True
+    def get_all_ledgers_rpc(self):
+        """
+        Get all debt ledgers (RPC method).
 
-        # Register signal handlers for graceful shutdown
-        def signal_handler(signum, frame):
-            bt.logging.info(f"Received signal {signum}, shutting down gracefully...")
-            self.running = False
+        Returns:
+            Dict mapping hotkey to DebtLedger instance (pickled automatically by RPC)
+        """
+        return self._manager.get_all_ledgers()
 
-        signal.signal(signal.SIGINT, signal_handler)
-        signal.signal(signal.SIGTERM, signal_handler)
+    def get_ledger_summary_rpc(self, hotkey: str) -> Optional[dict]:
+        """
+        Get summary stats for a specific ledger (RPC method).
 
-        bt.logging.info("=" * 80)
-        bt.logging.info("Debt Ledger Manager - Daemon Mode")
-        bt.logging.info("=" * 80)
-        bt.logging.info(f"Check Interval: {check_interval_seconds}s ({check_interval_seconds / 3600:.1f} hours)")
-        bt.logging.info(f"Update Sequence: Penalty -> Emissions -> Debt (all in this thread)")
-        bt.logging.info(f"Full Rebuild Mode: Enabled (debt ledgers derived from emissions + penalties + perf)")
-        bt.logging.info(f"Slack Notifications: {'Enabled' if self.slack_notifier.webhook_url else 'Disabled'}")
-        bt.logging.info("=" * 80)
+        Args:
+            hotkey: The miner's hotkey
 
-        # Track consecutive failures for exponential backoff
-        consecutive_failures = 0
-        initial_backoff_seconds = 300  # Start with 5 minutes
-        max_backoff_seconds = 3600  # Max 1 hour
-        backoff_multiplier = 2
+        Returns:
+            Summary dict with cumulative stats and latest checkpoint
+        """
+        return self._manager.get_ledger_summary(hotkey)
 
-        time.sleep(120)  # Initial delay to stagger large ipc reads
+    def get_all_summaries_rpc(self) -> Dict[str, dict]:
+        """
+        Get summary stats for all ledgers (RPC method).
 
-        # Main loop
-        while self.running:
-            try:
-                bt.logging.info("="*80)
-                bt.logging.info("Starting coordinated ledger update cycle...")
-                bt.logging.info("="*80)
-                start_time = time.time()
+        Returns:
+            Dict mapping hotkey to summary dict
+        """
+        return self._manager.get_all_summaries()
 
-                # IMPORTANT: Update sub-ledgers FIRST in correct order before building debt ledgers
-                # This ensures debt ledgers have the latest data from all sources
+    def get_compressed_summaries_rpc(self) -> bytes:
+        """
+        Get pre-compressed debt ledger summaries as gzip bytes from cache (RPC method).
 
-                # Step 1: Update penalty ledgers (runs in this thread, not separate daemon)
-                bt.logging.info("Step 1/3: Updating penalty ledgers...")
-                penalty_start = time.time()
-                self.penalty_ledger_manager.build_penalty_ledgers(force_rebuild=False)
-                bt.logging.info(f"Penalty ledgers updated in {time.time() - penalty_start:.2f}s")
+        Returns:
+            Cached compressed gzip bytes of debt ledger summaries JSON
+        """
+        return self._manager.get_compressed_summaries()
 
-                # Step 2: Update emissions ledgers
-                bt.logging.info("Step 2/3: Updating emissions ledgers...")
-                emissions_start = time.time()
-                self.emissions_ledger_manager.build_delta_update()
-                bt.logging.info(f"Emissions ledgers updated in {time.time() - emissions_start:.2f}s")
+    def get_health_check_details(self) -> dict:
+        """Add service-specific health check details."""
+        return {
+            "total_ledgers": len(self._manager.debt_ledgers)
+        }
 
-                # Step 3: Build debt ledgers (combines data from penalty + emissions + perf)
-                # IMPORTANT: Debt ledgers ALWAYS do full rebuilds (never delta updates)
-                # since they're derived from three sources that can change retroactively
-                bt.logging.info("Step 3/3: Building debt ledgers (full rebuild)...")
-                debt_start = time.time()
-                self.build_debt_ledgers(verbose=verbose, delta_update=False)
-                bt.logging.info(f"Debt ledgers built in {time.time() - debt_start:.2f}s")
+    # ========================================================================
+    # EMISSIONS LEDGER RPC METHODS (delegate to manager's sub-manager)
+    # ========================================================================
 
-                elapsed = time.time() - start_time
-                bt.logging.info("="*80)
-                bt.logging.info(f"Complete update cycle finished in {elapsed:.2f}s")
-                bt.logging.info("="*80)
+    def get_emissions_ledger_rpc(self, hotkey: str):
+        """
+        Get emissions ledger for a specific hotkey (RPC method).
 
-                # Success - reset failure counter
-                if consecutive_failures > 0:
-                    bt.logging.info(f"Recovered after {consecutive_failures} failure(s)")
-                    # Send recovery alert with VM/git/hotkey context
-                    self.slack_notifier.send_ledger_recovery_alert("Debt Ledger", consecutive_failures)
+        Args:
+            hotkey: The miner's hotkey
 
-                consecutive_failures = 0
+        Returns:
+            EmissionsLedger instance, or None if not found
+        """
+        return self._manager.get_emissions_ledger(hotkey)
 
-            except Exception as e:
-                consecutive_failures += 1
+    def get_all_emissions_ledgers_rpc(self):
+        """
+        Get all emissions ledgers (RPC method).
 
-                # Calculate backoff for logging
-                backoff_seconds = min(
-                    initial_backoff_seconds * (backoff_multiplier ** (consecutive_failures - 1)),
-                    max_backoff_seconds
-                )
+        Returns:
+            Dict mapping hotkey to EmissionsLedger instance
+        """
+        return self._manager.get_all_emissions_ledgers()
 
-                bt.logging.error(
-                    f"Error in daemon loop (failure #{consecutive_failures}): {e}",
-                    exc_info=True
-                )
+    def set_emissions_ledger_rpc(self, hotkey: str, emissions_ledger):
+        """
+        Set emissions ledger for a specific hotkey (RPC method - test-only).
 
-                # Send Slack alert with VM/git/hotkey context
-                self.slack_notifier.send_ledger_failure_alert(
-                    "Debt Ledger",
-                    consecutive_failures,
-                    e,
-                    backoff_seconds
-                )
+        Args:
+            hotkey: The miner's hotkey
+            emissions_ledger: EmissionsLedger instance
+        """
+        self._manager.emissions_ledger_manager.emissions_ledgers[hotkey] = emissions_ledger
+        return True
 
-            # Calculate sleep time and sleep
-            if self.running:
-                if consecutive_failures > 0:
-                    # Exponential backoff
-                    backoff_seconds = min(
-                        initial_backoff_seconds * (backoff_multiplier ** (consecutive_failures - 1)),
-                        max_backoff_seconds
-                    )
-                    next_check_time = time.time() + backoff_seconds
-                    next_check_str = datetime.fromtimestamp(next_check_time, tz=timezone.utc).strftime(
-                        '%Y-%m-%d %H:%M:%S UTC')
-                    bt.logging.warning(
-                        f"Retrying after {consecutive_failures} failure(s). "
-                        f"Backoff: {backoff_seconds}s. Next attempt at: {next_check_str}"
-                    )
-                else:
-                    # Normal interval
-                    next_check_time = time.time() + check_interval_seconds
-                    next_check_str = datetime.fromtimestamp(next_check_time, tz=timezone.utc).strftime(
-                        '%Y-%m-%d %H:%M:%S UTC')
-                    bt.logging.info(f"Next check at: {next_check_str}")
+    # ========================================================================
+    # PENALTY LEDGER RPC METHODS (delegate to manager's sub-manager)
+    # ========================================================================
 
-                # Sleep in small intervals to allow graceful shutdown
-                while self.running and time.time() < next_check_time:
-                    time.sleep(10)
+    def get_penalty_ledger_rpc(self, hotkey: str):
+        """
+        Get penalty ledger for a specific hotkey (RPC method).
 
-        bt.logging.info("Debt Ledger Manager daemon stopped")
+        Args:
+            hotkey: The miner's hotkey
+
+        Returns:
+            PenaltyLedger instance, or None if not found
+        """
+        return self._manager.get_penalty_ledger(hotkey)
+
+    def get_all_penalty_ledgers_rpc(self):
+        """
+        Get all penalty ledgers (RPC method).
+
+        Returns:
+            Dict mapping hotkey to PenaltyLedger instance
+        """
+        return self._manager.get_all_penalty_ledgers()
+
+    def build_penalty_ledgers_rpc(self, verbose: bool = False, delta_update: bool = True):
+        """
+        Build penalty ledgers (RPC method for testing/manual use).
+
+        Args:
+            verbose: Enable detailed logging
+            delta_update: If True, only process new checkpoints. If False, rebuild from scratch.
+        """
+        return self._manager.penalty_ledger_manager.build_penalty_ledgers(verbose=verbose, delta_update=delta_update)
+
+    # ========================================================================
+    # MANUAL BUILD (for testing/manual use)
+    # ========================================================================
 
     def build_debt_ledgers(self, verbose: bool = False, delta_update: bool = True):
         """
-        Build or update debt ledgers for all hotkeys using timestamp-based iteration.
+        Build or update debt ledgers (delegates to manager).
 
-        IMPORTANT: This method writes directly to self.debt_ledgers (normal Python dict).
-        No IPC overhead! All mutations are in-place and fast.
-
-        Iterates over TIMESTAMPS (perf ledger checkpoints), processing ALL hotkeys at each timestamp.
-        Saves to disk after completion. Matches emissions ledger pattern.
-
-        In order to create a debt checkpoint, we must have:
-        - Corresponding emissions checkpoint for that timestamp
-        - Corresponding penalty checkpoint for that timestamp
-        - Corresponding perf checkpoint for that timestamp
-
-        IMPORTANT: Builds candidate ledgers first, then atomically swaps them in to prevent race conditions
-        where ledgers momentarily disappear during the build process.
+        This method is exposed for manual/testing use.
+        The daemon calls this automatically at regular intervals.
 
         Args:
             verbose: Enable detailed logging
-            delta_update: If True, only process new checkpoints since last update. If False, rebuild from scratch.
+            delta_update: If True, only process new checkpoints. If False, rebuild from scratch.
         """
-        from vali_objects.vali_dataclasses.debt_ledger import DebtLedger, DebtCheckpoint
+        return self._manager.build_debt_ledgers(verbose=verbose, delta_update=delta_update)
 
-        # Build into candidate dict to prevent race conditions (don't clear existing ledgers yet)
-        if delta_update:
-            # Delta update: start with copies of existing ledgers
-            candidate_ledgers = {}
-            for hotkey, existing_ledger in self.debt_ledgers.items():
-                # Create a new DebtLedger with copies of existing checkpoints
-                candidate_ledgers[hotkey] = DebtLedger(hotkey, checkpoints=list(existing_ledger.checkpoints))
-        else:
-            # Full rebuild: start from scratch
-            candidate_ledgers = {}
-            bt.logging.info("Full rebuild mode: building new debt ledgers from scratch")
+    def build_debt_ledgers_rpc(self, verbose: bool = False, delta_update: bool = True):
+        """
+        RPC wrapper for build_debt_ledgers.
 
-        # Read all perf ledgers from perf ledger manager
-        all_perf_ledgers: Dict[str, Dict[str, any]] = self.perf_ledger_manager.get_perf_ledgers(
-            portfolio_only=False
-        )
-
-        if not all_perf_ledgers:
-            bt.logging.warning("No performance ledgers found")
-            return
-
-        # Pick a reference portfolio ledger (use the one with the most checkpoints for maximum coverage)
-        reference_portfolio_ledger = None
-        reference_hotkey = None
-        max_checkpoints = 0
-
-        for hotkey, ledger_dict in all_perf_ledgers.items():
-            portfolio_ledger = ledger_dict.get(TP_ID_PORTFOLIO)
-            if portfolio_ledger and portfolio_ledger.cps:
-                if len(portfolio_ledger.cps) > max_checkpoints:
-                    max_checkpoints = len(portfolio_ledger.cps)
-                    reference_portfolio_ledger = portfolio_ledger
-                    reference_hotkey = hotkey
-
-        if not reference_portfolio_ledger:
-            bt.logging.warning("No valid portfolio ledgers found with checkpoints")
-            return
-
-        bt.logging.info(
-            f"Using portfolio ledger from {reference_hotkey[:16]}...{reference_hotkey[-8:]} "
-            f"as reference ({len(reference_portfolio_ledger.cps)} checkpoints, "
-            f"target_cp_duration_ms: {reference_portfolio_ledger.target_cp_duration_ms}ms)"
-        )
-
-        target_cp_duration_ms = reference_portfolio_ledger.target_cp_duration_ms
-
-        # Determine which checkpoints to process based on delta update mode
-        # Find the ledger with the MOST checkpoints (longest history) to use as reference
-        # This prevents truncating history when new miners register with few checkpoints
-        last_processed_ms = 0
-        if delta_update and candidate_ledgers:
-            reference_ledger = None
-            max_checkpoint_count = 0
-            max_last_processed_ms = 0
-
-            # Find ledger with most checkpoints
-            for ledger in candidate_ledgers.values():
-                if ledger.checkpoints:
-                    checkpoint_count = len(ledger.checkpoints)
-                    ledger_last_ms = ledger.checkpoints[-1].timestamp_ms
-
-                    if checkpoint_count > max_checkpoint_count:
-                        max_checkpoint_count = checkpoint_count
-                        reference_ledger = ledger
-                        last_processed_ms = ledger_last_ms
-
-                    # Track maximum timestamp for sanity check
-                    if ledger_last_ms > max_last_processed_ms:
-                        max_last_processed_ms = ledger_last_ms
-
-            if last_processed_ms > 0:
-                # Sanity check: reference ledger (most checkpoints) should have the maximum timestamp
-                # This validates that the longest-running miner is up-to-date
-                assert last_processed_ms == max_last_processed_ms, (
-                    f"Reference ledger (most checkpoints: {max_checkpoint_count}) has timestamp "
-                    f"{TimeUtil.millis_to_formatted_date_str(last_processed_ms)}, but max timestamp across "
-                    f"all ledgers is {TimeUtil.millis_to_formatted_date_str(max_last_processed_ms)}. "
-                    f"This indicates the reference ledger is behind, which would cause history truncation."
-                )
-
-                bt.logging.info(
-                    f"Delta update mode: resuming from {TimeUtil.millis_to_formatted_date_str(last_processed_ms)} "
-                    f"(reference ledger with {max_checkpoint_count} checkpoints)"
-                )
-
-        # Filter checkpoints to process
-        perf_checkpoints_to_process = []
-        for checkpoint in reference_portfolio_ledger.cps:
-            # Skip active checkpoints (incomplete)
-            if checkpoint.accum_ms != target_cp_duration_ms:
-                continue
-
-            checkpoint_ms = checkpoint.last_update_ms
-
-            # Skip checkpoints we've already processed in delta update mode
-            if delta_update and checkpoint_ms <= last_processed_ms:
-                continue
-
-            perf_checkpoints_to_process.append(checkpoint)
-
-        if not perf_checkpoints_to_process:
-            bt.logging.info("No new checkpoints to process")
-            return
-
-        bt.logging.info(
-            f"Processing {len(perf_checkpoints_to_process)} checkpoints "
-            f"(from {TimeUtil.millis_to_formatted_date_str(perf_checkpoints_to_process[0].last_update_ms)} "
-            f"to {TimeUtil.millis_to_formatted_date_str(perf_checkpoints_to_process[-1].last_update_ms)})"
-        )
-
-        # Track all hotkeys we need to process (from perf ledgers)
-        all_hotkeys_to_track = set(all_perf_ledgers.keys())
-
-        # Optimization: Find earliest emissions timestamp across all hotkeys to skip early checkpoints
-        earliest_emissions_ms = self.emissions_ledger_manager.get_earliest_emissions_timestamp()
-
-        if earliest_emissions_ms:
-            bt.logging.info(
-                f"Earliest emissions data starts at {TimeUtil.millis_to_formatted_date_str(earliest_emissions_ms)}"
-            )
-
-        # Iterate over TIMESTAMPS processing ALL hotkeys at each timestamp
-        checkpoint_count = 0
-        for perf_checkpoint in perf_checkpoints_to_process:
-            checkpoint_count += 1
-            checkpoint_start_time = time.time()
-
-            # Skip this entire timestamp if it's before the earliest emissions data
-            if earliest_emissions_ms and perf_checkpoint.last_update_ms < earliest_emissions_ms:
-                if verbose:
-                    bt.logging.info(
-                        f"Skipping checkpoint {checkpoint_count} at {TimeUtil.millis_to_formatted_date_str(perf_checkpoint.last_update_ms)} "
-                        f"(before earliest emissions data)"
-                    )
-                continue
-
-            hotkeys_processed_at_checkpoint = 0
-            hotkeys_missing_data = []
-
-            # Process ALL hotkeys at this timestamp
-            for hotkey in all_hotkeys_to_track:
-                # Get ledgers for this hotkey
-                ledger_dict = all_perf_ledgers.get(hotkey)
-                if not ledger_dict:
-                    continue
-
-                portfolio_ledger = ledger_dict.get(TP_ID_PORTFOLIO)
-                if not portfolio_ledger or not portfolio_ledger.cps:
-                    continue
-
-                if not perf_checkpoint:
-                    continue  # This hotkey doesn't have a perf checkpoint at this timestamp
-
-                # Get corresponding penalty checkpoint (efficient O(1) lookup)
-                penalty_ledger = self.penalty_ledger_manager.get_penalty_ledger(hotkey)
-                penalty_checkpoint = None
-                if penalty_ledger:
-                    penalty_checkpoint = penalty_ledger.get_checkpoint_at_time(perf_checkpoint.last_update_ms, target_cp_duration_ms)
-
-                # Get corresponding emissions checkpoint (efficient O(1) lookup)
-                emissions_ledger = self.emissions_ledger_manager.get_ledger(hotkey)
-                emissions_checkpoint = None
-                if emissions_ledger:
-                    emissions_checkpoint = emissions_ledger.get_checkpoint_at_time(perf_checkpoint.last_update_ms, target_cp_duration_ms)
-
-                # Skip if we don't have both penalty and emissions data
-                if not penalty_checkpoint or not emissions_checkpoint:
-                    hotkeys_missing_data.append(hotkey)
-                    continue
-
-                # Validate timestamps match
-                if penalty_checkpoint.last_processed_ms != perf_checkpoint.last_update_ms:
-                    if verbose:
-                        bt.logging.warning(
-                            f"Penalty checkpoint timestamp mismatch for {hotkey}: "
-                            f"expected {perf_checkpoint.last_update_ms}, got {penalty_checkpoint.last_processed_ms}"
-                        )
-                    continue
-
-                if emissions_checkpoint.chunk_end_ms != perf_checkpoint.last_update_ms:
-                    if verbose:
-                        bt.logging.warning(
-                            f"Emissions checkpoint end time mismatch for {hotkey}: "
-                            f"expected {perf_checkpoint.last_update_ms}, got {emissions_checkpoint.chunk_end_ms}"
-                        )
-                    continue
-
-                # Get or create debt ledger for this hotkey (from candidate ledgers)
-                if hotkey in candidate_ledgers:
-                    debt_ledger = candidate_ledgers[hotkey]
-                else:
-                    debt_ledger = DebtLedger(hotkey)
-
-                # Skip if this hotkey already has a checkpoint at this timestamp (delta update safety check)
-                if delta_update and debt_ledger.checkpoints:
-                    last_checkpoint_ms = debt_ledger.checkpoints[-1].timestamp_ms
-                    if perf_checkpoint.last_update_ms <= last_checkpoint_ms:
-                        if verbose:
-                            bt.logging.info(
-                                f"Skipping checkpoint for {hotkey} at {perf_checkpoint.last_update_ms} "
-                                f"(already processed, last checkpoint: {last_checkpoint_ms})"
-                            )
-                        continue
-
-                # Create unified debt checkpoint combining all three sources
-                debt_checkpoint = DebtCheckpoint(
-                    timestamp_ms=perf_checkpoint.last_update_ms,
-                    # Emissions data (chunk only - cumulative calculated by summing)
-                    chunk_emissions_alpha=emissions_checkpoint.chunk_emissions,
-                    chunk_emissions_tao=emissions_checkpoint.chunk_emissions_tao,
-                    chunk_emissions_usd=emissions_checkpoint.chunk_emissions_usd,
-                    avg_alpha_to_tao_rate=emissions_checkpoint.avg_alpha_to_tao_rate,
-                    avg_tao_to_usd_rate=emissions_checkpoint.avg_tao_to_usd_rate,
-                    tao_balance_snapshot=emissions_checkpoint.tao_balance_snapshot,
-                    alpha_balance_snapshot=emissions_checkpoint.alpha_balance_snapshot,
-                    # Performance data - access attributes directly from PerfCheckpoint
-                    portfolio_return=perf_checkpoint.gain,  # Current portfolio multiplier
-                    realized_pnl=perf_checkpoint.realized_pnl if hasattr(perf_checkpoint, 'realized_pnl') else perf_checkpoint.pnl_gain,  # Net realized PnL during this checkpoint period
-                    unrealized_pnl=perf_checkpoint.unrealized_pnl if hasattr(perf_checkpoint, 'unrealized_pnl') else perf_checkpoint.pnl_loss,  # Net unrealized PnL during this checkpoint period
-                    spread_fee_loss=perf_checkpoint.spread_fee_loss,  # Spread fees during this checkpoint
-                    carry_fee_loss=perf_checkpoint.carry_fee_loss,  # Carry fees during this checkpoint
-                    max_drawdown=perf_checkpoint.mdd,  # Max drawdown
-                    max_portfolio_value=perf_checkpoint.mpv,  # Max portfolio value achieved
-                    open_ms=perf_checkpoint.open_ms,
-                    accum_ms=perf_checkpoint.accum_ms,
-                    n_updates=perf_checkpoint.n_updates,
-                    # Penalty data
-                    drawdown_penalty=penalty_checkpoint.drawdown_penalty,
-                    risk_profile_penalty=penalty_checkpoint.risk_profile_penalty,
-                    min_collateral_penalty=penalty_checkpoint.min_collateral_penalty,
-                    risk_adjusted_performance_penalty=penalty_checkpoint.risk_adjusted_performance_penalty,
-                    total_penalty=penalty_checkpoint.total_penalty,
-                    challenge_period_status=penalty_checkpoint.challenge_period_status,
-                )
-
-                # Add checkpoint to candidate ledger (validates strict contiguity)
-                debt_ledger.add_checkpoint(debt_checkpoint, target_cp_duration_ms)
-                candidate_ledgers[hotkey] = debt_ledger  # Update candidate ledgers
-                hotkeys_processed_at_checkpoint += 1
-
-            # Log progress for this checkpoint
-            checkpoint_elapsed = time.time() - checkpoint_start_time
-            checkpoint_dt = datetime.fromtimestamp(perf_checkpoint.last_update_ms / 1000, tz=timezone.utc)
-            bt.logging.info(
-                f"Checkpoint {checkpoint_count}/{len(perf_checkpoints_to_process)} "
-                f"({checkpoint_dt.strftime('%Y-%m-%d %H:%M UTC')}): "
-                f"{hotkeys_processed_at_checkpoint} hotkeys processed, "
-                f"{len(hotkeys_missing_data)} missing data, "
-                f"{checkpoint_elapsed:.2f}s"
-            )
-
-        # Build completed successfully - atomically swap candidate ledgers into production
-        # This prevents race conditions where ledgers momentarily disappear during build
-        bt.logging.info(
-            f"Build completed successfully: {checkpoint_count} checkpoints for {len(candidate_ledgers)} hotkeys. "
-            f"Atomically updating debt ledgers..."
-        )
-
-        # Direct assignment to normal dict (no IPC overhead!)
-        self.debt_ledgers = candidate_ledgers
-
-        # Save to disk after atomic swap
-        bt.logging.info(f"Saving {len(self.debt_ledgers)} debt ledgers to disk...")
-        self.save_to_disk(create_backup=False)
-
-        # Write summaries to compressed file for backup/debugging
-        bt.logging.info("Writing summaries to disk...")
-        self._write_summaries_to_disk()
-
-        # Update compressed ledgers cache for instant RPC access (matches MinerStatisticsManager pattern)
-        bt.logging.info("Updating compressed ledgers cache...")
-        self._update_compressed_ledgers_cache()
-
-        # Final summary
-        bt.logging.info(
-            f"Debt ledgers updated: {checkpoint_count} checkpoints processed, "
-            f"{len(self.debt_ledgers)} hotkeys tracked "
-            f"(target_cp_duration_ms: {target_cp_duration_ms}ms)"
-        )
-
-
-def start_debt_ledger_manager_server(
-    address, authkey, perf_ledger_manager, position_manager, contract_manager,
-    asset_selection_manager, challengeperiod_manager=None, slack_webhook_url=None,
-    running_unit_tests=False, validator_hotkey=None, ready_event=None
-):
-    """
-    Start the DebtLedgerManager server process.
-
-    Args:
-        address: (host, port) tuple for RPC server
-        authkey: Authentication key for RPC
-        perf_ledger_manager: Performance ledger manager instance
-        position_manager: Position manager instance
-        contract_manager: Contract manager instance
-        asset_selection_manager: Asset selection manager instance
-        challengeperiod_manager: Challenge period manager instance
-        slack_webhook_url: Slack webhook URL for notifications
-        running_unit_tests: Whether running in test mode
-        validator_hotkey: Validator hotkey for notifications
-        ready_event: Optional multiprocessing.Event to signal when server is ready
-    """
-    from setproctitle import setproctitle
-    from threading import Thread
-    setproctitle("vali_DebtLedgerManagerServer")
-
-    bt.logging.info(f"Starting DebtLedgerManager server on {address}")
-
-    # Create server instance
-    server_instance = DebtLedgerManagerServer(
-        perf_ledger_manager=perf_ledger_manager,
-        position_manager=position_manager,
-        contract_manager=contract_manager,
-        asset_selection_manager=asset_selection_manager,
-        challengeperiod_manager=challengeperiod_manager,
-        slack_webhook_url=slack_webhook_url,
-        running_unit_tests=running_unit_tests,
-        validator_hotkey=validator_hotkey
-    )
-
-    # Start daemon thread (runs build_debt_ledgers forever)
-    daemon_thread = Thread(
-        target=server_instance.run_daemon_forever,
-        args=(),
-        kwargs={'verbose': False},
-        daemon=True
-    )
-    daemon_thread.start()
-    bt.logging.info("Started DebtLedgerManagerServer daemon thread")
-
-    # Register the DebtLedgerManagerServer with BaseManager
-    class DebtLedgerManagerRPC(BaseManager):
-        pass
-
-    DebtLedgerManagerRPC.register('DebtLedgerManagerServer', callable=lambda: server_instance)
-
-    # Start manager and serve the instance
-    manager = DebtLedgerManagerRPC(address=address, authkey=authkey)
-    server = manager.get_server()
-
-    bt.logging.success(f"DebtLedgerManager server ready on {address}")
-
-    # Signal that server is ready to accept connections
-    if ready_event:
-        ready_event.set()
-        bt.logging.debug("Server readiness event set")
-
-    server.serve_forever()
+        Args:
+            verbose: Enable detailed logging
+            delta_update: If True, only process new checkpoints. If False, rebuild from scratch.
+        """
+        return self.build_debt_ledgers(verbose=verbose, delta_update=delta_update)

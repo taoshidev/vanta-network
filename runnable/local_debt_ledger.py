@@ -27,12 +27,12 @@ from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.position_source import PositionSourceManager, PositionSource
 from shared_objects.cache_controller import CacheController
 from shared_objects.mock_metagraph import MockMetagraph
-from vali_objects.utils.elimination_manager import EliminationManager
+from vali_objects.utils.elimination_server import EliminationServer
 from vali_objects.utils.position_manager import PositionManager
 from vali_objects.vali_dataclasses.perf_ledger import PerfLedgerManager
 from vali_objects.utils.validator_contract_manager import ValidatorContractManager
 from vali_objects.vali_dataclasses.debt_ledger import DebtLedgerManager
-from vali_objects.utils.asset_selection_manager import AssetSelectionManager
+from vali_objects.utils.asset_selection_client import AssetSelectionClient
 
 
 # ============================================================================
@@ -338,7 +338,8 @@ if __name__ == "__main__":
 
     # Initialize metagraph and managers
     mmg = MockMetagraph(hotkeys=hotkeys_to_process)
-    elimination_manager = EliminationManager(mmg, None, None)
+    # EliminationServer creates its own RPC clients internally (forward compatibility pattern)
+    elimination_manager = EliminationServer(running_unit_tests=True)
     position_manager = PositionManager(
         metagraph=mmg,
         running_unit_tests=False,
@@ -384,11 +385,10 @@ if __name__ == "__main__":
         running_unit_tests=False
     )
 
-    # Create AssetSelectionManager
-    bt.logging.info("Creating AssetSelectionManager...")
-    asset_selection_manager = AssetSelectionManager(
-        config=None,
-        metagraph=mmg
+    # Create AssetSelectionClient
+    bt.logging.info("Creating AssetSelectionClient...")
+    asset_selection_manager = AssetSelectionClient(
+        running_unit_tests=True
     )
 
     # Create DebtLedgerManager in direct mode (no RPC overhead for local debugging)

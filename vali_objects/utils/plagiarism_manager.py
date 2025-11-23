@@ -2,7 +2,7 @@ from typing import Dict
 
 import requests
 
-from miner_objects.slack_notifier import SlackNotifier
+from shared_objects.slack_notifier import SlackNotifier
 from vali_objects.utils.miner_bucket_enum import MinerBucket
 from vali_objects.vali_config import ValiConfig
 import bittensor as bt

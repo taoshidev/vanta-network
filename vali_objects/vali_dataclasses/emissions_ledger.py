@@ -23,6 +23,7 @@ Architecture:
 Standalone Usage:
     python -m vali_objects.vali_dataclasses.emissions_ledger --hotkey <hotkey> --netuid 8
 """
+import argparse
 import gzip
 import json
 import os
@@ -30,22 +31,19 @@ import shutil
 import signal
 import multiprocessing
 from collections import defaultdict
+from copy import deepcopy
 from typing import Dict, List, Optional
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 import bittensor as bt
 import time
-import argparse
 import scalecodec
-from async_substrate_interface.errors import SubstrateRequestException
 
 from time_util.time_util import TimeUtil
-from vali_objects.utils.live_price_fetcher import LivePriceFetcher
+from vali_objects.utils.live_price_server import LivePriceFetcherClient
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
-from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import ValiConfig, TradePair
-from vanta_api.slack_notifier import SlackNotifier
-from vali_objects.vali_dataclasses.perf_ledger import PerfLedgerManager, TP_ID_PORTFOLIO
+from shared_objects.slack_notifier import SlackNotifier
 
 
 @dataclass
@@ -491,7 +489,6 @@ class EmissionsLedgerManager:
 
     def __init__(
         self,
-        perf_ledger_manager: PerfLedgerManager,
         archive_endpoint: str = "wss://archive.chain.opentensor.ai:443",
         netuid: int = 8,
         rate_limit_per_second: float = 1.0,
@@ -503,8 +500,9 @@ class EmissionsLedgerManager:
         """
         Initialize EmissionsLedger with blockchain connection.
 
+        Note: Creates its own PerfLedgerClient internally (forward compatibility).
+
         Args:
-            perf_ledger_manager: Manager for reading performance ledgers (to align emissions with perf checkpoints)
             archive_endpoint: archive node endpoint for historical queries.
             netuid: Subnet UID to query (default: 8 for mainnet PTN)
             rate_limit_per_second: Maximum queries per second (default: 1.0 for official endpoints)
@@ -513,14 +511,17 @@ class EmissionsLedgerManager:
             start_daemon: If True, automatically start daemon process running run_forever (default: False)
             validator_hotkey: Optional validator hotkey for notifications
         """
+        # Create PerfLedgerClient internally for accessing perf ledger data
+        from vali_objects.vali_dataclasses.perf_ledger_server import PerfLedgerClient
+        self._perf_ledger_client = PerfLedgerClient()
+
         # Pickleable attributes
-        self.perf_ledger_manager = perf_ledger_manager
         self.archive_endpoint = archive_endpoint
         self.netuid = netuid
         self.rate_limit_per_second = rate_limit_per_second
         self.last_query_time = 0.0
         self.running_unit_tests = running_unit_tests
-        # In-memory ledgers (normal Python dict - managed within DebtLedgerManagerServer process)
+        # In-memory ledgers (normal Python dict - managed within DebtLedgerServer process)
         self.emissions_ledgers: Dict[str, EmissionsLedger] = {}
         # Daemon control
         self.running = False
@@ -941,11 +942,10 @@ class EmissionsLedgerManager:
             self.subtensor = bt.subtensor(config=config)
             bt.logging.info(f"Connected to: {self.subtensor.chain_endpoint}")
 
-        # Initialize live price fetcher if not already initialized
+        # Initialize live price fetcher client if not already initialized
         if self.live_price_fetcher is None:
-            bt.logging.info("Initializing live price fetcher")
-            secrets = ValiUtils.get_secrets(running_unit_tests=self.running_unit_tests)
-            self.live_price_fetcher = LivePriceFetcher(secrets, disable_ws=True)
+            bt.logging.info("Initializing live price fetcher client")
+            self.live_price_fetcher = LivePriceFetcherClient(running_unit_tests=self.running_unit_tests)
 
     def _query_rates_for_zero_emission_chunk(
         self,
@@ -1030,7 +1030,7 @@ class EmissionsLedgerManager:
         bt.logging.info("Building emissions ledgers for all hotkeys (aligned with perf ledgers)")
 
         # Get all perf ledgers (portfolio only) to use as checkpoint reference
-        all_perf_ledgers: Dict[str, Dict[str, 'PerfLedger']] = self.perf_ledger_manager.get_perf_ledgers(
+        all_perf_ledgers: dict[str, 'PerfLedger'] = self._perf_ledger_client.get_perf_ledgers(
             portfolio_only=True
         )
 
@@ -1043,13 +1043,8 @@ class EmissionsLedgerManager:
         reference_hotkey = None
         max_checkpoints = 0
 
-        for hotkey, ledger_dict in all_perf_ledgers.items():
-            # Handle both return formats: portfolio_only=True returns PerfLedger directly,
-            # portfolio_only=False returns Dict[str, PerfLedger]
-            if isinstance(ledger_dict, dict):
-                portfolio_ledger = ledger_dict.get(TP_ID_PORTFOLIO)
-            else:
-                portfolio_ledger = ledger_dict  # Already a PerfLedger when portfolio_only=True
+        for hotkey, ledger in all_perf_ledgers.items():
+            portfolio_ledger = ledger  # Already a PerfLedger when portfolio_only=True
 
             if portfolio_ledger and portfolio_ledger.cps:
                 if len(portfolio_ledger.cps) > max_checkpoints:
@@ -1884,6 +1879,10 @@ class EmissionsLedgerManager:
         """Get emissions ledger for a specific hotkey."""
         return self.emissions_ledgers.get(hotkey)
 
+    def get_all_ledgers(self) -> Dict[str, EmissionsLedger]:
+        """Get all emissions ledgers."""
+        return deepcopy(self.emissions_ledgers)
+
     def get_earliest_emissions_timestamp(self) -> Optional[int]:
         """
         Get the earliest emissions timestamp across all ledgers (efficient single IPC read).
@@ -2088,22 +2087,10 @@ if __name__ == "__main__":
     if args.verbose:
         bt.logging.enable_debug()
 
-    # Create minimal metagraph for PerfLedgerManager
-    bt.logging.info("Initializing metagraph for performance ledger access...")
-    metagraph = bt.metagraph(netuid=args.netuid, network=args.network)
-
-    # Initialize PerfLedgerManager (loads existing perf ledgers from disk)
-    bt.logging.info("Initializing performance ledger manager...")
-    perf_ledger_manager = PerfLedgerManager(
-        metagraph=metagraph,
-        running_unit_tests=False,
-        build_portfolio_ledgers_only=True  # Only need portfolio ledgers for alignment
-    )
-
     # Initialize emissions ledger manager
+    # EmissionsLedgerManager creates its own PerfLedgerClient internally (forward compatibility)
     bt.logging.info("Initializing emissions ledger manager...")
     emissions_ledger_manager = EmissionsLedgerManager(
-        perf_ledger_manager=perf_ledger_manager,
         start_daemon=False
     )
 

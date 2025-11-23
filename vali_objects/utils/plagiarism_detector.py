@@ -12,18 +12,20 @@ from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import ValiConfig
 from shared_objects.cache_controller import CacheController
-from vali_objects.utils.position_manager import PositionManager
 import time
 import traceback
 
 import bittensor as bt
 
 from vali_objects.utils.plagiarism_pipeline import PlagiarismPipeline
+from vali_objects.vali_config import RPCConnectionMode
 
 class PlagiarismDetector(CacheController):
-    def __init__(self, metagraph, running_unit_tests=False, shutdown_dict=None,
-                 position_manager: PositionManager=None):
-        super().__init__(metagraph, running_unit_tests=running_unit_tests)
+    def __init__(self, connection_mode: RPCConnectionMode = RPCConnectionMode.RPC, shutdown_dict=None):
+        self.connection_mode = connection_mode
+        running_unit_tests = connection_mode == RPCConnectionMode.LOCAL
+
+        super().__init__(running_unit_tests=running_unit_tests, connection_mode=connection_mode)
         self.plagiarism_data = {}
         self.plagiarism_raster = {}
         self.plagiarism_positions = {}
@@ -32,7 +34,14 @@ class PlagiarismDetector(CacheController):
                                    CopySimilarity,
                                    TwoCopySimilarity,
                                    ThreeCopySimilarity]
-        self.position_manager = position_manager if position_manager else PositionManager(metagraph=metagraph, running_unit_tests=running_unit_tests)
+
+        # Create own PositionManagerClient (forward compatibility - no parameter passing)
+        from vali_objects.utils.position_manager_client import PositionManagerClient
+        self._position_client = PositionManagerClient(
+            port=ValiConfig.RPC_POSITIONMANAGER_PORT,
+            connect_immediately=not running_unit_tests
+        )
+
         self.plagiarism_pipeline = PlagiarismPipeline(self.plagiarism_classes)
         self.shutdown_dict = shutdown_dict
 
@@ -41,6 +50,11 @@ class PlagiarismDetector(CacheController):
             ValiBkpUtils.make_dir(ValiBkpUtils.get_plagiarism_dir(running_unit_tests=self.running_unit_tests))
             ValiBkpUtils.make_dir(ValiBkpUtils.get_plagiarism_scores_dir(running_unit_tests=self.running_unit_tests))
 
+    @property
+    def position_manager(self):
+        """Get position manager client."""
+        return self._position_client
+
     def run_update_loop(self):
         setproctitle(f"vali_{self.__class__.__name__}")
         bt.logging.enable_info()
@@ -48,7 +62,7 @@ class PlagiarismDetector(CacheController):
         while not self.shutdown_dict:
             try:
                 if self.refresh_allowed(ValiConfig.PLAGIARISM_REFRESH_TIME_MS):
-                    self.detect(hotkeys=self.position_manager.metagraph.get_hotkeys())
+                    self.detect(hotkeys=self._metagraph_client.get_hotkeys())
                     self.set_last_update_time(skip_message=False)  # TODO: set True
 
             except Exception as e:
@@ -67,8 +81,8 @@ class PlagiarismDetector(CacheController):
         else:
             current_time = TimeUtil.now_in_millis()
         if hotkeys is None:
-            hotkeys = self.metagraph.get_hotkeys()
-            assert hotkeys, f"No hotkeys found in metagraph {self.metagraph}"
+            hotkeys = self._metagraph_client.get_hotkeys()
+            assert hotkeys, "No hotkeys found in metagraph for plagiarism detection."
         if hotkey_positions is None:
             hotkey_positions = self.position_manager.get_positions_for_hotkeys(
                 hotkeys,

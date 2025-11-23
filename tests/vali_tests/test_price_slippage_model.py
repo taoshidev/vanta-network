@@ -2,7 +2,7 @@ from unittest.mock import Mock, patch, MagicMock
 import pandas as pd
 
 from tests.shared_objects.mock_classes import (
-    MockLivePriceFetcher,
+    MockLivePriceFetcherServer,
     MockPriceSlippageModel,
 )
 from tests.vali_tests.base_objects.test_base import TestBase
@@ -20,7 +20,7 @@ class TestPriceSlippageModel(TestBase):
     def setUp(self):
         super().setUp()
         secrets = ValiUtils.get_secrets(running_unit_tests=True)
-        self.live_price_fetcher = MockLivePriceFetcher(secrets=secrets, disable_ws=True)
+        self.live_price_fetcher = MockLivePriceFetcherServer(secrets=secrets, disable_ws=True)
         self.psm = MockPriceSlippageModel(live_price_fetcher=self.live_price_fetcher)
         self.psm.refresh_features_daily(write_to_disk=False)
 
@@ -218,7 +218,7 @@ class TestPriceSlippageModelCriticalBugs(TestBase):
         super().setUp()
         import holidays
         secrets = ValiUtils.get_secrets(running_unit_tests=True)
-        self.live_price_fetcher = MockLivePriceFetcher(secrets=secrets, disable_ws=True)
+        self.live_price_fetcher = MockLivePriceFetcherServer(secrets=secrets, disable_ws=True)
         # Initialize PriceSlippageModel with required class variables
         PriceSlippageModel.live_price_fetcher = self.live_price_fetcher
         PriceSlippageModel.holidays_nyse = holidays.financial_holidays('NYSE')

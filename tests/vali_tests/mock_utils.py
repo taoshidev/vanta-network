@@ -151,7 +151,8 @@ class EnhancedMockChallengePeriodManager(BaseMockChallengePeriodManager):
     def __init__(self, metagraph, position_manager, perf_ledger_manager, contract_manager, plagiarism_manager, running_unit_tests=True):
         super().__init__(metagraph, position_manager, contract_manager, plagiarism_manager)
         self.perf_ledger_manager = perf_ledger_manager
-        self.elimination_manager = position_manager.elimination_manager if position_manager else None
+        # Access elimination via position_manager's elimination_client
+        self._position_manager = position_manager
 
         # Initialize bucket storage
         self.active_miners = {}  # hotkey -> (bucket, timestamp)
@@ -163,10 +164,10 @@ class EnhancedMockChallengePeriodManager(BaseMockChallengePeriodManager):
 
     def get_hotkeys_by_bucket(self, bucket: MinerBucket) -> List[str]:
         """Get all hotkeys in a specific bucket, excluding eliminated miners"""
-        # Get eliminated hotkeys if elimination_manager is available
+        # Get eliminated hotkeys via position_manager's elimination_client
         eliminated_hotkeys = set()
-        if self.elimination_manager:
-            eliminated_hotkeys = set(self.elimination_manager.get_eliminated_hotkeys())
+        if self._position_manager and hasattr(self._position_manager, 'elimination_client'):
+            eliminated_hotkeys = set(self._position_manager.elimination_client.get_eliminated_hotkeys())
 
         # Return hotkeys in the bucket that are not eliminated
         return [hk for hk, (b, _, _, _) in self.active_miners.items()
@@ -174,10 +175,10 @@ class EnhancedMockChallengePeriodManager(BaseMockChallengePeriodManager):
 
     def remove_eliminated(self):
         """Remove eliminated miners from active_miners"""
-        if not self.elimination_manager:
+        if not self._position_manager or not hasattr(self._position_manager, 'elimination_client'):
             return
 
-        eliminated_hotkeys = set(self.elimination_manager.get_eliminated_hotkeys())
+        eliminated_hotkeys = set(self._position_manager.elimination_client.get_eliminated_hotkeys())
 
         # Remove eliminated miners from active_miners
         miners_to_remove = [hk for hk in self.active_miners.keys() if hk in eliminated_hotkeys]
@@ -207,16 +208,15 @@ class EnhancedMockPerfLedgerManager:
 
     def __init__(self, metagraph, running_unit_tests=True, perf_ledger_hks_to_invalidate=None):
         from vali_objects.vali_dataclasses.perf_ledger import PerfLedgerManager
-        # PerfLedgerManager still uses ipc_manager parameter, so pass None for it
+        # PerfLedgerManager manages its own perf_ledger_hks_to_invalidate internally if not provided
         self.base = PerfLedgerManager(
             metagraph,
-            ipc_manager=None,
             running_unit_tests=running_unit_tests,
             perf_ledger_hks_to_invalidate=perf_ledger_hks_to_invalidate or {}
         )
         # Delegate all attributes to base
         self.__dict__.update(self.base.__dict__)
-        self.elimination_manager = None  # Set after initialization
+        self.elimination_client = None  # Set after initialization (reference to position_manager's elimination_client)
         
     def __getattr__(self, name):
         # Delegate to base for any missing attributes
@@ -224,21 +224,21 @@ class EnhancedMockPerfLedgerManager:
     
     def __setattr__(self, name, value):
         # Special handling for certain attributes
-        if name in ['base', 'elimination_manager']:
+        if name in ['base', 'elimination_client']:
             self.__dict__[name] = value
         elif hasattr(self, 'base') and hasattr(self.base, name):
             setattr(self.base, name, value)
         else:
             self.__dict__[name] = value
-        
+
     def filtered_ledger_for_scoring(self, portfolio_only=False, hotkeys=None):
         """Override to exclude eliminated miners"""
         # Get base filtered ledger
         filtered_ledger = self.base.filtered_ledger_for_scoring(portfolio_only, hotkeys)
-        
+
         # Additional filtering for eliminated miners
-        if self.elimination_manager:
-            eliminations = self.elimination_manager.get_eliminations_from_memory()
+        if self.elimination_client:
+            eliminations = self.elimination_client.get_eliminations_from_memory()
             eliminated_hotkeys = {e['hotkey'] for e in eliminations}
             
             # Remove eliminated miners from the ledger
@@ -280,11 +280,11 @@ class EnhancedMockPerfLedgerManager:
 
 class EnhancedMockPositionManager(BaseMockPositionManager):
     """Enhanced mock position manager with full elimination support"""
-    
-    def __init__(self, metagraph, perf_ledger_manager, elimination_manager, live_price_fetcher=None):
-        super().__init__(metagraph, perf_ledger_manager, elimination_manager, live_price_fetcher)
+
+    def __init__(self, metagraph, perf_ledger_manager, live_price_fetcher=None):
+        super().__init__(metagraph, perf_ledger_manager, live_price_fetcher)
         self.challengeperiod_manager = None  # Set after initialization
-        
+
         # Track closed positions separately for testing
         self.closed_positions_by_hotkey = defaultdict(list)
         

@@ -5,6 +5,7 @@ This module provides utilities to:
 - Check if a port is actually free (not just hoping after sleep)
 - Wait for port release with exponential backoff polling
 - Wait for services to start listening on a port
+- Force-kill processes using specific ports
 
 Eliminates the anti-pattern:
     process.terminate()
@@ -14,8 +15,13 @@ Replaced with:
     process.terminate()
     PortManager.wait_for_port_release(port)  # Know when it's released
 """
+import os
+import signal
 import socket
+import subprocess
 import time
+
+import bittensor as bt
 
 
 class PortManager:
@@ -156,3 +162,88 @@ class PortManager:
             backoff *= 2
 
         return False
+
+    @staticmethod
+    def force_kill_port(port: int) -> None:
+        """
+        Force-kill any processes using the specified port.
+
+        Uses SIGKILL for immediate termination - designed for test cleanup
+        where we need fast, reliable port release.
+
+        Args:
+            port: Port number to clean up
+        """
+        PortManager.force_kill_ports([port])
+
+    @staticmethod
+    def force_kill_ports(ports: list) -> None:
+        """
+        Force-kill any processes using the specified ports.
+
+        Uses a single lsof call for efficiency when checking multiple ports.
+
+        Args:
+            ports: List of port numbers to clean up
+        """
+        if os.name != 'posix' or not ports:
+            return
+
+        current_pid = os.getpid()
+
+        try:
+            # Build a single lsof command for all ports: lsof -ti :50000 -ti :50001 ...
+            # This is much faster than calling lsof for each port
+            lsof_args = ['lsof']
+            for port in ports:
+                lsof_args.extend(['-ti', f':{port}'])
+
+            result = subprocess.run(
+                lsof_args,
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+
+            if result.returncode == 0 and result.stdout.strip():
+                pids = set(result.stdout.strip().split('\n'))
+
+                for pid_str in pids:
+                    try:
+                        pid = int(pid_str)
+                        if pid == current_pid:
+                            continue
+
+                        # Force kill immediately - no graceful shutdown
+                        os.kill(pid, signal.SIGKILL)
+                        bt.logging.debug(f"Force-killed PID {pid}")
+                    except (ValueError, ProcessLookupError, OSError):
+                        pass  # Process already dead or invalid PID
+
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+
+    @staticmethod
+    def force_kill_all_rpc_ports() -> None:
+        """
+        Force-kill any processes using any known RPC port.
+
+        This is a nuclear option for test cleanup - kills ALL processes
+        on all RPC ports defined in ValiConfig.
+
+        Dynamically discovers ports by scanning ValiConfig for attributes
+        starting with 'RPC_' and ending with '_PORT' with integer values.
+        """
+        from vali_objects.vali_config import ValiConfig
+
+        # Dynamically find all RPC port attributes
+        rpc_ports = []
+        for attr_name in dir(ValiConfig):
+            if attr_name.startswith('RPC_') and attr_name.endswith('_PORT'):
+                value = getattr(ValiConfig, attr_name, None)
+                if isinstance(value, int):
+                    rpc_ports.append(value)
+
+        # Remove duplicates and sort for consistent ordering
+        rpc_ports = sorted(set(rpc_ports))
+        PortManager.force_kill_ports(rpc_ports)

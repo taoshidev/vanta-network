@@ -6,6 +6,7 @@ import time
 import uuid
 import threading
 
+from vanta_api.websocket_notifier import WebSocketNotifierClient
 from time_util.time_util import TimeUtil
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.enums.order_type_enum import OrderType
@@ -14,20 +15,39 @@ import bittensor as bt
 
 from vali_objects.position import Position
 from vali_objects.utils.price_slippage_model import PriceSlippageModel
-from vali_objects.vali_config import ValiConfig, TradePair
+from vali_objects.vali_config import ValiConfig, TradePair, RPCConnectionMode
 from vali_objects.vali_dataclasses.order import OrderSource, Order
 
 
 class MarketOrderManager():
-    def __init__(self, live_price_fetcher, position_locks, config, position_manager,
-                 websocket_notifier, contract_manager, slack_notifier=None, running_unit_tests=False):
-        self.live_price_fetcher = live_price_fetcher
-        self.position_locks = position_locks
-        self.price_slippage_model = PriceSlippageModel(live_price_fetcher=self.live_price_fetcher, running_unit_tests=running_unit_tests)
-        self.config = config
-        self.position_manager = position_manager
-        self.websocket_notifier = websocket_notifier
-        self.contract_manager = contract_manager
+    def __init__(self, serve:bool, slack_notifier=None, running_unit_tests=False, connection_mode=RPCConnectionMode.RPC):
+        self.serve = serve
+        self.running_unit_tests = running_unit_tests
+
+        self.websocket_notifier = WebSocketNotifierClient(connection_mode=connection_mode, connect_immediately=False)
+        # Create own ContractClient (forward compatibility - no parameter passing)
+        from vali_objects.utils.contract_server import ContractClient
+        self._contract_client = ContractClient(running_unit_tests=running_unit_tests, connection_mode=connection_mode)
+
+        # Create own LivePriceFetcherClient (forward compatibility - no parameter passing)
+        from vali_objects.utils.live_price_server import LivePriceFetcherClient
+        self._live_price_client = LivePriceFetcherClient(running_unit_tests=running_unit_tests, connection_mode=connection_mode)
+
+        # Create own PositionManagerClient (forward compatibility - no parameter passing)
+        from vali_objects.utils.position_manager_client import PositionManagerClient
+        self._position_client = PositionManagerClient(
+            port=ValiConfig.RPC_POSITIONMANAGER_PORT,
+            connect_immediately=False,
+            connection_mode=connection_mode
+        )
+
+        # Create own PositionLockClient (forward compatibility - no parameter passing)
+        from vali_objects.utils.position_lock_server import PositionLockClient
+        self._position_lock_client = PositionLockClient(running_unit_tests=running_unit_tests)
+
+        # PriceSlippageModel creates its own LivePriceFetcherClient internally
+        self.price_slippage_model = PriceSlippageModel(running_unit_tests=running_unit_tests)
+
         # Cache to track last order time for each (miner_hotkey, trade_pair) combination
         self.last_order_time_cache = {}  # Key: (miner_hotkey, trade_pair_id), Value: last_order_time_ms
 
@@ -49,12 +69,26 @@ class MarketOrderManager():
             self.slippage_refresher = None
             self.slippage_refresher_thread = None
 
+    @property
+    def live_price_fetcher(self):
+        """Get live price fetcher client."""
+        return self._live_price_client
+
+    @property
+    def position_manager(self):
+        """Get position manager client."""
+        return self._position_client
+
+    @property
+    def contract_manager(self):
+        """Get contract client (forward compatibility - created internally)."""
+        return self._contract_client
 
     def _get_or_create_open_position_from_new_order(self, trade_pair: TradePair, order_type: OrderType, order_time_ms: int,
                                         miner_hotkey: str, miner_order_uuid: str, now_ms:int, price_sources, miner_repo_version, account_size):
 
         # Check if there's an existing open position for this specific trade pair (server-side filtered)
-        existing_open_pos = self.position_manager.get_open_position_for_a_miner_trade_pair(
+        existing_open_pos = self._position_client.get_open_position_for_trade_pair(
             miner_hotkey,
             trade_pair.trade_pair_id
         )
@@ -195,7 +229,7 @@ class MarketOrderManager():
         self.last_order_time_cache[(miner_hotkey, trade_pair.trade_pair_id)] = order_time_ms
         # NOTE: UUID tracking happens in validator process, not here
 
-        if self.config.serve:
+        if self.serve:
             # Broadcast position update via RPC to WebSocket clients
             # Skip websocket messages for development hotkey
             step_start = TimeUtil.now_in_millis()
@@ -301,7 +335,7 @@ class MarketOrderManager():
         bt.logging.info(f"[LOCK] Requesting position lock for {debug_lock_key}")
         err_msg = None
         existing_position = None
-        with (self.position_locks.get_lock(miner_hotkey, trade_pair.trade_pair_id)):
+        with (self._position_lock_client.get_lock(miner_hotkey, trade_pair.trade_pair_id)):
             lock_acquired_time = TimeUtil.now_in_millis()
             lock_wait_ms = lock_acquired_time - lock_request_time
             bt.logging.info(f"[LOCK] Acquired lock for {debug_lock_key} after {lock_wait_ms}ms wait")

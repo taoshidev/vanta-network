@@ -344,6 +344,24 @@ class ValiBkpUtils:
             bt.logging.debug(f"Cleared directory: {directory}")
 
     @staticmethod
+    def clear_all_miner_directories(running_unit_tests=False):
+        """
+        Clear all miner directories from disk (for testing).
+
+        This removes the entire miners/ directory and recreates it empty.
+        CAUTION: This will delete all position data on disk!
+
+        Args:
+            running_unit_tests: If True, clears test directories; else production
+        """
+        miner_dir = ValiBkpUtils.get_miner_dir(running_unit_tests=running_unit_tests)
+        if os.path.exists(miner_dir):
+            shutil.rmtree(miner_dir)
+            bt.logging.info(f"Cleared all miner directories from {miner_dir}")
+        # Recreate empty directory
+        os.makedirs(miner_dir, exist_ok=True)
+
+    @staticmethod
     def write_to_dir(
         vali_file: str, vali_data: dict | object, is_pickle: bool = False, is_binary:bool = False
     ) -> None:
@@ -385,9 +403,19 @@ class ValiBkpUtils:
 
     @staticmethod
     def read_pickle(file_path: str) -> dict:
-        """Read pickle data."""
+        """Read pickle data (handles both compressed and uncompressed)."""
+        # Check if file is gzip-compressed by reading magic number
         with open(file_path, 'rb') as f:
-            return pickle.load(f)
+            magic = f.read(2)
+
+        # If gzip-compressed (magic number is \x1f\x8b), decompress first
+        if magic == b'\x1f\x8b':
+            with gzip.open(file_path, 'rb') as gz_f:
+                return pickle.load(gz_f)
+        else:
+            # Regular pickle file
+            with open(file_path, 'rb') as f:
+                return pickle.load(f)
 
     @staticmethod
     def read_compressed_json(file_path: str) -> dict:

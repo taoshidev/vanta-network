@@ -3,7 +3,7 @@ import unittest
 from copy import deepcopy
 
 import numpy as np
-from tests.shared_objects.mock_classes import MockLivePriceFetcher
+from tests.shared_objects.mock_classes import MockLivePriceFetcherServer
 
 from shared_objects.mock_metagraph import MockMetagraph
 from tests.vali_tests.base_objects.test_base import TestBase
@@ -14,7 +14,7 @@ from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.risk_profiling import RiskProfiling
 from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.vali_dataclasses.order import Order
-from vali_objects.utils.live_price_fetcher import LivePriceFetcher
+from vali_objects.utils.live_price_server import LivePriceFetcherServer
 from vali_objects.utils.vali_utils import ValiUtils
 
 class TestRiskProfile(TestBase):
@@ -59,7 +59,7 @@ class TestRiskProfile(TestBase):
             trade_pair=self.DEFAULT_TRADE_PAIR,
         )
         secrets = ValiUtils.get_secrets(running_unit_tests=True)
-        self.live_price_fetcher = MockLivePriceFetcher(secrets=secrets, disable_ws=True)
+        self.live_price_fetcher = MockLivePriceFetcherServer(secrets=secrets, disable_ws=True)
         self.mock_metagraph = MockMetagraph([self.DEFAULT_MINER_HOTKEY])
         self.position_manager = PositionManager(metagraph=self.mock_metagraph, running_unit_tests=True)
         self.position_manager.clear_all_miner_positions()
@@ -72,8 +72,8 @@ class TestRiskProfile(TestBase):
         position_hotkey = position.hotkey
 
         self.position_manager.save_miner_position(position)
-        self.position_manager.get_open_position_for_a_miner_trade_pair(position_hotkey, position_trade_pair)
-        self.assertEqual(len(self.position_manager.get_miner_positions()), 1, "Position should be saved to disk")
+        self.position_manager.get_open_position_for_trade_pair(position_hotkey, position_trade_pair.trade_pair_id)
+        self.assertEqual(len(self.position_manager.get_positions_for_one_hotkey()), 1, "Position should be saved to disk")
 
     def test_monotonic_positions_one(self):
         """Test the monotonically increasing leverage detection with various edge cases"""

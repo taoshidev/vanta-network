@@ -24,7 +24,7 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 
 from time_util.time_util import TimeUtil
 from vali_objects.position import Position
-from vali_objects.utils.live_price_fetcher import LivePriceFetcher
+from vali_objects.utils.live_price_server import LivePriceFetcherServer
 from vali_objects.utils.position_source import PositionSourceManager, PositionSource
 from vali_objects.vali_config import TradePair, TradePairCategory, CryptoSubcategory, ForexSubcategory
 from vali_objects.vali_dataclasses.price_source import PriceSource
@@ -77,7 +77,7 @@ class ReturnCalculator:
             position: Position,
             target_date_ms: int,
             cached_price_sources: Dict[TradePair, PriceSource],
-            live_price_fetcher: LivePriceFetcher
+            live_price_fetcher: LivePriceFetcherServer
     ) -> float:
         """Calculate return for a single position."""
         # If position is closed and closed before/at target date, use actual return
@@ -204,7 +204,7 @@ class CategoryReturnCalculator:
             lambda: defaultdict(lambda: {"return": 1.0, "count": 0}))
 
         secrets = ValiUtils.get_secrets()
-        live_price_fetcher = LivePriceFetcher(secrets, disable_ws=True)
+        live_price_fetcher = LivePriceFetcherServer(secrets, disable_ws=True)
         # Process each position (following reference logic exactly)
         for position in positions:
             # Calculate return_at_close for this position at the target date

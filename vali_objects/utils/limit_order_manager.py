@@ -1,22 +1,16 @@
-import json
 import os
-import time
 import traceback
-from multiprocessing import Process
-from multiprocessing.managers import BaseManager
 
 import bittensor as bt
-import threading
 
 from shared_objects.cache_controller import CacheController
-from shared_objects.rpc_service_base import RPCServiceBase
 from time_util.time_util import TimeUtil
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.exceptions.signal_exception import SignalException
 from vali_objects.utils.position_lock import PositionLocks
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
-from vali_objects.vali_config import ValiConfig, TradePair
+from vali_objects.vali_config import ValiConfig, TradePair, RPCConnectionMode
 from vali_objects.vali_dataclasses.order import OrderSource, Order
 
 
@@ -44,14 +38,32 @@ class LimitOrderManager(CacheController):
     - Understanding miner signals (validator's job)
     """
 
-    def __init__(self, position_manager, live_price_fetcher, market_order_manager,
-                 shutdown_dict=None, running_unit_tests=False):
-        super().__init__(running_unit_tests=running_unit_tests)
-        self.position_manager = position_manager
-        self.elimination_manager = position_manager.elimination_manager
-        self.live_price_fetcher = live_price_fetcher
-        self.market_order_manager = market_order_manager  # For filling orders
-        self.shutdown_dict = shutdown_dict or {}
+    def __init__(self, running_unit_tests=False, serve=True, connection_mode: RPCConnectionMode=RPCConnectionMode.RPC):
+        super().__init__(running_unit_tests=running_unit_tests, connection_mode=connection_mode)
+
+        # Create own MarketOrderManager (forward compatibility - no parameter passing)
+        from vali_objects.utils.market_order_manager import MarketOrderManager
+        self._market_order_manager = MarketOrderManager(
+            serve=serve,
+            running_unit_tests=running_unit_tests,
+            connection_mode=connection_mode
+        )
+        # Create own LivePriceFetcherClient (forward compatibility - no parameter passing)
+        from vali_objects.utils.live_price_server import LivePriceFetcherClient
+        self._live_price_client = LivePriceFetcherClient(running_unit_tests=running_unit_tests,
+                                                         connection_mode=connection_mode)
+
+        # Create own RPC clients (forward compatibility - no parameter passing)
+        from vali_objects.utils.position_manager_client import PositionManagerClient
+        from vali_objects.utils.elimination_client import EliminationClient
+        self._position_client = PositionManagerClient(
+            port=ValiConfig.RPC_POSITIONMANAGER_PORT,
+            connect_immediately=False
+        )
+        self._elimination_client = EliminationClient(
+            connect_immediately=False
+        )
+
         self.running_unit_tests = running_unit_tests
 
         # Internal data structure: {TradePair: {hotkey: [Order]}}
@@ -75,14 +87,58 @@ class LimitOrderManager(CacheController):
         self.limit_order_locks = PositionLocks(
             hotkey_to_positions=hotkey_to_orders,
             is_backtesting=running_unit_tests,
-            use_ipc=False
+            running_unit_tests=running_unit_tests,
+            mode='local'
         )
 
     # ============================================================================
     # RPC Methods (called from client)
     # ============================================================================
 
-    def process_limit_order_rpc(self, miner_hotkey, order):
+    @property
+    def live_price_fetcher(self):
+        """Get live price fetcher client."""
+        return self._live_price_client
+
+    @property
+    def position_manager(self):
+        """Get position manager client."""
+        return self._position_client
+
+    @property
+    def elimination_manager(self):
+        """Get elimination manager client."""
+        return self._elimination_client
+
+    @property
+    def market_order_manager(self):
+        """Get market order manager."""
+        return self._market_order_manager
+
+    # ==================== Public API Methods ====================
+    def health_check_rpc(self) -> dict:
+        """Health check endpoint for RPC monitoring"""
+        total_orders = sum(
+            len(orders)
+            for hotkey_dict in self._limit_orders.values()
+            for orders in hotkey_dict.values()
+        )
+        unfilled_count = sum(
+            1 for hotkey_dict in self._limit_orders.values()
+            for orders in hotkey_dict.values()
+            for order in orders
+            if order.src in [OrderSource.LIMIT_UNFILLED, OrderSource.BRACKET_UNFILLED]
+        )
+
+        return {
+            "status": "ok",
+            "timestamp_ms": TimeUtil.now_in_millis(),
+            "total_orders": total_orders,
+            "unfilled_orders": unfilled_count,
+            "num_trade_pairs": len(self._limit_orders)
+        }
+
+    def process_limit_order(self, miner_hotkey, order):
         """
         RPC method to process a limit order or bracket order.
         Args:
@@ -185,7 +241,7 @@ class LimitOrderManager(CacheController):
         return {"status": "success", "order_uuid": order_uuid}
 
 
-    def cancel_limit_order_rpc(self, miner_hotkey, trade_pair_id, order_uuid, now_ms):
+    def cancel_limit_order(self, miner_hotkey, trade_pair_id, order_uuid, now_ms):
         """
         RPC method to cancel limit order(s).
         Args:
@@ -370,48 +426,10 @@ class LimitOrderManager(CacheController):
             bt.logging.error(traceback.format_exc())
             raise
 
-    def health_check_rpc(self) -> dict:
-        """Health check endpoint for RPC monitoring"""
-        total_orders = sum(
-            len(orders)
-            for hotkey_dict in self._limit_orders.values()
-            for orders in hotkey_dict.values()
-        )
-        unfilled_count = sum(
-            1 for hotkey_dict in self._limit_orders.values()
-            for orders in hotkey_dict.values()
-            for order in orders
-            if order.src in [OrderSource.LIMIT_UNFILLED, OrderSource.BRACKET_UNFILLED]
-        )
-
-        return {
-            "status": "ok",
-            "timestamp_ms": TimeUtil.now_in_millis(),
-            "total_orders": total_orders,
-            "unfilled_orders": unfilled_count,
-            "num_trade_pairs": len(self._limit_orders)
-        }
-
     # ============================================================================
     # Daemon Method (runs in separate process)
     # ============================================================================
 
-    def run_limit_order_daemon(self):
-        """
-        Daemon process that checks and attempts to fill limit orders every minute.
-        """
-        bt.logging.info("Limit order daemon started")
-
-        while not self.shutdown_dict:
-            try:
-                self.check_and_fill_limit_orders()
-                time.sleep(10)
-            except Exception as e:
-                bt.logging.error(f"Error in limit order daemon: {e}")
-                bt.logging.error(traceback.format_exc())
-                time.sleep(5)
-
-        bt.logging.info("Limit order daemon shutting down")
 
     def check_and_fill_limit_orders(self):
         """
@@ -608,7 +626,7 @@ class LimitOrderManager(CacheController):
                 else:
                     raise ValueError("Bracket Order type was not LONG or SHORT")
 
-            err_msg, updated_position, _ = self.market_order_manager._process_market_order(
+            err_msg, updated_position, created_order = self.market_order_manager._process_market_order(
                 order.order_uuid,
                 "limit_order",
                 trade_pair,
@@ -735,9 +753,9 @@ class LimitOrderManager(CacheController):
                 self._write_to_disk(miner_hotkey, bracket_order)
                 self._limit_orders[trade_pair][miner_hotkey].append(bracket_order)
 
-                bt.logging.info(
+                bt.logging.success(
                     f"Created bracket order [{bracket_order.order_uuid}] "
-                    f"with SL={parent_order.stop_loss}, TP={parent_order.take_profit}, leverage={parent_order.leverage}"
+                    f"with SL={parent_order.stop_loss}, TP={parent_order.take_profit}"
                 )
 
         except Exception as e:
@@ -747,7 +765,7 @@ class LimitOrderManager(CacheController):
     def _get_position_for(self, hotkey, order):
         """Get open position for hotkey and trade pair."""
         trade_pair_id = order.trade_pair.trade_pair_id
-        return self.position_manager.get_open_position_for_a_miner_trade_pair(hotkey, trade_pair_id)
+        return self.position_manager.get_open_position_for_trade_pair(hotkey, trade_pair_id)
 
     def _evaluate_trigger_price(self, order, position, ps):
         if order.execution_type == ExecutionType.LIMIT:
@@ -921,205 +939,13 @@ class LimitOrderManager(CacheController):
 
         self._read_limit_orders_from_disk()
 
-
-# ============================================================================
-# RPC Client
-# ============================================================================
-
-class LimitOrderManagerClient(RPCServiceBase):
-    """
-    RPC client for LimitOrderManager.
-
-    PROCESS BOUNDARY: This client runs in the VALIDATOR process.
-    All methods make RPC calls to the LimitOrderManager server process.
-
-    Design Principles:
-    - Client handles NO business logic - just RPC wrapper
-    - Client passes only serializable data (no synapse objects)
-    - Exceptions from server are pickled and re-raised in validator
-    - Validator owns all protocol/synapse handling logic
-    """
-
-    def __init__(self, position_manager, live_price_fetcher, market_order_manager,
-                 shutdown_dict=None, running_unit_tests=False,
-                 slack_notifier=None):
+    def clear_limit_orders(self):
         """
-        Initialize client and start the server process.
+        Clear all limit orders from memory.
 
-        Args:
-            position_manager: PositionManager instance
-            live_price_fetcher: LivePriceFetcher instance
-            market_order_manager: MarketOrderManager instance (provides position_locks)
-            shutdown_dict: Shutdown dictionary
-            running_unit_tests: Whether running unit tests
-            slack_notifier: Optional SlackNotifier for health check alerts
-
-        Note: uuid_tracker is NOT passed here because this runs in a separate process.
-              All UUID tracking must happen in the validator process.
+        This is primarily used for testing and development.
+        Does NOT delete orders from disk.
         """
-        # Initialize RPCServiceBase
-        RPCServiceBase.__init__(
-            self,
-            service_name=ValiConfig.RPC_LIMITORDERMANAGER_SERVICE_NAME,
-            port=ValiConfig.RPC_LIMITORDERMANAGER_PORT,
-            running_unit_tests=running_unit_tests,
-            enable_health_check=True,
-            health_check_interval_s=60,
-            max_consecutive_failures=3,
-            enable_auto_restart=True,
-            slack_notifier=slack_notifier
-        )
-
-        # Store dependencies for server creation
-        self.position_manager = position_manager
-        self.live_price_fetcher = live_price_fetcher
-        self.market_order_manager = market_order_manager
-        self.shutdown_dict = shutdown_dict or {}
-
-        # Start the RPC service
-        self._initialize_service()
-
-        # Store reference for backward compatibility
-        self.limit_order_manager = self._server_proxy
-
-    def _create_direct_server(self):
-        """Create direct in-memory instance for tests"""
-        return LimitOrderManager(
-            self.position_manager,
-            self.live_price_fetcher,
-            self.market_order_manager,
-            self.shutdown_dict,
-            running_unit_tests=True
-        )
-
-    def _start_server_process(self, address, authkey, server_ready):
-        """Start RPC server in separate process"""
-        def server_main():
-            from setproctitle import setproctitle
-            setproctitle("vali_LimitOrderManager")
-
-            # Create server instance
-            server_instance = LimitOrderManager(
-                self.position_manager,
-                self.live_price_fetcher,
-                self.market_order_manager,
-                self.shutdown_dict,
-                running_unit_tests=False
-            )
-
-            # Start daemon thread in server process
-            daemon_thread = threading.Thread(target=server_instance.run_limit_order_daemon, daemon=True)
-            daemon_thread.start()
-            bt.logging.info("Limit order daemon thread started in server process")
-
-            # Serve RPC
-            self._serve_rpc(server_instance, address, authkey, server_ready)
-
-        process = Process(target=server_main, daemon=True)
-        process.start()
-        return process
-
-    # ============================================================================
-    # Client API Methods
-    # ============================================================================
-
-    def process_limit_order(self, miner_hotkey: str, limit_order: Order) -> dict:
-        """
-        Process a limit order via RPC.
-
-        Args:
-            miner_hotkey: Miner's hotkey
-            limit_order: Order object to save
-
-        Returns:
-            dict with status and order_uuid
-
-        Raises:
-            SignalException: Validation errors (pickled from server)
-            Exception: RPC or server errors
-        """
-        # Send Order object directly - pickle handles serialization
-        return self.limit_order_manager.process_limit_order_rpc(miner_hotkey, limit_order)
-
-    def cancel_limit_order(self, miner_hotkey: str, trade_pair_id: str,
-                          order_uuid: str, now_ms: int) -> dict:
-        """
-        Cancel limit order(s) via RPC.
-
-        Args:
-            miner_hotkey: Miner's hotkey
-            trade_pair_id: Trade pair ID string (can be None for cancel by UUID)
-            order_uuid: UUID of order to cancel
-            now_ms: Current timestamp
-
-        Returns:
-            dict with cancellation details
-
-        Raises:
-            SignalException: Order not found (pickled from server)
-            Exception: RPC or server errors
-        """
-        return self.limit_order_manager.cancel_limit_order_rpc(miner_hotkey, trade_pair_id, order_uuid, now_ms)
-
-    def get_all_limit_orders(self) -> dict:
-        """
-        Get all limit orders via RPC.
-
-        Returns:
-            Dict of {trade_pair_id: {hotkey: [order_dicts]}}
-        """
-        return self.limit_order_manager.get_all_limit_orders_rpc()
-
-    def get_limit_orders(self, miner_hotkey: str) -> list:
-        """
-        Get all limit orders for a hotkey via RPC.
-
-        Args:
-            miner_hotkey: Miner's hotkey
-
-        Returns:
-            List of order dicts
-        """
-        return self.limit_order_manager.get_limit_orders_for_hotkey_rpc(miner_hotkey)
-
-    def get_limit_orders_for_trade_pair(self, trade_pair_id: str) -> dict:
-        """
-        Get all limit orders for a trade pair via RPC.
-
-        Args:
-            trade_pair_id: Trade pair ID string
-
-        Returns:
-            Dict of {hotkey: [order_dicts]}
-        """
-        return self.limit_order_manager.get_limit_orders_for_trade_pair_rpc(trade_pair_id)
-
-    def to_dashboard_dict(self, miner_hotkey: str):
-        """
-        Get dashboard representation via RPC.
-
-        Args:
-            miner_hotkey: Miner's hotkey
-
-        Returns:
-            List of order data for dashboard or None
-        """
-        return self.limit_order_manager.to_dashboard_dict_rpc(miner_hotkey)
-
-    def delete_all_limit_orders_for_hotkey(self, miner_hotkey: str) -> dict:
-        """
-        Delete all limit orders for a hotkey via RPC.
-
-        This is called when a miner is eliminated to clean up their limit order data.
-
-        Args:
-            miner_hotkey: Miner's hotkey
-
-        Returns:
-            dict with deletion details
-
-        Raises:
-            Exception: RPC or server errors
-        """
-        return self.limit_order_manager.delete_all_limit_orders_for_hotkey_rpc(miner_hotkey)
-
+        self._limit_orders.clear()
+        self._last_fill_time.clear()
+        bt.logging.info("Cleared all limit orders from memory")

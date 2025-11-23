@@ -20,14 +20,15 @@ from vali_objects.vali_dataclasses.order import Order
 from vali_objects.utils.validator_sync_base import ValidatorSyncBase
 
 class P2PSyncer(ValidatorSyncBase):
-    def __init__(self, wallet=None, metagraph=None, is_testnet=None, shutdown_dict=None, signal_sync_lock=None,
+    def __init__(self, wallet=None, is_testnet=None, shutdown_dict=None, signal_sync_lock=None,
                  signal_sync_condition=None, n_orders_being_processed=None, running_unit_tests=False,
-                 position_manager=None, ipc_manager=None):
-        super().__init__(shutdown_dict, signal_sync_lock, signal_sync_condition, n_orders_being_processed,
-                         running_unit_tests=running_unit_tests, position_manager=position_manager,
-                         ipc_manager=ipc_manager)
+                 position_manager=None):
+        #super().__init__(shutdown_dict, signal_sync_lock, signal_sync_condition, n_orders_being_processed, position_manager=position_manager)
+
+        # Create own MetagraphClient (forward compatibility - no parameter passing).
+        from shared_objects.metagraph_server import MetagraphClient
+        self._metagraph_client = MetagraphClient()
         self.wallet = wallet
-        self.metagraph = metagraph
         self.golden = None
         if self.wallet is not None:
             self.hotkey = self.wallet.hotkey.ss58_address
@@ -36,6 +37,11 @@ class P2PSyncer(ValidatorSyncBase):
         self.created_golden = False
         self.last_signal_sync_time_ms = 0
         self.running_unit_tests = running_unit_tests
+
+    @property
+    def metagraph(self):
+        """Get metagraph client (forward compatibility - created internally)."""
+        return self._metagraph_client
 
     def receive_checkpoint(self, synapse: template.protocol.ValidatorCheckpoint) -> template.protocol.ValidatorCheckpoint:
         """
@@ -191,7 +197,7 @@ class P2PSyncer(ValidatorSyncBase):
             bt.logging.info(f"{hotkey} sent checkpoint {self.checkpoint_summary(chk)}")
             bt.logging.info("--------------------------------------------------")
 
-        golden_eliminations = self.position_manager.elimination_manager.get_eliminations_from_memory()
+        golden_eliminations = self._position_manager_client.elimination_handle.get_eliminations_from_memory()
         golden_positions = self.p2p_sync_positions(valid_checkpoints)
         golden_challengeperiod = self.p2p_sync_challengeperiod(valid_checkpoints)
 
@@ -349,7 +355,7 @@ class P2PSyncer(ValidatorSyncBase):
 
                 new_position.orders.sort(key=lambda o: o.processed_ms)
                 try:
-                    new_position.rebuild_position_with_updated_orders(self.position_manager.live_price_fetcher)
+                    new_position.rebuild_position_with_updated_orders(self._position_manager_client.price_fetcher_client)
                     position_dict = json.loads(new_position.to_json_string())
                     uuid_matched_positions.append(position_dict)
                 except ValueError as v:

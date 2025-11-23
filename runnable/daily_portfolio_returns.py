@@ -14,7 +14,6 @@ Usage:
 """
 import time
 import argparse
-from copy import deepcopy
 from dataclasses import dataclass
 from typing import Dict, List, Tuple, Set, Optional, Any, Union
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -31,7 +30,7 @@ from time_util.time_util import MS_IN_24_HOURS
 from vali_objects.position import Position
 from vali_objects.utils.position_source import PositionSourceManager, PositionSource
 from vali_objects.utils.elimination_source import EliminationSourceManager, EliminationSource
-from vali_objects.utils.live_price_fetcher import LivePriceFetcher
+from vali_objects.utils.live_price_server import LivePriceFetcherServer
 from vali_objects.vali_config import TradePair, TradePairCategory, CryptoSubcategory, ForexSubcategory
 from vali_objects.vali_dataclasses.price_source import PriceSource
 from vali_objects.utils.vali_utils import ValiUtils
@@ -156,7 +155,7 @@ class SharedDataManager:
         """Initialize shared price fetcher for efficient caching across miners."""
         bt.logging.info("📊 Initializing shared price fetcher...")
         secrets = ValiUtils.get_secrets()
-        self.live_price_fetcher = LivePriceFetcher(secrets, disable_ws=True)
+        self.live_price_fetcher = LivePriceFetcherServer(secrets, disable_ws=True)
         bt.logging.info("✅ Shared price fetcher initialized (will cache prices across miners)")
 
     def get_cache_statistics(self) -> Dict[str, Any]:
@@ -741,7 +740,7 @@ class PositionFilterAnalyzer:
             filtered_positions = []
             
             for position in positions:
-                filtered_position, skip_reason = PositionFilter.filter_single_position(position, target_date_ms, self.live_price_fetcher)
+                filtered_position, skip_reason = PositionFilter.filter_single_position(position, target_date_ms, self.price_fetcher_client)
                 
                 if skip_reason == "equities":
                     stats.equities_positions_skipped += 1
@@ -835,7 +834,7 @@ class PositionFilterAnalyzer:
 class PriceFetcher:
     """Handles multi-threaded price fetching for trade pairs."""
     
-    def __init__(self, live_price_fetcher: LivePriceFetcher, max_workers: int = 30):
+    def __init__(self, live_price_fetcher: LivePriceFetcherServer, max_workers: int = 30):
         self.live_price_fetcher = live_price_fetcher
         self.max_workers = max_workers
     
@@ -912,7 +911,7 @@ class ReturnCalculator:
         position: Position,
         target_date_ms: int,
         cached_price_sources: Dict[TradePair, PriceSource],
-        live_price_fetcher: LivePriceFetcher
+        live_price_fetcher: LivePriceFetcherServer
     ) -> float:
         """Calculate return for a single position."""
         # If position is closed and closed before/at target date, use actual return
@@ -1829,7 +1828,7 @@ def main():
 
     # Initialize live price fetcher
     secrets = ValiUtils.get_secrets()
-    live_price_fetcher = LivePriceFetcher(secrets, disable_ws=True)
+    live_price_fetcher = LivePriceFetcherServer(secrets, disable_ws=True)
     
     # Initialize SharedDataManager for efficient price caching in regular mode
     # This is needed for the regular flow (non-auto-backfill) to cache prices across days

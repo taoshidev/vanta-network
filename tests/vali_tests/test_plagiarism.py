@@ -2,11 +2,12 @@
 import unittest
 from unittest.mock import Mock, patch, MagicMock
 
-from miner_objects.slack_notifier import SlackNotifier
+from shared_objects.slack_notifier import SlackNotifier
 from shared_objects.mock_metagraph import MockMetagraph
 from tests.vali_tests.base_objects.test_base import TestBase
 from vali_objects.utils.challengeperiod_manager import ChallengePeriodManager
-from vali_objects.utils.elimination_manager import EliminationManager, EliminationReason
+from vali_objects.utils.elimination_server import EliminationServer
+from vali_objects.utils.elimination_manager import EliminationReason
 from vali_objects.utils.miner_bucket_enum import MinerBucket
 from vali_objects.utils.plagiarism_manager import PlagiarismManager
 from vali_objects.utils.position_manager import PositionManager
@@ -42,7 +43,7 @@ class TestPlagiarism(TestBase):
 
         # Mock dependencies for ChallengePeriodManager
         self.mock_position_manager = Mock(spec=PositionManager)
-        self.mock_elimination_manager = Mock(spec=EliminationManager)
+        self.mock_elimination_manager = Mock(spec=EliminationServer)
         self.mock_position_manager.elimination_manager = self.mock_elimination_manager
 
         # Create ChallengePeriodManager with mocked dependencies
@@ -54,8 +55,8 @@ class TestPlagiarism(TestBase):
         )
 
         # Initialize active miners using update_miners API
-        self.challenge_manager.clear_all_miners()
-        self.challenge_manager.update_miners({
+        self.challenge_manager.clear_active_miners()
+        self.challenge_manager.update_active_miners({
             self.MINER_HOTKEY1: (MinerBucket.MAINCOMP, self.current_time, None, None),
             self.MINER_HOTKEY2: (MinerBucket.PROBATION, self.current_time, None, None),
             self.MINER_HOTKEY3: (MinerBucket.CHALLENGE, self.current_time, None, None),

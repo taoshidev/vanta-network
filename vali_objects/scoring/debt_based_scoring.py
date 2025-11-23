@@ -47,12 +47,12 @@ Important Notes:
 """
 
 import bittensor as bt
-import numpy as np
 from datetime import datetime, timezone
-from typing import List, Tuple, Optional
+from typing import List, Tuple
 from calendar import monthrange
 
 from time_util.time_util import TimeUtil
+from vali_objects.utils.contract_server import ContractClient
 from vali_objects.vali_dataclasses.debt_ledger import DebtLedger
 from vali_objects.utils.miner_bucket_enum import MinerBucket
 from vali_objects.vali_config import ValiConfig
@@ -134,7 +134,7 @@ class DebtBasedScoring:
 
     @staticmethod
     def calculate_dynamic_dust(
-        metagraph: 'bt.metagraph',
+        metagraph: 'bt.metagraph_handle',
         target_daily_usd: float = 0.01,
         verbose: bool = False
     ) -> float:
@@ -399,9 +399,9 @@ class DebtBasedScoring:
     @staticmethod
     def compute_results(
         ledger_dict: dict[str, DebtLedger],
-        metagraph: 'bt.metagraph',
-        challengeperiod_manager: 'ChallengePeriodManager',
-        contract_manager: 'ValidatorContractManager',
+        metagraph: 'MetagraphClient',
+        challengeperiod_client: 'ChallengePeriodClient',
+        contract_client: 'ContractClient',
         current_time_ms: int = None,
         verbose: bool = False,
         is_testnet: bool = False
@@ -425,8 +425,8 @@ class DebtBasedScoring:
         Args:
             ledger_dict: Dict of {hotkey: DebtLedger} containing debt ledger data
             metagraph: Shared IPC metagraph with emission data and substrate reserves
-            challengeperiod_manager: Manager for querying current challenge period status (required)
-            contract_manager: Manager for querying miner collateral balances (required)
+            challengeperiod_client: Client for querying current challenge period status (required)
+            contract_client: Client for querying miner collateral balances (required)
             current_time_ms: Current timestamp in milliseconds (defaults to now)
             verbose: Enable detailed logging
             is_testnet: True for testnet (netuid 116), False for mainnet (netuid 8)
@@ -487,8 +487,8 @@ class DebtBasedScoring:
             return DebtBasedScoring._apply_pre_activation_weights(
                 ledger_dict=ledger_dict,
                 metagraph=metagraph,
-                challengeperiod_manager=challengeperiod_manager,
-                contract_manager=contract_manager,
+                challengeperiod_client=challengeperiod_client,
+                contract_client=contract_client,
                 current_time_ms=current_time_ms,
                 is_testnet=is_testnet,
                 verbose=verbose
@@ -662,9 +662,9 @@ class DebtBasedScoring:
         # NOTE: Weights are unitless proportions, derived from daily target USD payouts
         miner_weights_with_minimums = DebtBasedScoring._apply_minimum_weights(
             ledger_dict=ledger_dict,
-            miner_remaining_payouts_usd=miner_daily_target_payouts_usd,  # Use DAILY targets, not total
-            challengeperiod_manager=challengeperiod_manager,
-            contract_manager=contract_manager,
+            miner_remaining_payouts_usd=miner_remaining_payouts_usd,
+            challengeperiod_client=challengeperiod_client,
+            contract_client=contract_client,
             metagraph=metagraph,
             current_time_ms=current_time_ms,
             verbose=verbose
@@ -699,7 +699,7 @@ class DebtBasedScoring:
 
     @staticmethod
     def _estimate_alpha_emissions_until_target(
-        metagraph: 'bt.metagraph',
+        metagraph: 'MetagraphClient',
         days_until_target: int,
         verbose: bool = False
     ) -> float:
@@ -788,7 +788,7 @@ class DebtBasedScoring:
     @staticmethod
     def _convert_alpha_to_usd(
         alpha_amount: float,
-        metagraph: 'bt.metagraph',
+        metagraph: 'bt.metagraph_handle',
         verbose: bool = False
     ) -> float:
         """
@@ -999,7 +999,7 @@ class DebtBasedScoring:
     @staticmethod
     def _calculate_challenge_zero_weight_miners(
         pnl_scores: dict[str, float],
-        contract_manager: 'ValidatorContractManager',
+        contract_client: 'ContractClient',
         percentile: float = 0.25,
         max_zero_weight_miners: int = 10
     ) -> set[str]:
@@ -1013,7 +1013,7 @@ class DebtBasedScoring:
 
         Args:
             pnl_scores: Dict of hotkey -> PnL score
-            contract_manager: Contract manager for collateral queries
+            contract_client: Contract client for collateral queries
             percentile: Target percentile for 0 weight (0.25 = 25%)
             max_zero_weight_miners: Maximum total miners to assign 0 weight
 
@@ -1027,7 +1027,7 @@ class DebtBasedScoring:
         # Use cached data to avoid rate limiting on-chain queries
         collateral_balances = {}
         for hotkey in pnl_scores.keys():
-            collateral_usd = contract_manager.get_miner_account_size(hotkey, most_recent=True)
+            collateral_usd = contract_client.get_miner_account_size(hotkey, most_recent=True)
             # Handle None or negative values
             if collateral_usd is None or collateral_usd <= 0:
                 collateral_usd = 0.0
@@ -1244,8 +1244,8 @@ class DebtBasedScoring:
     @staticmethod
     def _calculate_dynamic_dust_weights(
         ledger_dict: dict[str, DebtLedger],
-        challengeperiod_manager: 'ChallengePeriodManager',
-        contract_manager: 'ValidatorContractManager',
+        challengeperiod_client: 'ChallengePeriodClient',
+        contract_client: 'ContractClient',
         current_time_ms: int,
         base_dust: float,
         verbose: bool = False
@@ -1270,8 +1270,8 @@ class DebtBasedScoring:
 
         Args:
             ledger_dict: All miner ledgers
-            challengeperiod_manager: Bucket status manager
-            contract_manager: Manager for querying miner collateral balances (required)
+            challengeperiod_client: Client for querying bucket status
+            contract_client: Client for querying miner collateral balances (required)
             current_time_ms: Current timestamp
             base_dust: Static dust value from ValiConfig.CHALLENGE_PERIOD_MIN_WEIGHT
             verbose: Enable detailed logging
@@ -1295,7 +1295,7 @@ class DebtBasedScoring:
         # Group miners by current bucket
         bucket_groups = defaultdict(list)
         for hotkey, ledger in ledger_dict.items():
-            bucket = challengeperiod_manager.get_miner_bucket(hotkey)
+            bucket = challengeperiod_client.get_miner_bucket(hotkey)
             # Handle None case - use UNKNOWN as default
             if bucket is None:
                 bt.logging.warning(
@@ -1338,7 +1338,7 @@ class DebtBasedScoring:
             if bucket == MinerBucket.CHALLENGE.value:
                 zero_weight_miners = DebtBasedScoring._calculate_challenge_zero_weight_miners(
                     pnl_scores=pnl_scores,
-                    contract_manager=contract_manager,
+                    contract_client=contract_client,
                     percentile=0.25,
                     max_zero_weight_miners=10
                 )
@@ -1369,9 +1369,9 @@ class DebtBasedScoring:
     def _apply_minimum_weights(
         ledger_dict: dict[str, DebtLedger],
         miner_remaining_payouts_usd: dict[str, float],
-        challengeperiod_manager: 'ChallengePeriodManager',
-        contract_manager: 'ValidatorContractManager',
-        metagraph: 'bt.metagraph',
+        challengeperiod_client: 'ChallengePeriodClient',
+        contract_client: 'ContractClient',
+        metagraph: 'bt.metagraph_handle',
         current_time_ms: int = None,
         verbose: bool = False
     ) -> dict[str, float]:
@@ -1393,8 +1393,8 @@ class DebtBasedScoring:
         Args:
             ledger_dict: Dict of {hotkey: DebtLedger}
             miner_remaining_payouts_usd: Dict of {hotkey: remaining_payout_usd} in USD
-            challengeperiod_manager: Manager for querying current challenge period status (required)
-            contract_manager: Manager for querying miner collateral balances (required)
+            challengeperiod_client: Client for querying current challenge period status (required)
+            contract_client: Client for querying miner collateral balances (required)
             metagraph: Shared IPC metagraph (not used for dust calculation)
             current_time_ms: Current timestamp (required for performance scaling)
             verbose: Enable detailed logging
@@ -1415,8 +1415,8 @@ class DebtBasedScoring:
             try:
                 dynamic_dust_weights = DebtBasedScoring._calculate_dynamic_dust_weights(
                     ledger_dict=ledger_dict,
-                    challengeperiod_manager=challengeperiod_manager,
-                    contract_manager=contract_manager,
+                    challengeperiod_client=challengeperiod_client,
+                    contract_client=contract_client,
                     current_time_ms=current_time_ms,
                     base_dust=DUST,
                     verbose=verbose
@@ -1439,7 +1439,7 @@ class DebtBasedScoring:
         # Batch read all statuses in one IPC call to minimize overhead
         miner_statuses = {}
         for hotkey in ledger_dict.keys():
-            bucket = challengeperiod_manager.get_miner_bucket(hotkey)
+            bucket = challengeperiod_client.get_miner_bucket(hotkey)
             # Handle None case - use UNKNOWN as default
             if bucket is None:
                 bt.logging.warning(
@@ -1499,7 +1499,7 @@ class DebtBasedScoring:
 
     @staticmethod
     def _get_burn_address_hotkey(
-        metagraph: 'bt.metagraph',
+        metagraph: 'bt.metagraph_handle',
         is_testnet: bool = False
     ) -> str:
         """
@@ -1528,7 +1528,7 @@ class DebtBasedScoring:
     @staticmethod
     def _normalize_with_burn_address(
         weights: dict[str, float],
-        metagraph: 'bt.metagraph',
+        metagraph: 'bt.metagraph_handle',
         is_testnet: bool = False,
         verbose: bool = False
     ) -> List[Tuple[str, float]]:
@@ -1596,9 +1596,9 @@ class DebtBasedScoring:
     @staticmethod
     def _apply_pre_activation_weights(
         ledger_dict: dict[str, DebtLedger],
-        metagraph: 'bt.metagraph',
-        challengeperiod_manager: 'ChallengePeriodManager',
-        contract_manager: 'ValidatorContractManager',
+        metagraph: 'bt.metagraph_handle',
+        challengeperiod_client: 'ChallengePeriodClient',
+        contract_client: 'ContractClient',
         current_time_ms: int = None,
         is_testnet: bool = False,
         verbose: bool = False
@@ -1613,8 +1613,8 @@ class DebtBasedScoring:
         Args:
             ledger_dict: Dict of {hotkey: DebtLedger}
             metagraph: Bittensor metagraph for accessing hotkeys
-            challengeperiod_manager: Manager for querying current challenge period status (required)
-            contract_manager: Manager for querying miner collateral balances (required)
+            challengeperiod_client: Client for querying current challenge period status (required)
+            contract_client: Client for querying miner collateral balances (required)
             current_time_ms: Current timestamp (required for performance-scaled dust calculation)
             is_testnet: True for testnet (uid 220), False for mainnet (uid 229)
             verbose: Enable detailed logging
@@ -1626,8 +1626,8 @@ class DebtBasedScoring:
         miner_dust_weights = DebtBasedScoring._apply_minimum_weights(
             ledger_dict=ledger_dict,
             miner_remaining_payouts_usd={hotkey: 0.0 for hotkey in ledger_dict.keys()},  # No debt earnings
-            challengeperiod_manager=challengeperiod_manager,
-            contract_manager=contract_manager,
+            challengeperiod_client=challengeperiod_client,
+            contract_client=contract_client,
             metagraph=metagraph,
             current_time_ms=current_time_ms,
             verbose=verbose

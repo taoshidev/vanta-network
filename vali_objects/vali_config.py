@@ -16,6 +16,28 @@ if meta_dict is None:
 else:
     meta_version = meta_dict.get("subnet_version", "x.x.x")
 
+class RPCConnectionMode(int, Enum):
+    """
+    Connection mode for RPC clients/servers.
+
+    LOCAL: Direct mode - bypass RPC, use set_direct_server() for in-process communication.
+           Use this for tests that need to verify logic without RPC overhead.
+    RPC: Normal RPC mode - connect via network.
+           Use this for production and integration tests that need full RPC behavior.
+
+    Usage:
+        # Test without RPC (fastest, no network)
+        client = MyClient(connection_mode=RPCConnectionMode.LOCAL)
+        client.set_direct_server(server_instance)
+
+        # Test with real RPC (like production)
+        server = MyServer(connection_mode=RPCConnectionMode.RPC)  # Starts RPC server
+        client = MyClient(connection_mode=RPCConnectionMode.RPC)  # Connects via RPC
+    """
+    LOCAL = 0   # Direct mode - bypass RPC, use set_direct_server()
+    RPC = 1     # Normal RPC mode - connect via network
+
+
 class TradePairCategory(str, Enum):
     CRYPTO = "crypto"
     FOREX = "forex"
@@ -134,47 +156,81 @@ class ValiConfig:
 
     # Core Manager Services
     RPC_LIVEPRICEFETCHER_PORT = 50000
-    RPC_LIVEPRICEFETCHER_SERVICE_NAME = "LivePriceFetcher"
+    RPC_LIVEPRICEFETCHER_SERVICE_NAME = "LivePriceFetcherServer"
 
     RPC_LIMITORDERMANAGER_PORT = 50001
-    RPC_LIMITORDERMANAGER_SERVICE_NAME = "LimitOrderManager"
+    RPC_LIMITORDERMANAGER_SERVICE_NAME = "LimitOrderServer"
 
     RPC_POSITIONMANAGER_PORT = 50002
     RPC_POSITIONMANAGER_SERVICE_NAME = "PositionManagerServer"
 
     RPC_CHALLENGEPERIOD_PORT = 50003
-    RPC_CHALLENGEPERIOD_SERVICE_NAME = "ChallengePeriodManagerServer"
+    RPC_CHALLENGEPERIOD_SERVICE_NAME = "ChallengePeriodServer"
 
     RPC_ELIMINATION_PORT = 50004
-    RPC_ELIMINATION_SERVICE_NAME = "EliminationManagerServer"
+    RPC_ELIMINATION_SERVICE_NAME = "EliminationServer"
 
     RPC_METAGRAPH_PORT = 50005
     RPC_METAGRAPH_SERVICE_NAME = "MetagraphServer"
+
+    RPC_MINERSTATS_PORT = 50006
+    RPC_MINERSTATS_SERVICE_NAME = "MinerStatsServer"
+
+    RPC_COREOUTPUTS_PORT = 50007
+    RPC_COREOUTPUTS_SERVICE_NAME = "CoreOutputsServer"
 
     # Utility Services
     RPC_POSITIONLOCK_PORT = 50008
     RPC_POSITIONLOCK_SERVICE_NAME = "PositionLockServer"
 
     RPC_DEBTLEDGER_PORT = 50009
-    RPC_DEBTLEDGER_SERVICE_NAME = "DebtLedgerManagerServer"
+    RPC_DEBTLEDGER_SERVICE_NAME = "DebtLedgerServer"
 
     RPC_ASSETSELECTION_PORT = 50010
-    RPC_ASSETSELECTION_SERVICE_NAME = "AssetSelectionManagerServer"
+    RPC_ASSETSELECTION_SERVICE_NAME = "AssetSelectionServer"
 
     RPC_CONTRACTMANAGER_PORT = 50011
-    RPC_CONTRACTMANAGER_SERVICE_NAME = "ValidatorContractManagerServer"
+    RPC_CONTRACTMANAGER_SERVICE_NAME = "ValidatorContractServer"
 
     RPC_MINERSTATISTICS_PORT = 50012
-    RPC_MINERSTATISTICS_SERVICE_NAME = "MinerStatisticsManagerServer"
+    RPC_MINERSTATISTICS_SERVICE_NAME = "MinerStatisticsServer"
 
     RPC_REQUESTCORE_PORT = 50013
-    RPC_REQUESTCORE_SERVICE_NAME = "RequestCoreManagerServer"
+    RPC_REQUESTCORE_SERVICE_NAME = "RequestCoreServer"
 
     RPC_WEBSOCKET_NOTIFIER_PORT = 50014
     RPC_WEBSOCKET_NOTIFIER_SERVICE_NAME = "WebSocketNotifierServer"
 
     RPC_WEIGHT_SETTER_PORT = 50015
     RPC_WEIGHT_SETTER_SERVICE_NAME = "WeightSetterServer"
+
+    RPC_PERFLEDGER_PORT = 50016
+    RPC_PERFLEDGER_SERVICE_NAME = "PerfLedgerServer"
+
+    RPC_PLAGIARISM_PORT = 50017
+    RPC_PLAGIARISM_SERVICE_NAME = "PlagiarismServer"
+
+    RPC_PLAGIARISM_DETECTOR_PORT = 50018
+    RPC_PLAGIARISM_DETECTOR_SERVICE_NAME = "PlagiarismDetectorServer"
+
+    RPC_COMMONDATA_PORT = 50019
+    RPC_COMMONDATA_SERVICE_NAME = "CommonDataServer"
+
+    RPC_MDDCHECKER_PORT = 50020
+    RPC_MDDCHECKER_SERVICE_NAME = "MDDCheckerServer"
+
+    RPC_WEIGHT_CALCULATOR_PORT = 50021
+    RPC_WEIGHT_CALCULATOR_SERVICE_NAME = "WeightCalculatorServer"
+
+    RPC_REST_SERVER_PORT = 50022
+    RPC_REST_SERVER_SERVICE_NAME = "VantaRestServer"
+
+    # Public API Configuration (well-known network endpoints)
+    REST_API_HOST = "127.0.0.1"
+    REST_API_PORT = 48888
+
+    VANTA_WEBSOCKET_HOST = "localhost"
+    VANTA_WEBSOCKET_PORT = 8765
 
     @staticmethod
     def get_rpc_authkey(service_name: str, port: int) -> bytes:
@@ -242,7 +298,7 @@ class ValiConfig:
 
     # Fees take into account exiting and entering a position, liquidity, and futures fees
     PERF_LEDGER_REFRESH_TIME_MS = 1000 * 60 * 5  # minutes
-    CHALLENGE_PERIOD_REFRESH_TIME_MS = 1000 * 60 * 1  # minutes
+    CHALLENGE_PERIOD_REFRESH_TIME_MS = 1000 * 60 * 5  # minutes
     MDD_CHECK_REFRESH_TIME_MS = 60 * 1000  # 60 seconds
     PRICE_SOURCE_COMPACTING_SLEEP_INTERVAL_SECONDS = 60 * 60 * 12 # 12 hours
 

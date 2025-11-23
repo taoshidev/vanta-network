@@ -1,39 +1,108 @@
+# developer: jbonilla
+# Copyright © 2024 Taoshi Inc
 """
 Position Lock Server - RPC service for managing position locks across processes.
 
 Provides centralized lock management to avoid IPC overhead of multiprocessing.Manager.
+
+Architecture:
+- PositionLockServer inherits from RPCServerBase for unified infrastructure
+- PositionLockClient inherits from RPCClientBase for lightweight RPC access
+- PositionLockProxy provides context manager for acquire/release pattern
+
+Usage:
+    # Server (typically started by validator)
+    server = PositionLockServer(
+        start_server=True,
+        start_daemon=False  # No daemon needed for lock service
+    )
+
+    # Client (can be created in any process)
+    client = PositionLockClient()
+    with client.get_lock(hotkey, trade_pair_id):
+        # Critical section
+        pass
 """
 import bittensor as bt
 import threading
 from typing import Tuple, Dict
-from shared_objects.rpc_service_base import RPCServiceBase
+
+from shared_objects.rpc_server_base import RPCServerBase
+from shared_objects.rpc_client_base import RPCClientBase
 from vali_objects.vali_config import ValiConfig
+from time_util.time_util import TimeUtil
 
 
-class PositionLockServer:
+class PositionLockServer(RPCServerBase):
     """
     Server-side position lock manager with local dict storage.
 
     Locks are held server-side. Clients call acquire_rpc/release_rpc instead of
     getting lock objects. This avoids the problem of trying to proxy Lock objects
     across processes.
-    """
 
-    def __init__(self):
-        """Initialize the lock server."""
+    Inherits from RPCServerBase for unified RPC infrastructure, though this service
+    doesn't require a daemon (locks are passive - only respond to acquire/release).
+    """
+    service_name = ValiConfig.RPC_POSITIONLOCK_SERVICE_NAME
+    service_port = ValiConfig.RPC_POSITIONLOCK_PORT
+
+    def __init__(
+        self,
+        running_unit_tests: bool = False,
+        slack_notifier=None,
+        start_server: bool = True,
+        start_daemon: bool = False  # No daemon needed for lock service
+    ):
+        """
+        Initialize the lock server.
+
+        Args:
+            running_unit_tests: Whether running in unit test mode
+            slack_notifier: Optional SlackNotifier for alerts
+            start_server: Whether to start RPC server immediately
+            start_daemon: Whether to start daemon (not needed for locks)
+        """
         # Local dict to store locks (faster than IPC dict)
         # Use threading.Lock since all RPC access goes through this server process
         self.locks: Dict[Tuple[str, str], threading.Lock] = {}
         self.locks_dict_lock = threading.Lock()  # Protect dict mutations
 
+        # Initialize base class
+        # daemon_interval_s: 60s (slow interval since daemon does nothing)
+        # hang_timeout_s: Dynamically set to 2x interval to prevent false alarms
+        daemon_interval_s = 60.0
+        hang_timeout_s = daemon_interval_s * 2.0  # 120s (2x interval)
+
+        super().__init__(
+            service_name=ValiConfig.RPC_POSITIONLOCK_SERVICE_NAME,
+            port=ValiConfig.RPC_POSITIONLOCK_PORT,
+            slack_notifier=slack_notifier,
+            start_server=start_server,
+            start_daemon=start_daemon,
+            daemon_interval_s=daemon_interval_s,
+            hang_timeout_s=hang_timeout_s
+        )
+
         bt.logging.info("PositionLockServer initialized")
 
-    def health_check_rpc(self) -> dict:
-        """Health check endpoint for RPC monitoring."""
-        from time_util.time_util import TimeUtil
+    # ==================== RPCServerBase Abstract Methods ====================
+
+    def run_daemon_iteration(self) -> None:
+        """
+        Daemon iteration (no-op for lock service).
+
+        Position locks are passive - they only respond to acquire/release requests.
+        No background processing needed.
+        """
+        # No background processing needed for lock management
+        pass
+
+    # ==================== Lock RPC Methods ====================
+
+    def get_health_check_details(self) -> dict:
+        """Add service-specific health check details."""
         return {
-            "status": "ok",
-            "timestamp_ms": TimeUtil.now_in_millis(),
             "num_locks": len(self.locks)
         }
 
@@ -124,32 +193,9 @@ class PositionLockServer:
             )
             return False
 
-
-def start_position_lock_server(address, authkey, server_ready):
-    """Entry point for server process."""
-    from multiprocessing.managers import BaseManager
-    from setproctitle import setproctitle
-
-    setproctitle("vali_PositionLockServer")
-
-    server_instance = PositionLockServer()
-
-    # Register server with manager
-    class PositionLockRPC(BaseManager):
-        pass
-
-    PositionLockRPC.register('PositionLockServer', callable=lambda: server_instance)
-
-    manager = PositionLockRPC(address=address, authkey=authkey)
-    rpc_server = manager.get_server()
-
-    bt.logging.success(f"PositionLockServer ready on {address}")
-
-    if server_ready:
-        server_ready.set()
-
-    # Start serving (blocks forever)
-    rpc_server.serve_forever()
+    def get_lock_count_rpc(self) -> int:
+        """Get the number of locks currently tracked."""
+        return len(self.locks)
 
 
 class PositionLockProxy:
@@ -165,7 +211,7 @@ class PositionLockProxy:
         Initialize lock proxy.
 
         Args:
-            server_proxy: RPC proxy to PositionLockServer
+            server_proxy: RPC proxy to PositionLockServer (or direct server in test mode)
             miner_hotkey: Miner's hotkey
             trade_pair_id: Trade pair ID
             timeout: Lock acquisition timeout in seconds
@@ -192,135 +238,45 @@ class PositionLockProxy:
         return False  # Don't suppress exceptions
 
 
-class PositionLockManagerClient(RPCServiceBase):
+class PositionLockClient(RPCClientBase):
     """
-    RPC client for PositionLockServer.
+    Lightweight RPC client for PositionLockServer.
 
-    Provides centralized lock management with better performance than
-    multiprocessing.Manager IPC overhead.
+    Can be created in ANY process. No server ownership.
+    Port is obtained from ValiConfig.RPC_POSITIONLOCK_PORT.
 
-    Supports two modes:
-    - Server mode: Starts its own server (default)
-    - Client-only mode: Connects to existing server (for multi-process scenarios)
+    In test mode (running_unit_tests=True), the client won't connect via RPC.
+    Instead, use set_direct_server() to provide a direct PositionLockServer instance.
 
     Usage:
-        # First instance (starts server)
-        server_locks = PositionLockManagerClient(running_unit_tests=False)
-
-        # Additional instances (connect to existing server)
-        client_locks = PositionLockManagerClient(running_unit_tests=False, client_only=True)
-
-        # Or pass server_locks to other processes (automatically becomes client_only)
-        with client_locks.get_lock(hotkey, trade_pair_id):
-            # Critical section - only one thread/process can execute this
+        # Production mode - connects to existing server
+        client = PositionLockClient()
+        with client.get_lock(hotkey, pair_id):
+            # Critical section
             pass
+
+        # Test mode - direct server access
+        client = PositionLockClient(running_unit_tests=True)
+        client.set_direct_server(server_instance)
     """
 
-    def __init__(self, running_unit_tests: bool = False, client_only: bool = False):
+    def __init__(self, port: int = None, running_unit_tests: bool = False):
         """
-        Initialize the position lock manager client.
+        Initialize position lock client.
 
         Args:
-            running_unit_tests: If True, use direct in-memory mode
-            client_only: If True, only connect to existing server (don't start new server)
+            port: Port number of the position lock server (default: ValiConfig.RPC_POSITIONLOCK_PORT)
+            running_unit_tests: If True, don't connect via RPC (use set_direct_server() instead)
         """
-        self.client_only = client_only
-
         super().__init__(
             service_name=ValiConfig.RPC_POSITIONLOCK_SERVICE_NAME,
-            port=ValiConfig.RPC_POSITIONLOCK_PORT,
-            running_unit_tests=running_unit_tests,
-            enable_health_check=True,
-            health_check_interval_s=60,
-            max_consecutive_failures=3,
-            enable_auto_restart=True
-        )
-        self._initialize_service()
-
-    def _initialize_service(self):
-        """
-        Initialize service in client-only mode or full mode.
-
-        In client-only mode:
-        - Skip starting the server process
-        - Just connect to existing server
-        - Used when passing locks to child processes
-        """
-        if self.client_only and not self.running_unit_tests:
-            bt.logging.info(f"{self.service_name} client-only mode: connecting to existing server")
-
-            # Use a known authkey (must match what server used)
-            # In production, all clients on same host connect to same server
-            self._authkey = ValiConfig.get_rpc_authkey(
-                ValiConfig.RPC_POSITIONLOCK_SERVICE_NAME,
-                ValiConfig.RPC_POSITIONLOCK_PORT
-            )
-
-            # Connect to existing server
-            self._connect_client()
-
-            # Enable health checks for client-only mode too
-            if self.enable_health_check:
-                self._health_check_enabled_for_instance = True
-        else:
-            # Normal mode: start server or use direct mode
-            super()._initialize_service()
-
-    def _create_direct_server(self):
-        """Create direct in-memory server for tests."""
-        return PositionLockServer()
-
-    def _start_server_process(self, address, authkey, server_ready):
-        """Start RPC server in separate process."""
-        from multiprocessing import Process
-
-        # Store authkey for client-only mode
-        # In server mode, we know the authkey - save it for future client-only instances
-        self._authkey = ValiConfig.get_rpc_authkey(
-            ValiConfig.RPC_POSITIONLOCK_SERVICE_NAME,
-            ValiConfig.RPC_POSITIONLOCK_PORT
+            port=port or ValiConfig.RPC_POSITIONLOCK_PORT,
+            connect_immediately=False
         )
 
-        process = Process(
-            target=start_position_lock_server,
-            args=(address, self._authkey, server_ready),
-            daemon=True
-        )
-        process.start()
-        return process
+    # ==================== Lock Methods ====================
 
-    def __getstate__(self):
-        """
-        Prepare object for pickling (when passed to child processes).
-
-        When pickled, mark as client-only so child processes connect
-        to existing server instead of trying to start their own.
-        """
-        state = self.__dict__.copy()
-
-        # When unpickled in child process, become client-only
-        state['client_only'] = True
-
-        # Don't pickle process/proxy objects (they're not picklable anyway)
-        state['_server_process'] = None
-        state['_client_manager'] = None
-        state['_server_proxy'] = None
-
-        return state
-
-    def __setstate__(self, state):
-        """
-        Restore object after unpickling (in child process).
-
-        Automatically reconnects to existing server.
-        """
-        self.__dict__.update(state)
-
-        # Reinitialize connection to existing server
-        # This will use client_only=True from pickled state
-        self._initialize_service()
-
-    def get_lock(self, miner_hotkey: str, trade_pair_id: str, timeout: float = 10.0):
+    def get_lock(self, miner_hotkey: str, trade_pair_id: str, timeout: float = 10.0) -> PositionLockProxy:
         """
         Get a lock proxy for the given key.
 
@@ -335,8 +291,45 @@ class PositionLockManagerClient(RPCServiceBase):
             PositionLockProxy: Context manager for the lock
 
         Usage:
-            with lock_client.get_lock(hotkey, pair_id):
+            with client.get_lock(hotkey, pair_id):
                 # Critical section
                 pass
         """
-        return PositionLockProxy(self._server_proxy, miner_hotkey, trade_pair_id, timeout)
+        return PositionLockProxy(self._server, miner_hotkey, trade_pair_id, timeout)
+
+    def acquire(self, miner_hotkey: str, trade_pair_id: str, timeout: float = 10.0) -> bool:
+        """
+        Acquire lock directly (without context manager).
+
+        Args:
+            miner_hotkey: Miner's hotkey
+            trade_pair_id: Trade pair ID
+            timeout: Lock acquisition timeout in seconds
+
+        Returns:
+            bool: True if lock was acquired, False if timeout
+        """
+        return self._server.acquire_rpc(miner_hotkey, trade_pair_id, timeout)
+
+    def release(self, miner_hotkey: str, trade_pair_id: str) -> bool:
+        """
+        Release lock directly (without context manager).
+
+        Args:
+            miner_hotkey: Miner's hotkey
+            trade_pair_id: Trade pair ID
+
+        Returns:
+            bool: True if released successfully, False if error
+        """
+        return self._server.release_rpc(miner_hotkey, trade_pair_id)
+
+    # ==================== Health Check ====================
+
+    def health_check(self) -> dict:
+        """Get health status from server."""
+        return self._server.health_check_rpc()
+
+    def get_lock_count(self) -> int:
+        """Get the number of locks currently tracked."""
+        return self._server.get_lock_count_rpc()

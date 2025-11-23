@@ -4,7 +4,7 @@
 Shared RPC protocol definitions for manager-to-manager communication.
 
 This module defines the message format for communication between:
-- EliminationManager <-> ChallengePeriodManager
+- EliminationServer <-> ChallengePeriodManager
 - Other future manager interactions
 
 Key principle: NO imports of actual manager classes.
@@ -29,7 +29,7 @@ class EliminationInfo:
 
 @dataclass
 class GetEliminationsRequest:
-    """Request all eliminations from EliminationManager"""
+    """Request all eliminations from EliminationServer"""
     pass
 
 

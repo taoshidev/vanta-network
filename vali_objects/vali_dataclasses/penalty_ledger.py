@@ -5,6 +5,7 @@ This module builds penalty ledgers for miners based on their performance ledgers
 Penalties include drawdown threshold, risk profile, and minimum collateral penalties.
 
 """
+from copy import deepcopy
 from typing import Dict, List, Optional
 from dataclasses import dataclass
 from enum import Enum, auto
@@ -16,19 +17,18 @@ import json
 import os
 import shutil
 from vali_objects.position import Position
-from vali_objects.utils.asset_selection_manager import AssetSelectionManager
+from vali_objects.utils.asset_selection_client import AssetSelectionClient
+from vali_objects.utils.contract_server import ContractClient
 from vali_objects.vali_dataclasses.perf_ledger import PerfLedger, TP_ID_PORTFOLIO
 from vali_objects.utils.ledger_utils import LedgerUtils
 from vali_objects.utils.position_penalties import PositionPenalties
 from vali_objects.utils.validator_contract_manager import ValidatorContractManager
-from vali_objects.utils.position_manager import PositionManager
-from vali_objects.vali_dataclasses.perf_ledger import PerfLedgerManager
 from vali_objects.utils.position_filter import PositionFilter
 from vali_objects.utils.asset_segmentation import AssetSegmentation
 from vali_objects.utils.miner_bucket_enum import MinerBucket
 from vali_objects.vali_config import ValiConfig
 from time_util.time_util import TimeUtil
-from vanta_api.slack_notifier import SlackNotifier
+from shared_objects.slack_notifier import SlackNotifier
 import bittensor as bt
 
 
@@ -266,11 +266,6 @@ class PenaltyLedgerManager:
 
     def __init__(
         self,
-        position_manager: PositionManager,
-        perf_ledger_manager: PerfLedgerManager,
-        contract_manager: ValidatorContractManager,
-        asset_selection_manager: AssetSelectionManager,
-        challengeperiod_manager=None,
         running_unit_tests: bool = False,
         slack_webhook_url=None,
         run_daemon: bool = False,
@@ -279,25 +274,31 @@ class PenaltyLedgerManager:
         """
         Initialize PenaltyLedgerManager with managers for positions, performance ledgers, and collateral.
 
+        Note: Creates its own PerfLedgerClient and AssetSelectionClient internally (forward compatibility).
+
         Args:
-            position_manager: Manager for reading miner positions
-            perf_ledger_manager: Manager for reading performance ledgers
-            contract_manager: Manager for reading miner collateral/account sizes
-            asset_selection_manager: Manager for tracking miner asset class selections
-            challengeperiod_manager: Optional manager for challenge period status (for real-time status)
+            contract_client: Client for reading miner collateral/account sizes
             running_unit_tests: Whether this is being run in unit tests
             slack_webhook_url: Optional Slack webhook URL for failure notifications
             run_daemon: If True, automatically start daemon process (default: False)
             validator_hotkey: Optional validator hotkey for notifications
         """
-        self.position_manager = position_manager
-        self.perf_ledger_manager = perf_ledger_manager
-        self.contract_manager = contract_manager
-        self.asset_selection_manager = asset_selection_manager
-        self.challengeperiod_manager = challengeperiod_manager
+        self.contract_client = ContractClient()
         self.running_unit_tests = running_unit_tests
 
-        # Storage for penalty checkpoints per miner (normal Python dict - managed within DebtLedgerManagerServer process)
+        # Create own RPC clients (forward compatibility - no parameter passing)
+        from vali_objects.utils.position_manager_client import PositionManagerClient
+        from vali_objects.utils.challengeperiod_client import ChallengePeriodClient
+        from vali_objects.vali_dataclasses.perf_ledger_server import PerfLedgerClient
+        self._position_client = PositionManagerClient(
+            port=ValiConfig.RPC_POSITIONMANAGER_PORT,
+            connect_immediately=not running_unit_tests
+        )
+        self._challengeperiod_client = ChallengePeriodClient()
+        self._perf_ledger_client = PerfLedgerClient()
+        self._asset_selection_client = AssetSelectionClient()
+
+        # Storage for penalty checkpoints per miner (normal Python dict - managed within DebtLedgerServer process)
         self.penalty_ledgers: Dict[str, PenaltyLedger] = {}
 
         # Daemon control
@@ -319,6 +320,11 @@ class PenaltyLedgerManager:
         self.load_from_disk()
         if run_daemon:
             self._start_daemon_process()
+
+    @property
+    def position_manager(self):
+        """Get position manager client."""
+        return self._position_client
 
     def _start_daemon_process(self):
         """Start the daemon process for continuous updates."""
@@ -778,26 +784,29 @@ class PenaltyLedgerManager:
         if not delta_update:
             bt.logging.info("[PENALTY_LEDGER] Full rebuild mode: building new ledgers while preserving old ones")
 
-        # Read all perf ledgers from perf ledger manager
-        all_perf_ledgers: Dict[str, Dict[str, PerfLedger]] = self.perf_ledger_manager.get_perf_ledgers(
+        # Read all perf ledgers from perf ledger client
+        all_perf_ledgers: Dict[str, Dict[str, PerfLedger]] = self._perf_ledger_client.get_perf_ledgers(
             portfolio_only=False
         )
         all_positions: Dict[str, List[Position]] = self.position_manager.get_positions_for_all_miners()
 
-        # OPTIMIZATION: Fetch entire active_miners dict once upfront to avoid O(n) IPC calls
-        # Instead of calling get_miner_bucket() for each miner (which makes an IPC call each time),
+        # OPTIMIZATION: Fetch entire active_miners dict once upfront to avoid O(n) RPC calls
+        # Instead of calling get_miner_bucket() for each miner (which makes an RPC call each time),
         # we fetch the entire dict once using RPC
         # Dict structure: {"bucket": str, "bucket_start_time": int, "previous_bucket": str, "previous_bucket_start_time": int}
         challenge_period_data = {}
-        if self.challengeperiod_manager:
-            # Make a single RPC call to get the entire dict with full bucket data
-            challenge_period_data = self.challengeperiod_manager.to_checkpoint_dict()
-            # Filter out None entries
-            challenge_period_data = {
-                hotkey: bucket_data
-                for hotkey, bucket_data in challenge_period_data.items()
-                if bucket_data
-            }
+        if self._challengeperiod_client:
+            try:
+                # Make a single RPC call to get the entire dict with full bucket data
+                challenge_period_data = self._challengeperiod_client.to_checkpoint_dict()
+                # Filter out None entries
+                challenge_period_data = {
+                    hotkey: bucket_data
+                    for hotkey, bucket_data in challenge_period_data.items()
+                    if bucket_data
+                }
+            except Exception as e:
+                bt.logging.warning(f"[PENALTY_LEDGER] Failed to fetch challenge period data via RPC: {e}")
 
         bt.logging.info(
             f"[PENALTY_LEDGER] Building penalty ledgers for {len(all_perf_ledgers)} hotkeys "
@@ -839,7 +848,7 @@ class PenaltyLedgerManager:
                     )
 
             # Get miner's collateral/account size
-            miner_account_size = self.contract_manager.miner_account_sizes.get(miner_hotkey, 0)
+            miner_account_size = self.contract_client.get_miner_account_size(miner_hotkey)
             if miner_account_size is None:
                 miner_account_size = 0
 
@@ -893,7 +902,7 @@ class PenaltyLedgerManager:
                             segmentation_machine = AssetSegmentation({miner_hotkey: ledger_dict})
                             accumulated_penalty = 1
 
-                            asset_class = self.asset_selection_manager.asset_selections.get(miner_hotkey);
+                            asset_class = self._asset_selection_client.get_asset_selections().get(miner_hotkey)
                             if not asset_class:
                                 accumulated_penalty = 0
                             else:
@@ -1031,6 +1040,15 @@ class PenaltyLedgerManager:
 
         # Save to disk after building
         self.save_to_disk()
+
+    def get_all_penalty_ledgers(self) -> Dict[str, PenaltyLedger]:
+        """
+        Get all penalty ledgers.
+
+        Returns:
+            Dict of miner hotkey to PenaltyLedger
+        """
+        return deepcopy(self.penalty_ledgers)
 
     def get_penalty_ledger(self, miner_hotkey: str) -> Optional[PenaltyLedger]:
         """

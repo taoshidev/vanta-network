@@ -1,922 +1,962 @@
-# developer: jbonilla
+# developer: trdougherty, jbonilla
 # Copyright © 2024 Taoshi Inc
-from typing import Optional, List
-from multiprocessing import Process
-import multiprocessing
+"""
+ChallengePeriodManager - Core business logic for challenge period management.
+
+This manager handles all heavy logic for challenge period operations.
+ChallengePeriodServer wraps this and exposes methods via RPC.
+
+This follows the same pattern as EliminationManager.
+"""
+import time
+from collections import defaultdict
+
 import bittensor as bt
-from shared_objects.rpc_service_base import RPCServiceBase
+import threading
+import copy
+from typing import Dict, Optional, Tuple
+from datetime import datetime
+
+from vali_objects.utils.elimination_client import EliminationClient
+from vali_objects.utils.position_manager_client import PositionManagerClient
+from vali_objects.utils.asset_segmentation import AssetSegmentation
+from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
+from vali_objects.utils.vali_utils import ValiUtils
+from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 from shared_objects.cache_controller import CacheController
+from vali_objects.scoring.scoring import Scoring
+from time_util.time_util import TimeUtil
+from vali_objects.vali_dataclasses.perf_ledger import PerfLedger, TP_ID_PORTFOLIO
+from vali_objects.vali_dataclasses.perf_ledger_server import PerfLedgerClient
+from vali_objects.utils.ledger_utils import LedgerUtils
+from vali_objects.position import Position
+from vali_objects.utils.elimination_manager import EliminationReason
 from vali_objects.utils.miner_bucket_enum import MinerBucket
-from vali_objects.vali_config import ValiConfig
+from vali_objects.utils.plagiarism_server import PlagiarismClient
+from vali_objects.utils.contract_server import ContractClient
+from shared_objects.common_data_server import CommonDataClient
 
-class ChallengePeriodManager(RPCServiceBase, CacheController):
+
+class ChallengePeriodManager(CacheController):
     """
-    RPC Client for ChallengePeriodManager - manages challenge period state via RPC.
+    Challenge Period Manager - Contains all business logic for challenge period management.
 
-    This client connects to ChallengePeriodManagerServer running in a separate process.
-    Much faster than IPC managerized dicts (50-200x improvement on batch operations).
+    This manager is wrapped by ChallengePeriodServer which exposes methods via RPC.
+    All heavy logic resides here - server delegates to this manager.
+
+    Pattern:
+    - Server holds a `self._manager` instance
+    - Server delegates all RPC methods to manager methods
+    - Manager creates its own clients internally (forward compatibility)
     """
 
     def __init__(
-            self,
-            metagraph,
-            perf_ledger_manager=None,
-            position_manager=None,
-            contract_manager=None,
-            plagiarism_manager=None,
-            asset_selection_manager=None,
-            *,
-            running_unit_tests=False,
-            is_backtesting=False,
-            shutdown_dict=None,
-            sync_in_progress=None,
-            slack_notifier=None,
-            sync_epoch=None,
-            start_server=True,
-            start_daemon=False):
+        self,
+        *,
+        is_backtesting=False,
+        running_unit_tests: bool = False,
+        connection_mode: RPCConnectionMode = RPCConnectionMode.RPC
+    ):
         """
         Initialize ChallengePeriodManager.
 
         Args:
-            metagraph: Metagraph instance
-            perf_ledger_manager: Performance ledger manager
-            position_manager: Position manager
-            contract_manager: Contract manager
-            plagiarism_manager: Plagiarism manager
-            asset_selection_manager: Asset selection manager
+            is_backtesting: Whether running in backtesting mode
             running_unit_tests: Whether running in test mode
-            is_backtesting: Whether backtesting
-            shutdown_dict: Shared shutdown flag
-            sync_in_progress: Sync flag
-            slack_notifier: Slack notifier
-            sync_epoch: Sync epoch counter
-            start_server: Whether to start RPC server immediately (vs deferred)
-            start_daemon: Whether to start daemon process immediately
+            connection_mode: RPCConnectionMode.LOCAL for tests, RPCConnectionMode.RPC for production
         """
+        super().__init__(running_unit_tests=running_unit_tests, is_backtesting=is_backtesting, connection_mode=connection_mode)
 
-        # Initialize RPCServiceBase
-        RPCServiceBase.__init__(
-            self,
-            service_name=ValiConfig.RPC_CHALLENGEPERIOD_SERVICE_NAME,
-            port=ValiConfig.RPC_CHALLENGEPERIOD_PORT,
-            running_unit_tests=running_unit_tests,
-            enable_health_check=True,
-            health_check_interval_s=60,
-            max_consecutive_failures=3,
-            enable_auto_restart=True,
-            slack_notifier=slack_notifier
+        self.running_unit_tests = running_unit_tests
+        self.connection_mode = connection_mode
+
+        # Create clients internally (forward compatibility - no parameter passing)
+        self._perf_ledger_client = PerfLedgerClient(
+            connection_mode=connection_mode,
+            connect_immediately=False,
+            running_unit_tests=running_unit_tests
         )
 
-        # Initialize CacheController
-        CacheController.__init__(self, metagraph=metagraph, running_unit_tests=running_unit_tests, is_backtesting=is_backtesting)
+        self._position_client = PositionManagerClient(
+            connect_immediately=False,
+            connection_mode=connection_mode
+        )
 
-        # Store dependencies needed for server creation (using private attributes for properties)
-        self._perf_ledger_manager = perf_ledger_manager
-        self._position_manager = position_manager
-        self._contract_manager = contract_manager
-        self._plagiarism_manager = plagiarism_manager
-        self._asset_selection_manager = asset_selection_manager
-        self.shutdown_dict = shutdown_dict
-        self.is_backtesting = is_backtesting
-        self.sync_in_progress = sync_in_progress
-        self.sync_epoch = sync_epoch
-        self.asset_selection_manager = asset_selection_manager
+        self.elim_client = EliminationClient(
+            connection_mode=connection_mode,
+            connect_immediately=False
+        )
 
-        # Elimination RPC address is read from ValiConfig (fixed configuration)
-        # In test mode, elimination integration is disabled (address = None)
-        self.elimination_rpc_address = None if running_unit_tests else ("localhost", ValiConfig.RPC_ELIMINATION_PORT)
+        self._plagiarism_client = PlagiarismClient(
+            connection_mode=connection_mode,
+            connect_immediately=False
+        )
 
-        # Start the RPC service (unless deferred via start_server=False)
-        if start_server:
-            self._initialize_service()
+        self._contract_client = ContractClient(
+            connection_mode=connection_mode,
+            connect_immediately=False
+        )
 
-            # Start daemon process if requested (for continuous challenge period updates)
-            if start_daemon:
-                self._start_daemon_process()
-        else:
-            bt.logging.info("ChallengePeriodManager: Deferring server start until initialize_server() is called")
+        # Create own CommonDataClient (forward compatibility - no parameter passing)
+        self._common_data_client = CommonDataClient(
+            connect_immediately=False,
+            connection_mode=connection_mode
+        )
 
-    def initialize_server(self):
+        # Local dicts (NOT IPC managerized) - much faster!
+        self.eliminations_with_reasons: Dict[str, Tuple[str, float]] = {}
+        self.active_miners: Dict[str, Tuple[MinerBucket, int, Optional[MinerBucket], Optional[int]]] = {}
+
+        # Local lock (NOT shared across processes) - RPC methods are auto-serialized
+        self.eliminations_lock = threading.Lock()
+
+        self.CHALLENGE_FILE = ValiBkpUtils.get_challengeperiod_file_location(running_unit_tests=running_unit_tests)
+
+        # Load initial active_miners from disk
+        initial_active_miners = {}
+        if not self.is_backtesting:
+            disk_data = ValiUtils.get_vali_json_file_dict(self.CHALLENGE_FILE)
+            initial_active_miners = self.parse_checkpoint_dict(disk_data)
+
+        self.active_miners = initial_active_miners
+
+        if not self.is_backtesting and len(self.active_miners) == 0:
+            self._write_challengeperiod_from_memory_to_disk()
+
+        self.refreshed_challengeperiod_start_time = False
+
+        bt.logging.info("[CP_MANAGER] ChallengePeriodManager initialized with local dicts (no IPC)")
+
+    # ==================== Core Business Logic ====================
+
+    def refresh(self, current_time: int = None, iteration_epoch=None):
         """
-        Initialize the RPC server after dependencies have been set.
-
-        This method should be called after position_manager and elimination_manager
-        have been set via property setters (when start_server=False was passed to __init__).
-
-        Example:
-            # Create with deferred server start
-            cp_mgr = ChallengePeriodManager(..., start_server=False)
-
-            # Set dependencies
-            cp_mgr.position_manager = position_manager
-            cp_mgr.perf_ledger_manager = perf_ledger_manager
-
-            # Now start the server with all dependencies ready
-            cp_mgr.initialize_server()
-
-            # Start daemon after server is ready
-            cp_mgr._start_daemon_process()
-        """
-        if hasattr(self, '_server_proxy') and self._server_proxy is not None:
-            bt.logging.warning("ChallengePeriodManager: Server already initialized, ignoring")
-            return
-
-        bt.logging.info("ChallengePeriodManager: Initializing RPC server with all dependencies")
-        self._initialize_service()
-        bt.logging.success("ChallengePeriodManager: RPC server initialized successfully")
-
-    def _start_daemon_process(self):
-        """
-        Start the daemon process for continuous challenge period updates.
-
-        The daemon process runs run_update_loop() on the server, which continuously
-        refreshes the challenge period manager state (updating buckets, handling
-        promotions/demotions, etc.).
-
-        This is separate from the RPC server process - the RPC server handles
-        requests, while the daemon process performs continuous background updates.
-        """
-
-        # Call run_update_loop on the server (either direct or via RPC)
-        if self.running_unit_tests:
-            # In test mode with direct server, just call run_update_loop directly
-            bt.logging.info("ChallengePeriodManager: Test mode - run_update_loop must be called manually")
-            # We don't start a daemon in test mode because tests control the flow
-        else:
-            # In production with RPC server, the server already has run_update_loop
-            # We need to start a daemon process that calls it
-            daemon_process = multiprocessing.Process(
-                target=self._server_proxy.run_update_loop,
-                daemon=True
-            )
-            daemon_process.start()
-            bt.logging.success(
-                f"ChallengePeriodManager daemon process started with PID: {daemon_process.pid}"
-            )
-
-    # ==================== Dependency Properties (auto-sync to server in test mode) ====================
-
-    @property
-    def perf_ledger_manager(self):
-        """Performance ledger manager dependency"""
-        return self._perf_ledger_manager
-
-    @perf_ledger_manager.setter
-    def perf_ledger_manager(self, value):
-        """Set perf ledger manager and auto-sync to server in test mode"""
-        self._perf_ledger_manager = value
-        # In test mode, also update server instance
-        if self.running_unit_tests and hasattr(self, '_server_proxy') and self._server_proxy:
-            self._server_proxy.perf_ledger_manager = value
-
-    @property
-    def position_manager(self):
-        """Position manager dependency"""
-        return self._position_manager
-
-    @position_manager.setter
-    def position_manager(self, value):
-        """Set position manager and auto-sync to server in test mode"""
-        self._position_manager = value
-        # In test mode, also update server instance
-        if self.running_unit_tests and hasattr(self, '_server_proxy') and self._server_proxy:
-            self._server_proxy.position_manager = value
-
-    @property
-    def contract_manager(self):
-        """Contract manager dependency"""
-        return self._contract_manager
-
-    @contract_manager.setter
-    def contract_manager(self, value):
-        """Set contract manager and auto-sync to server in test mode"""
-        self._contract_manager = value
-        # In test mode, also update server instance
-        if self.running_unit_tests and hasattr(self, '_server_proxy') and self._server_proxy:
-            self._server_proxy.contract_manager = value
-
-    @property
-    def plagiarism_manager(self):
-        """Plagiarism manager dependency"""
-        return self._plagiarism_manager
-
-    @plagiarism_manager.setter
-    def plagiarism_manager(self, value):
-        """Set plagiarism manager and auto-sync to server in test mode"""
-        self._plagiarism_manager = value
-        # In test mode, also update server instance
-        if self.running_unit_tests and hasattr(self, '_server_proxy') and self._server_proxy:
-            self._server_proxy.plagiarism_manager = value
-
-    @property
-    def asset_selection_manager(self):
-        """Asset selection manager dependency"""
-        return self._asset_selection_manager
-
-    @asset_selection_manager.setter
-    def asset_selection_manager(self, value):
-        """Set asset selection manager and auto-sync to server in test mode"""
-        self._asset_selection_manager = value
-        # In test mode, also update server instance
-        if self.running_unit_tests and hasattr(self, '_server_proxy') and self._server_proxy:
-            self._server_proxy.asset_selection_manager = value
-
-    @property
-    def elimination_manager(self):
-        """
-        Elimination manager dependency (test mode only).
-
-        In production, the server uses elimination_rpc_address to create its own RPC client.
-        In test mode, we allow setting a direct reference for backward compatibility.
-        """
-        return getattr(self, '_elimination_manager', None)
-
-    @elimination_manager.setter
-    def elimination_manager(self, value):
-        """
-        Set elimination manager and sync to server in test mode only.
-
-        This property exists for test mode backward compatibility where tests
-        set circular references directly. In production, this is ignored.
-        """
-        self._elimination_manager = value
-        # In test mode, also update server instance directly (no RPC needed in test mode)
-        if self.running_unit_tests and hasattr(self, '_server_proxy') and self._server_proxy:
-            self._server_proxy.elimination_manager = value
-
-    @property
-    def active_miners(self):
-        """
-        Direct access to active_miners dict (test mode only).
-
-        In test mode with direct server, provides access to the server's active_miners dict.
-        DO NOT use in production - use RPC methods instead (set_miner_bucket, get_miner_bucket, etc.)
-
-        Returns:
-            dict: The server's active_miners dict (direct reference in test mode)
-        """
-        if not self.running_unit_tests:
-            raise NotImplementedError(
-                "active_miners direct access is only available in test mode. "
-                "Use RPC methods like set_miner_bucket(), get_miner_bucket(), etc."
-            )
-        return self._server_proxy.active_miners
-
-    @active_miners.setter
-    def active_miners(self, value):
-        """
-        Set active_miners dict (test mode only).
+        Refresh the challenge period manager.
 
         Args:
-            value: Dict mapping hotkeys to (bucket, start_time, prev_bucket, prev_time) tuples
+            current_time: Current time in milliseconds. If None, uses TimeUtil.now_in_millis().
+            iteration_epoch: Epoch captured at start of iteration. Used to detect stale data.
         """
-        if not self.running_unit_tests:
-            raise NotImplementedError(
-                "active_miners direct access is only available in test mode. "
-                "Use RPC methods like set_miner_bucket(), update_miners(), etc."
-            )
-        self._server_proxy.active_miners = value
+        if current_time is None:
+            current_time = TimeUtil.now_in_millis()
 
-    def _create_direct_server(self):
-        """Create direct in-memory instance for tests"""
-        from vali_objects.utils.challengeperiod_manager_server import ChallengePeriodManagerServer
-
-        return ChallengePeriodManagerServer(
-            metagraph=self.metagraph,
-            perf_ledger_manager=self.perf_ledger_manager,
-            position_manager=self.position_manager,
-            contract_manager=self.contract_manager,
-            plagiarism_manager=self.plagiarism_manager,
-            asset_selection_manager=self.asset_selection_manager,
-            elimination_rpc_address=self.elimination_rpc_address,  # Pass address, not object
-            running_unit_tests=self.running_unit_tests,
-            shutdown_dict=self.shutdown_dict,
-            is_backtesting=self.is_backtesting,
-            sync_in_progress=self.sync_in_progress,
-            slack_notifier=self.slack_notifier,
-            sync_epoch=self.sync_epoch
-        )
-
-    def _start_server_process(self, address, authkey, server_ready):
-        """Start RPC server in separate process"""
-        from vali_objects.utils.challengeperiod_manager_server import start_challengeperiod_manager_server
-
-        process = Process(
-            target=start_challengeperiod_manager_server,
-            args=(
-                self.metagraph,
-                self.perf_ledger_manager,
-                self.position_manager,
-                self.contract_manager,
-                self.plagiarism_manager,
-                self.asset_selection_manager,
-                self.elimination_rpc_address,  # Pass address, not object
-                self.running_unit_tests,
-                self.shutdown_dict,
-                self.is_backtesting,
-                self.sync_in_progress,
-                self.slack_notifier,
-                self.sync_epoch,
-                address,
-                authkey,
-                server_ready
-            ),
-            daemon=True
-        )
-        process.start()
-        return process
-
-    def __getstate__(self):
-        """
-        Prepare object for pickling (when passed to child processes).
-
-        When challengeperiod_manager is passed to other components (EliminationManager,
-        LimitOrderManager) that run in separate processes, this method ensures the
-        object can be pickled properly.
-
-        The unpickled object will be a client-only instance that connects to the
-        existing RPC server.
-
-        Note: elimination_rpc_address is a simple tuple and pickles normally.
-        """
-        import os
-
-        msg = (
-            f"[CP_PICKLE] __getstate__ called in PID {os.getpid()}, "
-            f"running_unit_tests={self.running_unit_tests}, port={self.port}"
-        )
-        bt.logging.info(msg)
-        print(msg, flush=True)  # Also print to ensure visibility
-
-        state = self.__dict__.copy()
-
-        # Mark as client-only so unpickled instance connects to existing server
-        state['_is_client_only'] = True
-
-        # Don't pickle process/proxy objects (they're not picklable anyway)
-        state['_server_process'] = None
-        state['_client_manager'] = None
-        state['_server_proxy'] = None
-
-        # elimination_rpc_address is a simple tuple - pickles normally
-
-        bt.logging.debug(
-            f"[CP_PICKLE] __getstate__ complete, removed unpicklable objects"
-        )
-
-        return state
-
-    def __setstate__(self, state):
-        """
-        Restore object after unpickling (in child process).
-
-        Automatically reconnects to existing RPC server running in the main validator process.
-        """
-        import os
-
-        msg = (
-            f"[CP_UNPICKLE] __setstate__ called in PID {os.getpid()}, "
-            f"running_unit_tests={state.get('running_unit_tests', 'UNKNOWN')}"
-        )
-        bt.logging.info(msg)
-        print(msg, flush=True)  # Also print to ensure visibility
-
-        self.__dict__.update(state)
-
-        # In test mode, recreate direct server instance
-        if self.running_unit_tests:
-            bt.logging.info("[CP_UNPICKLE] Test mode - recreating direct server instance")
-            self._server_proxy = self._create_direct_server()
-            bt.logging.success(
-                f"[CP_UNPICKLE] Direct server created, type: {type(self._server_proxy)}"
-            )
+        if not self.refresh_allowed(ValiConfig.CHALLENGE_PERIOD_REFRESH_TIME_MS):
+            time.sleep(1)
             return
+        bt.logging.info("Refreshing challenge period")
 
-        # Reconnect to existing RPC server
-        msg_reconnect = f"[CP_UNPICKLE] Production mode - reconnecting to RPC server on port {self.port}"
-        bt.logging.info(msg_reconnect)
-        print(msg_reconnect, flush=True)
+        # Store iteration epoch for this refresh cycle
+        self._current_iteration_epoch = iteration_epoch
 
-        self._connect_client_only()
+        # Read current eliminations
+        eliminations = self.elim_client.get_eliminations_from_memory()
 
-        # Verify connection succeeded
-        if self._server_proxy is None:
-            msg_error = "[CP_UNPICKLE] CRITICAL: _server_proxy is still None after _connect_client_only()!"
-            bt.logging.error(msg_error)
-            print(msg_error, flush=True)
-        else:
-            msg_success = f"[CP_UNPICKLE] _server_proxy successfully set: {type(self._server_proxy)}"
-            bt.logging.success(msg_success)
-            print(msg_success, flush=True)
+        self.update_plagiarism_miners(current_time, self.get_plagiarism_miners())
 
-    def _connect_client_only(self):
-        """
-        Connect to existing RPC server (client-only mode for child processes).
+        # Collect challenge period and update with new eliminations criteria
+        self.remove_eliminated(eliminations=eliminations)
 
-        This is called when challengeperiod_manager is unpickled in a child process
-        (EliminationManagerServer, LimitOrderManager, etc.).
-        """
-        import traceback
+        hk_to_positions, hk_to_first_order_time = self._position_client.filtered_positions_for_scoring(
+            hotkeys=self._metagraph_client.get_hotkeys()
+        )
+
+        # Add to testing if not in eliminated, already in the challenge period, or in the new eliminations list
+        self._add_challengeperiod_testing_in_memory_and_disk(
+            new_hotkeys=self._metagraph_client.get_hotkeys(),
+            eliminations=eliminations,
+            hk_to_first_order_time=hk_to_first_order_time,
+            default_time=current_time
+        )
+
+        challengeperiod_success_hotkeys = self.get_hotkeys_by_bucket(MinerBucket.MAINCOMP)
+        challengeperiod_testing_hotkeys = self.get_hotkeys_by_bucket(MinerBucket.CHALLENGE)
+        challengeperiod_probation_hotkeys = self.get_hotkeys_by_bucket(MinerBucket.PROBATION)
+        all_miners = challengeperiod_success_hotkeys + challengeperiod_testing_hotkeys + challengeperiod_probation_hotkeys
+
+        if not self.refreshed_challengeperiod_start_time:
+            self.refreshed_challengeperiod_start_time = True
+            self._refresh_challengeperiod_start_time(hk_to_first_order_time)
+
+        ledger = self._perf_ledger_client.filtered_ledger_for_scoring(hotkeys=all_miners, portfolio_only=False)
+
+        inspection_miners = self.get_testing_miners() | self.get_probation_miners()
+        challengeperiod_success, challengeperiod_demoted, challengeperiod_eliminations = self.inspect(
+            positions=hk_to_positions,
+            ledger=ledger,
+            success_hotkeys=challengeperiod_success_hotkeys,
+            probation_hotkeys=challengeperiod_probation_hotkeys,
+            inspection_hotkeys=inspection_miners,
+            current_time=current_time,
+            hk_to_first_order_time=hk_to_first_order_time
+        )
+
+        # Update plagiarism eliminations
+        plagiarism_elim_miners = self.prepare_plagiarism_elimination_miners(current_time=current_time)
+        challengeperiod_eliminations.update(plagiarism_elim_miners)
+
+        # Update elimination reasons atomically
+        self.update_elimination_reasons(challengeperiod_eliminations)
+
+        any_changes = bool(challengeperiod_success) or bool(challengeperiod_eliminations) or bool(challengeperiod_demoted)
+
+        # Moves challenge period testing to challenge period success in memory
+        self._promote_challengeperiod_in_memory(challengeperiod_success, current_time)
+        self._demote_challengeperiod_in_memory(challengeperiod_demoted, current_time)
+        self._eliminate_challengeperiod_in_memory(eliminations_with_reasons=challengeperiod_eliminations)
+
+        # Remove any miners who are no longer in the metagraph
+        any_changes |= self._prune_deregistered_metagraph()
+
+        # Sync challenge period with disk
+        if any_changes:
+            self._write_challengeperiod_from_memory_to_disk()
+
+        # Clear iteration epoch after refresh completes
+        self._current_iteration_epoch = None
+
+        self.set_last_update_time()
 
         bt.logging.info(
-            f"[CP_UNPICKLE] Starting client-only reconnection on port {self.port}"
+            "Challenge Period snapshot after refresh "
+            f"(MAINCOMP, {len(self.get_success_miners())}) "
+            f"(PROBATION, {len(self.get_probation_miners())}) "
+            f"(CHALLENGE, {len(self.get_testing_miners())}) "
+            f"(PLAGIARISM, {len(self.get_plagiarism_miners())})"
         )
 
-        # Use stable authkey (must match what server used)
-        if not hasattr(self, '_authkey'):
-            self._authkey = ValiConfig.get_rpc_authkey(self.service_name, self.port)
-            bt.logging.debug(f"[CP_UNPICKLE] Generated authkey from port {self.port}")
+    def _prune_deregistered_metagraph(self, hotkeys=None) -> bool:
+        """Prune the challenge period of all miners who are no longer in the metagraph."""
+        if not hotkeys:
+            hotkeys = self._metagraph_client.get_hotkeys()
 
-        # Connect to existing server (inherited from RPCServiceBase)
-        try:
-            bt.logging.info(f"[CP_UNPICKLE] Attempting to connect to {self._address}")
-            self._connect_client()
-            bt.logging.success(
-                f"[CP_UNPICKLE] ✓ Client-only mode connected to existing RPC server at {self._address}"
-            )
-            bt.logging.info(f"[CP_UNPICKLE] _server_proxy type: {type(self._server_proxy)}")
-        except Exception as e:
-            error_trace = traceback.format_exc()
-            bt.logging.error(
-                f"[CP_UNPICKLE] ✗ Failed to reconnect in client-only mode: {e}\n"
-                f"Address: {self._address}\n"
-                f"Port: {self.port}\n"
-                f"Traceback:\n{error_trace}"
-            )
-            # Don't raise - allow child process to continue, but log the error
-            # The _server_proxy will be None and methods will fail with clearer errors
-            bt.logging.error(
-                "[CP_UNPICKLE] Child process will not be able to use challengeperiod_manager methods. "
-                "This likely means the RPC server is not running or not accessible from this process."
-            )
+        any_changes = False
+        for hotkey in self.get_all_miner_hotkeys():
+            if hotkey not in hotkeys:
+                self.remove_miner(hotkey)
+                any_changes = True
 
-    # ==================== Client Methods (proxy to RPC) ====================
+        return any_changes
 
-    # ==================== Elimination Reasons Methods ====================
+    @staticmethod
+    def is_recently_re_registered(ledger, hotkey, hk_to_first_order_time):
+        """Check if a miner recently re-registered (edge case detection)."""
+        if not hk_to_first_order_time:
+            return False
+        if ledger:
+            time_of_ledger_start = ledger.start_time_ms
+        else:
+            return False
 
-    def get_all_elimination_reasons(self) -> dict:
+        first_order_time = hk_to_first_order_time.get(hotkey, None)
+        if first_order_time is None:
+            msg = f'No positions for hotkey {hotkey} - ledger start time: {time_of_ledger_start}'
+            print(msg)
+            return True
+
+        # A perf ledger can never begin before the first order
+        ans = time_of_ledger_start < first_order_time
+        if ans:
+            msg = (f'Hotkey {hotkey} has a ledger start time of {TimeUtil.millis_to_formatted_date_str(time_of_ledger_start)},'
+                   f' a first order time of {TimeUtil.millis_to_formatted_date_str(first_order_time)}, and an'
+                   f' initialization time of {TimeUtil.millis_to_formatted_date_str(ledger.initialization_time_ms)}.')
+        return ans
+
+    def inspect(
+        self,
+        positions: dict[str, list[Position]],
+        ledger: dict[str, dict[str, PerfLedger]],
+        success_hotkeys: list[str],
+        probation_hotkeys: list[str],
+        inspection_hotkeys: dict[str, int],
+        current_time: int,
+        success_scores_dict: dict[str, dict] | None = None,
+        inspection_scores_dict: dict[str, dict] | None = None,
+        hk_to_first_order_time: dict[str, int] | None = None,
+    ) -> tuple[list[str], list[str], dict[str, tuple[str, float]]]:
         """
-        Get all elimination reasons as a dict.
-
-        Returns:
-            dict: Mapping hotkeys to (reason, drawdown) tuples
-        """
-        return self._server_proxy.get_all_elimination_reasons_rpc()
-
-    def has_elimination_reasons(self) -> bool:
-        """
-        Check if there are any elimination reasons.
-
-        Returns:
-            bool: True if elimination reasons exist
-        """
-        return self._server_proxy.has_elimination_reasons_rpc()
-
-    def clear_elimination_reasons(self) -> None:
-        """Clear all elimination reasons."""
-        self._server_proxy.clear_elimination_reasons_rpc()
-
-    def update_elimination_reasons(self, reasons_dict: dict) -> int:
-        """
-        Bulk update elimination reasons from a dict.
+        Runs a screening process to eliminate miners who didn't pass the challenge period. Does not modify the challenge period in memory.
 
         Args:
-            reasons_dict: Dict mapping hotkeys to (reason, drawdown) tuples
+            success_scores_dict (dict[str, dict]) - a dictionary with a similar structure to config with keys being
+            function names of metrics and values having "scores" (scores of miners that passed challenge)
+            and "weight" which is the weight of the metric. Only provided if running tests
+
+            inspection_scores_dict (dict[str, dict]) - identical to success_scores_dict in structure, but only has data
+            for one inspection hotkey. Only provided if running tests
 
         Returns:
-            int: Number of elimination reasons set
+            hotkeys_to_promote - list of miners that should be promoted from challenge/probation to maincomp
+            hotkeys_to_demote - list of miners whose scores were lower than the threshold rank, to be demoted to probation
+            miners_to_eliminate - dictionary of hotkey to a tuple of the form (reason failed challenge period, maximum drawdown)
         """
-        return self._server_proxy.update_elimination_reasons_rpc(reasons_dict)
+        if len(inspection_hotkeys) == 0:
+            return [], [], {}  # no hotkeys to inspect
 
-    def pop_elimination_reason(self, hotkey: str):
-        """
-        Atomically get and remove an elimination reason for a single hotkey.
+        if not current_time:
+            current_time = TimeUtil.now_in_millis()
 
-        Args:
-            hotkey: The hotkey to pop elimination reason for
+        miners_to_eliminate = {}
+        miners_recently_reregistered = set()
+        miners_not_enough_positions = []
 
-        Returns:
-            Tuple of (reason, drawdown) or None if not found
-        """
-        return self._server_proxy.pop_elimination_reason_rpc(hotkey)
+        # Used for checking base cases
+        portfolio_only_ledgers = {}
+        for hotkey, asset_ledgers in ledger.items():
+            if asset_ledgers is not None:
+                if isinstance(asset_ledgers, dict):
+                    portfolio_only_ledgers[hotkey] = asset_ledgers.get(TP_ID_PORTFOLIO)
+                else:
+                    raise TypeError(f"Expected asset_ledgers to be dict, got {type(asset_ledgers)}")
 
-    # ==================== Active Miners Methods ====================
+        valid_candidate_hotkeys = []
+        for hotkey, bucket_start_time in inspection_hotkeys.items():
 
-    def has_miner(self, hotkey: str) -> bool:
-        """
-        Fast check if a miner is in active_miners (O(1)).
+            if ChallengePeriodManager.is_recently_re_registered(portfolio_only_ledgers.get(hotkey), hotkey, hk_to_first_order_time):
+                miners_recently_reregistered.add(hotkey)
+                continue
 
-        Args:
-            hotkey: The miner hotkey to check
+            if bucket_start_time is None:
+                bt.logging.warning(f'Hotkey {hotkey} has no inspection time. Unexpected.')
+                continue
 
-        Returns:
-            bool: True if miner is active
-        """
-        return self._server_proxy.has_miner_rpc(hotkey)
+            miner_bucket = self.get_miner_bucket(hotkey)
+            before_challenge_end = self.meets_time_criteria(current_time, bucket_start_time, miner_bucket)
+            if not before_challenge_end:
+                bt.logging.info(f'Hotkey {hotkey} has failed the {miner_bucket.value} period due to time. cp_failed')
+                miners_to_eliminate[hotkey] = (EliminationReason.FAILED_CHALLENGE_PERIOD_TIME.value, -1)
+                continue
 
-    def get_miner_bucket(self, hotkey: str) -> Optional[MinerBucket]:
-        """
-        Get the bucket of a miner.
+            # Get hotkey to positions dict that only includes the inspection miner
+            has_minimum_positions, inspection_positions = ChallengePeriodManager.screen_minimum_positions(positions, hotkey)
+            if not has_minimum_positions:
+                miners_not_enough_positions.append(hotkey)
+                continue
 
-        Args:
-            hotkey: The miner hotkey to look up
+            # Get hotkey to ledger dict that only includes the inspection miner
+            has_minimum_ledger, inspection_ledger = ChallengePeriodManager.screen_minimum_ledger(portfolio_only_ledgers, hotkey)
+            if not has_minimum_ledger:
+                continue
 
-        Returns:
-            MinerBucket: Bucket enum, or None if not found
-        """
-        bucket_value = self._server_proxy.get_miner_bucket_rpc(hotkey)
-        return MinerBucket(bucket_value) if bucket_value else None
+            # This step we want to check their drawdown. If they fail, we can move on.
+            # inspection_ledger is already the PerfLedger object for this hotkey (not a dict)
+            ledger_element = inspection_ledger
+            exceeds_max_drawdown, recorded_drawdown_percentage = LedgerUtils.is_beyond_max_drawdown(ledger_element)
+            if exceeds_max_drawdown:
+                bt.logging.info(f'Hotkey {hotkey} has failed the {miner_bucket.value} period due to drawdown {recorded_drawdown_percentage}. cp_failed')
+                miners_to_eliminate[hotkey] = (EliminationReason.FAILED_CHALLENGE_PERIOD_DRAWDOWN.value, recorded_drawdown_percentage)
+                continue
 
-    def get_miner_start_time(self, hotkey: str) -> Optional[int]:
-        """
-        Get the start time of a miner's current bucket.
+            if not self.screen_minimum_interaction(ledger_element):
+                continue
 
-        Args:
-            hotkey: The miner hotkey to look up
+            valid_candidate_hotkeys.append(hotkey)
 
-        Returns:
-            int: Start time in milliseconds, or None if not found
-        """
-        return self._server_proxy.get_miner_start_time_rpc(hotkey)
+        # Calculate dynamic minimum participation days for asset classes
+        combined_hotkeys = set(success_hotkeys + probation_hotkeys)
+        maincomp_ledger = {hotkey: ledger_data for hotkey, ledger_data in ledger.items() if hotkey in combined_hotkeys}
+        asset_classes = list(AssetSegmentation.distill_asset_classes(ValiConfig.ASSET_CLASS_BREAKDOWN))
+        asset_class_min_days = LedgerUtils.calculate_dynamic_minimum_days_for_asset_classes(
+            maincomp_ledger, asset_classes
+        )
+        bt.logging.info(f"challengeperiod_manager asset class minimum days: {asset_class_min_days}")
 
-    def get_miner_previous_bucket(self, hotkey: str) -> Optional[MinerBucket]:
-        """
-        Get the previous bucket of a miner (used for plagiarism demotions).
+        all_miner_account_sizes = self._contract_client.get_all_miner_account_sizes(timestamp_ms=current_time)
 
-        Args:
-            hotkey: The miner hotkey to look up
+        # If success_scoring_dict is already calculated, no need to calculate scores. Useful for testing
+        if not success_scores_dict:
+            success_positions = {hotkey: miner_positions for hotkey, miner_positions in positions.items() if hotkey in success_hotkeys}
+            success_ledger = {hotkey: ledger_data for hotkey, ledger_data in ledger.items() if hotkey in success_hotkeys}
+            # Get the penalized scores of all successful miners
+            success_scores_dict = Scoring.score_miners(
+                    ledger_dict=success_ledger,
+                    positions=success_positions,
+                    asset_class_min_days=asset_class_min_days,
+                    evaluation_time_ms=current_time,
+                    weighting=True,
+                    all_miner_account_sizes=all_miner_account_sizes)
 
-        Returns:
-            MinerBucket: Previous bucket enum, or None if not found or not set
-        """
-        prev_bucket_value = self._server_proxy.get_miner_previous_bucket_rpc(hotkey)
-        return MinerBucket(prev_bucket_value) if prev_bucket_value else None
+        if not inspection_scores_dict:
+            candidates_positions = {hotkey: positions[hotkey] for hotkey in valid_candidate_hotkeys}
+            candidates_ledgers = {hotkey: ledger[hotkey] for hotkey in valid_candidate_hotkeys}
 
-    def get_miner_previous_time(self, hotkey: str) -> Optional[int]:
-        """
-        Get the start time of a miner's previous bucket.
+            inspection_scores_dict = Scoring.score_miners(
+                    ledger_dict=candidates_ledgers,
+                    positions=candidates_positions,
+                    asset_class_min_days=asset_class_min_days,
+                    evaluation_time_ms=current_time,
+                    weighting=True,
+                    all_miner_account_sizes=all_miner_account_sizes)
 
-        Args:
-            hotkey: The miner hotkey to look up
+        hotkeys_to_promote, hotkeys_to_demote = ChallengePeriodManager.evaluate_promotions(success_hotkeys,
+                                                                                           success_scores_dict,
+                                                                                           valid_candidate_hotkeys,
+                                                                                           inspection_scores_dict)
 
-        Returns:
-            int: Previous bucket start time in milliseconds, or None if not found or not set
-        """
-        return self._server_proxy.get_miner_previous_time_rpc(hotkey)
+        bt.logging.info(f"Challenge Period: evaluating {len(valid_candidate_hotkeys)}/{len(inspection_hotkeys)} miners eligible for promotion")
+        bt.logging.info(f"Challenge Period: evaluating {len(success_hotkeys)} miners eligible for demotion")
+        bt.logging.info(f"Hotkeys to promote: {hotkeys_to_promote}")
+        bt.logging.info(f"Hotkeys to demote: {hotkeys_to_demote}")
+        bt.logging.info(f"Hotkeys to eliminate: {list(miners_to_eliminate.keys())}")
+        bt.logging.info(f"Miners with no positions (skipped): {len(miners_not_enough_positions)}")
+        bt.logging.info(f"Miners recently re-registered (skipped): {list(miners_recently_reregistered)}")
 
-    def get_hotkeys_by_bucket(self, bucket: MinerBucket) -> List[str]:
-        """
-        Get all hotkeys in a specific bucket.
+        return hotkeys_to_promote, hotkeys_to_demote, miners_to_eliminate
 
-        Args:
-            bucket: Bucket enum (e.g., MinerBucket.CHALLENGE, MinerBucket.MAINCOMP)
+    @staticmethod
+    def evaluate_promotions(
+            success_hotkeys,
+            success_scores_dict,
+            candidate_hotkeys,
+            inspection_scores_dict
+    ) -> tuple[list[str], list[str]]:
+        # combine maincomp and challenge/probation miners into one scoring dict
+        combined_scores_dict = copy.deepcopy(success_scores_dict)
+        for asset_class, candidate_scores_dict in inspection_scores_dict.items():
+            for metric_name, candidate_metric in candidate_scores_dict["metrics"].items():
+                combined_scores_dict[asset_class]['metrics'][metric_name]["scores"] += candidate_metric["scores"]
+            combined_scores_dict[asset_class]["penalties"].update(candidate_scores_dict["penalties"])
 
-        Returns:
-            list: List of hotkeys in the bucket
-        """
-        return self._server_proxy.get_hotkeys_by_bucket_rpc(bucket.value)
+        # score them based on asset class
+        asset_combined_scores = Scoring.combine_scores(combined_scores_dict)
+        asset_softmaxed_scores = Scoring.softmax_by_asset(asset_combined_scores)
 
-    def get_all_miner_hotkeys(self) -> List[str]:
-        """
-        Get list of all active miner hotkeys.
+        # combine asset
+        weighted_scores = defaultdict(lambda: defaultdict(float))
+        for asset_class, miner_scores in asset_softmaxed_scores.items():
+            weight = ValiConfig.ASSET_CLASS_BREAKDOWN[asset_class]["emission"]
 
-        Returns:
-            list: List of hotkeys
-        """
-        return self._server_proxy.get_all_miner_hotkeys_rpc()
+            for hotkey, score in miner_scores.items():
+                weighted_scores[asset_class][hotkey] += weight * score
+
+        maincomp_hotkeys = set()
+        promotion_threshold_rank = ValiConfig.PROMOTION_THRESHOLD_RANK
+        for asset_scores in weighted_scores.values():
+            threshold_score = 0
+            if len(asset_scores) >= promotion_threshold_rank:
+                sorted_scores = sorted(asset_scores.values(), reverse=True)
+                threshold_score = sorted_scores[promotion_threshold_rank - 1]
+
+            for hotkey, score in asset_scores.items():
+                if score >= threshold_score and score > 0:
+                    maincomp_hotkeys.add(hotkey)
+
+            # logging
+            for hotkey in success_hotkeys:
+                if hotkey not in asset_scores:
+                    bt.logging.warning(
+                        f"Could not find MAINCOMP hotkey {hotkey} when scoring, miner will not be evaluated")
+            for hotkey in candidate_hotkeys:
+                if hotkey not in asset_scores:
+                    bt.logging.warning(
+                        f"Could not find CHALLENGE/PROBATION hotkey {hotkey} when scoring, miner will not be evaluated")
+
+        promote_hotkeys = maincomp_hotkeys - set(success_hotkeys)
+        demote_hotkeys = set(success_hotkeys) - maincomp_hotkeys
+
+        return list(promote_hotkeys), list(demote_hotkeys)
+
+    @staticmethod
+    def screen_minimum_interaction(ledger_element) -> bool:
+        """Check if miner has minimum number of trading days."""
+        if ledger_element is None:
+            bt.logging.warning("Ledger element is None. Returning False.")
+            return False
+
+        miner_returns = LedgerUtils.daily_return_log(ledger_element)
+        return len(miner_returns) >= ValiConfig.CHALLENGE_PERIOD_MINIMUM_DAYS
+
+    def meets_time_criteria(self, current_time, bucket_start_time, bucket):
+        if bucket == MinerBucket.MAINCOMP:
+            return False
+
+        if bucket == MinerBucket.CHALLENGE:
+            probation_end_time_ms = bucket_start_time + ValiConfig.CHALLENGE_PERIOD_MAXIMUM_MS
+            return current_time <= probation_end_time_ms
+
+        if bucket == MinerBucket.PROBATION:
+            probation_end_time_ms = bucket_start_time + ValiConfig.PROBATION_MAXIMUM_MS
+            return current_time <= probation_end_time_ms
+
+    @staticmethod
+    def screen_minimum_ledger(
+        ledger: dict[str, PerfLedger],
+        inspection_hotkey: str
+    ) -> tuple[bool, PerfLedger] | tuple[bool, None]:
+        """Ensure there is enough ledger data for the specific miner."""
+        # Note: Caller should check if ledger dict is empty before calling this in a loop
+        if ledger is None or len(ledger) == 0:
+            return False, None
+
+        single_ledger = ledger.get(inspection_hotkey, None)
+        if single_ledger is None:
+            return False, None
+
+        has_minimum_ledger = len(single_ledger.cps) > 0
+
+        if not has_minimum_ledger:
+            bt.logging.debug(f"Hotkey: {inspection_hotkey} doesn't have the minimum ledger for challenge period.")
+
+        return has_minimum_ledger, single_ledger
+
+    @staticmethod
+    def screen_minimum_positions(
+        positions: dict[str, list[Position]],
+        inspection_hotkey: str
+    ) -> tuple[bool, dict[str, list[Position]]]:
+        """Ensure there are enough positions for the specific miner."""
+        if positions is None or len(positions) == 0:
+            bt.logging.info(f"No positions for any miner to evaluate for challenge period. positions: {positions}")
+            return False, {}
+
+        positions_list = positions.get(inspection_hotkey, None)
+        has_minimum_positions = positions_list is not None and len(positions_list) > 0
+
+        inspection_positions = {inspection_hotkey: positions_list} if has_minimum_positions else {}
+
+        return has_minimum_positions, inspection_positions
+
+    def sync_challenge_period_data(self, active_miners_sync):
+        """Sync challenge period data from another validator."""
+        if not active_miners_sync:
+            bt.logging.error(f'challenge_period_data {active_miners_sync} appears invalid')
+
+        synced_miners = self.parse_checkpoint_dict(active_miners_sync)
+
+        self.clear_active_miners()
+        self.update_active_miners(synced_miners)
+        self._write_challengeperiod_from_memory_to_disk()
+
+    def get_hotkeys_by_bucket(self, bucket: MinerBucket) -> list[str]:
+        """Get all hotkeys in a specific bucket."""
+        return [hotkey for hotkey, (b, _, _, _) in self.active_miners.items() if b == bucket]
+
+    def _remove_eliminated_from_memory(self, eliminations: list[dict] = None) -> bool:
+        """Remove eliminated miners from memory."""
+        if eliminations:
+            eliminations_hotkeys = set([x['hotkey'] for x in eliminations])
+        else:
+            eliminations_hotkeys = self.elim_client.get_eliminated_hotkeys()
+
+        bt.logging.info(f"[CP_DEBUG] _remove_eliminated_from_memory processing {len(eliminations_hotkeys)} eliminated hotkeys")
+
+        any_changes = False
+        for hotkey in eliminations_hotkeys:
+            if self.has_miner(hotkey):
+                bt.logging.info(f"[CP_DEBUG] Removing already-eliminated hotkey {hotkey} from active_miners")
+                self.remove_miner(hotkey)
+                any_changes = True
+
+        return any_changes
+
+    def remove_eliminated(self, eliminations=None):
+        """Remove eliminated miners and sync to disk."""
+        any_changes = self._remove_eliminated_from_memory(eliminations=eliminations)
+        if any_changes:
+            self._write_challengeperiod_from_memory_to_disk()
+
+    def _clear_challengeperiod_in_memory_and_disk(self):
+        """Clear all challenge period data."""
+        if not self.running_unit_tests:
+            raise Exception("Clearing challenge period is only allowed during unit tests.")
+        self.clear_active_miners()
+        self._write_challengeperiod_from_memory_to_disk()
+
+    def update_plagiarism_miners(self, current_time, plagiarism_miners):
+        """Update plagiarism miners status."""
+        new_plagiarism_miners, whitelisted_miners = self._plagiarism_client.update_plagiarism_miners(
+            current_time, plagiarism_miners
+        )
+        self._demote_plagiarism_in_memory(new_plagiarism_miners, current_time)
+        self._promote_plagiarism_to_previous_bucket_in_memory(whitelisted_miners, current_time)
+
+    def prepare_plagiarism_elimination_miners(self, current_time):
+        """Prepare plagiarism miners for elimination."""
+        miners_to_eliminate = self._plagiarism_client.plagiarism_miners_to_eliminate(current_time)
+        elim_miners_to_return = {}
+        for hotkey in miners_to_eliminate:
+            if self.has_miner(hotkey):
+                bt.logging.info(
+                    f'Hotkey {hotkey} is overdue in {MinerBucket.PLAGIARISM} at time {current_time}')
+                elim_miners_to_return[hotkey] = (EliminationReason.PLAGIARISM.value, -1)
+                self._plagiarism_client.send_plagiarism_elimination_notification(hotkey)
+
+        return elim_miners_to_return
+
+    def _promote_challengeperiod_in_memory(self, hotkeys: list[str], current_time: int):
+        """Promote miners to main competition."""
+        if len(hotkeys) > 0:
+            bt.logging.info(f"Promoting {len(hotkeys)} miners to main competition.")
+
+        for hotkey in hotkeys:
+            bucket_value = self.get_miner_bucket(hotkey)
+            if bucket_value is None:
+                bt.logging.error(f"Hotkey {hotkey} is not an active miner. Skipping promotion")
+                continue
+            bt.logging.info(f"Promoting {hotkey} from {self.get_miner_bucket(hotkey).value} to MAINCOMP")
+            self.set_miner_bucket(hotkey, MinerBucket.MAINCOMP, current_time)
+
+    def _promote_plagiarism_to_previous_bucket_in_memory(self, hotkeys: list[str], current_time):
+        """Promote plagiarism miners to their previous bucket."""
+        if len(hotkeys) > 0:
+            bt.logging.info(f"Promoting {len(hotkeys)} plagiarism miners to probation.")
+
+        for hotkey in hotkeys:
+            try:
+                bucket_value = self.get_miner_bucket(hotkey)
+                if bucket_value is None or bucket_value != MinerBucket.PLAGIARISM:
+                    bt.logging.error(f"Hotkey {hotkey} is not an active miner. Skipping promotion")
+                    continue
+
+                previous_bucket = self.get_miner_previous_bucket(hotkey)
+                previous_time = self.get_miner_previous_time(hotkey)
+
+                bt.logging.info(f"Promoting {hotkey} from {bucket_value.value} to {previous_bucket.value} with time {previous_time}")
+                self.set_miner_bucket(hotkey, previous_bucket, previous_time)
+
+                # Send Slack notification
+                self._plagiarism_client.send_plagiarism_promotion_notification(hotkey)
+            except Exception as e:
+                bt.logging.error(f"Failed to promote {hotkey} from plagiarism at time {current_time}: {e}")
+
+    def _eliminate_challengeperiod_in_memory(self, eliminations_with_reasons: dict[str, tuple[str, float]]):
+        """Eliminate miners from challenge period."""
+        hotkeys = eliminations_with_reasons.keys()
+        if hotkeys:
+            bt.logging.info(f"[CP_DEBUG] Removing {len(hotkeys)} hotkeys from challenge period: {list(hotkeys)}")
+            bt.logging.info(f"[CP_DEBUG] active_miners has {len(self.active_miners)} entries before elimination")
+
+        for hotkey in hotkeys:
+            if self.has_miner(hotkey):
+                bucket = self.get_miner_bucket(hotkey)
+                bt.logging.info(f"[CP_DEBUG] Eliminating {hotkey} from bucket {bucket.value}")
+                self.remove_miner(hotkey)
+
+                # Verify deletion
+                if not self.has_miner(hotkey):
+                    bt.logging.info(f"[CP_DEBUG] ✓ Verified {hotkey} was removed from active_miners")
+                else:
+                    bt.logging.error(f"[CP_DEBUG] ✗ FAILED to remove {hotkey} from active_miners!")
+            else:
+                bt.logging.error(f"[CP_DEBUG] Hotkey {hotkey} was not in active_miners but elimination was attempted. active_miners keys: {self.get_all_miner_hotkeys()}")
+
+    def _demote_challengeperiod_in_memory(self, hotkeys: list[str], current_time):
+        """Demote miners to probation."""
+        if hotkeys:
+            bt.logging.info(f"Demoting {len(hotkeys)} miners to probation")
+
+        for hotkey in hotkeys:
+            bucket_value = self.get_miner_bucket(hotkey)
+            if bucket_value is None:
+                bt.logging.error(f"Hotkey {hotkey} is not an active miner. Skipping demotion")
+                continue
+            bt.logging.info(f"Demoting {hotkey} to PROBATION")
+            self.set_miner_bucket(hotkey, MinerBucket.PROBATION, current_time)
+
+    def _demote_plagiarism_in_memory(self, hotkeys: list[str], current_time):
+        """Demote miners to plagiarism bucket."""
+        for hotkey in hotkeys:
+            try:
+                prev_bucket_value = self.get_miner_bucket(hotkey)
+                if prev_bucket_value is None:
+                    continue
+                prev_bucket_time = self.get_miner_start_time(hotkey)
+                bt.logging.info(f"Demoting {hotkey} to PLAGIARISM from {prev_bucket_value}")
+                # Maintain previous state to make reverting easier
+                self.set_miner_bucket(hotkey, MinerBucket.PLAGIARISM, current_time, prev_bucket_value, prev_bucket_time)
+
+                # Send Slack notification
+                self._plagiarism_client.send_plagiarism_demotion_notification(hotkey)
+            except Exception as e:
+                bt.logging.error(f"Failed to demote {hotkey} for plagiarism at time {current_time}: {e}")
+
+    def _write_challengeperiod_from_memory_to_disk(self):
+        """Write challenge period data from memory to disk."""
+        if self.is_backtesting:
+            return
+
+        # Epoch-based validation: check if sync occurred during our iteration
+        if hasattr(self, '_current_iteration_epoch') and self._current_iteration_epoch is not None:
+            current_epoch = self._common_data_client.get_sync_epoch()
+            if current_epoch != self._current_iteration_epoch:
+                bt.logging.warning(
+                    f"Sync occurred during ChallengePeriodManager iteration "
+                    f"(epoch {self._current_iteration_epoch} -> {current_epoch}). "
+                    f"Skipping save to avoid data corruption"
+                )
+                return
+
+        challengeperiod_data = self.to_checkpoint_dict()
+        ValiBkpUtils.write_file(self.CHALLENGE_FILE, challengeperiod_data)
+
+    def _add_challengeperiod_testing_in_memory_and_disk(
+        self,
+        new_hotkeys: list[str],
+        eliminations: list[dict],
+        hk_to_first_order_time: dict[str, int],
+        default_time: int
+    ):
+        """Add miners to challenge period testing."""
+        if not eliminations:
+            eliminations = self.elim_client.get_eliminations_from_memory()
+
+        elimination_hotkeys = set(x['hotkey'] for x in eliminations)
+
+        # Get local eliminations that haven't been persisted yet
+        with self.eliminations_lock:
+            local_elimination_hotkeys = set(self.eliminations_with_reasons.keys())
+
+        maincomp_hotkeys = self.get_hotkeys_by_bucket(MinerBucket.MAINCOMP)
+        probation_hotkeys = self.get_hotkeys_by_bucket(MinerBucket.PROBATION)
+        plagiarism_hotkeys = self.get_hotkeys_by_bucket(MinerBucket.PLAGIARISM)
+
+        any_changes = False
+        for hotkey in new_hotkeys:
+            # Skip if miner is in persisted eliminations
+            if hotkey in elimination_hotkeys:
+                continue
+
+            # Skip if miner is in local eliminations
+            if hotkey in local_elimination_hotkeys:
+                bt.logging.info(f"[CP_DEBUG] Skipping {hotkey[:16]}...{hotkey[-8:]} - in eliminations_with_reasons (not yet persisted)")
+                continue
+
+            if hotkey in maincomp_hotkeys or hotkey in probation_hotkeys or hotkey in plagiarism_hotkeys:
+                continue
+
+            first_order_time = hk_to_first_order_time.get(hotkey)
+            if first_order_time is None:
+                if not self.has_miner(hotkey):
+                    self.set_miner_bucket(hotkey, MinerBucket.CHALLENGE, default_time)
+                    bt.logging.info(f"Adding {hotkey} to challenge period with start time {default_time}")
+                    any_changes = True
+                continue
+
+            # Has a first order time but not yet stored in memory or start time is set as default
+            start_time = self.get_miner_start_time(hotkey)
+            if not self.has_miner(hotkey) or start_time != first_order_time:
+                self.set_miner_bucket(hotkey, MinerBucket.CHALLENGE, first_order_time)
+                bt.logging.info(f"Adding {hotkey} to challenge period with first order time {first_order_time}")
+                any_changes = True
+
+        if any_changes:
+            self._write_challengeperiod_from_memory_to_disk()
+
+    def _refresh_challengeperiod_start_time(self, hk_to_first_order_time_ms: dict[str, int]):
+        """Retroactively update the challengeperiod_testing start time based on time of first order."""
+        bt.logging.info("Refreshing challengeperiod start times")
+
+        any_changes = False
+        for hotkey in self.get_testing_miners().keys():
+            start_time_ms = self.get_miner_start_time(hotkey)
+            if hotkey not in hk_to_first_order_time_ms:
+                continue
+            first_order_time_ms = hk_to_first_order_time_ms[hotkey]
+
+            if start_time_ms != first_order_time_ms:
+                bt.logging.info(f"Challengeperiod start time for {hotkey} updated from: {datetime.fromtimestamp(start_time_ms/1000)} "
+                                f"to: {datetime.fromtimestamp(first_order_time_ms/1000)}, {(start_time_ms-first_order_time_ms)/1000}s delta")
+                self.set_miner_bucket(hotkey, MinerBucket.CHALLENGE, first_order_time_ms)
+                any_changes = True
+
+        if any_changes:
+            self._write_challengeperiod_from_memory_to_disk()
+
+        bt.logging.info("All challengeperiod start times up to date")
+
+    def add_all_miners_to_success(self, current_time_ms, run_elimination=True):
+        """Used to bypass running challenge period, but still adds miners to success for statistics."""
+        assert self.is_backtesting, "This function is only for backtesting"
+        eliminations = []
+        if run_elimination:
+            eliminations = self.elim_client.get_eliminations_from_memory()
+            self.remove_eliminated(eliminations=eliminations)
+
+        challenge_hk_to_positions, challenge_hk_to_first_order_time = self._position_client.filtered_positions_for_scoring(
+            hotkeys=self._metagraph_client.get_hotkeys())
+
+        self._add_challengeperiod_testing_in_memory_and_disk(
+            new_hotkeys=self._metagraph_client.get_hotkeys(),
+            eliminations=eliminations,
+            hk_to_first_order_time=challenge_hk_to_first_order_time,
+            default_time=current_time_ms
+        )
+
+        miners_to_promote = self.get_hotkeys_by_bucket(MinerBucket.CHALLENGE) \
+                          + self.get_hotkeys_by_bucket(MinerBucket.PROBATION)
+
+        # Finally promote all testing miners to success
+        self._promote_challengeperiod_in_memory(miners_to_promote, current_time_ms)
+
+    # ==================== Internal Getter/Setter Methods ====================
 
     def set_miner_bucket(
         self,
         hotkey: str,
         bucket: MinerBucket,
         start_time: int,
-        prev_bucket: Optional[MinerBucket] = None,
-        prev_time: Optional[int] = None
+        prev_bucket: MinerBucket = None,
+        prev_time: int = None
     ) -> bool:
-        """
-        Set or update a miner's bucket information.
+        """Set or update a miner's bucket information."""
+        is_new = hotkey not in self.active_miners
+        self.active_miners[hotkey] = (bucket, start_time, prev_bucket, prev_time)
+        return is_new
 
-        Args:
-            hotkey: The miner hotkey
-            bucket: The current bucket
-            start_time: Bucket start time in milliseconds
-            prev_bucket: Previous bucket (for plagiarism demotions)
-            prev_time: Previous bucket start time (for plagiarism demotions)
+    def get_miner_start_time(self, hotkey: str) -> int:
+        """Get the start time of a miner's current bucket."""
+        info = self.active_miners.get(hotkey)
+        return info[1] if info else None
 
-        Returns:
-            bool: True if this is a new miner, False if updating existing
-        """
-        return self._server_proxy.set_miner_bucket_rpc(
-            hotkey,
-            bucket.value,
-            start_time,
-            prev_bucket.value if prev_bucket else None,
-            prev_time
-        )
+    def get_miner_previous_bucket(self, hotkey: str) -> MinerBucket:
+        """Get the previous bucket of a miner."""
+        info = self.active_miners.get(hotkey)
+        return info[2] if info else None
+
+    def get_miner_previous_time(self, hotkey: str) -> int:
+        """Get the start time of a miner's previous bucket."""
+        info = self.active_miners.get(hotkey)
+        return info[3] if info else None
+
+    def has_miner(self, hotkey: str) -> bool:
+        """Fast check if a miner is in active_miners (O(1))."""
+        return hotkey in self.active_miners
 
     def remove_miner(self, hotkey: str) -> bool:
-        """
-        Remove a miner from active_miners.
+        """Remove a miner from active_miners."""
+        if hotkey in self.active_miners:
+            del self.active_miners[hotkey]
+            return True
+        return False
 
-        Args:
-            hotkey: The miner hotkey to remove
-
-        Returns:
-            bool: True if removed, False if not found
-        """
-        return self._server_proxy.remove_miner_rpc(hotkey)
-
-    def clear_all_miners(self) -> None:
+    def clear_active_miners(self):
         """Clear all miners from active_miners."""
-        self._server_proxy.clear_all_miners_rpc()
+        self.active_miners.clear()
 
-    def update_miners(self, miners_dict: dict) -> int:
+    def update_active_miners(self, miners_dict: dict) -> int:
         """
         Bulk update active_miners from a dict.
-        Used for syncing from another validator.
 
         Args:
-            miners_dict: Dict mapping hotkeys to (bucket, start_time, prev_bucket, prev_time) tuples
+            miners_dict: Can be either:
+                - Dict mapping hotkey to tuple (bucket, start_time, prev_bucket, prev_time)
+                - Dict mapping hotkey to dict with keys: bucket, start_time, prev_bucket, prev_time
+                  (for RPC serialization compatibility)
 
         Returns:
-            int: Number of miners updated
+            Number of miners updated
         """
-        # Convert tuples to dicts for RPC serialization
-        miners_rpc_dict = {}
-        for hotkey, (bucket, start_time, prev_bucket, prev_time) in miners_dict.items():
-            miners_rpc_dict[hotkey] = {
-                "bucket": bucket.value,
-                "start_time": start_time,
-                "prev_bucket": prev_bucket.value if prev_bucket else None,
-                "prev_time": prev_time
-            }
+        # Handle both tuple format and dict format (for RPC compatibility)
+        normalized_dict = {}
+        for hotkey, data in miners_dict.items():
+            if isinstance(data, tuple):
+                # Already in tuple format
+                normalized_dict[hotkey] = data
+            elif isinstance(data, dict):
+                # Convert from RPC dict format to tuple format
+                bucket = MinerBucket(data["bucket"]) if isinstance(data["bucket"], str) else data["bucket"]
+                start_time = data["start_time"]
+                prev_bucket = MinerBucket(data["prev_bucket"]) if (data.get("prev_bucket") and isinstance(data["prev_bucket"], str)) else data.get("prev_bucket")
+                prev_time = data.get("prev_time")
 
-        return self._server_proxy.update_miners_rpc(miners_rpc_dict)
+                normalized_dict[hotkey] = (bucket, start_time, prev_bucket, prev_time)
+            else:
+                raise ValueError(f"Invalid data type for miner {hotkey}: {type(data)}")
+
+        count = len(normalized_dict)
+        self.active_miners.update(normalized_dict)
+        return count
 
     def iter_active_miners(self):
-        """
-        Iterate over active miners.
-        Note: This fetches ALL miners and iterates locally.
+        """Iterate over active miners."""
+        for hotkey, (bucket, start_time, prev_bucket, prev_time) in self.active_miners.items():
+            yield hotkey, bucket, start_time, prev_bucket, prev_time
 
-        Yields:
-            Tuples of (hotkey, bucket, start_time, prev_bucket, prev_time)
-        """
-        # Get all miners from server
-        testing_miners = self.get_testing_miners()
-        success_miners = self.get_success_miners()
-        probation_miners = self.get_probation_miners()
-        plagiarism_miners = self.get_plagiarism_miners()
+    def get_all_miner_hotkeys(self) -> list:
+        """Get list of all active miner hotkeys."""
+        return list(self.active_miners.keys())
 
-        # Iterate over each bucket
-        for hotkey, start_time in testing_miners.items():
-            prev_bucket = self.get_miner_previous_bucket(hotkey)
-            prev_time = self.get_miner_previous_time(hotkey)
-            yield hotkey, MinerBucket.CHALLENGE, start_time, prev_bucket, prev_time
+    def get_all_elimination_reasons(self) -> dict:
+        """Get all elimination reasons as a dict."""
+        with self.eliminations_lock:
+            return dict(self.eliminations_with_reasons)
 
-        for hotkey, start_time in success_miners.items():
-            prev_bucket = self.get_miner_previous_bucket(hotkey)
-            prev_time = self.get_miner_previous_time(hotkey)
-            yield hotkey, MinerBucket.MAINCOMP, start_time, prev_bucket, prev_time
+    def has_elimination_reasons(self) -> bool:
+        """Check if there are any elimination reasons."""
+        with self.eliminations_lock:
+            return bool(self.eliminations_with_reasons)
 
-        for hotkey, start_time in probation_miners.items():
-            prev_bucket = self.get_miner_previous_bucket(hotkey)
-            prev_time = self.get_miner_previous_time(hotkey)
-            yield hotkey, MinerBucket.PROBATION, start_time, prev_bucket, prev_time
+    def pop_elimination_reason(self, hotkey: str) -> Optional[Tuple[str, float]]:
+        """Atomically get and remove an elimination reason for a single hotkey."""
+        with self.eliminations_lock:
+            return self.eliminations_with_reasons.pop(hotkey, None)
 
-        for hotkey, start_time in plagiarism_miners.items():
-            prev_bucket = self.get_miner_previous_bucket(hotkey)
-            prev_time = self.get_miner_previous_time(hotkey)
-            yield hotkey, MinerBucket.PLAGIARISM, start_time, prev_bucket, prev_time
+    def clear_elimination_reasons(self):
+        """Clear all elimination reasons."""
+        with self.eliminations_lock:
+            self.eliminations_with_reasons.clear()
 
-    def get_testing_miners(self) -> dict:
-        """Get all CHALLENGE bucket miners as dict {hotkey: start_time}."""
-        return self._server_proxy.get_testing_miners_rpc()
+    def update_elimination_reasons(self, reasons_dict: dict) -> int:
+        """Accumulate elimination reasons from a dict."""
+        with self.eliminations_lock:
+            self.eliminations_with_reasons.update(reasons_dict)
+        return len(self.eliminations_with_reasons)
 
-    def get_success_miners(self) -> dict:
-        """Get all MAINCOMP bucket miners as dict {hotkey: start_time}."""
-        return self._server_proxy.get_success_miners_rpc()
+    def get_miner_bucket(self, hotkey):
+        """Get the bucket of a miner."""
+        return self.active_miners.get(hotkey, [None])[0]
 
-    def get_probation_miners(self) -> dict:
-        """Get all PROBATION bucket miners as dict {hotkey: start_time}."""
-        return self._server_proxy.get_probation_miners_rpc()
+    def get_testing_miners(self):
+        """Get all CHALLENGE bucket miners."""
+        return copy.deepcopy(self._bucket_view(MinerBucket.CHALLENGE))
 
-    def get_plagiarism_miners(self) -> dict:
-        """Get all PLAGIARISM bucket miners as dict {hotkey: start_time}."""
-        return self._server_proxy.get_plagiarism_miners_rpc()
+    def get_success_miners(self):
+        """Get all MAINCOMP bucket miners."""
+        return copy.deepcopy(self._bucket_view(MinerBucket.MAINCOMP))
 
-    # ==================== Management Methods (exposed via RPC) ====================
+    def get_probation_miners(self):
+        """Get all PROBATION bucket miners."""
+        return copy.deepcopy(self._bucket_view(MinerBucket.PROBATION))
 
-    def _clear_challengeperiod_in_memory_and_disk(self):
-        """
-        Clear all challenge period data (memory and disk).
-        Uses RPC in both test and production modes.
-        """
-        self._server_proxy.clear_challengeperiod_in_memory_and_disk_rpc()
+    def get_plagiarism_miners(self):
+        """Get all PLAGIARISM bucket miners."""
+        return copy.deepcopy(self._bucket_view(MinerBucket.PLAGIARISM))
 
-    def _write_challengeperiod_from_memory_to_disk(self):
-        """
-        Write challenge period data from memory to disk.
-        Uses RPC in both test and production modes.
-        """
-        self._server_proxy.write_challengeperiod_from_memory_to_disk_rpc()
+    def _bucket_view(self, bucket: MinerBucket):
+        """Get all miners in a specific bucket as {hotkey: start_time} dict."""
+        return {hk: ts for hk, (b, ts, _, _) in self.active_miners.items() if b == bucket}
 
-    def sync_challenge_period_data(self, active_miners_sync):
-        """
-        Sync challenge period data from another validator.
-        Used for P2P synchronization.
-        Uses RPC in both test and production modes.
-
-        Args:
-            active_miners_sync: Checkpoint dict from another validator
-        """
-        self._server_proxy.sync_challenge_period_data_rpc(active_miners_sync)
-
-    def refresh(self, current_time: int = None, iteration_epoch=None):
-        """
-        Refresh the challenge period manager.
-        Uses RPC in both test and production modes.
-
-        Args:
-            current_time: Current time in milliseconds
-            iteration_epoch: Epoch captured at start of iteration
-        """
-        self._server_proxy.refresh_rpc(current_time=current_time, iteration_epoch=iteration_epoch)
-
-    def meets_time_criteria(self, current_time, bucket_start_time, bucket):
-        """
-        Check if a miner meets time criteria for their bucket.
-        Uses RPC in both test and production modes.
-
-        Args:
-            current_time: Current time in milliseconds
-            bucket_start_time: Bucket start time in milliseconds
-            bucket: MinerBucket enum
-
-        Returns:
-            bool: True if miner meets time criteria
-        """
-        return self._server_proxy.meets_time_criteria_rpc(current_time, bucket_start_time, bucket.value)
-
-    def remove_eliminated(self, eliminations=None):
-        """
-        Remove eliminated miners from active_miners.
-        Uses RPC in both test and production modes.
-
-        Args:
-            eliminations: Optional list of elimination dicts. If None, uses elimination_manager.
-        """
-        self._server_proxy.remove_eliminated_rpc(eliminations=eliminations)
-
-    def update_plagiarism_miners(self, current_time, plagiarism_miners):
-        """
-        Update plagiarism miners.
-        Uses RPC in both test and production modes.
-
-        Args:
-            current_time: Current time in milliseconds
-            plagiarism_miners: Dict of plagiarism miners {hotkey: start_time}
-        """
-        self._server_proxy.update_plagiarism_miners_rpc(current_time, plagiarism_miners)
-
-    def prepare_plagiarism_elimination_miners(self, current_time):
-        """
-        Prepare plagiarism miners for elimination.
-        Uses RPC in both test and production modes.
-
-        Args:
-            current_time: Current time in milliseconds
-
-        Returns:
-            dict: Mapping hotkeys to (reason, drawdown) tuples
-        """
-        return self._server_proxy.prepare_plagiarism_elimination_miners_rpc(current_time)
-
-    def _demote_plagiarism_in_memory(self, hotkeys, current_time):
-        """
-        Demote miners to plagiarism bucket (exposed for testing).
-        Uses RPC in both test and production modes.
-
-        Args:
-            hotkeys: List of hotkeys to demote
-            current_time: Current time in milliseconds
-        """
-        self._server_proxy._demote_plagiarism_in_memory_rpc(hotkeys, current_time)
-
-    def _promote_plagiarism_to_previous_bucket_in_memory(self, hotkeys, current_time):
-        """
-        Promote plagiarism miners to their previous bucket (exposed for testing).
-        Uses RPC in both test and production modes.
-
-        Args:
-            hotkeys: List of hotkeys to promote
-            current_time: Current time in milliseconds
-        """
-        self._server_proxy._promote_plagiarism_to_previous_bucket_in_memory_rpc(hotkeys, current_time)
-
-    def _eliminate_challengeperiod_in_memory(self, eliminations_with_reasons):
-        """
-        Eliminate miners from challenge period (exposed for testing).
-        Uses RPC in both test and production modes.
-
-        Args:
-            eliminations_with_reasons: Dict mapping hotkeys to (reason, drawdown) tuples
-        """
-        self._server_proxy._eliminate_challengeperiod_in_memory_rpc(eliminations_with_reasons)
-
-    def _add_challengeperiod_testing_in_memory_and_disk(
-        self,
-        new_hotkeys,
-        eliminations,
-        hk_to_first_order_time,
-        default_time
-    ):
-        """
-        Add miners to challenge period (exposed for testing).
-        Uses RPC in both test and production modes.
-
-        Args:
-            new_hotkeys: List of hotkeys to potentially add
-            eliminations: List of elimination dicts
-            hk_to_first_order_time: Dict mapping hotkeys to first order timestamps
-            default_time: Default time to use if no first order time
-        """
-        self._server_proxy._add_challengeperiod_testing_in_memory_and_disk_rpc(
-            new_hotkeys=new_hotkeys,
-            eliminations=eliminations,
-            hk_to_first_order_time=hk_to_first_order_time,
-            default_time=default_time
-        )
-
-    def _promote_challengeperiod_in_memory(self, hotkeys, current_time):
-        """
-        Promote miners to main competition (exposed for testing).
-        Uses RPC in both test and production modes.
-
-        Args:
-            hotkeys: List of hotkeys to promote
-            current_time: Current time in milliseconds
-        """
-        self._server_proxy._promote_challengeperiod_in_memory_rpc(hotkeys, current_time)
-
-    def inspect(
-        self,
-        positions,
-        ledger,
-        success_hotkeys,
-        probation_hotkeys,
-        inspection_hotkeys,
-        current_time,
-        hk_to_first_order_time=None,
-        combined_scores_dict=None
-    ):
-        """
-        Run challenge period inspection (exposed for testing).
-        Uses RPC in both test and production modes.
-
-        Returns:
-            tuple: (hotkeys_to_promote, hotkeys_to_demote, miners_to_eliminate)
-        """
-        return self._server_proxy.inspect_rpc(
-            positions=positions,
-            ledger=ledger,
-            success_hotkeys=success_hotkeys,
-            probation_hotkeys=probation_hotkeys,
-            inspection_hotkeys=inspection_hotkeys,
-            current_time=current_time,
-            hk_to_first_order_time=hk_to_first_order_time,
-            combined_scores_dict=combined_scores_dict
-        )
-
-    def to_checkpoint_dict(self) -> dict:
-        """
-        Get challenge period data as a checkpoint dict for serialization.
-        Uses RPC in both test and production modes.
-
-        Returns:
-            dict: Mapping hotkeys to their bucket information
-        """
-        return self._server_proxy.to_checkpoint_dict_rpc()
+    def to_checkpoint_dict(self):
+        """Get challenge period data as a checkpoint dict for serialization."""
+        json_dict = {
+            hotkey: {
+                "bucket": bucket.value,
+                "bucket_start_time": start_time,
+                "previous_bucket": previous_bucket.value if previous_bucket else None,
+                "previous_bucket_start_time": previous_bucket_time
+            }
+            for hotkey, bucket, start_time, previous_bucket, previous_bucket_time in self.iter_active_miners()
+        }
+        return json_dict
 
     @staticmethod
     def parse_checkpoint_dict(json_dict):
-        """
-        Static method: Parse checkpoint dictionary from disk format.
-        Available in both test and RPC modes.
-        """
-        from vali_objects.utils.challengeperiod_manager_server import ChallengePeriodManagerServer
-        return ChallengePeriodManagerServer.parse_checkpoint_dict(json_dict)
+        """Parse checkpoint dict from disk."""
+        formatted_dict = {}
 
-    @staticmethod
-    def screen_minimum_interaction(ledger_element) -> bool:
-        """
-        Static method: Check if miner has minimum number of trading days.
-        Available in both test and RPC modes.
+        if "testing" in json_dict.keys() and "success" in json_dict.keys():
+            testing = json_dict.get("testing", {})
+            success = json_dict.get("success", {})
+            for hotkey, start_time in testing.items():
+                formatted_dict[hotkey] = (MinerBucket.CHALLENGE, start_time, None, None)
+            for hotkey, start_time in success.items():
+                formatted_dict[hotkey] = (MinerBucket.MAINCOMP, start_time, None, None)
+        else:
+            for hotkey, info in json_dict.items():
+                bucket = MinerBucket(info["bucket"]) if info.get("bucket") else None
+                bucket_start_time = info.get("bucket_start_time")
+                previous_bucket = MinerBucket(info["previous_bucket"]) if info.get("previous_bucket") else None
+                previous_bucket_start_time = info.get("previous_bucket_start_time")
 
-        Args:
-            ledger_element: Performance ledger element (portfolio ledger)
+                formatted_dict[hotkey] = (bucket, bucket_start_time, previous_bucket, previous_bucket_start_time)
 
-        Returns:
-            bool: True if miner has enough trading days, False otherwise
-        """
-        from vali_objects.utils.challengeperiod_manager_server import ChallengePeriodManagerServer
-        return ChallengePeriodManagerServer.screen_minimum_interaction(ledger_element)
+        return formatted_dict

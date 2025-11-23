@@ -1,140 +1,253 @@
+# developer: jbonilla
+# Copyright © 2024 Taoshi Inc
 """
-Asset Selection Manager - RPC Client for managing asset class selections.
+AssetSelectionManager - Business logic for asset class selection.
 
-This client connects to AssetSelectionManagerServer running in a separate process.
-Much faster than IPC managerized dicts.
+This manager contains all the business logic for managing asset class selections.
+It does NOT handle RPC - that's the job of AssetSelectionServer.
 
 Miners can select an asset class (forex, crypto, etc.) only once.
 Once selected, the miner cannot trade any trade pair from a different asset class.
+Asset selections are persisted to disk and loaded on startup.
 """
-import bittensor as bt
+import threading
 from typing import Dict, Optional
-from multiprocessing import Process
+
+import asyncio
+import bittensor as bt
 
 import template.protocol
-from shared_objects.rpc_service_base import RPCServiceBase
-from vali_objects.vali_config import TradePairCategory, ValiConfig
-
+from time_util.time_util import TimeUtil
+from vali_objects.vali_config import TradePairCategory, ValiConfig, RPCConnectionMode
+from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
+from vali_objects.utils.vali_utils import ValiUtils
 
 ASSET_CLASS_SELECTION_TIME_MS = 1758326340000
 
 
-class AssetSelectionManager(RPCServiceBase):
+class AssetSelectionManager:
     """
-    Lightweight RPC client for accessing asset selection data.
+    Manages asset class selection for miners (business logic only).
 
-    The actual asset selection management happens in AssetSelectionManagerServer.
-    This client provides access via RPC.
+    Each miner can select an asset class (forex, crypto, etc.) only once.
+    Once selected, the miner cannot trade any trade pair from a different asset class.
+    Asset selections are persisted to disk and loaded on startup.
 
-    Inherits from RPCServiceBase for common RPC infrastructure (connection management,
-    process lifecycle, stale server cleanup, health checks).
+    This class contains NO RPC code - only business logic.
+    For RPC access, use AssetSelectionServer (which wraps this manager).
     """
 
-    def __init__(self, config=None, metagraph=None, running_unit_tests=False, slack_notifier=None):
+    def __init__(
+        self,
+        running_unit_tests: bool = False,
+        connection_mode: RPCConnectionMode = RPCConnectionMode.RPC,
+        config=None
+    ):
         """
-        Initialize client and start server process.
+        Initialize the AssetSelectionManager.
 
         Args:
-            config: Validator config (for netuid, wallet)
-            metagraph: Metagraph instance for broadcasting
-            running_unit_tests: Whether running in unit test mode
-            slack_notifier: Slack notifier for health check alerts
+            running_unit_tests: Whether the manager is being used in unit tests
+            connection_mode: Connection mode (RPC vs LOCAL for tests)
+            config: Validator config (for netuid, wallet) - optional, used to initialize wallet
         """
-        # Store dependencies for server creation
-        self._config = config
-        self._metagraph = metagraph
+        self.running_unit_tests = running_unit_tests
+        self.connection_mode = connection_mode
+        self.is_mothership = 'ms' in ValiUtils.get_secrets(running_unit_tests=running_unit_tests)
 
-        # Initialize RPCServiceBase (handles connection, process lifecycle, etc.)
-        super().__init__(
-            service_name=ValiConfig.RPC_ASSETSELECTION_SERVICE_NAME,
-            port=ValiConfig.RPC_ASSETSELECTION_PORT,
-            running_unit_tests=running_unit_tests,
-            enable_health_check=True,
-            health_check_interval_s=60,
-            max_consecutive_failures=3,
-            enable_auto_restart=True,
-            slack_notifier=slack_notifier
+        # FIX: Create lock immediately in __init__, not lazy!
+        # This prevents the race condition where multiple threads could create separate lock instances
+        self._asset_selection_lock = threading.RLock()
+
+        # Create own MetagraphClient (forward compatibility - no parameter passing)
+        from shared_objects.metagraph_server import MetagraphClient
+        self._metagraph_client = MetagraphClient(connection_mode=connection_mode)
+
+        # Initialize wallet directly
+        if not running_unit_tests and config is not None:
+            self.is_testnet = config.netuid == 116
+            self._wallet = bt.wallet(config=config)
+            bt.logging.info("[ASSET_MGR] Wallet initialized")
+        else:
+            self.is_testnet = False
+            self._wallet = None
+
+        # SOURCE OF TRUTH: Normal Python dict
+        # Structure: miner_hotkey -> TradePairCategory
+        self.asset_selections: Dict[str, TradePairCategory] = {}
+
+        self.ASSET_SELECTIONS_FILE = ValiBkpUtils.get_asset_selections_file_location(
+            running_unit_tests=running_unit_tests
         )
+        self._load_asset_selections_from_disk()
 
-        # Cache static file path locally (no need for RPC call)
-        from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
-        self._asset_selections_file = ValiBkpUtils.get_asset_selections_file_location(running_unit_tests=running_unit_tests)
+        bt.logging.info(f"[ASSET_MGR] AssetSelectionManager initialized with {len(self.asset_selections)} selections")
 
-        # Initialize the service (RPC mode or direct mode for tests)
-        self._initialize_service()
+    @property
+    def asset_selection_lock(self):
+        """Thread-safe lock for protecting asset_selections dict access"""
+        return self._asset_selection_lock
 
-    # ============================================================================
-    # RPCServiceBase IMPLEMENTATION (required abstract methods)
-    # ============================================================================
+    @property
+    def wallet(self):
+        """Get wallet."""
+        return self._wallet
 
-    def _create_direct_server(self):
+    @property
+    def metagraph(self):
+        """Get metagraph client (created internally)"""
+        return self._metagraph_client
+
+    # ==================== Persistence Methods ====================
+
+    def _load_asset_selections_from_disk(self) -> None:
+        """Load asset selections from disk into memory using ValiUtils pattern."""
+        try:
+            disk_data = ValiUtils.get_vali_json_file_dict(self.ASSET_SELECTIONS_FILE)
+            parsed_selections = self._parse_asset_selections_dict(disk_data)
+
+            # FIX: Protect clear + update with lock to prevent data loss from concurrent access
+            with self._asset_selection_lock:
+                self.asset_selections.clear()
+                self.asset_selections.update(parsed_selections)
+
+            bt.logging.info(f"[ASSET_MGR] Loaded {len(parsed_selections)} asset selections from disk")
+        except Exception as e:
+            bt.logging.error(f"[ASSET_MGR] Error loading asset selections from disk: {e}")
+
+    def _save_asset_selections_to_disk(self) -> None:
         """
-        Create a direct in-memory server instance for unit tests.
+        Save asset selections from memory to disk using ValiBkpUtils pattern.
 
-        Returns:
-            AssetSelectionManagerServer instance (not proxied, direct Python object)
+        IMPORTANT: Caller MUST hold self._asset_selection_lock before calling this method!
+        This ensures thread-safe iteration over asset_selections and prevents concurrent writes.
         """
-        from vali_objects.utils.asset_selection_manager_server import AssetSelectionManagerServer
+        try:
+            selections_data = self._to_dict()
+            ValiBkpUtils.write_file(self.ASSET_SELECTIONS_FILE, selections_data)
+            bt.logging.debug(f"[ASSET_MGR] Saved {len(selections_data)} asset selections to disk")
+        except Exception as e:
+            bt.logging.error(f"[ASSET_MGR] Error saving asset selections to disk: {e}")
 
-        return AssetSelectionManagerServer(
-            config=self._config,
-            metagraph=self._metagraph,
-            running_unit_tests=self.running_unit_tests
-        )
-
-    def _start_server_process(self, address, authkey, server_ready):
+    def _to_dict(self) -> Dict:
         """
-        Start the RPC server in a separate process.
+        Convert in-memory asset selections to disk format.
+
+        IMPORTANT: Caller MUST hold self._asset_selection_lock before calling this method!
+        This prevents RuntimeError from dict modification during iteration.
+        """
+        return {
+            hotkey: asset_class.value
+            for hotkey, asset_class in self.asset_selections.items()
+        }
+
+    @staticmethod
+    def _parse_asset_selections_dict(json_dict: Dict) -> Dict[str, TradePairCategory]:
+        """Parse disk format back to in-memory format."""
+        parsed_selections = {}
+
+        for hotkey, asset_class_str in json_dict.items():
+            try:
+                if asset_class_str:
+                    # Convert string back to TradePairCategory enum
+                    asset_class = TradePairCategory(asset_class_str)
+                    parsed_selections[hotkey] = asset_class
+            except ValueError as e:
+                bt.logging.warning(f"[ASSET_MGR] Invalid asset selection for miner {hotkey}: {e}")
+                continue
+
+        return parsed_selections
+
+    def broadcast_asset_selection_to_validators(self, hotkey: str, asset_selection: TradePairCategory):
+        """
+        Broadcast AssetSelection synapse to other validators.
+        Runs in a separate thread to avoid blocking the main process.
 
         Args:
-            address: (host, port) tuple for RPC server
-            authkey: Authentication key for RPC connection
-            server_ready: Event to signal when server is ready
-
-        Returns:
-            Process object for the server process
+            hotkey: The miner's hotkey
+            asset_selection: The TradePairCategory enum value
         """
-        from vali_objects.utils.asset_selection_manager_server import start_asset_selection_manager_server
+        def run_broadcast():
+            try:
+                asyncio.run(self._async_broadcast_asset_selection(hotkey, asset_selection))
+            except Exception as e:
+                bt.logging.error(f"[ASSET_MGR] Failed to broadcast asset selection for {hotkey}: {e}")
 
-        process = Process(
-            target=start_asset_selection_manager_server,
-            args=(
-                address,
-                authkey,
-                self._config,
-                self._metagraph,
-                self.running_unit_tests,
-                server_ready
-            ),
-            daemon=True
-        )
-        process.start()
-        return process
+        thread = threading.Thread(target=run_broadcast, daemon=True)
+        thread.start()
 
-    # ============================================================================
-    # PUBLIC CLIENT METHODS (call server RPC methods)
-    # ============================================================================
-
-    def receive_asset_selection(self, synapse: template.protocol.AssetSelection) -> template.protocol.AssetSelection:
+    async def _async_broadcast_asset_selection(self, hotkey: str, asset_selection: TradePairCategory):
         """
-        Receive miner's asset selection.
+        Asynchronously broadcast AssetSelection synapse to other validators.
 
         Args:
-            synapse: AssetSelection synapse from miner
-
-        Returns:
-            Updated synapse with success/error status
+            hotkey: The miner's hotkey
+            asset_selection: The TradePairCategory enum value
         """
-        return self._server_proxy.receive_asset_selection_rpc(synapse)
+        try:
+            if not self.wallet:
+                bt.logging.debug("[ASSET_MGR] No wallet configured, skipping broadcast")
+                return
 
-    def sync_miner_asset_selection_data(self, asset_selection_data: Dict[str, str]) -> None:
-        """
-        Sync miner asset selection data from external source (backup/sync).
+            if not self.metagraph:
+                bt.logging.debug("[ASSET_MGR] No metagraph configured, skipping broadcast")
+                return
 
-        Args:
-            asset_selection_data: Dict mapping hotkey to asset class string
-        """
-        self._server_proxy.sync_miner_asset_selection_data_rpc(asset_selection_data)
+            # Get other validators to broadcast to
+            if self.is_testnet:
+                validator_axons = [
+                    n.axon_info for n in self.metagraph.get_neurons()
+                    if n.axon_info.ip != ValiConfig.AXON_NO_IP
+                    and n.axon_info.hotkey != self.wallet.hotkey.ss58_address
+                ]
+            else:
+                validator_axons = [
+                    n.axon_info for n in self.metagraph.get_neurons()
+                    if n.stake > bt.Balance(ValiConfig.STAKE_MIN)
+                    and n.axon_info.ip != ValiConfig.AXON_NO_IP
+                    and n.axon_info.hotkey != self.wallet.hotkey.ss58_address
+                ]
+
+            if not validator_axons:
+                bt.logging.debug("[ASSET_MGR] No other validators to broadcast AssetSelection to")
+                return
+
+            # Create AssetSelection synapse with the data
+            asset_selection_data = {
+                "hotkey": hotkey,
+                "asset_selection": asset_selection.value if hasattr(asset_selection, 'value') else str(asset_selection)
+            }
+
+            asset_selection_synapse = template.protocol.AssetSelection(
+                asset_selection=asset_selection_data
+            )
+
+            bt.logging.info(f"[ASSET_MGR] Broadcasting AssetSelection for {hotkey} to {len(validator_axons)} validators")
+
+            # Send to other validators using dendrite
+            async with bt.dendrite(wallet=self.wallet) as dendrite:
+                responses = await dendrite.aquery(validator_axons, asset_selection_synapse)
+
+                # Log results
+                success_count = 0
+                for response in responses:
+                    if response.successfully_processed:
+                        success_count += 1
+                    elif response.error_message:
+                        bt.logging.warning(
+                            f"[ASSET_MGR] Failed to send AssetSelection to {response.axon.hotkey}: {response.error_message}"
+                        )
+
+                bt.logging.info(
+                    f"[ASSET_MGR] AssetSelection broadcast completed: {success_count}/{len(responses)} validators updated"
+                )
+
+        except Exception as e:
+            bt.logging.error(f"[ASSET_MGR] Error in async broadcast asset selection: {e}")
+            import traceback
+            bt.logging.error(traceback.format_exc())
+
+    # ==================== Query Methods ====================
 
     def is_valid_asset_class(self, asset_class: str) -> bool:
         """
@@ -146,9 +259,15 @@ class AssetSelectionManager(RPCServiceBase):
         Returns:
             True if valid, False otherwise
         """
-        return self._server_proxy.is_valid_asset_class_rpc(asset_class)
+        valid_asset_classes = [category.value for category in TradePairCategory]
+        return asset_class.lower() in [cls.lower() for cls in valid_asset_classes]
 
-    def validate_order_asset_class(self, miner_hotkey: str, trade_pair_category: TradePairCategory, timestamp_ms: int = None) -> bool:
+    def validate_order_asset_class(
+        self,
+        miner_hotkey: str,
+        trade_pair_category: TradePairCategory,
+        timestamp_ms: int = None
+    ) -> bool:
         """
         Check if a miner is allowed to trade a specific asset class.
 
@@ -160,7 +279,58 @@ class AssetSelectionManager(RPCServiceBase):
         Returns:
             True if the miner can trade this asset class, False otherwise
         """
-        return self._server_proxy.validate_order_asset_class_rpc(miner_hotkey, trade_pair_category, timestamp_ms)
+        if timestamp_ms is None:
+            timestamp_ms = TimeUtil.now_in_millis()
+        if timestamp_ms < ASSET_CLASS_SELECTION_TIME_MS:
+            return True
+
+        # FIX: Protect read with lock to prevent TOCTOU race
+        # Without lock, could read empty dict during sync or get stale data
+        with self._asset_selection_lock:
+            selected_asset_class = self.asset_selections.get(miner_hotkey, None)
+            if selected_asset_class is None:
+                return False
+
+            # Check if the selected asset class matches the trade pair category
+            return selected_asset_class == trade_pair_category
+
+    def get_asset_selections(self) -> Dict[str, TradePairCategory]:
+        """
+        Get the asset_selections dict (copy).
+
+        Returns:
+            Dict[str, TradePairCategory]: Dictionary mapping hotkey to TradePairCategory enum
+        """
+        # FIX: Protect dict copy with lock to prevent torn reads
+        # Without lock, could see partial state if dict modified during copy
+        with self._asset_selection_lock:
+            return dict(self.asset_selections)
+
+    def get_all_miner_selections(self) -> Dict[str, str]:
+        """
+        Get all miner asset selections as a dictionary.
+
+        Returns:
+            Dict[str, str]: Dictionary mapping miner hotkeys to their asset class selections (as strings).
+                           Returns empty dict if no selections exist.
+        """
+        try:
+            # Only need lock for the copy operation to get a consistent snapshot
+            with self.asset_selection_lock:
+                # Convert the dict to a regular dict
+                selections_copy = dict(self.asset_selections)
+
+            # Lock not needed here - working with local copy
+            # Convert TradePairCategory objects to their string values
+            return {
+                hotkey: asset_class.value if hasattr(asset_class, 'value') else str(asset_class)
+                for hotkey, asset_class in selections_copy.items()
+            }
+        except Exception as e:
+            bt.logging.error(f"[ASSET_MGR] Error getting all miner selections: {e}")
+            return {}
+
+    # ==================== Mutation Methods ====================
 
     def process_asset_selection_request(self, asset_selection: str, miner: str) -> Dict[str, str]:
         """
@@ -172,22 +342,87 @@ class AssetSelectionManager(RPCServiceBase):
 
         Returns:
             Dict containing success status and message
-        """
-        return self._server_proxy.process_asset_selection_request_rpc(asset_selection, miner)
 
-    def get_all_miner_selections(self) -> Dict[str, str]:
+        Note:
+            This method does NOT broadcast to validators - that's the server's job.
+            The server will call this method and then handle broadcasting.
         """
-        Get all miner asset selections as a dictionary.
+        try:
+            # Validate asset class (read-only, safe outside lock)
+            if not self.is_valid_asset_class(asset_selection):
+                valid_classes = [category.value for category in TradePairCategory]
+                return {
+                    'successfully_processed': False,
+                    'error_message': f'Invalid asset class. Valid options are: {", ".join(valid_classes)}'
+                }
 
-        Returns:
-            Dict[str, str]: Dictionary mapping miner hotkeys to their asset class selections (as strings).
-                           Returns empty dict if no selections exist.
+            # Convert string to TradePairCategory
+            asset_class = TradePairCategory(asset_selection.lower())
+
+            # FIX: Move check inside lock for atomic check-then-set
+            # This prevents race where multiple threads could all pass the check before any sets the value
+            with self._asset_selection_lock:
+                # Re-check inside lock (double-checked locking pattern)
+                if miner in self.asset_selections:
+                    current_selection = self.asset_selections.get(miner)
+                    return {
+                        'successfully_processed': False,
+                        'error_message': f'Asset class already selected: {current_selection.value}. Cannot change selection.'
+                    }
+
+                # Atomic check-then-set: Both check and set now happen atomically
+                self.asset_selections[miner] = asset_class
+                self._save_asset_selections_to_disk()
+
+            bt.logging.info(f"[ASSET_MGR] Miner {miner} selected asset class: {asset_selection}")
+
+            return {
+                'successfully_processed': True,
+                'success_message': f'Miner {miner} successfully selected asset class: {asset_selection}',
+                'asset_class': asset_class  # Return the enum for server to use in broadcast
+            }
+
+        except Exception as e:
+            bt.logging.error(f"[ASSET_MGR] Error processing asset selection request for miner {miner}: {e}")
+            return {
+                'successfully_processed': False,
+                'error_message': 'Internal server error processing asset selection request'
+            }
+
+    def sync_miner_asset_selection_data(self, asset_selection_data: Dict[str, str]) -> None:
         """
-        return self._server_proxy.get_all_miner_selections_rpc()
+        Sync miner asset selection data from external source (backup/sync).
+
+        Args:
+            asset_selection_data: Dict mapping hotkey to asset class string
+        """
+        if not asset_selection_data:
+            bt.logging.warning("[ASSET_MGR] asset_selection_data appears empty or invalid")
+            return
+        try:
+            # Parse outside lock (can take time, doesn't need lock)
+            synced_data = self._parse_asset_selections_dict(asset_selection_data)
+
+            # FIX: Use atomic replacement instead of clear + update
+            # This prevents readers from seeing empty dict during the clear-then-populate gap
+            with self._asset_selection_lock:
+                # Option 1: Atomic replacement (recommended for visibility)
+                # Old data visible until new data ready
+                self.asset_selections = synced_data
+
+                # Option 2 (commented): Clear + update if dict identity must be preserved
+                # self.asset_selections.clear()
+                # self.asset_selections.update(synced_data)
+
+                self._save_asset_selections_to_disk()
+
+            bt.logging.info(f"[ASSET_MGR] Synced {len(synced_data)} miner asset selection records")
+        except Exception as e:
+            bt.logging.error(f"[ASSET_MGR] Failed to sync miner asset selection data: {e}")
 
     def receive_asset_selection_update(self, asset_selection_data: dict) -> bool:
         """
-        Process an incoming AssetSelection synapse and update miner asset selection.
+        Process an incoming asset selection update from another validator.
 
         Args:
             asset_selection_data: Dictionary containing hotkey, asset selection
@@ -195,56 +430,47 @@ class AssetSelectionManager(RPCServiceBase):
         Returns:
             bool: True if successful, False otherwise
         """
-        return self._server_proxy.receive_asset_selection_update_rpc(asset_selection_data)
+        try:
+            if self.is_mothership:
+                return False
 
-    def health_check(self) -> dict:
-        """Check server health."""
-        return self._server_proxy.health_check_rpc()
+            with self.asset_selection_lock:
+                # Extract data from the synapse
+                hotkey = asset_selection_data.get("hotkey")
+                asset_selection = asset_selection_data.get("asset_selection")
+                bt.logging.info(f"[ASSET_MGR] Processing asset selection for miner {hotkey}")
 
-    # ============================================================================
-    # BACKWARD COMPATIBILITY (for tests)
-    # ============================================================================
+                if not all([hotkey, asset_selection is not None]):
+                    bt.logging.warning(f"[ASSET_MGR] Invalid asset selection data received: {asset_selection_data}")
+                    return False
 
-    @property
-    def asset_selections(self) -> Dict[str, TradePairCategory]:
-        """
-        Get asset selections dict from server (backward compatibility for tests).
+                # Check if we already have this record (avoid duplicates)
+                if hotkey in self.asset_selections:
+                    bt.logging.debug(f"[ASSET_MGR] Asset selection for {hotkey} already exists")
+                    return True
 
-        In test mode, provides direct access to server's dict for mutation.
-        In production, uses RPC call which returns a copy.
+                # Parse the asset selection string to TradePairCategory
+                try:
+                    if isinstance(asset_selection, str):
+                        asset_class = TradePairCategory(asset_selection.lower())
+                    else:
+                        # Already a TradePairCategory
+                        asset_class = asset_selection
+                except ValueError as e:
+                    bt.logging.warning(f"[ASSET_MGR] Invalid asset class value: {asset_selection}: {e}")
+                    return False
 
-        Returns:
-            Dict mapping hotkey to TradePairCategory
-        """
-        if self.running_unit_tests:
-            # Direct mode: return actual dict reference for test mutations
-            return self._server_proxy.asset_selections
-        else:
-            # RPC mode: return copy via RPC call
-            return self._server_proxy.get_asset_selections_rpc()
+                # Add the new record
+                self.asset_selections[hotkey] = asset_class
 
-    @property
-    def ASSET_SELECTIONS_FILE(self) -> str:
-        """
-        Get asset selections file path (backward compatibility for tests).
+                # Save to disk
+                self._save_asset_selections_to_disk()
 
-        Cached locally during initialization - no RPC call needed for static value.
+                bt.logging.info(f"[ASSET_MGR] Updated miner asset selection for {hotkey}: {asset_selection}")
+                return True
 
-        Returns:
-            File path for asset selections persistence
-        """
-        return self._asset_selections_file
-
-    def _to_dict(self) -> Dict:
-        """Convert asset selections to disk format (backward compatibility)."""
-        return self._server_proxy.to_dict_rpc()
-
-    @staticmethod
-    def _parse_asset_selections_dict(json_dict: Dict) -> Dict[str, TradePairCategory]:
-        """Parse disk format back to in-memory format (backward compatibility)."""
-        from vali_objects.utils.asset_selection_manager_server import AssetSelectionManagerServer
-        return AssetSelectionManagerServer._parse_asset_selections_dict(json_dict)
-
-    def _save_asset_selections_to_disk(self) -> None:
-        """Save asset selections to disk (backward compatibility)."""
-        return self._server_proxy.save_asset_selections_to_disk_rpc()
+        except Exception as e:
+            bt.logging.error(f"[ASSET_MGR] Error processing asset selection update: {e}")
+            import traceback
+            bt.logging.error(traceback.format_exc())
+            return False

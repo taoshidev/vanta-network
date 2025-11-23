@@ -2,12 +2,12 @@
 # Copyright © 2024 Taoshi Inc
 import uuid
 
-from tests.shared_objects.mock_classes import MockPlagiarismDetector, MockLivePriceFetcher
+from tests.shared_objects.mock_classes import MockPlagiarismDetector, MockLivePriceFetcherServer
 from shared_objects.mock_metagraph import MockMetagraph
 from tests.vali_tests.base_objects.test_base import TestBase
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.position import Position
-from vali_objects.utils.elimination_manager import EliminationManager
+from vali_objects.utils.elimination_server import EliminationServer
 from vali_objects.utils.plagiarism_definitions import (
     CopySimilarity,
     FollowPercentage,
@@ -41,19 +41,21 @@ class TestPlagiarismUnit(TestBase):
         self.mock_metagraph = MockMetagraph([self.MINER_HOTKEY1, self.MINER_HOTKEY2, self.MINER_HOTKEY3, self.MINER_HOTKEY4])
         self.current_time = ValiConfig.PLAGIARISM_LOOKBACK_RANGE_MS
         secrets = ValiUtils.get_secrets(running_unit_tests=True)
-        self.live_price_fetcher = MockLivePriceFetcher(secrets=secrets, disable_ws=True)
+        self.live_price_fetcher = MockLivePriceFetcherServer(secrets=secrets, disable_ws=True)
 
-        # Initialize elimination_manager first (circular dependency pattern)
-        self.elimination_manager = EliminationManager(
+        # Create position manager first
+        self.position_manager = PositionManager(metagraph=self.mock_metagraph, running_unit_tests=True,
+                                                live_price_fetcher=self.live_price_fetcher)
+
+        # Create elimination server
+        self.elimination_server = EliminationServer(
             metagraph=self.mock_metagraph,
-            position_manager=None,
+            position_manager=self.position_manager,
             running_unit_tests=True
         )
 
-        self.position_manager = PositionManager(metagraph=self.mock_metagraph, running_unit_tests=True,
-                                                elimination_manager=self.elimination_manager,
-                                                live_price_fetcher=self.live_price_fetcher)
-        self.elimination_manager.position_manager = self.position_manager
+        # Connect EliminationClient to server directly for testing
+        self.position_manager.elimination_client.set_direct_server(self.elimination_server)
         self.plagiarism_detector = MockPlagiarismDetector(self.mock_metagraph, self.position_manager)
         self.DEFAULT_TEST_POSITION_UUID = "test_position"
         self.DEFAULT_OPEN_MS = 1000
@@ -110,7 +112,7 @@ class TestPlagiarismUnit(TestBase):
         self.position_manager.clear_all_miner_positions()
         self.plagiarism_detector.clear_plagiarism_from_disk()
 
-        self.plagiarism_detector.position_manager.elimination_manager.clear_eliminations()
+        self.plagiarism_detector.position_manager.elimination_client.clear_eliminations()
         self.position_counter = 0
         PlagiarismEvents.clear_plagiarism_events()
 

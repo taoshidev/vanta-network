@@ -110,7 +110,7 @@ class PositionSplitter:
         return len(PositionSplitter.find_split_points(position)) > 0
 
     @staticmethod
-    def split_position_on_flat(position: Position, live_price_fetcher, track_stats: bool = False) -> tuple[list[Position], dict]:
+    def split_position_on_flat(position: Position, price_fetcher_client, track_stats: bool = False) -> tuple[list[Position], dict]:
         """
         Split a position into multiple positions separated by FLAT orders or implicit flats.
 
@@ -127,7 +127,7 @@ class PositionSplitter:
 
         Args:
             position: The position to split
-            live_price_fetcher: Price fetcher for rebuilding positions after splitting
+            price_fetcher_client: Price fetcher for rebuilding positions after splitting
             track_stats: If True, returns detailed statistics about split types
 
         Returns:
@@ -190,7 +190,7 @@ class PositionSplitter:
 
             # Update the original position with the first group
             position.orders = order_groups[0]
-            position.rebuild_position_with_updated_orders(live_price_fetcher)
+            position.rebuild_position_with_updated_orders(price_fetcher_client)
 
             positions = [position]
 
@@ -204,7 +204,7 @@ class PositionSplitter:
                     orders=order_group,
                     account_size=position.account_size
                 )
-                new_position.rebuild_position_with_updated_orders(live_price_fetcher)
+                new_position.rebuild_position_with_updated_orders(price_fetcher_client)
                 positions.append(new_position)
 
             split_info = {

@@ -315,7 +315,7 @@ class Position(BaseModel):
     def get_net_leverage(self):
         return self.net_leverage
 
-    def rebuild_position_with_updated_orders(self, live_price_fetcher):
+    def rebuild_position_with_updated_orders(self, price_fetcher_client):
         self.current_return = 1.0
         self.close_ms = None
         self.return_at_close = 1.0
@@ -330,7 +330,7 @@ class Position(BaseModel):
         self.is_closed_position = False
         self.position_type = None
 
-        self._update_position(live_price_fetcher)
+        self._update_position(price_fetcher_client)
 
     def log_position_status(self):
         bt.logging.debug(
@@ -507,18 +507,18 @@ class Position(BaseModel):
 
         return max_leverage
 
-    def _handle_liquidation(self, time_ms, live_price_fetcher):
+    def _handle_liquidation(self, time_ms, price_fetcher_client):
         self._position_log("position liquidated. Trade pair: " + str(self.trade_pair.trade_pair_id))
         if self.is_closed_position:
             return
         else:
-            self.orders.append(self.generate_fake_flat_order(self, time_ms, live_price_fetcher))
+            self.orders.append(self.generate_fake_flat_order(self, time_ms, price_fetcher_client))
             self.close_out_position(time_ms)
 
     @staticmethod
-    def generate_fake_flat_order(position, elimination_time_ms, live_price_fetcher, extra_price_source=None):
+    def generate_fake_flat_order(position, elimination_time_ms, price_fetcher_client, extra_price_source=None):
         fake_flat_order_time = elimination_time_ms
-        price_source = live_price_fetcher.get_close_at_date(
+        price_source = price_fetcher_client.get_close_at_date(
             trade_pair=position.trade_pair,
             timestamp_ms=elimination_time_ms,
             verbose=False
@@ -549,8 +549,8 @@ class Position(BaseModel):
                            leverage=-position.net_leverage,
                            src=src,
                            price_sources=[x for x in (price_source, extra_price_source) if x is not None])
-        flat_order.quote_usd_rate = live_price_fetcher.get_quote_usd_conversion(flat_order, position)
-        flat_order.usd_base_rate = live_price_fetcher.get_usd_base_conversion(position.trade_pair, fake_flat_order_time, price, OrderType.FLAT, position)
+        flat_order.quote_usd_rate = price_fetcher_client.get_quote_usd_conversion(flat_order, position)
+        flat_order.usd_base_rate = price_fetcher_client.get_usd_base_conversion(position.trade_pair, fake_flat_order_time, price, OrderType.FLAT, position)
         return flat_order
 
     def calculate_return_with_fees(self, current_return_no_fees, timestamp_ms=None):
@@ -578,10 +578,10 @@ class Position(BaseModel):
             self._handle_liquidation(TimeUtil.now_in_millis() if time_ms is None else time_ms, live_price_fetcher)
 
 
-    def set_returns(self, realtime_price, live_price_fetcher, time_ms=None, total_fees=None, order=None):
+    def set_returns(self, realtime_price, price_fetcher_client, time_ms=None, total_fees=None, order=None):
         # We used to multiple trade_pair.fees by net_leverage. Eventually we will
         # Update this calculation to approximate actual exchange fees.
-        self.current_return = self.calculate_pnl(realtime_price, live_price_fetcher, t_ms=time_ms, order=order)
+        self.current_return = self.calculate_pnl(realtime_price, price_fetcher_client, t_ms=time_ms, order=order)
         if total_fees is None:
             self.return_at_close = self.calculate_return_with_fees(self.current_return,
                                timestamp_ms=TimeUtil.now_in_millis() if time_ms is None else time_ms)
@@ -592,9 +592,9 @@ class Position(BaseModel):
             raise ValueError(f"current return must be positive {self.current_return}")
 
         if self.current_return == 0:
-            self._handle_liquidation(TimeUtil.now_in_millis() if time_ms is None else time_ms, live_price_fetcher)
+            self._handle_liquidation(TimeUtil.now_in_millis() if time_ms is None else time_ms, price_fetcher_client)
 
-    def update_position_state_for_new_order(self, order, delta_quantity, delta_leverage, live_price_fetcher):
+    def update_position_state_for_new_order(self, order, delta_quantity, delta_leverage, price_fetcher_client):
         """
         Must be called after every order to maintain accurate internal state. The variable average_entry_price has
         a name that can be a little confusing. Although it claims to be the average price, it really isn't.
@@ -610,7 +610,7 @@ class Position(BaseModel):
             self.net_quantity = 0.0
             self.net_value = 0.0
             return  # Don't set returns since the price is zero'd out.
-        self.set_returns(realtime_price, live_price_fetcher, time_ms=order.processed_ms, order=order)
+        self.set_returns(realtime_price, price_fetcher_client, time_ms=order.processed_ms, order=order)
 
         # Liquidated
         if self.current_return == 0:
@@ -729,7 +729,7 @@ class Position(BaseModel):
             order.order_type = OrderType.FLAT
         return False
 
-    def _update_position(self, live_price_fetcher):
+    def _update_position(self, price_fetcher_client):
         self.net_leverage = 0.0
         self.net_quantity = 0.0
         self.net_value = 0.0
@@ -782,7 +782,8 @@ class Position(BaseModel):
             #bt.logging.info(
             #    f"Updating position state for new order {order} with adjusted leverage {adjusted_quantity}"
             #)
-            self.update_position_state_for_new_order(order, adjusted_quantity, adjusted_leverage, live_price_fetcher)
+            self.update_position_state_for_new_order(order, adjusted_quantity, adjusted_leverage, price_fetcher_client)
+
 
             # If the position is already closed, we don't need to process any more orders. break in case there are more orders.
             if self.position_type == OrderType.FLAT:
