@@ -1047,7 +1047,7 @@ class Validator:
                                         usd_base_price=None) -> Order:
         # Must be locked by caller
         best_price_source = price_sources[0]
-        price = best_price_source.parse_appropriate_price(order_time_ms, trade_pair.is_forex, signal_order_type, existing_position.orders[0].order_type)
+        price = best_price_source.parse_appropriate_price(order_time_ms, trade_pair.is_forex, signal_order_type, existing_position)
 
         if existing_position.account_size <= 0:
             bt.logging.warning(
@@ -1057,7 +1057,7 @@ class Validator:
             existing_position.account_size = ValiConfig.MIN_CAPITAL
         # Calculate value and leverage
         if usd_base_price is None:
-            usd_base_price = self.live_price_fetcher.get_usd_base_conversion(trade_pair, order_time_ms, price, signal_order_type, existing_position.position_type)
+            usd_base_price = self.live_price_fetcher.get_usd_base_conversion(trade_pair, order_time_ms, price, signal_order_type, existing_position)
         value = (1 / usd_base_price) * (quantity * trade_pair.lot_size)
         leverage = value / existing_position.account_size
         order = Order(
@@ -1075,7 +1075,7 @@ class Validator:
             src=src
         )
         order.usd_base_rate = usd_base_price
-        order.quote_usd_rate = self.live_price_fetcher.get_quote_usd_conversion(order, existing_position.position_type)
+        order.quote_usd_rate = self.live_price_fetcher.get_quote_usd_conversion(order, existing_position)
         net_portfolio_leverage = self.position_manager.calculate_net_portfolio_leverage(miner_hotkey)
         order.slippage = PriceSlippageModel.calculate_slippage(order.bid, order.ask, order)
         existing_position.add_order(order, self.live_price_fetcher, net_portfolio_leverage)
@@ -1171,8 +1171,8 @@ class Validator:
                     now_ms, miner_hotkey, miner_order_uuid, now_ms, price_sources, miner_repo_version, account_size)
                 if existing_position:
                     best_price_source = price_sources[0]
-                    price = best_price_source.parse_appropriate_price(now_ms, trade_pair.is_forex, signal_order_type, existing_position.orders[0].order_type)
-                    usd_base_price = self.live_price_fetcher.get_usd_base_conversion(trade_pair, now_ms, price, signal_order_type, existing_position.position_type)
+                    price = best_price_source.parse_appropriate_price(now_ms, trade_pair.is_forex, signal_order_type, existing_position)
+                    usd_base_price = self.live_price_fetcher.get_usd_base_conversion(trade_pair, now_ms, price, signal_order_type, existing_position)
                     quantity = self.parse_order_quantity(signal, usd_base_price, trade_pair, existing_position.account_size)
 
                     order = self._add_order_to_existing_position(existing_position, trade_pair, signal_order_type,

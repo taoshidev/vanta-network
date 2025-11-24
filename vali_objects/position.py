@@ -529,7 +529,7 @@ class Position(BaseModel):
                 now_ms=elimination_time_ms,
                 is_forex=position.trade_pair.is_forex,
                 order_type=OrderType.FLAT,
-                position_type=position.orders[0].order_type
+                position=position
             )
             src = OrderSource.PRICE_FILLED_ELIMINATION_FLAT
         else:
@@ -548,8 +548,8 @@ class Position(BaseModel):
                            leverage=-position.net_leverage,
                            src=src,
                            price_sources=[x for x in (price_source, extra_price_source) if x is not None])
-        flat_order.quote_usd_rate = live_price_fetcher.get_quote_usd_conversion(flat_order, position.position_type)
-        flat_order.usd_base_rate = live_price_fetcher.get_usd_base_conversion(position.trade_pair, fake_flat_order_time, price, OrderType.FLAT, position.position_type)
+        flat_order.quote_usd_rate = live_price_fetcher.get_quote_usd_conversion(flat_order, position)
+        flat_order.usd_base_rate = live_price_fetcher.get_usd_base_conversion(position.trade_pair, fake_flat_order_time, price, OrderType.FLAT, position)
         return flat_order
 
     def calculate_return_with_fees(self, current_return_no_fees, timestamp_ms=None):

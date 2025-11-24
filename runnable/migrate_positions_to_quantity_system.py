@@ -85,11 +85,11 @@ def migrate_order_quantities(position: Position) -> tuple[int, int]:
                 if order.price == 0 and order.src == 1: # SKIP elimination order where price == 0
                     continue
                 order.quote_usd_rate = live_price_fetcher.get_quote_usd_conversion(
-                    order, position.orders[0].order_type
+                    order, position
                 )
                 order.usd_base_rate = live_price_fetcher.get_usd_base_conversion(
                     order.trade_pair, order.processed_ms, order.price,
-                    order.order_type, position.orders[0].order_type
+                    order.order_type, position
                 )
                 usd_rate_migrated += 1
             except Exception as e:

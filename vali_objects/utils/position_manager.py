@@ -766,7 +766,7 @@ class PositionManager(CacheController):
                     continue
                 if position.trade_pair in tps_to_eliminate:
                     price_sources = self.live_price_fetcher.get_sorted_price_sources_for_trade_pair(position.trade_pair, TARGET_MS)
-                    live_price = price_sources[0].parse_appropriate_price(TARGET_MS, position.trade_pair.is_forex, OrderType.FLAT, position.orders[0].order_type)
+                    live_price = price_sources[0].parse_appropriate_price(TARGET_MS, position.trade_pair.is_forex, OrderType.FLAT, position)
                     flat_order = Order(price=live_price,
                                        price_sources=price_sources,
                                        processed_ms=TARGET_MS,
@@ -775,8 +775,8 @@ class PositionManager(CacheController):
                                        order_type=OrderType.FLAT,
                                        leverage=-position.net_leverage,
                                        src=OrderSource.DEPRECATION_FLAT)
-                    flat_order.quote_usd_rate = self.live_price_fetcher.get_quote_usd_conversion(flat_order, position.position_type)
-                    flat_order.usd_base_rate = self.live_price_fetcher.get_usd_base_conversion(position.trade_pair, TARGET_MS, live_price, OrderType.FLAT, position.position_type)
+                    flat_order.quote_usd_rate = self.live_price_fetcher.get_quote_usd_conversion(flat_order, position)
+                    flat_order.usd_base_rate = self.live_price_fetcher.get_usd_base_conversion(position.trade_pair, TARGET_MS, live_price, OrderType.FLAT, position)
 
                     position.add_order(flat_order, self.live_price_fetcher)
                     self.save_miner_position(position, delete_open_position_if_exists=True)

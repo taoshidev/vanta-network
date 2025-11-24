@@ -310,7 +310,7 @@ class LivePriceFetcher:
         """
         return price_source
 
-    def get_quote_usd_conversion(self, order, position_type):
+    def get_quote_usd_conversion(self, order, position):
         """
         Return the conversion rate between an order's quote currency and USD
         """
@@ -339,7 +339,7 @@ class LivePriceFetcher:
                 now_ms=order.processed_ms,
                 is_forex=True,          # from_currency is USD for crypto and equities
                 order_type=order.order_type,
-                position_type=position_type
+                position=position
             )
             return usd_conversion if b_usd else 1.0 / usd_conversion
 
@@ -347,7 +347,7 @@ class LivePriceFetcher:
         return 1.0
         # TODO: raise Exception(f"Unable to fetch currency conversion from {from_currency} to USD at time {time_ms}.")
 
-    def get_usd_base_conversion(self, trade_pair, time_ms, price, order_type, position_type):
+    def get_usd_base_conversion(self, trade_pair, time_ms, price, order_type, position):
         """
         Return the conversion rate between USD and an order's base currency
         """
@@ -376,7 +376,7 @@ class LivePriceFetcher:
                 now_ms=time_ms,
                 is_forex=True,          # from_currency is USD for crypto and equities
                 order_type=order_type,
-                position_type=position_type
+                position=position
             )
             return usd_conversion if usd_a else 1.0 / usd_conversion
 
