@@ -456,7 +456,7 @@ class PolygonDataService(BaseDataService):
     def get_close_rest(
         self,
         trade_pair: TradePair,
-        timestamp_ms: int,
+        timestamp_ms: int = None,
         order: Order = None
     ) -> PriceSource | None:
         if not timestamp_ms:
@@ -466,8 +466,8 @@ class PolygonDataService(BaseDataService):
             if order is not None and order.src == 0:
                 assert self.is_market_open(trade_pair, time_ms=timestamp_ms)
 
-        if not self.is_market_open(trade_pair):
-            return self.get_event_before_market_close(trade_pair)
+        if not self.is_market_open(trade_pair, time_ms=timestamp_ms):
+            return self.get_event_before_market_close(trade_pair, timestamp_ms)
 
         prev_timestamp = None
         final_agg = None
@@ -931,7 +931,6 @@ if __name__ == "__main__":
         #if tp != TradePair.GBPUSD:
         #    continue
 
-        print('PRICE BEFORE MARKET CLOSE: ', polygon_data_provider.get_event_before_market_close(tp))
         print('getting close for', tp.trade_pair_id, ':', polygon_data_provider.get_close_rest(tp, TimeUtil.now_in_millis()))
 
     time.sleep(100000)
