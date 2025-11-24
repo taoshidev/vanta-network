@@ -1044,7 +1044,7 @@ class Validator:
     def _add_order_to_existing_position(self, existing_position, trade_pair, signal_order_type: OrderType,
                                         quantity: float, order_time_ms: int, miner_hotkey: str,
                                         price_sources, miner_order_uuid: str, miner_repo_version: str, src:OrderSource,
-                                        usd_base_price=None):
+                                        usd_base_price=None) -> Order:
         # Must be locked by caller
         best_price_source = price_sources[0]
         price = best_price_source.parse_appropriate_price(order_time_ms, trade_pair.is_forex, signal_order_type, existing_position.orders[0].order_type)
@@ -1087,6 +1087,7 @@ class Validator:
         if self.config.serve:
             # Add the position to the queue for broadcasting
             self.shared_queue_websockets.put(existing_position.to_websocket_dict(miner_repo_version=miner_repo_version))
+        return order
 
     def _get_account_size(self, miner_hotkey, now_ms):
         account_size = self.contract_manager.get_miner_account_size(hotkey=miner_hotkey, timestamp_ms=now_ms)
@@ -1174,7 +1175,7 @@ class Validator:
                     usd_base_price = self.live_price_fetcher.get_usd_base_conversion(trade_pair, now_ms, price, signal_order_type, existing_position.position_type)
                     quantity = self.parse_order_quantity(signal, usd_base_price, trade_pair, existing_position.account_size)
 
-                    self._add_order_to_existing_position(existing_position, trade_pair, signal_order_type,
+                    order = self._add_order_to_existing_position(existing_position, trade_pair, signal_order_type,
                                                         quantity, now_ms, miner_hotkey,
                                                         price_sources, miner_order_uuid, miner_repo_version,
                                                         OrderSource.ORGANIC, usd_base_price)

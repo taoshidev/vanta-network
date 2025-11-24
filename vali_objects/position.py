@@ -49,6 +49,7 @@ class Position(BaseModel):
     close_ms: Optional[int] = None
     net_leverage: float = 0.0
     net_value: float = 0.0                  # USD
+    max_net_value: float = 0.0              # USD
     net_quantity: float = 0.0               # Base currency lots
     return_at_close: float = 1.0            # Includes all fees
     average_entry_price: float = 0.0        # Quote currency
@@ -209,7 +210,7 @@ class Position(BaseModel):
     def __hash__(self):
         # Include specified fields in the hash, assuming trade_pair is accessible and immutable
         return hash((self.miner_hotkey, self.position_uuid, self.open_ms, self.current_return,
-                     self.net_leverage, self.net_quantity, self.net_value, self.initial_entry_price, self.trade_pair.trade_pair))
+                     self.net_leverage, self.net_quantity, self.net_value, self.max_net_value, self.initial_entry_price, self.trade_pair.trade_pair))
 
     def __eq__(self, other):
         if not isinstance(other, Position):
@@ -221,6 +222,7 @@ class Position(BaseModel):
                 self.net_leverage == other.net_leverage and
                 self.net_quantity == other.net_quantity and
                 self.net_value == other.net_value and
+                self.max_net_value == other.max_net_value and
                 self.initial_entry_price == other.initial_entry_price and
                 self.trade_pair.trade_pair == other.trade_pair.trade_pair)
 
@@ -321,6 +323,7 @@ class Position(BaseModel):
         self.net_leverage = 0.0
         self.net_quantity = 0.0
         self.net_value = 0.0
+        self.max_net_value = 0.0
         self.average_entry_price = 0.0
         self.cumulative_entry_value = 0.0
         self.realized_pnl = 0.0
@@ -339,6 +342,7 @@ class Position(BaseModel):
             f"net leverage [{self.net_leverage}] "
             f"net quantity [{self.net_quantity}] "
             f"net value [{self.net_value}] "
+            f"max net value [{self.max_net_value}] "
             f"average entry price [{self.average_entry_price}] "
             f"return_at_close [{self.return_at_close}]"
         )
@@ -418,10 +422,11 @@ class Position(BaseModel):
             quote_usd_conversion = self.orders[-1].quote_usd_rate # live_price_fetcher.get_usd_conversion(self.trade_pair.quote, t_ms, self.orders[-1].order_type, self.position_type)  # TODO: calculate conversion rate at current time instead of last order time
             self.unrealized_pnl = unrealized_pnl_quote * quote_usd_conversion
 
-        if self.cumulative_entry_value == 0:
+        max_net_value = self.max_net_value if self.max_net_value > 0 else abs(self.net_value)
+        if max_net_value == 0:
             gain = 0
         else:
-            gain = (self.realized_pnl + self.unrealized_pnl) / self.cumulative_entry_value
+            gain = (self.realized_pnl + self.unrealized_pnl) / max_net_value   # self.cumulative_entry_value
 
         # Check if liquidated
         if gain <= -1.0:
@@ -639,6 +644,7 @@ class Position(BaseModel):
             self.cumulative_entry_value += entry_value
             self.net_quantity = new_net_quantity
             self.net_value = (realtime_price * order.quote_usd_rate) * (self.net_quantity * self.trade_pair.lot_size)
+            self.max_net_value = max(self.max_net_value, abs(self.net_value))
             self.net_leverage = self.net_value / self.account_size
 
     def initialize_position_from_first_order(self, order):
@@ -738,6 +744,7 @@ class Position(BaseModel):
         self.net_leverage = 0.0
         self.net_quantity = 0.0
         self.net_value = 0.0
+        self.max_net_value = 0.0
         self.cumulative_entry_value = 0.0
         self.realized_pnl = 0.0
         self.unrealized_pnl = 0.0
