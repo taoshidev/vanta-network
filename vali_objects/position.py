@@ -1,5 +1,6 @@
 import json
 import logging
+import traceback
 from copy import deepcopy
 from typing import Optional, List
 from pydantic import model_validator, BaseModel, Field
@@ -465,7 +466,7 @@ class Position(BaseModel):
 
         if interval_data['max_leverage'] == -float('inf'):
             raise ValueError('Unable to find max leverage in interval')
-        assert interval_data['max_leverage'] > 0, (interval_data['max_leverage'], self.orders)
+        assert interval_data['max_leverage'] > 0, (interval_data, self.orders, str(self))
         return interval_data['max_leverage']
 
     def max_leverage_seen(self, interval_data=None):
@@ -593,7 +594,7 @@ class Position(BaseModel):
         if self.current_return == 0:
             self._handle_liquidation(TimeUtil.now_in_millis() if time_ms is None else time_ms, live_price_fetcher)
 
-    def update_position_state_for_new_order(self, order, delta_quantity, live_price_fetcher):
+    def update_position_state_for_new_order(self, order, delta_quantity, delta_leverage, live_price_fetcher):
         """
         Must be called after every order to maintain accurate internal state. The variable average_entry_price has
         a name that can be a little confusing. Although it claims to be the average price, it really isn't.
@@ -603,6 +604,7 @@ class Position(BaseModel):
         realtime_price = order.price
         assert self.initial_entry_price > 0, self.initial_entry_price
         new_net_quantity = self.net_quantity + delta_quantity
+        new_net_leverage = self.net_leverage + delta_leverage
         if order.src in (OrderSource.ELIMINATION_FLAT, OrderSource.DEPRECATION_FLAT):
             self.net_leverage = 0.0
             self.net_quantity = 0.0
@@ -625,10 +627,17 @@ class Position(BaseModel):
                 # average entry price only changes when an order is in the same direction as the position. reducing a position does not affect average entry price.
                 if ALWAYS_USE_SLIPPAGE is False or (ALWAYS_USE_SLIPPAGE is None and order.processed_ms < SLIPPAGE_V1_TIME_MS):
                     # no slippage
-                    self.average_entry_price = (
-                        self.average_entry_price * self.net_quantity
-                        + realtime_price * delta_quantity
-                    ) / new_net_quantity
+                    try:
+                        self.average_entry_price = (
+                            self.average_entry_price * self.net_quantity
+                            + realtime_price * delta_quantity
+                        ) / new_net_quantity
+                    except Exception as e:
+                        print(f"avg entry price error {e}")
+                        traceback.print_exc()
+                        print(self.orders)
+                        print(self.net_quantity)
+                        print(str(self))
                 else:
                     # after SLIPPAGE_V1_TIME_MS, average entry price now reflects the average price
                     entry_price = order.price * (1 + order.slippage) if order.leverage > 0 else order.price * (1 - order.slippage)
@@ -645,7 +654,7 @@ class Position(BaseModel):
             self.net_quantity = new_net_quantity
             self.net_value = (realtime_price * order.quote_usd_rate) * (self.net_quantity * self.trade_pair.lot_size)
             self.max_net_value = max(self.max_net_value, abs(self.net_value))
-            self.net_leverage = self.net_value / self.account_size
+            self.net_leverage = new_net_leverage    # self.net_value / self.account_size
 
     def initialize_position_from_first_order(self, order):
         self.open_ms = order.processed_ms
@@ -764,11 +773,13 @@ class Position(BaseModel):
             if (
                 (
                     self.position_type == OrderType.LONG
-                    and self.net_leverage + order.leverage <= 0
+                    and
+                    (self.net_leverage + order.leverage <= 0 or self.net_quantity + order.quantity <= 0)
                 )
                 or (
                     self.position_type == OrderType.SHORT
-                    and self.net_leverage + order.leverage >= 0
+                    and
+                    (self.net_leverage + order.leverage >= 0 or self.net_quantity + order.quantity >= 0)
                 )
                 or order.order_type == OrderType.FLAT
             ):
@@ -785,10 +796,13 @@ class Position(BaseModel):
             adjusted_quantity = (
                 0.0 if self.position_type == OrderType.FLAT else order.quantity
             )
+            adjusted_leverage = (
+                0.0 if self.position_type == OrderType.FLAT else order.leverage
+            )
             #bt.logging.info(
             #    f"Updating position state for new order {order} with adjusted leverage {adjusted_quantity}"
             #)
-            self.update_position_state_for_new_order(order, adjusted_quantity, live_price_fetcher)
+            self.update_position_state_for_new_order(order, adjusted_quantity, adjusted_leverage, live_price_fetcher)
 
             # If the position is already closed, we don't need to process any more orders. break in case there are more orders.
             if self.position_type == OrderType.FLAT:

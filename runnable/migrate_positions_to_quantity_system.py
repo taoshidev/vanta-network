@@ -322,6 +322,9 @@ def process_hotkey(args):
             # Rebuild position with updated orders
             position.rebuild_position_with_updated_orders(live_price_fetcher)
 
+            if hotkey == "5F6oea6yYMFWETD9KkWj5FMUntRv77yCw7WoiJv5tVsor2Mb":
+                print(position)
+
             # Save position
             if not dry_run:
                 save_position(position)
