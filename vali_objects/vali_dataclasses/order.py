@@ -30,8 +30,8 @@ class Order(Signal):
     bid: float = 0              # Quote currency
     ask: float = 0              # Quote currency
     slippage: float = 0
-    quote_usd_rate: float = 1.0 # Conversion rate from quote currency to USD
-    usd_base_rate: float = 1.0  # Conversion rate from usd to base currency
+    quote_usd_rate: float = 0.0 # Conversion rate from quote currency to USD    # TODO: what should default be
+    usd_base_rate: float = 0.0  # Conversion rate from usd to base currency
     processed_ms: int
     order_uuid: str
     price_sources: list = []

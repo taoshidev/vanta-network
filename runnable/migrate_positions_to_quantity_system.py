@@ -12,6 +12,8 @@ Usage:
 """
 
 import sys
+import traceback
+
 import bittensor as bt
 from collections import defaultdict
 from vali_objects.position import Position
@@ -33,7 +35,7 @@ if len(sys.argv) > 1 and sys.argv[1] in ['--dry-run', '-n']:
     print("*** DRY RUN MODE - No files will be modified ***\n")
 
 # Initialize services
-bt.logging.info("Initializing services...")
+print("Initializing services...")
 secrets = ValiUtils.get_secrets()
 live_price_fetcher = LivePriceFetcher(secrets, disable_ws=True)
 
@@ -41,37 +43,33 @@ live_price_fetcher = LivePriceFetcher(secrets, disable_ws=True)
 try:
     contract_manager = ValidatorContractManager(
         config=None,
-        wallet=None,
         metagraph=None,
         running_unit_tests=False
     )
-    bt.logging.info("Contract manager initialized successfully")
+    print("Contract manager initialized successfully")
 except Exception as e:
-    bt.logging.warning(f"Could not initialize contract manager: {e}. Will use default account sizes.")
-    contract_manager = None
+    print(f"Could not initialize contract manager: {e}.")
+    sys.exit()
 
-def get_account_size_for_order(position, order, miner_account_sizes_cache):
+def get_account_size_for_order(hotkey, time_ms, miner_account_sizes_cache):
     """
     Get the miner's account size for an order based on collateral history.
     """
-    if order.processed_ms < COLLATERAL_START_TIME_MS:
-        return ValiConfig.DEFAULT_CAPITAL
-
-    if not contract_manager:
+    if time_ms < COLLATERAL_START_TIME_MS:
         return ValiConfig.DEFAULT_CAPITAL
 
     try:
         account_size = contract_manager.get_miner_account_size(
-            position.miner_hotkey,
-            order.processed_ms,
+            hotkey,
+            time_ms,
             records_dict=miner_account_sizes_cache
         )
         return account_size if account_size is not None else ValiConfig.MIN_CAPITAL
     except Exception as e:
-        bt.logging.warning(f"Error getting account size for {position.miner_hotkey}: {e}")
+        print(f"Error getting account size for {hotkey}: {e}")
         return ValiConfig.MIN_CAPITAL
 
-def migrate_order_quantities(position: Position, miner_account_sizes_cache: dict) -> tuple[int, int]:
+def migrate_order_quantities(position: Position) -> tuple[int, int]:
     """
     Migrate orders to include quantity and USD conversion rates.
     Returns (orders_migrated_for_quantity, orders_migrated_for_usd_rates)
@@ -81,9 +79,11 @@ def migrate_order_quantities(position: Position, miner_account_sizes_cache: dict
 
     for order in position.orders:
         # Migrate USD conversion rates
-        needs_usd_migration = (order.quote_usd_rate == 1.0 or order.usd_base_rate == 1.0)
+        needs_usd_migration = (order.quote_usd_rate == 0.0 or order.usd_base_rate == 0.0)
         if needs_usd_migration:
             try:
+                if order.price == 0 and order.src == 1: # SKIP elimination order where price == 0
+                    continue
                 order.quote_usd_rate = live_price_fetcher.get_quote_usd_conversion(
                     order, position.orders[0].order_type
                 )
@@ -93,8 +93,9 @@ def migrate_order_quantities(position: Position, miner_account_sizes_cache: dict
                 )
                 usd_rate_migrated += 1
             except Exception as e:
+                traceback.print_exc()
                 bt.logging.warning(
-                    f"Failed to migrate USD rates for order {order.order_uuid}: {e}"
+                    f"Failed to migrate USD rates for order {order}: {e}"
                 )
 
         # Migrate quantity
@@ -115,21 +116,22 @@ def check_position_needs_migration(position: Position) -> tuple[bool, bool]:
     """
     needs_account_size = (position.account_size == 0 or position.account_size is None)
     needs_order_migration = any(
-        (o.quantity is None and o.leverage is not None) or
-        o.quote_usd_rate == 1.0 or
-        o.usd_base_rate == 1.0
+        o.quantity is None or
+        o.value is None or
+        o.quote_usd_rate == 0.0 or
+        o.usd_base_rate == 0.0
         for o in position.orders
     )
     return needs_account_size, needs_order_migration
 
 def load_all_positions() -> dict[str, list[Position]]:
     """Load all positions (both open and closed) from disk."""
-    bt.logging.info("Loading positions from disk...")
+    print("Loading positions from disk...")
 
     all_positions = defaultdict(list)
 
     # Get all hotkey directories
-    base_dir = ValiBkpUtils.get_miner_all_positions_dir(running_unit_tests=False)
+    base_dir = ValiBkpUtils.get_miner_dir(running_unit_tests=False)
 
     try:
         import os
@@ -177,7 +179,7 @@ def load_all_positions() -> dict[str, list[Position]]:
                             bt.logging.warning(f"Failed to load {filepath}: {e}")
 
         total_positions = sum(len(positions) for positions in all_positions.values())
-        bt.logging.info(
+        print(
             f"Loaded {total_positions} positions from {len(all_positions)} hotkeys"
         )
 
@@ -217,8 +219,8 @@ if stats['total_positions'] == 0:
     bt.logging.error("No positions found. Exiting.")
     sys.exit(1)
 
-bt.logging.info(f"\nStarting migration of {stats['total_positions']} positions...")
-bt.logging.info("=" * 80)
+print(f"\nStarting migration of {stats['total_positions']} positions...")
+print("=" * 80)
 
 # Cache for miner account sizes
 miner_account_sizes_cache = {}
@@ -227,7 +229,7 @@ if contract_manager:
 
 # Process each hotkey's positions
 for hotkey_idx, (hotkey, positions) in enumerate(all_positions.items(), 1):
-    bt.logging.info(
+    print(
         f"\n[{hotkey_idx}/{len(all_positions)}] Processing hotkey {hotkey} "
         f"with {len(positions)} positions..."
     )
@@ -238,7 +240,7 @@ for hotkey_idx, (hotkey, positions) in enumerate(all_positions.items(), 1):
         try:
             # Progress update every 100 positions
             if position_idx % 100 == 0:
-                bt.logging.info(
+                print(
                     f"  Progress: {position_idx}/{len(positions)} positions "
                     f"({position_idx/len(positions)*100:.1f}%)"
                 )
@@ -261,7 +263,7 @@ for hotkey_idx, (hotkey, positions) in enumerate(all_positions.items(), 1):
             if needs_account_size:
                 old_account_size = position.account_size
                 position.account_size = get_account_size_for_order(
-                    position, position.orders[0], miner_account_sizes_cache
+                    hotkey, position.orders[0].processed_ms, miner_account_sizes_cache
                 )
                 stats['account_size_migrations'] += 1
                 bt.logging.debug(
@@ -272,7 +274,7 @@ for hotkey_idx, (hotkey, positions) in enumerate(all_positions.items(), 1):
             # Migrate orders
             if needs_order_migration:
                 quantity_migrated, usd_rate_migrated = migrate_order_quantities(
-                    position, miner_account_sizes_cache
+                    position
                 )
                 stats['order_quantity_migrations'] += quantity_migrated
                 stats['order_usd_rate_migrations'] += usd_rate_migrated
@@ -305,49 +307,49 @@ for hotkey_idx, (hotkey, positions) in enumerate(all_positions.items(), 1):
             continue
 
 # Print final statistics
-bt.logging.info("\n" + "=" * 80)
-bt.logging.info("MIGRATION SUMMARY")
-bt.logging.info("=" * 80)
-bt.logging.info(f"Total positions processed:        {stats['total_positions']}")
-bt.logging.info(f"Positions needing migration:      {stats['positions_needing_migration']}")
-bt.logging.info(f"Positions successfully migrated:  {stats['positions_migrated']}")
-bt.logging.info(f"Positions failed:                 {stats['positions_failed']}")
-bt.logging.info("")
-bt.logging.info(f"Account size migrations:          {stats['account_size_migrations']}")
-bt.logging.info(f"Order quantity migrations:        {stats['order_quantity_migrations']}")
-bt.logging.info(f"Order USD rate migrations:        {stats['order_usd_rate_migrations']}")
+print("\n" + "=" * 80)
+print("MIGRATION SUMMARY")
+print("=" * 80)
+print(f"Total positions processed:        {stats['total_positions']}")
+print(f"Positions needing migration:      {stats['positions_needing_migration']}")
+print(f"Positions successfully migrated:  {stats['positions_migrated']}")
+print(f"Positions failed:                 {stats['positions_failed']}")
+print("")
+print(f"Account size migrations:          {stats['account_size_migrations']}")
+print(f"Order quantity migrations:        {stats['order_quantity_migrations']}")
+print(f"Order USD rate migrations:        {stats['order_usd_rate_migrations']}")
 
 if stats['positions_needing_migration'] > 0:
     success_rate = (stats['positions_migrated'] / stats['positions_needing_migration']) * 100
-    bt.logging.info(f"\nSuccess rate: {success_rate:.2f}%")
+    print(f"\nSuccess rate: {success_rate:.2f}%")
 
 # Per-hotkey statistics
-bt.logging.info("\n" + "=" * 80)
-bt.logging.info("PER-HOTKEY BREAKDOWN")
-bt.logging.info("=" * 80)
+print("\n" + "=" * 80)
+print("PER-HOTKEY BREAKDOWN")
+print("=" * 80)
 for hotkey in sorted(stats['positions_by_hotkey'].keys()):
     hk_stats = stats['positions_by_hotkey'][hotkey]
     if hk_stats['migrated'] > 0:
-        bt.logging.info(
+        print(
             f"{hotkey}: {hk_stats['migrated']}/{hk_stats['total']} positions migrated"
         )
 
 # Show errors if any
 if stats['errors']:
-    bt.logging.info("\n" + "=" * 80)
-    bt.logging.info(f"ERRORS ({len(stats['errors'])} total)")
-    bt.logging.info("=" * 80)
+    print("\n" + "=" * 80)
+    print(f"ERRORS ({len(stats['errors'])} total)")
+    print("=" * 80)
     for error in stats['errors'][:10]:  # Show first 10 errors
-        bt.logging.info(error)
+        print(error)
     if len(stats['errors']) > 10:
-        bt.logging.info(f"... and {len(stats['errors']) - 10} more errors")
+        print(f"... and {len(stats['errors']) - 10} more errors")
 
 if DRY_RUN:
-    bt.logging.info("\n" + "=" * 80)
-    bt.logging.info("[DRY RUN] No files were modified")
-    bt.logging.info("Run without --dry-run to apply changes")
-    bt.logging.info("=" * 80)
+    print("\n" + "=" * 80)
+    print("[DRY RUN] No files were modified")
+    print("Run without --dry-run to apply changes")
+    print("=" * 80)
 else:
-    bt.logging.info("\n" + "=" * 80)
-    bt.logging.info("Migration completed successfully!")
-    bt.logging.info("=" * 80)
+    print("\n" + "=" * 80)
+    print("Migration completed successfully!")
+    print("=" * 80)
