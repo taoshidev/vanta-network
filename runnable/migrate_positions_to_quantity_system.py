@@ -32,6 +32,8 @@ from multiprocessing import Pool, cpu_count
 
 import bittensor as bt
 from collections import defaultdict
+
+from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.position import Position
 from vali_objects.utils.live_price_fetcher import LivePriceFetcher
 from vali_objects.utils.vali_utils import ValiUtils
@@ -100,6 +102,10 @@ def migrate_order_quantities(position: Position, price_fetcher) -> tuple[int, in
     """
     quantity_migrated = 0
     usd_rate_migrated = 0
+
+    if position.position_type == OrderType.FLAT and position.orders[-1].order_type != OrderType.FLAT:
+        print(f"Migrating flat position {position} last order type to FLAT")
+        position.orders[-1].order_type = OrderType.FLAT
 
     for order in position.orders:
         # Migrate USD conversion rates
