@@ -8,11 +8,27 @@ This script migrates historical positions that only have leverage to include:
 - position.account_size (historical account size from collateral)
 
 Usage:
-    python runnable/migrate_positions_to_quantity_system.py [--dry-run]
+    python runnable/migrate_positions_to_quantity_system.py [--dry-run] [--processes N]
+
+Options:
+    --dry-run, -n          Test migration without modifying files
+    --processes N, -j N    Number of parallel processes (default: CPU count)
+
+Examples:
+    # Dry run with default parallelization
+    python runnable/migrate_positions_to_quantity_system.py --dry-run
+
+    # Run migration with 4 parallel processes
+    python runnable/migrate_positions_to_quantity_system.py --processes 4
+
+    # Single-process mode for debugging
+    python runnable/migrate_positions_to_quantity_system.py --processes 1
 """
 
 import sys
+import time
 import traceback
+from multiprocessing import Pool, cpu_count
 
 import bittensor as bt
 from collections import defaultdict
@@ -27,12 +43,20 @@ from time_util.time_util import TimeUtil
 
 # Configuration
 DRY_RUN = False
+NUM_PROCESSES = cpu_count()  # Default to number of CPUs
 COLLATERAL_START_TIME_MS = 1755302399000
 
-# Check for dry-run argument
-if len(sys.argv) > 1 and sys.argv[1] in ['--dry-run', '-n']:
-    DRY_RUN = True
-    print("*** DRY RUN MODE - No files will be modified ***\n")
+# Check for command line arguments
+for i, arg in enumerate(sys.argv[1:], 1):
+    if arg in ['--dry-run', '-n']:
+        DRY_RUN = True
+        print("*** DRY RUN MODE - No files will be modified ***\n")
+    elif arg in ['--processes', '-j'] and i + 1 < len(sys.argv):
+        try:
+            NUM_PROCESSES = int(sys.argv[i + 1])
+            print(f"Using {NUM_PROCESSES} processes for parallel execution\n")
+        except ValueError:
+            print(f"Warning: Invalid process count '{sys.argv[i + 1]}', using default ({NUM_PROCESSES})\n")
 
 # Initialize services
 print("Initializing services...")
@@ -51,7 +75,7 @@ except Exception as e:
     print(f"Could not initialize contract manager: {e}.")
     sys.exit()
 
-def get_account_size_for_order(hotkey, time_ms, miner_account_sizes_cache):
+def get_account_size_for_order(hotkey, time_ms, miner_account_sizes_cache, contract_mgr):
     """
     Get the miner's account size for an order based on collateral history.
     """
@@ -59,7 +83,7 @@ def get_account_size_for_order(hotkey, time_ms, miner_account_sizes_cache):
         return ValiConfig.DEFAULT_CAPITAL
 
     try:
-        account_size = contract_manager.get_miner_account_size(
+        account_size = contract_mgr.get_miner_account_size(
             hotkey,
             time_ms,
             records_dict=miner_account_sizes_cache
@@ -69,7 +93,7 @@ def get_account_size_for_order(hotkey, time_ms, miner_account_sizes_cache):
         print(f"Error getting account size for {hotkey}: {e}")
         return ValiConfig.MIN_CAPITAL
 
-def migrate_order_quantities(position: Position) -> tuple[int, int]:
+def migrate_order_quantities(position: Position, price_fetcher) -> tuple[int, int]:
     """
     Migrate orders to include quantity and USD conversion rates.
     Returns (orders_migrated_for_quantity, orders_migrated_for_usd_rates)
@@ -84,10 +108,10 @@ def migrate_order_quantities(position: Position) -> tuple[int, int]:
             try:
                 if order.price == 0 and order.src == 1: # SKIP elimination order where price == 0
                     continue
-                order.quote_usd_rate = live_price_fetcher.get_quote_usd_conversion(
+                order.quote_usd_rate = price_fetcher.get_quote_usd_conversion(
                     order, position
                 )
-                order.usd_base_rate = live_price_fetcher.get_usd_base_conversion(
+                order.usd_base_rate = price_fetcher.get_usd_base_conversion(
                     order.trade_pair, order.processed_ms, order.price,
                     order.order_type, position
                 )
@@ -198,6 +222,121 @@ def save_position(position: Position):
     )
     ValiBkpUtils.write_file(miner_dir + position.position_uuid, position)
 
+def process_hotkey(args):
+    """
+    Process all positions for a single hotkey.
+    This function is called by each worker process in the pool.
+
+    Args:
+        args: Tuple of (hotkey, positions, dry_run, miner_account_sizes_cache)
+
+    Returns:
+        Dictionary with statistics for this hotkey
+    """
+    hotkey, positions, dry_run, miner_account_sizes_cache = args
+
+    # Initialize services in worker process
+    try:
+        secrets = ValiUtils.get_secrets()
+        live_price_fetcher = LivePriceFetcher(secrets, disable_ws=True)
+
+        contract_manager = ValidatorContractManager(
+            config=None,
+            metagraph=None,
+            running_unit_tests=False
+        )
+    except Exception as e:
+        return {
+            'hotkey': hotkey,
+            'error': f"Failed to initialize services: {e}",
+            'total': len(positions),
+            'migrated': 0,
+            'failed': len(positions),
+            'account_size_migrations': 0,
+            'order_quantity_migrations': 0,
+            'order_usd_rate_migrations': 0,
+            'errors': [f"Initialization failed for all {len(positions)} positions: {e}"]
+        }
+
+    # Statistics for this hotkey
+    stats = {
+        'hotkey': hotkey,
+        'total': len(positions),
+        'migrated': 0,
+        'failed': 0,
+        'account_size_migrations': 0,
+        'order_quantity_migrations': 0,
+        'order_usd_rate_migrations': 0,
+        'errors': []
+    }
+
+    for position_idx, position in enumerate(positions, 1):
+        try:
+            # Progress update every 100 positions
+            if position_idx % 100 == 0:
+                print(
+                    f"  [{hotkey[:8]}...] Progress: {position_idx}/{len(positions)} positions "
+                    f"({position_idx/len(positions)*100:.1f}%)"
+                )
+
+            if not position.orders:
+                bt.logging.warning(
+                    f"Skipping position {position.position_uuid} - no orders"
+                )
+                continue
+
+            # Check if migration needed
+            needs_account_size, needs_order_migration = check_position_needs_migration(position)
+
+            if not needs_account_size and not needs_order_migration:
+                continue
+
+            # Migrate account size first (needed for order calculations)
+            if needs_account_size:
+                old_account_size = position.account_size
+                position.account_size = get_account_size_for_order(
+                    hotkey, position.orders[0].processed_ms, miner_account_sizes_cache, contract_manager
+                )
+                stats['account_size_migrations'] += 1
+                bt.logging.debug(
+                    f"Migrated account_size for {position.position_uuid}: "
+                    f"{old_account_size} → ${position.account_size:,.2f}"
+                )
+
+            # Migrate orders
+            if needs_order_migration:
+                quantity_migrated, usd_rate_migrated = migrate_order_quantities(
+                    position, live_price_fetcher
+                )
+                stats['order_quantity_migrations'] += quantity_migrated
+                stats['order_usd_rate_migrations'] += usd_rate_migrated
+
+                if quantity_migrated > 0:
+                    bt.logging.debug(
+                        f"Migrated {quantity_migrated} orders for position "
+                        f"{position.position_uuid}: "
+                        f"leverage={position.orders[0].leverage} → "
+                        f"quantity={position.orders[0].quantity}"
+                    )
+
+            # Rebuild position with updated orders
+            position.rebuild_position_with_updated_orders(live_price_fetcher)
+
+            # Save position
+            if not dry_run:
+                save_position(position)
+
+            stats['migrated'] += 1
+
+        except Exception as e:
+            stats['failed'] += 1
+            error_msg = f"Failed to migrate position {position.position_uuid}: {e}"
+            bt.logging.error(error_msg)
+            stats['errors'].append(error_msg)
+            continue
+
+    return stats
+
 # Statistics tracking
 stats = {
     'total_positions': 0,
@@ -222,89 +361,56 @@ if stats['total_positions'] == 0:
 print(f"\nStarting migration of {stats['total_positions']} positions...")
 print("=" * 80)
 
+# Start timer
+migration_start_time = time.time()
+
 # Cache for miner account sizes
 miner_account_sizes_cache = {}
 if contract_manager:
     miner_account_sizes_cache = contract_manager.miner_account_sizes.copy()
 
-# Process each hotkey's positions
-for hotkey_idx, (hotkey, positions) in enumerate(all_positions.items(), 1):
-    print(
-        f"\n[{hotkey_idx}/{len(all_positions)}] Processing hotkey {hotkey} "
-        f"with {len(positions)} positions..."
-    )
+# Prepare arguments for parallel processing
+print(f"Preparing {len(all_positions)} hotkeys for parallel processing with {NUM_PROCESSES} processes...")
+process_args = [
+    (hotkey, positions, DRY_RUN, miner_account_sizes_cache)
+    for hotkey, positions in all_positions.items()
+]
 
-    stats['positions_by_hotkey'][hotkey]['total'] = len(positions)
+# Process hotkeys in parallel
+print(f"Starting parallel migration...")
+if NUM_PROCESSES > 1:
+    with Pool(processes=NUM_PROCESSES) as pool:
+        hotkey_results = pool.map(process_hotkey, process_args)
+else:
+    # Single process mode for debugging
+    hotkey_results = [process_hotkey(args) for args in process_args]
 
-    for position_idx, position in enumerate(positions, 1):
-        try:
-            # Progress update every 100 positions
-            if position_idx % 100 == 0:
-                print(
-                    f"  Progress: {position_idx}/{len(positions)} positions "
-                    f"({position_idx/len(positions)*100:.1f}%)"
-                )
+# Aggregate results from all workers
+print("\nAggregating results from all workers...")
+for result in hotkey_results:
+    hotkey = result['hotkey']
 
-            if not position.orders:
-                bt.logging.warning(
-                    f"Skipping position {position.position_uuid} - no orders"
-                )
-                continue
+    # Update global stats
+    stats['positions_migrated'] += result['migrated']
+    stats['positions_failed'] += result['failed']
+    stats['account_size_migrations'] += result['account_size_migrations']
+    stats['order_quantity_migrations'] += result['order_quantity_migrations']
+    stats['order_usd_rate_migrations'] += result['order_usd_rate_migrations']
 
-            # Check if migration needed
-            needs_account_size, needs_order_migration = check_position_needs_migration(position)
+    # Track positions needing migration (migrated + failed)
+    stats['positions_needing_migration'] += (result['migrated'] + result['failed'])
 
-            if not needs_account_size and not needs_order_migration:
-                continue
+    # Update per-hotkey stats
+    stats['positions_by_hotkey'][hotkey]['total'] = result['total']
+    stats['positions_by_hotkey'][hotkey]['migrated'] = result['migrated']
 
-            stats['positions_needing_migration'] += 1
+    # Collect errors
+    if result['errors']:
+        stats['errors'].extend(result['errors'])
 
-            # Migrate account size first (needed for order calculations)
-            if needs_account_size:
-                old_account_size = position.account_size
-                position.account_size = get_account_size_for_order(
-                    hotkey, position.orders[0].processed_ms, miner_account_sizes_cache
-                )
-                stats['account_size_migrations'] += 1
-                bt.logging.debug(
-                    f"Migrated account_size for {position.position_uuid}: "
-                    f"{old_account_size} → ${position.account_size:,.2f}"
-                )
-
-            # Migrate orders
-            if needs_order_migration:
-                quantity_migrated, usd_rate_migrated = migrate_order_quantities(
-                    position
-                )
-                stats['order_quantity_migrations'] += quantity_migrated
-                stats['order_usd_rate_migrations'] += usd_rate_migrated
-
-                if quantity_migrated > 0:
-                    bt.logging.debug(
-                        f"Migrated {quantity_migrated} orders for position "
-                        f"{position.position_uuid}: "
-                        f"leverage={position.orders[0].leverage} → "
-                        f"quantity={position.orders[0].quantity}"
-                    )
-
-            # Rebuild position with updated orders
-            position.rebuild_position_with_updated_orders(live_price_fetcher)
-
-            # Save position
-            if not DRY_RUN:
-                save_position(position)
-
-            stats['positions_migrated'] += 1
-            stats['positions_by_hotkey'][hotkey]['migrated'] += 1
-
-        except Exception as e:
-            stats['positions_failed'] += 1
-            error_msg = f"Failed to migrate position {position.position_uuid}: {e}"
-            bt.logging.error(error_msg)
-            stats['errors'].append(error_msg)
-
-            # Continue with next position instead of crashing
-            continue
+# End timer
+migration_end_time = time.time()
+migration_duration = migration_end_time - migration_start_time
 
 # Print final statistics
 print("\n" + "=" * 80)
@@ -318,6 +424,8 @@ print("")
 print(f"Account size migrations:          {stats['account_size_migrations']}")
 print(f"Order quantity migrations:        {stats['order_quantity_migrations']}")
 print(f"Order USD rate migrations:        {stats['order_usd_rate_migrations']}")
+print("")
+print(f"Migration duration:               {migration_duration:.2f} seconds ({migration_duration/60:.2f} minutes)")
 
 if stats['positions_needing_migration'] > 0:
     success_rate = (stats['positions_migrated'] / stats['positions_needing_migration']) * 100
