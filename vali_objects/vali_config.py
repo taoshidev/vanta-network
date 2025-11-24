@@ -425,23 +425,7 @@ class TradePair(Enum):
               TradePairCategory.FOREX, ForexSubcategory.G2]
     USDMXN = ["USDMXN", "USD/MXN", 0.00007, ValiConfig.FOREX_MIN_LEVERAGE, ValiConfig.FOREX_MAX_LEVERAGE,
               TradePairCategory.FOREX, ForexSubcategory.G5]
-    # forex trade pairs for USD currency conversions. (utility only, not tradeable)
-    CADUSD = ["CADUSD", "CAD/USD", 0.00007, 0, 0,
-              TradePairCategory.FOREX, ForexSubcategory.G1]
-    CHFUSD = ["CHFUSD", "CHF/USD", 0.00007, 0, 0,
-              TradePairCategory.FOREX, ForexSubcategory.G1]
-    JPYUSD = ["JPYUSD", "JPY/USD", 0.00007, 0, 0,
-              TradePairCategory.FOREX, ForexSubcategory.G2]
-    MXNUSD = ["MXNUSD", "MXN/USD", 0.00007, 0, 0,
-              TradePairCategory.FOREX, ForexSubcategory.G5]
-    USDAUD = ["USDAUD", "USD/AUD", 0.00007, 0, 0,
-              TradePairCategory.FOREX, ForexSubcategory.G1]
-    USDEUR = ["USDEUR", "USD/EUR", 0.00007, 0, 0,
-              TradePairCategory.FOREX, ForexSubcategory.G1]
-    USDNZD = ["USDNZD", "USD/NZD", 0.00007, 0, 0,
-              TradePairCategory.FOREX, ForexSubcategory.G1]
-    USDGBP = ["USDGBP", "USD/GBP", 0.00007, 0, 0,
-              TradePairCategory.FOREX, ForexSubcategory.G1]
+
 
     # "Commodities" (Bundle with Forex for now) (temporariliy paused for trading)
     XAUUSD = ["XAUUSD", "XAU/USD", 0.00007, ValiConfig.FOREX_MIN_LEVERAGE, ValiConfig.FOREX_MAX_LEVERAGE, TradePairCategory.FOREX]

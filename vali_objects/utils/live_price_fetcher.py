@@ -320,7 +320,15 @@ class LivePriceFetcher:
         if order.trade_pair.base == "USD":
             return 1.0 / order.price
 
+        # A/B cross pair: need to convert quote currency B to USD
+        # Try B/USD first (more common)
+        b_usd = True
         conversion_trade_pair = TradePair.from_trade_pair_id(f"{order.trade_pair.quote}USD")
+        if conversion_trade_pair is None:
+            # fall back to USD/B format
+            b_usd = False
+            conversion_trade_pair = TradePair.from_trade_pair_id(f"USD{order.trade_pair.quote}")
+
         price_source = self.get_close_at_date(
             trade_pair=conversion_trade_pair,
             timestamp_ms=order.processed_ms,
@@ -333,11 +341,11 @@ class LivePriceFetcher:
                 order_type=order.order_type,
                 position_type=position_type
             )
-            return usd_conversion
-        else:
-            bt.logging.warning(f"Unable to fetch currency conversion from {from_currency} to USD at time {time_ms}. Defaulting to 1.0")
-            return 1.0
-            # TODO: raise Exception(f"Unable to fetch currency conversion from {from_currency} to USD at time {time_ms}.")
+            return usd_conversion if b_usd else 1.0 / usd_conversion
+
+        bt.logging.error(f"Unable to fetch quote currency {order.trade_pair.quote} to USD conversion at time {order.processed_ms}.")
+        return 1.0
+        # TODO: raise Exception(f"Unable to fetch currency conversion from {from_currency} to USD at time {time_ms}.")
 
     def get_usd_base_conversion(self, trade_pair, time_ms, price, order_type, position_type):
         """
@@ -349,7 +357,15 @@ class LivePriceFetcher:
         if not trade_pair.is_forex or trade_pair.quote == "USD":
             return 1.0 / price
 
+        # A/B cross pair: need to convert usd to base currency A
+        # Try USD/A first (more common)
+        usd_a = True
         conversion_trade_pair = TradePair.from_trade_pair_id(f"USD{trade_pair.base}")
+        if conversion_trade_pair is None:
+            # fall back to A/USD format
+            usd_a = False
+            conversion_trade_pair = TradePair.from_trade_pair_id(f"{trade_pair.base}USD")
+
         price_source = self.get_close_at_date(
             trade_pair=conversion_trade_pair,
             timestamp_ms=time_ms,
@@ -362,10 +378,10 @@ class LivePriceFetcher:
                 order_type=order_type,
                 position_type=position_type
             )
-            return usd_conversion
-        else:
-            bt.logging.warning(f"Unable to fetch currency conversion from {from_currency} to USD at time {time_ms}. Defaulting to 1.0")
-            return 1.0
+            return usd_conversion if usd_a else 1.0 / usd_conversion
+
+        bt.logging.error(f"Unable to fetch USD to base currency {trade_pair.base} conversion at time {time_ms}.")
+        return 1.0
 
 if __name__ == "__main__":
     secrets = ValiUtils.get_secrets()
