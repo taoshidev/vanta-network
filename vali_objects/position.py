@@ -45,17 +45,17 @@ class Position(BaseModel):
     open_ms: int
     trade_pair: TradePair
     orders: List[Order] = Field(default_factory=list)
-    current_return: float = 1.0  # excludes fees
+    current_return: float = 1.0             # Excludes fees
     close_ms: Optional[int] = None
     net_leverage: float = 0.0
-    net_value: float = 0.0                  # in USD
-    net_quantity: float = 0.0
-    return_at_close: float = 1.0  # includes all fees
-    average_entry_price: float = 0.0        # in quote currency
-    cumulative_entry_value: float = 0.0     # in USD
-    account_size: float = 0.0               # in USD
-    realized_pnl: float = 0.0               # in USD
-    unrealized_pnl: float = 0.0             # in USD
+    net_value: float = 0.0                  # USD
+    net_quantity: float = 0.0               # Base currency lots
+    return_at_close: float = 1.0            # Includes all fees
+    average_entry_price: float = 0.0        # Quote currency
+    cumulative_entry_value: float = 0.0     # USD
+    account_size: float = 0.0               # USD
+    realized_pnl: float = 0.0               # USD
+    unrealized_pnl: float = 0.0             # USD
     position_type: Optional[OrderType] = None
     is_closed_position: bool = False
 
@@ -409,11 +409,13 @@ class Position(BaseModel):
                     exit_price = current_price
                 order_realized_pnl_quote = -1 * (exit_price - self.average_entry_price) * (order.quantity * order.trade_pair.lot_size)
                 self.realized_pnl += order_realized_pnl_quote * order.quote_usd_rate
-            unrealized_pnl_quote = (current_price - self.average_entry_price) * (min(self.net_quantity, self.net_quantity + order.quantity, key=abs) * order.trade_pair.lot_size)
+
+            unrealized_quantity = min(self.net_quantity, self.net_quantity + order.quantity, key=abs)
+            unrealized_pnl_quote = (current_price - self.average_entry_price) * (unrealized_quantity * order.trade_pair.lot_size)
             self.unrealized_pnl = unrealized_pnl_quote * order.quote_usd_rate
         else:
-            unrealized_pnl_quote = (current_price - self.average_entry_price) * (abs(self.net_quantity) * self.trade_pair.lot_size)
-            quote_usd_conversion = self.orders[-1].quote_usd_rate # live_price_fetcher.get_usd_conversion(self.trade_pair.quote, t_ms, self.orders[-1].order_type, self.position_type)
+            unrealized_pnl_quote = (current_price - self.average_entry_price) * (self.net_quantity * self.trade_pair.lot_size)
+            quote_usd_conversion = self.orders[-1].quote_usd_rate # live_price_fetcher.get_usd_conversion(self.trade_pair.quote, t_ms, self.orders[-1].order_type, self.position_type)  # TODO: calculate conversion rate at current time instead of last order time
             self.unrealized_pnl = unrealized_pnl_quote * quote_usd_conversion
 
         if self.cumulative_entry_value == 0:
@@ -617,30 +619,24 @@ class Position(BaseModel):
             if self.position_type == order.order_type:
                 # average entry price only changes when an order is in the same direction as the position. reducing a position does not affect average entry price.
                 if ALWAYS_USE_SLIPPAGE is False or (ALWAYS_USE_SLIPPAGE is None and order.processed_ms < SLIPPAGE_V1_TIME_MS):
-                    print(self.orders)
-                    print(self.position_type)
-                    print(order)
                     # no slippage
                     self.average_entry_price = (
                         self.average_entry_price * self.net_quantity
                         + realtime_price * delta_quantity
                     ) / new_net_quantity
-
-                    entry_value = realtime_price * (order.quantity * order.trade_pair.lot_size)
                 else:
                     # after SLIPPAGE_V1_TIME_MS, average entry price now reflects the average price
                     entry_price = order.price * (1 + order.slippage) if order.leverage > 0 else order.price * (1 - order.slippage)
-                    entry_value = entry_price * (order.quantity * order.trade_pair.lot_size)
-
                     self.average_entry_price = (
                         self.average_entry_price * self.net_quantity
                         + entry_price * delta_quantity
                     ) / new_net_quantity
+                entry_value = abs(order.value)
             else:
                 # order is reducing the size of a position, so there is no entry cost.
                 entry_value = 0
 
-            self.cumulative_entry_value += entry_value * order.quote_usd_rate
+            self.cumulative_entry_value += entry_value
             self.net_quantity = new_net_quantity
             self.net_value = (realtime_price * order.quote_usd_rate) * (self.net_quantity * self.trade_pair.lot_size)
             self.net_leverage = self.net_value / self.account_size

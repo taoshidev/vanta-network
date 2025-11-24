@@ -26,12 +26,12 @@ ORDER_SRC_PRICE_FILLED_ELIMINATION_FLAT = OrderSource.PRICE_FILLED_ELIMINATION_F
 ORDER_SRC_MAX_ORDERS_PER_POSITION_CLOSE = OrderSource.MAX_ORDERS_PER_POSITION_CLOSE
 
 class Order(Signal):
-    price: float
-    bid: float = 0
-    ask: float = 0
+    price: float                # Quote currency
+    bid: float = 0              # Quote currency
+    ask: float = 0              # Quote currency
     slippage: float = 0
-    quote_usd_rate: float = 1.0 # conversion rate from quote currency to USD
-    usd_base_rate: float = 1.0  # conversion rate from usd to base currency
+    quote_usd_rate: float = 1.0 # Conversion rate from quote currency to USD
+    usd_base_rate: float = 1.0  # Conversion rate from usd to base currency
     processed_ms: int
     order_uuid: str
     price_sources: list = []
