@@ -451,7 +451,7 @@ class TestLimitOrders(TestBase):
         )
         self.assertEqual(trigger, 50000.0)
 
-        # ask=49900 < limit=50000 -> trigger at ask
+        # ask=49900 < limit=50000 -> trigger at limit_price
         price_source.ask = 49900.0
         trigger = self.limit_order_manager._evaluate_limit_trigger_price(
             OrderType.LONG,
@@ -459,7 +459,7 @@ class TestLimitOrders(TestBase):
             price_source,
             50000.0
         )
-        self.assertEqual(trigger, 49900.0)
+        self.assertEqual(trigger, 50000.0)
 
     def test_evaluate_trigger_price_short_order(self):
         """Test SHORT order trigger evaluation"""
@@ -485,7 +485,7 @@ class TestLimitOrders(TestBase):
         )
         self.assertEqual(trigger, 50000.0)
 
-        # bid=50100 > limit=50000 -> trigger at bid
+        # bid=50100 > limit=50000 -> trigger at limit_price
         price_source.bid = 50100.0
         trigger = self.limit_order_manager._evaluate_limit_trigger_price(
             OrderType.SHORT,
@@ -493,7 +493,7 @@ class TestLimitOrders(TestBase):
             price_source,
             50000.0
         )
-        self.assertEqual(trigger, 50100.0)
+        self.assertEqual(trigger, 50000.0)
 
     def test_evaluate_trigger_price_flat_long_position(self):
         """Test FLAT order trigger for LONG position (sells at bid)"""
@@ -511,7 +511,7 @@ class TestLimitOrders(TestBase):
         )
         self.assertIsNone(trigger)
 
-        # bid=50100 > limit=50000 -> trigger at bid
+        # bid=50100 > limit=50000 -> trigger at limit_price
         price_source.bid = 50100.0
         trigger = self.limit_order_manager._evaluate_limit_trigger_price(
             OrderType.FLAT,
@@ -519,7 +519,7 @@ class TestLimitOrders(TestBase):
             price_source,
             50000.0
         )
-        self.assertEqual(trigger, 50100.0)
+        self.assertEqual(trigger, 50000.0)
 
     def test_evaluate_trigger_price_flat_short_position(self):
         """Test FLAT order trigger for SHORT position (buys at ask)"""
@@ -537,7 +537,7 @@ class TestLimitOrders(TestBase):
         )
         self.assertIsNone(trigger)
 
-        # ask=49900 < limit=50000 -> trigger at ask
+        # ask=49900 < limit=50000 -> trigger at limit_price
         price_source.ask = 49900.0
         trigger = self.limit_order_manager._evaluate_limit_trigger_price(
             OrderType.FLAT,
@@ -545,7 +545,7 @@ class TestLimitOrders(TestBase):
             price_source,
             50000.0
         )
-        self.assertEqual(trigger, 49900.0)
+        self.assertEqual(trigger, 50000.0)
 
     def test_evaluate_trigger_price_fallback_to_open(self):
         """Test fallback to open price when bid/ask is 0"""
@@ -558,7 +558,7 @@ class TestLimitOrders(TestBase):
             price_source,
             50100.0
         )
-        self.assertEqual(trigger, 50000.0)  # open <= limit
+        self.assertEqual(trigger, 50100.0)  # Returns limit_price when triggered (open <= limit)
 
     # ============================================================================
     # Test Fill Logic with Market Order Manager Integration
@@ -750,7 +750,7 @@ class TestLimitOrders(TestBase):
         with patch.object(self.limit_order_manager, '_write_to_disk'):
             with patch('os.path.exists', return_value=False):
                 with patch.object(self.live_price_fetcher, 'is_market_open', return_value=True):
-                    with patch.object(self.live_price_fetcher, 'get_sorted_price_sources_for_trade_pair',
+                    with patch.object(self.limit_order_manager, '_get_best_price_source',
                                     return_value=[trigger_price_source]):
                         # Run the FULL daemon code flow
                         self.limit_order_manager.check_and_fill_limit_orders()
@@ -1022,7 +1022,7 @@ class TestLimitOrders(TestBase):
         )
 
         self.assertIsNotNone(trigger_price)
-        self.assertEqual(trigger_price, 47500.0)
+        self.assertEqual(trigger_price, 48000.0)  # Returns the stop_loss price
 
     def test_evaluate_bracket_trigger_price_long_take_profit(self):
         """Test bracket order trigger for LONG bracket hitting take profit"""
@@ -1072,7 +1072,7 @@ class TestLimitOrders(TestBase):
         )
 
         self.assertIsNotNone(trigger_price)
-        self.assertEqual(trigger_price, 52500.0)
+        self.assertEqual(trigger_price, 52000.0)  # Returns the take_profit price
 
     def test_evaluate_bracket_trigger_price_short_stop_loss(self):
         """Test bracket order trigger for SHORT bracket hitting stop loss"""
@@ -1122,7 +1122,7 @@ class TestLimitOrders(TestBase):
         )
 
         self.assertIsNotNone(trigger_price)
-        self.assertEqual(trigger_price, 52500.0)
+        self.assertEqual(trigger_price, 52000.0)  # Returns the stop_loss price
 
     def test_evaluate_bracket_trigger_price_short_take_profit(self):
         """Test bracket order trigger for SHORT bracket hitting take profit"""
@@ -1172,7 +1172,7 @@ class TestLimitOrders(TestBase):
         )
 
         self.assertIsNotNone(trigger_price)
-        self.assertEqual(trigger_price, 47500.0)
+        self.assertEqual(trigger_price, 48000.0)  # Returns the take_profit price
 
     def test_evaluate_bracket_trigger_price_no_trigger(self):
         """Test bracket order when price doesn't hit either boundary"""
@@ -1276,9 +1276,9 @@ class TestLimitOrders(TestBase):
         with patch.object(self.limit_order_manager, '_write_to_disk'):
             with patch('os.path.exists', return_value=False):
                 with patch.object(self.live_price_fetcher, 'is_market_open', return_value=True):
-                    with patch.object(self.live_price_fetcher, 'get_sorted_price_sources_for_trade_pair',
+                    with patch.object(self.limit_order_manager, '_get_best_price_source',
                                     return_value=[trigger_price_source]):
-                        # Run daemon check
+                        # Run FULL daemon code flow
                         self.limit_order_manager.check_and_fill_limit_orders()
 
         # Verify ONLY the first order was filled (and removed from memory due to Issue 8 fix)
@@ -1332,9 +1332,9 @@ class TestLimitOrders(TestBase):
         with patch.object(self.limit_order_manager, '_write_to_disk'):
             with patch('os.path.exists', return_value=False):
                 with patch.object(self.live_price_fetcher, 'is_market_open', return_value=True):
-                    with patch.object(self.live_price_fetcher, 'get_sorted_price_sources_for_trade_pair',
+                    with patch.object(self.limit_order_manager, '_get_best_price_source',
                                     return_value=[trigger_price_source]):
-                        # Run daemon check
+                        # Run FULL daemon code flow
                         self.limit_order_manager.check_and_fill_limit_orders()
 
         # Verify BOTH miners' orders were filled and removed from memory (Issue 8 fix)
