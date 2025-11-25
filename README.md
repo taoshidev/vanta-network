@@ -2,7 +2,7 @@
 
 <p align="center">
   <a href="https://taoshi.io">
-    <img width="500" alt="taoshi - ptn repo logo" src="https://i.imgur.com/5hTsp97.png">
+    <img width="385" alt="taoshi - ptn repo logo" src="https://www.taoshi.io/white-black.png">
   </a>
 </p>
 
