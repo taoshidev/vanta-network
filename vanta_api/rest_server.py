@@ -24,8 +24,8 @@ from vali_objects.utils.position_manager import PositionManager
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.vali_config import ValiConfig
 from multiprocessing import current_process
-from ptn_api.api_key_refresh import APIKeyMixin
-from ptn_api.nonce_manager import NonceManager
+from vanta_api.api_key_refresh import APIKeyMixin
+from vanta_api.nonce_manager import NonceManager
 
 
 class APIMetricsTracker:
@@ -290,7 +290,7 @@ class APIMetricsTracker:
         bt.logging.info(f"API metrics logging started (interval: {self.log_interval_minutes} minutes)")
 
 
-class PTNRestServer(APIKeyMixin):
+class VantaRestServer(APIKeyMixin):
     """Handles REST API requests with Flask and Waitress."""
 
     def __init__(self, api_keys_file, shared_queue=None, host="127.0.0.1",

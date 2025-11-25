@@ -10,7 +10,7 @@ import uuid
 
 from setproctitle import setproctitle
 
-from ptn_api.api_manager import APIManager
+from vanta_api.api_manager import APIManager
 from shared_objects.sn8_multiprocessing import get_ipc_metagraph
 from multiprocessing import Manager, Process
 from typing import Tuple

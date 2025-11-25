@@ -61,7 +61,7 @@ npm run preview  # Preview production build
 
 ### Data Infrastructure
 - **`data_generator/`** - Financial data services (Polygon, Tiingo, Binance, Bybit, Kraken)
-- **`ptn_api/`** - API management for real-time data and communication
+- **`vanta_api/`** - API management for real-time data and communication
 - **`mining/`** - Signal processing pipeline (received/processed/failed signals)
 - **`validation/`** - Validator state (eliminations, plagiarism, performance ledgers)
 

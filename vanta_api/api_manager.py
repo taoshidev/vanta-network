@@ -4,9 +4,9 @@ import time
 import traceback
 import threading
 from multiprocessing import Process, Manager
-from ptn_api.rest_server import PTNRestServer
-from ptn_api.websocket_server import WebSocketServer
-from ptn_api.slack_notifier import SlackNotifier
+from vanta_api.rest_server import VantaRestServer
+from vanta_api.websocket_server import WebSocketServer
+from vanta_api.slack_notifier import SlackNotifier
 
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 
@@ -23,8 +23,8 @@ def start_rest_server(shared_queue, host="127.0.0.1", port=48888, refresh_interv
         print(f"[REST] Step 2/4: API keys file path: {api_keys_file}")
 
         # Create and run the REST server
-        print(f"[REST] Step 3/4: Creating PTNRestServer instance...")
-        rest_server = PTNRestServer(
+        print(f"[REST] Step 3/4: Creating VantaRestServer instance...")
+        rest_server = VantaRestServer(
             api_keys_file=api_keys_file,
             shared_queue=shared_queue,
             host=host,

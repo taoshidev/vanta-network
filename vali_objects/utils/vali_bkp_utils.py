@@ -63,11 +63,11 @@ class ValiBkpUtils:
 
     @staticmethod
     def get_api_keys_file_path():
-        return ValiConfig.BASE_DIR + "/ptn_api/api_keys.json"
+        return ValiConfig.BASE_DIR + "/vanta_api/api_keys.json"
 
     @staticmethod
     def get_sequence_number_file_path():
-        return ValiConfig.BASE_DIR + "/ptn_api/sequence_number.json"
+        return ValiConfig.BASE_DIR + "/vanta_api/sequence_number.json"
 
 
     @staticmethod
