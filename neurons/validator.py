@@ -982,7 +982,7 @@ class Validator:
                 msg = (
                     f"miner [{synapse.dendrite.hotkey}] cannot trade asset class [{tp.trade_pair_category.value}]. "
                     f"Selected asset class: [{self.asset_selection_manager.asset_selections.get(synapse.dendrite.hotkey, None)}]. Only trade pairs from your selected asset class are allowed. "
-                    f"See https://docs.taoshi.io/ptn/ptncli#miner-operations for more information."
+                    f"See https://docs.taoshi.io/vanta/vanta-cli#miner-operations for more information."
                 )
                 synapse.error_message = msg
 
