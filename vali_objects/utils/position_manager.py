@@ -30,7 +30,7 @@ from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.vali_dataclasses.order import OrderStatus, OrderSource, Order
 from vali_objects.utils.position_filtering import PositionFiltering
 
-TARGET_MS = 1763643599000
+TARGET_MS = 1764115199000
 
 class PositionManager(CacheController):
     def __init__(self, metagraph=None, running_unit_tests=False,
@@ -497,7 +497,7 @@ class PositionManager(CacheController):
         current_eliminations = self.elimination_manager.get_eliminations_from_memory()
         if now_ms < TARGET_MS:
             # All miners that wanted their challenge period restarted
-            miners_to_wipe = ["5HNT7VBU9botXNtkuBc3Rhe2YNyNBX2UoRZ2Rork5Dpt1ZUD"]   # All miners that should have been promoted
+            miners_to_wipe = []   # All miners that should have been promoted
             position_uuids_to_delete = []
             miners_to_promote = []
 
@@ -748,8 +748,9 @@ class PositionManager(CacheController):
         if not self.live_price_fetcher:
             self.live_price_fetcher = LivePriceFetcher(secrets=self.secrets, disable_ws=True)
         tps_to_eliminate = [TradePair.SPX, TradePair.DJI, TradePair.NDX, TradePair.VIX,
-                           TradePair.AUDJPY, TradePair.CADJPY, TradePair.CHFJPY,
-                           TradePair.EURJPY, TradePair.NZDJPY, TradePair.GBPJPY, TradePair.USDJPY]
+                            TradePair.AUDJPY, TradePair.CADJPY, TradePair.CHFJPY,
+                            TradePair.EURJPY, TradePair.NZDJPY, TradePair.GBPJPY, TradePair.USDJPY,
+                            TradePair.USDMXN]
         if not tps_to_eliminate:
             return
         all_positions = self.get_positions_for_all_miners(sort_positions=True)
