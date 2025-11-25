@@ -427,7 +427,7 @@ class Position(BaseModel):
         if max_net_value == 0:
             gain = 0
         else:
-            gain = (self.realized_pnl + self.unrealized_pnl) / max_net_value   # self.cumulative_entry_value
+            gain = (self.realized_pnl + self.unrealized_pnl) / self.account_size    # max_net_value   # self.cumulative_entry_value
 
         # Check if liquidated
         if gain <= -1.0:
