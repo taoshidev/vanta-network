@@ -1,3 +1,5 @@
+> Proprietary Trading Network is now Vanta Network! Read announcement here.
+
 <p align="center">
   <a href="https://taoshi.io">
     <img width="500" alt="taoshi - ptn repo logo" src="https://i.imgur.com/5hTsp97.png">
@@ -28,7 +30,7 @@
 <details>
   <summary>Table of contents</summary>
   <ol>
-    <li><a href="#proprietary-trading-network">Proprietary Trading Network</a></li>
+    <li><a href="#vanta-network">Vanta Network</a></li>
     <li><a href="#features">Features</a></li>
     <li><a href="#how-does-it-work">How does it work?</a></li>
     <li>
@@ -71,11 +73,11 @@ Validators recieve trade signals from Miners. Validators ensure trades are valid
 <br />
 <br />
 
-# Proprietary Trading Subnet
+# Vanta Network
 
-This repository contains the code for the Proprietary Trading Network (PTN) developed by Taoshi.
+This repository contains the code for the Vanta Network developed by Taoshi.
 
-PTN receives signals from quant and deep learning machine learning trading systems to deliver the world's
+Vanta receives signals from quant and deep learning machine learning trading systems to deliver the world's
 most complete trading signals across a variety of asset classes.
 
 # Features
@@ -88,7 +90,7 @@ most complete trading signals across a variety of asset classes.
 
 ## How does it work?
 
-PTN is the most challenging & competitive network in the world. Our miners need to provide futures based signals (long/short)
+Vanta is the most challenging & competitive network in the world. Our miners need to provide futures based signals (long/short)
 that are highly efficient and effective across various markets to compete (forex, crypto). The top miners are
 those that provide the most returns, while never exceeding certain drawdown limits.
 
@@ -106,7 +108,7 @@ With this system only the world's best traders & deep learning / quant based tra
 
 # Eliminations
 
-In the Proprietary Trading Network, Eliminations occur for miners that commit Plagiarism, or exceed 10% Max Drawdown.
+In the Vanta Network, Eliminations occur for miners that commit Plagiarism, or exceed 10% Max Drawdown.
 
 
 ### Plagiarism Eliminations
@@ -141,12 +143,12 @@ If you attempt to re-register a previously used hotkey after elimination or dere
 # Get Started
 
 ### Mainnet Trade Dashboard
-Take a look at the top traders on PTN <a href="https://dashboard.taoshi.io/">Dashboard</a>
+Take a look at the top traders on Vanta <a href="https://dashboard.taoshi.io/">Dashboard</a>
 
-### Auto Trade with PTN data 
+### Auto Trade with Vanta data 
 https://x.com/glitchfinancial
 
-### Subscribe to Realtime Trade Data from PTN
+### Subscribe to Realtime Trade Data from Vanta
 https://request.taoshi.io/login 
 
 ### Theta Token

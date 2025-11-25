@@ -61,7 +61,7 @@ To achieve maximum reward as a miner, you will need to be competitive in all ass
 
 **Debt-Based Scoring System** (Active December 2025+)
 
-PTN uses a debt-based scoring system that pays miners proportionally based on their previous month's performance. The system tracks three key components for each miner:
+Vanta uses a debt-based scoring system that pays miners proportionally based on their previous month's performance. The system tracks three key components for each miner:
 
 1. **Emissions Ledger**: Records ALPHA/TAO/USD tokens earned in 12-hour checkpoints
 2. **Performance Ledger**: Tracks PnL, fees, drawdown, and portfolio returns
@@ -138,7 +138,7 @@ $$
 
 There are two primary penalties in place for each miner:
 
-1. Max Drawdown: PTN eliminates miners who exceed 10% max drawdown.
+1. Max Drawdown: Vanta eliminates miners who exceed 10% max drawdown.
 2. Risk-Profiling: Miners are penalized for having positions that may create undue risk for copy traders.
 
 To avoid the impact of a risk profiling penalty, we recommend that you avoid doing the following:
@@ -153,7 +153,7 @@ The Max Drawdown penalty and Risk Profiling penalty help us detect the absolute 
 
 ### Fees and Transaction Costs
 
-We want to simulate real costs of trading for our miners, to make signals from PTN more valuable outside our platform. To do this, we have incorporated three primary costs: **Cost of Carry**, **Slippage**, and **Spread Fee**.
+We want to simulate real costs of trading for our miners, to make signals from Vanta more valuable outside our platform. To do this, we have incorporated three primary costs: **Cost of Carry**, **Slippage**, and **Spread Fee**.
 
 Cost of carry is reflective of real exchanges, and how they manage the cost of holding a position overnight. This rate changes depending on the asset class, the logic of which may be found in [our proposal 4](https://docs.taoshi.io/tips/p4/).
 
@@ -199,7 +199,7 @@ We also implement a [portfolio level leverage limit](https://docs.taoshi.io/tips
 
 **Debt-Based Weight Calculation** (Active December 2025+)
 
-Starting in December 2025, PTN uses a debt-based scoring algorithm to calculate miner weights:
+Starting in December 2025, Vanta uses a debt-based scoring algorithm to calculate miner weights:
 
 1. **Previous Month Performance**: Calculate each miner's needed payout from previous month (PnL × penalties in USD)
 2. **Current Month Emissions**: Sum emissions already received in current month (in USD)
@@ -234,7 +234,7 @@ Where a holiday falls on a weekend, it is observed on the nearest working day.
 
 # Easy Setup
 
-Here are platforms that allows you to trade on PTN with a simple interface or connect to an existing API. These facilitate trading so you can focus on building your strategy.
+Here are platforms that allows you to trade on Vanta with a simple interface or connect to an existing API. These facilitate trading so you can focus on building your strategy.
 
 1. [Horizon](https://x.com/taoshiio/status/1895516351814365201)
 2. [Delta Prop Shop](https://x.com/DeltaDeFi_)
@@ -292,7 +292,7 @@ Below are the prerequisites for miners. You may be able to make a miner work off
 
 # Getting Started
 
-## 1. Install PTN
+## 1. Install Vanta
 
 Clone repository
 

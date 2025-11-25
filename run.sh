@@ -4,7 +4,7 @@
 script="neurons/validator.py"
 generate_script="runnable/generate_request_outputs.py"
 autoRunLoc=$(readlink -f "$0")
-proc_name="ptn"
+proc_name="vanta"
 generate_proc_name="generate"
 args=()
 generate_args=() # Assuming no specific arguments to the generate script

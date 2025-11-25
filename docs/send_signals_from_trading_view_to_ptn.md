@@ -1,11 +1,10 @@
-# Send Signals from TradingView to Taoshi's Proprietary Trading Network (PTN)
+# Send Signals from TradingView to Taoshi's Vanta Network
 
 ## Overview
 
-This document provides traders the ability to send signals directly from TradingView to the proprietary
-trading network to compete as a miner.
+This document provides traders the ability to send signals directly from TradingView to the Vanta Network to compete as a miner.
 
-Please start by reviewing our <a href="https://github.com/taoshidev/proprietary-trading-network">README</a> to better understand PTN.
+Please start by reviewing our <a href="https://github.com/taoshidev/proprietary-trading-network">README</a> to better understand Vanta.
 
 If you have questions, you can join our <a href="https://discord.gg/MWWqaH3VJU">Taoshi Community Hub on Discord</a>
 for us to help guide you.
@@ -78,7 +77,7 @@ in setting up your alert.
 
 
 Note:
-You will want to silo access to your new PTN signals server on port 80 so that only TradingView can access it.
+You will want to silo access to your new Vanta signals server on port 80 so that only TradingView can access it.
 
 See here for the latest <a href="https://www.tradingview.com/support/solutions/43000529348-about-webhooks/">IPv4 TradingView addresses</a>.
 
