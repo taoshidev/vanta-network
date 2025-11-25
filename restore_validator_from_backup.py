@@ -10,13 +10,13 @@ from datetime import datetime
 
 from time_util.time_util import TimeUtil
 from vali_objects.position import Position
-from vali_objects.utils.elimination_manager import EliminationManager
+from vali_objects.utils.elimination_manager_server import EliminationManagerServer
 from vali_objects.utils.limit_order_manager import LimitOrderManager
-from vali_objects.utils.position_manager import PositionManager
-from vali_objects.utils.challengeperiod_manager import ChallengePeriodManager
-from vali_objects.utils.validator_contract_manager import ValidatorContractManager
+from vali_objects.utils.position_manager_server import PositionManagerServer
+from vali_objects.utils.challengeperiod_manager_server import ChallengePeriodManagerServer
+from vali_objects.utils.validator_contract_manager import ValidatorContractManagerServer
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
-from vali_objects.utils.asset_selection_manager import AssetSelectionManager
+from vali_objects.utils.asset_selection_manager_server import AssetSelectionManagerServer
 import bittensor as bt
 from vali_objects.vali_dataclasses.perf_ledger import PerfLedgerManager
 
@@ -109,15 +109,13 @@ def regenerate_miner_positions(perform_backup=True, backup_from_data_dir=False, 
             bt.logging.info(f"    {key}: {value}")
     backup_creation_time_ms = data['created_timestamp_ms']
 
-    elimination_manager = EliminationManager(None, None, None)
-    position_manager = PositionManager(perform_order_corrections=True,
-                                       challengeperiod_manager=None,
-                                       elimination_manager=elimination_manager)
-    contract_manager = ValidatorContractManager(config=None, running_unit_tests=False)
-    challengeperiod_manager = ChallengePeriodManager(metagraph=None, position_manager=position_manager)
-    perf_ledger_manager = PerfLedgerManager(None)
-    asset_selection_manager = AssetSelectionManager()
-    limit_order_manager = LimitOrderManager(position_manager, None)
+    elimination_manager = EliminationManagerServer(None, None, None)
+    position_manager = PositionManagerServer(running_unit_tests=False, is_backtesting=False)
+    contract_manager = ValidatorContractManagerServer(config=None, running_unit_tests=False)
+    challengeperiod_manager = ChallengePeriodManagerServer(metagraph=None, position_manager=position_manager)
+    perf_ledger_manager = PerfLedgerManager(None, contract_manager=contract_manager)
+    asset_selection_manager = AssetSelectionManagerServer()
+    limit_order_manager = LimitOrderManager(position_manager, None, None)
 
     if DEBUG:
         position_manager.pre_run_setup()
@@ -125,8 +123,7 @@ def regenerate_miner_positions(perform_backup=True, backup_from_data_dir=False, 
     # We want to get the smallest processed_ms timestamp across all positions in the backup and then compare this to
     # the smallest processed_ms timestamp across all orders on the local filesystem. If the backup smallest timestamp is
     # older than the local smallest timestamp, we will not regenerate the positions. Similarly for the oldest timestamp.
-    smallest_disk_ms, largest_disk_ms = (
-        position_manager.get_extreme_position_order_processed_on_disk_ms())
+    smallest_disk_ms, largest_disk_ms = position_manager.get_extreme_position_order_processed_on_disk_ms_rpc()
     smallest_backup_ms = data['youngest_order_processed_ms']
     largest_backup_ms = data['oldest_order_processed_ms']
     try:
@@ -167,8 +164,8 @@ def regenerate_miner_positions(perform_backup=True, backup_from_data_dir=False, 
         return False
 
 
-    n_existing_position = position_manager.get_number_of_miners_with_any_positions()
-    n_existing_eliminations = position_manager.get_number_of_eliminations()
+    n_existing_position = len(position_manager.get_all_hotkeys_rpc())
+    n_existing_eliminations = len(elimination_manager.get_eliminations_from_memory_rpc())
     msg = (f"Detected {n_existing_position} hotkeys with positions, {n_existing_eliminations} eliminations")
     bt.logging.info(msg)
 
@@ -177,7 +174,7 @@ def regenerate_miner_positions(perform_backup=True, backup_from_data_dir=False, 
         backup_validation_directory()
 
     bt.logging.info(f"regenerating {len(data['positions'].keys())} hotkeys")
-    position_manager.clear_all_miner_positions()
+    position_manager.clear_all_miner_positions_rpc()
     for hotkey, json_positions in data['positions'].items():
         # sort positions by close_ms otherwise, writing a closed position after an open position for the same
         # trade pair will delete the open position
@@ -185,14 +182,14 @@ def regenerate_miner_positions(perform_backup=True, backup_from_data_dir=False, 
         if not positions:
             continue
         assert len(positions) > 0, f"no positions for hotkey {hotkey}"
-        positions.sort(key=PositionManager.sort_by_close_ms)
+        positions.sort(key=lambda p: p.close_ms if p.close_ms is not None else float('inf'))
         ValiBkpUtils.make_dir(ValiBkpUtils.get_miner_all_positions_dir(hotkey))
         for p_obj in positions:
             #bt.logging.info(f'creating position {p_obj}')
-            position_manager.save_miner_position(p_obj)
+            position_manager.save_miner_position_rpc(p_obj)
 
         # Validate that the positions were written correctly
-        disk_positions = position_manager.get_positions_for_one_hotkey(hotkey, sort_positions=True)
+        disk_positions = position_manager.get_positions_for_one_hotkey_rpc(hotkey)
         #bt.logging.info(f'disk_positions: {disk_positions}, positions: {positions}')
         n_disk_positions = len(disk_positions)
         n_memory_positions = len(positions)
@@ -203,7 +200,7 @@ def regenerate_miner_positions(perform_backup=True, backup_from_data_dir=False, 
 
 
     bt.logging.info(f"regenerating {len(data['eliminations'])} eliminations")
-    position_manager.elimination_manager.write_eliminations_to_disk(data['eliminations'])
+    elimination_manager.write_eliminations_to_disk(data['eliminations'])
 
     perf_ledgers = data.get('perf_ledgers', {})
     bt.logging.info(f"regenerating {len(perf_ledgers)} perf ledgers")
@@ -217,7 +214,7 @@ def regenerate_miner_positions(perform_backup=True, backup_from_data_dir=False, 
     miner_account_sizes = data.get('miner_account_sizes', {})
     if miner_account_sizes:
         bt.logging.info(f"syncing {len(miner_account_sizes)} miner account size records")
-        contract_manager.sync_miner_account_sizes_data(miner_account_sizes)
+        contract_manager.sync_miner_account_sizes_data_rpc(miner_account_sizes)
     else:
         bt.logging.info("No miner account sizes found in backup data")
 
@@ -225,12 +222,12 @@ def regenerate_miner_positions(perform_backup=True, backup_from_data_dir=False, 
 
     limit_orders = data.get('limit_orders', {})
     limit_order_manager.sync_limit_orders(limit_orders)
-    
+
     ## Restore asset selections
     asset_selections_data = data.get('asset_selections', {})
     if asset_selections_data:
         bt.logging.info(f"syncing {len(asset_selections_data)} miner asset selection records")
-        asset_selection_manager.sync_miner_asset_selection_data(asset_selections_data)
+        asset_selection_manager.sync_miner_asset_selection_data_rpc(asset_selections_data)
     else:
         bt.logging.info("No asset selections found in backup data")
 

@@ -380,6 +380,25 @@ class PositionManagerServer:
         """Get all hotkeys that have positions."""
         return list(self.hotkey_to_positions.keys())
 
+    def get_extreme_position_order_processed_on_disk_ms_rpc(self):
+        """
+        Get the minimum and maximum processed_ms timestamps across all orders in all positions.
+
+        Returns:
+            tuple: (min_time, max_time) in milliseconds
+        """
+        min_time = float("inf")
+        max_time = 0
+
+        for hotkey in self.hotkey_to_positions.keys():
+            positions = list(self.hotkey_to_positions[hotkey].values())
+            for p in positions:
+                for o in p.orders:
+                    min_time = min(min_time, o.processed_ms)
+                    max_time = max(max_time, o.processed_ms)
+
+        return min_time, max_time
+
     def health_check_rpc(self) -> dict:
         """Health check endpoint for RPC monitoring"""
         total_positions = sum(len(positions_dict) for positions_dict in self.hotkey_to_positions.values())

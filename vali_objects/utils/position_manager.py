@@ -868,21 +868,7 @@ class PositionManager(RPCServiceBase, CacheController):
         return len(self._server_proxy.get_all_hotkeys_rpc())
 
     def get_extreme_position_order_processed_on_disk_ms(self):
-        dir = ValiBkpUtils.get_miner_dir(running_unit_tests=self.running_unit_tests)
-        min_time = float("inf")
-        max_time = 0
-        for file in os.listdir(dir):
-            file_path = os.path.join(dir, file)
-            if os.path.isfile(file_path):
-                continue
-            hotkey = file
-            # Read all positions in this directory
-            positions = self.get_positions_for_one_hotkey(hotkey)
-            for p in positions:
-                for o in p.orders:
-                    min_time = min(min_time, o.processed_ms)
-                    max_time = max(max_time, o.processed_ms)
-        return min_time, max_time
+        return self._server_proxy.get_extreme_position_order_processed_on_disk_ms_rpc()
 
     def get_open_position_for_a_miner_trade_pair(self, hotkey: str, trade_pair_id: str) -> Position | None:
         """
