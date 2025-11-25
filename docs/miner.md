@@ -297,13 +297,13 @@ Below are the prerequisites for miners. You may be able to make a miner work off
 Clone repository
 
 ```bash
-git clone https://github.com/taoshidev/proprietary-trading-network.git
+git clone https://github.com/taoshidev/vanta-network.git
 ```
 
 Change directory
 
 ```bash
-cd proprietary-trading-network
+cd vanta-network
 ```
 
 Create Virtual Environment

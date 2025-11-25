@@ -1,4 +1,4 @@
-> Proprietary Trading Network is now Vanta Network! Read announcement here.
+> Proprietary Trading Network is now Vanta Network!
 
 <p align="center">
   <a href="https://taoshi.io">
@@ -83,7 +83,7 @@ most complete trading signals across a variety of asset classes.
 # Features
 
 🛠️&nbsp;Open Source Strategy Building Techniques (In Our Taoshi Community)<br>
-🫰&nbsp;Signals From a <a href="https://github.com/taoshidev/proprietary-trading-network/blob/main/vali_objects/vali_config.py#L19"> Variety of Asset Classes</a> - Forex and Crypto<br>
+🫰&nbsp;Signals From a <a href="https://github.com/taoshidev/vanta-network/blob/main/vali_objects/vali_config.py#L19"> Variety of Asset Classes</a> - Forex and Crypto<br>
 📈&nbsp;<a href="https://taomarketcap.com/subnet/8?subpage=miners&metagraph_type=miners">Millions of $ Payouts</a> to Top Traders<br>
 💪&nbsp;Innovative Trader Performance Metrics that Identify the Best Traders<br>
 🔎&nbsp;<a href="https://dashboard.taoshi.io/">Trading + Metrics Visualization Dashboard</a>
@@ -96,12 +96,12 @@ those that provide the most returns, while never exceeding certain drawdown limi
 
 ### Rules
 
-1. Miners can submit LONG, SHORT, or FLAT signal for Forex and Crypto trade pairs into the network during market hours. <a href="https://github.com/taoshidev/proprietary-trading-network/blob/main/vali_objects/vali_config.py#L173">Currently supported trade pairs</a>
+1. Miners can submit LONG, SHORT, or FLAT signal for Forex and Crypto trade pairs into the network during market hours. <a href="https://github.com/taoshidev/vanta-network/blob/main/vali_objects/vali_config.py#L173">Currently supported trade pairs</a>
 2. Miners are eliminated if they are detected as plagiarising other miners, or if they exceed 10% max drawdown (more info in  the "Eliminations" section).
 3. There is a fee for leaving positions open "carry fee". The fee is equal to 10.95/3% per year for a 1x leverage position (crypto/forex) <a href="https://docs.taoshi.io/tips/p4/">More info</a>
 4. There is a spread (transaction) fee applied to crypto pairs only, calculated as 0.1% multiplied by the leverage of each order. This simulates a transaction cost that a normal exchange would add.
 5. There is a slippage assessed per order. The slippage cost is is greater for orders with higher leverages, and in assets with lower liquidity.
-6. Miners are rewarded using a debt-based scoring system that tracks their emissions, performance, and penalties. Weights are set based on previous month's performance (PnL scaled by penalties), with payouts targeting completion by day 25 of each month <a href="https://github.com/taoshidev/proprietary-trading-network/blob/main/docs/miner.md">More info</a>
+6. Miners are rewarded using a debt-based scoring system that tracks their emissions, performance, and penalties. Weights are set based on previous month's performance (PnL scaled by penalties), with payouts targeting completion by day 25 of each month <a href="https://github.com/taoshidev/vanta-network/blob/main/docs/miner.md">More info</a>
 
 With this system only the world's best traders & deep learning / quant based trading systems can compete.
 
@@ -156,11 +156,11 @@ https://www.taoshi.io/theta
 
 ### Validator Installation
 
-Please see our [Validator Installation](https://github.com/taoshidev//proprietary-trading-network/blob/main/docs/validator.md) guide.
+Please see our [Validator Installation](https://github.com/taoshidev/vanta-network/blob/main/docs/validator.md) guide.
 
 ### Miner Installation
 
-Please see our [Miner Installation](https://github.com/taoshidev/proprietary-trading-network/blob/main/docs/miner.md) guide.
+Please see our [Miner Installation](https://github.com/taoshidev/vanta-network/blob/main/docs/miner.md) guide.
 
 # Building a strategy
 

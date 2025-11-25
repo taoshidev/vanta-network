@@ -251,7 +251,7 @@ while true; do
         retry_count=$((retry_count + 1))
         echo "Checking for latest version... (attempt $retry_count/$max_retries)"
 
-        latest_version=$(check_variable_value_on_github "taoshidev/proprietary-trading-network" "$version_location" "$version" "$branch")
+        latest_version=$(check_variable_value_on_github "taoshidev/vanta-network" "$version_location" "$version" "$branch")
 
         # Check if we got a valid version (not an error message)
         if [ -n "$latest_version" ] && ! echo "$latest_version" | grep -q "^Error:"; then

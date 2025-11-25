@@ -4,7 +4,7 @@
 
 This document provides traders the ability to send signals directly from TradingView to the Vanta Network to compete as a miner.
 
-Please start by reviewing our <a href="https://github.com/taoshidev/proprietary-trading-network">README</a> to better understand Vanta.
+Please start by reviewing our <a href="https://github.com/taoshidev/vanta-network">README</a> to better understand Vanta.
 
 If you have questions, you can join our <a href="https://discord.gg/MWWqaH3VJU">Taoshi Community Hub on Discord</a>
 for us to help guide you.
@@ -22,7 +22,7 @@ We’ll start by first having you test sending signals using testnet. We’ll st
 ### Setting Up Testnet Miner
 
 Once you’ve reviewed our README, we recommend setting up your miner on testnet. You can do so by
-following our <a href = "https://github.com/taoshidev/proprietary-trading-network/blob/main/docs/miner.md">installation guide</a> with the testnet flag.
+following our <a href = "https://github.com/taoshidev/vanta-network/blob/main/docs/miner.md">installation guide</a> with the testnet flag.
 
 Once you have a testnet miner registered via a wallet setup, you can test out sending your signals to your
 testnet miner using the following steps.
@@ -31,10 +31,10 @@ testnet miner using the following steps.
    your server is capable of receiving requests via open ports. By default, the expected port will be 80 to receive
    signals for your server.
 
-2. **Follow documentation on running the receive signals server** - We’ve created <a href="https://github.com/taoshidev/proprietary-trading-network/blob/main/docs/running_signals_server.md">documentation</a> on how to run the receive
+2. **Follow documentation on running the receive signals server** - We’ve created <a href="https://github.com/taoshidev/vanta-network/blob/main/docs/running_signals_server.md">documentation</a> on how to run the receive
    signals server for you. Follow the guide to run your server.
 
-3. **Ensure your server can receive signals** - We recommend cloning the proprietary-trading-network repository onto
+3. **Ensure your server can receive signals** - We recommend cloning the vanta-network repository onto
    another machine (locally) & running the `sample_signal_request.py` script inside of it pointing to your server’s endpoint. First, make
    sure you update the API key in the repo to be what the server is expecting (updating `mining/miner_secrets.json`). Next you can run
    the `sample_signal_request.py` script passing in an argument for your server's endpoint `python sample_signal_request.py http://example.com:80`. This will ensure your
@@ -72,8 +72,8 @@ order that's inside of your pine script.
 Your TradingView account should now be ready to send in signals to your server. Below are some images to help guide you
 in setting up your alert.
 
-<img width="600" alt="Screenshot 2024-03-19 at 6 02 24 PM" src="https://github.com/taoshidev/proprietary-trading-network/assets/68529441/1b6a0198-a875-4881-a7d7-2056d3e02ac2">
-<img width="600" alt="Screenshot 2024-03-19 at 1 26 40 PM" src="https://github.com/taoshidev/proprietary-trading-network/assets/68529441/22cfa76f-7a8f-4db9-a9eb-ca5630c39f61">
+<img width="600" alt="Screenshot 2024-03-19 at 6 02 24 PM" src="https://github.com/taoshidev/vanta-network/assets/68529441/1b6a0198-a875-4881-a7d7-2056d3e02ac2">
+<img width="600" alt="Screenshot 2024-03-19 at 1 26 40 PM" src="https://github.com/taoshidev/vanta-network/assets/68529441/22cfa76f-7a8f-4db9-a9eb-ca5630c39f61">
 
 
 Note:
