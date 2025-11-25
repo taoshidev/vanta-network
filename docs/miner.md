@@ -15,25 +15,27 @@ A long position is a bet that the trade pair will increase, while a short positi
    - Have at least 61 full days of trading
    - Don't exceed 10% max drawdown
    - Score at or above the 15th miner in each asset class in main competition. The details may be found [here](https://docs.taoshi.io/tips/p21/).
-3. Positions are uni-directional. Meaning, if a position starts LONG (the first order it receives is LONG),
+3. Miner's account size is determined from your miner's deposited collateral. Each theta deposited unlocks \$500 of trading capacity. Miners are required to deposit a minimum of 300 Theta, and are capped at a maximum of 1000 Theta deposited as collateral.
+4. Miner's must select an asset category in order to submit trades. Miners will be restricted to only submitting trades in their chosen asset class.
+5. Positions are uni-directional. Meaning, if a position starts LONG (the first order it receives is LONG),
    it can't flip SHORT. If you try and have it flip SHORT (using more leverage SHORT than exists LONG) it will close out
    the position. You'll then need to open a second position which is SHORT with the difference.
-4. Position leverage is bound per trade pair. If an order would cause the position's leverage to exceed the upper boundary, the position leverage will be clamped. Minimum order leverage is 0.001. Crypto positional leverage limit is [0.01, 0.5]. Forex positional leverage limit is [0.1, 5].
-5. Leverage is capped at 10 across all open positions in a miner's portfolio. Crypto position leverages are scaled by 10x when contributing
+6. Position leverage is bound per trade pair. If an order would cause the position's leverage to exceed the upper boundary, the position leverage will be clamped. Minimum order leverage is 0.001. Crypto positional leverage limit is [0.01, 0.5]. Forex positional leverage limit is [0.1, 5].
+7. Leverage is capped at 10 across all open positions in a miner's portfolio. Crypto position leverages are scaled by 10x when contributing
    to the leverage cap. <a href="https://docs.taoshi.io/tips/p10/">View for more details and examples.</a>
-6. You can take profit on an open position using LONG and SHORT. Say you have an open LONG position with .5x
+8. You can take profit on an open position using LONG and SHORT. Say you have an open LONG position with .5x
    leverage and you want to reduce it to a .25x leverage position to start taking profit on it. You would send in a SHORT signal
    of size .25x leverage to reduce the size of the position. LONG and SHORT signals can be thought of working in opposite
    directions in this way.
-7. Miners that have passed challenge period will be eliminated for a drawdown that exceeds 10%.
-8. Miners in main competition who fall below the top 15 in each asset class will be observed under a probation period. 
+9. Miners that have passed challenge period will be eliminated for a drawdown that exceeds 10%.
+10. Miners in main competition who fall below the top 15 in each asset class will be observed under a probation period. 
    - Miners in probation period have 30 days from time of demotion to be promoted back into main competition.
    - If they fail to do so within this window, they will be eliminated.
-9. A miner can have a maximum of 1 open position per trade pair. No limit on the number of closed positions.
-10. A miner's order will be ignored if placing a trade outside of market hours.
-11. A miner's order will be ignored if they are rate limited (maliciously sending too many requests)
-12. There is a 10-second cooldown period between orders of the same trade pair, during which the miner cannot place another order.
-13. **CRITICAL**: Never reuse hotkeys that have been previously eliminated or deregistered. Once a hotkey is eliminated or deregistered, it is **permanently blacklisted** by the network. Validators internally track all departed hotkeys (both eliminated miners and voluntary deregistrations) and will reject orders from re-registered hotkeys. **Each registration must use a completely new, unused hotkey**. This policy ensures network integrity and prevents circumventing elimination penalties.
+11. A miner can have a maximum of 1 open position per trade pair. No limit on the number of closed positions.
+12. A miner's order will be ignored if placing a trade outside of market hours.
+13. A miner's order will be ignored if they are rate limited (maliciously sending too many requests)
+14. There is a 10-second cooldown period between orders of the same trade pair, during which the miner cannot place another order.
+15. **CRITICAL**: Never reuse hotkeys that have been previously eliminated or deregistered. Once a hotkey is eliminated or deregistered, it is **permanently blacklisted** by the network. Validators internally track all departed hotkeys (both eliminated miners and voluntary deregistrations) and will reject orders from re-registered hotkeys. **Each registration must use a completely new, unused hotkey**. This policy ensures network integrity and prevents circumventing elimination penalties.
 
 ## Scoring Categories
 Our incentive is split into a number of subcategories, each of which is competitive using the same rules of logic as seen above. This helps to balance the spread of information which is generated on our network, without being too prescriptive in terms of what it means to score well within a specific subtopic. The incentive is split evenly between asset classes, with subcategories as follows:
@@ -455,6 +457,54 @@ You can run a second miner using the following example command:
 ```bash
 python neurons/miner.py --netuid 116 --subtensor.network test --wallet.name <wallet> --wallet.hotkey <miner2> --logging.debug --axon.port 8095
 ```
+
+
+
+# Vanta CLI: Selecting your asset class and managing collateral
+
+Miners are required to select an asset class before submitting orders. Miners are also required to deposit a minimum of 300 Theta as collateral, up to a maximum of 1000 Theta. Asset class selection and Collateral can be managed from the Vanta CLI.
+
+### Installing the Vanta CLI
+
+The [Vanta CLI](https://github.com/taoshidev/vanta-cli) is included when installing Vanta. More information can be found [here](https://docs.taoshi.io/vanta/vanta-cli/). It may also be installed separately by running the following:
+
+```bash
+pip install git+https://github.com/taoshidev/vanta-cli.git
+```
+
+### Selecting an asset class with the Vanta CLI
+
+Miners can select an asset class using the following command. Once an asset class is selected, it cannot be changed. Miners who wish to participate in multiple asset classes must register another miner.
+
+```bash
+vanta asset select
+```
+
+To select an asset class on the testnet add the `--subtensor.network test` flag
+
+### Depositing and managing collateral
+
+Miners can also deposit and manage collateral using the following commands:
+
+View deposited collateral
+
+```bash
+vanta collateral list
+```
+
+Deposit collateral
+
+```bash
+vanta collateral deposit
+```
+
+Withdraw collateral. Withdrawn collateral is subject to slashing proportional the miner's current drawdown. A miner who is eliminated will have their collateral deposit slashed and burnt.
+
+```bash
+vanta collateral withdraw
+```
+
+To manage collateral on the testnet add the `--subtensor.network test` flag
 
 # Miner Dashboard
 
