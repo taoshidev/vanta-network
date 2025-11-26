@@ -193,7 +193,7 @@ class LedgerUtils:
     def raw_pnl(ledger: PerfLedger) -> float:
         """
         Calculate total pnl from tracked PnL values in perf ledgers.
-        Uses the payout formula: realized_pnl + min(0, unrealized_pnl)
+        Uses the formula: realized_pnl + min(0, last_unrealized_pnl)
 
         Args:
             ledger: PerfLedger - the ledger of the miner
@@ -204,19 +204,18 @@ class LedgerUtils:
 
         if ledger is None or not ledger.cps:
             return 0
-        total_pnl = 0
-        for cp in ledger.cps:
-            # Payout formula: realized + unrealized (only if negative)
-            total_pnl += cp.realized_pnl + min(0, cp.unrealized_pnl)
+
+        total_realized = sum(cp.realized_pnl for cp in ledger.cps)
+        latest_unrealized = min(0, ledger.cps[-1].unrealized_pnl)
+        total_pnl = total_realized + latest_unrealized
 
         return total_pnl
 
     @staticmethod
     def daily_pnl_by_date(ledger: PerfLedger) -> dict[datetime.date, float]:
         """
-        Calculate daily PnL from performance checkpoints, only including full days
+        Calculate daily realized PnL from performance checkpoints, only including full days
         with complete data and correct total accumulated time.
-        Uses the payout formula: realized_pnl + min(0, unrealized_pnl)
 
         Args:
             ledger: PerfLedger - the ledger of the miner
@@ -228,8 +227,7 @@ class LedgerUtils:
 
         date_pnl_map = {}
         for running_date, day_checkpoints in sorted(complete_days.items()):
-            # Payout formula: realized + unrealized (only if negative)
-            total_pnl = sum(cp.realized_pnl + min(0, cp.unrealized_pnl) for cp in day_checkpoints)
+            total_pnl = sum(cp.realized_pnl for cp in day_checkpoints)
             date_pnl_map[running_date] = total_pnl
 
         return date_pnl_map
