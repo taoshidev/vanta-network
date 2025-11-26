@@ -605,7 +605,7 @@ class Position(BaseModel):
         assert self.initial_entry_price > 0, self.initial_entry_price
         new_net_quantity = self.net_quantity + delta_quantity
         new_net_leverage = self.net_leverage + delta_leverage
-        if order.src in (OrderSource.ELIMINATION_FLAT, OrderSource.DEPRECATION_FLAT):
+        if order.src in (OrderSource.ELIMINATION_FLAT, OrderSource.DEPRECATION_FLAT) and (order.price==0 or order.usd_base_rate==0 or order.quote_usd_rate==0):
             self.net_leverage = 0.0
             self.net_quantity = 0.0
             self.net_value = 0.0
