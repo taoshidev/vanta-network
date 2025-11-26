@@ -744,16 +744,16 @@ class VantaRestServer(APIKeyMixin):
                 if not data:
                     return jsonify({'error': 'Invalid JSON body'}), 400
 
-                # Check PTNCLI version FIRST - reject outdated versions
-                ptncli_version = data.get('ptncli_version', '0.0.0')
-                ptncli_error = self.check_ptncli_version(ptncli_version)
-                if ptncli_error:
-                    bt.logging.warning(f"PTNCLI version {ptncli_version} rejected (deposit endpoint): {ptncli_error}")
-                    return jsonify({
-                        'error': ptncli_error,
-                        'successfully_processed': False
-                    }), 400
-
+                # Check vanta-cli version FIRST - reject outdated versions
+                vanta_cli_version = (
+                    data.get('version')
+                    or data.get('ptncli_version')
+                    or '0.0.0'
+                )
+                vanta_cli_error = self.check_vanta_cli_version(vanta_cli_version)
+                if vanta_cli_error:
+                    return jsonify({'error': vanta_cli_error}), 400
+                    
                 # Validate required fields
                 required_fields = ['extrinsic']
                 for field in required_fields:
@@ -797,15 +797,15 @@ class VantaRestServer(APIKeyMixin):
                 if not data:
                     return jsonify({'error': 'Invalid JSON body'}), 400
 
-                # Check PTNCLI version FIRST - reject outdated versions
-                ptncli_version = data.get('ptncli_version', '0.0.0')
-                ptncli_error = self.check_ptncli_version(ptncli_version)
-                if ptncli_error:
-                    bt.logging.warning(f"PTNCLI version {ptncli_version} rejected (query-withdraw endpoint): {ptncli_error}")
-                    return jsonify({
-                        'error': ptncli_error,
-                        'successfully_processed': False
-                    }), 400
+                # Check vanta-cli version FIRST - reject outdated versions
+                vanta_cli_version = (
+                    data.get('version')
+                    or data.get('ptncli_version')
+                    or '0.0.0'
+                )
+                vanta_cli_error = self.check_vanta_cli_version(vanta_cli_version)
+                if vanta_cli_error:
+                    return jsonify({'error': vanta_cli_error}), 400
 
                 # Validate required fields for withdrawal query
                 required_fields = ['amount', 'miner_hotkey']
@@ -858,15 +858,15 @@ class VantaRestServer(APIKeyMixin):
                 if not data:
                     return jsonify({'error': 'Invalid JSON body'}), 400
 
-                # Check PTNCLI version FIRST - reject outdated versions
-                ptncli_version = data.get('ptncli_version', '0.0.0')
-                ptncli_error = self.check_ptncli_version(ptncli_version)
-                if ptncli_error:
-                    bt.logging.warning(f"PTNCLI version {ptncli_version} rejected (withdraw endpoint): {ptncli_error}")
-                    return jsonify({
-                        'error': ptncli_error,
-                        'successfully_processed': False
-                    }), 400
+                # Check vanta-cli version FIRST - reject outdated versions
+                vanta_cli_version = (
+                    data.get('version')
+                    or data.get('ptncli_version')
+                    or '0.0.0'
+                )
+                vanta_cli_error = self.check_vanta_cli_version(vanta_cli_version)
+                if vanta_cli_error:
+                    return jsonify({'error': vanta_cli_error}), 400
 
                 # Validate required fields for signed withdrawal
                 required_fields = ['amount', 'miner_coldkey', 'miner_hotkey', 'nonce', 'timestamp', 'signature']

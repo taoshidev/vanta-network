@@ -15,7 +15,9 @@ A long position is a bet that the trade pair will increase, while a short positi
    - Have at least 61 full days of trading
    - Don't exceed 10% max drawdown
    - Score at or above the 25th miner in each asset class in main competition. The details may be found [here](https://docs.taoshi.io/tips/p21/).
-3. Positions are uni-directional. Meaning, if a position starts LONG (the first order it receives is LONG),
+3. Miner's account size is determined from your miner's deposited collateral. Each theta deposited unlocks \$500 of trading capacity. Miners are required to deposit a minimum of 300 Theta, and are capped at a maximum of 1000 Theta deposited as collateral.
+4. Miner's must select an asset category in order to submit trades. Miners will be restricted to only submitting trades in their chosen asset class.
+5. Positions are uni-directional. Meaning, if a position starts LONG (the first order it receives is LONG),
    it can't flip SHORT. If you try and have it flip SHORT (using more leverage SHORT than exists LONG) it will close out
    the position. You'll then need to open a second position which is SHORT with the difference.
 6. Position leverage is bound per trade pair. If an order would cause the position's leverage to exceed the upper boundary, the position leverage will be clamped. Minimum order leverage is 0.001. Crypto positional leverage limit is [0.01, 0.5]. Forex positional leverage limit is [0.1, 5].
@@ -25,8 +27,8 @@ A long position is a bet that the trade pair will increase, while a short positi
    leverage and you want to reduce it to a .25x leverage position to start taking profit on it. You would send in a SHORT signal
    of size .25x leverage to reduce the size of the position. LONG and SHORT signals can be thought of working in opposite
    directions in this way.
-7. Miners that have passed challenge period will be eliminated for a drawdown that exceeds 10%.
-8. Miners in main competition who fall below the top 25 in each asset class will be observed under a probation period. 
+9. Miners that have passed challenge period will be eliminated for a drawdown that exceeds 10%.
+10. Miners in main competition who fall below the top 25 in each asset class will be observed under a probation period. 
    - Miners in probation period have 60 days from time of demotion to be promoted back into main competition.
    - If they fail to do so within this window, they will be eliminated.
 11. A miner can have a maximum of 1 open position per trade pair. No limit on the number of closed positions.
