@@ -44,7 +44,7 @@ from vali_objects.utils.live_price_fetcher import LivePriceFetcher
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import ValiConfig, TradePair
-from ptn_api.slack_notifier import SlackNotifier
+from vanta_api.slack_notifier import SlackNotifier
 from vali_objects.vali_dataclasses.perf_ledger import PerfLedgerManager, TP_ID_PORTFOLIO
 
 

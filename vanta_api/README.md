@@ -1,10 +1,10 @@
-# PTN API and Websocket Data
+# Vanta API and Websocket Data
 
 ## Overview
 
-This repository provides a comprehensive API server and client for the [Proprietary Trading Network (PTN) - Bittensor subnet 8](https://github.com/taoshidev/proprietary-trading-network/blob/main/docs/validator.md). It features both REST and WebSocket endpoints that enable real-time access to trading data, positions, statistics, and other critical information.
+This repository provides a comprehensive API server and client for the [Vanta Network - Bittensor subnet 8](https://github.com/taoshidev/vanta-network/blob/main/docs/validator.md). It features both REST and WebSocket endpoints that enable real-time access to trading data, positions, statistics, and other critical information.
 
-The REST API server is designed for validators to efficiently provide PTN data to consumers, with support for different data freshness tiers, real-time updates, and secure authentication.
+The REST API server is designed for validators to efficiently provide Vanta data to consumers, with support for different data freshness tiers, real-time updates, and secure authentication.
 
 The Websocket server allows for real-time streaming of trading data, enabling clients to receive updates as they happen.
 
@@ -59,12 +59,12 @@ API keys are stored in a JSON file with the following format:
     - 100: Premium access (100% data freshness + WebSocket support)
 ```
 
-By default, the system looks for this file at the relative path `ptn_api/api_keys.json`. The API keys are automatically refreshed from disk, allowing you to add or remove keys without restarting the server.
+By default, the system looks for this file at the relative path `vanta_api/api_keys.json`. The API keys are automatically refreshed from disk, allowing you to add or remove keys without restarting the server.
 
 
 The [Request Network](https://request.taoshi.io/) is a Taoshi product which serves subnet data while handling security, rate limiting, data customization, and provides a polished customer-facing and validator setup UI. Running this repo's APIManager is a prerequisite to serving data on the Request Network
 
-For end users who want to access PTN data, you will need a Request Network API key. If you have any issues or questions, please reach out to the Taoshi team on Discord.
+For end users who want to access Vanta data, you will need a Request Network API key. If you have any issues or questions, please reach out to the Taoshi team on Discord.
 
 ### Command Line Options
 
@@ -271,7 +271,7 @@ Perf Ledger schema
         {
 ...
 ```
-Perf ledgers are built based off realtime price data and are consumed in the scoring logic. More info in the PTN repo.
+Perf ledgers are built based off realtime price data and are consumed in the scoring logic. More info in the Vanta repo.
 
 
 ## Collateral Management
@@ -438,15 +438,15 @@ The `last_sequence` parameter helps track message continuity and allows clients 
 
 ### Websocket Message Format
 
-Messages from the websocket server are parsed into PTNWebsocketMessage ([ptn_api/websocket_client.py](ptn_api/websocket_client.py)) objects which mirror the position data from the REST endpoint.
+Messages from the websocket server are parsed into VantaWebsocketMessage ([vanta_api/websocket_client.py](vanta_api/websocket_client.py)) objects which mirror the position data from the REST endpoint.
 
-This data is serialized into a PTN Position object, and the server will send a message with the sequence number of the last message sent. Sequence number can be used to detect gaps in the message stream. The client can use this to make a REST call to fill in the gaps.
+This data is serialized into a Vanta Position object, and the server will send a message with the sequence number of the last message sent. Sequence number can be used to detect gaps in the message stream. The client can use this to make a REST call to fill in the gaps.
 
-Lag info is also included in the message. lag from the queue is lag from when the order was made available to the websocket server. Lag from the order is lag from when the order was placed and is larger due to variable time in price filling and order processing in the PTN repo.
+Lag info is also included in the message. lag from the queue is lag from when the order was made available to the websocket server. Lag from the order is lag from when the order was placed and is larger due to variable time in price filling and order processing in the Vanta repo.
 
-Here a snippet of a terminal printing PTNWebsocketMessage objects:
+Here a snippet of a terminal printing VantaWebsocketMessage objects:
 ```bash
-Received message PTNWebSocketMessage(seq=237)
+Received message VantaWebSocketMessage(seq=237)
 Position Summary:
 {
   "miner_hotkey": "5CUUWxGzf4qU5DCgLcL65qAKsQF1ezUTvBzfD548zPEDzxmR",
@@ -575,10 +575,10 @@ with requests.Session() as session:
 
 ### WebSocket Client with Python
 
-Our WebSocket client ([ptn_api/websocket_client.py](ptn_api/websocket_client.py)) provides a simple interface for receiving real-time data:
+Our WebSocket client ([vanta_api/websocket_client.py](vanta_api/websocket_client.py)) provides a simple interface for receiving real-time data:
 
 ```python
-from ptn_api.websocket_client import PTNWebSocketClient
+from vanta_api.websocket_client import VantaWebSocketClient
 import sys
 
 ...
@@ -596,7 +596,7 @@ if __name__ == "__main__":
             print(f"\nReceived message {msg}")
     # Create client
     print(f"Connecting to ws://{host}:{port} with API key: {api_key}")
-    client = PTNWebSocketClient(api_key=api_key, host=host, port=port)
+    client = VantaWebSocketClient(api_key=api_key, host=host, port=port)
 
     # Run client
     client.run(handle_messages)
@@ -607,12 +607,12 @@ if __name__ == "__main__":
 For more complex processing, you can use async handlers:
 
 ```python
-from ptn_api.websocket_client import PTNWebSocketClient, PTNWebSocketMessage
+from vanta_api.websocket_client import VantaWebSocketClient, VantaWebSocketMessage
 import asyncio
 from typing import List
 
 
-async def process_message(msg: PTNWebSocketMessage):
+async def process_message(msg: VantaWebSocketMessage):
     # Example: Check bid/ask spread
     if msg.new_order.bid and msg.new_order.ask:
         spread = msg.new_order.ask - msg.new_order.bid
@@ -629,7 +629,7 @@ async def process_message(msg: PTNWebSocketMessage):
     return None
 
 
-async def async_handler(messages: List[PTNWebSocketMessage]):
+async def async_handler(messages: List[VantaWebSocketMessage]):
     # Process messages concurrently
     results = await asyncio.gather(*[process_message(msg) for msg in messages])
 
@@ -639,7 +639,7 @@ async def async_handler(messages: List[PTNWebSocketMessage]):
 
 
 # Run with async handler
-client = PTNWebSocketClient(api_key="your_api_key_here")
+client = VantaWebSocketClient(api_key="your_api_key_here")
 client.subscribe()
 client.run(async_handler)
 ```

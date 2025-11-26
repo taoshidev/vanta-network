@@ -4,7 +4,7 @@
 script="neurons/validator.py"
 generate_script="runnable/generate_request_outputs.py"
 autoRunLoc=$(readlink -f "$0")
-proc_name="ptn"
+proc_name="vanta"
 generate_proc_name="generate"
 args=()
 generate_args=() # Assuming no specific arguments to the generate script
@@ -195,9 +195,18 @@ check_and_restart_pm2() {
     local script_path=$2
     local -n proc_args_ref=$3
 
+    # Check for current process name
     if pm2 status | grep -q $proc_name; then
         echo "The script $script_path is already running with pm2 under the name $proc_name. Stopping and restarting..."
         pm2 delete $proc_name
+    fi
+
+    # MIGRATION: Check for old "ptn" process name and stop it
+    # This ensures clean migration from ptn to vanta
+    if [ "$proc_name" = "vanta" ] && pm2 status | grep -q "ptn"; then
+        echo "⚠️  Found old 'ptn' process from before rebrand. Stopping it..."
+        pm2 delete ptn
+        echo "✓ Old 'ptn' process stopped successfully"
     fi
 
     echo "Running $script_path with the following pm2 config:"
@@ -251,7 +260,7 @@ while true; do
         retry_count=$((retry_count + 1))
         echo "Checking for latest version... (attempt $retry_count/$max_retries)"
 
-        latest_version=$(check_variable_value_on_github "taoshidev/proprietary-trading-network" "$version_location" "$version" "$branch")
+        latest_version=$(check_variable_value_on_github "taoshidev/vanta-network" "$version_location" "$version" "$branch")
 
         # Check if we got a valid version (not an error message)
         if [ -n "$latest_version" ] && ! echo "$latest_version" | grep -q "^Error:"; then

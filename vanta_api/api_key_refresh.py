@@ -45,7 +45,7 @@ class APIKeyMixin:
     -------------
     To create a new API key file:
 
-    1. Create a JSON file at path: ptn_api/api_keys.json
+    1. Create a JSON file at path: vanta_api/api_keys.json
     2. Add user entries following either format above
     3. The server automatically loads and refreshes this file (every 15 seconds by default)
     4. You can add/remove/modify keys without restarting the server

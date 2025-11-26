@@ -50,7 +50,7 @@ from dataclasses import dataclass
 from typing import List, Optional, Dict
 from datetime import datetime, timezone
 
-from ptn_api.slack_notifier import SlackNotifier
+from vanta_api.slack_notifier import SlackNotifier
 from time_util.time_util import TimeUtil
 from vali_objects.vali_config import ValiConfig
 from vali_objects.vali_dataclasses.emissions_ledger import EmissionsLedgerManager, EmissionsLedger

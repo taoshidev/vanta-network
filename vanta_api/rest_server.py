@@ -24,8 +24,8 @@ from vali_objects.utils.position_manager import PositionManager
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.vali_config import ValiConfig
 from multiprocessing import current_process
-from ptn_api.api_key_refresh import APIKeyMixin
-from ptn_api.nonce_manager import NonceManager
+from vanta_api.api_key_refresh import APIKeyMixin
+from vanta_api.nonce_manager import NonceManager
 
 
 class APIMetricsTracker:
@@ -290,7 +290,7 @@ class APIMetricsTracker:
         bt.logging.info(f"API metrics logging started (interval: {self.log_interval_minutes} minutes)")
 
 
-class PTNRestServer(APIKeyMixin):
+class VantaRestServer(APIKeyMixin):
     """Handles REST API requests with Flask and Waitress."""
 
     def __init__(self, api_keys_file, shared_queue=None, host="127.0.0.1",
@@ -744,15 +744,15 @@ class PTNRestServer(APIKeyMixin):
                 if not data:
                     return jsonify({'error': 'Invalid JSON body'}), 400
 
-                # Check PTNCLI version FIRST - reject outdated versions
-                ptncli_version = data.get('ptncli_version', '0.0.0')
-                ptncli_error = self.check_ptncli_version(ptncli_version)
-                if ptncli_error:
-                    bt.logging.warning(f"PTNCLI version {ptncli_version} rejected (deposit endpoint): {ptncli_error}")
-                    return jsonify({
-                        'error': ptncli_error,
-                        'successfully_processed': False
-                    }), 400
+                # Check vanta-cli version FIRST - reject outdated versions
+                vanta_cli_version = (
+                    data.get('version')
+                    or data.get('ptncli_version')
+                    or '0.0.0'
+                )
+                vanta_cli_error = self.check_vanta_cli_version(vanta_cli_version)
+                if vanta_cli_error:
+                    return jsonify({'error': vanta_cli_error}), 400
                     
                 # Validate required fields
                 required_fields = ['extrinsic']
@@ -797,15 +797,15 @@ class PTNRestServer(APIKeyMixin):
                 if not data:
                     return jsonify({'error': 'Invalid JSON body'}), 400
 
-                # Check PTNCLI version FIRST - reject outdated versions
-                ptncli_version = data.get('ptncli_version', '0.0.0')
-                ptncli_error = self.check_ptncli_version(ptncli_version)
-                if ptncli_error:
-                    bt.logging.warning(f"PTNCLI version {ptncli_version} rejected (query-withdraw endpoint): {ptncli_error}")
-                    return jsonify({
-                        'error': ptncli_error,
-                        'successfully_processed': False
-                    }), 400
+                # Check vanta-cli version FIRST - reject outdated versions
+                vanta_cli_version = (
+                    data.get('version')
+                    or data.get('ptncli_version')
+                    or '0.0.0'
+                )
+                vanta_cli_error = self.check_vanta_cli_version(vanta_cli_version)
+                if vanta_cli_error:
+                    return jsonify({'error': vanta_cli_error}), 400
 
                 # Validate required fields for withdrawal query
                 required_fields = ['amount', 'miner_hotkey']
@@ -858,15 +858,15 @@ class PTNRestServer(APIKeyMixin):
                 if not data:
                     return jsonify({'error': 'Invalid JSON body'}), 400
 
-                # Check PTNCLI version FIRST - reject outdated versions
-                ptncli_version = data.get('ptncli_version', '0.0.0')
-                ptncli_error = self.check_ptncli_version(ptncli_version)
-                if ptncli_error:
-                    bt.logging.warning(f"PTNCLI version {ptncli_version} rejected (withdraw endpoint): {ptncli_error}")
-                    return jsonify({
-                        'error': ptncli_error,
-                        'successfully_processed': False
-                    }), 400
+                # Check vanta-cli version FIRST - reject outdated versions
+                vanta_cli_version = (
+                    data.get('version')
+                    or data.get('ptncli_version')
+                    or '0.0.0'
+                )
+                vanta_cli_error = self.check_vanta_cli_version(vanta_cli_version)
+                if vanta_cli_error:
+                    return jsonify({'error': vanta_cli_error}), 400
 
                 # Validate required fields for signed withdrawal
                 required_fields = ['amount', 'miner_coldkey', 'miner_hotkey', 'nonce', 'timestamp', 'signature']
@@ -1030,15 +1030,15 @@ class PTNRestServer(APIKeyMixin):
                 if not data:
                     return jsonify({'error': 'Invalid JSON body'}), 400
 
-                # Check PTNCLI version FIRST - reject outdated versions
-                ptncli_version = data.get('ptncli_version', '0.0.0')
-                ptncli_error = self.check_ptncli_version(ptncli_version)
-                if ptncli_error:
-                    bt.logging.warning(f"PTNCLI version {ptncli_version} rejected (asset-selection endpoint): {ptncli_error}")
-                    return jsonify({
-                        'error': ptncli_error,
-                        'successfully_processed': False
-                    }), 400
+                # Check vanta-cli version FIRST - reject outdated versions
+                vanta_cli_version = (
+                    data.get('version')
+                    or data.get('ptncli_version')
+                    or '0.0.0'
+                )
+                vanta_cli_error = self.check_vanta_cli_version(vanta_cli_version)
+                if vanta_cli_error:
+                    return jsonify({'error': vanta_cli_error}), 400
 
                 # Validate required fields for signed withdrawal
                 required_fields = ['asset_selection', 'miner_coldkey', 'miner_hotkey', 'signature']
@@ -1188,13 +1188,13 @@ class PTNRestServer(APIKeyMixin):
                 raise
 
     @staticmethod
-    def check_ptncli_version(version: str) -> Optional[str]:
+    def check_vanta_cli_version(version: str) -> Optional[str]:
         """
-        Check if PTNCLI version meets minimum requirements.
+        Check if vanta-cli version meets minimum requirements.
         This is now an enforced requirement - requests will be rejected if version is outdated.
 
         Args:
-            version: PTNCLI version string (e.g., "1.0.5")
+            version: vanta-cli version string (e.g., "1.0.5")
 
         Returns:
             Error message string if version is outdated or invalid, None if OK
@@ -1202,16 +1202,16 @@ class PTNRestServer(APIKeyMixin):
         try:
             # Parse version strings into tuples for comparison
             current = tuple(int(x) for x in version.split('.')[:3])
-            minimum = tuple(int(x) for x in ValiConfig.PTNCLI_MINIMUM_VERSION.split('.')[:3])
+            minimum = tuple(int(x) for x in ValiConfig.VANTA_CLI_MINIMUM_VERSION.split('.')[:3])
 
             if current < minimum:
-                return (f"Your PTNCLI version {version} is outdated and no longer supported. "
-                        f"Please upgrade to PTNCLI >= {ValiConfig.PTNCLI_MINIMUM_VERSION}: "
-                        f"pip install --upgrade git+https://github.com/taoshidev/ptncli.git")
+                return (f"Your vanta-cli version {version} is outdated and no longer supported. "
+                        f"Please upgrade to vanta-cli >= {ValiConfig.VANTA_CLI_MINIMUM_VERSION}: "
+                        f"pip install --upgrade git+https://github.com/taoshidev/vanta-cli.git")
         except (ValueError, AttributeError, IndexError):
             # Invalid version format - treat as error for security
-            return (f"Invalid PTNCLI version format: {version}. "
-                    f"Please reinstall PTNCLI: pip install --upgrade git+https://github.com/taoshidev/ptncli.git")
+            return (f"Invalid vanta-cli version format: {version}. "
+                    f"Please reinstall vanta-cli: pip install --upgrade git+https://github.com/taoshidev/vanta-cli.git")
         return None
 
     def run(self):

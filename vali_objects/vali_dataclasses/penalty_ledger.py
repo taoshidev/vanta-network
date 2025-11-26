@@ -28,7 +28,7 @@ from vali_objects.utils.asset_segmentation import AssetSegmentation
 from vali_objects.utils.miner_bucket_enum import MinerBucket
 from vali_objects.vali_config import ValiConfig
 from time_util.time_util import TimeUtil
-from ptn_api.slack_notifier import SlackNotifier
+from vanta_api.slack_notifier import SlackNotifier
 import bittensor as bt
 
 

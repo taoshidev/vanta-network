@@ -18,7 +18,7 @@ from vali_objects.position import Position
 from vali_objects.utils.vali_bkp_utils import CustomEncoder, ValiBkpUtils
 
 # Assuming APIKeyMixin is in api.api_key_refresh
-from ptn_api.api_key_refresh import APIKeyMixin
+from vanta_api.api_key_refresh import APIKeyMixin
 from vali_objects.vali_config import TradePair
 
 # Maximum number of websocket connections allowed per API key

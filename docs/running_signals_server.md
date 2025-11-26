@@ -28,7 +28,7 @@ Installation portion of the README.
 Once you have your venv setup you can run the signals server. We've setup a convenient
 script that will ensure your server is running at all times named `run_receive_signals_server.sh`.
 
-You can run it with the following command inside the proprietary-trading-network directory:
+You can run it with the following command inside the vanta-network directory:
 
 `sh run_receive_signals_server.sh`
 
@@ -46,5 +46,5 @@ You can test a sample signal to ensure your server is running properly by runnin
 `sample_signal_request.py` script inside the `mining` directory.
 
 1. Be sure to activate your venv
-2. go to `proprietary-trading-network/mining/`
+2. go to `vanta-network/mining/`
 3. run `python sample_signal_request.py`

@@ -61,11 +61,11 @@ def send_to_slack(message: str, webhook_url: str) -> bool:
         return False
 
 
-class PTNWebSocketMessage:
+class VantaWebSocketMessage:
     """Wrapper for websocket messages with helpful accessors."""
 
     # Class logger
-    logger = setup_logger('PTNWebSocketMessage')
+    logger = setup_logger('VantaWebSocketMessage')
 
     def __init__(self, raw_message: Dict[str, Any], clock_offset_ms):
         # logger.debug('raw_message %s', raw_message)
@@ -140,7 +140,7 @@ class PTNWebSocketMessage:
         # Format the new order in a more readable way
         new_order = json.dumps(self.new_order.to_python_dict(), indent=2, cls=CustomEncoder)
 
-        return (f"PTNWebSocketMessage(seq={self.sequence}, repo_version={self.repo_version})\n"
+        return (f"VantaWebSocketMessage(seq={self.sequence}, repo_version={self.repo_version})\n"
                 f"Position Summary:\n{position_summary}\n"
                 f"New Order:\n{new_order}\n"
                 f"Approx Timelag (ms): from_queue={self.timelag_from_queue}, from_order={self.timelag_from_order}")
@@ -149,11 +149,11 @@ class PTNWebSocketMessage:
         return self.__str__()
 
 
-class PTNWebSocketClient:
+class VantaWebSocketClient:
     """Client for connecting to WebSocket server with authentication and subscription capabilities."""
 
     # Class logger
-    logger = setup_logger('PTNWebSocketClient')
+    logger = setup_logger('VantaWebSocketClient')
 
     def __init__(self,
                  api_key: Optional[str] = None,
@@ -360,7 +360,7 @@ class PTNWebSocketClient:
                     for item in data["messages"]:
                         if "sequence" in item:
                             self.last_sequence = max(self.last_sequence, item["sequence"])
-                            messages.append(PTNWebSocketMessage(item, self.clock_offset_estimate_ms))
+                            messages.append(VantaWebSocketMessage(item, self.clock_offset_estimate_ms))
 
                     # Call handlers with the batch of messages
                     if messages and self.message_handlers:
@@ -370,7 +370,7 @@ class PTNWebSocketClient:
                 # Handle single messages
                 elif "sequence" in data:
                     self.last_sequence = max(self.last_sequence, data["sequence"])
-                    message_obj = PTNWebSocketMessage(data, self.clock_offset_estimate_ms)
+                    message_obj = VantaWebSocketMessage(data, self.clock_offset_estimate_ms)
 
                     # Call handlers with a list containing one message
                     if self.message_handlers:
@@ -552,7 +552,7 @@ class PTNWebSocketClient:
                 # Increase backoff for next attempt
                 backoff = min(backoff * 2, self._max_backoff)
 
-    def run(self, handler: Optional[Callable[[List[PTNWebSocketMessage]], None]] = None) -> None:
+    def run(self, handler: Optional[Callable[[List[VantaWebSocketMessage]], None]] = None) -> None:
         """Run the client with the given message handler.
 
         Args:
@@ -628,7 +628,7 @@ if __name__ == "__main__":
 
 
     # Define a message handler that logs to console and optionally to Slack
-    def handle_messages(messages: List[PTNWebSocketMessage]) -> None:
+    def handle_messages(messages: List[VantaWebSocketMessage]) -> None:
         for msg in messages:
             # Log to console
             main_logger.info(
@@ -642,7 +642,7 @@ if __name__ == "__main__":
 
     # Create client
     main_logger.info("Connecting to ws://%s:%s with API key: %s", host, port, api_key)
-    client = PTNWebSocketClient(api_key=api_key, host=host, port=port,
+    client = VantaWebSocketClient(api_key=api_key, host=host, port=port,
                                 slack_webhook_url=slack_webhook_url, server_alias=server_alias)
 
     # Run client
