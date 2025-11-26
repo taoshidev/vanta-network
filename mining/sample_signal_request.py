@@ -44,7 +44,7 @@ if __name__ == "__main__":
         # 'execution_type': ExecutionType.MARKET,
         # 'execution_type': ExecutionType.LIMIT_CANCEL,
         # 'limit_price': 0.1,
-        # 'cancel_order_uuid': "order-uuid",
+        # 'order_uuid': "order-uuid",
         'api_key': 'xxxx'
     }
 

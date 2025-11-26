@@ -71,12 +71,13 @@ def handle_data():
             leverage=float(data["leverage"]),
             execution_type=data.get("execution_type", "MARKET").upper(),
             limit_price=float(data["limit_price"]) if "limit_price" in data else None,
-            cancel_order_uuid=data["cancel_order_uuid"] if "cancel_order_uuid" in data else None
+            stop_loss=float(data["stop_loss"]) if "stop_loss" in data else None,
+            take_profit=float(data["take_profit"]) if "take_profit" in data else None
         )
         # make miner received signals dir if doesnt exist
         ValiBkpUtils.make_dir(MinerConfig.get_miner_received_signals_dir())
         # store miner signal
-        signal_file_uuid = str(uuid.uuid4())
+        signal_file_uuid = data["order_uuid"] if "order_uuid" in data else str(uuid.uuid4())
         signal_path = os.path.join(MinerConfig.get_miner_received_signals_dir(), signal_file_uuid)
         ValiBkpUtils.write_file(signal_path, dict(signal))
     except IOError as e:

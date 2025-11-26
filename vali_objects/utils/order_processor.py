@@ -39,18 +39,18 @@ class OrderProcessor:
         Raises:
             SignalException: If required fields are missing or invalid
         """
-        # Parse trade pair
-        trade_pair = Order.parse_trade_pair_from_signal(signal)
-        if trade_pair is None:
-            raise SignalException(
-                f"Invalid trade pair in signal. Raw signal: {signal}"
-            )
-
         # Parse execution type (defaults to MARKET for backwards compatibility)
         try:
             execution_type = ExecutionType.from_string(signal.get("execution_type", "MARKET").upper())
         except ValueError as e:
             raise SignalException(f"Invalid execution_type: {str(e)}")
+
+        # Parse trade pair (allow None for LIMIT_CANCEL operations)
+        trade_pair = Order.parse_trade_pair_from_signal(signal)
+        if trade_pair is None and execution_type != ExecutionType.LIMIT_CANCEL:
+            raise SignalException(
+                f"Invalid trade pair in signal. Raw signal: {signal}"
+            )
 
         # Generate UUID if not provided
         order_uuid = miner_order_uuid if miner_order_uuid else str(uuid.uuid4())
@@ -149,7 +149,7 @@ class OrderProcessor:
 
         Args:
             signal: Signal dictionary (order_uuid may be in here for specific cancel)
-            trade_pair: Parsed TradePair object
+            trade_pair: Parsed TradePair object (can be None for cancel by UUID)
             order_uuid: Order UUID to cancel (or None/empty for cancel all)
             now_ms: Current timestamp in milliseconds
             miner_hotkey: Miner's hotkey
@@ -161,10 +161,13 @@ class OrderProcessor:
         Raises:
             SignalException: If cancellation fails
         """
+        # Extract trade_pair_id (can be None for cancel by UUID)
+        trade_pair_id = trade_pair.trade_pair_id if trade_pair else None
+
         # Call cancel limit order (may throw SignalException)
         result = limit_order_manager.cancel_limit_order(
             miner_hotkey,
-            trade_pair.trade_pair_id,
+            trade_pair_id,
             order_uuid,
             now_ms
         )

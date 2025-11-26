@@ -188,17 +188,21 @@ class LimitOrderManager(CacheController):
         RPC method to cancel limit order(s).
         Args:
             miner_hotkey: The miner's hotkey
-            trade_pair_id: Trade pair ID string
+            trade_pair_id: Trade pair ID string (can be None for cancel by UUID)
             order_uuid: UUID of specific order to cancel, or None/empty for all
             now_ms: Current timestamp
         Returns:
             dict with cancellation details
         """
         try:
-            trade_pair = TradePair.from_trade_pair_id(trade_pair_id)
+            # Parse trade_pair only if trade_pair_id is provided
+            trade_pair = TradePair.from_trade_pair_id(trade_pair_id) if trade_pair_id else None
 
+            # Try to find orders by UUID first
             orders_to_cancel = self._find_orders_to_cancel_by_uuid(miner_hotkey, order_uuid)
-            if not orders_to_cancel:
+
+            # If no orders found by UUID and trade_pair is provided, try by trade_pair
+            if not orders_to_cancel and trade_pair:
                 orders_to_cancel = self._find_orders_to_cancel_by_trade_pair(miner_hotkey, trade_pair)
 
             if not orders_to_cancel:
@@ -1033,7 +1037,7 @@ class LimitOrderManagerClient(RPCServiceBase):
 
         Args:
             miner_hotkey: Miner's hotkey
-            trade_pair_id: Trade pair ID string
+            trade_pair_id: Trade pair ID string (can be None for cancel by UUID)
             order_uuid: UUID of order to cancel
             now_ms: Current timestamp
 
