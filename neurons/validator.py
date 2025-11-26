@@ -997,7 +997,7 @@ class Validator:
                 synapse.error_message = msg
 
             elif tp.is_blocked:
-                msg = (f"Trade pair [{tp.trade_pair_id}] has been blocked. "
+                msg = (f"Trade pair [{tp.trade_pair_id}] is no longer supported. "
                        f"Please try again with a different trade pair.")
                 synapse.error_message = msg
 

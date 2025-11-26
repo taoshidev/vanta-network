@@ -134,9 +134,7 @@ class ValidatorContractManager:
         if now_ms > TARGET_MS:
             return
 
-        miners_to_reinstate = {
-            "5HNT7VBU9botXNtkuBc3Rhe2YNyNBX2UoRZ2Rork5Dpt1ZUD": 62.34
-        }
+        miners_to_reinstate = {}
         for miner, amount in miners_to_reinstate.items():
             self.force_deposit(amount, miner)
 
