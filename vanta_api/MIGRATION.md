@@ -4,7 +4,12 @@ This guide explains how to migrate your validator from the old `ptn_api` directo
 
 ## What Changed?
 
-As part of the rebrand from Proprietary Trading Network (PTN) to Vanta Network, the `ptn_api` directory has been renamed to `vanta_api`. All class names and imports have been updated accordingly.
+As part of the rebrand from Proprietary Trading Network (PTN) to Vanta Network:
+- The `ptn_api` directory has been renamed to `vanta_api`
+- All class names and imports have been updated accordingly
+- The PM2 process name changed from `ptn` to `vanta`
+
+**Important**: The `run.sh` script now includes automatic cleanup to stop the old `ptn` process when starting the new `vanta` process, preventing both from running simultaneously.
 
 ## Do I Need to Migrate?
 
@@ -60,6 +65,26 @@ ls -la vanta_api/
 
 Start your validator and check the logs. You should **NOT** see warnings about using deprecated `ptn_api/` paths.
 
+## PM2 Process Migration
+
+The PM2 process name has changed from `ptn` to `vanta`. The `run.sh` script handles this automatically:
+
+✅ **Automatic Cleanup**: When you update and run the new version, the script will:
+1. Check for the old `ptn` process
+2. Stop it if found
+3. Start the new `vanta` process
+
+You can verify the migration with:
+```bash
+pm2 status
+# You should see "vanta" listed, not "ptn"
+```
+
+If you still see the old `ptn` process running, stop it manually:
+```bash
+pm2 delete ptn
+```
+
 ## After Migration
 
 Once you've verified everything works correctly:
@@ -67,6 +92,7 @@ Once you've verified everything works correctly:
 1. ✅ Files are in `vanta_api/`
 2. ✅ No deprecation warnings in logs
 3. ✅ Validator is functioning normally
+4. ✅ Only `vanta` process running (not `ptn`)
 
 You can safely delete the old `ptn_api/` directory:
 

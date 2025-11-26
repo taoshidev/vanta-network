@@ -195,9 +195,18 @@ check_and_restart_pm2() {
     local script_path=$2
     local -n proc_args_ref=$3
 
+    # Check for current process name
     if pm2 status | grep -q $proc_name; then
         echo "The script $script_path is already running with pm2 under the name $proc_name. Stopping and restarting..."
         pm2 delete $proc_name
+    fi
+
+    # MIGRATION: Check for old "ptn" process name and stop it
+    # This ensures clean migration from ptn to vanta
+    if [ "$proc_name" = "vanta" ] && pm2 status | grep -q "ptn"; then
+        echo "⚠️  Found old 'ptn' process from before rebrand. Stopping it..."
+        pm2 delete ptn
+        echo "✓ Old 'ptn' process stopped successfully"
     fi
 
     echo "Running $script_path with the following pm2 config:"
