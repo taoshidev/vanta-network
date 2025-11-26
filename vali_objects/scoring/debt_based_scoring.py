@@ -577,13 +577,16 @@ class DebtBasedScoring:
                 )
 
             # Step 4: Calculate needed payout from previous month (in USD)
-            # "needed payout" = sum of (net_pnl * total_penalty) across all prev month checkpoints
-            # NOTE: net_pnl is in USD, pnl_gain/pnl_loss are per-checkpoint values (NOT cumulative)
+            # "needed payout" = sum of (realized_pnl * total_penalty) across all prev month checkpoints
+            #                   and (unrealized_pnl * total_penalty) of the last checkpoint
+            # NOTE: realized_pnl is in USD, pnl_gain/pnl_loss are per-checkpoint values (NOT cumulative)
             needed_payout_usd = 0.0
             if prev_month_checkpoints:
                 # Sum penalty-adjusted PnL across all checkpoints in the month
                 # Each checkpoint has its own PnL (for that 12-hour period) and its own penalty
-                needed_payout_usd = sum(cp.net_pnl * cp.total_penalty for cp in prev_month_checkpoints)
+                last_checkpoint = prev_month_checkpoints[-1]
+                needed_payout_usd = sum(cp.realized_pnl * cp.total_penalty for cp in prev_month_checkpoints)
+                needed_payout_usd += min(0.0, last_checkpoint.unrealized_pnl) * last_checkpoint.total_penalty
 
             # Step 5: Calculate actual payout given so far in current month (in USD)
             # "actual payout" = sum of chunk_emissions_usd for current month
@@ -832,7 +835,7 @@ class DebtBasedScoring:
         This is the SINGLE SOURCE OF TRUTH for PnL calculations,
         used by both main scoring and dynamic dust weight calculations.
 
-        NOTE: net_pnl in checkpoints is in USD (performance value),
+        NOTE: realized_pnl in checkpoints is in USD (performance value),
         so the return value is also in USD.
 
         Args:
@@ -842,7 +845,7 @@ class DebtBasedScoring:
             earning_statuses: Set of statuses to include (default: MAINCOMP, PROBATION)
 
         Returns:
-            Penalty-adjusted PnL for the period in USD (sum of net_pnl * total_penalty)
+            Penalty-adjusted PnL for the period in USD (sum of realized_pnl * total_penalty) + (last unrealized_pnl * last penalty)
         """
         # Default to earning statuses
         if earning_statuses is None:
@@ -867,7 +870,9 @@ class DebtBasedScoring:
         # Sum penalty-adjusted PnL across all checkpoints in the time range
         # NOTE: pnl_gain/pnl_loss are per-checkpoint values (NOT cumulative), so we must sum
         # Each checkpoint has its own PnL (for that 12-hour period) and its own penalty
-        penalty_adjusted_pnl = sum(cp.net_pnl * cp.total_penalty for cp in relevant_checkpoints)
+        last_checkpoint = relevant_checkpoints[-1]
+        penalty_adjusted_pnl = sum(cp.realized_pnl * cp.total_penalty for cp in relevant_checkpoints)
+        penalty_adjusted_pnl += min(0.0, last_checkpoint.unrealized_pnl) * last_checkpoint.total_penalty
 
         return penalty_adjusted_pnl
 

@@ -206,7 +206,7 @@ class LedgerUtils:
             return 0
 
         total_realized = sum(cp.realized_pnl for cp in ledger.cps)
-        latest_unrealized = min(0, ledger.cps[-1].unrealized_pnl)
+        latest_unrealized = min(0.0, ledger.cps[-1].unrealized_pnl)
         total_pnl = total_realized + latest_unrealized
 
         return total_pnl
