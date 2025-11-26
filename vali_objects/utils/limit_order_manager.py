@@ -174,7 +174,7 @@ class LimitOrderManager(CacheController):
 
         # Fill outside the lock to avoid reentrant lock issue
         if should_fill_immediately:
-            fill_error = self._fill_limit_order_with_price_source(miner_hotkey, order, price_sources[0], None)
+            fill_error = self._fill_limit_order_with_price_source(miner_hotkey, order, price_sources[0], None, enforce_market_cooldown=True)
             if fill_error:
                 raise SignalException(fill_error)
 
@@ -208,7 +208,8 @@ class LimitOrderManager(CacheController):
                 )
 
             for order in orders_to_cancel:
-                self._close_limit_order(miner_hotkey, order, OrderSource.ORDER_SRC_LIMIT_CANCELLED, now_ms)
+                cancel_src = OrderSource.get_cancel(order.src)
+                self._close_limit_order(miner_hotkey, order, cancel_src, now_ms)
 
             return {
                 "status": "cancelled",
@@ -372,7 +373,7 @@ class LimitOrderManager(CacheController):
             1 for hotkey_dict in self._limit_orders.values()
             for orders in hotkey_dict.values()
             for order in orders
-            if order.src in [OrderSource.ORDER_SRC_LIMIT_UNFILLED, OrderSource.ORDER_SRC_BRACKET_UNFILLED]
+            if order.src in [OrderSource.LIMIT_UNFILLED, OrderSource.BRACKET_UNFILLED]
         )
 
         return {
@@ -396,7 +397,7 @@ class LimitOrderManager(CacheController):
         while not self.shutdown_dict:
             try:
                 self.check_and_fill_limit_orders()
-                time.sleep(15)
+                time.sleep(10)
             except Exception as e:
                 bt.logging.error(f"Error in limit order daemon: {e}")
                 bt.logging.error(traceback.format_exc())
@@ -438,7 +439,7 @@ class LimitOrderManager(CacheController):
 
                 for order in orders:
                     # Check both regular limit orders and SL/TP Bracket orders
-                    if order.src not in [OrderSource.ORDER_SRC_LIMIT_UNFILLED, OrderSource.ORDER_SRC_BRACKET_UNFILLED]:
+                    if order.src not in [OrderSource.LIMIT_UNFILLED, OrderSource.BRACKET_UNFILLED]:
                         continue
 
                     total_checked += 1
@@ -464,7 +465,7 @@ class LimitOrderManager(CacheController):
             if miner_hotkey in hotkey_dict:
                 for order in hotkey_dict[miner_hotkey]:
                     # Count both regular limit orders and bracket orders
-                    if order.src in [OrderSource.ORDER_SRC_LIMIT_UNFILLED, OrderSource.ORDER_SRC_BRACKET_UNFILLED]:
+                    if order.src in [OrderSource.LIMIT_UNFILLED, OrderSource.BRACKET_UNFILLED]:
                         count += 1
         return count
 
@@ -487,10 +488,10 @@ class LimitOrderManager(CacheController):
             if miner_hotkey in hotkey_dict:
                 for order in hotkey_dict[miner_hotkey]:
                     # Exact match for regular limit orders
-                    if order.order_uuid == order_uuid and order.src == OrderSource.ORDER_SRC_LIMIT_UNFILLED:
+                    if order.order_uuid == order_uuid and order.src == OrderSource.LIMIT_UNFILLED:
                         orders_to_cancel.append(order)
                     # Prefix match for bracket orders (allows canceling via parent UUID)
-                    elif order.src == OrderSource.ORDER_SRC_BRACKET_UNFILLED and order.order_uuid.startswith(order_uuid):
+                    elif order.src == OrderSource.BRACKET_UNFILLED and order.order_uuid.startswith(order_uuid):
                         orders_to_cancel.append(order)
 
         return orders_to_cancel
@@ -500,7 +501,7 @@ class LimitOrderManager(CacheController):
         orders_to_cancel = []
         if trade_pair in self._limit_orders and miner_hotkey in self._limit_orders[trade_pair]:
             for order in self._limit_orders[trade_pair][miner_hotkey]:
-                if order.src == OrderSource.ORDER_SRC_LIMIT_UNFILLED:
+                if order.src == OrderSource.LIMIT_UNFILLED:
                     orders_to_cancel.append(order)
         return orders_to_cancel
 
@@ -546,7 +547,7 @@ class LimitOrderManager(CacheController):
             # Check if order should be filled (under limit_order_locks)
             with self.limit_order_locks.get_lock(miner_hotkey, trade_pair.trade_pair_id):
                 # Verify order still unfilled (either regular limit or SL/TP)
-                if order.src not in [OrderSource.ORDER_SRC_LIMIT_UNFILLED, OrderSource.ORDER_SRC_BRACKET_UNFILLED]:
+                if order.src not in [OrderSource.LIMIT_UNFILLED, OrderSource.BRACKET_UNFILLED]:
                     return False
 
                 # Check if limit price triggered
@@ -558,7 +559,7 @@ class LimitOrderManager(CacheController):
                     should_fill = True
 
             if order.execution_type == ExecutionType.BRACKET and not position:
-                self._close_limit_order(miner_hotkey, order, OrderSource.ORDER_SRC_BRACKET_CANCELLED, now_ms)
+                self._close_limit_order(miner_hotkey, order, OrderSource.BRACKET_CANCELLED, now_ms)
                 return False
 
             # Fill OUTSIDE the lock to avoid deadlock with _close_limit_order
@@ -575,22 +576,19 @@ class LimitOrderManager(CacheController):
             bt.logging.error(traceback.format_exc())
             return False
 
-    def _fill_limit_order_with_price_source(self, miner_hotkey, order, price_source, fill_price):
+    def _fill_limit_order_with_price_source(self, miner_hotkey, order, price_source, fill_price, enforce_market_cooldown=False):
         """Fill a limit order and update position. Returns error message on failure, None on success."""
         trade_pair = order.trade_pair
         fill_time = price_source.start_ms
         error_msg = None
 
-        if order.src == OrderSource.ORDER_SRC_BRACKET_UNFILLED:
-            new_src = OrderSource.ORDER_SRC_BRACKET_FILLED
-        else:
-            new_src = OrderSource.ORDER_SRC_LIMIT_FILLED
+        new_src = OrderSource.get_fill(order.src)
 
         try:
-            # Reverse order direction when exeucting BRACKET orders
             order_dict = Order.to_python_dict(order)
             order_dict['price'] = fill_price
 
+            # Reverse order direction when exeucting BRACKET orders
             if order.execution_type == ExecutionType.BRACKET:
                 # Get the closing order type (opposite direction)
                 closing_order_type = OrderType.opposite_order_type(order.order_type)
@@ -607,7 +605,8 @@ class LimitOrderManager(CacheController):
                 fill_time,
                 order_dict,
                 miner_hotkey,
-                [price_source]
+                [price_source],
+                enforce_market_cooldown
             )
 
             # Issue 2: Check if err_msg is set - treat as failure
@@ -640,7 +639,7 @@ class LimitOrderManager(CacheController):
         except Exception as e:
             error_msg = f"Could not fill limit order [{order.order_uuid}]: {e}. Cancelling order"
             bt.logging.info(error_msg)
-            new_src = OrderSource.ORDER_SRC_LIMIT_CANCELLED
+            new_src = OrderSource.get_cancel(order.src)
 
         finally:
             self._close_limit_order(miner_hotkey, order, new_src, fill_time)
@@ -707,7 +706,7 @@ class LimitOrderManager(CacheController):
                 limit_price=None,  # Not used for bracket orders
                 stop_loss=parent_order.stop_loss,
                 take_profit=parent_order.take_profit,
-                src=OrderSource.ORDER_SRC_BRACKET_UNFILLED
+                src=OrderSource.BRACKET_UNFILLED
             )
 
             with self.limit_order_locks.get_lock(miner_hotkey, trade_pair.trade_pair_id):
@@ -851,7 +850,7 @@ class LimitOrderManager(CacheController):
             return
         try:
             trade_pair_id = order.trade_pair.trade_pair_id
-            if order.src in [OrderSource.ORDER_SRC_LIMIT_UNFILLED, OrderSource.ORDER_SRC_BRACKET_UNFILLED]:
+            if order.src in [OrderSource.LIMIT_UNFILLED, OrderSource.BRACKET_UNFILLED]:
                 status = "unfilled"
             else:
                 status = "closed"

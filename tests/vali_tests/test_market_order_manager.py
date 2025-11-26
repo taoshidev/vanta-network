@@ -531,12 +531,12 @@ class TestMarketOrderManager(TestBase):
             price_sources=price_sources,
             miner_order_uuid="limit_order",
             miner_repo_version="1.0.0",
-            src=OrderSource.ORDER_SRC_LIMIT_FILLED,
+            src=OrderSource.LIMIT_FILLED,
             account_size=self.DEFAULT_ACCOUNT_SIZE
         )
 
         new_order = position.orders[-1]
-        self.assertEqual(new_order.src, OrderSource.ORDER_SRC_LIMIT_FILLED)
+        self.assertEqual(new_order.src, OrderSource.LIMIT_FILLED)
 
     # ============================================================================
     # Test: _process_market_order (internal method)
@@ -731,7 +731,7 @@ class TestMarketOrderManager(TestBase):
 
         # Verify order source is LIMIT_FILLED
         new_order = position.orders[-1]
-        self.assertEqual(new_order.src, OrderSource.ORDER_SRC_LIMIT_FILLED)
+        self.assertEqual(new_order.src, OrderSource.LIMIT_FILLED)
 
     def test_process_market_order_market_execution_type(self):
         """Test processing order with MARKET execution type sets correct source"""

@@ -271,7 +271,7 @@ class MarketOrderManager():
 
         return created_order
 
-    def _process_market_order(self, miner_order_uuid, miner_repo_version, trade_pair, now_ms, signal, miner_hotkey, price_sources):
+    def _process_market_order(self, miner_order_uuid, miner_repo_version, trade_pair, now_ms, signal, miner_hotkey, price_sources, enforce_market_cooldown=True):
         # TIMING: Price fetching
         if price_sources is None:
             price_fetch_start = TimeUtil.now_in_millis()
@@ -307,10 +307,11 @@ class MarketOrderManager():
             bt.logging.info(f"[LOCK] Acquired lock for {debug_lock_key} after {lock_wait_ms}ms wait")
 
             # TIMING: Cooldown check
-            cooldown_start = TimeUtil.now_in_millis()
-            err_msg = self.enforce_order_cooldown(trade_pair.trade_pair_id, now_ms, miner_hotkey)
-            cooldown_ms = TimeUtil.now_in_millis() - cooldown_start
-            bt.logging.info(f"[LOCK_WORK] Cooldown check took {cooldown_ms}ms")
+            if enforce_market_cooldown:
+                cooldown_start = TimeUtil.now_in_millis()
+                err_msg = self.enforce_order_cooldown(trade_pair.trade_pair_id, now_ms, miner_hotkey)
+                cooldown_ms = TimeUtil.now_in_millis() - cooldown_start
+                bt.logging.info(f"[LOCK_WORK] Cooldown check took {cooldown_ms}ms")
 
             if err_msg:
                 bt.logging.error(err_msg)
@@ -341,9 +342,9 @@ class MarketOrderManager():
                 fill_price = signal.get("price")
 
                 if execution_type == ExecutionType.LIMIT:
-                    new_src = OrderSource.ORDER_SRC_LIMIT_FILLED
+                    new_src = OrderSource.LIMIT_FILLED
                 elif execution_type == ExecutionType.BRACKET:
-                    new_src = OrderSource.ORDER_SRC_BRACKET_FILLED
+                    new_src = OrderSource.BRACKET_FILLED
                 else:
                     new_src = OrderSource.ORGANIC
 

@@ -92,7 +92,7 @@ class TestLimitOrders(TestBase):
             limit_price=limit_price,
             stop_loss=stop_loss,
             take_profit=take_profit,
-            src=OrderSource.ORDER_SRC_LIMIT_UNFILLED
+            src=OrderSource.LIMIT_UNFILLED
         )
 
     def create_test_price_source(self, price, bid=None, ask=None, start_ms=None):
@@ -159,7 +159,7 @@ class TestLimitOrders(TestBase):
         orders = self.limit_order_manager._limit_orders[self.DEFAULT_TRADE_PAIR][self.DEFAULT_MINER_HOTKEY]
         self.assertEqual(len(orders), 1)
         self.assertEqual(orders[0].order_uuid, limit_order.order_uuid)
-        self.assertEqual(orders[0].src, OrderSource.ORDER_SRC_LIMIT_UNFILLED)
+        self.assertEqual(orders[0].src, OrderSource.LIMIT_UNFILLED)
 
     def test_process_limit_order_rpc_exceeds_maximum(self):
         """Test limit order rejection when exceeding maximum unfilled orders"""
@@ -224,7 +224,7 @@ class TestLimitOrders(TestBase):
         # Mock market_order_manager to return successful fill
         filled_order = self.create_test_limit_order(limit_price=50000.0)
         filled_order.price = 49000.0
-        filled_order.src = OrderSource.ORDER_SRC_LIMIT_FILLED
+        filled_order.src = OrderSource.LIMIT_FILLED
 
         mock_position = self.create_test_position()
         mock_position.orders = [filled_order]
@@ -324,7 +324,7 @@ class TestLimitOrders(TestBase):
         # order2 should still be unfilled
         order2_in_list = next((o for o in orders if o.order_uuid == "order2"), None)
         self.assertIsNotNone(order2_in_list)
-        self.assertEqual(order2_in_list.src, OrderSource.ORDER_SRC_LIMIT_UNFILLED)
+        self.assertEqual(order2_in_list.src, OrderSource.LIMIT_UNFILLED)
 
     def test_cancel_limit_order_rpc_all_for_trade_pair(self):
         """Test cancelling all limit orders for a trade pair"""
@@ -576,7 +576,7 @@ class TestLimitOrders(TestBase):
         filled_order.ask = 49000.0
         filled_order.slippage = 10.0
         filled_order.processed_ms = price_source.start_ms
-        filled_order.src = OrderSource.ORDER_SRC_LIMIT_FILLED
+        filled_order.src = OrderSource.LIMIT_FILLED
 
         mock_position = self.create_test_position()
         mock_position.orders = [filled_order]
@@ -690,7 +690,7 @@ class TestLimitOrders(TestBase):
 
         # Order should remain unfilled
         orders = self.limit_order_manager._limit_orders[self.DEFAULT_TRADE_PAIR][self.DEFAULT_MINER_HOTKEY]
-        self.assertEqual(orders[0].src, OrderSource.ORDER_SRC_LIMIT_UNFILLED)
+        self.assertEqual(orders[0].src, OrderSource.LIMIT_UNFILLED)
 
     def test_check_and_fill_limit_orders_no_price_sources(self):
         """Test daemon skips when no price sources available"""
@@ -706,7 +706,7 @@ class TestLimitOrders(TestBase):
 
         # Order should remain unfilled
         orders = self.limit_order_manager._limit_orders[self.DEFAULT_TRADE_PAIR][self.DEFAULT_MINER_HOTKEY]
-        self.assertEqual(orders[0].src, OrderSource.ORDER_SRC_LIMIT_UNFILLED)
+        self.assertEqual(orders[0].src, OrderSource.LIMIT_UNFILLED)
 
     def test_check_and_fill_limit_orders_triggers_and_fills(self):
         """
@@ -733,7 +733,7 @@ class TestLimitOrders(TestBase):
         # Verify order is in memory before daemon runs
         orders_before = self.limit_order_manager._limit_orders[self.DEFAULT_TRADE_PAIR][self.DEFAULT_MINER_HOTKEY]
         self.assertEqual(len(orders_before), 1, "Order should be in memory before fill")
-        self.assertEqual(orders_before[0].src, OrderSource.ORDER_SRC_LIMIT_UNFILLED)
+        self.assertEqual(orders_before[0].src, OrderSource.LIMIT_UNFILLED)
 
         # Create mocked price source (ask=49000 < limit=50000 triggers LONG order)
         trigger_price_source = self.create_test_price_source(49000.0, bid=49000.0, ask=49000.0)
@@ -741,7 +741,7 @@ class TestLimitOrders(TestBase):
         # Mock successful fill from market_order_manager
         filled_order = deepcopy(order)
         filled_order.price = 49000.0
-        filled_order.src = OrderSource.ORDER_SRC_LIMIT_FILLED
+        filled_order.src = OrderSource.LIMIT_FILLED
         mock_position = self.create_test_position()
         mock_position.orders = [filled_order]
         self.mock_market_order_manager._process_market_order.return_value = (None, mock_position, None)
@@ -774,7 +774,7 @@ class TestLimitOrders(TestBase):
     def test_check_and_fill_limit_orders_skips_filled_orders(self):
         """Test daemon skips already filled orders"""
         order = self.create_test_limit_order()
-        order.src = OrderSource.ORDER_SRC_LIMIT_FILLED
+        order.src = OrderSource.LIMIT_FILLED
 
         self.limit_order_manager._limit_orders[self.DEFAULT_TRADE_PAIR] = {
             self.DEFAULT_MINER_HOTKEY: [order]
@@ -812,7 +812,7 @@ class TestLimitOrders(TestBase):
 
         # Fill one order
         btc_orders = self.limit_order_manager._limit_orders[TradePair.BTCUSD][self.DEFAULT_MINER_HOTKEY]
-        btc_orders[0].src = OrderSource.ORDER_SRC_LIMIT_FILLED
+        btc_orders[0].src = OrderSource.LIMIT_FILLED
 
         count = self.limit_order_manager._count_unfilled_orders_for_hotkey(self.DEFAULT_MINER_HOTKEY)
         self.assertEqual(count, 3)
@@ -933,7 +933,7 @@ class TestLimitOrders(TestBase):
         self.assertEqual(bracket_order.execution_type, ExecutionType.BRACKET)
         self.assertEqual(bracket_order.stop_loss, 49000.0)
         self.assertEqual(bracket_order.take_profit, 51000.0)
-        self.assertEqual(bracket_order.src, OrderSource.ORDER_SRC_BRACKET_UNFILLED)
+        self.assertEqual(bracket_order.src, OrderSource.BRACKET_UNFILLED)
         self.assertEqual(bracket_order.order_type, OrderType.LONG)  # Same as parent
         self.assertEqual(bracket_order.leverage, parent_order.leverage)  # Same leverage
 
@@ -987,7 +987,7 @@ class TestLimitOrders(TestBase):
             execution_type=ExecutionType.BRACKET,
             stop_loss=48000.0,  # SL below entry
             take_profit=52000.0,  # TP above entry
-            src=OrderSource.ORDER_SRC_BRACKET_UNFILLED
+            src=OrderSource.BRACKET_UNFILLED
         )
 
         # Create mock position (LONG position being protected by bracket)
@@ -1038,7 +1038,7 @@ class TestLimitOrders(TestBase):
             execution_type=ExecutionType.BRACKET,
             stop_loss=48000.0,
             take_profit=52000.0,  # TP above entry
-            src=OrderSource.ORDER_SRC_BRACKET_UNFILLED
+            src=OrderSource.BRACKET_UNFILLED
         )
 
         position = Position(
@@ -1088,7 +1088,7 @@ class TestLimitOrders(TestBase):
             execution_type=ExecutionType.BRACKET,
             stop_loss=52000.0,  # SL above entry
             take_profit=48000.0,  # TP below entry
-            src=OrderSource.ORDER_SRC_BRACKET_UNFILLED
+            src=OrderSource.BRACKET_UNFILLED
         )
 
         position = Position(
@@ -1138,7 +1138,7 @@ class TestLimitOrders(TestBase):
             execution_type=ExecutionType.BRACKET,
             stop_loss=52000.0,  # SL above entry
             take_profit=48000.0,  # TP below entry
-            src=OrderSource.ORDER_SRC_BRACKET_UNFILLED
+            src=OrderSource.BRACKET_UNFILLED
         )
 
         position = Position(
@@ -1188,7 +1188,7 @@ class TestLimitOrders(TestBase):
             execution_type=ExecutionType.BRACKET,
             stop_loss=48000.0,  # Loss if bid < 48000
             take_profit=52000.0,  # Profit if bid > 52000
-            src=OrderSource.ORDER_SRC_BRACKET_UNFILLED
+            src=OrderSource.BRACKET_UNFILLED
         )
 
         position = Position(
@@ -1290,7 +1290,7 @@ class TestLimitOrders(TestBase):
 
         # Verify both remaining orders are unfilled
         for order in orders:
-            self.assertEqual(order.src, OrderSource.ORDER_SRC_LIMIT_UNFILLED,
+            self.assertEqual(order.src, OrderSource.LIMIT_UNFILLED,
                            "Remaining orders should be unfilled")
 
         # Verify _process_market_order was called exactly once
@@ -1461,7 +1461,7 @@ class TestLimitOrders(TestBase):
         # order2 should still be unfilled
         order2_in_list = next((o for o in orders if o.order_uuid == "order123-extra"), None)
         self.assertIsNotNone(order2_in_list, "Unfilled order should remain in memory")
-        self.assertEqual(order2_in_list.src, OrderSource.ORDER_SRC_LIMIT_UNFILLED)
+        self.assertEqual(order2_in_list.src, OrderSource.LIMIT_UNFILLED)
 
     def test_bracket_order_uuid_format(self):
         """

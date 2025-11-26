@@ -132,7 +132,7 @@ class OrderProcessor:
             limit_price=float(limit_price),
             stop_loss=stop_loss,
             take_profit=take_profit,
-            src=OrderSource.ORDER_SRC_LIMIT_UNFILLED
+            src=OrderSource.LIMIT_UNFILLED
         )
 
         # Process the limit order (may throw SignalException)
@@ -229,7 +229,7 @@ class OrderProcessor:
             limit_price=None,  # Not used for bracket orders
             stop_loss=stop_loss,
             take_profit=take_profit,
-            src=OrderSource.ORDER_SRC_BRACKET_UNFILLED
+            src=OrderSource.BRACKET_UNFILLED
         )
 
         # Process the bracket order - manager validates position and sets correct order_type/leverage
