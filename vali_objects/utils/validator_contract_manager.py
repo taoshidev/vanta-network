@@ -612,7 +612,8 @@ class ValidatorContractManager:
                 return 0.0
 
             # Calculate slash amount (based on drawdown percentage)
-            drawdown_proportion = 1 - ((drawdown - ValiConfig.MAX_TOTAL_DRAWDOWN) / (1 - ValiConfig.MAX_TOTAL_DRAWDOWN))  # scales x% drawdown to 100% of collateral
+            drawdown_proportion = 1 - ((drawdown - ValiConfig.MAX_TOTAL_DRAWDOWN) / (
+                        1 - ValiConfig.MAX_TOTAL_DRAWDOWN))  # scales x% drawdown to 100% of collateral
             slash_proportion = min(1.0, drawdown_proportion * ValiConfig.DRAWDOWN_SLASH_PROPORTION) # cap slashed proportion at 100%
             slash_amount = current_balance_theta * slash_proportion
 
