@@ -63,7 +63,30 @@ class ValiBkpUtils:
 
     @staticmethod
     def get_api_keys_file_path():
-        return ValiConfig.BASE_DIR + "/vanta_api/api_keys.json"
+        """
+        Get the path to api_keys.json with backwards compatibility.
+
+        Checks vanta_api first, then falls back to ptn_api for backwards compatibility
+        during the migration period.
+
+        ptn_api is deprecated, and support will be removed in the future.
+        """
+        vanta_path = ValiConfig.BASE_DIR + "/vanta_api/api_keys.json"
+        ptn_path = ValiConfig.BASE_DIR + "/ptn_api/api_keys.json"
+
+        # Prefer vanta_api, but fall back to ptn_api if vanta doesn't exist
+        if os.path.exists(vanta_path):
+            return vanta_path
+        elif os.path.exists(ptn_path):
+            import bittensor as bt
+            bt.logging.warning(
+                "⚠️  Using api_keys.json from ptn_api/ (deprecated). "
+                "Please run vanta_api/migrate_from_ptn.sh to migrate your files."
+            )
+            return ptn_path
+
+        # Default to vanta_api path if neither exists
+        return vanta_path
 
     @staticmethod
     def get_sequence_number_file_path():
