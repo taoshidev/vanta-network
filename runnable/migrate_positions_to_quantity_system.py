@@ -129,7 +129,7 @@ def migrate_order_quantities(position: Position, price_fetcher) -> tuple[int, in
                 )
 
         # Migrate quantity
-        if order.quantity is None and order.leverage is not None:
+        if (order.quantity is None or order.value is None) and order.leverage is not None:
             order.value = order.leverage * position.account_size
             if order.price == 0:
                 order.quantity = 0
