@@ -39,7 +39,7 @@ class TestPositions(TestBase):
         self.DEFAULT_TRADE_PAIR = TradePair.BTCUSD
         self.DEFAULT_ACCOUNT_SIZE = 100_000
         self.default_order = Order(price=1, processed_ms=self.DEFAULT_OPEN_MS, order_uuid=self.DEFAULT_ORDER_UUID, trade_pair=self.DEFAULT_TRADE_PAIR,
-                                     order_type=OrderType.LONG, leverage=1, value=self.DEFAULT_ACCOUNT_SIZE, quantity=self.DEFAULT_ACCOUNT_SIZE/1)
+                                     order_type=OrderType.LONG, leverage=1)
         self.default_position = Position(
             miner_hotkey=self.DEFAULT_MINER_HOTKEY,
             position_uuid=self.DEFAULT_POSITION_UUID,

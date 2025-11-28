@@ -37,6 +37,33 @@ class Order(Signal):
     price_sources: list = []
     src: int = ORDER_SRC_ORGANIC
 
+    @model_validator(mode="after")
+    def set_conversion_defaults(self):
+        """
+        Initializes quote_usd_rate and usd_base_rate based on the trade pair.
+        Only sets values if they were left at the default 0.
+        """
+        base = self.trade_pair.base  # e.g. BTC in BTCUSD
+        quote = self.trade_pair.quote  # e.g. USD in BTCUSD
+        price = self.price
+
+        if price == 0:
+            return self
+
+        if self.quote_usd_rate == 0:
+            if quote == "USD":
+                self.quote_usd_rate = 1.0
+            elif base == "USD":
+                self.quote_usd_rate = 1.0 / price
+
+        if self.usd_base_rate == 0:
+            if base == "USD":
+                self.usd_base_rate = 1.0
+            elif quote == "USD":
+                self.usd_base_rate = 1.0 / price
+
+        return self
+
     @field_validator('price', 'processed_ms', mode='before')
     def validate_values(cls, v, info):
         if info.field_name == 'price' and v < 0:

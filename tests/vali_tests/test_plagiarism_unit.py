@@ -150,11 +150,13 @@ class TestPlagiarismUnit(TestBase):
                 type = OrderType.FLAT
 
             order = Order(order_type=type,
-                leverage=leverages[i],
-                price=1000,
-                trade_pair=position1.trade_pair,
-                processed_ms= (i * time_apart) + time_after,
-                order_uuid=str(uuid.uuid4()))
+                          leverage=leverages[i],
+                          price=1000,
+                          trade_pair=position1.trade_pair,
+                          processed_ms= (i * time_apart) + time_after,
+                          order_uuid=str(uuid.uuid4()),
+                          quote_usd_rate=1.0,
+                          usd_base_rate=1.0/1000)
             self.add_order_to_position_and_save_to_disk(position1, order)
 
     def generate_plagiarism_position(self, plagiarist_key, victim_key, time_after, victim_leverages, plagiarist_leverages, time_apart):
