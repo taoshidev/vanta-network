@@ -655,7 +655,8 @@ class Position(BaseModel):
             self._position_log("setting new position type as SHORT. Trade pair: " + str(self.trade_pair.trade_pair_id))
             self.position_type = OrderType.SHORT
         else:
-            raise ValueError("quantity of 0 provided as initial order.")
+            print(self)
+            raise ValueError("leverage of 0 provided as initial order.")
 
     def close_out_position(self, close_ms):
         self.position_type = OrderType.FLAT

@@ -747,8 +747,8 @@ class TestLedgerUtils(TestBase):
                 accum_ms=checkpoint_duration_ms,
                 open_ms=checkpoint_time - checkpoint_duration_ms,
                 prev_portfolio_ret=1.0,
-                pnl_gain=20,  # $10 realized PnL per checkpoint
-                pnl_loss=-5,  # $5 unrealized PnL per checkpoint
+                realized_pnl=20,  # $10 realized PnL per checkpoint
+                unrealized_pnl=-5,  # $5 unrealized PnL per checkpoint
                 gain=0.0,
                 loss=0.0,
                 n_updates=1,
@@ -762,7 +762,7 @@ class TestLedgerUtils(TestBase):
         # Should have one day's worth of data
         self.assertEqual(len(result), 1)
         # Total PnL should be (10 + 5) * daily_checkpoints = 15 * daily_checkpoints
-        expected_pnl = 15.0 * daily_checkpoints
+        expected_pnl = 20.0 * daily_checkpoints
         self.assertEqual(result[0], expected_pnl)
 
     def test_daily_pnl_incomplete_day(self):
@@ -781,8 +781,8 @@ class TestLedgerUtils(TestBase):
                 accum_ms=checkpoint_duration_ms,
                 open_ms=checkpoint_time - checkpoint_duration_ms,
                 prev_portfolio_ret=1.0,
-                pnl_gain=20,
-                pnl_loss=-5,
+                realized_pnl=20,
+                unrealized_pnl=-5,
                 gain=0.0,
                 loss=0.0,
                 n_updates=1,
@@ -823,8 +823,8 @@ class TestLedgerUtils(TestBase):
                 accum_ms=checkpoint_duration_ms,
                 open_ms=checkpoint_time - checkpoint_duration_ms,
                 prev_portfolio_ret=1.0,
-                pnl_gain=40.0,
-                pnl_loss=-10.0,
+                realized_pnl=40.0,
+                unrealized_pnl=-10.0,
                 gain=0.0,
                 loss=0.0,
                 n_updates=1,
@@ -841,7 +841,7 @@ class TestLedgerUtils(TestBase):
         # Check the date key and PnL value
         expected_date = datetime.fromtimestamp(base_time_ms / 1000, tz=timezone.utc).date()
         self.assertIn(expected_date, result)
-        expected_pnl = 30.0 * daily_checkpoints
+        expected_pnl = 40.0 * daily_checkpoints
         self.assertEqual(result[expected_date], expected_pnl)
 
     def test_daily_pnl_by_date_multiple_days(self):
@@ -862,8 +862,8 @@ class TestLedgerUtils(TestBase):
                     accum_ms=checkpoint_duration_ms,
                     open_ms=checkpoint_time - checkpoint_duration_ms,
                     prev_portfolio_ret=1.0,
-                    pnl_gain=150.0 * (day + 1),
-                    pnl_loss=0,
+                    realized_pnl=150.0 * (day + 1),
+                    unrealized_pnl=0,
                     gain=0.0,
                     loss=0.0,
                     n_updates=1,
@@ -1029,8 +1029,8 @@ class TestLedgerUtils(TestBase):
                 accum_ms=checkpoint_duration_ms,
                 open_ms=checkpoint_time - checkpoint_duration_ms,
                 prev_portfolio_ret=1.0,
-                pnl_gain=5,
-                pnl_loss=-40,
+                realized_pnl=-5,
+                unrealized_pnl=40,
                 gain=0.0,
                 loss=0.0,
                 n_updates=1,
@@ -1043,7 +1043,7 @@ class TestLedgerUtils(TestBase):
         
         # Should have one day with negative PnL
         self.assertEqual(len(result), 1)
-        expected_pnl = -35.0 * daily_checkpoints
+        expected_pnl = -5.0 * daily_checkpoints
         self.assertEqual(result[0], expected_pnl)
 
     def test_daily_pnl_consistency_with_by_date(self):
@@ -1064,8 +1064,8 @@ class TestLedgerUtils(TestBase):
                     accum_ms=checkpoint_duration_ms,
                     open_ms=checkpoint_time - checkpoint_duration_ms,
                     prev_portfolio_ret=1.0,
-                    pnl_gain=50,
-                    pnl_loss=-5,
+                    realized_pnl=50,
+                    unrealized_pnl=-5,
                     gain=0.0,
                     loss=0.0,
                     n_updates=1,
@@ -1105,8 +1105,8 @@ class TestLedgerUtils(TestBase):
             accum_ms=ValiConfig.TARGET_CHECKPOINT_DURATION_MS,
             open_ms=1672531200000 - ValiConfig.TARGET_CHECKPOINT_DURATION_MS,
             prev_portfolio_ret=1.0,
-            pnl_gain=100.0,
-            pnl_loss=-25.0,
+            realized_pnl=100.0,
+            unrealized_pnl=-25.0,
             gain=0.0,
             loss=0.0,
             n_updates=1,
@@ -1124,8 +1124,8 @@ class TestLedgerUtils(TestBase):
                 accum_ms=ValiConfig.TARGET_CHECKPOINT_DURATION_MS,
                 open_ms=1672531200000 - ValiConfig.TARGET_CHECKPOINT_DURATION_MS,
                 prev_portfolio_ret=1.0,
-                pnl_gain=50.0,
-                pnl_loss=-10.0,
+                realized_pnl=50.0,
+                unrealized_pnl=-10.0,
                 gain=0.0,
                 loss=0.0,
                 n_updates=1,
@@ -1136,8 +1136,8 @@ class TestLedgerUtils(TestBase):
                 accum_ms=ValiConfig.TARGET_CHECKPOINT_DURATION_MS,
                 open_ms=1672531200000,
                 prev_portfolio_ret=1.0,
-                pnl_gain=30.0,
-                pnl_loss=-5.0,
+                realized_pnl=30.0,
+                unrealized_pnl=-5.0,
                 gain=0.0,
                 loss=0.0,
                 n_updates=1,
@@ -1148,8 +1148,8 @@ class TestLedgerUtils(TestBase):
                 accum_ms=ValiConfig.TARGET_CHECKPOINT_DURATION_MS,
                 open_ms=1672531200000 + ValiConfig.TARGET_CHECKPOINT_DURATION_MS,
                 prev_portfolio_ret=1.0,
-                pnl_gain=20.0,
-                pnl_loss=-8.0,
+                realized_pnl=20.0,
+                unrealized_pnl=-8.0,
                 gain=0.0,
                 loss=0.0,
                 n_updates=1,
@@ -1158,8 +1158,9 @@ class TestLedgerUtils(TestBase):
         ]
         ledger = PerfLedger(cps=checkpoints)
         result = LedgerUtils.raw_pnl(ledger)
+        expected = 50 + 30 + 20 - 8
         # (50 + (-10)) + (30 + (-5)) + (20 + (-8)) = 40 + 25 + 12 = 77
-        self.assertEqual(result, 77.0)
+        self.assertEqual(result, expected)
 
     def test_raw_pnl_positive_values(self):
         """Test raw_pnl with only positive PnL values"""
@@ -1169,8 +1170,8 @@ class TestLedgerUtils(TestBase):
                 accum_ms=ValiConfig.TARGET_CHECKPOINT_DURATION_MS,
                 open_ms=1672531200000 - ValiConfig.TARGET_CHECKPOINT_DURATION_MS,
                 prev_portfolio_ret=1.0,
-                pnl_gain=100.0,
-                pnl_loss=0.0,
+                realized_pnl=100.0,
+                unrealized_pnl=0.0,
                 gain=0.0,
                 loss=0.0,
                 n_updates=1,
@@ -1181,8 +1182,8 @@ class TestLedgerUtils(TestBase):
                 accum_ms=ValiConfig.TARGET_CHECKPOINT_DURATION_MS,
                 open_ms=1672531200000,
                 prev_portfolio_ret=1.0,
-                pnl_gain=50.0,
-                pnl_loss=0.0,
+                realized_pnl=50.0,
+                unrealized_pnl=0.0,
                 gain=0.0,
                 loss=0.0,
                 n_updates=1,
@@ -1201,8 +1202,8 @@ class TestLedgerUtils(TestBase):
                 accum_ms=ValiConfig.TARGET_CHECKPOINT_DURATION_MS,
                 open_ms=1672531200000 - ValiConfig.TARGET_CHECKPOINT_DURATION_MS,
                 prev_portfolio_ret=1.0,
-                pnl_gain=0.0,
-                pnl_loss=-100.0,
+                realized_pnl=0.0,
+                unrealized_pnl=-100.0,
                 gain=0.0,
                 loss=0.0,
                 n_updates=1,
@@ -1213,8 +1214,8 @@ class TestLedgerUtils(TestBase):
                 accum_ms=ValiConfig.TARGET_CHECKPOINT_DURATION_MS,
                 open_ms=1672531200000,
                 prev_portfolio_ret=1.0,
-                pnl_gain=0.0,
-                pnl_loss=-50.0,
+                realized_pnl=0.0,
+                unrealized_pnl=-50.0,
                 gain=0.0,
                 loss=0.0,
                 n_updates=1,
@@ -1223,7 +1224,8 @@ class TestLedgerUtils(TestBase):
         ]
         ledger = PerfLedger(cps=checkpoints)
         result = LedgerUtils.raw_pnl(ledger)
-        self.assertEqual(result, -150.0)
+        expected = 0 + 0 - 50
+        self.assertEqual(result, expected)
 
     def test_raw_pnl_mixed_values(self):
         """Test raw_pnl with mixed positive and negative PnL values"""
@@ -1233,8 +1235,8 @@ class TestLedgerUtils(TestBase):
                 accum_ms=ValiConfig.TARGET_CHECKPOINT_DURATION_MS,
                 open_ms=1672531200000 - ValiConfig.TARGET_CHECKPOINT_DURATION_MS,
                 prev_portfolio_ret=1.0,
-                pnl_gain=150.0,
-                pnl_loss=-100.0,
+                realized_pnl=150.0,
+                unrealized_pnl=-100.0,
                 gain=0.0,
                 loss=0.0,
                 n_updates=1,
@@ -1245,8 +1247,8 @@ class TestLedgerUtils(TestBase):
                 accum_ms=ValiConfig.TARGET_CHECKPOINT_DURATION_MS,
                 open_ms=1672531200000,
                 prev_portfolio_ret=1.0,
-                pnl_gain=25.0,
-                pnl_loss=-75.0,
+                realized_pnl=25.0,
+                unrealized_pnl=-75.0,
                 gain=0.0,
                 loss=0.0,
                 n_updates=1,
@@ -1255,8 +1257,9 @@ class TestLedgerUtils(TestBase):
         ]
         ledger = PerfLedger(cps=checkpoints)
         result = LedgerUtils.raw_pnl(ledger)
+        expected = 150 + 25 - 75
         # (150 + (-100)) + (25 + (-75)) = 50 + (-50) = 0
-        self.assertEqual(result, 0.0)
+        self.assertEqual(result, expected)
 
     def test_raw_pnl_zero_values(self):
         """Test raw_pnl with zero PnL values"""
@@ -1266,8 +1269,8 @@ class TestLedgerUtils(TestBase):
                 accum_ms=ValiConfig.TARGET_CHECKPOINT_DURATION_MS,
                 open_ms=1672531200000 - ValiConfig.TARGET_CHECKPOINT_DURATION_MS,
                 prev_portfolio_ret=1.0,
-                pnl_gain=0.0,
-                pnl_loss=0.0,
+                realized_pnl=0.0,
+                unrealized_pnl=0.0,
                 gain=0.0,
                 loss=0.0,
                 n_updates=1,
@@ -1278,8 +1281,8 @@ class TestLedgerUtils(TestBase):
                 accum_ms=ValiConfig.TARGET_CHECKPOINT_DURATION_MS,
                 open_ms=1672531200000,
                 prev_portfolio_ret=1.0,
-                pnl_gain=0.0,
-                pnl_loss=0.0,
+                realized_pnl=0.0,
+                unrealized_pnl=0.0,
                 gain=0.0,
                 loss=0.0,
                 n_updates=1,
@@ -1299,8 +1302,8 @@ class TestLedgerUtils(TestBase):
                 accum_ms=ValiConfig.TARGET_CHECKPOINT_DURATION_MS,
                 open_ms=1672531200000 - ValiConfig.TARGET_CHECKPOINT_DURATION_MS,
                 prev_portfolio_ret=1.0,
-                pnl_gain=12.34,
-                pnl_loss=-5.67,
+                realized_pnl=12.34,
+                unrealized_pnl=-5.67,
                 gain=0.0,
                 loss=0.0,
                 n_updates=1,
@@ -1311,8 +1314,8 @@ class TestLedgerUtils(TestBase):
                 accum_ms=ValiConfig.TARGET_CHECKPOINT_DURATION_MS,
                 open_ms=1672531200000,
                 prev_portfolio_ret=1.0,
-                pnl_gain=0.01,
-                pnl_loss=-0.01,
+                realized_pnl=0.01,
+                unrealized_pnl=-0.01,
                 gain=0.0,
                 loss=0.0,
                 n_updates=1,
@@ -1321,7 +1324,7 @@ class TestLedgerUtils(TestBase):
         ]
         ledger = PerfLedger(cps=checkpoints)
         result = LedgerUtils.raw_pnl(ledger)
-        expected = (12.34 + (-5.67)) + (0.01 + (-0.01))
+        expected = (12.34 + 0.01) + (-0.01)
         self.assertAlmostEqual(result, expected, places=7)
 
     def test_raw_pnl_large_values(self):
@@ -1331,8 +1334,8 @@ class TestLedgerUtils(TestBase):
             accum_ms=ValiConfig.TARGET_CHECKPOINT_DURATION_MS,
             open_ms=1672531200000 - ValiConfig.TARGET_CHECKPOINT_DURATION_MS,
             prev_portfolio_ret=1.0,
-            pnl_gain=999999.99,
-            pnl_loss=-888888.88,
+            realized_pnl=999999.99,
+            unrealized_pnl=-888888.88,
             gain=0.0,
             loss=0.0,
             n_updates=1,

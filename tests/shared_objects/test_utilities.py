@@ -159,13 +159,8 @@ def checkpoint_generator(
         loss: float = 0.0,
         realized_pnl: float = 0.0,
         unrealized_pnl: float = 0.0,
-        pnl_gain: float = 0.0,
-        pnl_loss: float = 0.0,
         mdd: float = 1.0,
 ):
-    if pnl_gain != 0.0 or pnl_loss != 0.0:
-        realized_pnl = pnl_gain + pnl_loss
-
     return PerfCheckpoint(
         last_update_ms=last_update_ms,
         prev_portfolio_ret=prev_portfolio_ret,
@@ -199,7 +194,7 @@ def generate_losing_ledger(start, end):
         "BTCUSD": btc_ledger[TP_ID_PORTFOLIO]
     }
 
-def create_daily_checkpoints_with_pnl(pnl_values: list[float]) -> PerfLedger:
+def create_daily_checkpoints_with_pnl(realized_pnl_values: list[float], unrealized_pnl_values: list[float]) -> PerfLedger:
         """Helper method to create checkpoints for complete days with specific PnL values"""
         checkpoints = []
         # Use fixed timestamp for deterministic tests (2024-01-01 00:00:00 UTC)
@@ -208,11 +203,10 @@ def create_daily_checkpoints_with_pnl(pnl_values: list[float]) -> PerfLedger:
         checkpoint_duration_ms = ValiConfig.TARGET_CHECKPOINT_DURATION_MS
         checkpoints_per_day = int(ValiConfig.DAILY_CHECKPOINTS)
 
-        for day_idx, daily_pnl in enumerate(pnl_values):
+        for day_idx, (realized_daily, unrealized_daily) in enumerate(zip(realized_pnl_values, unrealized_pnl_values)):
             # Split daily PnL across checkpoints for the day
-            pnl_per_checkpoint = daily_pnl / checkpoints_per_day
-            pnl_gain = pnl_per_checkpoint if pnl_per_checkpoint > 0 else 0
-            pnl_loss = pnl_per_checkpoint if pnl_per_checkpoint < 0 else 0
+            realized_pnl = realized_daily / checkpoints_per_day
+            unrealized_pnl = unrealized_daily
 
             # Calculate the start of this day (since current_time_ms is already midnight UTC,
             # this gives us midnight of each subsequent day)
@@ -228,8 +222,8 @@ def create_daily_checkpoints_with_pnl(pnl_values: list[float]) -> PerfLedger:
                     last_update_ms=checkpoint_end_ms,
                     prev_portfolio_ret=1.0,
                     accum_ms=checkpoint_duration_ms,  # Complete checkpoint
-                    pnl_gain=pnl_gain,
-                    pnl_loss=pnl_loss,
+                    realized_pnl=realized_pnl,
+                    unrealized_pnl=unrealized_pnl,
                     gain=0.01,  # Small positive gain for valid checkpoint
                     loss=0.0,
                     mdd=0.95  # No significant drawdown

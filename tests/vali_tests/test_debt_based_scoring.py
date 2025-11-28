@@ -173,8 +173,8 @@ class TestDebtBasedScoring(unittest.TestCase):
         ledger1 = DebtLedger(hotkey="hotkey1", checkpoints=[])
         ledger1.checkpoints.append(DebtCheckpoint(
             timestamp_ms=prev_month_checkpoint_ms,
-            pnl_gain=5000.0,
-            pnl_loss=-1000.0,  # net_pnl = 4000
+            realized_pnl=5000.0,
+            unrealized_pnl=-1000.0,  # net_pnl = 4000
             total_penalty=1.0,
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
@@ -188,8 +188,8 @@ class TestDebtBasedScoring(unittest.TestCase):
         ledger2 = DebtLedger(hotkey="hotkey2", checkpoints=[])
         ledger2.checkpoints.append(DebtCheckpoint(
             timestamp_ms=prev_month_checkpoint_ms,
-            pnl_gain=10000.0,
-            pnl_loss=-2000.0,  # net_pnl = 8000
+            realized_pnl=10000.0,
+            unrealized_pnl=-2000.0,  # net_pnl = 8000
             total_penalty=1.0,
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
@@ -234,8 +234,8 @@ class TestDebtBasedScoring(unittest.TestCase):
         ledger_challenge = DebtLedger(hotkey="challenge_miner", checkpoints=[])
         ledger_challenge.checkpoints.append(DebtCheckpoint(
             timestamp_ms=prev_month_checkpoint_ms,
-            pnl_gain=0.0,
-            pnl_loss=-1.0,  # Negative PnL -> 0 remaining payout
+            realized_pnl=0.0,
+            unrealized_pnl=-1.0,  # Negative PnL -> 0 remaining payout
             total_penalty=1.0,
             challenge_period_status=MinerBucket.CHALLENGE.value
         ))
@@ -243,8 +243,8 @@ class TestDebtBasedScoring(unittest.TestCase):
         ledger_probation = DebtLedger(hotkey="probation_miner", checkpoints=[])
         ledger_probation.checkpoints.append(DebtCheckpoint(
             timestamp_ms=prev_month_checkpoint_ms,
-            pnl_gain=0.0,
-            pnl_loss=-1.0,  # Negative PnL -> 0 remaining payout
+            realized_pnl=0.0,
+            unrealized_pnl=-1.0,  # Negative PnL -> 0 remaining payout
             total_penalty=1.0,
             challenge_period_status=MinerBucket.PROBATION.value
         ))
@@ -252,8 +252,8 @@ class TestDebtBasedScoring(unittest.TestCase):
         ledger_maincomp = DebtLedger(hotkey="maincomp_miner", checkpoints=[])
         ledger_maincomp.checkpoints.append(DebtCheckpoint(
             timestamp_ms=prev_month_checkpoint_ms,
-            pnl_gain=0.0,
-            pnl_loss=-1.0,  # Negative PnL -> 0 remaining payout
+            realized_pnl=0.0,
+            unrealized_pnl=-1.0,  # Negative PnL -> 0 remaining payout
             total_penalty=1.0,
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
@@ -326,8 +326,8 @@ class TestDebtBasedScoring(unittest.TestCase):
         ledger1 = DebtLedger(hotkey="test_hotkey_1", checkpoints=[])
         ledger1.checkpoints.append(DebtCheckpoint(
             timestamp_ms=prev_checkpoint_ms,
-            pnl_gain=0.0001,
-            pnl_loss=0.0,  # net_pnl = 0.0001 (tiny)
+            realized_pnl=0.0001,
+            unrealized_pnl=0.0,  # net_pnl = 0.0001 (tiny)
             total_penalty=1.0,
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
@@ -335,8 +335,8 @@ class TestDebtBasedScoring(unittest.TestCase):
         ledger2 = DebtLedger(hotkey="test_hotkey_2", checkpoints=[])
         ledger2.checkpoints.append(DebtCheckpoint(
             timestamp_ms=prev_checkpoint_ms,
-            pnl_gain=0.00005,
-            pnl_loss=0.0,  # net_pnl = 0.00005 (tiny)
+            realized_pnl=0.00005,
+            unrealized_pnl=0.0,  # net_pnl = 0.00005 (tiny)
             total_penalty=1.0,
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
@@ -379,8 +379,8 @@ class TestDebtBasedScoring(unittest.TestCase):
         ledger1 = DebtLedger(hotkey="test_hotkey_1", checkpoints=[])
         ledger1.checkpoints.append(DebtCheckpoint(
             timestamp_ms=prev_checkpoint_ms,
-            pnl_gain=0.0001,
-            pnl_loss=0.0,  # net_pnl = 0.0001 (tiny)
+            realized_pnl=0.0001,
+            unrealized_pnl=0.0,  # net_pnl = 0.0001 (tiny)
             total_penalty=1.0,
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
@@ -388,8 +388,8 @@ class TestDebtBasedScoring(unittest.TestCase):
         ledger2 = DebtLedger(hotkey="test_hotkey_2", checkpoints=[])
         ledger2.checkpoints.append(DebtCheckpoint(
             timestamp_ms=prev_checkpoint_ms,
-            pnl_gain=0.00005,
-            pnl_loss=0.0,  # net_pnl = 0.00005 (tiny)
+            realized_pnl=0.00005,
+            unrealized_pnl=0.0,  # net_pnl = 0.00005 (tiny)
             total_penalty=1.0,
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
@@ -430,8 +430,8 @@ class TestDebtBasedScoring(unittest.TestCase):
         ledger_negative = DebtLedger(hotkey="negative_miner", checkpoints=[])
         ledger_negative.checkpoints.append(DebtCheckpoint(
             timestamp_ms=prev_month_checkpoint_ms,
-            pnl_gain=1000.0,
-            pnl_loss=-5000.0,  # net_pnl = -4000 (negative) -> 0 remaining payout
+            realized_pnl=1000.0,
+            unrealized_pnl=-5000.0,  # net_pnl = -4000 (negative) -> 0 remaining payout
             total_penalty=1.0,
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
@@ -440,8 +440,8 @@ class TestDebtBasedScoring(unittest.TestCase):
         ledger_positive = DebtLedger(hotkey="positive_miner", checkpoints=[])
         ledger_positive.checkpoints.append(DebtCheckpoint(
             timestamp_ms=prev_month_checkpoint_ms,
-            pnl_gain=0.001,
-            pnl_loss=-0.0005,  # net_pnl = 0.0005 (very small positive)
+            realized_pnl=0.001,
+            unrealized_pnl=-0.0005,  # net_pnl = 0.0005 (very small positive)
             total_penalty=1.0,
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
@@ -491,8 +491,8 @@ class TestDebtBasedScoring(unittest.TestCase):
         ledger1 = DebtLedger(hotkey="no_penalty", checkpoints=[])
         ledger1.checkpoints.append(DebtCheckpoint(
             timestamp_ms=prev_month_checkpoint_ms,
-            pnl_gain=5000.0,
-            pnl_loss=-1000.0,  # net_pnl = 4000
+            realized_pnl=5000.0,
+            unrealized_pnl=-1000.0,  # net_pnl = 4000
             total_penalty=1.0,  # No penalty
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
@@ -501,8 +501,8 @@ class TestDebtBasedScoring(unittest.TestCase):
         ledger2 = DebtLedger(hotkey="with_penalty", checkpoints=[])
         ledger2.checkpoints.append(DebtCheckpoint(
             timestamp_ms=prev_month_checkpoint_ms,
-            pnl_gain=5000.0,
-            pnl_loss=-1000.0,  # net_pnl = 4000
+            realized_pnl=5000.0,
+            unrealized_pnl=-1000.0,  # net_pnl = 4000
             total_penalty=0.5,  # 50% penalty
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
@@ -559,8 +559,8 @@ class TestDebtBasedScoring(unittest.TestCase):
         ledger = DebtLedger(hotkey="test_hotkey", checkpoints=[])
         ledger.checkpoints.append(DebtCheckpoint(
             timestamp_ms=prev_month_checkpoint_ms,
-            pnl_gain=10000.0,
-            pnl_loss=-2000.0,  # net_pnl = 8000
+            realized_pnl=10000.0,
+            unrealized_pnl=-2000.0,  # net_pnl = 8000
             total_penalty=1.0,
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
@@ -615,8 +615,8 @@ class TestDebtBasedScoring(unittest.TestCase):
         # CHALLENGE checkpoint (should NOT count)
         ledger.checkpoints.append(DebtCheckpoint(
             timestamp_ms=challenge_checkpoint_ms,
-            pnl_gain=5000.0,
-            pnl_loss=-1000.0,  # net_pnl = 4000
+            realized_pnl=5000.0,
+            unrealized_pnl=-1000.0,  # net_pnl = 4000
             total_penalty=1.0,
             challenge_period_status=MinerBucket.CHALLENGE.value
         ))
@@ -624,8 +624,8 @@ class TestDebtBasedScoring(unittest.TestCase):
         # MAINCOMP checkpoint (SHOULD count)
         ledger.checkpoints.append(DebtCheckpoint(
             timestamp_ms=maincomp_checkpoint_ms,
-            pnl_gain=10000.0,  # Cumulative
-            pnl_loss=-2000.0,  # Cumulative, net_pnl = 8000
+            realized_pnl=10000.0,  # Cumulative
+            unrealized_pnl=-2000.0,  # Cumulative, net_pnl = 8000
             total_penalty=1.0,
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
@@ -656,8 +656,8 @@ class TestDebtBasedScoring(unittest.TestCase):
         ledger1 = DebtLedger(hotkey="miner1", checkpoints=[])
         ledger1.checkpoints.append(DebtCheckpoint(
             timestamp_ms=prev_month_checkpoint_ms,
-            pnl_gain=50000.0,
-            pnl_loss=0.0,  # net_pnl = $50000 USD
+            realized_pnl=50000.0,
+            unrealized_pnl=0.0,  # net_pnl = $50000 USD
             total_penalty=1.0,
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
@@ -666,8 +666,8 @@ class TestDebtBasedScoring(unittest.TestCase):
         ledger2 = DebtLedger(hotkey="miner2", checkpoints=[])
         ledger2.checkpoints.append(DebtCheckpoint(
             timestamp_ms=prev_month_checkpoint_ms,
-            pnl_gain=100000.0,
-            pnl_loss=0.0,  # net_pnl = $100000 USD
+            realized_pnl=100000.0,
+            unrealized_pnl=0.0,  # net_pnl = $100000 USD
             total_penalty=1.0,
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
@@ -676,8 +676,8 @@ class TestDebtBasedScoring(unittest.TestCase):
         ledger3 = DebtLedger(hotkey="miner3", checkpoints=[])
         ledger3.checkpoints.append(DebtCheckpoint(
             timestamp_ms=prev_month_checkpoint_ms,
-            pnl_gain=75000.0,
-            pnl_loss=0.0,  # net_pnl = $75000 USD
+            realized_pnl=75000.0,
+            unrealized_pnl=0.0,  # net_pnl = $75000 USD
             total_penalty=1.0,
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
@@ -824,8 +824,8 @@ class TestDebtBasedScoring(unittest.TestCase):
         ledger1 = DebtLedger(hotkey="high_performer_1", checkpoints=[])
         ledger1.checkpoints.append(DebtCheckpoint(
             timestamp_ms=prev_month_checkpoint_ms,
-            pnl_gain=50000.0,
-            pnl_loss=-10000.0,  # net_pnl = 40000
+            realized_pnl=50000.0,
+            unrealized_pnl=-10000.0,  # net_pnl = 40000
             total_penalty=1.0,
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
@@ -838,8 +838,8 @@ class TestDebtBasedScoring(unittest.TestCase):
         ledger2 = DebtLedger(hotkey="high_performer_2", checkpoints=[])
         ledger2.checkpoints.append(DebtCheckpoint(
             timestamp_ms=prev_month_checkpoint_ms,
-            pnl_gain=60000.0,
-            pnl_loss=-10000.0,  # net_pnl = 50000
+            realized_pnl=60000.0,
+            unrealized_pnl=-10000.0,  # net_pnl = 50000
             total_penalty=1.0,
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
@@ -852,8 +852,8 @@ class TestDebtBasedScoring(unittest.TestCase):
         ledger3 = DebtLedger(hotkey="high_performer_3", checkpoints=[])
         ledger3.checkpoints.append(DebtCheckpoint(
             timestamp_ms=prev_month_checkpoint_ms,
-            pnl_gain=40000.0,
-            pnl_loss=-10000.0,  # net_pnl = 30000
+            realized_pnl=40000.0,
+            unrealized_pnl=-10000.0,  # net_pnl = 30000
             total_penalty=1.0,
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
@@ -929,8 +929,8 @@ class TestDebtBasedScoring(unittest.TestCase):
         ledger1 = DebtLedger(hotkey="miner1", checkpoints=[])
         ledger1.checkpoints.append(DebtCheckpoint(
             timestamp_ms=prev_month_checkpoint_ms,
-            pnl_gain=0.0,
-            pnl_loss=-1.0,  # Negative PnL -> 0 remaining payout
+            realized_pnl=0.0,
+            unrealized_pnl=-1.0,  # Negative PnL -> 0 remaining payout
             total_penalty=1.0,
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
@@ -938,8 +938,8 @@ class TestDebtBasedScoring(unittest.TestCase):
         ledger2 = DebtLedger(hotkey="miner2", checkpoints=[])
         ledger2.checkpoints.append(DebtCheckpoint(
             timestamp_ms=prev_month_checkpoint_ms,
-            pnl_gain=0.0,
-            pnl_loss=-1.0,  # Negative PnL -> 0 remaining payout
+            realized_pnl=0.0,
+            unrealized_pnl=-1.0,  # Negative PnL -> 0 remaining payout
             total_penalty=1.0,
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
@@ -986,16 +986,16 @@ class TestDebtBasedScoring(unittest.TestCase):
         ledger1 = DebtLedger(hotkey="best_miner", checkpoints=[])
         ledger1.checkpoints.append(DebtCheckpoint(
             timestamp_ms=within_window_ms,
-            pnl_gain=10000.0,
-            pnl_loss=0.0,  # net_pnl = 10000
+            realized_pnl=10000.0,
+            unrealized_pnl=0.0,  # net_pnl = 10000
             total_penalty=1.0,
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
         # Prev month checkpoint for main scoring (negative to ensure 0 remaining payout)
         ledger1.checkpoints.append(DebtCheckpoint(
             timestamp_ms=prev_month_checkpoint_ms,
-            pnl_gain=0.0,
-            pnl_loss=-1.0,
+            realized_pnl=0.0,
+            unrealized_pnl=-1.0,
             total_penalty=1.0,
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
@@ -1004,15 +1004,15 @@ class TestDebtBasedScoring(unittest.TestCase):
         ledger2 = DebtLedger(hotkey="middle_miner", checkpoints=[])
         ledger2.checkpoints.append(DebtCheckpoint(
             timestamp_ms=within_window_ms,
-            pnl_gain=5000.0,
-            pnl_loss=0.0,  # net_pnl = 5000
+            realized_pnl=5000.0,
+            unrealized_pnl=0.0,  # net_pnl = 5000
             total_penalty=1.0,
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
         ledger2.checkpoints.append(DebtCheckpoint(
             timestamp_ms=prev_month_checkpoint_ms,
-            pnl_gain=0.0,
-            pnl_loss=-1.0,
+            realized_pnl=0.0,
+            unrealized_pnl=-1.0,
             total_penalty=1.0,
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
@@ -1021,15 +1021,15 @@ class TestDebtBasedScoring(unittest.TestCase):
         ledger3 = DebtLedger(hotkey="worst_miner", checkpoints=[])
         ledger3.checkpoints.append(DebtCheckpoint(
             timestamp_ms=within_window_ms,
-            pnl_gain=0.0,
-            pnl_loss=0.0,  # net_pnl = 0
+            realized_pnl=0.0,
+            unrealized_pnl=0.0,  # net_pnl = 0
             total_penalty=1.0,
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
         ledger3.checkpoints.append(DebtCheckpoint(
             timestamp_ms=prev_month_checkpoint_ms,
-            pnl_gain=0.0,
-            pnl_loss=-1.0,
+            realized_pnl=0.0,
+            unrealized_pnl=-1.0,
             total_penalty=1.0,
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
@@ -1093,15 +1093,15 @@ class TestDebtBasedScoring(unittest.TestCase):
         ledger_maincomp = DebtLedger(hotkey="worst_maincomp", checkpoints=[])
         ledger_maincomp.checkpoints.append(DebtCheckpoint(
             timestamp_ms=within_window_ms,
-            pnl_gain=0.0,
-            pnl_loss=0.0,  # net_pnl = 0
+            realized_pnl=0.0,
+            unrealized_pnl=0.0,  # net_pnl = 0
             total_penalty=1.0,
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
         ledger_maincomp.checkpoints.append(DebtCheckpoint(
             timestamp_ms=prev_month_checkpoint_ms,
-            pnl_gain=0.0,
-            pnl_loss=-1.0,  # Negative -> 0 remaining payout
+            realized_pnl=0.0,
+            unrealized_pnl=-1.0,  # Negative -> 0 remaining payout
             total_penalty=1.0,
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
@@ -1110,15 +1110,15 @@ class TestDebtBasedScoring(unittest.TestCase):
         ledger_probation = DebtLedger(hotkey="best_probation", checkpoints=[])
         ledger_probation.checkpoints.append(DebtCheckpoint(
             timestamp_ms=within_window_ms,
-            pnl_gain=10000.0,
-            pnl_loss=0.0,  # net_pnl = 10000 (excellent)
+            realized_pnl=10000.0,
+            unrealized_pnl=0.0,  # net_pnl = 10000 (excellent)
             total_penalty=1.0,
             challenge_period_status=MinerBucket.PROBATION.value
         ))
         ledger_probation.checkpoints.append(DebtCheckpoint(
             timestamp_ms=prev_month_checkpoint_ms,
-            pnl_gain=0.0,
-            pnl_loss=-1.0,  # Negative -> 0 remaining payout
+            realized_pnl=0.0,
+            unrealized_pnl=-1.0,  # Negative -> 0 remaining payout
             total_penalty=1.0,
             challenge_period_status=MinerBucket.PROBATION.value
         ))
@@ -1195,15 +1195,15 @@ class TestDebtBasedScoring(unittest.TestCase):
             ledger = DebtLedger(hotkey=f"miner{i}", checkpoints=[])
             ledger.checkpoints.append(DebtCheckpoint(
                 timestamp_ms=within_window_ms,
-                pnl_gain=0.0,
-                pnl_loss=0.0,  # net_pnl = 0
+                realized_pnl=0.0,
+                unrealized_pnl=0.0,  # net_pnl = 0
                 total_penalty=1.0,
                 challenge_period_status=MinerBucket.MAINCOMP.value
             ))
             ledger.checkpoints.append(DebtCheckpoint(
                 timestamp_ms=prev_month_checkpoint_ms,
-                pnl_gain=0.0,
-                pnl_loss=-1.0,  # Negative -> 0 remaining payout
+                realized_pnl=0.0,
+                unrealized_pnl=-1.0,  # Negative -> 0 remaining payout
                 total_penalty=1.0,
                 challenge_period_status=MinerBucket.MAINCOMP.value
             ))
@@ -1243,15 +1243,15 @@ class TestDebtBasedScoring(unittest.TestCase):
         ledger_negative = DebtLedger(hotkey="negative_miner", checkpoints=[])
         ledger_negative.checkpoints.append(DebtCheckpoint(
             timestamp_ms=within_window_ms,
-            pnl_gain=1000.0,
-            pnl_loss=-5000.0,  # net_pnl = -4000 (negative)
+            realized_pnl=-1000.0,
+            unrealized_pnl=-1.0,  # net_pnl = -4000 (negative)
             total_penalty=1.0,
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
         ledger_negative.checkpoints.append(DebtCheckpoint(
             timestamp_ms=prev_month_checkpoint_ms,
-            pnl_gain=0.0,
-            pnl_loss=-1.0,  # Negative -> 0 remaining payout
+            realized_pnl=0.0,
+            unrealized_pnl=-5000.0,  # Negative -> 0 remaining payout
             total_penalty=1.0,
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
@@ -1259,15 +1259,15 @@ class TestDebtBasedScoring(unittest.TestCase):
         ledger_zero = DebtLedger(hotkey="zero_miner", checkpoints=[])
         ledger_zero.checkpoints.append(DebtCheckpoint(
             timestamp_ms=within_window_ms,
-            pnl_gain=0.0,
-            pnl_loss=0.0,  # net_pnl = 0
+            realized_pnl=0.0,
+            unrealized_pnl=0.0,  # net_pnl = 0
             total_penalty=1.0,
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
         ledger_zero.checkpoints.append(DebtCheckpoint(
             timestamp_ms=prev_month_checkpoint_ms,
-            pnl_gain=0.0,
-            pnl_loss=-1.0,  # Negative -> 0 remaining payout
+            realized_pnl=0.0,
+            unrealized_pnl=-1.0,  # Negative -> 0 remaining payout
             total_penalty=1.0,
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
@@ -1313,15 +1313,15 @@ class TestDebtBasedScoring(unittest.TestCase):
         ledger1 = DebtLedger(hotkey="miner1", checkpoints=[])
         ledger1.checkpoints.append(DebtCheckpoint(
             timestamp_ms=old_checkpoint_ms,
-            pnl_gain=10000.0,  # High PnL but too old
-            pnl_loss=0.0,
+            realized_pnl=10000.0,  # High PnL but too old
+            unrealized_pnl=0.0,
             total_penalty=1.0,
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
         ledger1.checkpoints.append(DebtCheckpoint(
             timestamp_ms=prev_month_checkpoint_ms,
-            pnl_gain=0.0,
-            pnl_loss=-1.0,  # Negative -> 0 remaining payout
+            realized_pnl=0.0,
+            unrealized_pnl=-1.0,  # Negative -> 0 remaining payout
             total_penalty=1.0,
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
@@ -1331,15 +1331,15 @@ class TestDebtBasedScoring(unittest.TestCase):
         ledger2 = DebtLedger(hotkey="miner2", checkpoints=[])
         ledger2.checkpoints.append(DebtCheckpoint(
             timestamp_ms=recent_checkpoint_ms,
-            pnl_gain=10000.0,  # High PnL within window
-            pnl_loss=0.0,
+            realized_pnl=10000.0,  # High PnL within window
+            unrealized_pnl=0.0,
             total_penalty=1.0,
             challenge_period_status=MinerBucket.CHALLENGE.value  # CHALLENGE = not earning status
         ))
         ledger2.checkpoints.append(DebtCheckpoint(
             timestamp_ms=prev_month_checkpoint_ms,
-            pnl_gain=0.0,
-            pnl_loss=-1.0,  # Negative -> 0 remaining payout
+            realized_pnl=0.0,
+            unrealized_pnl=-1.0,  # Negative -> 0 remaining payout
             total_penalty=1.0,
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
@@ -1383,15 +1383,15 @@ class TestDebtBasedScoring(unittest.TestCase):
         ledger1 = DebtLedger(hotkey="no_penalty", checkpoints=[])
         ledger1.checkpoints.append(DebtCheckpoint(
             timestamp_ms=within_window_ms,
-            pnl_gain=10000.0,
-            pnl_loss=0.0,  # net_pnl = 10000
+            realized_pnl=10000.0,
+            unrealized_pnl=0.0,  # net_pnl = 10000
             total_penalty=1.0,  # No penalty
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
         ledger1.checkpoints.append(DebtCheckpoint(
             timestamp_ms=prev_month_checkpoint_ms,
-            pnl_gain=0.0,
-            pnl_loss=-1.0,
+            realized_pnl=0.0,
+            unrealized_pnl=-1.0,
             total_penalty=1.0,
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
@@ -1400,15 +1400,15 @@ class TestDebtBasedScoring(unittest.TestCase):
         ledger2 = DebtLedger(hotkey="with_penalty", checkpoints=[])
         ledger2.checkpoints.append(DebtCheckpoint(
             timestamp_ms=within_window_ms,
-            pnl_gain=10000.0,
-            pnl_loss=0.0,  # net_pnl = 10000
+            realized_pnl=10000.0,
+            unrealized_pnl=0.0,  # net_pnl = 10000
             total_penalty=0.5,  # 50% penalty -> effective PnL = 5000
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
         ledger2.checkpoints.append(DebtCheckpoint(
             timestamp_ms=prev_month_checkpoint_ms,
-            pnl_gain=0.0,
-            pnl_loss=-1.0,
+            realized_pnl=0.0,
+            unrealized_pnl=-1.0,
             total_penalty=1.0,
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
@@ -1417,15 +1417,15 @@ class TestDebtBasedScoring(unittest.TestCase):
         ledger3 = DebtLedger(hotkey="half_pnl", checkpoints=[])
         ledger3.checkpoints.append(DebtCheckpoint(
             timestamp_ms=within_window_ms,
-            pnl_gain=5000.0,
-            pnl_loss=0.0,  # net_pnl = 5000
+            realized_pnl=5000.0,
+            unrealized_pnl=0.0,  # net_pnl = 5000
             total_penalty=1.0,  # No penalty
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
         ledger3.checkpoints.append(DebtCheckpoint(
             timestamp_ms=prev_month_checkpoint_ms,
-            pnl_gain=0.0,
-            pnl_loss=-1.0,
+            realized_pnl=0.0,
+            unrealized_pnl=-1.0,
             total_penalty=1.0,
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
@@ -1866,15 +1866,15 @@ class TestDebtBasedScoring(unittest.TestCase):
             # Distribute PnL from 0 to 19000 (miner_0 has lowest, miner_19 has highest)
             ledger.checkpoints.append(DebtCheckpoint(
                 timestamp_ms=within_window_ms,
-                pnl_gain=float(i * 1000),
-                pnl_loss=0.0,
+                realized_pnl=float(i * 1000),
+                unrealized_pnl=0.0,
                 total_penalty=1.0,
                 challenge_period_status=MinerBucket.CHALLENGE.value
             ))
             ledger.checkpoints.append(DebtCheckpoint(
                 timestamp_ms=prev_month_checkpoint_ms,
-                pnl_gain=0.0,
-                pnl_loss=-1.0,  # Negative -> 0 remaining payout
+                realized_pnl=0.0,
+                unrealized_pnl=-1.0,  # Negative -> 0 remaining payout
                 total_penalty=1.0,
                 challenge_period_status=MinerBucket.CHALLENGE.value
             ))
@@ -1950,15 +1950,15 @@ class TestDebtBasedScoring(unittest.TestCase):
             # Distribute PnL from 0 to 49000
             ledger.checkpoints.append(DebtCheckpoint(
                 timestamp_ms=within_window_ms,
-                pnl_gain=float(i * 1000),
-                pnl_loss=0.0,
+                realized_pnl=float(i * 1000),
+                unrealized_pnl=0.0,
                 total_penalty=1.0,
                 challenge_period_status=MinerBucket.CHALLENGE.value
             ))
             ledger.checkpoints.append(DebtCheckpoint(
                 timestamp_ms=prev_month_checkpoint_ms,
-                pnl_gain=0.0,
-                pnl_loss=-1.0,
+                realized_pnl=0.0,
+                unrealized_pnl=-1.0,
                 total_penalty=1.0,
                 challenge_period_status=MinerBucket.CHALLENGE.value
             ))
@@ -2038,15 +2038,15 @@ class TestDebtBasedScoring(unittest.TestCase):
             # All have 0 PnL
             ledger.checkpoints.append(DebtCheckpoint(
                 timestamp_ms=within_window_ms,
-                pnl_gain=0.0,
-                pnl_loss=0.0,
+                realized_pnl=0.0,
+                unrealized_pnl=0.0,
                 total_penalty=1.0,
                 challenge_period_status=MinerBucket.CHALLENGE.value
             ))
             ledger.checkpoints.append(DebtCheckpoint(
                 timestamp_ms=prev_month_checkpoint_ms,
-                pnl_gain=0.0,
-                pnl_loss=-1.0,
+                realized_pnl=0.0,
+                unrealized_pnl=-1.0,
                 total_penalty=1.0,
                 challenge_period_status=MinerBucket.CHALLENGE.value
             ))
@@ -2118,15 +2118,15 @@ class TestDebtBasedScoring(unittest.TestCase):
             ledger = DebtLedger(hotkey=hotkey, checkpoints=[])
             ledger.checkpoints.append(DebtCheckpoint(
                 timestamp_ms=within_window_ms,
-                pnl_gain=0.0,
-                pnl_loss=0.0,
+                realized_pnl=0.0,
+                unrealized_pnl=0.0,
                 total_penalty=1.0,
                 challenge_period_status=MinerBucket.CHALLENGE.value
             ))
             ledger.checkpoints.append(DebtCheckpoint(
                 timestamp_ms=prev_month_checkpoint_ms,
-                pnl_gain=0.0,
-                pnl_loss=-1.0,
+                realized_pnl=0.0,
+                unrealized_pnl=-1.0,
                 total_penalty=1.0,
                 challenge_period_status=MinerBucket.CHALLENGE.value
             ))
@@ -2191,15 +2191,15 @@ class TestDebtBasedScoring(unittest.TestCase):
         ledger = DebtLedger(hotkey="solo_challenge_miner", checkpoints=[])
         ledger.checkpoints.append(DebtCheckpoint(
             timestamp_ms=within_window_ms,
-            pnl_gain=0.0,
-            pnl_loss=0.0,
+            realized_pnl=0.0,
+            unrealized_pnl=0.0,
             total_penalty=1.0,
             challenge_period_status=MinerBucket.CHALLENGE.value
         ))
         ledger.checkpoints.append(DebtCheckpoint(
             timestamp_ms=prev_month_checkpoint_ms,
-            pnl_gain=0.0,
-            pnl_loss=-1.0,
+            realized_pnl=0.0,
+            unrealized_pnl=-1.0,
             total_penalty=1.0,
             challenge_period_status=MinerBucket.CHALLENGE.value
         ))
@@ -2257,15 +2257,15 @@ class TestDebtBasedScoring(unittest.TestCase):
             ledger = DebtLedger(hotkey=f"miner_{i}", checkpoints=[])
             ledger.checkpoints.append(DebtCheckpoint(
                 timestamp_ms=within_window_ms,
-                pnl_gain=float(pnl),
-                pnl_loss=0.0,
+                realized_pnl=float(pnl),
+                unrealized_pnl=0.0,
                 total_penalty=1.0,
                 challenge_period_status=MinerBucket.CHALLENGE.value
             ))
             ledger.checkpoints.append(DebtCheckpoint(
                 timestamp_ms=prev_month_checkpoint_ms,
-                pnl_gain=0.0,
-                pnl_loss=-1.0,
+                realized_pnl=0.0,
+                unrealized_pnl=-1.0,
                 total_penalty=1.0,
                 challenge_period_status=MinerBucket.CHALLENGE.value
             ))

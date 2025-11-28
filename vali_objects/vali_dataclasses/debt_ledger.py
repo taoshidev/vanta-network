@@ -444,7 +444,7 @@ class DebtLedger:
                     alpha_balance_snapshot=emissions.get('alpha_balance_snapshot', 0.0),
                     # Performance
                     portfolio_return=performance.get('portfolio_return', 1.0),
-                    realized_pnl=performance.get('realized_pnl', performance.get('pnl_gain', 0.0) + performance.get('pnl_loss', 0.0)),
+                    realized_pnl=performance.get('realized_pnl', 0.0),
                     unrealized_pnl=performance.get('unrealized_pnl', 0.0),
                     spread_fee_loss=performance.get('spread_fee_loss', 0.0),
                     carry_fee_loss=performance.get('carry_fee_loss', 0.0),
@@ -473,7 +473,7 @@ class DebtLedger:
                     tao_balance_snapshot=cp_dict.get('tao_balance_snapshot', 0.0),
                     alpha_balance_snapshot=cp_dict.get('alpha_balance_snapshot', 0.0),
                     portfolio_return=cp_dict.get('portfolio_return', 1.0),
-                    realized_pnl=cp_dict.get('realized_pnl', cp_dict.get('pnl_gain', 0.0) + cp_dict.get('pnl_loss', 0.0)),
+                    realized_pnl=cp_dict.get('realized_pnl', 0.0),
                     unrealized_pnl=cp_dict.get('unrealized_pnl', 0.0),
                     spread_fee_loss=cp_dict.get('spread_fee_loss', 0.0),
                     carry_fee_loss=cp_dict.get('carry_fee_loss', 0.0),

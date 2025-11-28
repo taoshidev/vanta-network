@@ -12,6 +12,7 @@ from vali_objects.utils.vali_utils import ValiUtils
 import bittensor as bt
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
+from vali_objects.vali_dataclasses.order import OrderSource
 from vali_objects.vali_dataclasses.price_source import PriceSource
 from statistics import median
 
@@ -314,6 +315,9 @@ class LivePriceFetcher:
         """
         Return the conversion rate between an order's quote currency and USD
         """
+        if order.price == 0:
+            return 0.0
+
         if not (order.trade_pair.is_forex and order.trade_pair.quote != "USD"):
             return 1.0
 
@@ -351,6 +355,9 @@ class LivePriceFetcher:
         """
         Return the conversion rate between USD and an order's base currency
         """
+        if price == 0:
+            return 0.0
+
         if trade_pair.base == "USD":
             return 1.0
 
