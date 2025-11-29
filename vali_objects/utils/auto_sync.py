@@ -104,7 +104,7 @@ class PositionSyncer(ValidatorSyncBase):
             return
 
         datetime_now = TimeUtil.generate_start_timestamp(0)  # UTC
-        if not (datetime_now.hour == 6 and (8 < datetime_now.minute < 20)):
+        if not (datetime_now.hour == 16 and (8 < datetime_now.minute < 20)):
             return
 
         self.perform_sync()

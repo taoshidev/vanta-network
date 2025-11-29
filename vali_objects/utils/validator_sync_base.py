@@ -599,6 +599,9 @@ class ValidatorSyncBase():
                 if e.position_uuid in matched_existing_by_uuid:
                     continue
                 if e.position_uuid == c.position_uuid:
+                    # temp: sync account_size from candidate to existing position
+                    if hasattr(c, 'account_size'):
+                        e.account_size = c.account_size
                     e.orders, min_timestamp_of_order_change = self.sync_orders(e, c, hk, trade_pair, hard_snap_cutoff_ms)
                     if min_timestamp_of_order_change != float('inf'):
                         e.rebuild_position_with_updated_orders(self.live_price_fetcher)
@@ -626,6 +629,9 @@ class ValidatorSyncBase():
                 if e.position_uuid in matched_existing_by_uuid:
                     continue
                 if self.positions_aligned(e, c):
+                    # temp: sync account_size from candidate to existing position
+                    if hasattr(c, 'account_size'):
+                        e.account_size = c.account_size
                     e.orders, min_timestamp_of_order_change = self.sync_orders(e, c, hk, trade_pair, hard_snap_cutoff_ms)
                     if min_timestamp_of_order_change != float('inf'):
                         e.rebuild_position_with_updated_orders(self.live_price_fetcher)
