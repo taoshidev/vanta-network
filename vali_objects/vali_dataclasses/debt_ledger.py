@@ -103,8 +103,6 @@ class DebtCheckpoint:
         challenge_period_status: Challenge period status (MAINCOMP/CHALLENGE/PROBATION/PLAGIARISM/UNKNOWN)
 
         # Derived/Computed Fields
-        net_pnl: Payout PnL = realized_pnl + min(0, unrealized_pnl)
-                 (Penalizes unrealized losses, ignores unrealized gains)
         total_fees: Total fees paid (spread + carry)
         return_after_fees: Portfolio return after all fees
         weighted_score: Final score after applying all penalties
@@ -147,7 +145,6 @@ class DebtCheckpoint:
         if self.challenge_period_status is None:
             self.challenge_period_status = MinerBucket.UNKNOWN.value
         # Calculate derived financial fields
-        self.net_pnl = self.realized_pnl + min(0.0, self.unrealized_pnl)
         self.total_fees = self.spread_fee_loss + self.carry_fee_loss
         self.return_after_fees = self.portfolio_return
         self.weighted_score = self.portfolio_return * self.total_penalty
@@ -183,7 +180,6 @@ class DebtCheckpoint:
                 'portfolio_return': self.portfolio_return,
                 'realized_pnl': self.realized_pnl,
                 'unrealized_pnl': self.unrealized_pnl,
-                'net_pnl': self.net_pnl,
                 'spread_fee_loss': self.spread_fee_loss,
                 'carry_fee_loss': self.carry_fee_loss,
                 'total_fees': self.total_fees,
@@ -373,7 +369,6 @@ class DebtLedger:
                 'cumulative_emissions_usd': self.get_cumulative_emissions_usd(),
                 'portfolio_return': self.get_current_portfolio_return(),
                 'weighted_score': self.get_current_weighted_score(),
-                'net_pnl': latest.net_pnl if latest else 0.0,
                 'total_fees': latest.total_fees if latest else 0.0,
             } if latest else {},
 
@@ -399,7 +394,6 @@ class DebtLedger:
         print(f"Total USD: ${self.get_cumulative_emissions_usd():,.2f}")
         print(f"\n--- Performance ---")
         print(f"Portfolio Return: {latest.portfolio_return:.4f} ({(latest.portfolio_return - 1) * 100:+.2f}%)")
-        print(f"Net PnL: ${latest.net_pnl:,.2f}")
         print(f"Total Fees: ${latest.total_fees:,.2f}")
         print(f"Max Drawdown: {latest.max_drawdown:.4f}")
         print(f"\n--- Penalties ---")
