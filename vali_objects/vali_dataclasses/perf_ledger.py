@@ -8,7 +8,7 @@ from datetime import timezone
 from collections import defaultdict, Counter
 from copy import deepcopy
 from enum import Enum
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 import bittensor as bt
 from setproctitle import setproctitle
 from vali_objects.utils.position_source import PositionSourceManager, PositionSource
@@ -485,6 +485,60 @@ class PerfLedger():
 
     def get_total_ledger_duration_ms(self):
         return sum(cp.accum_ms for cp in self.cps)
+
+    def get_checkpoint_at_time(self, timestamp_ms: int, target_cp_duration_ms: int) -> Optional[PerfCheckpoint]:
+        """
+        Get the checkpoint at a specific timestamp (efficient O(1) lookup).
+
+        Uses index calculation instead of scanning since checkpoints are evenly-spaced
+        and contiguous (enforced by strict checkpoint validation).
+
+        Args:
+            timestamp_ms: Exact timestamp to query (should match last_update_ms)
+            target_cp_duration_ms: Target checkpoint duration in milliseconds
+
+        Returns:
+            Checkpoint at the exact timestamp, or None if not found
+
+        Raises:
+            ValueError: If checkpoint exists at calculated index but timestamp doesn't match (data corruption)
+        """
+        if not self.cps:
+            return None
+
+        # Calculate expected index based on first checkpoint and duration
+        first_checkpoint_ms = self.cps[0].last_update_ms
+
+        # Check if timestamp is before first checkpoint
+        if timestamp_ms < first_checkpoint_ms:
+            return None
+
+        # Calculate index (checkpoints are evenly spaced by target_cp_duration_ms)
+        time_diff = timestamp_ms - first_checkpoint_ms
+        if time_diff % target_cp_duration_ms != 0:
+            # Timestamp doesn't align with checkpoint boundaries
+            return None
+
+        index = time_diff // target_cp_duration_ms
+
+        # Check if index is within bounds
+        if index >= len(self.cps):
+            return None
+
+        # Validate the checkpoint at this index has the expected timestamp
+        checkpoint = self.cps[index]
+        if checkpoint.last_update_ms != timestamp_ms:
+            from time_util.time_util import TimeUtil
+            raise ValueError(
+                f"Data corruption detected for {self.tp_id}: "
+                f"checkpoint at index {index} has last_update_ms {checkpoint.last_update_ms} "
+                f"({TimeUtil.millis_to_formatted_date_str(checkpoint.last_update_ms)}), "
+                f"but expected {timestamp_ms} "
+                f"({TimeUtil.millis_to_formatted_date_str(timestamp_ms)}). "
+                f"Checkpoints are not properly contiguous."
+            )
+
+        return checkpoint
 
 class PerfLedgerManager(CacheController):
     def __init__(self, metagraph, ipc_manager=None, running_unit_tests=False, shutdown_dict=None,

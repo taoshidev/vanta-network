@@ -971,7 +971,11 @@ class DebtLedgerManager:
                 if not portfolio_ledger or not portfolio_ledger.cps:
                     continue
 
-                if not perf_checkpoint:
+                # Get this hotkey's perf checkpoint at the current timestamp (efficient O(1) lookup)
+                hotkey_perf_checkpoint = portfolio_ledger.get_checkpoint_at_time(
+                    perf_checkpoint.last_update_ms, target_cp_duration_ms
+                )
+                if not hotkey_perf_checkpoint:
                     continue  # This hotkey doesn't have a perf checkpoint at this timestamp
 
                 # Get corresponding penalty checkpoint (efficient O(1) lookup)
@@ -992,6 +996,14 @@ class DebtLedgerManager:
                     continue
 
                 # Validate timestamps match
+                if hotkey_perf_checkpoint.last_update_ms != perf_checkpoint.last_update_ms:
+                    if verbose:
+                        bt.logging.warning(
+                            f"Perf checkpoint timestamp mismatch for {hotkey}: "
+                            f"expected {perf_checkpoint.last_update_ms}, got {hotkey_perf_checkpoint.last_update_ms}"
+                        )
+                    continue
+
                 if penalty_checkpoint.last_processed_ms != perf_checkpoint.last_update_ms:
                     if verbose:
                         bt.logging.warning(
@@ -1027,7 +1039,7 @@ class DebtLedgerManager:
 
                 # Create unified debt checkpoint combining all three sources
                 debt_checkpoint = DebtCheckpoint(
-                    timestamp_ms=perf_checkpoint.last_update_ms,
+                    timestamp_ms=hotkey_perf_checkpoint.last_update_ms,
                     # Emissions data (chunk only - cumulative calculated by summing)
                     chunk_emissions_alpha=emissions_checkpoint.chunk_emissions,
                     chunk_emissions_tao=emissions_checkpoint.chunk_emissions_tao,
@@ -1037,16 +1049,16 @@ class DebtLedgerManager:
                     tao_balance_snapshot=emissions_checkpoint.tao_balance_snapshot,
                     alpha_balance_snapshot=emissions_checkpoint.alpha_balance_snapshot,
                     # Performance data - access attributes directly from PerfCheckpoint
-                    portfolio_return=perf_checkpoint.gain,  # Current portfolio multiplier
-                    realized_pnl=perf_checkpoint.realized_pnl,  # Net realized PnL during this checkpoint period
-                    unrealized_pnl=perf_checkpoint.unrealized_pnl,  # Net unrealized PnL during this checkpoint period
-                    spread_fee_loss=perf_checkpoint.spread_fee_loss,  # Spread fees during this checkpoint
-                    carry_fee_loss=perf_checkpoint.carry_fee_loss,  # Carry fees during this checkpoint
-                    max_drawdown=perf_checkpoint.mdd,  # Max drawdown
-                    max_portfolio_value=perf_checkpoint.mpv,  # Max portfolio value achieved
-                    open_ms=perf_checkpoint.open_ms,
-                    accum_ms=perf_checkpoint.accum_ms,
-                    n_updates=perf_checkpoint.n_updates,
+                    portfolio_return=hotkey_perf_checkpoint.gain,  # Current portfolio multiplier
+                    realized_pnl=hotkey_perf_checkpoint.realized_pnl,  # Net realized PnL during this checkpoint period
+                    unrealized_pnl=hotkey_perf_checkpoint.unrealized_pnl,  # Net unrealized PnL during this checkpoint period
+                    spread_fee_loss=hotkey_perf_checkpoint.spread_fee_loss,  # Spread fees during this checkpoint
+                    carry_fee_loss=hotkey_perf_checkpoint.carry_fee_loss,  # Carry fees during this checkpoint
+                    max_drawdown=hotkey_perf_checkpoint.mdd,  # Max drawdown
+                    max_portfolio_value=hotkey_perf_checkpoint.mpv,  # Max portfolio value achieved
+                    open_ms=hotkey_perf_checkpoint.open_ms,
+                    accum_ms=hotkey_perf_checkpoint.accum_ms,
+                    n_updates=hotkey_perf_checkpoint.n_updates,
                     # Penalty data
                     drawdown_penalty=penalty_checkpoint.drawdown_penalty,
                     risk_profile_penalty=penalty_checkpoint.risk_profile_penalty,
