@@ -137,7 +137,6 @@ def plot_pnl_performance(debt_checkpoints, hotkey):
                  for cp in debt_checkpoints]
     realized_pnls = [cp.realized_pnl for cp in debt_checkpoints]
     unrealized_pnls = [cp.unrealized_pnl for cp in debt_checkpoints]
-    net_pnls = [cp.net_pnl for cp in debt_checkpoints]
 
     # Get time range
     start_date = timestamps[0].strftime('%Y-%m-%d')
@@ -149,7 +148,6 @@ def plot_pnl_performance(debt_checkpoints, hotkey):
     # Plot PnL components
     ax.plot(timestamps, realized_pnls, 'g-', linewidth=2, label=f'Realized PnL (total: {sum(realized_pnls):.2f})')
     ax.plot(timestamps, unrealized_pnls, 'orange', linewidth=2, label=f'Unrealized PnL (total: {sum(unrealized_pnls):.2f})')
-    ax.plot(timestamps, net_pnls, 'b-', linewidth=2.5, label=f'Net PnL - Payout (total: {sum(net_pnls):.2f})')
 
     # Add zero line
     ax.axhline(y=0, color='black', linestyle='--', linewidth=1, alpha=0.3)
