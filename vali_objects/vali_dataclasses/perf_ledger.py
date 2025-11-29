@@ -2099,7 +2099,7 @@ class PerfLedgerManager(CacheController):
         return self.update_all_perf_ledgers(hotkey_to_positions, existing_perf_ledgers, t_ms)
 
     @timeme
-    def update(self, testing_one_hotkey=None, regenerate_all_ledgers=False, t_ms=None):
+    def update(self, testing_one_hotkey=None, regenerate_all_ledgers=True, t_ms=None):  # TEMPORARY: Force full rebuild
         assert self.position_manager.elimination_manager.metagraph, "Metagraph must be loaded before updating perf ledgers"
         assert self.metagraph, "Metagraph must be loaded before updating perf ledgers"
         perf_ledger_bundles = self.get_perf_ledgers(portfolio_only=False)
