@@ -251,7 +251,7 @@ class TestPositions(TestBase):
         )
         closed_position.add_order(open_order, self.live_price_fetcher)
         closed_position.add_order(close_order, self.live_price_fetcher)
-        assert closed_position.current_return == 1.0045269066025986
+        assert closed_position.current_return == 1.0045338242380495
 
     def test_position_returns_one_order(self):
         """
@@ -271,11 +271,12 @@ class TestPositions(TestBase):
             position_uuid=self.DEFAULT_POSITION_UUID,
             open_ms=1742910011691,
             trade_pair=TradePair.BTCUSD,
-            orders=[open_order],
+            orders=[],
             net_leverage=-0.1,
             average_entry_price=100,
             account_size=ValiConfig.DEFAULT_CAPITAL
         )
+        open_position.add_order(open_order, self.live_price_fetcher)
         assert open_position.current_return == 1
 
         open_position.set_returns(90, live_price_fetcher=self.live_price_fetcher)
@@ -423,14 +424,20 @@ class TestPositions(TestBase):
                    order_uuid="2000")
 
         self.add_order_to_position_and_save(position, o1)
+
+        net_value = 1.0 * ValiConfig.DEFAULT_CAPITAL
+        net_quantity = net_value / o1.price
+
         self.validate_intermediate_position_state(position, {
             'orders': [o1],
             'position_type': OrderType.LONG,
             'is_closed_position': False,
             'net_leverage': 1.0,
+            'net_value': net_value,
+            'net_quantity': net_quantity,
             'initial_entry_price': 100,
             'average_entry_price': 100,
-            'cumulative_entry_value': 100.0,
+            'cumulative_entry_value': 100000.0,
             'realized_pnl': 0,
             'close_ms': None,
             'return_at_close': 0.999,
@@ -449,10 +456,12 @@ class TestPositions(TestBase):
             'position_type': OrderType.FLAT,
             'is_closed_position': True,
             'net_leverage': 0.0,
+            'net_value': 0.0,
+            'net_quantity': 0.0,
             'initial_entry_price': 100,
             'average_entry_price': 100,
-            'cumulative_entry_value': 100.0,
-            'realized_pnl': 0,
+            'cumulative_entry_value': 100000.0,
+            'realized_pnl': 10000.0,
             'close_ms': o2.processed_ms,
             'return_at_close': 1.0976837374307222,
             'current_return': 1.1,
@@ -528,14 +537,20 @@ class TestPositions(TestBase):
                    order_uuid="2000")
 
         self.add_order_to_position_and_save(position, o1)
+
+        net_value = 1.0 * ValiConfig.DEFAULT_CAPITAL
+        net_quantity = net_value / o1.price
+
         self.validate_intermediate_position_state(position, {
             'orders': [o1],
             'position_type': OrderType.LONG,
             'is_closed_position': False,
             'net_leverage': 1.0,
+            'net_value': net_value,
+            'net_quantity': net_quantity,
             'initial_entry_price': 500,
             'average_entry_price': 500,
-            'cumulative_entry_value': 500.0,
+            'cumulative_entry_value': 100000.0,
             'realized_pnl': 0,
             'close_ms': None,
             'return_at_close': 0.999,
@@ -554,10 +569,12 @@ class TestPositions(TestBase):
             'position_type': OrderType.FLAT,
             'is_closed_position': True,
             'net_leverage': 0.0,
+            'net_value': 0.0,
+            'net_quantity': 0.0,
             'initial_entry_price': 500,
             'average_entry_price': 500,
-            'cumulative_entry_value': 500.0,
-            'realized_pnl': 0,
+            'cumulative_entry_value': 100000.0,
+            'realized_pnl': 100000.0,
             'close_ms': o2.processed_ms,
             'return_at_close': 1.993887142229985,
             'current_return': 2.0,
@@ -591,14 +608,19 @@ class TestPositions(TestBase):
         self.add_order_to_position_and_save(position, o1)
         self.assertAlmostEqual(position.get_carry_fee(o1.processed_ms)[0], 1.0)
 
+        net_value = -1.0 * ValiConfig.DEFAULT_CAPITAL
+        net_quantity = net_value / o1.price
+
         self.validate_intermediate_position_state(position, {
             'orders': [o1],
             'position_type': OrderType.SHORT,
             'is_closed_position': False,
             'net_leverage': -1.0,
+            'net_value': net_value,
+            'net_quantity': net_quantity,
             'initial_entry_price': 100,
             'average_entry_price': 100,
-            'cumulative_entry_value': -100.0,
+            'cumulative_entry_value': -100000.0,
             'realized_pnl': 0,
             'close_ms': None,
             'return_at_close': 0.999,
@@ -617,10 +639,12 @@ class TestPositions(TestBase):
             'position_type': OrderType.FLAT,
             'is_closed_position': True,
             'net_leverage': 0.0,
+            'net_value': 0.0,
+            'net_quantity': 0.0,
             'initial_entry_price': 100,
             'average_entry_price': 100,
-            'cumulative_entry_value': -100.0,
-            'realized_pnl': 0,
+            'cumulative_entry_value': -100000.0,
+            'realized_pnl': 10000.0,
             'close_ms': o2.processed_ms,
             'return_at_close': 1.0974512492292436 ,
             'current_return': 1.1,
@@ -658,7 +682,7 @@ class TestPositions(TestBase):
             'net_leverage': 10.0,
             'initial_entry_price': 100,
             'average_entry_price': 100,
-            'cumulative_entry_value': 1000.0,
+            'cumulative_entry_value': 1000000.0,
             'realized_pnl': 0,
             'close_ms': None,
             'return_at_close': 0.99,
@@ -668,7 +692,9 @@ class TestPositions(TestBase):
             'trade_pair': self.DEFAULT_TRADE_PAIR,
             'position_uuid': self.DEFAULT_POSITION_UUID,
             'account_size': ValiConfig.DEFAULT_CAPITAL,
-            'unrealized_pnl': 0
+            'unrealized_pnl': 0,
+            'net_value': 1000000.0,
+            'net_quantity': 10000.0
         })
 
         self.add_order_to_position_and_save(position, o2)
@@ -679,8 +705,8 @@ class TestPositions(TestBase):
             'net_leverage': 10.0,
             'initial_entry_price': 100,
             'average_entry_price': 100,
-            'cumulative_entry_value': 1000.0,
-            'realized_pnl': 0,
+            'cumulative_entry_value': 1000000.0,
+            'realized_pnl': -500000.0,
             'close_ms': o2.processed_ms,
             'return_at_close': 0.0,
             'current_return': 0.0,
@@ -689,7 +715,9 @@ class TestPositions(TestBase):
             'trade_pair': self.DEFAULT_TRADE_PAIR,
             'position_uuid': self.DEFAULT_POSITION_UUID,
             'account_size': ValiConfig.DEFAULT_CAPITAL,
-            'unrealized_pnl': 0
+            'unrealized_pnl': 0,
+            'net_value': 1000000.0,
+            'net_quantity': 10000.0
         })
         self.assertEqual(position.max_leverage_seen(), 10.0)
         self.assertEqual(position.get_cumulative_leverage(), 20.0)
@@ -718,7 +746,7 @@ class TestPositions(TestBase):
             'net_leverage': -1,
             'initial_entry_price': 100,
             'average_entry_price': 100,
-            'cumulative_entry_value': -100.0,
+            'cumulative_entry_value': -100000.0,
             'realized_pnl': 0,
             'close_ms': None,
             'return_at_close': .999,
@@ -728,7 +756,9 @@ class TestPositions(TestBase):
             'trade_pair': self.DEFAULT_TRADE_PAIR,
             'position_uuid': self.DEFAULT_POSITION_UUID,
             'account_size': ValiConfig.DEFAULT_CAPITAL,
-            'unrealized_pnl': 0
+            'unrealized_pnl': 0,
+            'net_value': -100000.0,
+            'net_quantity': -1000.0
         })
 
         self.add_order_to_position_and_save(position, o2)
@@ -739,8 +769,8 @@ class TestPositions(TestBase):
             'net_leverage': -1.0,
             'initial_entry_price': 100,
             'average_entry_price': 100,
-            'cumulative_entry_value': -100.0,
-            'realized_pnl': 0,
+            'cumulative_entry_value': -100000.0,
+            'realized_pnl': -8900000.0,
             'close_ms': o2.processed_ms,
             'return_at_close': 0.0,
             'current_return': 0.0,
@@ -749,7 +779,9 @@ class TestPositions(TestBase):
             'trade_pair': self.DEFAULT_TRADE_PAIR,
             'position_uuid': self.DEFAULT_POSITION_UUID,
             'account_size': ValiConfig.DEFAULT_CAPITAL,
-            'unrealized_pnl': 0
+            'unrealized_pnl': 0,
+            'net_value': -100000.0,
+            'net_quantity': -1000.0
         })
         self.assertEqual(position.max_leverage_seen(), 1.0)
         self.assertEqual(position.get_cumulative_leverage(), 2.0)
@@ -783,7 +815,7 @@ class TestPositions(TestBase):
             'net_leverage': -1,
             'initial_entry_price': 100,
             'average_entry_price': 100,
-            'cumulative_entry_value': -100.0,
+            'cumulative_entry_value': -100000.0,
             'realized_pnl': 0,
             'close_ms': None,
             'return_at_close': .999,
@@ -793,7 +825,9 @@ class TestPositions(TestBase):
             'trade_pair': self.DEFAULT_TRADE_PAIR,
             'position_uuid': self.DEFAULT_POSITION_UUID,
             'account_size': ValiConfig.DEFAULT_CAPITAL,
-            'unrealized_pnl': 0
+            'unrealized_pnl': 0,
+            'net_value': -100000.0,
+            'net_quantity': -1000.0
         })
 
         self.add_order_to_position_and_save(position, o2)
@@ -808,8 +842,8 @@ class TestPositions(TestBase):
             'net_leverage': -1.0,
             'initial_entry_price': 100,
             'average_entry_price': 100,
-            'cumulative_entry_value': -100.0,
-            'realized_pnl': 0,
+            'cumulative_entry_value': -100000.0,
+            'realized_pnl': -9888.888888888889,
             'close_ms': o2.processed_ms,
             'return_at_close': 0.0,
             'current_return': 0.0,
@@ -818,7 +852,9 @@ class TestPositions(TestBase):
             'trade_pair': self.DEFAULT_TRADE_PAIR,
             'position_uuid': self.DEFAULT_POSITION_UUID,
             'account_size': ValiConfig.DEFAULT_CAPITAL,
-            'unrealized_pnl': 0
+            'unrealized_pnl': -8890111.111111112,
+            'net_value': -100000.0,
+            'net_quantity': -1000.0
         })
 
         # Orders post-liquidation are ignored
@@ -831,8 +867,8 @@ class TestPositions(TestBase):
             'net_leverage': -1.0,
             'initial_entry_price': 100,
             'average_entry_price': 100,
-            'cumulative_entry_value': -100.0,
-            'realized_pnl': 0,
+            'cumulative_entry_value': -100000.0,
+            'realized_pnl': -9888.888888888889,
             'close_ms': o2.processed_ms,
             'return_at_close': 0.0,
             'current_return': 0.0,
@@ -841,7 +877,9 @@ class TestPositions(TestBase):
             'trade_pair': self.DEFAULT_TRADE_PAIR,
             'position_uuid': self.DEFAULT_POSITION_UUID,
             'account_size': ValiConfig.DEFAULT_CAPITAL,
-            'unrealized_pnl': 0
+            'unrealized_pnl': -8890111.111111112,
+            'net_value': -100000.0,
+            'net_quantity': -1000.0
         })
         self.assertEqual(position.max_leverage_seen(), 1.0)
         self.assertEqual(position.get_cumulative_leverage(), 2.0)
@@ -875,7 +913,7 @@ class TestPositions(TestBase):
             'net_leverage': 10,
             'initial_entry_price': 100,
             'average_entry_price': 100,
-            'cumulative_entry_value': 1000.0,
+            'cumulative_entry_value': 1000000.0,
             'realized_pnl': 0,
             'close_ms': None,
             'return_at_close': 0.99,
@@ -885,7 +923,9 @@ class TestPositions(TestBase):
             'trade_pair': self.DEFAULT_TRADE_PAIR,
             'position_uuid': self.DEFAULT_POSITION_UUID,
             'account_size': ValiConfig.DEFAULT_CAPITAL,
-            'unrealized_pnl': 0
+            'unrealized_pnl': 0,
+            'net_value': 1000000.0,
+            'net_quantity': 10000.0
         })
 
         self.add_order_to_position_and_save(position, o2)
@@ -902,8 +942,8 @@ class TestPositions(TestBase):
             'net_leverage': 10,
             'initial_entry_price': 100,
             'average_entry_price': 100,
-            'cumulative_entry_value': 1000.0,
-            'realized_pnl': 0,
+            'cumulative_entry_value': 1000000.0,
+            'realized_pnl': -10000.0,
             'close_ms': o2.processed_ms,
             'return_at_close': 0.0,
             'current_return': 0.0,
@@ -912,7 +952,9 @@ class TestPositions(TestBase):
             'trade_pair': self.DEFAULT_TRADE_PAIR,
             'position_uuid': self.DEFAULT_POSITION_UUID,
             'account_size': ValiConfig.DEFAULT_CAPITAL,
-            'unrealized_pnl': 0
+            'unrealized_pnl': -490000.0,
+            'net_value': 1000000.0,
+            'net_quantity': 10000.0
         })
 
         # Orders post-liquidation are ignored
@@ -926,8 +968,8 @@ class TestPositions(TestBase):
             'net_leverage': 10,
             'initial_entry_price': 100,
             'average_entry_price': 100,
-            'cumulative_entry_value': 1000.0,
-            'realized_pnl': 0,
+            'cumulative_entry_value': 1000000.0,
+            'realized_pnl': -10000.0,
             'close_ms': o2.processed_ms,
             'return_at_close': 0.0,
             'current_return': 0.0,
@@ -936,7 +978,9 @@ class TestPositions(TestBase):
             'trade_pair': self.DEFAULT_TRADE_PAIR,
             'position_uuid': self.DEFAULT_POSITION_UUID,
             'account_size': ValiConfig.DEFAULT_CAPITAL,
-            'unrealized_pnl': 0
+            'unrealized_pnl': -490000.0,
+            'net_value': 1000000.0,
+            'net_quantity': 10000.0
         })
 
         self.assertEqual(position.max_leverage_seen(), 10.0)
@@ -965,7 +1009,7 @@ class TestPositions(TestBase):
             'net_leverage': -1,
             'initial_entry_price': 1000,
             'average_entry_price': 1000,
-            'cumulative_entry_value': -1000.0,
+            'cumulative_entry_value': -100000.0,
             'realized_pnl': 0,
             'close_ms': None,
             'return_at_close': .999,
@@ -975,7 +1019,9 @@ class TestPositions(TestBase):
             'trade_pair': self.DEFAULT_TRADE_PAIR,
             'position_uuid': self.DEFAULT_POSITION_UUID,
             'account_size': ValiConfig.DEFAULT_CAPITAL,
-            'unrealized_pnl': 0
+            'unrealized_pnl': 0,
+            'net_value': -100000.0,
+            'net_quantity': -100.0
         })
 
         self.add_order_to_position_and_save(position, o2)
@@ -986,8 +1032,8 @@ class TestPositions(TestBase):
             'net_leverage': 0.0,
             'initial_entry_price': 1000,
             'average_entry_price': 1000,
-            'cumulative_entry_value': -1000.0,
-            'realized_pnl': 0,
+            'cumulative_entry_value': -100000.0,
+            'realized_pnl': 50000.0,
             'close_ms': o2.processed_ms,
             'return_at_close': 1.4985,
             'current_return': 1.5,
@@ -996,7 +1042,9 @@ class TestPositions(TestBase):
             'trade_pair': self.DEFAULT_TRADE_PAIR,
             'position_uuid': self.DEFAULT_POSITION_UUID,
             'account_size': ValiConfig.DEFAULT_CAPITAL,
-            'unrealized_pnl': 0
+            'unrealized_pnl': 0,
+            'net_value': 0.0,
+            'net_quantity': 0.0
         })
         self.assertEqual(position.max_leverage_seen(), 1.0)
         self.assertEqual(position.get_cumulative_leverage(), 2.0)
@@ -1156,7 +1204,7 @@ class TestPositions(TestBase):
             'net_leverage': 1.0,
             'initial_entry_price': 1000,
             'average_entry_price': 1000,
-            'cumulative_entry_value': 1000.0,
+            'cumulative_entry_value': 100000.0,
             'realized_pnl': 0,
             'close_ms': None,
             'return_at_close': .999,
@@ -1166,7 +1214,9 @@ class TestPositions(TestBase):
             'trade_pair': self.DEFAULT_TRADE_PAIR,
             'position_uuid': self.DEFAULT_POSITION_UUID,
             'account_size': ValiConfig.DEFAULT_CAPITAL,
-            'unrealized_pnl': 0
+            'unrealized_pnl': 0,
+            'net_value': 100000.0,
+            'net_quantity': 100.0
         })
 
         self.add_order_to_position_and_save(position, o2)
@@ -1176,8 +1226,8 @@ class TestPositions(TestBase):
             'is_closed_position': False,
             'net_leverage': 1.1,
             'initial_entry_price': 1000,
-            'average_entry_price': 1090.9090909090908,
-            'cumulative_entry_value': 1200.0,
+            'average_entry_price': 1047.6190476190477,
+            'cumulative_entry_value': 110000.0,
             'realized_pnl': 0,
             'close_ms': None,
             'return_at_close': 1.9978,
@@ -1187,7 +1237,9 @@ class TestPositions(TestBase):
             'trade_pair': self.DEFAULT_TRADE_PAIR,
             'position_uuid': self.DEFAULT_POSITION_UUID,
             'account_size': ValiConfig.DEFAULT_CAPITAL,
-            'unrealized_pnl': 0
+            'unrealized_pnl': 100000.0,
+            'net_value': 210000.0,
+            'net_quantity': 105.0
         })
 
         self.add_order_to_position_and_save(position, o3)
@@ -1197,9 +1249,9 @@ class TestPositions(TestBase):
             'is_closed_position': True,
             'net_leverage': 0.0,
             'initial_entry_price': 1000,
-            'average_entry_price': 1090.9090909090908,
-            'cumulative_entry_value': 1200.0,
-            'realized_pnl': 0,
+            'average_entry_price': 1047.6190476190477,
+            'cumulative_entry_value': 110000.0,
+            'realized_pnl': 100_000,
             'close_ms': 5000,
             'return_at_close': 1.9978,
             'current_return': 2.0,
@@ -1208,7 +1260,9 @@ class TestPositions(TestBase):
             'trade_pair': self.DEFAULT_TRADE_PAIR,
             'position_uuid': self.DEFAULT_POSITION_UUID,
             'account_size': ValiConfig.DEFAULT_CAPITAL,
-            'unrealized_pnl': 0
+            'unrealized_pnl': 0,
+            'net_value': 0.0,
+            'net_quantity': 0.0
         })
         self.assertEqual(position.max_leverage_seen(), 1.1)
         self.assertEqual(position.get_cumulative_leverage(), 2.2)
@@ -1236,7 +1290,7 @@ class TestPositions(TestBase):
             'net_leverage': 1.0,
             'initial_entry_price': 1000,
             'average_entry_price': 1000,
-            'cumulative_entry_value': 1000.0,
+            'cumulative_entry_value': 100000.0,
             'realized_pnl': 0,
             'close_ms': None,
             'return_at_close': 0.999,
@@ -1246,7 +1300,9 @@ class TestPositions(TestBase):
             'trade_pair': self.DEFAULT_TRADE_PAIR,
             'position_uuid': self.DEFAULT_POSITION_UUID,
             'account_size': ValiConfig.DEFAULT_CAPITAL,
-            'unrealized_pnl': 0
+            'unrealized_pnl': 0,
+            'net_value': 100000.0,
+            'net_quantity': 100.0
         })
 
         self.add_order_to_position_and_save(position, o2)
@@ -1257,8 +1313,8 @@ class TestPositions(TestBase):
             'net_leverage': 0.0,
             'initial_entry_price': 1000,
             'average_entry_price': 1000,
-            'cumulative_entry_value': 1000.0,
-            'realized_pnl': 0,
+            'cumulative_entry_value': 100000.0,
+            'realized_pnl': -50000.0,
             'close_ms': o2.processed_ms,
             'return_at_close': 0.499,
             'current_return': 0.5,
@@ -1267,7 +1323,9 @@ class TestPositions(TestBase):
             'trade_pair': self.DEFAULT_TRADE_PAIR,
             'position_uuid': self.DEFAULT_POSITION_UUID,
             'account_size': ValiConfig.DEFAULT_CAPITAL,
-            'unrealized_pnl': 0
+            'unrealized_pnl': 0,
+            'net_value': 0.0,
+            'net_quantity': 0.0
         })
         self.assertEqual(position.max_leverage_seen(), 1.0)
         self.assertEqual(position.get_cumulative_leverage(), 2.0)
@@ -1303,7 +1361,7 @@ class TestPositions(TestBase):
             'net_leverage': 1.0,
             'initial_entry_price': 1000,
             'average_entry_price': 1000,
-            'cumulative_entry_value': 1000.0,
+            'cumulative_entry_value': 100000.0,
             'realized_pnl': 0,
             'close_ms': None,
             'return_at_close': 0.999,
@@ -1313,7 +1371,9 @@ class TestPositions(TestBase):
             'trade_pair': self.DEFAULT_TRADE_PAIR,
             'position_uuid': self.DEFAULT_POSITION_UUID,
             'account_size': ValiConfig.DEFAULT_CAPITAL,
-            'unrealized_pnl': 0
+            'unrealized_pnl': 0,
+            'net_value': 100000.0,
+            'net_quantity': 100.0
         })
 
         self.add_order_to_position_and_save(position, o2)
@@ -1323,8 +1383,8 @@ class TestPositions(TestBase):
             'is_closed_position': False,
             'net_leverage': 1.1,
             'initial_entry_price': 1000,
-            'average_entry_price': 954.5454545454545,
-            'cumulative_entry_value': 1050.0,
+            'average_entry_price': 916.6666666666666,
+            'cumulative_entry_value': 110000.0,
             'realized_pnl': 0,
             'close_ms': None,
             'return_at_close': 0.49945,
@@ -1334,7 +1394,9 @@ class TestPositions(TestBase):
             'trade_pair': self.DEFAULT_TRADE_PAIR,
             'position_uuid': self.DEFAULT_POSITION_UUID,
             'account_size': ValiConfig.DEFAULT_CAPITAL,
-            'unrealized_pnl': 0
+            'unrealized_pnl': -50000.0,
+            'net_value': 60000.0,
+            'net_quantity': 120.0
         })
 
         self.add_order_to_position_and_save(position, o3)
@@ -1344,18 +1406,20 @@ class TestPositions(TestBase):
             'is_closed_position': False,
             'net_leverage': 1.0,
             'initial_entry_price': 1000,
-            'average_entry_price': 950.0,
-            'cumulative_entry_value': 950.0,
-            'realized_pnl': 0,
+            'average_entry_price': 916.6666666666666,
+            'cumulative_entry_value': 110000.0,
+            'realized_pnl': 833.3333333333337,
             'close_ms': None,
-            'return_at_close': 1.04874,
-            'current_return': 1.05,
+            'return_at_close': 1.09868,
+            'current_return': 1.1,
             'miner_hotkey': self.DEFAULT_MINER_HOTKEY,
             'open_ms': o1.processed_ms,
             'trade_pair': self.DEFAULT_TRADE_PAIR,
             'position_uuid': self.DEFAULT_POSITION_UUID,
             'account_size': ValiConfig.DEFAULT_CAPITAL,
-            'unrealized_pnl': 0
+            'unrealized_pnl': 9166.666666666672,
+            'net_value': 110000.0,
+            'net_quantity': 110.0
         })
 
         self.assertEqual(position.max_leverage_seen(), 1.1)
@@ -1406,18 +1470,20 @@ class TestPositions(TestBase):
             'is_closed_position': True,
             'net_leverage': 0.0,
             'initial_entry_price': 1000,
-            'average_entry_price': 1776.7857142857142,
-            'cumulative_entry_value': 1990.0,
-            'realized_pnl': 0,
+            'average_entry_price': 1066.152466148805,
+            'cumulative_entry_value': 112000.0,
+            'realized_pnl': 4090025.641025641,
             'close_ms': 5000,
-            'return_at_close': 43.7609328,
-            'current_return': 43.81,
+            'return_at_close': 41.85332812307692,
+            'current_return': 41.90025641025641,
             'miner_hotkey': self.DEFAULT_MINER_HOTKEY,
             'open_ms': self.DEFAULT_OPEN_MS,
             'trade_pair': self.DEFAULT_TRADE_PAIR,
             'position_uuid': self.DEFAULT_POSITION_UUID,
             'account_size': ValiConfig.DEFAULT_CAPITAL,
-            'unrealized_pnl': 0
+            'unrealized_pnl': 0,
+            'net_value': 0.0,
+            'net_quantity': 0.0
         })
         self.assertEqual(position.max_leverage_seen(), 1.12)
         self.assertEqual(position.get_cumulative_leverage(), 2.24)
@@ -1467,18 +1533,20 @@ class TestPositions(TestBase):
             'is_closed_position': True,
             'net_leverage': 0.0,
             'initial_entry_price': 1000,
-            'average_entry_price': 986.6071428571428,
-            'cumulative_entry_value': -1105.0,
-            'realized_pnl': 0,
+            'average_entry_price': 984.2720139494332,
+            'cumulative_entry_value': -112000.0,
+            'realized_pnl': 43726.19047619047,
             'close_ms': 5000,
-            'return_at_close': 1.4313950399999997,
-            'current_return': 1.4329999999999998,
+            'return_at_close': 1.4356521714285715,
+            'current_return': 1.4372619047619049,
             'miner_hotkey': self.DEFAULT_MINER_HOTKEY,
             'open_ms': self.DEFAULT_OPEN_MS,
             'trade_pair': self.DEFAULT_TRADE_PAIR,
             'position_uuid': self.DEFAULT_POSITION_UUID,
             'account_size': ValiConfig.DEFAULT_CAPITAL,
-            'unrealized_pnl': 0
+            'unrealized_pnl': 0,
+            'net_value': 0.0,
+            'net_quantity': 0.0
         })
         self.assertEqual(position.max_leverage_seen(), 1.12)
         self.assertEqual(position.get_cumulative_leverage(), 2.24)
@@ -1504,7 +1572,7 @@ class TestPositions(TestBase):
                    order_uuid="3000")
         o4 = Order(order_type=OrderType.LONG,
                    leverage=2.1,
-                   price=700,
+                   price=750,
                    trade_pair=TradePair.BTCUSD,
                    processed_ms=4000,
                    order_uuid="4000")
@@ -1528,18 +1596,20 @@ class TestPositions(TestBase):
             'is_closed_position': True,
             'net_leverage': 0.0,
             'initial_entry_price': 1000,
-            'average_entry_price': 1700.0000000000005,
-            'cumulative_entry_value': -680.0,
-            'realized_pnl': 0,
+            'average_entry_price': 830.188679245283,
+            'cumulative_entry_value': -300000.0,
+            'realized_pnl': 31333.33333333332,
             'close_ms': 5000,
-            'return_at_close': 1.4364000000000001,
-            'current_return': 1.44,
+            'return_at_close': 1.31005,
+            'current_return': 1.3133333333333332,
             'miner_hotkey': self.DEFAULT_MINER_HOTKEY,
             'open_ms': self.DEFAULT_OPEN_MS,
             'trade_pair': self.DEFAULT_TRADE_PAIR,
             'position_uuid': self.DEFAULT_POSITION_UUID,
             'account_size': ValiConfig.DEFAULT_CAPITAL,
-            'unrealized_pnl': 0
+            'unrealized_pnl': 0,
+            'net_value': 0.0,
+            'net_quantity': 0.0
         })
         self.assertEqual(position.max_leverage_seen(), 2.5)
         # -1 +.5 - 2.0 + 2.1 = 1.44 (abs 5.6) , (flat from -.4) -> 6.0
@@ -1602,7 +1672,9 @@ class TestPositions(TestBase):
                    price=500,
                    trade_pair=trade_pair2,
                    processed_ms=weekday_time_ms,
-                   order_uuid="2000")
+                   order_uuid="2000",
+                   quote_usd_rate=1.0,
+                   usd_base_rate=1.0)
 
         self.add_order_to_position_and_save(position1, o1)
         self.validate_intermediate_position_state(position1, {
@@ -1612,7 +1684,7 @@ class TestPositions(TestBase):
             'net_leverage': -0.4,
             'initial_entry_price': 1000,
             'average_entry_price': 1000,
-            'cumulative_entry_value': -400.0,
+            'cumulative_entry_value': -40000.0,
             'realized_pnl': 0,
             'close_ms': None,
             'return_at_close': 1.0,
@@ -1622,10 +1694,13 @@ class TestPositions(TestBase):
             'trade_pair': trade_pair1,
             'position_uuid': self.DEFAULT_POSITION_UUID,
             'account_size': ValiConfig.DEFAULT_CAPITAL,
-            'unrealized_pnl': 0
+            'unrealized_pnl': 0,
+            'net_value': -40000.0,
+            'net_quantity': -40.0
         })
 
         self.add_order_to_position_and_save(position2, o2)
+        print(position2)
         self.validate_intermediate_position_state(position2, {
             'orders': [o2],
             'position_type': OrderType.SHORT,
@@ -1633,7 +1708,7 @@ class TestPositions(TestBase):
             'net_leverage': -0.4,
             'initial_entry_price': 500,
             'average_entry_price': 500,
-            'cumulative_entry_value': -200.0,
+            'cumulative_entry_value': -40000.0,
             'realized_pnl': 0,
             'close_ms': None,
             'return_at_close': 1.0,
@@ -1643,7 +1718,9 @@ class TestPositions(TestBase):
             'trade_pair': trade_pair2,
             'position_uuid': self.DEFAULT_POSITION_UUID + '_2',
             'account_size': ValiConfig.DEFAULT_CAPITAL,
-            'unrealized_pnl': 0
+            'unrealized_pnl': 0,
+            'net_value': -20000000.0,
+            'net_quantity': -0.4
         })
 
         self.assertEqual(position1.max_leverage_seen(), 0.4)
@@ -1686,9 +1763,11 @@ class TestPositions(TestBase):
             'position_type': OrderType.LONG,
             'is_closed_position': False,
             'net_leverage': o1.leverage,
+            'net_value': o1.leverage * ValiConfig.DEFAULT_CAPITAL,
+            'net_quantity': o1.leverage * ValiConfig.DEFAULT_CAPITAL / live_price,
             'initial_entry_price': live_price,
             'average_entry_price': position.average_entry_price,
-            'cumulative_entry_value': 69000.0,
+            'cumulative_entry_value': 100000.0,
             'realized_pnl': 0,
             'close_ms': None,
             'return_at_close': position.return_at_close,
@@ -1717,9 +1796,11 @@ class TestPositions(TestBase):
             'position_type': OrderType.LONG,
             'is_closed_position': False,
             'net_leverage': o1.leverage - ValiConfig.ORDER_MIN_LEVERAGE,
+            'net_value': (o1.leverage - ValiConfig.ORDER_MIN_LEVERAGE) * ValiConfig.DEFAULT_CAPITAL,
+            'net_quantity': (o1.leverage - ValiConfig.ORDER_MIN_LEVERAGE) * ValiConfig.DEFAULT_CAPITAL / live_price,
             'initial_entry_price': live_price,
             'average_entry_price': position.average_entry_price,
-            'cumulative_entry_value': 68931.0,
+            'cumulative_entry_value': 100000.0,
             'realized_pnl': 0,
             'close_ms': None,
             'return_at_close': position.return_at_close,
@@ -1768,9 +1849,11 @@ class TestPositions(TestBase):
             'position_type': OrderType.LONG,
             'is_closed_position': False,
             'net_leverage': o1.leverage + o3.leverage,
+            'net_value': (o1.leverage + o3.leverage) * ValiConfig.DEFAULT_CAPITAL,
+            'net_quantity': (o1.leverage + o3.leverage) * ValiConfig.DEFAULT_CAPITAL / live_price,
             'initial_entry_price': live_price,
             'average_entry_price': position.average_entry_price,
-            'cumulative_entry_value': 207.0,
+            'cumulative_entry_value': 300.0,
             'realized_pnl': 0,
             'close_ms': None,
             'return_at_close': position.return_at_close,
@@ -1819,9 +1902,11 @@ class TestPositions(TestBase):
             'position_type': OrderType.SHORT,
             'is_closed_position': False,
             'net_leverage': o1.leverage + o3.leverage,
+            'net_value': (o1.leverage + o3.leverage) * ValiConfig.DEFAULT_CAPITAL,
+            'net_quantity': (o1.leverage + o3.leverage) * ValiConfig.DEFAULT_CAPITAL / live_price,
             'initial_entry_price': live_price,
             'average_entry_price': position.average_entry_price,
-            'cumulative_entry_value': -207.0,
+            'cumulative_entry_value': -300.0,
             'realized_pnl': 0,
             'close_ms': None,
             'return_at_close': position.return_at_close,
@@ -1864,9 +1949,11 @@ class TestPositions(TestBase):
             'position_type': OrderType.SHORT,
             'is_closed_position': False,
             'net_leverage': o1.leverage,
+            'net_value': o1.leverage * ValiConfig.DEFAULT_CAPITAL,
+            'net_quantity': o1.leverage * ValiConfig.DEFAULT_CAPITAL / live_price,
             'initial_entry_price': live_price,
             'average_entry_price': position.average_entry_price,
-            'cumulative_entry_value': -69000.0,
+            'cumulative_entry_value': -100000.0,
             'realized_pnl': 0,
             'close_ms': None,
             'return_at_close': position.return_at_close,
@@ -1895,9 +1982,11 @@ class TestPositions(TestBase):
             'position_type': OrderType.SHORT,
             'is_closed_position': False,
             'net_leverage': -abs(o1.leverage) + ValiConfig.ORDER_MIN_LEVERAGE,
+            'net_value': (-abs(o1.leverage) + ValiConfig.ORDER_MIN_LEVERAGE) * ValiConfig.DEFAULT_CAPITAL,
+            'net_quantity': (-abs(o1.leverage) + ValiConfig.ORDER_MIN_LEVERAGE) * ValiConfig.DEFAULT_CAPITAL / live_price,
             'initial_entry_price': live_price,
             'average_entry_price': position.average_entry_price,
-            'cumulative_entry_value': -68931.0,
+            'cumulative_entry_value': -100000.0,
             'realized_pnl': 0,
             'close_ms': None,
             'return_at_close': position.return_at_close,
@@ -1932,9 +2021,14 @@ class TestPositions(TestBase):
 
         o2_clamped = deepcopy(o2)
         o2_clamped.leverage = 2
+        o2_clamped.value = o2_clamped.leverage * ValiConfig.DEFAULT_CAPITAL
+        o2_clamped.quantity = o2_clamped.value / live_price
 
         for order in [o1, o2]:
             self.add_order_to_position_and_save(position, order)
+
+        net_value = max_allowed_leverage * ValiConfig.DEFAULT_CAPITAL
+        net_quantity = net_value / live_price
 
         self.validate_intermediate_position_state(position, {
             'orders': [o1, o2_clamped],
@@ -1943,7 +2037,7 @@ class TestPositions(TestBase):
             'net_leverage': max_allowed_leverage,
             'initial_entry_price': live_price,
             'average_entry_price': position.average_entry_price,
-            'cumulative_entry_value': 1380000.0,
+            'cumulative_entry_value': 2000000.0,
             'realized_pnl': 0,
             'close_ms': None,
             'return_at_close': position.return_at_close,
@@ -1953,7 +2047,9 @@ class TestPositions(TestBase):
             'trade_pair': self.DEFAULT_TRADE_PAIR,
             'position_uuid': self.DEFAULT_POSITION_UUID,
             'account_size': ValiConfig.DEFAULT_CAPITAL,
-            'unrealized_pnl': 0
+            'unrealized_pnl': 0,
+            'net_value': net_value,
+            'net_quantity': net_quantity
         })
 
         self.assertEqual(position.max_leverage_seen(), 20.0)
@@ -1977,6 +2073,8 @@ class TestPositions(TestBase):
 
         o2_clamped = deepcopy(o2)
         o2_clamped.leverage = TradePair.BTCUSD.max_leverage / 2
+        o2_clamped.value = o2_clamped.leverage * ValiConfig.DEFAULT_CAPITAL
+        o2_clamped.quantity = o2_clamped.value / live_price
 
         for order in [o1, o2]:
             self.add_order_to_position_and_save(position, order)
@@ -1986,9 +2084,11 @@ class TestPositions(TestBase):
             'position_type': OrderType.LONG,
             'is_closed_position': False,
             'net_leverage': TradePair.BTCUSD.max_leverage,
+            'net_value': TradePair.BTCUSD.max_leverage * ValiConfig.DEFAULT_CAPITAL,
+            'net_quantity': TradePair.BTCUSD.max_leverage * ValiConfig.DEFAULT_CAPITAL / live_price,
             'initial_entry_price': live_price,
             'average_entry_price': position.average_entry_price,
-            'cumulative_entry_value': 34500.0,
+            'cumulative_entry_value': 50000.0,
             'realized_pnl': 0,
             'close_ms': None,
             'return_at_close': position.return_at_close,
@@ -2027,11 +2127,16 @@ class TestPositions(TestBase):
         with self.assertRaises(ValueError):
             self.add_order_to_position_and_save(position, o2)
 
+        net_value = max_allowed_leverage * ValiConfig.DEFAULT_CAPITAL
+        net_quantity = net_value / live_price
+
         self.validate_intermediate_position_state(position, {
             'orders': [o1],
             'position_type': OrderType.LONG,
             'is_closed_position': False,
             'net_leverage': max_allowed_leverage,
+            'net_value': net_value,
+            'net_quantity': net_quantity,
             'initial_entry_price': live_price,
             'average_entry_price': position.average_entry_price,
             'cumulative_entry_value': 2000000.0,
@@ -2070,11 +2175,16 @@ class TestPositions(TestBase):
         with self.assertRaises(ValueError):
             self.add_order_to_position_and_save(position, o2)
 
+        net_value = TradePair.BTCUSD.max_leverage * ValiConfig.DEFAULT_CAPITAL
+        net_quantity = net_value / live_price
+
         self.validate_intermediate_position_state(position, {
             'orders': [o1],
             'position_type': OrderType.LONG,
             'is_closed_position': False,
             'net_leverage': TradePair.BTCUSD.max_leverage,
+            'net_value': net_value,
+            'net_quantity': net_quantity,
             'initial_entry_price': live_price,
             'average_entry_price': position.average_entry_price,
             'cumulative_entry_value': 50000.0,
@@ -2113,18 +2223,26 @@ class TestPositions(TestBase):
 
         o2_clamped = deepcopy(o2)
         o2_clamped.leverage = -1.0 * (max_allowed_leverage - abs(o1.leverage))
+        o2_clamped.value = o2_clamped.leverage * ValiConfig.DEFAULT_CAPITAL
+        o2_clamped.quantity = o2_clamped.value / live_price
 
         for order in [o1, o2]:
             self.add_order_to_position_and_save(position, order)
+
+        net_leverage = -1.0 * max_allowed_leverage
+        net_value = net_leverage * ValiConfig.DEFAULT_CAPITAL
+        net_quantity = net_value / live_price
 
         self.validate_intermediate_position_state(position, {
             'orders': [o1, o2_clamped],
             'position_type': OrderType.SHORT,
             'is_closed_position': False,
             'net_leverage': -1.0 * max_allowed_leverage,
+            'net_value': net_value,
+            'net_quantity': net_quantity,
             'initial_entry_price': live_price,
             'average_entry_price': position.average_entry_price,
-            'cumulative_entry_value': -88880.0,
+            'cumulative_entry_value': -2000000.0,
             'realized_pnl': 0,
             'close_ms': None,
             'return_at_close': position.return_at_close,
@@ -2157,18 +2275,25 @@ class TestPositions(TestBase):
 
         o2_clamped = deepcopy(o2)
         o2_clamped.leverage = -1.0 * (TradePair.BTCUSD.max_leverage - abs(o1.leverage))
+        o2_clamped.value = o2_clamped.leverage * ValiConfig.DEFAULT_CAPITAL
+        o2_clamped.quantity = o2_clamped.value / live_price
 
         for order in [o1, o2]:
             self.add_order_to_position_and_save(position, order)
+
+        net_value = -TradePair.BTCUSD.max_leverage * ValiConfig.DEFAULT_CAPITAL
+        net_quantity = net_value / live_price
 
         self.validate_intermediate_position_state(position, {
             'orders': [o1, o2_clamped],
             'position_type': OrderType.SHORT,
             'is_closed_position': False,
             'net_leverage': -TradePair.BTCUSD.max_leverage,
+            'net_value': net_value,
+            'net_quantity': net_quantity,
             'initial_entry_price': live_price,
             'average_entry_price': position.average_entry_price,
-            'cumulative_entry_value': -2222.0,
+            'cumulative_entry_value': -50000.0,
             'realized_pnl': 0,
             'close_ms': None,
             'return_at_close': position.return_at_close,
@@ -2230,14 +2355,19 @@ class TestPositions(TestBase):
         with self.assertRaises(ValueError):
             self.add_order_to_position_and_save(position, o2)
 
+        net_value = -max_allowed_leverage * ValiConfig.DEFAULT_CAPITAL
+        net_quantity = net_value / live_price
+
         self.validate_intermediate_position_state(position, {
             'orders': [o1],
             'position_type': OrderType.SHORT,
             'is_closed_position': False,
             'net_leverage': -max_allowed_leverage,
+            'net_value': net_value,
+            'net_quantity': net_quantity,
             'initial_entry_price': live_price,
             'average_entry_price': position.average_entry_price,
-            'cumulative_entry_value': -19980.0,
+            'cumulative_entry_value': -2000000.0,
             'realized_pnl': 0,
             'close_ms': None,
             'return_at_close': position.return_at_close,
@@ -2273,14 +2403,19 @@ class TestPositions(TestBase):
         with self.assertRaises(ValueError):
             self.add_order_to_position_and_save(position, o2)
 
+        net_value = -TradePair.BTCUSD.max_leverage * ValiConfig.DEFAULT_CAPITAL
+        net_quantity = net_value / live_price
+
         self.validate_intermediate_position_state(position, {
             'orders': [o1],
             'position_type': OrderType.SHORT,
             'is_closed_position': False,
             'net_leverage': -TradePair.BTCUSD.max_leverage,
+            'net_value': net_value,
+            'net_quantity': net_quantity,
             'initial_entry_price': live_price,
             'average_entry_price': position.average_entry_price,
-            'cumulative_entry_value': -499.5,
+            'cumulative_entry_value': -50000.0,
             'realized_pnl': 0,
             'close_ms': None,
             'return_at_close': position.return_at_close,
@@ -2307,7 +2442,9 @@ class TestPositions(TestBase):
                    price=100,
                    trade_pair=TradePair.AUDCAD,
                    processed_ms=leverage_utils.PORTFOLIO_LEVERAGE_BOUNDS_START_TIME_MS + 1000,
-                   order_uuid="1000")
+                   order_uuid="1000",
+                   quote_usd_rate=1.0,
+                   usd_base_rate=1.0)
         self.add_order_to_position_and_save(position, o1)
         self.position_manager.save_miner_position(position)
 
@@ -2348,7 +2485,9 @@ class TestPositions(TestBase):
                    price=100,
                    trade_pair=TradePair.AUDCAD,
                    processed_ms=leverage_utils.PORTFOLIO_LEVERAGE_BOUNDS_START_TIME_MS + 1000,
-                   order_uuid="1000")
+                   order_uuid="1000",
+                   quote_usd_rate=1.0,
+                   usd_base_rate=1.0)
         self.add_order_to_position_and_save(position, o1)
         self.position_manager.save_miner_position(position)
 
@@ -2363,6 +2502,8 @@ class TestPositions(TestBase):
                    order_uuid="1000")
         self.add_order_to_position_and_save(position2, o2)
         self.position_manager.save_miner_position(position2)
+
+        print(self.position_manager.calculate_net_portfolio_leverage(self.DEFAULT_MINER_HOTKEY))
 
         self.assertEqual(self.position_manager.calculate_net_portfolio_leverage(self.DEFAULT_MINER_HOTKEY), 9.0)
 
@@ -2393,7 +2534,9 @@ class TestPositions(TestBase):
                    price=100,
                    trade_pair=TradePair.AUDCAD,
                    processed_ms=leverage_utils.PORTFOLIO_LEVERAGE_BOUNDS_START_TIME_MS + 1000,
-                   order_uuid="1000")
+                   order_uuid="1000",
+                   quote_usd_rate=1.0,
+                   usd_base_rate=1.0)
         self.add_order_to_position_and_save(position, o1)
         self.position_manager.save_miner_position(position)
 
@@ -2418,7 +2561,9 @@ class TestPositions(TestBase):
                    price=100,
                    trade_pair=TradePair.AUDJPY,
                    processed_ms=leverage_utils.PORTFOLIO_LEVERAGE_BOUNDS_START_TIME_MS + 2000,
-                   order_uuid="2000")
+                   order_uuid="2000",
+                   quote_usd_rate=1.0,
+                   usd_base_rate=1.0)
 
         with self.assertLogs('root', level='DEBUG') as logger:
             self.add_order_to_position_and_save(position3, o3)
@@ -2437,7 +2582,9 @@ class TestPositions(TestBase):
                    price=100,
                    trade_pair=TradePair.AUDCAD,
                    processed_ms=leverage_utils.PORTFOLIO_LEVERAGE_BOUNDS_START_TIME_MS + 1000,
-                   order_uuid="1000")
+                   order_uuid="1000",
+                   quote_usd_rate=1.0,
+                   usd_base_rate=1.0)
         self.add_order_to_position_and_save(position, o1)
 
         position2 = deepcopy(self.default_position)
@@ -2491,7 +2638,9 @@ class TestPositions(TestBase):
                    price=100,
                    trade_pair=TradePair.AUDCAD,
                    processed_ms=leverage_utils.LEVERAGE_BOUNDS_V2_START_TIME_MS - 1000,
-                   order_uuid="1000")
+                   order_uuid="1000",
+                   quote_usd_rate=1.0,
+                   usd_base_rate=1.0)
         self.add_order_to_position_and_save(position2, o2)
 
         o3 = Order(order_type=OrderType.SHORT,
@@ -2499,7 +2648,9 @@ class TestPositions(TestBase):
                    price=100,
                    trade_pair=TradePair.AUDCAD,
                    processed_ms=leverage_utils.PORTFOLIO_LEVERAGE_BOUNDS_START_TIME_MS + 1000,
-                   order_uuid="1000")
+                   order_uuid="1000",
+                   quote_usd_rate=1.0,
+                   usd_base_rate=1.0)
         with self.assertRaises(ValueError):
             self.add_order_to_position_and_save(position2, o3)
 

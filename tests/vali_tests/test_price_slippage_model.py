@@ -61,7 +61,7 @@ class TestPriceSlippageModel(TestBase):
 
         self.open_position.set_returns(110, self.live_price_fetcher)  # say the current price has grown from 100 -> 110
         # the current return only applies slippage to the entry price, for unrealized PnL
-        assert self.open_position.current_return == 1.0476190476190477  # (110-105) / 105
+        assert self.open_position.current_return == 1.05  # 5000 / 100_000 or (110-105) / 100
 
     def test_closed_position_returns_with_slippage(self):
         """
@@ -100,7 +100,7 @@ class TestPriceSlippageModel(TestBase):
         assert self.closed_position.initial_entry_price == 101  # 100 * (1 + 0.01) = 101
         assert self.closed_position.average_entry_price == 101
         # the current return has a slippage on both the entry and exit prices when calculating a realized PnL
-        assert self.closed_position.current_return == 1.0782178217821783  # (108.9-101) / 101
+        assert self.closed_position.current_return == 1.079  # 7900 / 100_000 or (108.9-101) / 100
 
     # def test_equities_slippage(self):
     #     """

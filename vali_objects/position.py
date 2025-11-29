@@ -365,6 +365,10 @@ class Position(BaseModel):
             raise ValueError(
                 f"Order trade pair [{order.trade_pair}] does not match position trade pair [{self.trade_pair}]")
 
+        if order.order_type != OrderType.FLAT and abs(order.leverage) > ValiConfig.ORDER_MAX_LEVERAGE:
+            raise ValueError(
+                f'Order leverage [{order.leverage}] is above ORDER_MAX_LEVERAGE {ValiConfig.ORDER_MIN_LEVERAGE}, cannot increase size of position. Ignoring order.')
+
         if self._clamp_and_validate_leverage(order, abs(net_portfolio_leverage)):
             # This order's leverage got clamped to zero.
             # Skip it since we don't want to consider this a FLAT position and we don't want to allow bad actors
@@ -377,9 +381,6 @@ class Position(BaseModel):
                 else:
                     raise ValueError(
                         f"Miner {self.miner_hotkey} attempted to exceed leverage bounds [{self.trade_pair.min_leverage}, {self.trade_pair.max_leverage}] for trade pair {self.trade_pair.trade_pair_id}. Ignoring order.")
-            elif abs(order.leverage) < ValiConfig.ORDER_MIN_LEVERAGE:
-                raise ValueError(
-                    f'Order leverage [{order.leverage}] is below ORDER_MIN_LEVERAGE {ValiConfig.ORDER_MIN_LEVERAGE}, cannot increase size of position. Ignoring order.')
             else:
                 logging.warning(f"Miner {self.miner_hotkey} {self.trade_pair.trade_pair_id} order leverage clamped to {order.leverage}")
                 # Set order quantity and value base on clamped leverage
@@ -389,6 +390,10 @@ class Position(BaseModel):
                 else:
                     order.quantity = (order.value * order.usd_base_rate) / order.trade_pair.lot_size
                 # order.slippage = PriceSlippageModel.calculate_slippage(order.bid, order.ask, order)   # recalculate slippage based on new order size
+
+        if order.order_type != OrderType.FLAT and abs(order.leverage) < ValiConfig.ORDER_MIN_LEVERAGE:
+            raise ValueError(
+                f'Order leverage [{order.leverage}] is below ORDER_MIN_LEVERAGE {ValiConfig.ORDER_MIN_LEVERAGE}, cannot increase size of position. Ignoring order.')
 
         self.orders.append(order)
         self._update_position(live_price_fetcher)
@@ -422,7 +427,7 @@ class Position(BaseModel):
         if self.cumulative_entry_value == 0:
             gain = 0
         else:
-            gain = (self.realized_pnl + self.unrealized_pnl) / self.account_size    # self.cumulative_entry_value
+            gain = (self.realized_pnl + self.unrealized_pnl) / self.account_size
 
         # Check if liquidated
         if gain <= -1.0:
@@ -633,7 +638,7 @@ class Position(BaseModel):
                         self.average_entry_price * self.net_quantity
                         + entry_price * delta_quantity
                     ) / new_net_quantity
-                entry_value = abs(order.value)
+                entry_value = order.value
             else:
                 # order is reducing the size of a position, so there is no entry cost.
                 entry_value = 0
