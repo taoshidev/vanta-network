@@ -458,6 +458,7 @@ class ValidatorSyncBase():
         existing_orders = ep.orders
         candidate_orders = cp.orders
         min_timestamp_of_order_change = float('inf')
+        metadata_changed = False  # Track if any order metadata changes
         # Positions are synonymous with an order
         assert existing_orders, existing_orders
         assert candidate_orders, candidate_orders
@@ -478,8 +479,11 @@ class ValidatorSyncBase():
                     continue
                 if e.order_uuid == c.order_uuid:
                     # temp: Update USD conversion rates from candidate data. Can be removed
-                    e.quote_usd_rate = c.quote_usd_rate
-                    e.usd_base_rate = c.usd_base_rate
+                    # Check if metadata actually changed before updating
+                    if (e.quote_usd_rate != c.quote_usd_rate or e.usd_base_rate != c.usd_base_rate):
+                        metadata_changed = True
+                        e.quote_usd_rate = c.quote_usd_rate
+                        e.usd_base_rate = c.usd_base_rate
                     ret.append(e)
                     matched_candidates_by_uuid |= {c.order_uuid}
                     matched_existing_by_uuid |= {e.order_uuid}
@@ -496,8 +500,11 @@ class ValidatorSyncBase():
                     continue
                 if self.orders_aligned(e, c):
                     # temp: Update USD conversion rates from candidate data. Can be removed
-                    e.quote_usd_rate = c.quote_usd_rate
-                    e.usd_base_rate = c.usd_base_rate
+                    # Check if metadata actually changed before updating
+                    if (e.quote_usd_rate != c.quote_usd_rate or e.usd_base_rate != c.usd_base_rate):
+                        metadata_changed = True
+                        e.quote_usd_rate = c.quote_usd_rate
+                        e.usd_base_rate = c.usd_base_rate
                     matched_candidates_by_uuid |= {c.order_uuid}
                     matched_existing_by_uuid |= {e.order_uuid}
                     ret.append(e)
@@ -574,7 +581,7 @@ class ValidatorSyncBase():
 
         ans = ret
         ans.sort(key=lambda x: x.processed_ms)
-        return ans, min_timestamp_of_order_change
+        return ans, min_timestamp_of_order_change, metadata_changed
 
     def resolve_positions(self, candidate_positions, existing_positions, trade_pair, hk, hard_snap_cutoff_ms):
         min_timestamp_of_change = float('inf')  # If this stays as float('inf), no changes happened
@@ -600,9 +607,19 @@ class ValidatorSyncBase():
                     continue
                 if e.position_uuid == c.position_uuid:
                     # temp: sync account_size from candidate to existing position
-                    if hasattr(c, 'account_size'):
-                        e.account_size = c.account_size
-                    e.orders, min_timestamp_of_order_change = self.sync_orders(e, c, hk, trade_pair, hard_snap_cutoff_ms)
+                    # Check if position metadata will change
+                    position_metadata_changed = False
+                    if hasattr(c, 'account_size') and hasattr(e, 'account_size'):
+                        if e.account_size != c.account_size:
+                            position_metadata_changed = True
+                            e.account_size = c.account_size
+
+                    e.orders, min_timestamp_of_order_change, order_metadata_changed = self.sync_orders(e, c, hk, trade_pair, hard_snap_cutoff_ms)
+
+                    # If metadata changed but no order insertions/deletions, trigger update
+                    if (position_metadata_changed or order_metadata_changed) and min_timestamp_of_order_change == float('inf'):
+                        min_timestamp_of_order_change = e.open_ms
+
                     if min_timestamp_of_order_change != float('inf'):
                         e.rebuild_position_with_updated_orders(self.live_price_fetcher)
                         min_timestamp_of_change = min(min_timestamp_of_change, min_timestamp_of_order_change)
@@ -630,9 +647,19 @@ class ValidatorSyncBase():
                     continue
                 if self.positions_aligned(e, c):
                     # temp: sync account_size from candidate to existing position
-                    if hasattr(c, 'account_size'):
-                        e.account_size = c.account_size
-                    e.orders, min_timestamp_of_order_change = self.sync_orders(e, c, hk, trade_pair, hard_snap_cutoff_ms)
+                    # Check if position metadata will change
+                    position_metadata_changed = False
+                    if hasattr(c, 'account_size') and hasattr(e, 'account_size'):
+                        if e.account_size != c.account_size:
+                            position_metadata_changed = True
+                            e.account_size = c.account_size
+
+                    e.orders, min_timestamp_of_order_change, order_metadata_changed = self.sync_orders(e, c, hk, trade_pair, hard_snap_cutoff_ms)
+
+                    # If metadata changed but no order insertions/deletions, trigger update
+                    if (position_metadata_changed or order_metadata_changed) and min_timestamp_of_order_change == float('inf'):
+                        min_timestamp_of_order_change = e.open_ms
+
                     if min_timestamp_of_order_change != float('inf'):
                         e.rebuild_position_with_updated_orders(self.live_price_fetcher)
                         min_timestamp_of_change = min(min_timestamp_of_change, min_timestamp_of_order_change)
