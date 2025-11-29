@@ -1511,7 +1511,7 @@ class TestPositions(TestBase):
         # Test within time window
         with patch('vali_objects.utils.auto_sync.TimeUtil.generate_start_timestamp') as mock_time:
             mock_dt = Mock()
-            mock_dt.hour = 6
+            mock_dt.hour = 21
             mock_dt.minute = 15  # Between 8 and 20
             mock_time.return_value = mock_dt
             
