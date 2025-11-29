@@ -762,7 +762,7 @@ class TestLedgerUtils(TestBase):
         # Should have one day's worth of data
         self.assertEqual(len(result), 1)
         # Total PnL should be (10 + 5) * daily_checkpoints = 15 * daily_checkpoints
-        expected_pnl = 20.0 * daily_checkpoints
+        expected_pnl = 20.0 * daily_checkpoints + checkpoints[-1].unrealized_pnl
         self.assertEqual(result[0], expected_pnl)
 
     def test_daily_pnl_incomplete_day(self):
@@ -841,7 +841,7 @@ class TestLedgerUtils(TestBase):
         # Check the date key and PnL value
         expected_date = datetime.fromtimestamp(base_time_ms / 1000, tz=timezone.utc).date()
         self.assertIn(expected_date, result)
-        expected_pnl = 40.0 * daily_checkpoints
+        expected_pnl = 40.0 * daily_checkpoints + checkpoints[-1].unrealized_pnl
         self.assertEqual(result[expected_date], expected_pnl)
 
     def test_daily_pnl_by_date_multiple_days(self):

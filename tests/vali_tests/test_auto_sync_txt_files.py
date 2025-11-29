@@ -20,8 +20,8 @@ from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.validator_sync_base import AUTO_SYNC_ORDER_LAG_MS
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.vali_dataclasses.order import Order
-from vali_objects.utils.live_price_fetcher import LivePriceFetcher
 from vali_objects.utils.vali_utils import ValiUtils
+from tests.shared_objects.mock_classes import MockLivePriceFetcher
 
 
 class TestAutoSyncTxtFiles(TestBase):
@@ -64,9 +64,9 @@ class TestAutoSyncTxtFiles(TestBase):
         # Set up mock metagraph
         self.mock_metagraph = MockMetagraph(list(self.hotkeys))
         
-        # Set up live price fetcher
+        # Set up live price fetcher (use mock to avoid API calls during tests)
         secrets = ValiUtils.get_secrets(running_unit_tests=True)
-        self.live_price_fetcher = LivePriceFetcher(secrets=secrets, disable_ws=True)
+        self.live_price_fetcher = MockLivePriceFetcher(secrets=secrets, disable_ws=True)
         
         # Initialize managers
         self.elimination_manager = EliminationManager(
@@ -497,6 +497,8 @@ class TestAutoSyncTxtFiles(TestBase):
             order_type=OrderType.LONG,
             leverage=0.025,
             price=65000.0,
+            quote_usd_rate=1,
+            usd_base_rate=1/65000.0,
             processed_ms=current_time,
             trade_pair=random_trade_pair
         ))
@@ -508,6 +510,8 @@ class TestAutoSyncTxtFiles(TestBase):
             order_type=OrderType.FLAT,
             leverage=-0.025,  # Close out all leverage
             price=0,
+            quote_usd_rate=0,
+            usd_base_rate=0,
             processed_ms=current_time,
             trade_pair=random_trade_pair
         ))
@@ -524,6 +528,7 @@ class TestAutoSyncTxtFiles(TestBase):
             is_closed_position=True,
             account_size=self.DEFAULT_ACCOUNT_SIZE
         )
+        bogus_position.rebuild_position_with_updated_orders(self.live_price_fetcher)
         
         # Add to modified positions
         modified_positions.append(bogus_position)

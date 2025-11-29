@@ -477,6 +477,9 @@ class ValidatorSyncBase():
                 if e.order_uuid in matched_existing_by_uuid:
                     continue
                 if e.order_uuid == c.order_uuid:
+                    # temp: Update USD conversion rates from candidate data. Can be removed
+                    e.quote_usd_rate = c.quote_usd_rate
+                    e.usd_base_rate = c.usd_base_rate
                     ret.append(e)
                     matched_candidates_by_uuid |= {c.order_uuid}
                     matched_existing_by_uuid |= {e.order_uuid}
@@ -492,6 +495,9 @@ class ValidatorSyncBase():
                 if e.order_uuid in matched_existing_by_uuid:
                     continue
                 if self.orders_aligned(e, c):
+                    # temp: Update USD conversion rates from candidate data. Can be removed
+                    e.quote_usd_rate = c.quote_usd_rate
+                    e.usd_base_rate = c.usd_base_rate
                     matched_candidates_by_uuid |= {c.order_uuid}
                     matched_existing_by_uuid |= {e.order_uuid}
                     ret.append(e)
