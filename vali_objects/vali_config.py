@@ -93,6 +93,9 @@ def _TradePair_Lookup() -> dict[str, TradePairCategory]:
     return mapping
 
 class InterpolatedValueFromDate():
+    """
+    Dynamic value based on dates. Used for setting configs in the future.
+    """
     def __init__(self, start_date: str, *, low: int=None, high:int=None, interval: int, increment: int, target: int):
         self.start_date = datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
         self.low = low
@@ -278,7 +281,6 @@ class ValiConfig:
 
     PROBATION_MAXIMUM_DAYS = 60
     PROBATION_MAXIMUM_MS = PROBATION_MAXIMUM_DAYS * DAILY_MS
-    ASSET_SPLIT_GRACE_DATE = "2025-10-02"
 
     PROMOTION_THRESHOLD_RANK = 25 # Number of MAINCOMP miners per asset class
 
@@ -424,6 +426,7 @@ class TradePair(Enum):
     USDMXN = ["USDMXN", "USD/MXN", 0.00007, ValiConfig.FOREX_MIN_LEVERAGE, ValiConfig.FOREX_MAX_LEVERAGE,
               TradePairCategory.FOREX, ForexSubcategory.G5]
 
+
     # "Commodities" (Bundle with Forex for now) (temporariliy paused for trading)
     XAUUSD = ["XAUUSD", "XAU/USD", 0.00007, ValiConfig.FOREX_MIN_LEVERAGE, ValiConfig.FOREX_MAX_LEVERAGE, TradePairCategory.FOREX]
     XAGUSD = ["XAGUSD", "XAG/USD", 0.00007, ValiConfig.FOREX_MIN_LEVERAGE, ValiConfig.FOREX_MAX_LEVERAGE, TradePairCategory.FOREX]
@@ -504,12 +507,31 @@ class TradePair(Enum):
         return self.trade_pair_id in ValiConfig.BLOCKED_TRADE_PAIR_IDS
 
     @property
+    def lot_size(self):
+        trade_pair_lot_size = {TradePairCategory.CRYPTO: 1,
+                               TradePairCategory.FOREX: 100_000,
+                               TradePairCategory.INDICES: 1,
+                               TradePairCategory.EQUITIES: 1}
+        return trade_pair_lot_size[self.trade_pair_category]
+
+    @property
     def leverage_multiplier(self) -> int:
         trade_pair_leverage_multiplier = {TradePairCategory.CRYPTO: 10,
                                           TradePairCategory.FOREX: 1,
                                           TradePairCategory.INDICES: 1,
                                           TradePairCategory.EQUITIES: 2}
         return trade_pair_leverage_multiplier[self.trade_pair_category]
+
+    @property
+    def base(self):
+        return self.trade_pair.split("/")[0]
+
+    @property
+    def quote(self):
+        if self.is_forex:
+            return self.trade_pair.split("/")[1]
+        else:
+            return "USD"
 
     @classmethod
     def categories(cls):

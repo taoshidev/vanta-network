@@ -1,5 +1,6 @@
 import json
 import logging
+import traceback
 from copy import deepcopy
 from typing import Optional, List
 from pydantic import model_validator, BaseModel, Field
@@ -18,7 +19,7 @@ FOREX_CARRY_FEE_PER_INTERVAL = math.exp(math.log(1 - .03) / 365.0)  # 3% per yea
 INDICES_CARRY_FEE_PER_INTERVAL = math.exp(math.log(1 - .0525) / 365.0)  # 5.25% per year for 1x leverage. Each interval is 24 hrs
 FEE_V6_TIME_MS = 1720843707000  # V6 PR merged
 SLIPPAGE_V1_TIME_MS = 1739937600000  # Slippage PR merged
-ALWAYS_USE_SLIPPAGE = None  # set as either True or False to control whether slippage is always or never applied
+ALWAYS_USE_SLIPPAGE = None  # set as either True or False to control whether slippage is always or never applied. if set as None, slippage will be applied based on SLIPPAGE_V1_TIME_MS time gate
 
 class Position(BaseModel):
     """Represents a position in a trading system.
@@ -45,14 +46,17 @@ class Position(BaseModel):
     open_ms: int
     trade_pair: TradePair
     orders: List[Order] = Field(default_factory=list)
-    current_return: float = 1.0  # excludes fees
+    current_return: float = 1.0             # Excludes fees
     close_ms: Optional[int] = None
     net_leverage: float = 0.0
-    return_at_close: float = 1.0  # includes all fees
-    average_entry_price: float = 0.0
-    cumulative_entry_value: float = 0.0
-    account_size: float = 0.0
-    realized_pnl: float = 0.0
+    net_value: float = 0.0                  # USD
+    net_quantity: float = 0.0               # Base currency lots
+    return_at_close: float = 1.0            # Includes all fees
+    average_entry_price: float = 0.0        # Quote currency
+    cumulative_entry_value: float = 0.0     # USD
+    account_size: float = 0.0               # USD
+    realized_pnl: float = 0.0               # USD
+    unrealized_pnl: float = 0.0             # USD
     position_type: Optional[OrderType] = None
     is_closed_position: bool = False
 
@@ -106,6 +110,10 @@ class Position(BaseModel):
 
 
     def get_spread_fee(self, timestamp_ms: int) -> float:
+        """
+        transaction fee
+        only applied to crypto
+        """
         if not self.trade_pair.is_crypto:
             return 1.0
         ans = 1.0 - (self.get_cumulative_leverage() * .001)
@@ -202,7 +210,7 @@ class Position(BaseModel):
     def __hash__(self):
         # Include specified fields in the hash, assuming trade_pair is accessible and immutable
         return hash((self.miner_hotkey, self.position_uuid, self.open_ms, self.current_return,
-                     self.net_leverage, self.initial_entry_price, self.trade_pair.trade_pair))
+                     self.net_leverage, self.net_quantity, self.net_value, self.initial_entry_price, self.trade_pair.trade_pair))
 
     def __eq__(self, other):
         if not isinstance(other, Position):
@@ -212,6 +220,8 @@ class Position(BaseModel):
                 self.open_ms == other.open_ms and
                 self.current_return == other.current_return and
                 self.net_leverage == other.net_leverage and
+                self.net_quantity == other.net_quantity and
+                self.net_value == other.net_value and
                 self.initial_entry_price == other.initial_entry_price and
                 self.trade_pair.trade_pair == other.trade_pair.trade_pair)
 
@@ -310,9 +320,12 @@ class Position(BaseModel):
         self.close_ms = None
         self.return_at_close = 1.0
         self.net_leverage = 0.0
+        self.net_quantity = 0.0
+        self.net_value = 0.0
         self.average_entry_price = 0.0
         self.cumulative_entry_value = 0.0
         self.realized_pnl = 0.0
+        self.unrealized_pnl = 0.0
         self.position_type = None
         self.is_closed_position = False
         self.position_type = None
@@ -325,6 +338,8 @@ class Position(BaseModel):
             f"close_ms [{self.close_ms}] "
             f"initial entry price [{self.initial_entry_price}] "
             f"net leverage [{self.net_leverage}] "
+            f"net quantity [{self.net_quantity}] "
+            f"net value [{self.net_value}] "
             f"average entry price [{self.average_entry_price}] "
             f"return_at_close [{self.return_at_close}]"
         )
@@ -332,6 +347,7 @@ class Position(BaseModel):
             {
                 "order type": order.order_type.value,
                 "leverage": order.leverage,
+                "quantity": order.quantity,
                 "price": order,
             }
             for order in self.orders
@@ -340,7 +356,7 @@ class Position(BaseModel):
 
     def add_order(self, order: Order, live_price_fetcher, net_portfolio_leverage: float=0.0) -> bool:
         """
-        Add an order to a position, and adjust its leverage to stay within
+        Add an order to a position, and adjust its size to stay within
         the trade pair max and portfolio max.
         """
         if self.is_closed_position:
@@ -349,25 +365,40 @@ class Position(BaseModel):
             raise ValueError(
                 f"Order trade pair [{order.trade_pair}] does not match position trade pair [{self.trade_pair}]")
 
+        if order.order_type != OrderType.FLAT and abs(order.leverage) > ValiConfig.ORDER_MAX_LEVERAGE:
+            raise ValueError(
+                f'Order leverage [{order.leverage}] is above ORDER_MAX_LEVERAGE {ValiConfig.ORDER_MIN_LEVERAGE}, cannot increase size of position. Ignoring order.')
+
         if self._clamp_and_validate_leverage(order, abs(net_portfolio_leverage)):
             # This order's leverage got clamped to zero.
             # Skip it since we don't want to consider this a FLAT position and we don't want to allow bad actors
             # to send in a bunch of spam orders.
-            max_portfolio_leverage = leverage_utils.get_portfolio_leverage_cap(order.processed_ms)
-            if abs(net_portfolio_leverage) >= max_portfolio_leverage:
-                raise ValueError(
-                    f"Miner {self.miner_hotkey} attempted to exceed max adjusted portfolio leverage of {max_portfolio_leverage}. Ignoring order.")
-            else:
-                if order.leverage >= 0:
+            if order.leverage == 0:
+                max_portfolio_leverage = leverage_utils.get_portfolio_leverage_cap(order.processed_ms)
+                if abs(net_portfolio_leverage) >= max_portfolio_leverage:
                     raise ValueError(
-                        f"Miner {self.miner_hotkey} attempted to exceed max leverage {self.trade_pair.max_leverage} for trade pair {self.trade_pair.trade_pair_id}. Ignoring order.")
+                        f"Miner {self.miner_hotkey} attempted to exceed max adjusted portfolio leverage of {max_portfolio_leverage}. Ignoring order.")
                 else:
                     raise ValueError(
-                        f"Miner {self.miner_hotkey} attempted to go below min leverage {self.trade_pair.min_leverage} for trade pair {self.trade_pair.trade_pair_id}. Ignoring order.")
+                        f"Miner {self.miner_hotkey} attempted to exceed leverage bounds [{self.trade_pair.min_leverage}, {self.trade_pair.max_leverage}] for trade pair {self.trade_pair.trade_pair_id}. Ignoring order.")
+            else:
+                logging.warning(f"Miner {self.miner_hotkey} {self.trade_pair.trade_pair_id} order leverage clamped to {order.leverage}")
+                # Set order quantity and value base on clamped leverage
+                order.value = order.leverage * self.account_size
+                if order.price == 0:
+                    order.quantity = 0
+                else:
+                    order.quantity = (order.value * order.usd_base_rate) / order.trade_pair.lot_size
+                # order.slippage = PriceSlippageModel.calculate_slippage(order.bid, order.ask, order)   # recalculate slippage based on new order size
+
+        if order.order_type != OrderType.FLAT and abs(order.leverage) < ValiConfig.ORDER_MIN_LEVERAGE:
+            raise ValueError(
+                f'Order leverage [{order.leverage}] is below ORDER_MIN_LEVERAGE {ValiConfig.ORDER_MIN_LEVERAGE}, cannot increase size of position. Ignoring order.')
+
         self.orders.append(order)
         self._update_position(live_price_fetcher)
 
-    def calculate_pnl(self, current_price, t_ms=None, order=None):
+    def calculate_pnl(self, current_price, live_price_fetcher, t_ms=None, order=None):
         if self.initial_entry_price == 0 or self.average_entry_price is None:
             return 1
 
@@ -375,25 +406,29 @@ class Position(BaseModel):
             t_ms = TimeUtil.now_in_millis()
 
         # pnl with slippage
-        if ALWAYS_USE_SLIPPAGE or (ALWAYS_USE_SLIPPAGE is None and t_ms >= SLIPPAGE_V1_TIME_MS):
-            if order:
-                # update realized pnl for orders that reduce the size of a position
-                if (order.order_type != self.position_type or self.position_type == OrderType.FLAT):
+        if order:
+            # update realized pnl for orders that reduce the size of a position
+            if order.order_type != self.position_type or self.position_type == OrderType.FLAT:
+                if ALWAYS_USE_SLIPPAGE or (ALWAYS_USE_SLIPPAGE is None and t_ms >= SLIPPAGE_V1_TIME_MS):
                     exit_price = current_price * (1 + order.slippage) if order.leverage > 0 else current_price * (1 - order.slippage)
-                    # TODO Verify this Calculation
-                    order_volume = order.leverage #(order.leverage * self.account_size) / order.price  # TODO: calculate order.volume as an order attribute
-                    self.realized_pnl += -1 * (exit_price - self.average_entry_price) * order_volume  # TODO: FIFO entry cost
-                unrealized_pnl = (current_price - self.average_entry_price) * min(self.net_leverage, self.net_leverage + order.leverage, key=abs)
-            else:
-                unrealized_pnl = (current_price - self.average_entry_price) * self.net_leverage
+                else:
+                    exit_price = current_price
+                order_realized_pnl_quote = -1 * (exit_price - self.average_entry_price) * (order.quantity * order.trade_pair.lot_size)
+                self.realized_pnl += order_realized_pnl_quote * order.quote_usd_rate
 
-            gain = (self.realized_pnl + unrealized_pnl) / self.initial_entry_price
+            unrealized_quantity = min(self.net_quantity, self.net_quantity + order.quantity, key=abs)
+            unrealized_pnl_quote = (current_price - self.average_entry_price) * (unrealized_quantity * order.trade_pair.lot_size)
+            self.unrealized_pnl = unrealized_pnl_quote * order.quote_usd_rate
         else:
-            gain = (
-                (current_price - self.average_entry_price)
-                * self.net_leverage
-                / self.initial_entry_price
-            )
+            unrealized_pnl_quote = (current_price - self.average_entry_price) * (self.net_quantity * self.trade_pair.lot_size)
+            quote_usd_conversion = self.orders[-1].quote_usd_rate # live_price_fetcher.get_usd_conversion(self.trade_pair.quote, t_ms, self.orders[-1].order_type, self.position_type)  # TODO: calculate conversion rate at current time instead of last order time
+            self.unrealized_pnl = unrealized_pnl_quote * quote_usd_conversion
+
+        if self.cumulative_entry_value == 0:
+            gain = 0
+        else:
+            gain = (self.realized_pnl + self.unrealized_pnl) / self.account_size
+
         # Check if liquidated
         if gain <= -1.0:
             return 0
@@ -431,7 +466,7 @@ class Position(BaseModel):
 
         if interval_data['max_leverage'] == -float('inf'):
             raise ValueError('Unable to find max leverage in interval')
-        assert interval_data['max_leverage'] > 0, (interval_data['max_leverage'], self.orders)
+        assert interval_data['max_leverage'] > 0, (interval_data, self.orders, str(self))
         return interval_data['max_leverage']
 
     def max_leverage_seen(self, interval_data=None):
@@ -508,12 +543,14 @@ class Position(BaseModel):
 
         flat_order = Order(price=price,
                            processed_ms=fake_flat_order_time,
-                           order_uuid=position.position_uuid[::-1],  # determinstic across validators. Won't mess with p2p sync
+                           order_uuid=position.position_uuid[::-1],  # deterministic across validators. Won't mess with p2p sync
                            trade_pair=position.trade_pair,
                            order_type=OrderType.FLAT,
-                           leverage=0,
+                           leverage=-position.net_leverage,
                            src=src,
                            price_sources=[x for x in (price_source, extra_price_source) if x is not None])
+        flat_order.quote_usd_rate = live_price_fetcher.get_quote_usd_conversion(flat_order, position)
+        flat_order.usd_base_rate = live_price_fetcher.get_usd_base_conversion(position.trade_pair, fake_flat_order_time, price, OrderType.FLAT, position)
         return flat_order
 
     def calculate_return_with_fees(self, current_return_no_fees, timestamp_ms=None):
@@ -531,8 +568,8 @@ class Position(BaseModel):
             fee = self.get_carry_fee(timestamp_ms)[0] * self.get_spread_fee(timestamp_ms)
         return current_return_no_fees * fee
 
-    def get_open_position_return_with_fees(self, realtime_price, time_ms):
-        current_return = self.calculate_pnl(realtime_price)
+    def get_open_position_return_with_fees(self, realtime_price, live_price_fetcher, time_ms):
+        current_return = self.calculate_pnl(realtime_price, live_price_fetcher)
         return self.calculate_return_with_fees(current_return, timestamp_ms=time_ms)
 
     def set_returns_with_updated_fees(self, total_fees, time_ms, live_price_fetcher):
@@ -544,7 +581,7 @@ class Position(BaseModel):
     def set_returns(self, realtime_price, live_price_fetcher, time_ms=None, total_fees=None, order=None):
         # We used to multiple trade_pair.fees by net_leverage. Eventually we will
         # Update this calculation to approximate actual exchange fees.
-        self.current_return = self.calculate_pnl(realtime_price, t_ms=time_ms, order=order)
+        self.current_return = self.calculate_pnl(realtime_price, live_price_fetcher, t_ms=time_ms, order=order)
         if total_fees is None:
             self.return_at_close = self.calculate_return_with_fees(self.current_return,
                                timestamp_ms=TimeUtil.now_in_millis() if time_ms is None else time_ms)
@@ -557,7 +594,7 @@ class Position(BaseModel):
         if self.current_return == 0:
             self._handle_liquidation(TimeUtil.now_in_millis() if time_ms is None else time_ms, live_price_fetcher)
 
-    def update_position_state_for_new_order(self, order, delta_leverage, live_price_fetcher):
+    def update_position_state_for_new_order(self, order, delta_quantity, delta_leverage, live_price_fetcher):
         """
         Must be called after every order to maintain accurate internal state. The variable average_entry_price has
         a name that can be a little confusing. Although it claims to be the average price, it really isn't.
@@ -566,9 +603,12 @@ class Position(BaseModel):
         """
         realtime_price = order.price
         assert self.initial_entry_price > 0, self.initial_entry_price
+        new_net_quantity = self.net_quantity + delta_quantity
         new_net_leverage = self.net_leverage + delta_leverage
-        if order.src in (OrderSource.ELIMINATION_FLAT, OrderSource.DEPRECATION_FLAT):
+        if order.src in (OrderSource.ELIMINATION_FLAT, OrderSource.DEPRECATION_FLAT) and (order.price==0 or order.usd_base_rate==0 or order.quote_usd_rate==0):
             self.net_leverage = 0.0
+            self.net_quantity = 0.0
+            self.net_value = 0.0
             return  # Don't set returns since the price is zero'd out.
         self.set_returns(realtime_price, live_price_fetcher, time_ms=order.processed_ms, order=order)
 
@@ -580,26 +620,33 @@ class Position(BaseModel):
 
         if self.position_type == OrderType.FLAT:
             self.net_leverage = 0.0
+            self.net_quantity = 0.0
+            self.net_value = 0.0
         else:
-            if ALWAYS_USE_SLIPPAGE is False or (ALWAYS_USE_SLIPPAGE is None and order.processed_ms < SLIPPAGE_V1_TIME_MS):
-                self.average_entry_price = (
-                    self.average_entry_price * self.net_leverage
-                    + realtime_price * delta_leverage
-                ) / new_net_leverage
-                self.cumulative_entry_value += realtime_price * order.leverage
-            elif self.position_type == order.order_type:
-                # after SLIPPAGE_V1_TIME_MS, average entry price now reflects the average price
+            if self.position_type == order.order_type:
                 # average entry price only changes when an order is in the same direction as the position. reducing a position does not affect average entry price.
-                entry_price = order.price * (1 + order.slippage) if order.leverage > 0 else order.price * (1 - order.slippage)
+                if ALWAYS_USE_SLIPPAGE is False or (ALWAYS_USE_SLIPPAGE is None and order.processed_ms < SLIPPAGE_V1_TIME_MS):
+                    # no slippage
+                    self.average_entry_price = (
+                        self.average_entry_price * self.net_quantity
+                        + realtime_price * delta_quantity
+                    ) / new_net_quantity
+                else:
+                    # after SLIPPAGE_V1_TIME_MS, average entry price now reflects the average price
+                    entry_price = order.price * (1 + order.slippage) if order.leverage > 0 else order.price * (1 - order.slippage)
+                    self.average_entry_price = (
+                        self.average_entry_price * self.net_quantity
+                        + entry_price * delta_quantity
+                    ) / new_net_quantity
+                entry_value = order.value
+            else:
+                # order is reducing the size of a position, so there is no entry cost.
+                entry_value = 0
 
-                self.average_entry_price = (
-                    self.average_entry_price * self.net_leverage
-                    + entry_price * delta_leverage
-                ) / new_net_leverage
-
-                order_volume = (order.leverage * self.account_size) / entry_price  # TODO: order volume. represents # of shares, etc.
-                self.cumulative_entry_value += entry_price * order_volume  # TODO: replace with order.volume attribute
-            self.net_leverage = new_net_leverage
+            self.cumulative_entry_value += entry_value
+            self.net_quantity = new_net_quantity
+            self.net_value = (realtime_price * order.quote_usd_rate) * (self.net_quantity * self.trade_pair.lot_size)
+            self.net_leverage = new_net_leverage    # self.net_value / self.account_size
 
     def initialize_position_from_first_order(self, order):
         self.open_ms = order.processed_ms
@@ -613,6 +660,7 @@ class Position(BaseModel):
             self._position_log("setting new position type as SHORT. Trade pair: " + str(self.trade_pair.trade_pair_id))
             self.position_type = OrderType.SHORT
         else:
+            print(self)
             raise ValueError("leverage of 0 provided as initial order.")
 
     def close_out_position(self, close_ms):
@@ -633,13 +681,11 @@ class Position(BaseModel):
 
         If an order's leverage would take the position leverage below min_position_leverage, we raise an error.
 
-        Return true if the order should be ignored. Only happens when the order attempts to exceed max_position_leverage
-        and is already at max_position_leverage.
+        Returns:
+            bool: True if the order's leverage was clamped (to any value including zero), False otherwise (order leverage unchanged)
         """
-        should_ignore_order = False
         if order.order_type == OrderType.FLAT:
-            order.leverage = -self.net_leverage
-            return should_ignore_order
+            return False
 
         is_first_order = len(self.orders) == 0
         proposed_leverage = self.net_leverage + order.leverage
@@ -666,9 +712,7 @@ class Position(BaseModel):
 
                     if order.order_type == OrderType.SHORT:
                         order.leverage *= -1
-                    should_ignore_order = order.leverage == 0
-                    if not should_ignore_order:
-                        logging.warning(f"Miner {self.miner_hotkey} {self.trade_pair.trade_pair_id} order leverage clamped to {order.leverage}")
+                    return True
                 else:
                     # portfolio leverage attempts to go under min
                     if abs(proposed_leverage) < min_position_leverage:
@@ -680,22 +724,28 @@ class Position(BaseModel):
                     raise ValueError(f'Miner {self.miner_hotkey} attempted to set {self.trade_pair.trade_pair_id} position leverage below min_position_leverage {min_position_leverage}')
                 else:
                     pass  # We are trying to increase the leverage here so let it happen
-        # attempting to flip position
         else:
-            order.leverage = -self.net_leverage
+            # attempting to flip position
             order.order_type = OrderType.FLAT
-
-        if abs(order.leverage) < ValiConfig.ORDER_MIN_LEVERAGE and (should_ignore_order is False):
-            raise ValueError(f'Clamped order leverage [{order.leverage}] is below ValiConfig.ORDER_MIN_LEVERAGE {ValiConfig.ORDER_MIN_LEVERAGE}')
-
-        return should_ignore_order
+        return False
 
     def _update_position(self, live_price_fetcher):
         self.net_leverage = 0.0
+        self.net_quantity = 0.0
+        self.net_value = 0.0
         self.cumulative_entry_value = 0.0
         self.realized_pnl = 0.0
+        self.unrealized_pnl = 0.0
         bt.logging.trace(f"Updating position {self.trade_pair.trade_pair_id} with n orders: {len(self.orders)}")
         for order in self.orders:
+            # set value and quantity if not set
+            if (order.value is None or order.quantity is None) and order.leverage is not None:
+                order.value = order.leverage * self.account_size
+                if order.price == 0:
+                    order.quantity = 0
+                else:
+                    order.quantity = (order.value * order.usd_base_rate) / order.trade_pair.lot_size
+
             if self.position_type is None:
                 self.initialize_position_from_first_order(order)
 
@@ -703,11 +753,13 @@ class Position(BaseModel):
             if (
                 (
                     self.position_type == OrderType.LONG
-                    and self.net_leverage + order.leverage <= 0
+                    and
+                    (self.net_leverage + order.leverage <= 0 or self.net_quantity + order.quantity <= 0)
                 )
                 or (
                     self.position_type == OrderType.SHORT
-                    and self.net_leverage + order.leverage >= 0
+                    and
+                    (self.net_leverage + order.leverage >= 0 or self.net_quantity + order.quantity >= 0)
                 )
                 or order.order_type == OrderType.FLAT
             ):
@@ -715,15 +767,22 @@ class Position(BaseModel):
                 #    f"Flattening {self.position_type.value} position from order {order}"
                 #)
                 self.close_out_position(order.processed_ms)
+                # Set the order quantity
+                order.leverage = -self.net_leverage
+                order.quantity = -self.net_quantity
+                order.value = -self.net_value
 
             # Reflect the current order in the current position's return.
+            adjusted_quantity = (
+                0.0 if self.position_type == OrderType.FLAT else order.quantity
+            )
             adjusted_leverage = (
                 0.0 if self.position_type == OrderType.FLAT else order.leverage
             )
             #bt.logging.info(
-            #    f"Updating position state for new order {order} with adjusted leverage {adjusted_leverage}"
+            #    f"Updating position state for new order {order} with adjusted leverage {adjusted_quantity}"
             #)
-            self.update_position_state_for_new_order(order, adjusted_leverage, live_price_fetcher)
+            self.update_position_state_for_new_order(order, adjusted_quantity, adjusted_leverage, live_price_fetcher)
 
             # If the position is already closed, we don't need to process any more orders. break in case there are more orders.
             if self.position_type == OrderType.FLAT:

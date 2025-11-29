@@ -193,19 +193,21 @@ class LedgerUtils:
     def raw_pnl(ledger: PerfLedger) -> float:
         """
         Calculate total pnl from tracked PnL values in perf ledgers.
+        Uses the formula: realized_pnl + min(0, last_unrealized_pnl)
 
         Args:
             ledger: PerfLedger - the ledger of the miner
 
         Returns:
-            float - total pnl of the ledger
+            float - total payout pnl of the ledger (penalizes unrealized losses, ignores unrealized gains)
         """
 
         if ledger is None or not ledger.cps:
             return 0
-        total_pnl = 0
-        for cp in ledger.cps:
-            total_pnl += cp.pnl_gain + cp.pnl_loss
+
+        total_realized = sum(cp.realized_pnl for cp in ledger.cps)
+        latest_unrealized = min(0.0, ledger.cps[-1].unrealized_pnl)
+        total_pnl = total_realized + latest_unrealized
 
         return total_pnl
 
@@ -214,19 +216,30 @@ class LedgerUtils:
         """
         Calculate daily PnL from performance checkpoints, only including full days
         with complete data and correct total accumulated time.
-        
+
+        Daily PnL = Realized PnL for each day + Unrealized PnL for the last day
+
         Args:
             ledger: PerfLedger - the ledger of the miner
-            
+
         Returns:
-            dict[datetime.date, float] - dictionary mapping dates to total PnL
+            dict[datetime.date, float] - dictionary mapping dates to payout PnL
         """
         complete_days = LedgerUtils._group_checkpoints_by_complete_days(ledger)
-        
+
         date_pnl_map = {}
+        last_day = None
+        last_checkpoints = None
         for running_date, day_checkpoints in sorted(complete_days.items()):
-            total_pnl = sum(cp.pnl_gain + cp.pnl_loss for cp in day_checkpoints)
-            date_pnl_map[running_date] = total_pnl
+            total_realized_pnl = sum(cp.realized_pnl for cp in day_checkpoints)
+            date_pnl_map[running_date] = total_realized_pnl
+
+            last_day = running_date
+            last_checkpoints = day_checkpoints
+
+        if last_day is not None:
+            latest_unrealized_pnl = min(0.0, last_checkpoints[-1].unrealized_pnl)
+            date_pnl_map[last_day] += latest_unrealized_pnl
 
         return date_pnl_map
 

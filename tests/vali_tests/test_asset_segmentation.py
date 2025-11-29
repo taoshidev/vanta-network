@@ -449,12 +449,12 @@ class TestAssetSegmentation(TestBase):
 
         # Create checkpoints with explicit PnL values for crypto_majors
         checkpoints_btc = [
-            checkpoint_generator(last_update_ms=1000, gain=0.05, loss=-0.02, pnl_gain=100.0, pnl_loss=-20.0, n_updates=1),
-            checkpoint_generator(last_update_ms=2000, gain=0.03, loss=-0.01, pnl_gain=50.0, pnl_loss=-10.0, n_updates=1)
+            checkpoint_generator(last_update_ms=1000, gain=0.05, loss=-0.02, realized_pnl=100.0, unrealized_pnl=-20.0, n_updates=1),
+            checkpoint_generator(last_update_ms=2000, gain=0.03, loss=-0.01, realized_pnl=50.0, unrealized_pnl=-10.0, n_updates=1)
         ]
         checkpoints_eth = [
-            checkpoint_generator(last_update_ms=1000, gain=0.04, loss=-0.015, pnl_gain=80.0, pnl_loss=-15.0, n_updates=1),
-            checkpoint_generator(last_update_ms=2000, gain=0.02, loss=-0.005, pnl_gain=40.0, pnl_loss=-5.0, n_updates=1)
+            checkpoint_generator(last_update_ms=1000, gain=0.04, loss=-0.015, realized_pnl=80.0, unrealized_pnl=-15.0, n_updates=1),
+            checkpoint_generator(last_update_ms=2000, gain=0.02, loss=-0.005, realized_pnl=40.0, unrealized_pnl=-5.0, n_updates=1)
         ]
 
         btc_ledger = ledger_generator(checkpoints=checkpoints_btc)
@@ -469,15 +469,13 @@ class TestAssetSegmentation(TestBase):
 
         # Verify aggregation at timestamp 1000
         cp_1000 = next(cp for cp in result.cps if cp.last_update_ms == 1000)
-        self.assertEqual(cp_1000.pnl_gain, 180.0)  # 100 + 80
-        self.assertEqual(cp_1000.pnl_loss, -35.0)  # -20 + -15
+        self.assertEqual(cp_1000.realized_pnl, 180.0)  # 100 + 80
         self.assertEqual(cp_1000.gain, 0.09)  # 0.05 + 0.04
         self.assertEqual(cp_1000.loss, -0.035)  # -0.02 + -0.015
 
         # Verify aggregation at timestamp 2000
         cp_2000 = next(cp for cp in result.cps if cp.last_update_ms == 2000)
-        self.assertEqual(cp_2000.pnl_gain, 90.0)  # 50 + 40
-        self.assertEqual(cp_2000.pnl_loss, -15.0)  # -10 + -5
+        self.assertEqual(cp_2000.realized_pnl, 90.0)  # 50 + 40
         self.assertEqual(cp_2000.gain, 0.05)  # 0.03 + 0.02
         self.assertEqual(cp_2000.loss, -0.015)  # -0.01 + -0.005
 

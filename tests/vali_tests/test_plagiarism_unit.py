@@ -18,6 +18,7 @@ from vali_objects.utils.plagiarism_definitions import (
 from vali_objects.utils.plagiarism_events import PlagiarismEvents
 from vali_objects.utils.plagiarism_pipeline import PlagiarismPipeline
 from vali_objects.utils.position_manager import PositionManager
+from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.position_utils import PositionUtils
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair, ValiConfig
@@ -28,6 +29,11 @@ class TestPlagiarismUnit(TestBase):
 
     def setUp(self):
         super().setUp()
+        # Clear ALL test miner positions BEFORE creating PositionManager
+        ValiBkpUtils.clear_directory(
+            ValiBkpUtils.get_miner_dir(running_unit_tests=True)
+        )
+
         self.MINER_HOTKEY1 = "test_miner1"
         self.MINER_HOTKEY2 = "test_miner2"
         self.MINER_HOTKEY3 = "test_miner3"
@@ -44,12 +50,14 @@ class TestPlagiarismUnit(TestBase):
         self.plagiarism_detector = MockPlagiarismDetector(self.mock_metagraph, self.position_manager)
         self.DEFAULT_TEST_POSITION_UUID = "test_position"
         self.DEFAULT_OPEN_MS = 1000
+        self.DEFAULT_ACCOUNT_SIZE = 100_000
 
         self.eth_position1 = Position(
             miner_hotkey=self.MINER_HOTKEY1,
             position_uuid=self.DEFAULT_TEST_POSITION_UUID + "_eth1",
             open_ms=self.DEFAULT_OPEN_MS,
             trade_pair=TradePair.ETHUSD,
+            account_size=self.DEFAULT_ACCOUNT_SIZE,
         )
 
         self.eth_position2 = Position(
@@ -57,6 +65,7 @@ class TestPlagiarismUnit(TestBase):
             position_uuid=self.DEFAULT_TEST_POSITION_UUID + "_eth2",
             open_ms=self.DEFAULT_OPEN_MS,
             trade_pair=TradePair.ETHUSD,
+            account_size=self.DEFAULT_ACCOUNT_SIZE,
         )
 
         self.eth_position3 = Position(
@@ -64,6 +73,7 @@ class TestPlagiarismUnit(TestBase):
             position_uuid=self.DEFAULT_TEST_POSITION_UUID + "_eth3",
             open_ms=self.DEFAULT_OPEN_MS,
             trade_pair=TradePair.ETHUSD,
+            account_size=self.DEFAULT_ACCOUNT_SIZE,
         )
 
         self.btc_position1 = Position(
@@ -71,6 +81,7 @@ class TestPlagiarismUnit(TestBase):
             position_uuid=self.DEFAULT_TEST_POSITION_UUID + "_btc1",
             open_ms=self.DEFAULT_OPEN_MS,
             trade_pair=TradePair.BTCUSD,
+            account_size=self.DEFAULT_ACCOUNT_SIZE,
         )
 
         self.btc_position2 = Position(
@@ -78,6 +89,7 @@ class TestPlagiarismUnit(TestBase):
             position_uuid=self.DEFAULT_TEST_POSITION_UUID + "_btc2",
             open_ms=self.DEFAULT_OPEN_MS,
             trade_pair=TradePair.BTCUSD,
+            account_size=self.DEFAULT_ACCOUNT_SIZE,
         )
 
         self.btc_position3 = Position(
@@ -85,6 +97,7 @@ class TestPlagiarismUnit(TestBase):
             position_uuid=self.DEFAULT_TEST_POSITION_UUID + "_btc3",
             open_ms=self.DEFAULT_OPEN_MS,
             trade_pair=TradePair.BTCUSD,
+            account_size=self.DEFAULT_ACCOUNT_SIZE,
         )
 
         self.position_manager.clear_all_miner_positions()
@@ -124,6 +137,7 @@ class TestPlagiarismUnit(TestBase):
             position_uuid=self.DEFAULT_TEST_POSITION_UUID + f"pos{self.position_counter}",
             open_ms=self.DEFAULT_OPEN_MS,
             trade_pair=trade_pair,
+            account_size=self.DEFAULT_ACCOUNT_SIZE,
         )
 
         for i in range(len(leverages)):
@@ -136,11 +150,13 @@ class TestPlagiarismUnit(TestBase):
                 type = OrderType.FLAT
 
             order = Order(order_type=type,
-                leverage=leverages[i],
-                price=1000,
-                trade_pair=position1.trade_pair,
-                processed_ms= (i * time_apart) + time_after,
-                order_uuid=str(uuid.uuid4()))
+                          leverage=leverages[i],
+                          price=1000,
+                          trade_pair=position1.trade_pair,
+                          processed_ms= (i * time_apart) + time_after,
+                          order_uuid=str(uuid.uuid4()),
+                          quote_usd_rate=1.0,
+                          usd_base_rate=1.0/1000)
             self.add_order_to_position_and_save_to_disk(position1, order)
 
     def generate_plagiarism_position(self, plagiarist_key, victim_key, time_after, victim_leverages, plagiarist_leverages, time_apart):

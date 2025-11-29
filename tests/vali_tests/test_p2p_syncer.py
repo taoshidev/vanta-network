@@ -12,6 +12,7 @@ from vali_objects.utils.elimination_manager import EliminationManager
 from vali_objects.utils.live_price_fetcher import LivePriceFetcher
 from vali_objects.utils.p2p_syncer import P2PSyncer
 from vali_objects.utils.position_manager import PositionManager
+from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair
 from vali_objects.vali_dataclasses.order import Order
@@ -21,6 +22,11 @@ class TestPositions(TestBase):
 
     def setUp(self):
         super().setUp()
+        # Clear ALL test miner positions BEFORE creating PositionManager
+        ValiBkpUtils.clear_directory(
+            ValiBkpUtils.get_miner_dir(running_unit_tests=True)
+        )
+
         secrets = ValiUtils.get_secrets(running_unit_tests=True)
         self.live_price_fetcher = LivePriceFetcher(secrets=secrets, disable_ws=True)
         self.DEFAULT_MINER_HOTKEY = "test_miner"
@@ -28,6 +34,7 @@ class TestPositions(TestBase):
         self.DEFAULT_ORDER_UUID = "test_order"
         self.DEFAULT_OPEN_MS = TimeUtil.now_in_millis()  # 1718071209000
         self.DEFAULT_TRADE_PAIR = TradePair.BTCUSD
+        self.DEFAULT_ACCOUNT_SIZE = 100_000
         self.default_order = Order(price=1, processed_ms=self.DEFAULT_OPEN_MS, order_uuid=self.DEFAULT_ORDER_UUID, trade_pair=self.DEFAULT_TRADE_PAIR,
                                      order_type=OrderType.LONG, leverage=1)
         self.default_position = Position(
@@ -37,6 +44,7 @@ class TestPositions(TestBase):
             trade_pair=self.DEFAULT_TRADE_PAIR,
             orders=[self.default_order],
             position_type=OrderType.LONG,
+            account_size=self.DEFAULT_ACCOUNT_SIZE,
         )
 
         self.default_neuron = MockNeuron(axon_info=MockAxonInfo("0.0.0.0"),
@@ -56,6 +64,7 @@ class TestPositions(TestBase):
             trade_pair=self.DEFAULT_TRADE_PAIR,
             orders=[self.default_order],
             position_type=OrderType.LONG,
+            account_size=self.DEFAULT_ACCOUNT_SIZE,
         )
 
         self.default_closed_position = Position(
@@ -65,6 +74,7 @@ class TestPositions(TestBase):
             trade_pair=self.DEFAULT_TRADE_PAIR,
             orders=[self.default_order],
             position_type=OrderType.FLAT,
+            account_size=self.DEFAULT_ACCOUNT_SIZE,
         )
         self.default_closed_position.close_out_position(self.DEFAULT_OPEN_MS + 1000 * 60 * 60 * 6)
 

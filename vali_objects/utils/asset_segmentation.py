@@ -98,8 +98,8 @@ class AssetSegmentation:
                     existing_checkpoint.loss += checkpoint.loss
                     existing_checkpoint.spread_fee_loss += checkpoint.spread_fee_loss
                     existing_checkpoint.carry_fee_loss += checkpoint.carry_fee_loss
-                    existing_checkpoint.pnl_gain += checkpoint.pnl_gain
-                    existing_checkpoint.pnl_loss += checkpoint.pnl_loss
+                    existing_checkpoint.realized_pnl += checkpoint.realized_pnl
+                    existing_checkpoint.unrealized_pnl += checkpoint.unrealized_pnl
 
                     aggregated_dict_ledger[checkpoint.last_update_ms] = existing_checkpoint
 

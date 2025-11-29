@@ -5,6 +5,7 @@ from tests.shared_objects.mock_classes import MockLivePriceFetcher
 from shared_objects.mock_metagraph import MockMetagraph
 from vali_objects.utils.elimination_manager import EliminationManager
 from vali_objects.utils.position_manager import PositionManager
+from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair
 from vali_objects.enums.order_type_enum import OrderType
@@ -16,6 +17,12 @@ class TestPositionSplitting(TestBase):
     
     def setUp(self):
         super().setUp()
+        # Clear ALL test miner positions BEFORE creating PositionManager
+        ValiBkpUtils.clear_directory(
+            ValiBkpUtils.get_miner_dir(running_unit_tests=True)
+        )
+
+        self.DEFAULT_ACCOUNT_SIZE = 100_000
         secrets = ValiUtils.get_secrets(running_unit_tests=True)
         self.live_price_fetcher = MockLivePriceFetcher(secrets=secrets, disable_ws=True)
         self.DEFAULT_MINER_HOTKEY = "test_miner"
@@ -41,7 +48,8 @@ class TestPositionSplitting(TestBase):
             position_uuid="test_position_uuid",
             open_ms=1000,
             trade_pair=TradePair.BTCUSD,
-            orders=orders
+            orders=orders,
+            account_size=self.DEFAULT_ACCOUNT_SIZE,
         )
         position.rebuild_position_with_updated_orders(self.live_price_fetcher)
         
@@ -271,7 +279,8 @@ class TestPositionSplitting(TestBase):
                 position_uuid=f"{miner}_position",
                 open_ms=1000,
                 trade_pair=TradePair.BTCUSD,
-                orders=orders
+                orders=orders,
+                account_size=self.DEFAULT_ACCOUNT_SIZE
             )
             position.rebuild_position_with_updated_orders(self.live_price_fetcher)
             
@@ -315,7 +324,7 @@ class TestPositionSplitting(TestBase):
         self.assertEqual(result[0].orders[0].order_type, OrderType.LONG)
         self.assertEqual(result[0].orders[0].leverage, 2.0)
         self.assertEqual(result[0].orders[1].order_type, OrderType.SHORT)
-        self.assertEqual(result[0].orders[1].leverage, -3.0)
+        self.assertEqual(result[0].orders[1].leverage, -2.0)
         
         # Second position should have LONG order
         self.assertEqual(len(result[1].orders), 1)

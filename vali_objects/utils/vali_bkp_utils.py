@@ -281,6 +281,19 @@ class ValiBkpUtils:
                 os.remove(os.path.join(temp_dir, file))
 
     @staticmethod
+    def clear_directory(directory: str) -> None:
+        """
+        Clear all contents of a directory. If the directory doesn't exist, do nothing.
+        Useful for cleaning up test data before test runs.
+
+        Args:
+            directory: Full path to directory to clear
+        """
+        if os.path.exists(directory):
+            shutil.rmtree(directory)
+            bt.logging.debug(f"Cleared directory: {directory}")
+
+    @staticmethod
     def write_to_dir(
         vali_file: str, vali_data: dict | object, is_pickle: bool = False, is_binary:bool = False
     ) -> None:

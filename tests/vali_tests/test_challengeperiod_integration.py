@@ -17,6 +17,7 @@ from vali_objects.utils.ledger_utils import LedgerUtils
 from vali_objects.utils.miner_bucket_enum import MinerBucket
 from vali_objects.utils.plagiarism_manager import PlagiarismManager
 from vali_objects.utils.position_lock import PositionLocks
+from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.validator_contract_manager import ValidatorContractManager
 from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.vali_dataclasses.order import Order
@@ -33,6 +34,11 @@ class TestChallengePeriodIntegration(TestBase):
 
     def setUp(self):
         super().setUp()
+        # Clear ALL test miner positions BEFORE creating PositionManager
+        ValiBkpUtils.clear_directory(
+            ValiBkpUtils.get_miner_dir(running_unit_tests=True)
+        )
+
         self.N_MAINCOMP_MINERS = 30
         self.N_CHALLENGE_MINERS = 5
         self.N_ELIMINATED_MINERS = 5
@@ -68,6 +74,7 @@ class TestChallengePeriodIntegration(TestBase):
         self.DEFAULT_OPEN_MS = 1000
         self.DEFAULT_CLOSE_MS = 2000
         self.DEFAULT_TRADE_PAIR = TradePair.BTCUSD
+        self.DEFAULT_ACCOUNT_SIZE = 100_000
 
         # Default positions
         self.DEFAULT_POSITION = Position(
@@ -78,6 +85,7 @@ class TestChallengePeriodIntegration(TestBase):
             trade_pair=self.DEFAULT_TRADE_PAIR,
             is_closed_position=True,
             return_at_close=1.00,
+            account_size=self.DEFAULT_ACCOUNT_SIZE,
             orders=[Order(price=60000, processed_ms=self.START_TIME, order_uuid="initial_order",
                           trade_pair=TradePair.BTCUSD, order_type=OrderType.LONG, leverage=0.1)],
 

@@ -134,9 +134,9 @@ class ValidatorContractManager:
         if now_ms > TARGET_MS:
             return
 
-        miners_to_reinstate = {}
-        for miner, amount in miners_to_reinstate.items():
-            self.force_deposit(amount, miner)
+        # miners_to_reinstate = {}
+        # for miner, amount in miners_to_reinstate.items():
+        #     self.force_deposit(amount, miner)
 
         # Update CPT
         # update_thread = threading.Thread(target=self.refresh_miner_account_sizes, daemon=True)

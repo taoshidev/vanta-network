@@ -12,6 +12,7 @@ from vali_objects.utils.elimination_manager import EliminationManager
 from vali_objects.utils.live_price_fetcher import LivePriceFetcher
 from vali_objects.utils.position_lock import PositionLocks
 from vali_objects.utils.position_manager import PositionManager
+from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair
 from vali_objects.vali_dataclasses.order import Order
@@ -60,6 +61,11 @@ class TestMDDChecker(TestBase):
 
     def setUp(self):
         super().setUp()
+        # Clear ALL test miner positions BEFORE creating PositionManager
+        ValiBkpUtils.clear_directory(
+            ValiBkpUtils.get_miner_dir(running_unit_tests=True)
+        )
+
         secrets = ValiUtils.get_secrets(running_unit_tests=True)
         self.MINER_HOTKEY = "test_miner"
         self.mock_metagraph = MockMetagraph([self.MINER_HOTKEY])
@@ -75,11 +81,13 @@ class TestMDDChecker(TestBase):
         self.mdd_checker = MockMDDChecker(self.mock_metagraph, self.position_manager, self.live_price_fetcher)
         self.DEFAULT_TEST_POSITION_UUID = "test_position"
         self.DEFAULT_OPEN_MS = TimeUtil.now_in_millis()
+        self.DEFAULT_ACCOUNT_SIZE = 100_000
         self.trade_pair_to_default_position = {x: Position(
             miner_hotkey=self.MINER_HOTKEY,
             position_uuid=self.DEFAULT_TEST_POSITION_UUID + str(x.trade_pair_id),
             open_ms=self.DEFAULT_OPEN_MS,
             trade_pair=x,
+            account_size=self.DEFAULT_ACCOUNT_SIZE,
         ) for x in TradePair}
 
         self.mdd_checker.elimination_manager.clear_eliminations()

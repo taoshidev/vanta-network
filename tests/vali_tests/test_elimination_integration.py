@@ -33,6 +33,11 @@ class TestEliminationIntegration(TestBase):
     
     def setUp(self):
         super().setUp()
+        # Clear ALL test miner positions BEFORE creating PositionManager
+        ValiBkpUtils.clear_directory(
+            ValiBkpUtils.get_miner_dir(running_unit_tests=True)
+        )
+
         
         # Create diverse set of miners for integration testing
         self.HEALTHY_MINER = "healthy_miner"
@@ -42,6 +47,7 @@ class TestEliminationIntegration(TestBase):
         self.ZOMBIE_MINER = "zombie_miner"
         self.LIQUIDATED_MINER = "liquidated_miner"
         self.NEW_MINER = "new_miner"
+        self.DEFAULT_ACCOUNT_SIZE = 100_000
         
         self.all_miners = [
             self.HEALTHY_MINER,
@@ -162,6 +168,7 @@ class TestEliminationIntegration(TestBase):
                     open_ms=base_time + (i * MS_IN_8_HOURS),
                     trade_pair=trade_pair,
                     is_closed_position=False,
+                    account_size=self.DEFAULT_ACCOUNT_SIZE,
                     orders=[Order(
                         price=60000 if trade_pair == TradePair.BTCUSD else (3000 if trade_pair == TradePair.ETHUSD else 1.25),
                         processed_ms=base_time + (i * MS_IN_8_HOURS),

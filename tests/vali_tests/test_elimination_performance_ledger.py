@@ -38,12 +38,18 @@ from shared_objects.cache_controller import CacheController
 class TestPerfLedgerEliminations(TestBase):
     def setUp(self):
         super().setUp()
+        # Clear ALL test miner positions BEFORE creating PositionManager
+        ValiBkpUtils.clear_directory(
+            ValiBkpUtils.get_miner_dir(running_unit_tests=True)
+        )
+
         
         # Test miners
         self.HEALTHY_MINER = "healthy_miner"
         self.MDD_MINER = "mdd_miner"
         self.LIQUIDATED_MINER = "liquidated_miner"
         self.INVALIDATED_MINER = "invalidated_miner"
+        self.DEFAULT_ACCOUNT_SIZE = 100_000
         
         self.all_miners = [
             self.HEALTHY_MINER,
@@ -135,6 +141,7 @@ class TestPerfLedgerEliminations(TestBase):
                 open_ms=TimeUtil.now_in_millis() - MS_IN_24_HOURS,
                 trade_pair=TradePair.BTCUSD,
                 is_closed_position=False,
+                account_size=self.DEFAULT_ACCOUNT_SIZE,
                 orders=[Order(
                     price=60000,
                     processed_ms=TimeUtil.now_in_millis() - MS_IN_24_HOURS,
@@ -427,6 +434,7 @@ class TestPerfLedgerEliminations(TestBase):
             trade_pair=TradePair.BTCUSD,
             is_closed_position=True,
             return_at_close=1.0,  # No profit/loss
+            account_size=self.DEFAULT_ACCOUNT_SIZE,
             orders=[Order(
                 price=60000,
                 processed_ms=TimeUtil.now_in_millis() - MS_IN_24_HOURS * 2,

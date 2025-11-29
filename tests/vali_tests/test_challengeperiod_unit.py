@@ -19,6 +19,7 @@ from vali_objects.utils.elimination_manager import EliminationManager
 from vali_objects.utils.ledger_utils import LedgerUtils
 from vali_objects.utils.miner_bucket_enum import MinerBucket
 from vali_objects.utils.plagiarism_manager import PlagiarismManager
+from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.validator_contract_manager import ValidatorContractManager
 from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.vali_dataclasses.order import Order
@@ -30,6 +31,11 @@ class TestChallengePeriodUnit(TestBase):
 
     def setUp(self):
         super().setUp()
+        # Clear ALL test miner positions BEFORE creating PositionManager
+        ValiBkpUtils.clear_directory(
+            ValiBkpUtils.get_miner_dir(running_unit_tests=True)
+        )
+
 
         # For the positions and ledger creation
         self.START_TIME = 1000

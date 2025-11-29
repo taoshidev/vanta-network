@@ -121,11 +121,10 @@ class TestValidatorContractManager(TestBase):
         # Mock collateral balance for consistent account size calculation
         with patch.object(self.contract_manager, '_save_miner_account_sizes_to_disk'):
             self.mock_collateral_manager_instance.balance_of.side_effect = [
-                1_000_000,  # First call
-                2_000_000,  # Second call
-                3_000_000,  # Third call
-            ]
-            
+            1_000_000,  # First call
+            2_000_000,  # Second call
+            3_000_000,  # Third call
+        ]
             # Add multiple records with different timestamps
             self.contract_manager.set_miner_account_size(self.MINER_1, base_time)
             self.contract_manager.set_miner_account_size(self.MINER_1, base_time + 1000)
@@ -180,6 +179,7 @@ class TestValidatorContractManager(TestBase):
         
         # Sync the data
         self.contract_manager.sync_miner_account_sizes_data(test_data)
+        print(self.contract_manager.miner_account_sizes)
         
         # Verify data was synced correctly
         self.assertIn(self.MINER_1, self.contract_manager.miner_account_sizes)

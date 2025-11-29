@@ -10,6 +10,7 @@ from tests.vali_tests.base_objects.test_base import TestBase
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.position import Position
 from vali_objects.utils.position_manager import PositionManager
+from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.risk_profiling import RiskProfiling
 from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.vali_dataclasses.order import Order
@@ -23,6 +24,11 @@ class TestRiskProfile(TestBase):
 
     def setUp(self):
         super().setUp()
+        # Clear ALL test miner positions BEFORE creating PositionManager
+        ValiBkpUtils.clear_directory(
+            ValiBkpUtils.get_miner_dir(running_unit_tests=True)
+        )
+
         self.DEFAULT_MINER_HOTKEY = "test_miner"
         self.DEFAULT_POSITION_UUID = "test_position"
         self.DEFAULT_ORDER_UUID = "test_order"
@@ -33,6 +39,7 @@ class TestRiskProfile(TestBase):
         self.DEFAULT_LEVERAGE = 1.0
         self.DEFAULT_TRADE_PAIR = TradePair.BTCUSD
         self.DEFAULT_OPEN = False
+        self.DEFAULT_ACCOUNT_SIZE = 100_000
 
         self.default_position = Position(
             miner_hotkey=self.DEFAULT_MINER_HOTKEY,
@@ -40,6 +47,7 @@ class TestRiskProfile(TestBase):
             open_ms=self.DEFAULT_OPEN_MS,
             trade_pair=self.DEFAULT_TRADE_PAIR,
             is_closed_position=self.DEFAULT_OPEN,
+            account_size=self.DEFAULT_ACCOUNT_SIZE,
         )
 
         self.default_order = Order(

@@ -104,7 +104,7 @@ def save_positions_to_manager(position_manager, hk_to_positions):
 class BacktestManager:
 
     def __init__(self, positions_at_t_f, start_time_ms, secrets, scoring_func,
-                 capital=ValiConfig.DEFAULT_CAPITAL, use_slippage=None,
+                 use_slippage=None,
                  fetch_slippage_data=False, recalculate_slippage=False, rebuild_all_positions=False,
                  parallel_mode: ParallelizationMode=ParallelizationMode.PYSPARK, build_portfolio_ledgers_only=False,
                  pool_size=0, target_ledger_window_ms=ValiConfig.TARGET_LEDGER_WINDOW_MS):
@@ -149,13 +149,13 @@ class BacktestManager:
                                                      secrets=self.secrets,
                                                      use_slippage=use_slippage,
                                                      build_portfolio_ledgers_only=build_portfolio_ledgers_only,
-                                                     target_ledger_window_ms=target_ledger_window_ms,
-                                                     contract_manager=self.contract_manager)
+                                                     target_ledger_window_ms=target_ledger_window_ms)
 
 
         self.position_manager = PositionManager(metagraph=self.metagraph,
                                                 perf_ledger_manager=self.perf_ledger_manager,
                                                 elimination_manager=self.elimination_manager,
+                                                contract_manager=self.contract_manager,
                                                 is_backtesting=True,
                                                 challengeperiod_manager=None)
 
@@ -185,7 +185,7 @@ class BacktestManager:
             contract_manager=self.contract_manager,
         )
         self.psm = PriceSlippageModel(self.live_price_fetcher, is_backtesting=True, fetch_slippage_data=fetch_slippage_data,
-                                      recalculate_slippage=recalculate_slippage, capital=capital)
+                                      recalculate_slippage=recalculate_slippage)
 
 
         #Until slippage is added to the db, this will always have to be done since positions are sometimes rebuilt and would require slippage attributes on orders and initial_entry_price calculation
@@ -364,7 +364,7 @@ if __name__ == '__main__':
     t0 = time.time()
 
     secrets = ValiUtils.get_secrets()  # {'polygon_apikey': '123', 'tiingo_apikey': '456'}
-    btm = BacktestManager(hk_to_positions, start_time_ms, secrets, None, capital=500_000,
+    btm = BacktestManager(hk_to_positions, start_time_ms, secrets, None,
                           use_slippage=use_slippage, fetch_slippage_data=False, recalculate_slippage=False,
                           parallel_mode=parallel_mode,
                           build_portfolio_ledgers_only=build_portfolio_ledgers_only)

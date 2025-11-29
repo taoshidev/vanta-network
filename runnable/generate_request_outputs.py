@@ -71,7 +71,7 @@ class RequestOutputGenerator:
 
     def repull_data_from_disk(self):
         contract_manager = ValidatorContractManager()
-        perf_ledger_manager = PerfLedgerManager(metagraph=None, contract_manager=contract_manager)
+        perf_ledger_manager = PerfLedgerManager(metagraph=None)
         elimination_manager = EliminationManager(None, None, None)
         self.position_manager = PositionManager(None, None,
                                                 elimination_manager=elimination_manager,

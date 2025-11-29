@@ -12,6 +12,7 @@ from vali_objects.utils.vali_utils import ValiUtils
 import bittensor as bt
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
+from vali_objects.vali_dataclasses.order import OrderSource
 from vali_objects.vali_dataclasses.price_source import PriceSource
 from statistics import median
 
@@ -310,6 +311,84 @@ class LivePriceFetcher:
         """
         return price_source
 
+    def get_quote_usd_conversion(self, order, position):
+        """
+        Return the conversion rate between an order's quote currency and USD
+        """
+        if order.price == 0:
+            return 0.0
+
+        if not (order.trade_pair.is_forex and order.trade_pair.quote != "USD"):
+            return 1.0
+
+        if order.trade_pair.base == "USD":
+            return 1.0 / order.price
+
+        # A/B cross pair: need to convert quote currency B to USD
+        # Try B/USD first (more common)
+        b_usd = True
+        conversion_trade_pair = TradePair.from_trade_pair_id(f"{order.trade_pair.quote}USD")
+        if conversion_trade_pair is None:
+            # fall back to USD/B format
+            b_usd = False
+            conversion_trade_pair = TradePair.from_trade_pair_id(f"USD{order.trade_pair.quote}")
+
+        price_source = self.get_close_at_date(
+            trade_pair=conversion_trade_pair,
+            timestamp_ms=order.processed_ms,
+            verbose=False
+        )
+        if price_source:
+            usd_conversion = price_source.parse_appropriate_price(
+                now_ms=order.processed_ms,
+                is_forex=True,          # from_currency is USD for crypto and equities
+                order_type=order.order_type,
+                position=position
+            )
+            return usd_conversion if b_usd else 1.0 / usd_conversion
+
+        bt.logging.error(f"Unable to fetch quote currency {order.trade_pair.quote} to USD conversion at time {order.processed_ms}.")
+        return 1.0
+        # TODO: raise Exception(f"Unable to fetch currency conversion from {from_currency} to USD at time {time_ms}.")
+
+    def get_usd_base_conversion(self, trade_pair, time_ms, price, order_type, position):
+        """
+        Return the conversion rate between USD and an order's base currency
+        """
+        if price == 0:
+            return 0.0
+
+        if trade_pair.base == "USD":
+            return 1.0
+
+        if not trade_pair.is_forex or trade_pair.quote == "USD":
+            return 1.0 / price
+
+        # A/B cross pair: need to convert usd to base currency A
+        # Try USD/A first (more common)
+        usd_a = True
+        conversion_trade_pair = TradePair.from_trade_pair_id(f"USD{trade_pair.base}")
+        if conversion_trade_pair is None:
+            # fall back to A/USD format
+            usd_a = False
+            conversion_trade_pair = TradePair.from_trade_pair_id(f"{trade_pair.base}USD")
+
+        price_source = self.get_close_at_date(
+            trade_pair=conversion_trade_pair,
+            timestamp_ms=time_ms,
+            verbose=False
+        )
+        if price_source:
+            usd_conversion = price_source.parse_appropriate_price(
+                now_ms=time_ms,
+                is_forex=True,          # from_currency is USD for crypto and equities
+                order_type=order_type,
+                position=position
+            )
+            return usd_conversion if usd_a else 1.0 / usd_conversion
+
+        bt.logging.error(f"Unable to fetch USD to base currency {trade_pair.base} conversion at time {time_ms}.")
+        return 1.0
 
 if __name__ == "__main__":
     secrets = ValiUtils.get_secrets()

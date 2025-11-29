@@ -23,6 +23,7 @@ from vali_objects.position import Position
 from vali_objects.utils.elimination_manager import EliminationManager
 from vali_objects.utils.live_price_fetcher import LivePriceFetcher
 from vali_objects.utils.position_manager import PositionManager
+from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair
 from vali_objects.vali_dataclasses.order import Order
@@ -41,10 +42,16 @@ class TestPerfLedgerEdgeCasesAndValidation(TestBase):
 
     def setUp(self):
         super().setUp()
+        # Clear ALL test miner positions BEFORE creating PositionManager
+        ValiBkpUtils.clear_directory(
+            ValiBkpUtils.get_miner_dir(running_unit_tests=True)
+        )
+
         secrets = ValiUtils.get_secrets(running_unit_tests=True)
         self.live_price_fetcher = LivePriceFetcher(secrets=secrets, disable_ws=True)
         self.test_hotkey = "test_miner_edge"
         self.now_ms = TimeUtil.now_in_millis()
+        self.DEFAULT_ACCOUNT_SIZE = 100_000
         
         self.mmg = MockMetagraph(hotkeys=[self.test_hotkey])
         self.elimination_manager = EliminationManager(self.mmg, None, None, running_unit_tests=True)
@@ -101,6 +108,7 @@ class TestPerfLedgerEdgeCasesAndValidation(TestBase):
             open_ms=base_time,
             close_ms=base_time + 1000,  # 1 second later
             trade_pair=TradePair.BTCUSD,
+            account_size=self.DEFAULT_ACCOUNT_SIZE,
             orders=[
                 Order(
                     price=50000.0,
@@ -486,6 +494,7 @@ class TestPerfLedgerEdgeCasesAndValidation(TestBase):
             open_ms=base_time,
             close_ms=base_time + (10 * MS_IN_24_HOURS),  # 10 days
             trade_pair=TradePair.BTCUSD,
+            account_size=self.DEFAULT_ACCOUNT_SIZE,
             orders=[
                 Order(
                     price=50000.0,
@@ -539,6 +548,7 @@ class TestPerfLedgerEdgeCasesAndValidation(TestBase):
             open_ms=open_ms,
             close_ms=close_ms,
             trade_pair=trade_pair,
+            account_size=self.DEFAULT_ACCOUNT_SIZE,
             orders=[
                 Order(
                     price=open_price,

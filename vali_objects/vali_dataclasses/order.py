@@ -2,16 +2,17 @@
 # Copyright © 2024 Taoshi Inc
 
 from time_util.time_util import TimeUtil
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 
 from vali_objects.enums.order_type_enum import OrderType
+from vali_objects.vali_config import ValiConfig
 from vali_objects.vali_dataclasses.order_signal import Signal
 from vali_objects.vali_dataclasses.price_source import PriceSource
 from enum import Enum, IntEnum, auto
 
 class OrderSource(IntEnum):
     """Enum representing the source/origin of an order."""
-    ORGANIC = 0                         # order generated from a miner's signal
+    ORGANIC = 0                        # order generated from a miner's signal
     ELIMINATION_FLAT = 1               # order inserted when a miner is eliminated (0 used for price. DEPRECATED)
     DEPRECATION_FLAT = 2               # order inserted when a trade pair is removed (0 used for price)
     PRICE_FILLED_ELIMINATION_FLAT = 3  # order inserted when a miner is eliminated but we price fill it accurately.
@@ -25,25 +26,50 @@ ORDER_SRC_PRICE_FILLED_ELIMINATION_FLAT = OrderSource.PRICE_FILLED_ELIMINATION_F
 ORDER_SRC_MAX_ORDERS_PER_POSITION_CLOSE = OrderSource.MAX_ORDERS_PER_POSITION_CLOSE
 
 class Order(Signal):
-    price: float
-    bid: float = 0
-    ask: float = 0
+    price: float                # Quote currency
+    bid: float = 0              # Quote currency
+    ask: float = 0              # Quote currency
     slippage: float = 0
+    quote_usd_rate: float = 0.0 # Conversion rate from quote currency to USD
+    usd_base_rate: float = 0.0  # Conversion rate from usd to base currency
     processed_ms: int
     order_uuid: str
     price_sources: list = []
     src: int = ORDER_SRC_ORGANIC
 
-    @field_validator('price', 'processed_ms', 'leverage', mode='before')
+    @model_validator(mode="after")
+    def set_conversion_defaults(self):
+        """
+        Initializes quote_usd_rate and usd_base_rate based on the trade pair.
+        Only sets values if they were left at the default 0.
+        """
+        base = self.trade_pair.base  # e.g. BTC in BTCUSD
+        quote = self.trade_pair.quote  # e.g. USD in BTCUSD
+        price = self.price
+
+        if price == 0:
+            return self
+
+        if self.quote_usd_rate == 0:
+            if quote == "USD":
+                self.quote_usd_rate = 1.0
+            elif base == "USD":
+                self.quote_usd_rate = 1.0 / price
+
+        if self.usd_base_rate == 0:
+            if base == "USD":
+                self.usd_base_rate = 1.0
+            elif quote == "USD":
+                self.usd_base_rate = 1.0 / price
+
+        return self
+
+    @field_validator('price', 'processed_ms', mode='before')
     def validate_values(cls, v, info):
         if info.field_name == 'price' and v < 0:
             raise ValueError("Price must be greater than 0")
         if info.field_name == 'processed_ms' and v < 0:
             raise ValueError("processed_ms must be greater than 0")
-        if info.field_name == 'leverage':
-            order_type = info.data.get('order_type')
-            if order_type == OrderType.LONG and v < 0:
-                raise ValueError("Leverage must be positive for LONG orders.")
         return v
 
     @field_validator('order_uuid', mode='before')
@@ -57,6 +83,29 @@ class Order(Signal):
         if isinstance(v, list):
             return [PriceSource(**ps) if isinstance(ps, dict) else ps for ps in v]
         return v
+
+    # @model_validator(mode='before')
+    # def validate_size(cls, values):
+    #     """
+    #     Ensure that size meets min and maximum requirements
+    #     """
+    #     order_type = values['order_type']
+    #     is_flat_order = order_type == OrderType.FLAT or order_type == 'FLAT'
+    #     lev = values['leverage']
+    #     val = values.get('value')
+    #     if not is_flat_order and not (ValiConfig.ORDER_MIN_LEVERAGE <= abs(lev) <= ValiConfig.ORDER_MAX_LEVERAGE):
+    #         raise ValueError(
+    #             f"Order leverage must be between {ValiConfig.ORDER_MIN_LEVERAGE} and {ValiConfig.ORDER_MAX_LEVERAGE}, provided - lev [{lev}] and order_type [{order_type}] ({type(order_type)})")
+    #     if val is not None and not is_flat_order and not ValiConfig.ORDER_MIN_VALUE <= abs(val):
+    #         raise ValueError(f"Order value must be greater than {ValiConfig.ORDER_MIN_VALUE}, provided value is {abs(val)}")
+    #     return values
+
+    @model_validator(mode="before")
+    def check_exclusive_fields(cls, values):
+        """
+        Overrides inherited check_exclusive_fields from signal. When we populate the order we want to fill in all three leverage/value/quantity fields.
+        """
+        return values
 
     # Using Pydantic's constructor instead of a custom from_dict method
     @classmethod
@@ -73,10 +122,14 @@ class Order(Signal):
         return {'trade_pair_id': trade_pair_id,
                     'order_type': self.order_type.name,
                     'leverage': self.leverage,
+                    'value': self.value,
+                    'quantity': self.quantity,
                     'price': self.price,
                     'bid': self.bid,
                     'ask': self.ask,
                     'slippage': self.slippage,
+                    'quote_usd_rate': self.quote_usd_rate,
+                    'usd_base_rate': self.usd_base_rate,
                     'processed_ms': self.processed_ms,
                     'price_sources': self.price_sources,
                     'order_uuid': self.order_uuid,

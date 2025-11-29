@@ -27,11 +27,10 @@ class PriceSlippageModel:
     is_backtesting = False
     fetch_slippage_data = False
     recalculate_slippage = False
-    capital = ValiConfig.DEFAULT_CAPITAL
     last_refresh_time_ms = 0
 
     def __init__(self, live_price_fetcher=None, running_unit_tests=False, is_backtesting=False,
-                 fetch_slippage_data=False, recalculate_slippage=False, capital=ValiConfig.DEFAULT_CAPITAL):
+                 fetch_slippage_data=False, recalculate_slippage=False):
         if not PriceSlippageModel.parameters:
             PriceSlippageModel.holidays_nyse = holidays.financial_holidays('NYSE')
             PriceSlippageModel.parameters = self.read_slippage_model_parameters()
@@ -44,10 +43,9 @@ class PriceSlippageModel:
         PriceSlippageModel.is_backtesting = is_backtesting
         PriceSlippageModel.fetch_slippage_data = fetch_slippage_data
         PriceSlippageModel.recalculate_slippage = recalculate_slippage
-        PriceSlippageModel.capital = capital
 
     @classmethod
-    def calculate_slippage(cls, bid:float, ask:float, order:Order, capital:float=None):
+    def calculate_slippage(cls, bid:float, ask:float, order:Order):
         """
         returns the percentage slippage of the current order.
         each asset class uses a unique model
@@ -57,23 +55,19 @@ class PriceSlippageModel:
 
         trade_pair = order.trade_pair
         if bid * ask == 0:
-            if not trade_pair.is_crypto:  # For now, crypto does not have slippage
+            if not trade_pair.is_crypto:  # For now, crypto does not have bid/ask data
                 bt.logging.warning(f'Tried to calculate slippage with bid: {bid} and ask: {ask}. order: {order}. Returning 0')
-                return 0  # Need valid bid and ask.
-        if capital is None:
-            capital = ValiConfig.MIN_CAPITAL
-        size = abs(order.leverage) * capital
-        if size <= 1000:
-            return 0  # assume 0 slippage when order size is under 1k
-        if cls.is_backtesting:
-            cls.refresh_features_daily(order.processed_ms, write_to_disk=False)
+            return 0  # Need valid bid and ask.
+        if abs(order.value) <= 1000:
+            return 0
+        cls.refresh_features_daily(order.processed_ms, write_to_disk=not cls.is_backtesting)
 
         if trade_pair.is_equities:
             slippage_percentage = cls.calc_slippage_equities(bid, ask, order)
         elif trade_pair.is_forex:
             slippage_percentage = cls.calc_slippage_forex(bid, ask, order)
         elif trade_pair.is_crypto:
-            slippage_percentage = cls.calc_slippage_crypto(order, capital)
+            slippage_percentage = cls.calc_slippage_crypto(order)
         else:
             raise ValueError(f"Invalid trade pair {trade_pair.trade_pair_id} to calculate slippage")
         return float(np.clip(slippage_percentage, 0.0, 0.03))
@@ -93,7 +87,7 @@ class PriceSlippageModel:
         spread = ask - bid
         mid_price = (bid + ask) / 2
 
-        size = abs(order.leverage) * ValiConfig.DEFAULT_CAPITAL
+        size = abs(order.value)
         volume_shares = size / mid_price
 
         if order.processed_ms > 1735718400000:  # Use fitted BB+ for orders after jan 1, 2024, 08:00:00 UTC
@@ -134,7 +128,7 @@ class PriceSlippageModel:
 
         # bt.logging.info(f"bid: {bid}, ask: {ask}, adv: {avg_daily_volume}, vol: {annualized_volatility}")
 
-        size = abs(order.leverage) * ValiConfig.DEFAULT_CAPITAL
+        size = abs(order.value)
         base, _ = order.trade_pair.trade_pair.split("/")
         base_to_usd_conversion = cls.live_price_fetcher.polygon_data_service.get_currency_conversion(base=base, quote="USD") if base != "USD" else 1  # TODO: fallback?
         # print(base_to_usd_conversion)
@@ -148,19 +142,20 @@ class PriceSlippageModel:
         return slippage_pct
 
     @classmethod
-    def calc_slippage_crypto(cls, order:Order, capital:float) -> float:
+    def calc_slippage_crypto(cls, order:Order) -> float:
         """
-        slippage values for crypto
+        V2: price slippage model
+
+        V1: 0.2 bps for majors, 2 bps for alts
         """
         if order.processed_ms > SLIPPAGE_V2_TIME_MS:
             side = "long" if order.leverage > 0 else "short"
-            size = abs(order.leverage) * capital
             slippage_size_buckets = cls.slippage_estimates["crypto"][order.trade_pair.trade_pair_id+"C"][side]
             last_slippage = 0
             for bucket, slippage in slippage_size_buckets.items():
                 low, high = bucket[1:-1].split(",")
                 last_slippage = slippage
-                if int(low) <= size < int(high):
+                if int(low) <= abs(order.value) < int(high):
                     return last_slippage * 3     # conservative 3x multiplier on slippage
             return last_slippage * 3
 
@@ -318,7 +313,7 @@ class PriceSlippageModel:
                         bid = best_price_source.bid
                         ask = best_price_source.ask
 
-                    slippage = self.calculate_slippage(bid, ask, o, capital=self.capital)
+                    slippage = self.calculate_slippage(bid, ask, o)
                     o.bid = bid
                     o.ask = ask
                     o.slippage = slippage
@@ -333,6 +328,6 @@ if __name__ == "__main__":
     equities_order_buy = Order(price=100, processed_ms=TimeUtil.now_in_millis() - 1000 * 200,
                                     order_uuid="test_order",
                                     trade_pair=TradePair.NVDA,
-                                    order_type=OrderType.LONG, leverage=1)
+                                    order_type=OrderType.LONG, quantity=1)
     slippage_buy = PriceSlippageModel.calculate_slippage(bid=99, ask=100, order=equities_order_buy)
     print(slippage_buy)

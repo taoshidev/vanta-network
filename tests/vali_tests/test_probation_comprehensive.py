@@ -28,6 +28,7 @@ from vali_objects.utils.miner_bucket_enum import MinerBucket
 from vali_objects.utils.plagiarism_manager import PlagiarismManager
 from vali_objects.utils.position_lock import PositionLocks
 from vali_objects.utils.subtensor_weight_setter import SubtensorWeightSetter
+from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.validator_contract_manager import ValidatorContractManager
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair, ValiConfig
@@ -43,6 +44,11 @@ class TestProbationComprehensive(TestBase):
 
     def setUp(self):
         super().setUp()
+        # Clear ALL test miner positions BEFORE creating PositionManager
+        ValiBkpUtils.clear_directory(
+            ValiBkpUtils.get_miner_dir(running_unit_tests=True)
+        )
+
         self.N_MAINCOMP_MINERS = 30
         self.N_CHALLENGE_MINERS = 5
         self.N_PROBATION_MINERS = 5

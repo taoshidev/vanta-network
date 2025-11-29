@@ -10,6 +10,7 @@ from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.position import Position
 from vali_objects.utils.elimination_manager import EliminationManager
 from vali_objects.utils.plagiarism_events import PlagiarismEvents
+from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.vali_dataclasses.order import Order
@@ -20,6 +21,11 @@ class TestPlagiarismIntegration(TestBase):
     def setUp(self):
 
         super().setUp()
+        # Clear ALL test miner positions BEFORE creating PositionManager
+        ValiBkpUtils.clear_directory(
+            ValiBkpUtils.get_miner_dir(running_unit_tests=True)
+        )
+
 
         self.ONE_DAY_MS = 1000 * 60 * 60 * 24
         self.ONE_HOUR_MS = 1000 * 60 * 60
@@ -27,7 +33,7 @@ class TestPlagiarismIntegration(TestBase):
 
         self.N_MINERS = 6
         self.MINER_NAMES = [f"test_miner{i}" for i in range(self.N_MINERS)]
-
+        self.DEFAULT_ACCOUNT_SIZES = 100_000
         secrets = ValiUtils.get_secrets(running_unit_tests=True)
         self.live_price_fetcher = MockLivePriceFetcher(secrets=secrets, disable_ws=True)
         self.mock_metagraph = MockMetagraph(self.MINER_NAMES)
@@ -173,6 +179,7 @@ class TestPlagiarismIntegration(TestBase):
             position_uuid=self.DEFAULT_TEST_POSITION_UUID + f"pos{self.position_counter}",
             open_ms=open_ms,
             trade_pair=trade_pair,
+            account_size=self.DEFAULT_ACCOUNT_SIZES,
         )
 
         for i in range(len(leverages)):

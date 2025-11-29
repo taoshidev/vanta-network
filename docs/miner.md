@@ -14,7 +14,7 @@ A long position is a bet that the trade pair will increase, while a short positi
 2. Your miner will start in the challenge period upon entry. Miners must demonstrate consistent performance within 90 days to pass the challenge period. During this period, they will receive a small amount of TAO that will help them avoid getting deregistered. The minimum requirements to pass the challenge period:
    - Have at least 61 full days of trading
    - Don't exceed 10% max drawdown
-   - Score at or above the 15th miner in each asset class in main competition. The details may be found [here](https://docs.taoshi.io/tips/p21/).
+   - Score at or above the 25th miner in each asset class in main competition. The details may be found [here](https://docs.taoshi.io/tips/p21/).
 3. Miner's account size is determined from your miner's deposited collateral. Each theta deposited unlocks \$500 of trading capacity. Miners are required to deposit a minimum of 300 Theta, and are capped at a maximum of 1000 Theta deposited as collateral.
 4. Miner's must select an asset category in order to submit trades. Miners will be restricted to only submitting trades in their chosen asset class.
 5. Positions are uni-directional. Meaning, if a position starts LONG (the first order it receives is LONG),
@@ -28,8 +28,8 @@ A long position is a bet that the trade pair will increase, while a short positi
    of size .25x leverage to reduce the size of the position. LONG and SHORT signals can be thought of working in opposite
    directions in this way.
 9. Miners that have passed challenge period will be eliminated for a drawdown that exceeds 10%.
-10. Miners in main competition who fall below the top 15 in each asset class will be observed under a probation period. 
-   - Miners in probation period have 30 days from time of demotion to be promoted back into main competition.
+10. Miners in main competition who fall below the top 25 in each asset class will be observed under a probation period. 
+   - Miners in probation period have 60 days from time of demotion to be promoted back into main competition.
    - If they fail to do so within this window, they will be eliminated.
 11. A miner can have a maximum of 1 open position per trade pair. No limit on the number of closed positions.
 12. A miner's order will be ignored if placing a trade outside of market hours.
@@ -37,27 +37,8 @@ A long position is a bet that the trade pair will increase, while a short positi
 14. There is a 10-second cooldown period between orders of the same trade pair, during which the miner cannot place another order.
 15. **CRITICAL**: Never reuse hotkeys that have been previously eliminated or deregistered. Once a hotkey is eliminated or deregistered, it is **permanently blacklisted** by the network. Validators internally track all departed hotkeys (both eliminated miners and voluntary deregistrations) and will reject orders from re-registered hotkeys. **Each registration must use a completely new, unused hotkey**. This policy ensures network integrity and prevents circumventing elimination penalties.
 
-## Scoring Categories
-Our incentive is split into a number of subcategories, each of which is competitive using the same rules of logic as seen above. This helps to balance the spread of information which is generated on our network, without being too prescriptive in terms of what it means to score well within a specific subtopic. The incentive is split evenly between asset classes, with subcategories as follows:
-
-### Crypto (50% total emission)
-| Subcategory | Weight | Percentage | Effective Total |
-|-------------|--------|------------|-----------------|
-| MAJORS      | 0.8    | 80%        | 40%             |
-| ALTS        | 0.2    | 20%        | 10%             |
-
-### Forex (50% total emission)
-*Based on margin requirements on brokerage accounts*
-
-| Subcategory | Weight  | Percentage | Effective Total |
-|-------------|---------|------------|-----------------|
-| G1          | 0.2927  | 29.27%     | 14.64%          |
-| G2          | 0.1463  | 14.63%     | 7.32%           |
-| G3          | 0.2073  | 20.73%     | 10.37%          |
-| G4          | 0.0976  | 9.76%      | 4.88%           |
-| G5          | 0.2561  | 25.61%     | 12.81%          |
-
-To achieve maximum reward as a miner, you will need to be competitive in all asset categories. You may find more information about this in the following proposal: [P23](https://docs.taoshi.io/tips/p23/).
+## Asset Class Selection
+Each miner selects a single asset class to compete in (crypto or forex), and competes only against other miners with the same asset class selection. Miners who do not select an asset class are restricted from placing orders.
 
 ## Scoring Details
 

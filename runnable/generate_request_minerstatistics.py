@@ -706,16 +706,13 @@ class MinerStatisticsManager:
 
         # Build the final list
         results = []
-        # TODO [remove on 2025-10-02] 70 day grace period --> reset upper bound to bucket_end_time_ms
-        asset_split_grace_date = datetime.strptime(ValiConfig.ASSET_SPLIT_GRACE_DATE, "%Y-%m-%d")
-        asset_split_grace_timestamp = int(asset_split_grace_date.timestamp() * 1000)
         for hotkey in selected_miner_hotkeys:
 
             # ChallengePeriod info
             challengeperiod_info = {}
             if hotkey in sorted_challengeperiod_testing:
                 cp_start = sorted_challengeperiod_testing[hotkey]
-                cp_end = max(cp_start + ValiConfig.CHALLENGE_PERIOD_MAXIMUM_MS, asset_split_grace_timestamp)
+                cp_end = cp_start + ValiConfig.CHALLENGE_PERIOD_MAXIMUM_MS
                 remaining = cp_end - time_now
                 challengeperiod_info = {
                     "status": "testing",
@@ -730,7 +727,7 @@ class MinerStatisticsManager:
                 }
             elif hotkey in sorted_challengeperiod_probation:
                 bucket_start = sorted_challengeperiod_probation[hotkey]
-                bucket_end = max(bucket_start + ValiConfig.PROBATION_MAXIMUM_MS, asset_split_grace_timestamp)
+                bucket_end = bucket_start + ValiConfig.PROBATION_MAXIMUM_MS
                 remaining = bucket_end - time_now
                 challengeperiod_info = {
                     "status": "probation",
@@ -739,7 +736,7 @@ class MinerStatisticsManager:
                 }
             elif hotkey in sorted_challengeperiod_plagiarism:
                 bucket_start = sorted_challengeperiod_plagiarism[hotkey]
-                bucket_end = max(bucket_start + ValiConfig.PLAGIARISM_REVIEW_PERIOD_MS, asset_split_grace_timestamp)
+                bucket_end = bucket_start + ValiConfig.PLAGIARISM_REVIEW_PERIOD_MS
                 remaining = bucket_end - time_now
                 challengeperiod_info = {
                     "status": "plagiarism",

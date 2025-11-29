@@ -16,11 +16,12 @@ from vali_objects.position import Position
 from vali_objects.utils.auto_sync import PositionSyncer
 from vali_objects.utils.elimination_manager import EliminationManager
 from vali_objects.utils.position_manager import PositionManager
+from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.validator_sync_base import AUTO_SYNC_ORDER_LAG_MS
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.vali_dataclasses.order import Order
-from vali_objects.utils.live_price_fetcher import LivePriceFetcher
 from vali_objects.utils.vali_utils import ValiUtils
+from tests.shared_objects.mock_classes import MockLivePriceFetcher
 
 
 class TestAutoSyncTxtFiles(TestBase):
@@ -35,6 +36,12 @@ class TestAutoSyncTxtFiles(TestBase):
 
     def setUp(self):
         super().setUp()
+        # Clear ALL test miner positions BEFORE creating PositionManager
+        ValiBkpUtils.clear_directory(
+            ValiBkpUtils.get_miner_dir(running_unit_tests=True)
+        )
+
+        self.DEFAULT_ACCOUNT_SIZE = 100_000
         
         # Load test data files
         test_data_dir = os.path.join(os.path.dirname(__file__), '..', 'test_data')
@@ -57,9 +64,9 @@ class TestAutoSyncTxtFiles(TestBase):
         # Set up mock metagraph
         self.mock_metagraph = MockMetagraph(list(self.hotkeys))
         
-        # Set up live price fetcher
+        # Set up live price fetcher (use mock to avoid API calls during tests)
         secrets = ValiUtils.get_secrets(running_unit_tests=True)
-        self.live_price_fetcher = LivePriceFetcher(secrets=secrets, disable_ws=True)
+        self.live_price_fetcher = MockLivePriceFetcher(secrets=secrets, disable_ws=True)
         
         # Initialize managers
         self.elimination_manager = EliminationManager(
@@ -88,6 +95,7 @@ class TestAutoSyncTxtFiles(TestBase):
         for pos_dict in positions_data:
             try:
                 position = Position(**pos_dict)
+                position.account_size = self.DEFAULT_ACCOUNT_SIZE   # hotfix to add account size
                 positions.append(position)
             except Exception as e:
                 print(f"Failed to create position {pos_dict.get('position_uuid', 'unknown')}: {e}")
@@ -489,6 +497,8 @@ class TestAutoSyncTxtFiles(TestBase):
             order_type=OrderType.LONG,
             leverage=0.025,
             price=65000.0,
+            quote_usd_rate=1,
+            usd_base_rate=1/65000.0,
             processed_ms=current_time,
             trade_pair=random_trade_pair
         ))
@@ -500,6 +510,8 @@ class TestAutoSyncTxtFiles(TestBase):
             order_type=OrderType.FLAT,
             leverage=-0.025,  # Close out all leverage
             price=0,
+            quote_usd_rate=0,
+            usd_base_rate=0,
             processed_ms=current_time,
             trade_pair=random_trade_pair
         ))
@@ -513,8 +525,10 @@ class TestAutoSyncTxtFiles(TestBase):
             orders=bogus_orders,
             position_type=OrderType.FLAT,
             close_ms=bogus_orders[-1].processed_ms,
-            is_closed_position=True
+            is_closed_position=True,
+            account_size=self.DEFAULT_ACCOUNT_SIZE
         )
+        bogus_position.rebuild_position_with_updated_orders(self.live_price_fetcher)
         
         # Add to modified positions
         modified_positions.append(bogus_position)

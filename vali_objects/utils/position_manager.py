@@ -1,6 +1,7 @@
 # developer: jbonilla
 # Copyright © 2024 Taoshi Inc
 import json
+import math
 import os
 import shutil
 import time
@@ -770,12 +771,13 @@ class PositionManager(CacheController):
                     flat_order = Order(price=live_price,
                                        price_sources=price_sources,
                                        processed_ms=TARGET_MS,
-                                       order_uuid=position.position_uuid[::-1],
-                                       # determinstic across validators. Won't mess with p2p sync
+                                       order_uuid=position.position_uuid[::-1], # deterministic across validators. Won't mess with p2p sync
                                        trade_pair=position.trade_pair,
                                        order_type=OrderType.FLAT,
-                                       leverage=0,
+                                       leverage=-position.net_leverage,
                                        src=OrderSource.DEPRECATION_FLAT)
+                    flat_order.quote_usd_rate = self.live_price_fetcher.get_quote_usd_conversion(flat_order, position)
+                    flat_order.usd_base_rate = self.live_price_fetcher.get_usd_base_conversion(position.trade_pair, TARGET_MS, live_price, OrderType.FLAT, position)
 
                     position.add_order(flat_order, self.live_price_fetcher)
                     self.save_miner_position(position, delete_open_position_if_exists=True)
@@ -849,7 +851,13 @@ class PositionManager(CacheController):
             else:
                 value2 = getattr(position2, attr, None)
 
-            if value1 != value2:
+            # tolerant float comparison
+            if isinstance(value1, (int, float)) and isinstance(value2, (int, float)):
+                value1 = float(value1)
+                value2 = float(value2)
+                if not math.isclose(value1, value2, rel_tol=1e-9, abs_tol=1e-9):
+                    return False, f"{attr} is different. {value1} != {value2}"
+            elif value1 != value2:
                 return False, f"{attr} is different. {value1} != {value2}"
         return True, ""
 
@@ -1171,7 +1179,6 @@ class PositionManager(CacheController):
             ans["positions"].append(position_dict)
         return ans
 
-
     def _get_position_from_disk(self, file) -> Position:
         # wrapping here to allow simpler error handling & original for other error handling
         # Note one position always corresponds to one file.
@@ -1354,6 +1361,7 @@ class PositionManager(CacheController):
                     # Calculate return with fees at this moment
                     position_return = position.get_open_position_return_with_fees(
                         realtime_price,
+                        self.live_price_fetcher,
                         now_ms
                     )
                     portfolio_return *= position_return
@@ -1540,7 +1548,8 @@ class PositionManager(CacheController):
                                         position_uuid=order_group[0].order_uuid,
                                         open_ms=0,
                                         trade_pair=position.trade_pair,
-                                        orders=order_group)
+                                        orders=order_group,
+                                        account_size=position.account_size)
                 new_position.rebuild_position_with_updated_orders(self.live_price_fetcher)
                 positions.append(new_position)
 
