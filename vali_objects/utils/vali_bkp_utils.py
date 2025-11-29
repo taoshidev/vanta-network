@@ -68,7 +68,7 @@ class ValiBkpUtils:
         """
         Get the path to api_keys.json with backwards compatibility.
 
-        Checks vanta_api first, then falls back to ptn_api for backwards compatibility
+        Checks vanta_api first, then falls back to vanta_api for backwards compatibility
         during the migration period.
 
         ptn_api is deprecated, and support will be removed in the future.

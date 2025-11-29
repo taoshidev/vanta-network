@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from multiprocessing.managers import BaseManager
 from typing import Dict, Optional
 
-from ptn_api.slack_notifier import SlackNotifier
+from vanta_api.slack_notifier import SlackNotifier
 from time_util.time_util import TimeUtil
 from vali_objects.vali_config import ValiConfig
 from vali_objects.vali_dataclasses.emissions_ledger import EmissionsLedgerManager

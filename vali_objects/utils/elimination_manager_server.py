@@ -395,7 +395,7 @@ class EliminationManagerServer(CacheController):
                 )
             self.handle_eliminated_miner(e['hotkey'], trade_pair_to_price_source_used_for_elimination_check,
                                         position_locks, iteration_epoch)
-            self.contract_manager.slash_miner_collateral_proportion(e['hotkey'], ValiConfig.SLASH_PROPORTION)
+            self.contract_manager.slash_miner_collateral_proportion(e['hotkey'])
 
         if n_eliminations:
             self.save_eliminations()
@@ -552,7 +552,7 @@ class EliminationManagerServer(CacheController):
                 bt.logging.error(f"[ELIM_DEBUG] ✗ FAILED to add {hotkey} to eliminations list!")
 
             self.handle_eliminated_miner(hotkey, {}, position_locks, iteration_epoch)
-            self.contract_manager.slash_miner_collateral_proportion(hotkey, ValiConfig.CHALLENGEPERIOD_SLASH_PROPORTION)
+            self.contract_manager.slash_miner_collateral_proportion(hotkey)
 
         bt.logging.info(f"[ELIM_DEBUG] After processing, eliminations dict has {len(self.eliminations)} entries")
 
@@ -758,7 +758,7 @@ class EliminationManagerServer(CacheController):
             if miner_exceeds_mdd:
                 self.append_elimination_row(miner_hotkey, drawdown_percentage, EliminationReason.MAX_TOTAL_DRAWDOWN.value)
                 self.handle_eliminated_miner(miner_hotkey, {}, position_locks, iteration_epoch)
-                self.contract_manager.slash_miner_collateral_proportion(miner_hotkey, ValiConfig.SLASH_PROPORTION)
+                self.contract_manager.slash_miner_collateral_proportion(miner_hotkey)
 
     def handle_zombies(self, position_locks, iteration_epoch=None):
         """Handle zombie miners"""

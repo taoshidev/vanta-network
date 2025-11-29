@@ -1,6 +1,6 @@
 pydantic == 2.10.3
 polygon-api-client == 1.15.3
-bittensor == 9.12.2
+bittensor == 9.9.0
 scikit-learn == 1.5.0
 scipy == 1.13.0
 pandas == 2.2.2
