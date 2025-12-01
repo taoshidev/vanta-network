@@ -629,6 +629,9 @@ class LimitOrderManager(CacheController):
 
             # Issue 4: Copy values TO original order object rather than reassigning variable
             filled_order = updated_position.orders[-1]
+            order.leverage = filled_order.leverage
+            order.value = filled_order.value
+            order.quantity = filled_order.quantity
             order.price_sources = filled_order.price_sources
             order.price = fill_price if fill_price else filled_order.price
             order.bid = filled_order.bid
