@@ -78,15 +78,16 @@ class OrderProcessor:
             SignalException: If required fields are missing or processing fails
         """
         # Extract signal data
-        signal_leverage = signal.get("leverage")
+        leverage = signal.get("leverage")
+        value = signal.get("value")
+        quantity = signal.get("quantity")
+
         signal_order_type_str = signal.get("order_type")
         limit_price = signal.get("limit_price")
         stop_loss = signal.get("stop_loss")
         take_profit = signal.get("take_profit")
 
         # Validate required fields
-        if signal_leverage is None:
-            raise SignalException("Missing required field: leverage")
         if not signal_order_type_str:
             raise SignalException("Missing required field: order_type")
         if not limit_price:
@@ -127,7 +128,9 @@ class OrderProcessor:
             processed_ms=now_ms,
             price=0.0,
             order_type=signal_order_type,
-            leverage=float(signal_leverage),
+            leverage=leverage,
+            quantity=quantity,
+            value=value,
             execution_type=ExecutionType.LIMIT,
             limit_price=float(limit_price),
             stop_loss=stop_loss,
@@ -200,7 +203,10 @@ class OrderProcessor:
             SignalException: If required fields are missing, no position exists, or processing fails
         """
         # Extract signal data
-        leverage = signal.get("leverage", 0)  # If leverage is None, read leverage from position
+        leverage = signal.get("leverage")  # If leverage is None, read leverage from position
+        value = signal.get("value")
+        quantity = signal.get("quantity")
+
         stop_loss = signal.get("stop_loss")
         take_profit = signal.get("take_profit")
 
@@ -227,7 +233,9 @@ class OrderProcessor:
             processed_ms=now_ms,
             price=0.0,
             order_type=OrderType.LONG,  # Placeholder - will be overridden by manager
-            leverage=float(leverage),
+            leverage=leverage,
+            quantity=quantity,
+            value=value,
             execution_type=ExecutionType.BRACKET,
             limit_price=None,  # Not used for bracket orders
             stop_loss=stop_loss,

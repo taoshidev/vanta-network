@@ -136,8 +136,10 @@ class LimitOrderManager(CacheController):
                 order.order_type = position.position_type
 
                 # Use miner-provided leverage if specified, otherwise use position leverage
-                if order.leverage == 0.0:
+                if order.leverage is None and order.value is None and order.quantity is None:
                     order.leverage = position.net_leverage
+                    order.value = position.net_value
+                    order.quantity = position.net_quantity
 
             # Validation for LIMIT orders
             if order.execution_type == ExecutionType.LIMIT:
@@ -281,6 +283,8 @@ class LimitOrderManager(CacheController):
                             "limit_price": order.limit_price,
                             "price": order.price,
                             "leverage": order.leverage,
+                            'value': order.value,
+                            'quantity': order.quantity,
                             "src": order.src,
                             "execution_type": order.execution_type.name,
                             "order_uuid": order.order_uuid,
@@ -599,6 +603,8 @@ class LimitOrderManager(CacheController):
                 if closing_order_type:
                     order_dict['order_type'] = closing_order_type.name
                     order_dict['leverage'] = abs(order.leverage)
+                    order_dict['value'] = abs(order.value)
+                    order_dict['quantity'] = abs(order.quantity)
                 else:
                     raise ValueError("Bracket Order type was not LONG or SHORT")
 
@@ -706,6 +712,8 @@ class LimitOrderManager(CacheController):
                 price=0.0,
                 order_type=parent_order.order_type,
                 leverage=parent_order.leverage,
+                value=None,
+                quantity=parent_order.quantity,
                 execution_type=ExecutionType.BRACKET,
                 limit_price=None,  # Not used for bracket orders
                 stop_loss=parent_order.stop_loss,

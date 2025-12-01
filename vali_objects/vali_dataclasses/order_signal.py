@@ -21,10 +21,15 @@ class Signal(BaseModel):
     @model_validator(mode='before')
     def check_exclusive_fields(cls, values):
         """
-        Ensure that only ONE of leverage, value, or quantity is filled
+        Ensure that only ONE of leverage, value, or quantity is filled.
+        Exception: BRACKET orders can have all fields as None (will be populated from position).
         """
+        execution_type = values.get('execution_type', ExecutionType.MARKET)
+
         fields = ['leverage', 'value', 'quantity']
         filled = [f for f in fields if values.get(f) is not None]
+        if len(filled) == 0 and execution_type == ExecutionType.BRACKET:
+            return values
         if len(filled) != 1:
             raise ValueError(f"Exactly one of {fields} must be provided, got {filled}")
         return values
@@ -34,20 +39,8 @@ class Signal(BaseModel):
         """
         Ensure that long orders have positive size, and short orders have negative size,
         applied to all non-None of leverage, value, and quantity.
-        Special handling for BRACKET orders.
         """
         order_type = values['order_type']
-        execution_type = values.get('execution_type', ExecutionType.MARKET)
-
-        # Skip validation for FLAT and BRACKET orders
-        is_flat_order = order_type == OrderType.FLAT or order_type == 'FLAT'
-        is_bracket_order = execution_type == ExecutionType.BRACKET
-
-        # For bracket orders, leverage can be 0 (will be set from position)
-        if is_bracket_order:
-            lev = values.get('leverage', 0)
-            if lev == 0:
-                return values
 
         # Apply sign correction to leverage, value, and quantity
         for field in ['leverage', 'value', 'quantity']:
