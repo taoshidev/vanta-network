@@ -201,7 +201,8 @@ class PositionSplitter:
                     position_uuid=order_group[0].order_uuid,
                     open_ms=0,
                     trade_pair=position.trade_pair,
-                    orders=order_group
+                    orders=order_group,
+                    account_size=position.account_size
                 )
                 new_position.rebuild_position_with_updated_orders(live_price_fetcher)
                 positions.append(new_position)

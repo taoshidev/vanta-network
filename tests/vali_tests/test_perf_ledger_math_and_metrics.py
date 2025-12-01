@@ -44,6 +44,7 @@ class TestPerfLedgerMathAndMetrics(TestBase):
         self.live_price_fetcher = LivePriceFetcher(secrets=secrets, disable_ws=True)
         self.test_hotkey = "test_miner_math"
         self.now_ms = TimeUtil.now_in_millis()
+        self.DEFAULT_ACCOUNT_SIZE = 100_000
 
         self.mmg = MockMetagraph(hotkeys=[self.test_hotkey])
 
@@ -96,6 +97,7 @@ class TestPerfLedgerMathAndMetrics(TestBase):
                 open_ms=base_time,
                 close_ms=base_time + MS_IN_24_HOURS,
                 trade_pair=tp,
+                account_size=self.DEFAULT_ACCOUNT_SIZE,
                 orders=[
                     Order(
                         price=open_price,
@@ -159,6 +161,7 @@ class TestPerfLedgerMathAndMetrics(TestBase):
             open_ms=base_time,
             close_ms=base_time + MS_IN_24_HOURS,  # Exactly 1 day
             trade_pair=TradePair.BTCUSD,
+            account_size=self.DEFAULT_ACCOUNT_SIZE,
             orders=[
                 Order(
                     price=50000.0,
@@ -481,7 +484,7 @@ class TestPerfLedgerMathAndMetrics(TestBase):
                     f"(relative error: {difference})")
 
     def _create_position(self, position_id: str, trade_pair: TradePair,
-                        open_ms: int, close_ms: int, open_price: float, 
+                        open_ms: int, close_ms: int, open_price: float,
                         close_price: float, order_type: OrderType,
                         leverage: float = 1.0) -> Position:
         """Helper to create a position."""
@@ -491,6 +494,7 @@ class TestPerfLedgerMathAndMetrics(TestBase):
             open_ms=open_ms,
             close_ms=close_ms,
             trade_pair=trade_pair,
+            account_size=self.DEFAULT_ACCOUNT_SIZE,
             orders=[
                 Order(
                     price=open_price,

@@ -44,6 +44,7 @@ class TestPerfLedgerCore(TestBase):
         self.live_price_fetcher = MockLivePriceFetcher(secrets=secrets, disable_ws=True)
         self.test_hotkey = "test_miner_core"
         self.now_ms = TimeUtil.now_in_millis()
+        self.DEFAULT_ACCOUNT_SIZE = 100_000
 
         self.mmg = MockMetagraph(hotkeys=[self.test_hotkey])
 
@@ -452,8 +453,9 @@ class TestPerfLedgerCore(TestBase):
             orders=[open_order, close_order],
             position_type=OrderType.FLAT,
             is_closed_position=True,
+            account_size=self.DEFAULT_ACCOUNT_SIZE,
         )
-        
+
         position.rebuild_position_with_updated_orders(self.live_price_fetcher)
         return position
 

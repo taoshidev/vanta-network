@@ -380,11 +380,19 @@ class TestMarketOrderManager(TestBase):
 
         initial_order_count = len(position.orders)
 
+        # Calculate order size from leverage
+        signal = {"leverage": 1.0}
+        quantity, leverage, value = self.market_order_manager.parse_order_size(
+            signal, 1.0, self.DEFAULT_TRADE_PAIR, self.DEFAULT_ACCOUNT_SIZE
+        )
+
         self.market_order_manager._add_order_to_existing_position(
             existing_position=position,
             trade_pair=self.DEFAULT_TRADE_PAIR,
             signal_order_type=OrderType.LONG,
-            signal_leverage=1.0,
+            quantity=quantity,
+            leverage=leverage,
+            value=value,
             order_time_ms=now_ms,
             miner_hotkey=self.DEFAULT_MINER_HOTKEY,
             price_sources=price_sources,
@@ -418,11 +426,19 @@ class TestMarketOrderManager(TestBase):
         now_ms = TimeUtil.now_in_millis()
         price_sources = [self.create_test_price_source(50000.0, bid=49990.0, ask=50010.0, start_ms=now_ms)]
 
+        # Calculate order size from leverage
+        signal = {"leverage": 1.0}
+        quantity, leverage, value = self.market_order_manager.parse_order_size(
+            signal, 1.0, self.DEFAULT_TRADE_PAIR, self.DEFAULT_ACCOUNT_SIZE
+        )
+
         self.market_order_manager._add_order_to_existing_position(
             existing_position=position,
             trade_pair=self.DEFAULT_TRADE_PAIR,
             signal_order_type=OrderType.SHORT,
-            signal_leverage=1.0,
+            quantity=quantity,
+            leverage=leverage,
+            value=value,
             order_time_ms=now_ms,
             miner_hotkey=self.DEFAULT_MINER_HOTKEY,
             price_sources=price_sources,
@@ -444,11 +460,14 @@ class TestMarketOrderManager(TestBase):
         now_ms = TimeUtil.now_in_millis()
         price_sources = [self.create_test_price_source(51000.0, bid=50990.0, ask=51010.0, start_ms=now_ms)]
 
+        # FLAT orders use 0.0 for all values
         self.market_order_manager._add_order_to_existing_position(
             existing_position=position,
             trade_pair=self.DEFAULT_TRADE_PAIR,
             signal_order_type=OrderType.FLAT,
-            signal_leverage=0.0,
+            quantity=0.0,
+            leverage=0.0,
+            value=0.0,
             order_time_ms=now_ms,
             miner_hotkey=self.DEFAULT_MINER_HOTKEY,
             price_sources=price_sources,
@@ -471,11 +490,19 @@ class TestMarketOrderManager(TestBase):
         cache_key = (self.DEFAULT_MINER_HOTKEY, self.DEFAULT_TRADE_PAIR.trade_pair_id)
         self.assertNotIn(cache_key, self.market_order_manager.last_order_time_cache)
 
+        # Calculate order size from leverage
+        signal = {"leverage": 1.0}
+        quantity, leverage, value = self.market_order_manager.parse_order_size(
+            signal, 1.0, self.DEFAULT_TRADE_PAIR, self.DEFAULT_ACCOUNT_SIZE
+        )
+
         self.market_order_manager._add_order_to_existing_position(
             existing_position=position,
             trade_pair=self.DEFAULT_TRADE_PAIR,
             signal_order_type=OrderType.LONG,
-            signal_leverage=1.0,
+            quantity=quantity,
+            leverage=leverage,
+            value=value,
             order_time_ms=now_ms,
             miner_hotkey=self.DEFAULT_MINER_HOTKEY,
             price_sources=price_sources,
@@ -495,11 +522,19 @@ class TestMarketOrderManager(TestBase):
         now_ms = TimeUtil.now_in_millis()
         price_sources = [self.create_test_price_source(50000.0, start_ms=now_ms)]
 
+        # Calculate order size from leverage
+        signal = {"leverage": 1.0}
+        quantity, leverage, value = self.market_order_manager.parse_order_size(
+            signal, 1.0, self.DEFAULT_TRADE_PAIR, self.DEFAULT_ACCOUNT_SIZE
+        )
+
         self.market_order_manager._add_order_to_existing_position(
             existing_position=position,
             trade_pair=self.DEFAULT_TRADE_PAIR,
             signal_order_type=OrderType.LONG,
-            signal_leverage=1.0,
+            quantity=quantity,
+            leverage=leverage,
+            value=value,
             order_time_ms=now_ms,
             miner_hotkey=self.DEFAULT_MINER_HOTKEY,
             price_sources=price_sources,
@@ -521,11 +556,19 @@ class TestMarketOrderManager(TestBase):
         now_ms = TimeUtil.now_in_millis()
         price_sources = [self.create_test_price_source(50000.0, start_ms=now_ms)]
 
+        # Calculate order size from leverage
+        signal = {"leverage": 1.0}
+        quantity, leverage, value = self.market_order_manager.parse_order_size(
+            signal, 1.0, self.DEFAULT_TRADE_PAIR, self.DEFAULT_ACCOUNT_SIZE
+        )
+
         self.market_order_manager._add_order_to_existing_position(
             existing_position=position,
             trade_pair=self.DEFAULT_TRADE_PAIR,
             signal_order_type=OrderType.LONG,
-            signal_leverage=1.0,
+            quantity=quantity,
+            leverage=leverage,
+            value=value,
             order_time_ms=now_ms,
             miner_hotkey=self.DEFAULT_MINER_HOTKEY,
             price_sources=price_sources,
@@ -922,11 +965,19 @@ class TestMarketOrderManager(TestBase):
         position = self.create_test_position()
         price_sources = [self.create_test_price_source(50000.0, start_ms=now_ms)]
 
+        # Calculate order size from leverage
+        signal = {"leverage": 1.0}
+        quantity, leverage, value = self.market_order_manager.parse_order_size(
+            signal, 1.0, self.DEFAULT_TRADE_PAIR, self.DEFAULT_ACCOUNT_SIZE
+        )
+
         self.market_order_manager._add_order_to_existing_position(
             existing_position=position,
             trade_pair=self.DEFAULT_TRADE_PAIR,
             signal_order_type=OrderType.LONG,
-            signal_leverage=1.0,
+            quantity=quantity,
+            leverage=leverage,
+            value=value,
             order_time_ms=now_ms,
             miner_hotkey=self.DEFAULT_MINER_HOTKEY,
             price_sources=price_sources,

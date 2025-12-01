@@ -250,7 +250,7 @@ class TestPriceSlippageModelCriticalBugs(TestBase):
             order_uuid="test_order",
             trade_pair=TradePair.NVDA,
             order_type=OrderType.LONG,
-            leverage=1.0
+            value=100_000  # Explicitly provide value like other tests
         )
 
         # Ensure features are empty
@@ -274,7 +274,7 @@ class TestPriceSlippageModelCriticalBugs(TestBase):
             order_uuid="test_order",
             trade_pair=TradePair.EURUSD,
             order_type=OrderType.LONG,
-            leverage=1.0
+            value=100_000  # Explicitly provide value like other tests
         )
 
         # Ensure features are empty
@@ -297,7 +297,7 @@ class TestPriceSlippageModelCriticalBugs(TestBase):
             order_uuid="test_order",
             trade_pair=TradePair.NVDA,
             order_type=OrderType.LONG,
-            leverage=1.0
+            value=100_000  # Explicitly provide value like other tests
         )
 
         # Set up features but missing this specific trade pair
@@ -418,7 +418,7 @@ class TestPriceSlippageModelCriticalBugs(TestBase):
             order_uuid="test_order",
             trade_pair=TradePair.EURUSD,  # EUR/USD - base is EUR, needs conversion
             order_type=OrderType.LONG,
-            leverage=1.0
+            value=100_000  # Explicitly provide value like other tests
         )
 
         # Set up features (required for V1 model)
@@ -451,7 +451,7 @@ class TestPriceSlippageModelCriticalBugs(TestBase):
             order_uuid="test_order",
             trade_pair=TradePair.EURUSD,  # EUR/USD - base is EUR
             order_type=OrderType.LONG,
-            leverage=1.0
+            value=100_000  # Explicitly provide value like other tests
         )
 
         PriceSlippageModel.features[order_date] = {
@@ -492,7 +492,8 @@ class TestPriceSlippageModelCriticalBugs(TestBase):
             order_uuid="test_order",
             trade_pair=TradePair.BTCUSD,
             order_type=OrderType.LONG,
-            leverage=0.5
+            leverage=0.5,
+            value=50_000  # Explicitly provide value like other tests
         )
 
         # Ensure slippage_estimates is empty and bypass the auto-load
@@ -516,7 +517,8 @@ class TestPriceSlippageModelCriticalBugs(TestBase):
             order_uuid="test_order",
             trade_pair=TradePair.BTCUSD,
             order_type=OrderType.LONG,
-            leverage=0.5
+            leverage=0.5,
+            value=50_000  # Explicitly provide value like other tests
         )
 
         # Set up slippage_estimates but missing BTCUSD

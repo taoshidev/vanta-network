@@ -1,6 +1,7 @@
 # developer: jbonilla
 # Copyright © 2024 Taoshi Inc
 import json
+import math
 import os
 import shutil
 import time
@@ -673,7 +674,13 @@ class PositionManager(RPCServiceBase, CacheController):
             else:
                 value2 = getattr(position2, attr, None)
 
-            if value1 != value2:
+            # tolerant float comparison
+            if isinstance(value1, (int, float)) and isinstance(value2, (int, float)):
+                value1 = float(value1)
+                value2 = float(value2)
+                if not math.isclose(value1, value2, rel_tol=1e-9, abs_tol=1e-9):
+                    return False, f"{attr} is different. {value1} != {value2}"
+            elif value1 != value2:
                 return False, f"{attr} is different. {value1} != {value2}"
         return True, ""
 

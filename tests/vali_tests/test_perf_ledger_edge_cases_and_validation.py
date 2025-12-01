@@ -45,6 +45,7 @@ class TestPerfLedgerEdgeCasesAndValidation(TestBase):
         self.live_price_fetcher = LivePriceFetcher(secrets=secrets, disable_ws=True)
         self.test_hotkey = "test_miner_edge"
         self.now_ms = TimeUtil.now_in_millis()
+        self.DEFAULT_ACCOUNT_SIZE = 100_000
 
         self.mmg = MockMetagraph(hotkeys=[self.test_hotkey])
 
@@ -109,6 +110,7 @@ class TestPerfLedgerEdgeCasesAndValidation(TestBase):
             open_ms=base_time,
             close_ms=base_time + 1000,  # 1 second later
             trade_pair=TradePair.BTCUSD,
+            account_size=self.DEFAULT_ACCOUNT_SIZE,
             orders=[
                 Order(
                     price=50000.0,
@@ -493,6 +495,7 @@ class TestPerfLedgerEdgeCasesAndValidation(TestBase):
             open_ms=base_time,
             close_ms=base_time + (10 * MS_IN_24_HOURS),  # 10 days
             trade_pair=TradePair.BTCUSD,
+            account_size=self.DEFAULT_ACCOUNT_SIZE,
             orders=[
                 Order(
                     price=50000.0,
@@ -535,8 +538,8 @@ class TestPerfLedgerEdgeCasesAndValidation(TestBase):
                                "10x leverage for 10 days should have measurable carry fees (actual: ~0.999)")
                 break
 
-    def _create_position(self, position_id: str, trade_pair: TradePair, 
-                        open_ms: int, close_ms: int, open_price: float, 
+    def _create_position(self, position_id: str, trade_pair: TradePair,
+                        open_ms: int, close_ms: int, open_price: float,
                         close_price: float, order_type: OrderType,
                         leverage: float = 1.0) -> Position:
         """Helper to create a position."""
@@ -546,6 +549,7 @@ class TestPerfLedgerEdgeCasesAndValidation(TestBase):
             open_ms=open_ms,
             close_ms=close_ms,
             trade_pair=trade_pair,
+            account_size=self.DEFAULT_ACCOUNT_SIZE,
             orders=[
                 Order(
                     price=open_price,

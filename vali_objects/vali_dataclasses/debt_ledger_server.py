@@ -149,7 +149,7 @@ class DebtLedgerManagerServer:
             'portfolio_return': ledger.get_current_portfolio_return(),
             'weighted_score': ledger.get_current_weighted_score(),
             'latest_checkpoint_ms': latest.timestamp_ms,
-            'net_pnl': latest.net_pnl,
+            'net_pnl': latest.realized_pnl + latest.unrealized_pnl,
             'total_fees': latest.total_fees,
         }
 
@@ -772,8 +772,8 @@ class DebtLedgerManagerServer:
                     alpha_balance_snapshot=emissions_checkpoint.alpha_balance_snapshot,
                     # Performance data - access attributes directly from PerfCheckpoint
                     portfolio_return=perf_checkpoint.gain,  # Current portfolio multiplier
-                    pnl_gain=perf_checkpoint.pnl_gain,  # PnL gain during this checkpoint period
-                    pnl_loss=perf_checkpoint.pnl_loss,  # PnL loss during this checkpoint period
+                    realized_pnl=perf_checkpoint.realized_pnl if hasattr(perf_checkpoint, 'realized_pnl') else perf_checkpoint.pnl_gain,  # Net realized PnL during this checkpoint period
+                    unrealized_pnl=perf_checkpoint.unrealized_pnl if hasattr(perf_checkpoint, 'unrealized_pnl') else perf_checkpoint.pnl_loss,  # Net unrealized PnL during this checkpoint period
                     spread_fee_loss=perf_checkpoint.spread_fee_loss,  # Spread fees during this checkpoint
                     carry_fee_loss=perf_checkpoint.carry_fee_loss,  # Carry fees during this checkpoint
                     max_drawdown=perf_checkpoint.mdd,  # Max drawdown
