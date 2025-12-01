@@ -47,9 +47,9 @@ from vali_objects.scoring.scoring import Scoring
 class TestEliminationWeightCalculation(TestBase):
     """Weight calculation behavior for eliminated miners"""
 
-    # Test date after DebtBasedScoring activation (Dec 2025)
-    # January 15, 2026 00:00:00 UTC
-    TEST_TIME_MS = int(datetime(2026, 1, 15, 0, 0, 0, tzinfo=timezone.utc).timestamp() * 1000)
+    # Test date after DebtBasedScoring activation (Nov 2025)
+    # December 15, 2025 00:00:00 UTC
+    TEST_TIME_MS = int(datetime(2025, 12, 15, 0, 0, 0, tzinfo=timezone.utc).timestamp() * 1000)
 
     def setUp(self):
         super().setUp()
