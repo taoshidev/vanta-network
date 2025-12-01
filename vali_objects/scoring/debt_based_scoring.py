@@ -38,8 +38,8 @@ Aggressive Payout Strategy:
 - This front-loads emissions early in the month while respecting the hard deadline
 
 Important Notes:
-- Debt-based scoring activates January 2026 (pays for December 2025 performance)
-- Before January 2026, miners only receive minimum dust weights
+- Debt-based scoring activates December 2025 (pays for November 2025 performance)
+- Before December 2025, miners only receive minimum dust weights
 - Excess weight (when sum < 1.0) goes to burn address (uid 229 mainnet, uid 220 testnet)
 - Hard deadline: day 25 of each month
 - Checkpoints are 12-hour intervals (2 per day)
@@ -68,10 +68,10 @@ class DebtBasedScoring:
     Uses real-time subtensor queries to estimate emission rates and project available ALPHA.
     """
 
-    # Activation: First payouts in January 2026 for December 2025 performance
-    # (Previous month must be >= December 2025 to activate debt-based payouts)
+    # Activation: First payouts in December 2025 for November 2025 performance
+    # (Previous month must be >= November 2025 to activate debt-based payouts)
     ACTIVATION_YEAR = 2025
-    ACTIVATION_MONTH = 12
+    ACTIVATION_MONTH = 11
 
     # Target payout completion by day 25
     PAYOUT_TARGET_DAY = 25
@@ -472,8 +472,8 @@ class DebtBasedScoring:
         if verbose:
             bt.logging.info(f"Previous month: {prev_year}-{prev_month:02d}")
 
-        # Check activation date: prev_month must be >= December 2025 for debt-based payouts
-        # This means first debt-based payouts occur in January 2026 (for Dec 2025 performance)
+        # Check activation date: prev_month must be >= November 2025 for debt-based payouts
+        # This means first debt-based payouts occur in December 2025 (for Nov 2025 performance)
         if (prev_year < DebtBasedScoring.ACTIVATION_YEAR or
             (prev_year == DebtBasedScoring.ACTIVATION_YEAR and
              prev_month < DebtBasedScoring.ACTIVATION_MONTH)):
@@ -1529,7 +1529,7 @@ class DebtBasedScoring:
         verbose: bool = False
     ) -> List[Tuple[str, float]]:
         """
-        Apply weights for pre-activation period (before January 2026).
+        Apply weights for pre-activation period (before December 2025).
 
         During pre-activation, miners only receive minimum dust weights based on
         their challenge period status. Excess weight goes to burn address.
