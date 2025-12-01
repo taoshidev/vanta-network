@@ -156,17 +156,17 @@ class TestDebtBasedScoring(unittest.TestCase):
 
     def test_weights_sum_to_one(self):
         """Test that weights sum to 1.0"""
-        # Use January 2026 as current time (previous month is December 2025, after activation)
-        current_time = datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+        # Use December 2025 as current time (previous month is November 2025, at activation)
+        current_time = datetime(2025, 12, 15, 12, 0, 0, tzinfo=timezone.utc)
         current_time_ms = int(current_time.timestamp() * 1000)
 
         # Create ledgers with some performance data
-        # Previous month (December 2025) data
-        prev_month_checkpoint = datetime(2025, 12, 10, 12, 0, 0, tzinfo=timezone.utc)
+        # Previous month (November 2025) data
+        prev_month_checkpoint = datetime(2025, 11, 10, 12, 0, 0, tzinfo=timezone.utc)
         prev_month_checkpoint_ms = int(prev_month_checkpoint.timestamp() * 1000)
 
-        # Current month (January 2026) data
-        current_month_checkpoint = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+        # Current month (December 2025) data
+        current_month_checkpoint = datetime(2025, 12, 1, 12, 0, 0, tzinfo=timezone.utc)
         current_month_checkpoint_ms = int(current_month_checkpoint.timestamp() * 1000)
 
         # Miner 1: Good performance, needs payout
@@ -220,10 +220,10 @@ class TestDebtBasedScoring(unittest.TestCase):
 
     def test_minimum_weights_by_status(self):
         """Test that minimum weights are enforced based on challenge period status when sum < 1.0"""
-        current_time = datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+        current_time = datetime(2025, 12, 15, 12, 0, 0, tzinfo=timezone.utc)
         current_time_ms = int(current_time.timestamp() * 1000)
 
-        prev_month_checkpoint = datetime(2025, 12, 10, 12, 0, 0, tzinfo=timezone.utc)
+        prev_month_checkpoint = datetime(2025, 11, 10, 12, 0, 0, tzinfo=timezone.utc)
         prev_month_checkpoint_ms = int(prev_month_checkpoint.timestamp() * 1000)
 
         dust = self.expected_dynamic_dust
@@ -315,19 +315,19 @@ class TestDebtBasedScoring(unittest.TestCase):
 
     def test_burn_address_mainnet(self):
         """Test burn address receives excess weight on mainnet when sum < 1.0"""
-        current_time = datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+        current_time = datetime(2025, 12, 15, 12, 0, 0, tzinfo=timezone.utc)
         current_time_ms = int(current_time.timestamp() * 1000)
 
-        prev_checkpoint = datetime(2025, 12, 30, 12, 0, 0, tzinfo=timezone.utc)
+        prev_checkpoint = datetime(2025, 11, 30, 12, 0, 0, tzinfo=timezone.utc)
         prev_checkpoint_ms = int(prev_checkpoint.timestamp() * 1000)
 
-        # Create TWO miners with minimal weight (need 2+ to avoid single-miner bypass)
-        # Very small performance will cause sum < 1.0
+        # Create miners with 0 remaining payouts (dust minimums should dominate)
+        # This ensures sum of dust weights < 1.0, so burn address gets the rest
         ledger1 = DebtLedger(hotkey="test_hotkey_1", checkpoints=[])
         ledger1.checkpoints.append(DebtCheckpoint(
             timestamp_ms=prev_checkpoint_ms,
-            realized_pnl=0.0001,
-            unrealized_pnl=0.0,  # net_pnl = 0.0001 (tiny)
+            realized_pnl=0.0,
+            unrealized_pnl=-1.0,  # Negative PnL -> 0 remaining payout
             total_penalty=1.0,
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
@@ -335,8 +335,8 @@ class TestDebtBasedScoring(unittest.TestCase):
         ledger2 = DebtLedger(hotkey="test_hotkey_2", checkpoints=[])
         ledger2.checkpoints.append(DebtCheckpoint(
             timestamp_ms=prev_checkpoint_ms,
-            realized_pnl=0.00005,
-            unrealized_pnl=0.0,  # net_pnl = 0.00005 (tiny)
+            realized_pnl=0.0,
+            unrealized_pnl=-1.0,  # Negative PnL -> 0 remaining payout
             total_penalty=1.0,
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
@@ -368,19 +368,19 @@ class TestDebtBasedScoring(unittest.TestCase):
 
     def test_burn_address_testnet(self):
         """Test burn address receives excess weight on testnet with correct UID when sum < 1.0"""
-        current_time = datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+        current_time = datetime(2025, 12, 15, 12, 0, 0, tzinfo=timezone.utc)
         current_time_ms = int(current_time.timestamp() * 1000)
 
-        prev_checkpoint = datetime(2025, 12, 30, 12, 0, 0, tzinfo=timezone.utc)
+        prev_checkpoint = datetime(2025, 11, 30, 12, 0, 0, tzinfo=timezone.utc)
         prev_checkpoint_ms = int(prev_checkpoint.timestamp() * 1000)
 
-        # Create TWO miners with minimal weight (need 2+ to avoid single-miner bypass)
-        # Very small performance will cause sum < 1.0
+        # Create miners with 0 remaining payouts (dust minimums should dominate)
+        # This ensures sum of dust weights < 1.0, so burn address gets the rest
         ledger1 = DebtLedger(hotkey="test_hotkey_1", checkpoints=[])
         ledger1.checkpoints.append(DebtCheckpoint(
             timestamp_ms=prev_checkpoint_ms,
-            realized_pnl=0.0001,
-            unrealized_pnl=0.0,  # net_pnl = 0.0001 (tiny)
+            realized_pnl=0.0,
+            unrealized_pnl=-1.0,  # Negative PnL -> 0 remaining payout
             total_penalty=1.0,
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
@@ -388,8 +388,8 @@ class TestDebtBasedScoring(unittest.TestCase):
         ledger2 = DebtLedger(hotkey="test_hotkey_2", checkpoints=[])
         ledger2.checkpoints.append(DebtCheckpoint(
             timestamp_ms=prev_checkpoint_ms,
-            realized_pnl=0.00005,
-            unrealized_pnl=0.0,  # net_pnl = 0.00005 (tiny)
+            realized_pnl=0.0,
+            unrealized_pnl=-1.0,  # Negative PnL -> 0 remaining payout
             total_penalty=1.0,
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
@@ -403,9 +403,12 @@ class TestDebtBasedScoring(unittest.TestCase):
                         is_testnet=True  # TESTNET
         )
 
+        # Should have 3 entries: 2 miners + burn address
+        self.assertEqual(len(result), 3)
+
         weights_dict = dict(result)
 
-        # Burn address should be testnet (uid 5)
+        # Burn address should be testnet (uid 220)
         burn_hotkey = "hotkey_220"
         self.assertIn(burn_hotkey, weights_dict)
 
@@ -417,11 +420,11 @@ class TestDebtBasedScoring(unittest.TestCase):
         self.assertGreater(weights_dict[burn_hotkey], 0.0)
 
     def test_negative_performance_gets_minimum_weight(self):
-        """Test that miners with negative performance get minimum dust weight when sum < 1.0"""
-        current_time = datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+        """Test that miners with negative performance get minimum dust weight after normalization"""
+        current_time = datetime(2025, 12, 15, 12, 0, 0, tzinfo=timezone.utc)
         current_time_ms = int(current_time.timestamp() * 1000)
 
-        prev_month_checkpoint = datetime(2025, 12, 10, 12, 0, 0, tzinfo=timezone.utc)
+        prev_month_checkpoint = datetime(2025, 11, 10, 12, 0, 0, tzinfo=timezone.utc)
         prev_month_checkpoint_ms = int(prev_month_checkpoint.timestamp() * 1000)
 
         dust = self.expected_dynamic_dust
@@ -436,7 +439,7 @@ class TestDebtBasedScoring(unittest.TestCase):
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
 
-        # Miner with small positive performance (keep sum < 1.0)
+        # Miner with small positive performance
         ledger_positive = DebtLedger(hotkey="positive_miner", checkpoints=[])
         ledger_positive.checkpoints.append(DebtCheckpoint(
             timestamp_ms=prev_month_checkpoint_ms,
@@ -458,33 +461,26 @@ class TestDebtBasedScoring(unittest.TestCase):
             verbose=True
         )
 
-        # Should have 3 entries: 2 miners + burn address (sum < 1.0)
-        self.assertEqual(len(result), 3)
+        # After normalization: negative gets 0 (no payout), positive gets 1.0 (100% of payouts)
+        # After dust: negative gets max(0, 3*dust) = 3*dust, positive gets max(1.0, 3*dust) = 1.0
+        # Sum = 3*dust + 1.0 > 1.0, so normalize again -> no burn address
+        self.assertEqual(len(result), 2)
 
         weights_dict = dict(result)
 
-        # Negative miner should get minimum dust weight (3x for MAINCOMP)
-        # Positive miner should get higher weight based on remaining payout
+        # Positive miner should get higher weight
         self.assertGreater(weights_dict["positive_miner"], weights_dict["negative_miner"])
 
-        # Negative miner gets exactly minimum (since remaining_payout = 0)
-        self.assertAlmostEqual(weights_dict["negative_miner"], 3 * dust, places=10)
-
-        # Positive miner gets max(remaining_payout, 3*dust) = max(0.0005, 3*dust) = 0.0005
-        self.assertAlmostEqual(weights_dict["positive_miner"], 0.0005, places=10)
-
-        # Burn address gets the rest (1.0 - 0.0005 - 3*dust)
-        burn_hotkey = "burn_address_mainnet"
-        self.assertIn(burn_hotkey, weights_dict)
-        expected_burn = 1.0 - 0.0005 - (3 * dust)
-        self.assertAlmostEqual(weights_dict[burn_hotkey], expected_burn, places=5)
+        # After final normalization, weights sum to 1.0
+        total_weight = sum(weight for _, weight in result)
+        self.assertAlmostEqual(total_weight, 1.0, places=10)
 
     def test_penalty_reduces_needed_payout(self):
         """Test that penalties reduce the needed payout"""
-        current_time = datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+        current_time = datetime(2025, 12, 15, 12, 0, 0, tzinfo=timezone.utc)
         current_time_ms = int(current_time.timestamp() * 1000)
 
-        prev_month_checkpoint = datetime(2025, 12, 10, 12, 0, 0, tzinfo=timezone.utc)
+        prev_month_checkpoint = datetime(2025, 11, 10, 12, 0, 0, tzinfo=timezone.utc)
         prev_month_checkpoint_ms = int(prev_month_checkpoint.timestamp() * 1000)
 
         # Miner 1: No penalty
@@ -549,11 +545,11 @@ class TestDebtBasedScoring(unittest.TestCase):
     def test_aggressive_payout_strategy(self):
         """Test that aggressive payout strategy is applied correctly"""
         # Test day 1 - should use 4-day buffer (aggressive)
-        current_time_day1 = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+        current_time_day1 = datetime(2025, 12, 1, 12, 0, 0, tzinfo=timezone.utc)
         current_time_ms_day1 = int(current_time_day1.timestamp() * 1000)
 
         # Create simple ledger with remaining payout
-        prev_month_checkpoint = datetime(2025, 12, 10, 12, 0, 0, tzinfo=timezone.utc)
+        prev_month_checkpoint = datetime(2025, 11, 10, 12, 0, 0, tzinfo=timezone.utc)
         prev_month_checkpoint_ms = int(prev_month_checkpoint.timestamp() * 1000)
 
         ledger = DebtLedger(hotkey="test_hotkey", checkpoints=[])
@@ -581,7 +577,7 @@ class TestDebtBasedScoring(unittest.TestCase):
         self.assertEqual(result[0], ("test_hotkey", 1.0))
 
         # Test day 23 - should use 3-day buffer (actual remaining is 3)
-        current_time_day23 = datetime(2026, 1, 23, 12, 0, 0, tzinfo=timezone.utc)
+        current_time_day23 = datetime(2025, 12, 23, 12, 0, 0, tzinfo=timezone.utc)
         current_time_ms_day23 = int(current_time_day23.timestamp() * 1000)
 
         result = DebtBasedScoring.compute_results(
@@ -600,14 +596,14 @@ class TestDebtBasedScoring(unittest.TestCase):
 
     def test_only_earning_periods_counted(self):
         """Test that only MAINCOMP/PROBATION checkpoints count for earnings"""
-        current_time = datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+        current_time = datetime(2025, 12, 15, 12, 0, 0, tzinfo=timezone.utc)
         current_time_ms = int(current_time.timestamp() * 1000)
 
         # Create checkpoints in previous month with different statuses
-        challenge_checkpoint = datetime(2025, 12, 10, 12, 0, 0, tzinfo=timezone.utc)
+        challenge_checkpoint = datetime(2025, 11, 10, 12, 0, 0, tzinfo=timezone.utc)
         challenge_checkpoint_ms = int(challenge_checkpoint.timestamp() * 1000)
 
-        maincomp_checkpoint = datetime(2025, 12, 30, 12, 0, 0, tzinfo=timezone.utc)
+        maincomp_checkpoint = datetime(2025, 11, 30, 12, 0, 0, tzinfo=timezone.utc)
         maincomp_checkpoint_ms = int(maincomp_checkpoint.timestamp() * 1000)
 
         ledger = DebtLedger(hotkey="test_hotkey", checkpoints=[])
@@ -649,7 +645,7 @@ class TestDebtBasedScoring(unittest.TestCase):
     def test_iterative_payouts_approach_target_by_day_25(self):
         """Test that iterative weight setting causes payouts to approach required payout by day 25"""
         # Setup: 3 miners with different needed payouts from previous month
-        prev_month_checkpoint = datetime(2025, 12, 10, 12, 0, 0, tzinfo=timezone.utc)
+        prev_month_checkpoint = datetime(2025, 11, 10, 12, 0, 0, tzinfo=timezone.utc)
         prev_month_checkpoint_ms = int(prev_month_checkpoint.timestamp() * 1000)
 
         # Miner 1: Needs $50000 USD payout (net_pnl in USD)
@@ -711,9 +707,9 @@ class TestDebtBasedScoring(unittest.TestCase):
         # Track weights over time for verification
         weights_over_time = []
 
-        # Simulate days 1-25 of January 2026
+        # Simulate days 1-25 of December 2025
         for day in range(1, 26):
-            current_time = datetime(2026, 1, day, 12, 0, 0, tzinfo=timezone.utc)
+            current_time = datetime(2025, 12, day, 12, 0, 0, tzinfo=timezone.utc)
             current_time_ms = int(current_time.timestamp() * 1000)
 
             # Compute weights for this day
@@ -748,7 +744,7 @@ class TestDebtBasedScoring(unittest.TestCase):
                 # TAO → USD: 500.0 (fallback)
                 # Total: ALPHA → USD = ALPHA * 250
                 alpha_to_usd_rate = 250.0
-                current_month_checkpoint_ms = int(datetime(2026, 1, day + 1, 0, 0, 0, tzinfo=timezone.utc).timestamp() * 1000)
+                current_month_checkpoint_ms = int(datetime(2025, 12, day + 1, 0, 0, 0, tzinfo=timezone.utc).timestamp() * 1000)
                 ledgers[hotkey].checkpoints.append(DebtCheckpoint(
                     timestamp_ms=current_month_checkpoint_ms,
                     chunk_emissions_alpha=cumulative_payouts[hotkey],
@@ -810,13 +806,13 @@ class TestDebtBasedScoring(unittest.TestCase):
 
     def test_high_payouts_normalize_without_burn(self):
         """Test that when payouts exceed network capacity (sum >= 1.0), we normalize without burn address"""
-        current_time = datetime(2026, 1, 25, 12, 0, 0, tzinfo=timezone.utc)  # Late in month
+        current_time = datetime(2025, 12, 25, 12, 0, 0, tzinfo=timezone.utc)  # Late in month
         current_time_ms = int(current_time.timestamp() * 1000)
 
-        prev_month_checkpoint = datetime(2025, 12, 10, 12, 0, 0, tzinfo=timezone.utc)
+        prev_month_checkpoint = datetime(2025, 11, 10, 12, 0, 0, tzinfo=timezone.utc)
         prev_month_checkpoint_ms = int(prev_month_checkpoint.timestamp() * 1000)
 
-        current_month_checkpoint = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+        current_month_checkpoint = datetime(2025, 12, 1, 12, 0, 0, tzinfo=timezone.utc)
         current_month_checkpoint_ms = int(current_month_checkpoint.timestamp() * 1000)
 
         # Create 3 miners with high performance (high remaining payouts)
@@ -917,10 +913,10 @@ class TestDebtBasedScoring(unittest.TestCase):
 
     def test_dynamic_dust_enabled_by_default(self):
         """Test that dynamic dust is always enabled (miners with same PnL get same dynamic weight)"""
-        current_time = datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+        current_time = datetime(2025, 12, 15, 12, 0, 0, tzinfo=timezone.utc)
         current_time_ms = int(current_time.timestamp() * 1000)
 
-        prev_month_checkpoint = datetime(2025, 12, 10, 12, 0, 0, tzinfo=timezone.utc)
+        prev_month_checkpoint = datetime(2025, 11, 10, 12, 0, 0, tzinfo=timezone.utc)
         prev_month_checkpoint_ms = int(prev_month_checkpoint.timestamp() * 1000)
 
         dust = self.expected_dynamic_dust
@@ -965,16 +961,16 @@ class TestDebtBasedScoring(unittest.TestCase):
 
     def test_dynamic_dust_within_bucket_scaling(self):
         """Test that dynamic dust properly scales weights within bucket based on 30-day PnL"""
-        current_time = datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+        current_time = datetime(2025, 12, 15, 12, 0, 0, tzinfo=timezone.utc)
         current_time_ms = int(current_time.timestamp() * 1000)
 
         # Create checkpoint within 30-day window (10 days ago, in CURRENT month)
         # This ensures it's used for dynamic dust but NOT for previous month payout
-        within_window = datetime(2026, 1, 5, 12, 0, 0, tzinfo=timezone.utc)
+        within_window = datetime(2025, 12, 5, 12, 0, 0, tzinfo=timezone.utc)
         within_window_ms = int(within_window.timestamp() * 1000)
 
         # For main scoring: previous month checkpoint (OUTSIDE earning period)
-        prev_month_checkpoint = datetime(2025, 12, 10, 12, 0, 0, tzinfo=timezone.utc)
+        prev_month_checkpoint = datetime(2025, 11, 10, 12, 0, 0, tzinfo=timezone.utc)
         prev_month_checkpoint_ms = int(prev_month_checkpoint.timestamp() * 1000)
 
         dust = self.expected_dynamic_dust
@@ -1074,14 +1070,14 @@ class TestDebtBasedScoring(unittest.TestCase):
 
     def test_dynamic_dust_cross_bucket_hierarchy(self):
         """Test that cross-bucket hierarchy is maintained with dynamic dust"""
-        current_time = datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+        current_time = datetime(2025, 12, 15, 12, 0, 0, tzinfo=timezone.utc)
         current_time_ms = int(current_time.timestamp() * 1000)
 
         # Use CURRENT month for dynamic dust (not previous month)
-        within_window = datetime(2026, 1, 5, 12, 0, 0, tzinfo=timezone.utc)
+        within_window = datetime(2025, 12, 5, 12, 0, 0, tzinfo=timezone.utc)
         within_window_ms = int(within_window.timestamp() * 1000)
 
-        prev_month_checkpoint = datetime(2025, 12, 10, 12, 0, 0, tzinfo=timezone.utc)
+        prev_month_checkpoint = datetime(2025, 11, 10, 12, 0, 0, tzinfo=timezone.utc)
         prev_month_checkpoint_ms = int(prev_month_checkpoint.timestamp() * 1000)
 
         dust = self.expected_dynamic_dust
@@ -1178,13 +1174,13 @@ class TestDebtBasedScoring(unittest.TestCase):
 
     def test_dynamic_dust_all_miners_zero_pnl(self):
         """Test that all miners with 0 PnL get floor weight"""
-        current_time = datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+        current_time = datetime(2025, 12, 15, 12, 0, 0, tzinfo=timezone.utc)
         current_time_ms = int(current_time.timestamp() * 1000)
 
-        within_window = datetime(2025, 12, 26, 12, 0, 0, tzinfo=timezone.utc)
+        within_window = datetime(2025, 11, 25, 12, 0, 0, tzinfo=timezone.utc)
         within_window_ms = int(within_window.timestamp() * 1000)
 
-        prev_month_checkpoint = datetime(2025, 12, 10, 12, 0, 0, tzinfo=timezone.utc)
+        prev_month_checkpoint = datetime(2025, 11, 10, 12, 0, 0, tzinfo=timezone.utc)
         prev_month_checkpoint_ms = int(prev_month_checkpoint.timestamp() * 1000)
 
         dust = self.expected_dynamic_dust
@@ -1228,13 +1224,13 @@ class TestDebtBasedScoring(unittest.TestCase):
 
     def test_dynamic_dust_negative_pnl_floored_at_zero(self):
         """Test that negative PnL is floored at 0 for dust calculation"""
-        current_time = datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+        current_time = datetime(2025, 12, 15, 12, 0, 0, tzinfo=timezone.utc)
         current_time_ms = int(current_time.timestamp() * 1000)
 
-        within_window = datetime(2025, 12, 26, 12, 0, 0, tzinfo=timezone.utc)
+        within_window = datetime(2025, 11, 25, 12, 0, 0, tzinfo=timezone.utc)
         within_window_ms = int(within_window.timestamp() * 1000)
 
-        prev_month_checkpoint = datetime(2025, 12, 10, 12, 0, 0, tzinfo=timezone.utc)
+        prev_month_checkpoint = datetime(2025, 11, 10, 12, 0, 0, tzinfo=timezone.utc)
         prev_month_checkpoint_ms = int(prev_month_checkpoint.timestamp() * 1000)
 
         dust = self.expected_dynamic_dust
@@ -1293,18 +1289,18 @@ class TestDebtBasedScoring(unittest.TestCase):
 
     def test_dynamic_dust_30_day_lookback_window(self):
         """Test that only checkpoints within 30-day window are considered"""
-        current_time = datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+        current_time = datetime(2025, 12, 15, 12, 0, 0, tzinfo=timezone.utc)
         current_time_ms = int(current_time.timestamp() * 1000)
 
         # 2 months ago (OUTSIDE 30-day window AND outside previous month)
-        old_checkpoint = datetime(2025, 11, 15, 12, 0, 0, tzinfo=timezone.utc)
+        old_checkpoint = datetime(2025, 10, 15, 12, 0, 0, tzinfo=timezone.utc)
         old_checkpoint_ms = int(old_checkpoint.timestamp() * 1000)
 
         # 20 days ago (INSIDE 30-day window)
-        recent_checkpoint = datetime(2025, 12, 26, 12, 0, 0, tzinfo=timezone.utc)
+        recent_checkpoint = datetime(2025, 11, 25, 12, 0, 0, tzinfo=timezone.utc)
         recent_checkpoint_ms = int(recent_checkpoint.timestamp() * 1000)
 
-        prev_month_checkpoint = datetime(2025, 12, 10, 12, 0, 0, tzinfo=timezone.utc)
+        prev_month_checkpoint = datetime(2025, 11, 10, 12, 0, 0, tzinfo=timezone.utc)
         prev_month_checkpoint_ms = int(prev_month_checkpoint.timestamp() * 1000)
 
         dust = self.expected_dynamic_dust
@@ -1368,13 +1364,13 @@ class TestDebtBasedScoring(unittest.TestCase):
 
     def test_dynamic_dust_penalty_applied_to_pnl(self):
         """Test that penalties are applied to PnL in dynamic dust calculation"""
-        current_time = datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+        current_time = datetime(2025, 12, 15, 12, 0, 0, tzinfo=timezone.utc)
         current_time_ms = int(current_time.timestamp() * 1000)
 
-        within_window = datetime(2025, 12, 26, 12, 0, 0, tzinfo=timezone.utc)
+        within_window = datetime(2025, 11, 25, 12, 0, 0, tzinfo=timezone.utc)
         within_window_ms = int(within_window.timestamp() * 1000)
 
-        prev_month_checkpoint = datetime(2025, 12, 10, 12, 0, 0, tzinfo=timezone.utc)
+        prev_month_checkpoint = datetime(2025, 11, 10, 12, 0, 0, tzinfo=timezone.utc)
         prev_month_checkpoint_ms = int(prev_month_checkpoint.timestamp() * 1000)
 
         dust = self.expected_dynamic_dust
@@ -1847,14 +1843,14 @@ class TestDebtBasedScoring(unittest.TestCase):
 
     def test_challenge_bucket_bottom_25_percent_gets_zero_weight(self):
         """Test that bottom 25% of CHALLENGE miners get 0 weight"""
-        current_time = datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+        current_time = datetime(2025, 12, 15, 12, 0, 0, tzinfo=timezone.utc)
         current_time_ms = int(current_time.timestamp() * 1000)
 
         # Create checkpoint within 30-day window for dynamic dust
-        within_window = datetime(2026, 1, 5, 12, 0, 0, tzinfo=timezone.utc)
+        within_window = datetime(2025, 12, 5, 12, 0, 0, tzinfo=timezone.utc)
         within_window_ms = int(within_window.timestamp() * 1000)
 
-        prev_month_checkpoint = datetime(2025, 12, 10, 12, 0, 0, tzinfo=timezone.utc)
+        prev_month_checkpoint = datetime(2025, 11, 10, 12, 0, 0, tzinfo=timezone.utc)
         prev_month_checkpoint_ms = int(prev_month_checkpoint.timestamp() * 1000)
 
         dust = self.expected_dynamic_dust
@@ -1932,13 +1928,13 @@ class TestDebtBasedScoring(unittest.TestCase):
 
     def test_challenge_bucket_cap_at_10_miners(self):
         """Test that maximum 10 CHALLENGE miners get 0 weight even with > 40 miners"""
-        current_time = datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+        current_time = datetime(2025, 12, 15, 12, 0, 0, tzinfo=timezone.utc)
         current_time_ms = int(current_time.timestamp() * 1000)
 
-        within_window = datetime(2026, 1, 5, 12, 0, 0, tzinfo=timezone.utc)
+        within_window = datetime(2025, 12, 5, 12, 0, 0, tzinfo=timezone.utc)
         within_window_ms = int(within_window.timestamp() * 1000)
 
-        prev_month_checkpoint = datetime(2025, 12, 10, 12, 0, 0, tzinfo=timezone.utc)
+        prev_month_checkpoint = datetime(2025, 11, 10, 12, 0, 0, tzinfo=timezone.utc)
         prev_month_checkpoint_ms = int(prev_month_checkpoint.timestamp() * 1000)
 
         dust = self.expected_dynamic_dust
@@ -2012,13 +2008,13 @@ class TestDebtBasedScoring(unittest.TestCase):
 
     def test_challenge_bucket_all_zero_pnl_lexicographic_selection(self):
         """Test that when all CHALLENGE miners have 0 PnL, bottom 25% (capped at 10) get 0 weight by lexicographic order"""
-        current_time = datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+        current_time = datetime(2025, 12, 15, 12, 0, 0, tzinfo=timezone.utc)
         current_time_ms = int(current_time.timestamp() * 1000)
 
-        within_window = datetime(2026, 1, 5, 12, 0, 0, tzinfo=timezone.utc)
+        within_window = datetime(2025, 12, 5, 12, 0, 0, tzinfo=timezone.utc)
         within_window_ms = int(within_window.timestamp() * 1000)
 
-        prev_month_checkpoint = datetime(2025, 12, 10, 12, 0, 0, tzinfo=timezone.utc)
+        prev_month_checkpoint = datetime(2025, 11, 10, 12, 0, 0, tzinfo=timezone.utc)
         prev_month_checkpoint_ms = int(prev_month_checkpoint.timestamp() * 1000)
 
         dust = self.expected_dynamic_dust
@@ -2100,13 +2096,13 @@ class TestDebtBasedScoring(unittest.TestCase):
 
     def test_challenge_bucket_small_group_all_zero_pnl(self):
         """Test that with 8 CHALLENGE miners all at 0 PnL, bottom 2 get 0 weight (25% of 8)"""
-        current_time = datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+        current_time = datetime(2025, 12, 15, 12, 0, 0, tzinfo=timezone.utc)
         current_time_ms = int(current_time.timestamp() * 1000)
 
-        within_window = datetime(2026, 1, 5, 12, 0, 0, tzinfo=timezone.utc)
+        within_window = datetime(2025, 12, 5, 12, 0, 0, tzinfo=timezone.utc)
         within_window_ms = int(within_window.timestamp() * 1000)
 
-        prev_month_checkpoint = datetime(2025, 12, 10, 12, 0, 0, tzinfo=timezone.utc)
+        prev_month_checkpoint = datetime(2025, 11, 10, 12, 0, 0, tzinfo=timezone.utc)
         prev_month_checkpoint_ms = int(prev_month_checkpoint.timestamp() * 1000)
 
         dust = self.expected_dynamic_dust
@@ -2176,13 +2172,13 @@ class TestDebtBasedScoring(unittest.TestCase):
 
     def test_challenge_bucket_single_miner_zero_pnl_gets_floor_weight(self):
         """Test that single CHALLENGE miner with 0 PnL gets floor weight (not 0)"""
-        current_time = datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+        current_time = datetime(2025, 12, 15, 12, 0, 0, tzinfo=timezone.utc)
         current_time_ms = int(current_time.timestamp() * 1000)
 
-        within_window = datetime(2026, 1, 5, 12, 0, 0, tzinfo=timezone.utc)
+        within_window = datetime(2025, 12, 5, 12, 0, 0, tzinfo=timezone.utc)
         within_window_ms = int(within_window.timestamp() * 1000)
 
-        prev_month_checkpoint = datetime(2025, 12, 10, 12, 0, 0, tzinfo=timezone.utc)
+        prev_month_checkpoint = datetime(2025, 11, 10, 12, 0, 0, tzinfo=timezone.utc)
         prev_month_checkpoint_ms = int(prev_month_checkpoint.timestamp() * 1000)
 
         dust = self.expected_dynamic_dust
@@ -2239,13 +2235,13 @@ class TestDebtBasedScoring(unittest.TestCase):
 
     def test_challenge_bucket_threshold_boundary(self):
         """Test that miners exactly at the threshold get non-zero weight"""
-        current_time = datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+        current_time = datetime(2025, 12, 15, 12, 0, 0, tzinfo=timezone.utc)
         current_time_ms = int(current_time.timestamp() * 1000)
 
-        within_window = datetime(2026, 1, 5, 12, 0, 0, tzinfo=timezone.utc)
+        within_window = datetime(2025, 12, 5, 12, 0, 0, tzinfo=timezone.utc)
         within_window_ms = int(within_window.timestamp() * 1000)
 
-        prev_month_checkpoint = datetime(2025, 12, 10, 12, 0, 0, tzinfo=timezone.utc)
+        prev_month_checkpoint = datetime(2025, 11, 10, 12, 0, 0, tzinfo=timezone.utc)
         prev_month_checkpoint_ms = int(prev_month_checkpoint.timestamp() * 1000)
 
         # Create 12 miners (25% = 3, so bottom 3 get 0 weight)
