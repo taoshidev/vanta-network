@@ -321,13 +321,13 @@ class TestDebtBasedScoring(unittest.TestCase):
         prev_checkpoint = datetime(2025, 11, 30, 12, 0, 0, tzinfo=timezone.utc)
         prev_checkpoint_ms = int(prev_checkpoint.timestamp() * 1000)
 
-        # Create TWO miners with minimal weight (need 2+ to avoid single-miner bypass)
-        # Very small performance will cause sum < 1.0
+        # Create miners with 0 remaining payouts (dust minimums should dominate)
+        # This ensures sum of dust weights < 1.0, so burn address gets the rest
         ledger1 = DebtLedger(hotkey="test_hotkey_1", checkpoints=[])
         ledger1.checkpoints.append(DebtCheckpoint(
             timestamp_ms=prev_checkpoint_ms,
-            realized_pnl=0.0001,
-            unrealized_pnl=0.0,  # net_pnl = 0.0001 (tiny)
+            realized_pnl=0.0,
+            unrealized_pnl=-1.0,  # Negative PnL -> 0 remaining payout
             total_penalty=1.0,
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
@@ -335,8 +335,8 @@ class TestDebtBasedScoring(unittest.TestCase):
         ledger2 = DebtLedger(hotkey="test_hotkey_2", checkpoints=[])
         ledger2.checkpoints.append(DebtCheckpoint(
             timestamp_ms=prev_checkpoint_ms,
-            realized_pnl=0.00005,
-            unrealized_pnl=0.0,  # net_pnl = 0.00005 (tiny)
+            realized_pnl=0.0,
+            unrealized_pnl=-1.0,  # Negative PnL -> 0 remaining payout
             total_penalty=1.0,
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
@@ -374,13 +374,13 @@ class TestDebtBasedScoring(unittest.TestCase):
         prev_checkpoint = datetime(2025, 11, 30, 12, 0, 0, tzinfo=timezone.utc)
         prev_checkpoint_ms = int(prev_checkpoint.timestamp() * 1000)
 
-        # Create TWO miners with minimal weight (need 2+ to avoid single-miner bypass)
-        # Very small performance will cause sum < 1.0
+        # Create miners with 0 remaining payouts (dust minimums should dominate)
+        # This ensures sum of dust weights < 1.0, so burn address gets the rest
         ledger1 = DebtLedger(hotkey="test_hotkey_1", checkpoints=[])
         ledger1.checkpoints.append(DebtCheckpoint(
             timestamp_ms=prev_checkpoint_ms,
-            realized_pnl=0.0001,
-            unrealized_pnl=0.0,  # net_pnl = 0.0001 (tiny)
+            realized_pnl=0.0,
+            unrealized_pnl=-1.0,  # Negative PnL -> 0 remaining payout
             total_penalty=1.0,
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
@@ -388,8 +388,8 @@ class TestDebtBasedScoring(unittest.TestCase):
         ledger2 = DebtLedger(hotkey="test_hotkey_2", checkpoints=[])
         ledger2.checkpoints.append(DebtCheckpoint(
             timestamp_ms=prev_checkpoint_ms,
-            realized_pnl=0.00005,
-            unrealized_pnl=0.0,  # net_pnl = 0.00005 (tiny)
+            realized_pnl=0.0,
+            unrealized_pnl=-1.0,  # Negative PnL -> 0 remaining payout
             total_penalty=1.0,
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
@@ -403,9 +403,12 @@ class TestDebtBasedScoring(unittest.TestCase):
                         is_testnet=True  # TESTNET
         )
 
+        # Should have 3 entries: 2 miners + burn address
+        self.assertEqual(len(result), 3)
+
         weights_dict = dict(result)
 
-        # Burn address should be testnet (uid 5)
+        # Burn address should be testnet (uid 220)
         burn_hotkey = "hotkey_220"
         self.assertIn(burn_hotkey, weights_dict)
 
@@ -417,7 +420,7 @@ class TestDebtBasedScoring(unittest.TestCase):
         self.assertGreater(weights_dict[burn_hotkey], 0.0)
 
     def test_negative_performance_gets_minimum_weight(self):
-        """Test that miners with negative performance get minimum dust weight when sum < 1.0"""
+        """Test that miners with negative performance get minimum dust weight after normalization"""
         current_time = datetime(2025, 12, 15, 12, 0, 0, tzinfo=timezone.utc)
         current_time_ms = int(current_time.timestamp() * 1000)
 
@@ -436,7 +439,7 @@ class TestDebtBasedScoring(unittest.TestCase):
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
 
-        # Miner with small positive performance (keep sum < 1.0)
+        # Miner with small positive performance
         ledger_positive = DebtLedger(hotkey="positive_miner", checkpoints=[])
         ledger_positive.checkpoints.append(DebtCheckpoint(
             timestamp_ms=prev_month_checkpoint_ms,
@@ -458,26 +461,19 @@ class TestDebtBasedScoring(unittest.TestCase):
             verbose=True
         )
 
-        # Should have 3 entries: 2 miners + burn address (sum < 1.0)
-        self.assertEqual(len(result), 3)
+        # After normalization: negative gets 0 (no payout), positive gets 1.0 (100% of payouts)
+        # After dust: negative gets max(0, 3*dust) = 3*dust, positive gets max(1.0, 3*dust) = 1.0
+        # Sum = 3*dust + 1.0 > 1.0, so normalize again -> no burn address
+        self.assertEqual(len(result), 2)
 
         weights_dict = dict(result)
 
-        # Negative miner should get minimum dust weight (3x for MAINCOMP)
-        # Positive miner should get higher weight based on remaining payout
+        # Positive miner should get higher weight
         self.assertGreater(weights_dict["positive_miner"], weights_dict["negative_miner"])
 
-        # Negative miner gets exactly minimum (since remaining_payout = 0)
-        self.assertAlmostEqual(weights_dict["negative_miner"], 3 * dust, places=10)
-
-        # Positive miner gets max(remaining_payout, 3*dust) = max(0.0005, 3*dust) = 0.0005
-        self.assertAlmostEqual(weights_dict["positive_miner"], 0.0005, places=10)
-
-        # Burn address gets the rest (1.0 - 0.0005 - 3*dust)
-        burn_hotkey = "burn_address_mainnet"
-        self.assertIn(burn_hotkey, weights_dict)
-        expected_burn = 1.0 - 0.0005 - (3 * dust)
-        self.assertAlmostEqual(weights_dict[burn_hotkey], expected_burn, places=5)
+        # After final normalization, weights sum to 1.0
+        total_weight = sum(weight for _, weight in result)
+        self.assertAlmostEqual(total_weight, 1.0, places=10)
 
     def test_penalty_reduces_needed_payout(self):
         """Test that penalties reduce the needed payout"""

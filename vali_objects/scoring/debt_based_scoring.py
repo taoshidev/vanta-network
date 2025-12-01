@@ -620,14 +620,35 @@ class DebtBasedScoring:
                 f"{days_until_target}, skipping projection log"
             )
 
+        # Step 9b: Calculate daily target payouts using aggressive payout strategy
+        # Instead of paying the entire remaining amount at once, spread it over days_until_target
+        # This implements the aggressive payout strategy correctly
+        miner_daily_target_payouts_usd = {}
+        for hotkey, remaining_payout_usd in miner_remaining_payouts_usd.items():
+            if days_until_target > 0:
+                daily_target = remaining_payout_usd / days_until_target
+            else:
+                # Past deadline or exactly at deadline, pay everything today
+                daily_target = remaining_payout_usd
+
+            miner_daily_target_payouts_usd[hotkey] = daily_target
+
+            if verbose:
+                bt.logging.debug(
+                    f"{hotkey[:16]}...{hotkey[-8:]}: "
+                    f"remaining_usd=${remaining_payout_usd:.2f}, "
+                    f"daily_target_usd=${daily_target:.2f} "
+                    f"(over {days_until_target} days)"
+                )
+
         # Step 10: Enforce minimum weights based on challenge period status
         # All miners get minimum "dust" weights based on their current status
         # Dust is a static value from ValiConfig.CHALLENGE_PERIOD_MIN_WEIGHT
         # Weights are performance-scaled by 30-day PnL within each bucket
-        # NOTE: Weights are unitless proportions, but derived from USD payouts
+        # NOTE: Weights are unitless proportions, derived from daily target USD payouts
         miner_weights_with_minimums = DebtBasedScoring._apply_minimum_weights(
             ledger_dict=ledger_dict,
-            miner_remaining_payouts_usd=miner_remaining_payouts_usd,
+            miner_remaining_payouts_usd=miner_daily_target_payouts_usd,  # Use DAILY targets, not total
             challengeperiod_manager=challengeperiod_manager,
             contract_manager=contract_manager,
             metagraph=metagraph,
@@ -651,7 +672,12 @@ class DebtBasedScoring:
                 top_5 = result[:5]
                 bt.logging.info("Top 5 miners:")
                 for hotkey, weight in top_5:
-                    bt.logging.info(f"  {hotkey[:16]}...{hotkey[-8:]}: {weight:.6f}")
+                    daily_target = miner_daily_target_payouts_usd.get(hotkey, 0.0)
+                    monthly_target = miner_remaining_payouts_usd.get(hotkey, 0.0)
+                    bt.logging.info(
+                        f"  {hotkey[:16]}...{hotkey[-8:]}: weight={weight:.6f}, "
+                        f"daily_target_usd=${daily_target:.2f}, monthly_target_usd=${monthly_target:.2f}"
+                    )
 
         return result
 
@@ -1390,12 +1416,26 @@ class DebtBasedScoring:
             for hotkey in ledger_dict.keys()
         }
 
+        # Step 1: Normalize remaining payouts from USD to proportional weights (sum to 1.0)
+        # This ensures we're comparing apples to apples when applying dust minimums
+        total_remaining_payout = sum(miner_remaining_payouts_usd.values())
+
+        if total_remaining_payout > 0:
+            # Normalize USD amounts to proportional weights
+            normalized_debt_weights = {
+                hotkey: (payout_usd / total_remaining_payout)
+                for hotkey, payout_usd in miner_remaining_payouts_usd.items()
+            }
+        else:
+            # No payouts needed, all weights start at 0
+            normalized_debt_weights = {hotkey: 0.0 for hotkey in ledger_dict.keys()}
+
+        # Step 2: Apply minimum weights (now both are in 0-1 range)
         miner_weights_with_minimums = {}
 
         for hotkey, debt_ledger in ledger_dict.items():
-            # Get debt-based weight (from remaining payout in USD)
-            # Note: This is converted to unitless weight proportion later during normalization
-            debt_weight = miner_remaining_payouts_usd.get(hotkey, 0.0)
+            # Get normalized debt-based weight (proportional, 0-1 range)
+            debt_weight = normalized_debt_weights.get(hotkey, 0.0)
 
             # Get current status from batch-loaded statuses
             current_status = miner_statuses.get(hotkey, MinerBucket.UNKNOWN.value)
@@ -1407,7 +1447,7 @@ class DebtBasedScoring:
                 # Fallback to static dust weight
                 minimum_weight = status_to_minimum_weight.get(current_status, 1 * DUST)
 
-            # Apply max(debt_weight, minimum_weight)
+            # Apply max(debt_weight, minimum_weight) - now both are in same scale!
             final_weight = max(debt_weight, minimum_weight)
 
             miner_weights_with_minimums[hotkey] = final_weight
