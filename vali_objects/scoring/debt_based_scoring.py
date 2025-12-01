@@ -590,9 +590,19 @@ class DebtBasedScoring:
                 needed_payout_usd = sum(cp.realized_pnl * cp.total_penalty for cp in prev_month_checkpoints)
                 needed_payout_usd += min(0.0, last_checkpoint.unrealized_pnl) * last_checkpoint.total_penalty
 
-            # Step 5: Calculate actual payout given so far in current month (in USD)
-            # "actual payout" = sum of chunk_emissions_usd for current month
-            actual_payout_usd = sum(cp.chunk_emissions_usd for cp in current_month_checkpoints)
+            # Step 5: Calculate actual payout (in USD)
+            # Special case for December 2025 (first activation month):
+            #   Include both November + December payouts to avoid double-paying
+            #   (miners may have received emissions in November using old scoring)
+            # For all other months: Only include current month payouts
+            if (current_year == DebtBasedScoring.ACTIVATION_YEAR and
+                current_month == DebtBasedScoring.ACTIVATION_MONTH + 1):
+                # December 2025: Count November + December payouts
+                actual_payout_usd = sum(cp.chunk_emissions_usd for cp in prev_month_checkpoints)
+                actual_payout_usd += sum(cp.chunk_emissions_usd for cp in current_month_checkpoints)
+            else:
+                # All other months: Only current month payouts
+                actual_payout_usd = sum(cp.chunk_emissions_usd for cp in current_month_checkpoints)
 
             # Step 6: Calculate remaining payout (in USD)
             remaining_payout_usd = needed_payout_usd - actual_payout_usd
