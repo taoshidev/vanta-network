@@ -545,12 +545,14 @@ class DebtBasedScoring:
 
         # Step 4-6: Process each miner to calculate remaining payouts (in USD)
         miner_remaining_payouts_usd = {}
+        miner_actual_payouts_usd = {}  # Track what's been paid so far this month
 
         for hotkey, debt_ledger in ledger_dict.items():
             if not debt_ledger.checkpoints:
                 if verbose:
                     bt.logging.debug(f"Skipping {hotkey}: no checkpoints")
                 miner_remaining_payouts_usd[hotkey] = 0.0
+                miner_actual_payouts_usd[hotkey] = 0.0
                 continue
 
             # Extract checkpoints for previous month
@@ -600,6 +602,7 @@ class DebtBasedScoring:
                 remaining_payout_usd = 0.0
 
             miner_remaining_payouts_usd[hotkey] = remaining_payout_usd
+            miner_actual_payouts_usd[hotkey] = actual_payout_usd
 
             if verbose:
                 bt.logging.debug(
@@ -674,9 +677,11 @@ class DebtBasedScoring:
                 for hotkey, weight in top_5:
                     daily_target = miner_daily_target_payouts_usd.get(hotkey, 0.0)
                     monthly_target = miner_remaining_payouts_usd.get(hotkey, 0.0)
+                    actual_paid = miner_actual_payouts_usd.get(hotkey, 0.0)
                     bt.logging.info(
                         f"  {hotkey[:16]}...{hotkey[-8:]}: weight={weight:.6f}, "
-                        f"daily_target_usd=${daily_target:.2f}, monthly_target_usd=${monthly_target:.2f}"
+                        f"daily_target_usd=${daily_target:.2f}, monthly_target_usd=${monthly_target:.2f}, "
+                        f"paid_this_month_usd=${actual_paid:.2f}"
                     )
 
         return result
