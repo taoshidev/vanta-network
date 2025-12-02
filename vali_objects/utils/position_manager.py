@@ -908,7 +908,7 @@ class PositionManager:
         # 1. Handle deletion of existing open position if needed
         if position.is_closed_position and delete_open_position_if_exists:
             open_pos = self.get_open_position_for_trade_pair(position.miner_hotkey, position.trade_pair.trade_pair_id)
-            if open_pos and open_pos.position_uuid != position.position_uuid:
+            if open_pos and open_pos.position_uuid == position.position_uuid:
                 self.delete_position(open_pos.miner_hotkey, open_pos.position_uuid)
 
         # 2. Validate if needed (only for open positions)

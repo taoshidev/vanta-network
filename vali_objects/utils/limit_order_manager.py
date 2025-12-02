@@ -149,16 +149,6 @@ class LimitOrderManager(CacheController):
         Returns:
             dict with status and order_uuid
         """
-        bt.logging.info(f"[LIMIT_ORDER_MANAGER] Received RPC call to process_limit_order")
-        bt.logging.info(f"[LIMIT_ORDER_MANAGER] Miner: {miner_hotkey}")
-        bt.logging.info(f"[LIMIT_ORDER_MANAGER] Order UUID: {order.order_uuid}")
-        bt.logging.info(f"[LIMIT_ORDER_MANAGER] Trade pair: {order.trade_pair.trade_pair_id}")
-        bt.logging.info(f"[LIMIT_ORDER_MANAGER] Execution type: {order.execution_type.name}")
-        bt.logging.info(f"[LIMIT_ORDER_MANAGER] Order type: {order.order_type.name}")
-        bt.logging.info(f"[LIMIT_ORDER_MANAGER] Limit price: {order.limit_price}")
-        bt.logging.info(f"[LIMIT_ORDER_MANAGER] Leverage: {order.leverage}, Value: {order.value}, Quantity: {order.quantity}")
-        bt.logging.info(f"[LIMIT_ORDER_MANAGER] Stop Loss: {order.stop_loss}, Take Profit: {order.take_profit}")
-
         trade_pair = order.trade_pair
 
         # Variables to track whether to fill immediately
@@ -671,9 +661,9 @@ class LimitOrderManager(CacheController):
                 closing_order_type = OrderType.opposite_order_type(order.order_type)
                 if closing_order_type:
                     order_dict['order_type'] = closing_order_type.name
-                    order_dict['leverage'] = abs(order.leverage)
-                    order_dict['value'] = abs(order.value)
-                    order_dict['quantity'] = abs(order.quantity)
+                    order_dict['leverage'] = abs(order.leverage) if order.leverage else None
+                    order_dict['value'] = abs(order.value) if order.value else None
+                    order_dict['quantity'] = abs(order.quantity) if order.quantity else None
                 else:
                     raise ValueError("Bracket Order type was not LONG or SHORT")
 
