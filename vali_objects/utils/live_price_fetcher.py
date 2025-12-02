@@ -358,13 +358,13 @@ class LivePriceFetcher:
             b_usd = False
             conversion_trade_pair = TradePair.from_trade_pair_id(f"USD{order.trade_pair.quote}")
 
-        price_source = self.get_close_at_date(
+        price_sources = self.get_sorted_price_sources_for_trade_pair(
             trade_pair=conversion_trade_pair,
-            timestamp_ms=order.processed_ms,
-            verbose=False
+            time_ms=order.processed_ms
         )
-        if price_source:
-            usd_conversion = price_source.parse_appropriate_price(
+        if price_sources and len(price_sources) > 0:
+            best_price_source = price_sources[0]
+            usd_conversion = best_price_source.parse_appropriate_price(
                 now_ms=order.processed_ms,
                 is_forex=True,          # from_currency is USD for crypto and equities
                 order_type=order.order_type,
@@ -372,7 +372,7 @@ class LivePriceFetcher:
             )
             return usd_conversion if b_usd else 1.0 / usd_conversion
 
-        bt.logging.error(f"Unable to fetch quote currency {order.trade_pair.quote} to USD conversion at time {order.processed_ms}.")
+        bt.logging.error(f"Unable to fetch quote currency {order.trade_pair.quote} to USD conversion at time {order.processed_ms}. No price sources available (websocket or REST).")
         return 1.0
         # TODO: raise Exception(f"Unable to fetch currency conversion from {from_currency} to USD at time {time_ms}.")
 
@@ -398,13 +398,13 @@ class LivePriceFetcher:
             usd_a = False
             conversion_trade_pair = TradePair.from_trade_pair_id(f"{trade_pair.base}USD")
 
-        price_source = self.get_close_at_date(
+        price_sources = self.get_sorted_price_sources_for_trade_pair(
             trade_pair=conversion_trade_pair,
-            timestamp_ms=time_ms,
-            verbose=False
+            time_ms=time_ms
         )
-        if price_source:
-            usd_conversion = price_source.parse_appropriate_price(
+        if price_sources and len(price_sources) > 0:
+            best_price_source = price_sources[0]
+            usd_conversion = best_price_source.parse_appropriate_price(
                 now_ms=time_ms,
                 is_forex=True,          # from_currency is USD for crypto and equities
                 order_type=order_type,
@@ -412,7 +412,7 @@ class LivePriceFetcher:
             )
             return usd_conversion if usd_a else 1.0 / usd_conversion
 
-        bt.logging.error(f"Unable to fetch USD to base currency {trade_pair.base} conversion at time {time_ms}.")
+        bt.logging.error(f"Unable to fetch USD to base currency {trade_pair.base} conversion at time {time_ms}. No price sources available (websocket or REST).")
         return 1.0
 
 
