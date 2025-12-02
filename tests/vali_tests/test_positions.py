@@ -47,6 +47,17 @@ class TestPositions(TestBase):
     metagraph_client = None
     position_client = None
     DEFAULT_MINER_HOTKEY = "test_miner"
+    DEFAULT_POSITION_UUID = "test_position"
+    DEFAULT_OPEN_MS = 1000
+    DEFAULT_TRADE_PAIR = TradePair.BTCUSD
+    DEFAULT_ACCOUNT_SIZE = 100_000
+    default_position = Position(
+        miner_hotkey=DEFAULT_MINER_HOTKEY,
+        position_uuid=DEFAULT_POSITION_UUID,
+        open_ms=DEFAULT_OPEN_MS,
+        trade_pair=DEFAULT_TRADE_PAIR,
+        account_size=DEFAULT_ACCOUNT_SIZE,
+    )
 
     @classmethod
     def setUpClass(cls):
@@ -95,17 +106,7 @@ class TestPositions(TestBase):
 
     def _create_test_data(self):
         """Helper to create fresh test data."""
-        self.DEFAULT_POSITION_UUID = "test_position"
-        self.DEFAULT_OPEN_MS = 1000
-        self.DEFAULT_TRADE_PAIR = TradePair.BTCUSD
-        self.DEFAULT_ACCOUNT_SIZE = 100_000
-        self.default_position = Position(
-            miner_hotkey=self.DEFAULT_MINER_HOTKEY,
-            position_uuid=self.DEFAULT_POSITION_UUID,
-            open_ms=self.DEFAULT_OPEN_MS,
-            trade_pair=self.DEFAULT_TRADE_PAIR,
-            account_size=self.DEFAULT_ACCOUNT_SIZE,
-        )
+        pass
 
     # Aliases for backward compatibility with test methods
     @property

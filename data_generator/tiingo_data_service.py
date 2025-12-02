@@ -321,6 +321,17 @@ class TiingoDataService(BaseDataService):
         return tp
 
     def get_closes_rest(self, pairs: List[TradePair], verbose=False) -> dict[TradePair: PriceSource]:
+        # In unit test mode, return default test price sources instead of making network calls
+        # Note: Tiingo doesn't have injected test prices like Polygon, so return generic fallback
+        if self.running_unit_tests:
+            # Return a generic test price source for each pair
+            result = {}
+            for trade_pair in pairs:
+                # Use Polygon's default test price source structure
+                from data_generator.polygon_data_service import PolygonDataService
+                result[trade_pair] = PolygonDataService.DEFAULT_TESTING_FALLBACK_PRICE_SOURCE
+            return result
+
         tp_equities = [tp for tp in pairs if tp.trade_pair_category == TradePairCategory.EQUITIES]
         tp_crypto = [tp for tp in pairs if tp.trade_pair_category == TradePairCategory.CRYPTO]
         tp_forex = [tp for tp in pairs if tp.trade_pair_category == TradePairCategory.FOREX]

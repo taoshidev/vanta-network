@@ -42,6 +42,7 @@ class TestPositionManager(TestBase):
     perf_ledger_client = None
 
     DEFAULT_MINER_HOTKEY = "test_miner"
+    DEFAULT_ACCOUNT_SIZE = 100_000
 
     @classmethod
     def setUpClass(cls):
@@ -834,7 +835,8 @@ class TestPositionManager(TestBase):
                         miner_hotkey=miner_hotkey,
                         position_uuid=f"pos_t{thread_id}_i{i}",
                         trade_pair=trade_pair,
-                        open_ms=1000 + thread_id * 100 + i
+                        open_ms=1000 + thread_id * 100 + i,
+                        account_size=self.DEFAULT_ACCOUNT_SIZE
                     )
 
                     # RPC call - will be handled by server thread
@@ -938,7 +940,8 @@ class TestPositionManager(TestBase):
                     miner_hotkey=miner_hotkey,
                     position_uuid=f"duplicate_attempt_{thread_id}",
                     trade_pair=TradePair.BTCUSD,  # SAME trade pair for all threads!
-                    open_ms=1000 + thread_id
+                    open_ms=1000 + thread_id,
+                    account_size=self.DEFAULT_ACCOUNT_SIZE
                 )
 
                 # RPC save - server will handle concurrently with threading

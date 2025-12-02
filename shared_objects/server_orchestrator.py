@@ -28,17 +28,34 @@ Usage in tests:
 
 Usage in validator.py:
 
-    from shared_objects.server_orchestrator import ServerOrchestrator
+    from shared_objects.server_orchestrator import ServerOrchestrator, ServerMode
 
     # Start all servers once at validator startup
     orchestrator = ServerOrchestrator.get_instance()
     orchestrator.start_all_servers(
+        mode=ServerMode.PRODUCTION,
         secrets=self.secrets,
         config=self.config
     )
 
     # Get clients
     self.position_client = orchestrator.get_client('position_manager')
+
+Usage in miner.py:
+
+    from shared_objects.server_orchestrator import ServerOrchestrator, ServerMode
+    from vali_objects.utils.vali_utils import ValiUtils
+
+    # Start only required servers for miners (common_data, metagraph)
+    orchestrator = ServerOrchestrator.get_instance()
+    secrets = ValiUtils.get_secrets(running_unit_tests=False)
+    orchestrator.start_all_servers(
+        mode=ServerMode.MINER,
+        secrets=secrets
+    )
+
+    # Get client (servers guaranteed ready, no connection errors)
+    self.metagraph_client = orchestrator.get_client('metagraph')
 
 Usage in backtesting:
 
@@ -89,6 +106,7 @@ class ServerMode(Enum):
     TESTING = "testing"           # Unit tests - minimal servers, no WebSockets
     BACKTESTING = "backtesting"   # Backtesting - full servers, no WebSockets
     PRODUCTION = "production"     # Live validator - full servers with WebSockets
+    MINER = "miner"              # Live miner - minimal servers needed for signal submission
 
 
 @dataclass
@@ -97,7 +115,12 @@ class ServerConfig:
     server_class: type              # Server class (e.g., PositionManagerServer)
     client_class: type              # Client class (e.g., PositionManagerClient)
     required_in_testing: bool       # Whether needed in TESTING mode
-    spawn_kwargs: Dict[str, Any]    # Additional kwargs for spawn_process()
+    required_in_miner: bool = False # Whether needed in MINER mode (signal submission)
+    spawn_kwargs: Dict[str, Any] = None  # Additional kwargs for spawn_process()
+
+    def __post_init__(self):
+        if self.spawn_kwargs is None:
+            self.spawn_kwargs = {}
 
 
 class ServerOrchestrator:
@@ -122,12 +145,14 @@ class ServerOrchestrator:
             server_class=None,  # Imported lazily to avoid circular imports
             client_class=None,
             required_in_testing=True,
+            required_in_miner=True,  # Miners need shared state
             spawn_kwargs={}
         ),
         'metagraph': ServerConfig(
             server_class=None,
             client_class=None,
             required_in_testing=True,
+            required_in_miner=True,  # Miners need metagraph data
             spawn_kwargs={}
         ),
         'position_lock': ServerConfig(
@@ -194,6 +219,7 @@ class ServerOrchestrator:
             server_class=None,
             client_class=None,
             required_in_testing=True,
+            required_in_miner=False,  # Miners generate own signals, don't need price data
             spawn_kwargs={'disable_ws': True}  # No WebSockets in testing
         ),
         'debt_ledger': ServerConfig(
@@ -219,6 +245,13 @@ class ServerOrchestrator:
             client_class=None,
             required_in_testing=True,
             spawn_kwargs={'start_daemon': False}  # No daemon in testing
+        ),
+        'websocket_notifier': ServerConfig(
+            server_class=None,
+            client_class=None,
+            required_in_testing=False,  # Optional - only in PRODUCTION mode
+            required_in_miner=False,
+            spawn_kwargs={}
         ),
     }
 
@@ -294,6 +327,8 @@ class ServerOrchestrator:
         from runnable.miner_statistics_server import MinerStatisticsServer, MinerStatisticsClient
         from vali_objects.utils.mdd_checker_server import MDDCheckerServer
         from vali_objects.utils.mdd_checker_client import MDDCheckerClient
+        from vanta_api.websocket_server import WebSocketServer
+        from vanta_api.websocket_notifier import WebSocketNotifierClient
 
         # Update registry with classes
         self.SERVERS['common_data'].server_class = CommonDataServer
@@ -346,6 +381,9 @@ class ServerOrchestrator:
 
         self.SERVERS['mdd_checker'].server_class = MDDCheckerServer
         self.SERVERS['mdd_checker'].client_class = MDDCheckerClient
+
+        self.SERVERS['websocket_notifier'].server_class = WebSocketServer
+        self.SERVERS['websocket_notifier'].client_class = WebSocketNotifierClient
 
         self._classes_loaded = True
 
@@ -453,6 +491,8 @@ class ServerOrchestrator:
             for server_name, config in self.SERVERS.items():
                 if mode == ServerMode.TESTING and not config.required_in_testing:
                     continue
+                if mode == ServerMode.MINER and not config.required_in_miner:
+                    continue
                 servers_to_start.append(server_name)
 
             # Start servers in dependency order
@@ -480,6 +520,7 @@ class ServerOrchestrator:
         - challenge_period: depends on common_data, asset_selection
         - elimination: depends on perf_ledger, challenge_period
         - position_manager: depends on challenge_period, elimination
+        - websocket_notifier: depends on position_manager (broadcasts position updates)
         - plagiarism: depends on position_manager
         - plagiarism_detector: depends on plagiarism, position_manager
         - limit_order: depends on position_manager
@@ -503,6 +544,7 @@ class ServerOrchestrator:
             'challenge_period',
             'elimination',
             'position_manager',
+            'websocket_notifier',
             'plagiarism',
             'plagiarism_detector',
             'limit_order',
@@ -546,8 +588,15 @@ class ServerOrchestrator:
                 raise ValueError("secrets required for live_price_fetcher server")
             spawn_kwargs['secrets'] = secrets
 
-        # Handle WebSocket disabling for testing/backtesting
-        if mode in (ServerMode.TESTING, ServerMode.BACKTESTING):
+        # Add api_keys_file for WebSocketNotifierServer
+        if server_name == 'websocket_notifier':
+            from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
+            spawn_kwargs['api_keys_file'] = ValiBkpUtils.get_api_keys_file_path()
+
+        # Handle WebSocket configuration based on mode
+        if mode in (ServerMode.TESTING, ServerMode.BACKTESTING, ServerMode.MINER):
+            # Testing/backtesting/miner: no WebSockets
+            # Miners generate their own signals, validators need WebSockets for live validation
             if server_name == 'live_price_fetcher':
                 spawn_kwargs['disable_ws'] = True
 

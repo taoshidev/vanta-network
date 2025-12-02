@@ -554,6 +554,15 @@ class PolygonDataService(BaseDataService):
         return tp
 
     def get_closes_rest(self, pairs: List[TradePair]) -> dict:
+        # In unit test mode, return test price sources instead of making network calls
+        if self.running_unit_tests:
+            result = {}
+            for trade_pair in pairs:
+                test_price = self._get_test_price_source(trade_pair, TimeUtil.now_in_millis())
+                if test_price:
+                    result[trade_pair] = test_price
+            return result
+
         all_trade_pair_closes = {}
         # Multi-threaded fetching of REST data over all requested trade pairs. Max parallelism is 5.
         with ThreadPoolExecutor(max_workers=5) as executor:
@@ -850,6 +859,10 @@ class PolygonDataService(BaseDataService):
         return ret
 
     def unified_candle_fetcher(self, trade_pair: TradePair, start_timestamp_ms: int, end_timestamp_ms: int, timespan: str=None):
+        # In unit test mode, don't make network calls - return empty list
+        # Tests should inject price data via set_test_price_source
+        if self.running_unit_tests:
+            return []
 
         def _fetch_raw_polygon_aggs():
             return self.POLYGON_CLIENT.list_aggs(

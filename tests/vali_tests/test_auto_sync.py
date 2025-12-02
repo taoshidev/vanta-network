@@ -2,7 +2,6 @@ import json
 from copy import deepcopy
 from unittest.mock import Mock, patch
 
-from shared_objects.rpc_client_base import RPCClientBase
 from shared_objects.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
 from time_util.time_util import TimeUtil

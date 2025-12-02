@@ -18,8 +18,10 @@ from miner_objects.position_inspector import PositionInspector
 from shared_objects.slack_notifier import SlackNotifier
 from shared_objects.metagraph_updater import MetagraphUpdater
 from shared_objects.metagraph_server import MetagraphServer, MetagraphClient
+from shared_objects.server_orchestrator import ServerOrchestrator, ServerMode
 from vali_objects.decoders.generalized_json_decoder import GeneralizedJSONDecoder
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
+from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import RPCConnectionMode
 
 
@@ -41,16 +43,32 @@ class Miner:
             enable_metrics=True,
             enable_daily_summary=True
         )
-        # Create metagraph in miner mode (no RPC server, direct in-process access)
-        # Uses same interface as validator's MetagraphServer but auto-configured for miners
-        self.metagraph_server = MetagraphServer(is_miner=True)
+
+        # Start required servers using ServerOrchestrator (fixes connection errors)
+        # This ensures servers are fully started before clients try to connect
+        bt.logging.info("Initializing miner servers...")
+        self.orchestrator = ServerOrchestrator.get_instance()
+        secrets = ValiUtils.get_secrets(running_unit_tests=False)
+
+        # Start only the servers miners need (common_data, metagraph)
+        # Servers start in dependency order and block until ready - no connection errors!
+        self.orchestrator.start_all_servers(
+            mode=ServerMode.MINER,
+            secrets=secrets
+        )
+
+        # Get clients from orchestrator (servers guaranteed ready, no connection errors)
+        self.metagraph_client = self.orchestrator.get_client('metagraph')
+
+        bt.logging.success("Miner servers initialized successfully")
+
         self.position_inspector = PositionInspector(self.wallet, self.config)
         self.metagraph_updater = MetagraphUpdater(self.config, self.wallet.hotkey.ss58_address,
                                                   True, position_inspector=self.position_inspector,
                                                     slack_notifier=self.slack_notifier)
         self.prop_net_order_placer = PropNetOrderPlacer(
             self.wallet,
-            self.metagraph_updater,
+            self.metagraph_client,
             self.config,
             self.is_testnet,
             position_inspector=self.position_inspector,
@@ -64,7 +82,7 @@ class Miner:
         )
         
         self.check_miner_registration()
-        self.my_subnet_uid = self.metagraph_server.hotkeys.index(self.wallet.hotkey.ss58_address)
+        self.my_subnet_uid = self.metagraph_client.hotkeys.index(self.wallet.hotkey.ss58_address)
         bt.logging.info(f"Running miner on netuid {self.config.netuid} with uid: {self.my_subnet_uid}")
 
 
@@ -86,7 +104,7 @@ class Miner:
         # Dashboard
         # Start the miner data api in its own thread
         try:
-            self.dashboard = Dashboard(self.wallet, self.metagraph_server, self.config, self.is_testnet)
+            self.dashboard = Dashboard(self.wallet, self.metagraph_client, self.config, self.is_testnet)
             self.dashboard_api_thread = threading.Thread(target=self.dashboard.run, daemon=True)
             self.dashboard_api_thread.start()
         except OSError as e:
@@ -104,7 +122,7 @@ class Miner:
             os.makedirs(self.config.full_path, exist_ok=True)
 
     def check_miner_registration(self):
-        if self.wallet.hotkey.ss58_address not in self.metagraph_server.hotkeys:
+        if self.wallet.hotkey.ss58_address not in self.metagraph_client.hotkeys:
             error_msg = "Your miner is not registered. Please register and try again."
             bt.logging.error(error_msg)
             self.slack_notifier.send_message(f"❌ {error_msg}", level="error")

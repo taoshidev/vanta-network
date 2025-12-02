@@ -1,16 +1,14 @@
 import unittest
-import time
 
 from shared_objects.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
 from time_util.time_util import TimeUtil
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.enums.execution_type_enum import ExecutionType
-from vali_objects.exceptions.signal_exception import SignalException
 from vali_objects.position import Position
 from vali_objects.utils.limit_order_server import LimitOrderClient
 from vali_objects.utils.vali_utils import ValiUtils
-from vali_objects.vali_config import TradePair, ValiConfig
+from vali_objects.vali_config import TradePair
 from vali_objects.vali_dataclasses.order import Order, OrderSource
 from vali_objects.vali_dataclasses.price_source import PriceSource
 
@@ -97,7 +95,8 @@ class TestLimitOrderIntegration(TestBase):
             miner_hotkey=self.DEFAULT_MINER_HOTKEY,
             position_uuid=f"pos_{now_ms}",
             open_ms=now_ms,
-            trade_pair=self.DEFAULT_TRADE_PAIR
+            trade_pair=self.DEFAULT_TRADE_PAIR,
+            account_size=1000.0  # Required for position validation
         )
 
         # Add initial market order to position
@@ -210,7 +209,6 @@ class TestLimitOrderIntegration(TestBase):
 
         # Verify initial position
         self.assertEqual(len(initial_position.orders), 1)
-        print(f"DEBUG: Initial position order src: {initial_position.orders[0].src} (should be ORGANIC=0)")
 
         # Create LONG limit order to add to position (0.3 + 0.2 = 0.5, within max leverage)
         limit_order = self.create_limit_order(order_type=OrderType.LONG, limit_price=48000.0, leverage=0.2)
@@ -235,30 +233,8 @@ class TestLimitOrderIntegration(TestBase):
         self.live_price_fetcher_client.set_test_market_open(True)
         self.live_price_fetcher_client.set_test_price_source(self.DEFAULT_TRADE_PAIR, trigger_price_source)
 
-        # Debug: Check internal state before daemon
-        orders_dict_before = self.limit_order_client.get_limit_orders_dict()
-        print(f"DEBUG: Orders dict before daemon: {orders_dict_before}")
-        print(f"DEBUG: Market is open: {self.live_price_fetcher_client.is_market_open(self.DEFAULT_TRADE_PAIR)}")
-
         # Run daemon via client - server will use injected test data
-        print("DEBUG: About to call check_and_fill_limit_orders daemon")
-        result = self.limit_order_client.check_and_fill_limit_orders()
-        print(f"DEBUG: Daemon returned: {result}")
-
-        # Debug: Check internal state after daemon
-        orders_dict_after = self.limit_order_client.get_limit_orders_dict()
-        print(f"DEBUG: Orders dict after daemon: {orders_dict_after}")
-
-        # Check position BEFORE verifying order was added
-        position_before_assert = self.position_client.get_open_position_for_trade_pair(
-            self.DEFAULT_MINER_HOTKEY,
-            self.DEFAULT_TRADE_PAIR.trade_pair_id
-        )
-        if position_before_assert:
-            print(f"DEBUG: Position has {len(position_before_assert.orders)} orders")
-            print(f"DEBUG: Position orders sources: {[o.src for o in position_before_assert.orders]}")
-        else:
-            print("DEBUG: Position is None!")
+        self.limit_order_client.check_and_fill_limit_orders()
 
         # Verify order removed from memory (filled orders are cleaned up)
         orders_after = self.limit_order_client.get_limit_orders_for_trade_pair(
@@ -378,17 +354,33 @@ class TestLimitOrderIntegration(TestBase):
         ).get(self.DEFAULT_MINER_HOTKEY, [])
         self.assertEqual(len(bracket_orders), 1, "Bracket order should be created")
         bracket_order = bracket_orders[0]
-        self.assertEqual(bracket_order['execution_type'], ExecutionType.BRACKET)
+        self.assertEqual(bracket_order['execution_type'], 'BRACKET')  # RPC serializes enum to string
         self.assertEqual(bracket_order['stop_loss'], 45000.0)
         self.assertEqual(bracket_order['take_profit'], 52000.0)
         self.assertEqual(bracket_order['src'], OrderSource.BRACKET_UNFILLED)
 
         # Clear fill interval to allow bracket order to fill immediately
-        self.limit_order_client.clear_order_cooldown_cache()
+        self.limit_order_client.set_last_fill_time(
+            self.DEFAULT_TRADE_PAIR.trade_pair_id,
+            self.DEFAULT_MINER_HOTKEY,
+            0
+        )
 
         # Trigger stop loss (price falls below 45000)
         stop_loss_price_source = self.create_price_source(44000.0, bid=44000.0, ask=44000.0)
         self.inject_price_data(self.DEFAULT_TRADE_PAIR, stop_loss_price_source)
+        # Market should still be open from previous set_market_open call, but verify
+        self.set_market_open(is_open=True)
+
+        # Verify position still exists before trying to fill bracket
+        position_before_bracket = self.position_client.get_open_position_for_trade_pair(
+            self.DEFAULT_MINER_HOTKEY,
+            self.DEFAULT_TRADE_PAIR.trade_pair_id
+        )
+        print(f"DEBUG: Position before bracket fill exists: {position_before_bracket is not None}")
+        if position_before_bracket:
+            print(f"DEBUG: Position has {len(position_before_bracket.orders)} orders")
+            print(f"DEBUG: Position net leverage: {position_before_bracket.net_leverage}")
 
         # Fill the bracket order
         self.limit_order_client.check_and_fill_limit_orders()
@@ -397,6 +389,9 @@ class TestLimitOrderIntegration(TestBase):
         bracket_orders_after = self.limit_order_client.get_limit_orders_for_trade_pair(
             self.DEFAULT_TRADE_PAIR.trade_pair_id
         ).get(self.DEFAULT_MINER_HOTKEY, [])
+        print(f"DEBUG: Bracket orders after fill: {len(bracket_orders_after)}")
+        if bracket_orders_after:
+            print(f"DEBUG: Bracket order still unfilled: {bracket_orders_after[0]}")
         self.assertEqual(len(bracket_orders_after), 0, "Bracket order should be removed after fill")
 
         # Verify position updated with bracket order fill
@@ -449,7 +444,11 @@ class TestLimitOrderIntegration(TestBase):
         self.assertEqual(len(bracket_orders), 1)
 
         # Clear fill interval
-        self.limit_order_client.clear_order_cooldown_cache()
+        self.limit_order_client.set_last_fill_time(
+            self.DEFAULT_TRADE_PAIR.trade_pair_id,
+            self.DEFAULT_MINER_HOTKEY,
+            0
+        )
 
         # Close the position manually (simulate position being closed elsewhere)
         self.position_client.clear_all_miner_positions_and_disk()
