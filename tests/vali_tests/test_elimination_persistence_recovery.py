@@ -4,7 +4,7 @@ import os
 import json
 import shutil
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from tests.shared_objects.mock_classes import MockPositionManager
 from shared_objects.mock_metagraph import MockMetagraph
@@ -13,8 +13,9 @@ from time_util.time_util import TimeUtil, MS_IN_24_HOURS
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.position import Position
 from vali_objects.utils.challengeperiod_manager import ChallengePeriodManager
-from vali_objects.utils.elimination_manager import EliminationManager, EliminationReason
-from vali_objects.utils.live_price_fetcher import LivePriceFetcher
+from vali_objects.utils.elimination_server import EliminationServer
+from vali_objects.utils.elimination_manager import EliminationReason
+from vali_objects.utils.live_price_server import LivePriceFetcherServer
 from vali_objects.utils.miner_bucket_enum import MinerBucket
 from vali_objects.utils.position_lock import PositionLocks
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
@@ -51,7 +52,7 @@ class TestEliminationPersistenceRecovery(TestBase):
         
         # Set up live price fetcher
         secrets = ValiUtils.get_secrets(running_unit_tests=True)
-        self.live_price_fetcher = LivePriceFetcher(secrets=secrets, disable_ws=True)
+        self.live_price_fetcher = LivePriceFetcherServer(secrets=secrets, disable_ws=True)
         
         self.position_locks = PositionLocks()
         
@@ -61,23 +62,20 @@ class TestEliminationPersistenceRecovery(TestBase):
             running_unit_tests=True
         )
         
-        # Create position manager first (needed by elimination manager)
+        # Create position manager first (it creates its own EliminationClient internally)
         self.position_manager = MockPositionManager(
             self.mock_metagraph,
             perf_ledger_manager=self.perf_ledger_manager,
-            elimination_manager=None,  # Will set circular reference later
             live_price_fetcher=self.live_price_fetcher
         )
-        
-        self.elimination_manager = EliminationManager(
+
+        # Create elimination server and connect it to position manager's client
+        self.elimination_server = EliminationServer(
             self.mock_metagraph,
-            self.position_manager,
-            None,  # challengeperiod_manager set later
+            position_manager=self.position_manager,
             running_unit_tests=True
         )
-        
-        # Set circular reference
-        self.position_manager.elimination_manager = self.elimination_manager
+        self.position_manager.elimination_client.set_direct_server(self.elimination_server)
         
         self.challengeperiod_manager = ChallengePeriodManager(
             self.mock_metagraph,
@@ -87,8 +85,7 @@ class TestEliminationPersistenceRecovery(TestBase):
         )
         
         # Set circular references
-        self.elimination_manager.position_manager = self.position_manager
-        self.elimination_manager.challengeperiod_manager = self.challengeperiod_manager
+        self.elimination_server.challengeperiod_manager = self.challengeperiod_manager
         
         # Clear all data
         self.clear_all_data()
@@ -105,7 +102,7 @@ class TestEliminationPersistenceRecovery(TestBase):
         self.position_manager.clear_all_miner_positions()
         self.perf_ledger_manager.clear_perf_ledgers_from_disk()
         self.challengeperiod_manager._clear_challengeperiod_in_memory_and_disk()
-        self.elimination_manager.clear_eliminations()
+        self.elimination_server.clear_eliminations()
 
     def _setup_positions(self):
         """Create test positions"""
@@ -148,13 +145,13 @@ class TestEliminationPersistenceRecovery(TestBase):
                 'return_info': {'plagiarism_score': 0.95}
             }
         ]
-        
+
         # Add eliminations
         for elim in eliminations:
-            self.elimination_manager.eliminations.append(elim)
-        
+            self.elimination_server.add_elimination(elim['hotkey'], elim)
+
         # Save to disk
-        self.elimination_manager.save_eliminations()
+        self.elimination_server.save_eliminations()
         
         # Verify file exists
         file_path = ValiBkpUtils.get_eliminations_dir(running_unit_tests=True)
@@ -173,12 +170,8 @@ class TestEliminationPersistenceRecovery(TestBase):
             self.assertEqual(saved_elim['hotkey'], eliminations[i]['hotkey'])
             self.assertEqual(saved_elim['reason'], eliminations[i]['reason'])
 
-    @patch('data_generator.polygon_data_service.PolygonDataService.unified_candle_fetcher')
-    def test_elimination_recovery_on_restart(self, mock_candle_fetcher):
+    def test_elimination_recovery_on_restart(self):
         """Test that eliminations are recovered correctly on validator restart"""
-        # Mock the API call to return empty list (no price data needed for this test)
-        mock_candle_fetcher.return_value = []
-        
         # Create and save eliminations
         test_eliminations = [
             {
@@ -194,33 +187,30 @@ class TestEliminationPersistenceRecovery(TestBase):
                 'elimination_initiated_time_ms': TimeUtil.now_in_millis() - MS_IN_24_HOURS
             }
         ]
-        
+
         # Write directly to disk (simulating previous session)
-        self.elimination_manager.write_eliminations_to_disk(test_eliminations)
-        
+        self.elimination_server.write_eliminations_to_disk(test_eliminations)
+
         # Create new elimination manager (simulating restart)
-        new_elimination_manager = EliminationManager(
+        new_elimination_server = EliminationServer(
             self.mock_metagraph,
             self.position_manager,
-            self.challengeperiod_manager,
             running_unit_tests=True
         )
-        
+        new_elimination_server.challengeperiod_manager = self.challengeperiod_manager
+
         # Verify eliminations were loaded
-        loaded_eliminations = new_elimination_manager.get_eliminations_from_memory()
+        loaded_eliminations = new_elimination_server.get_eliminations_from_memory()
         self.assertEqual(len(loaded_eliminations), 2)
-        
+
         # Verify content
         hotkeys = [e['hotkey'] for e in loaded_eliminations]
         self.assertIn(self.PERSISTENT_MINER_1, hotkeys)
         self.assertIn(self.RECOVERY_MINER, hotkeys)
-        
+
         # Verify first refresh handles recovered eliminations
-        new_elimination_manager.handle_first_refresh(self.position_locks)
-        
-        # Assert the mock was called
-        self.assertTrue(mock_candle_fetcher.called)
-        
+        new_elimination_server.handle_first_refresh(self.position_locks)
+
         # Check that positions were closed for eliminated miners
         for elim in test_eliminations:
             positions = self.position_manager.get_positions_for_one_hotkey(elim['hotkey'])
@@ -239,11 +229,11 @@ class TestEliminationPersistenceRecovery(TestBase):
                 'price_info': {str(TradePair.BTCUSD): 45000}
             }
         ]
-        
+
         # Add and save eliminations
         for elim in original_eliminations:
-            self.elimination_manager.eliminations.append(elim)
-        self.elimination_manager.save_eliminations()
+            self.elimination_server.add_elimination(elim['hotkey'], elim)
+        self.elimination_server.save_eliminations()
         
         # Create backup directory
         backup_dir = "/tmp/test_elimination_backup"
@@ -255,24 +245,24 @@ class TestEliminationPersistenceRecovery(TestBase):
         shutil.copy2(original_file, backup_file)
         
         # Clear eliminations
-        self.elimination_manager.clear_eliminations()
+        self.elimination_server.clear_eliminations()
         
         # Verify eliminations are cleared
-        self.assertEqual(len(self.elimination_manager.get_eliminations_from_memory()), 0)
+        self.assertEqual(len(self.elimination_server.get_eliminations_from_memory()), 0)
         
         # Restore from backup
         shutil.copy2(backup_file, original_file)
         
         # Create new elimination manager to load restored data
-        restored_elimination_manager = EliminationManager(
+        restored_elimination_server = EliminationServer(
             self.mock_metagraph,
             self.position_manager,
-            self.challengeperiod_manager,
             running_unit_tests=True
         )
+        restored_elimination_server.challengeperiod_manager = self.challengeperiod_manager
         
         # Verify restoration
-        restored_eliminations = restored_elimination_manager.get_eliminations_from_memory()
+        restored_eliminations = restored_elimination_server.get_eliminations_from_memory()
         self.assertEqual(len(restored_eliminations), 1)
         self.assertEqual(restored_eliminations[0]['hotkey'], self.PERSISTENT_MINER_1)
         
@@ -290,12 +280,12 @@ class TestEliminationPersistenceRecovery(TestBase):
         
         # Try to create elimination manager (should handle gracefully)
         try:
-            em1 = EliminationManager(
+            em1 = EliminationServer(
                 self.mock_metagraph,
                 self.position_manager,
-                self.challengeperiod_manager,
                 running_unit_tests=True
             )
+            em1.challengeperiod_manager = self.challengeperiod_manager
             # Should create empty eliminations
             self.assertEqual(len(em1.eliminations), 0)
         except Exception as e:
@@ -316,12 +306,12 @@ class TestEliminationPersistenceRecovery(TestBase):
             json.dump(corrupted_data, f)
         
         # Create elimination manager
-        em2 = EliminationManager(
+        em2 = EliminationServer(
             self.mock_metagraph,
             self.position_manager,
-            self.challengeperiod_manager,
             running_unit_tests=True
         )
+        em2.challengeperiod_manager = self.challengeperiod_manager
         
         # Should load what it can
         loaded = em2.get_eliminations_from_memory()
@@ -332,7 +322,7 @@ class TestEliminationPersistenceRecovery(TestBase):
         file_path = ValiBkpUtils.get_eliminations_dir(running_unit_tests=True)
         
         # Create elimination
-        self.elimination_manager.append_elimination_row(
+        self.elimination_server.append_elimination_row(
             self.PERSISTENT_MINER_1,
             0.11,
             EliminationReason.MAX_TOTAL_DRAWDOWN.value
@@ -347,7 +337,7 @@ class TestEliminationPersistenceRecovery(TestBase):
             os.chmod(parent_dir, 0o444)  # Read-only
             
             # Try to save (should handle gracefully)
-            self.elimination_manager.save_eliminations()
+            self.elimination_server.save_eliminations()
             
         except Exception:
             # Should handle permission errors gracefully
@@ -363,20 +353,20 @@ class TestEliminationPersistenceRecovery(TestBase):
         file_path = ValiBkpUtils.get_eliminations_dir(running_unit_tests=True)
         
         # Manager 1 loads data
-        em1 = EliminationManager(
+        em1 = EliminationServer(
             self.mock_metagraph,
             self.position_manager,
-            self.challengeperiod_manager,
             running_unit_tests=True
         )
-        
+        em1.challengeperiod_manager = self.challengeperiod_manager
+
         # Manager 2 loads same data
-        em2 = EliminationManager(
+        em2 = EliminationServer(
             self.mock_metagraph,
             self.position_manager,
-            self.challengeperiod_manager,
             running_unit_tests=True
         )
+        em2.challengeperiod_manager = self.challengeperiod_manager
         
         # Both add different eliminations
         em1.append_elimination_row(
@@ -392,7 +382,7 @@ class TestEliminationPersistenceRecovery(TestBase):
         )
         
         # Last write wins
-        final_data = self.elimination_manager.get_eliminations_from_disk()
+        final_data = self.elimination_server.get_eliminations_from_disk()
         # Should contain eliminations from the last save
 
     def test_elimination_state_consistency(self):
@@ -412,16 +402,16 @@ class TestEliminationPersistenceRecovery(TestBase):
                 'elimination_initiated_time_ms': TimeUtil.now_in_millis() - MS_IN_24_HOURS
             }
         ]
-        
+
         for elim in test_elims:
-            self.elimination_manager.eliminations.append(elim)
-        
+            self.elimination_server.add_elimination(elim['hotkey'], elim)
+
         # Save to disk
-        self.elimination_manager.save_eliminations()
+        self.elimination_server.save_eliminations()
         
         # Compare memory and disk
-        memory_elims = self.elimination_manager.get_eliminations_from_memory()
-        disk_elims = self.elimination_manager.get_eliminations_from_disk()
+        memory_elims = self.elimination_server.get_eliminations_from_memory()
+        disk_elims = self.elimination_server.get_eliminations_from_disk()
         
         # Should be identical
         self.assertEqual(len(memory_elims), len(disk_elims))
@@ -450,12 +440,12 @@ class TestEliminationPersistenceRecovery(TestBase):
         
         # Load with new elimination manager
         # Implementation should handle format migration
-        em = EliminationManager(
+        em = EliminationServer(
             self.mock_metagraph,
             self.position_manager,
-            self.challengeperiod_manager,
             running_unit_tests=True
         )
+        em.challengeperiod_manager = self.challengeperiod_manager
         
         # Should either migrate or handle gracefully
         loaded = em.get_eliminations_from_memory()
@@ -464,7 +454,7 @@ class TestEliminationPersistenceRecovery(TestBase):
     def test_elimination_cache_invalidation(self):
         """Test cache invalidation for eliminations"""
         # Add elimination
-        self.elimination_manager.append_elimination_row(
+        self.elimination_server.append_elimination_row(
             self.PERSISTENT_MINER_1,
             0.11,
             EliminationReason.MAX_TOTAL_DRAWDOWN.value
@@ -472,18 +462,18 @@ class TestEliminationPersistenceRecovery(TestBase):
         
         # Test with running_unit_tests=False to properly test cache behavior
         # Temporarily set running_unit_tests to False
-        original_running_unit_tests = self.elimination_manager.running_unit_tests
-        self.elimination_manager.running_unit_tests = False
+        original_running_unit_tests = self.elimination_server.running_unit_tests
+        self.elimination_server.running_unit_tests = False
         
         try:
             # Initialize attempted_start_time_ms by calling refresh_allowed
-            self.elimination_manager.refresh_allowed(0)
+            self.elimination_server.refresh_allowed(0)
             # Set cache update time
-            self.elimination_manager.set_last_update_time()
+            self.elimination_server.set_last_update_time()
             
             # Immediate refresh should be blocked
             self.assertFalse(
-                self.elimination_manager.refresh_allowed(ValiConfig.ELIMINATION_CHECK_INTERVAL_MS)
+                self.elimination_server.refresh_allowed(ValiConfig.ELIMINATION_CHECK_INTERVAL_MS)
             )
             
             # Mock time passage by patching TimeUtil.now_in_millis
@@ -491,11 +481,11 @@ class TestEliminationPersistenceRecovery(TestBase):
             with patch('time_util.time_util.TimeUtil.now_in_millis', return_value=future_time_ms):
                 # Now refresh should be allowed
                 self.assertTrue(
-                    self.elimination_manager.refresh_allowed(ValiConfig.ELIMINATION_CHECK_INTERVAL_MS)
+                    self.elimination_server.refresh_allowed(ValiConfig.ELIMINATION_CHECK_INTERVAL_MS)
                 )
         finally:
             # Restore original value
-            self.elimination_manager.running_unit_tests = original_running_unit_tests
+            self.elimination_server.running_unit_tests = original_running_unit_tests
 
     def test_perf_ledger_elimination_persistence(self):
         """Test persistence of perf ledger eliminations"""

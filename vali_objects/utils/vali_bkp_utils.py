@@ -1,6 +1,7 @@
 # developer: Taoshidev
 # Copyright © 2024 Taoshi Inc
 
+import gzip
 import json
 import os
 import shutil
@@ -15,15 +16,16 @@ from vali_objects.vali_config import ValiConfig
 from vali_objects.position import Position
 from vali_objects.vali_dataclasses.order import OrderStatus
 from vali_objects.enums.order_type_enum import OrderType
+from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.vali_config import TradePair
 
 
 class CustomEncoder(json.JSONEncoder):
     def default(self, obj):
-        if isinstance(obj, TradePair) or isinstance(obj, OrderType):
+        if isinstance(obj, TradePair) or isinstance(obj, OrderType) or isinstance(obj, ExecutionType):
             return obj.__json__()
         elif isinstance(obj, BaseModel):
-            return obj.dict()
+            return obj.model_dump()
         elif hasattr(obj, 'to_dict'):
             return obj.to_dict()
         elif isinstance(obj, DictProxy):
@@ -66,7 +68,7 @@ class ValiBkpUtils:
         """
         Get the path to api_keys.json with backwards compatibility.
 
-        Checks vanta_api first, then falls back to ptn_api for backwards compatibility
+        Checks vanta_api first, then falls back to vanta_api for backwards compatibility
         during the migration period.
 
         ptn_api is deprecated, and support will be removed in the future.
@@ -120,7 +122,51 @@ class ValiBkpUtils:
     @staticmethod
     def get_perf_ledgers_path(running_unit_tests=False) -> str:
         suffix = "/tests" if running_unit_tests else ""
+        return ValiConfig.BASE_DIR + f"{suffix}/validation/perf_ledgers.pkl"
+
+    @staticmethod
+    def get_perf_ledgers_path_compressed_json(running_unit_tests=False) -> str:
+        """Get compressed JSON perf_ledgers path for backward compatibility fallback."""
+        suffix = "/tests" if running_unit_tests else ""
+        return ValiConfig.BASE_DIR + f"{suffix}/validation/perf_ledgers.json.gz"
+
+    @staticmethod
+    def get_perf_ledgers_path_legacy(running_unit_tests=False) -> str:
+        """Get legacy uncompressed perf_ledgers path for migration."""
+        suffix = "/tests" if running_unit_tests else ""
         return ValiConfig.BASE_DIR + f"{suffix}/validation/perf_ledgers.json"
+
+    @staticmethod
+    def migrate_perf_ledgers_to_compressed(running_unit_tests=False) -> bool:
+        """
+        Migrate perf_ledgers.json to perf_ledgers.json.gz and delete old file.
+
+        Returns:
+            bool: True if migration occurred, False otherwise
+        """
+        legacy_path = ValiBkpUtils.get_perf_ledgers_path_legacy(running_unit_tests)
+        new_path = ValiBkpUtils.get_perf_ledgers_path(running_unit_tests)
+
+        # Skip if already migrated or no legacy file exists
+        if not os.path.exists(legacy_path):
+            return False
+
+        try:
+            # Read legacy uncompressed file
+            with open(legacy_path, 'r') as f:
+                data = json.load(f)
+
+            # Write to compressed format
+            ValiBkpUtils.write_compressed_json(new_path, data)
+
+            # Delete legacy file after successful migration
+            os.remove(legacy_path)
+            bt.logging.info(f"Migrated perf_ledgers from {legacy_path} to {new_path}")
+            return True
+
+        except Exception as e:
+            bt.logging.error(f"Failed to migrate perf_ledgers: {e}")
+            return False
 
     @staticmethod
     def get_plagiarism_dir(running_unit_tests=False) -> str:
@@ -130,7 +176,7 @@ class ValiBkpUtils:
     def get_plagiarism_raster_file_location(running_unit_tests=False) -> str:
         suffix = "/tests" if running_unit_tests else ""
         return ValiConfig.BASE_DIR + f"{suffix}/validation/plagiarism/raster_vectors"
-    
+
     @staticmethod
     def get_plagiarism_positions_file_location(running_unit_tests=False) -> str:
         suffix = "/tests" if running_unit_tests else ""
@@ -140,11 +186,11 @@ class ValiBkpUtils:
     def get_plagiarism_scores_dir(running_unit_tests=False) -> str:
         suffix = "/tests" if running_unit_tests else ""
         return ValiConfig.BASE_DIR + f"{suffix}/validation/plagiarism/miners/"
-    
+
     @staticmethod
     def get_plagiarism_score_file_location(hotkey, running_unit_tests=False) -> str:
         return f"{ValiBkpUtils.get_plagiarism_scores_dir(running_unit_tests=running_unit_tests)}{hotkey}.json"
-    
+
     @staticmethod
     def get_challengeperiod_file_location(running_unit_tests=False) -> str:
         suffix = "/tests" if running_unit_tests else ""
@@ -176,7 +222,7 @@ class ValiBkpUtils:
     @staticmethod
     def get_plagiarism_blocklist_file_location():
         return ValiConfig.BASE_DIR + "/miner_blocklist.json"
-    
+
     @staticmethod
     def get_vali_bkp_dir() -> str:
         return ValiConfig.BASE_DIR + "/backups/"
@@ -196,13 +242,17 @@ class ValiBkpUtils:
         return ValiConfig.BASE_DIR + "/validator_checkpoint.json"
 
     @staticmethod
-    def get_vcp_output_path() -> str:
+    def get_vcp_output_path(running_unit_tests=False) -> str:
         """Get path for compressed validator checkpoint output file.
-        
+
+        Args:
+            running_unit_tests: If True, returns test-specific path
+
         Returns:
             Full path to compressed validator checkpoint output file (.gz)
         """
-        return ValiBkpUtils.get_vali_outputs_dir() + "validator_checkpoint.json.gz"
+        suffix = "/tests" if running_unit_tests else ""
+        return ValiConfig.BASE_DIR + f"{suffix}/runnable/validator_checkpoint.json.gz"
 
     @staticmethod
     def get_miner_positions_output_path(suffix_dir: None | str = None) -> str:
@@ -294,6 +344,24 @@ class ValiBkpUtils:
             bt.logging.debug(f"Cleared directory: {directory}")
 
     @staticmethod
+    def clear_all_miner_directories(running_unit_tests=False):
+        """
+        Clear all miner directories from disk (for testing).
+
+        This removes the entire miners/ directory and recreates it empty.
+        CAUTION: This will delete all position data on disk!
+
+        Args:
+            running_unit_tests: If True, clears test directories; else production
+        """
+        miner_dir = ValiBkpUtils.get_miner_dir(running_unit_tests=running_unit_tests)
+        if os.path.exists(miner_dir):
+            shutil.rmtree(miner_dir)
+            bt.logging.info(f"Cleared all miner directories from {miner_dir}")
+        # Recreate empty directory
+        os.makedirs(miner_dir, exist_ok=True)
+
+    @staticmethod
     def write_to_dir(
         vali_file: str, vali_data: dict | object, is_pickle: bool = False, is_binary:bool = False
     ) -> None:
@@ -314,6 +382,46 @@ class ValiBkpUtils:
                 f.write(json.dumps(vali_data, cls=CustomEncoder))
         # Move the file from temp to the final location
         shutil.move(temp_file_path, vali_file)
+
+    @staticmethod
+    def write_compressed_json(file_path: str, data: dict) -> None:
+        """Write JSON data compressed with gzip (atomic write via temp file)."""
+        temp_path = file_path + ".tmp"
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        with gzip.open(temp_path, 'wt', encoding='utf-8') as f:
+            json.dump(data, f, cls=CustomEncoder)
+        shutil.move(temp_path, file_path)
+
+    @staticmethod
+    def write_pickle(file_path: str, data: dict) -> None:
+        """Write pickle data (atomic write via temp file)."""
+        temp_path = file_path + ".tmp"
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        with open(temp_path, 'wb') as f:
+            pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
+        shutil.move(temp_path, file_path)
+
+    @staticmethod
+    def read_pickle(file_path: str) -> dict:
+        """Read pickle data (handles both compressed and uncompressed)."""
+        # Check if file is gzip-compressed by reading magic number
+        with open(file_path, 'rb') as f:
+            magic = f.read(2)
+
+        # If gzip-compressed (magic number is \x1f\x8b), decompress first
+        if magic == b'\x1f\x8b':
+            with gzip.open(file_path, 'rb') as gz_f:
+                return pickle.load(gz_f)
+        else:
+            # Regular pickle file
+            with open(file_path, 'rb') as f:
+                return pickle.load(f)
+
+    @staticmethod
+    def read_compressed_json(file_path: str) -> dict:
+        """Read compressed JSON data."""
+        with gzip.open(file_path, 'rt', encoding='utf-8') as f:
+            return json.load(f)
 
     @staticmethod
     def write_file(
@@ -387,11 +495,11 @@ class ValiBkpUtils:
 
         # Concatenate "open" and other directory files without sorting
         return open_files + closed_files
-    
+
     @staticmethod
     def get_hotkeys_from_file_name(files: list[str]) -> list[str]:
         return [os.path.splitext(os.path.basename(path))[0] for path in files]
-    
+
     @staticmethod
     def get_directories_in_dir(directory):
         return [
@@ -415,3 +523,41 @@ class ValiBkpUtils:
         }[order_status]
 
         return f"{base_dir}{status_dir}"
+
+    @staticmethod
+    def get_limit_orders_dir(miner_hotkey, trade_pair_id, status_str, running_unit_tests=False):
+        base_dir = (f"{ValiBkpUtils.get_miner_dir(running_unit_tests=running_unit_tests)}"
+               f"{miner_hotkey}/limit_orders/{trade_pair_id}/")
+
+        return f"{base_dir}{status_str}/"
+
+    @staticmethod
+    def get_limit_orders(miner_hotkey, unfilled_only=False, *, running_unit_tests=False):
+        miner_limit_orders_dir = (f"{ValiBkpUtils.get_miner_dir(running_unit_tests=running_unit_tests)}"
+                                  f"{miner_hotkey}/limit_orders/")
+
+        if not os.path.exists(miner_limit_orders_dir):
+            return []
+
+        orders = []
+        trade_pair_dirs = ValiBkpUtils.get_directories_in_dir(miner_limit_orders_dir)
+        status_dirs = ["unfilled"]
+        if not unfilled_only:
+            status_dirs = ["closed"]
+        for trade_pair_id in trade_pair_dirs:
+            for status in status_dirs:
+                status_dir = ValiBkpUtils.get_limit_orders_dir(miner_hotkey, trade_pair_id, status, running_unit_tests)
+
+                if not os.path.exists(status_dir):
+                    continue
+
+                try:
+                    status_files = ValiBkpUtils.get_all_files_in_dir(status_dir)
+                    for filename in status_files:
+                        with open(filename, 'r') as f:
+                            orders.append(json.load(f))
+
+                except Exception as e:
+                    bt.logging.error(f"Error accessing {status} directory {status_dir}: {e}")
+
+        return orders

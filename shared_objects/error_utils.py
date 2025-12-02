@@ -1,6 +1,7 @@
 # developer: jbonilla
 # Copyright © 2024 Taoshi Inc
 
+from time_util.time_util import TimeUtil
 import traceback
 from typing import Union, List
 
@@ -107,8 +108,7 @@ class ErrorUtils:
         Returns:
             A formatted error message suitable for Slack
         """
-        from time_util.time_util import TimeUtil
-        
+
         if traceback_str is None:
             traceback_str = traceback.format_exc()
         

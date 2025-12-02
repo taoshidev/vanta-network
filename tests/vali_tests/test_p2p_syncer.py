@@ -8,8 +8,8 @@ from tests.vali_tests.base_objects.test_base import TestBase
 from time_util.time_util import TimeUtil
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.position import Position
-from vali_objects.utils.elimination_manager import EliminationManager
-from vali_objects.utils.live_price_fetcher import LivePriceFetcher
+from vali_objects.utils.elimination_server import EliminationServer
+from vali_objects.utils.live_price_server import LivePriceFetcherServer
 from vali_objects.utils.p2p_syncer import P2PSyncer
 from vali_objects.utils.position_manager import PositionManager
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
@@ -28,7 +28,7 @@ class TestPositions(TestBase):
         )
 
         secrets = ValiUtils.get_secrets(running_unit_tests=True)
-        self.live_price_fetcher = LivePriceFetcher(secrets=secrets, disable_ws=True)
+        self.live_price_fetcher = LivePriceFetcherServer(secrets=secrets, disable_ws=True)
         self.DEFAULT_MINER_HOTKEY = "test_miner"
         self.DEFAULT_POSITION_UUID = "test_position"
         self.DEFAULT_ORDER_UUID = "test_order"
@@ -51,11 +51,18 @@ class TestPositions(TestBase):
                                          stake=Balance(0.0))
 
         self.mock_metagraph = MockMetagraph([self.DEFAULT_MINER_HOTKEY])
-        self.elimination_manager = EliminationManager(self.mock_metagraph, None, None, running_unit_tests=True)
-        self.position_manager = PositionManager(metagraph=self.mock_metagraph, running_unit_tests=True,
-                                                elimination_manager=self.elimination_manager)
+
+        # Create position manager first (it creates its own EliminationClient internally)
+        self.position_manager = PositionManager(metagraph=self.mock_metagraph, running_unit_tests=True)
+
+        # Create elimination server and connect it to the position manager's client
+        self.elimination_server = EliminationServer(
+            metagraph=self.mock_metagraph,
+            position_manager=self.position_manager,
+            running_unit_tests=True
+        )
+        self.position_manager.elimination_client.set_direct_server(self.elimination_server)
         self.position_manager.clear_all_miner_positions()
-        self.elimination_manager.position_manager = self.position_manager
 
         self.default_open_position = Position(
             miner_hotkey=self.DEFAULT_MINER_HOTKEY,
@@ -539,7 +546,7 @@ class TestPositions(TestBase):
         order2.order_uuid = "test_order2"
         order2.processed_ms = 2000
         order2.leverage = 0.5
-        order2.order_type = "LONG"
+        order2.order_type = OrderType.LONG
         order3 = deepcopy(self.default_order)
         order3.order_uuid = "test_order3"
         order3.leverage = 0.8
@@ -557,7 +564,7 @@ class TestPositions(TestBase):
         order2x.order_uuid = "test_order2x"
         order2x.processed_ms = 2000
         order2x.leverage = 0.5
-        order2x.order_type = "LONG"
+        order2x.order_type = OrderType.LONG
         order3 = deepcopy(self.default_order)
         order3.order_uuid = "test_order3"
         order3.leverage = 0.8
@@ -605,7 +612,7 @@ class TestPositions(TestBase):
         order2.order_uuid = "test_order2"
         order2.processed_ms = TimeUtil.now_in_millis()
         order2.leverage = 0.5
-        order2.order_type = "LONG"
+        order2.order_type = OrderType.LONG
         orders = [order1, order2]
         position1 = deepcopy(self.default_position)
         position1.position_uuid = "test_position1"
@@ -683,7 +690,7 @@ class TestPositions(TestBase):
         order1.order_uuid = "test_order1x"
         order1.processed_ms = 1000
         order1.leverage = 0.5
-        order1.order_type = "LONG"
+        order1.order_type = OrderType.LONG
         order2 = deepcopy(self.default_order)
         order2.order_uuid = "test_order2"
         order2.processed_ms = TimeUtil.now_in_millis()
@@ -700,7 +707,7 @@ class TestPositions(TestBase):
         order1.order_uuid = "test_order1y"
         order1.processed_ms = 1010
         order1.leverage = 0.5
-        order1.order_type = "LONG"
+        order1.order_type = OrderType.LONG
         order2 = deepcopy(self.default_order)
         order2.order_uuid = "test_order2"
         order2.processed_ms = TimeUtil.now_in_millis()
@@ -716,7 +723,7 @@ class TestPositions(TestBase):
         order1.order_uuid = "test_order1z"
         order1.processed_ms = 990
         order1.leverage = 0.5
-        order1.order_type = "LONG"
+        order1.order_type = OrderType.LONG
         order2 = deepcopy(self.default_order)
         order2.order_uuid = "test_order2"
         order2.processed_ms = TimeUtil.now_in_millis()
@@ -747,12 +754,12 @@ class TestPositions(TestBase):
         order1.order_uuid = "test_order1x"
         order1.processed_ms = TimeUtil.now_in_millis() - 1000
         order1.leverage = 0.5
-        order1.order_type = "LONG"
+        order1.order_type = OrderType.LONG
         order2 = deepcopy(self.default_order)
         order2.order_uuid = "test_order2x"
         order2.processed_ms = TimeUtil.now_in_millis()
         order2.leverage = 0.5
-        order2.order_type = "LONG"
+        order2.order_type = OrderType.LONG
         orders = [order1, order2]
         position1 = deepcopy(self.default_position)
         position1.position_uuid = "test_position1"
@@ -766,11 +773,11 @@ class TestPositions(TestBase):
         order1.order_uuid = "test_order1y"
         order1.processed_ms = TimeUtil.now_in_millis() - 1000
         order1.leverage = 0.5
-        order1.order_type = "LONG"
+        order1.order_type = OrderType.LONG
         order2 = deepcopy(self.default_order)
         order2.order_uuid = "test_order2y"
         order2.leverage = 0.5
-        order2.order_type = "LONG"
+        order2.order_type = OrderType.LONG
         order2.processed_ms = TimeUtil.now_in_millis()
         orders = [order1, order2]
         position1 = deepcopy(self.default_position)
@@ -785,11 +792,11 @@ class TestPositions(TestBase):
         order1.order_uuid = "test_order1z"
         order1.processed_ms = TimeUtil.now_in_millis() - 1000
         order1.leverage = 0.5
-        order1.order_type = "LONG"
+        order1.order_type = OrderType.LONG
         order2 = deepcopy(self.default_order)
         order2.order_uuid = "test_order2z"
         order2.leverage = 0.5
-        order2.order_type = "LONG"
+        order2.order_type = OrderType.LONG
         order2.processed_ms = TimeUtil.now_in_millis()
         orders = [order1, order2]
         position1 = deepcopy(self.default_position)

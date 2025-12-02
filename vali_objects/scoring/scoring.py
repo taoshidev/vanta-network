@@ -93,15 +93,16 @@ class Scoring:
             metrics=None,
             all_miner_account_sizes: dict[str, float]=None
     ) -> List[Tuple[str, float]]:
+        bt.logging.info(f"compute_results_checkpoint called with {len(ledger_dict)} miners")
+
         if len(ledger_dict) == 0:
             bt.logging.debug("No results to compute, returning empty list")
             return []
 
         if len(ledger_dict) == 1:
             miner = list(ledger_dict.keys())[0]
-            if verbose:
-                bt.logging.info(
-                    f"compute_results_checkpoint - Only one miner: {miner}, returning 1.0 for the solo miner weight")
+            bt.logging.info(
+                f"compute_results_checkpoint - Only one miner: {miner}, returning 1.0 for the solo miner weight")
             return [(miner, 1.0)]
 
         if evaluation_time_ms is None:
@@ -130,16 +131,20 @@ class Scoring:
             weighting=weighting,
             all_miner_account_sizes=all_miner_account_sizes
         )
+        bt.logging.info(f"asset_softmaxed_scores has {len(asset_softmaxed_scores)} asset classes")
 
         # Now combine the percentile scores using asset class emission weights
         asset_aggregated_scores = Scoring.asset_class_score_aggregation(asset_softmaxed_scores)
+        bt.logging.info(f"asset_aggregated_scores has {len(asset_aggregated_scores)} miners")
 
         # Force good performance of all error metrics
         combined_weighed = asset_aggregated_scores + full_penalty_miner_scores
+        bt.logging.info(f"combined_weighed has {len(combined_weighed)} entries (aggregated: {len(asset_aggregated_scores)}, penalties: {len(full_penalty_miner_scores)})")
         combined_scores = dict(combined_weighed)
 
         # Normalize the scores
         normalized_scores = Scoring.normalize_scores(combined_scores)
+        bt.logging.info(f"normalized_scores has {len(normalized_scores)} miners, returning results")
         return sorted(normalized_scores.items(), key=lambda x: x[1], reverse=True)
 
     @staticmethod
@@ -156,8 +161,9 @@ class Scoring:
         asset_competitiveness: dictionary with asset classes as keys and their competitiveness as values.
         asset_miner_softmaxed_scores: A dictionary with softmax scores for each miner within each asset class
         """
+        bt.logging.info(f"score_miner_asset_classes called with {len(ledger_dict)} miners")
         if len(ledger_dict) <= 1:
-            bt.logging.debug("No asset class results to compute, returning empty dicts")
+            bt.logging.info("score_miner_asset_classes: <= 1 miner, returning empty dicts (no competition)")
             return {}, {}
 
         if evaluation_time_ms is None:

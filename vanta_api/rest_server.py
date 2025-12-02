@@ -18,14 +18,20 @@ from waitress import serve
 from bittensor_wallet import Keypair
 
 from time_util.time_util import TimeUtil
+from vali_objects.utils.market_order_manager import MarketOrderManager
 from vali_objects.utils.vali_bkp_utils import CustomEncoder
 from vali_objects.position import Position
-from vali_objects.utils.position_manager import PositionManager
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
-from vali_objects.vali_config import ValiConfig
+from vali_objects.vali_config import ValiConfig, RPCConnectionMode
+from vali_objects.enums.execution_type_enum import ExecutionType
+from vali_objects.vali_dataclasses.debt_ledger_server import DebtLedgerClient
+from vali_objects.vali_dataclasses.perf_ledger_server import PerfLedgerClient
+from vali_objects.exceptions.signal_exception import SignalException
+from vali_objects.utils.order_processor import OrderProcessor
 from multiprocessing import current_process
 from vanta_api.api_key_refresh import APIKeyMixin
 from vanta_api.nonce_manager import NonceManager
+from shared_objects.rpc_server_base import RPCServerBase
 
 
 class APIMetricsTracker:
@@ -290,78 +296,249 @@ class APIMetricsTracker:
         bt.logging.info(f"API metrics logging started (interval: {self.log_interval_minutes} minutes)")
 
 
-class VantaRestServer(APIKeyMixin):
-    """Handles REST API requests with Flask and Waitress."""
+class VantaRestServer(RPCServerBase, APIKeyMixin):
+    """Handles REST API requests with Flask and Waitress.
 
-    def __init__(self, api_keys_file, shared_queue=None, host="127.0.0.1",
-                 port=48888, refresh_interval=15, metrics_interval_minutes=5, position_manager=None, contract_manager=None,
-                 miner_statistics_manager=None, request_core_manager=None,
-                 asset_selection_manager=None, debt_ledger_manager=None):
+    Inherits from:
+    - APIKeyMixin: Provides API key authentication and refresh
+    - RPCServerBase: Provides RPC server lifecycle management for health checks/control
+
+    The server runs TWO servers:
+    - Flask HTTP server on port 48888 (REST API)
+    - RPC server on port 50022 (health checks, control, monitoring)
+    """
+
+    service_name = ValiConfig.RPC_REST_SERVER_SERVICE_NAME
+    service_port = ValiConfig.RPC_REST_SERVER_PORT
+
+    def __init__(self, api_keys_file, shared_queue=None, refresh_interval=15,
+                 metrics_interval_minutes=5, running_unit_tests=False,
+                 connection_mode:RPCConnectionMode = RPCConnectionMode.RPC,
+                 start_server=True, flask_host=None, flask_port=None, **kwargs):
         """Initialize the REST server with API key handling and routing.
+
+        Note: Creates own clients internally
+        - PositionManagerClient
+        - AssetSelectionClient
+        - LimitOrderClient
+        - ContractClient
+        - CoreOutputsClient
+        - StatisticsOutputsClient
+        - DebtLedgerClient
+        - PerfLedgerClient
+
+        The server runs on configurable endpoints (defaults from ValiConfig):
+        - Flask HTTP: flask_host:flask_port (default: ValiConfig.REST_API_HOST:REST_API_PORT)
+        - RPC health: ValiConfig.RPC_REST_SERVER_PORT (50022)
 
         Args:
             api_keys_file: Path to the JSON file containing API keys
             shared_queue: Optional shared queue for communication with WebSocket server
-            host: Hostname or IP to bind the server to
-            port: Port to bind the server to
             refresh_interval: How often to check for API key changes (seconds)
             metrics_interval_minutes: How often to log API metrics (minutes)
-            position_manager: Optional position manager for handling miner positions
-            contract_manager: Optional contract manager for handling collateral operations
+            running_unit_tests: Whether running in unit test mode
         """
-        print(f"[REST-INIT] Step 1/8: Initializing API key handling...")
+        self.running_unit_tests = running_unit_tests
+
+        print(f"[REST-INIT] Step 1/9: Initializing API key handling...")
         # Initialize API key handling
         APIKeyMixin.__init__(self, api_keys_file, refresh_interval)
-        print(f"[REST-INIT] Step 1/8: API key handling initialized ✓")
+        print(f"[REST-INIT] Step 1/9: API key handling initialized ✓")
 
-        print(f"[REST-INIT] Step 2/8: Setting REST server configuration...")
+        print(f"[REST-INIT] Step 2/9: Creating PositionManagerClient...")
+        # Create own PositionManagerClient (forward compatibility - no parameter passing)
+        from vali_objects.utils.position_manager_client import PositionManagerClient
+        self._position_client = PositionManagerClient(connection_mode=connection_mode)
+        self._debt_ledger_client = DebtLedgerClient(connection_mode=connection_mode)
+        self._perf_ledger_client = PerfLedgerClient(connection_mode=connection_mode)
+        print(f"[REST-INIT] Step 2/9: PositionManagerClient created ✓")
+
+        print(f"[REST-INIT] Step 2b/9: Creating AssetSelectionClient...")
+        # Create own AssetSelectionClient (forward compatibility - no parameter passing)
+        from vali_objects.utils.asset_selection_client import AssetSelectionClient
+        self._asset_selection_client = AssetSelectionClient(connection_mode=connection_mode)
+        print(f"[REST-INIT] Step 2b/9: AssetSelectionClient created ✓")
+
+        print(f"[REST-INIT] Step 2c/9: Creating LimitOrderClient...")
+        # Create own LimitOrderClient (forward compatibility - no parameter passing)
+        from vali_objects.utils.limit_order_server import LimitOrderClient
+        self._limit_order_client = LimitOrderClient(connection_mode=connection_mode)
+        print(f"[REST-INIT] Step 2c/9: LimitOrderClient created ✓")
+
+        print(f"[REST-INIT] Step 2d/9: Creating ContractClient...")
+        # Create own ContractClient (forward compatibility - no parameter passing)
+        from vali_objects.utils.contract_server import ContractClient
+        self._contract_client = ContractClient(connection_mode=connection_mode)
+        print(f"[REST-INIT] Step 2d/9: ContractClient created ✓")
+
+        print(f"[REST-INIT] Step 2e/9: Creating CoreOutputsClient...")
+        # Create own CoreOutputsClient (forward compatibility - no parameter passing)
+        from runnable.core_outputs_server import CoreOutputsClient
+        self._core_outputs_client = CoreOutputsClient(connection_mode=connection_mode)
+        print(f"[REST-INIT] Step 2e/9: CoreOutputsClient created ✓")
+
+        print(f"[REST-INIT] Step 2f/9: Creating StatisticsOutputsClient...")
+        # Create own StatisticsOutputsClient (forward compatibility - no parameter passing)
+        from runnable.miner_statistics_server import MinerStatisticsClient
+        self._statistics_outputs_client = MinerStatisticsClient(connection_mode=connection_mode)
+        print(f"[REST-INIT] Step 2f/9: StatisticsOutputsClient created ✓")
+
+        print(f"[REST-INIT] Step 3/9: Setting REST server configuration...")
+        # IMPORTANT: Store Flask HTTP server config separately from RPC port
+        # Flask serves REST API on configurable host/port (self.flask_host/flask_port)
+        # RPC server runs on port 50022 (self.service_port) for health checks
+        # Use provided host/port or fall back to ValiConfig defaults
+        self.flask_host = flask_host if flask_host is not None else ValiConfig.REST_API_HOST
+        self.flask_port = flask_port if flask_port is not None else ValiConfig.REST_API_PORT
+
         # REST server configuration
         self.shared_queue = shared_queue
-        self.position_manager: PositionManager = position_manager
-        self.contract_manager = contract_manager
-        self.miner_statistics_manager = miner_statistics_manager
-        self.request_core_manager = request_core_manager
         self.nonce_manager = NonceManager()
-        self.asset_selection_manager = asset_selection_manager
-        self.debt_ledger_manager = debt_ledger_manager
+        self.market_order_manager = MarketOrderManager(serve=False)
         self.data_path = ValiConfig.BASE_DIR
-        self.host = host
-        self.port = port
-        print(f"[REST-INIT] Step 2/8: Configuration set ✓")
+        print(f"[REST-INIT] Step 3/9: Configuration set ✓")
 
-        print(f"[REST-INIT] Step 3/8: Creating Flask app...")
+        print(f"[REST-INIT] Step 4/9: Creating Flask app...")
         self.app = Flask(__name__)
         self.app.config['MAX_CONTENT_LENGTH'] = 256 * 1024  # 256 KB upper bound
-        print(f"[REST-INIT] Step 3/8: Flask app created ✓")
+        print(f"[REST-INIT] Step 4/9: Flask app created ✓")
 
-        print(f"[REST-INIT] Step 4/8: Loading contract owner...")
-        self.contract_manager.load_contract_owner()
-        print(f"[REST-INIT] Step 4/8: Contract owner loaded ✓")
+        print(f"[REST-INIT] Step 5/9: Loading contract owner...")
+        self._contract_client.load_contract_owner()
+        print(f"[REST-INIT] Step 5/9: Contract owner loaded ✓")
 
         # Flask-Compress removed to prevent double-compression of pre-compressed endpoints
         # Our critical endpoints (validator-checkpoint, minerstatistics) serve pre-compressed data
 
-        print(f"[REST-INIT] Step 5/8: Setting up metrics tracking...")
+        print(f"[REST-INIT] Step 6/9: Setting up metrics tracking...")
         # Initialize metrics tracking
         self._setup_metrics(metrics_interval_minutes)
-        print(f"[REST-INIT] Step 5/8: Metrics tracking initialized ✓")
+        print(f"[REST-INIT] Step 6/9: Metrics tracking initialized ✓")
 
-        print(f"[REST-INIT] Step 6/8: Registering routes...")
+        print(f"[REST-INIT] Step 7/9: Registering routes...")
         # Register routes
         self._register_routes()
-        print(f"[REST-INIT] Step 6/8: Routes registered ✓")
+        print(f"[REST-INIT] Step 7/9: Routes registered ✓")
 
-        print(f"[REST-INIT] Step 7/8: Registering error handlers...")
+        print(f"[REST-INIT] Step 8/9: Registering error handlers...")
         # Register error handlers
         self._register_error_handlers()
-        print(f"[REST-INIT] Step 7/8: Error handlers registered ✓")
+        print(f"[REST-INIT] Step 8/9: Error handlers registered ✓")
 
-        print(f"[REST-INIT] Step 8/8: Starting API key refresh thread...")
+        print(f"[REST-INIT] Step 9/9: Starting API key refresh thread...")
         # Start API key refresh thread
         self.start_refresh_thread()
-        print(f"[REST-INIT] Step 8/8: API key refresh thread started ✓")
+        print(f"[REST-INIT] Step 9/9: API key refresh thread started ✓")
+
+        print(f"[REST-INIT] Step 10/10: Initializing RPC server for health checks...")
+        # Initialize RPCServerBase (provides RPC server for health checks on port 50022)
+        RPCServerBase.__init__(
+            self,
+            service_name=self.service_name,
+            port=self.service_port,
+            connection_mode=connection_mode,
+            start_server=start_server,
+            start_daemon=False,  # Flask runs in main thread, no daemon needed
+            **kwargs
+        )
+        print(f"[REST-INIT] Step 10/10: RPC server initialized on port {self.service_port} ✓")
 
         print(f"[{current_process().name}] RestServer initialized with {len(self.accessible_api_keys)} API keys")
+        print(f"[{current_process().name}] Flask HTTP server will run on {self.flask_host}:{self.flask_port}")
+        print(f"[{current_process().name}] RPC health server running on port {self.service_port}")
+
+        # Flask server state (thread-based, similar to RPC server)
+        self._flask_thread: Optional[threading.Thread] = None
+        self._flask_ready = threading.Event()
+
+        # Start Flask server if requested (same pattern as RPC server in RPCServerBase)
+        if start_server and connection_mode == RPCConnectionMode.RPC:
+            self.start_flask_server()
+
+    # ============================================================================
+    # FLASK SERVER LIFECYCLE (follows RPCServerBase pattern)
+    # ============================================================================
+
+    def start_flask_server(self):
+        """
+        Start the Flask HTTP server in a background thread.
+
+        Follows the same pattern as RPCServerBase.start_rpc_server():
+        - Runs in background thread
+        - Sets ready event when listening
+        - Waits for readiness before returning
+        """
+        if self._flask_thread is not None and self._flask_thread.is_alive():
+            bt.logging.warning(f"{self.service_name} Flask server already started")
+            return
+
+        start_time = time.time()
+
+        # Start Flask server in background thread
+        self._flask_thread = threading.Thread(
+            target=self.run,  # run() method contains the waitress serve() call
+            daemon=True,
+            name=f"{self.service_name}_Flask"
+        )
+        self._flask_thread.start()
+
+        # Wait for server to be ready (Flask signals this in run())
+        if not self._flask_ready.wait(timeout=5.0):
+            bt.logging.warning(f"{self.service_name} Flask server may not be fully ready")
+
+        elapsed_ms = (time.time() - start_time) * 1000
+        bt.logging.success(
+            f"{self.service_name} Flask HTTP server started on {self.flask_host}:{self.flask_port} ({elapsed_ms:.0f}ms)"
+        )
+
+    def stop_flask_server(self):
+        """Stop the Flask HTTP server."""
+        if self._flask_thread is None:
+            return
+
+        bt.logging.info(f"{self.service_name} stopping Flask server...")
+
+        # Flask/Waitress doesn't have a clean shutdown mechanism from outside
+        # The thread will be terminated when the process exits (daemon=True)
+        self._flask_thread = None
+        self._flask_ready.clear()
+
+        bt.logging.info(f"{self.service_name} Flask server stopped")
+
+    def shutdown(self):
+        """Override shutdown to stop Flask server in addition to RPC server."""
+        bt.logging.info(f"{self.service_name} shutting down...")
+        self.stop_flask_server()
+        # Call parent shutdown to stop RPC server and daemon
+        super().shutdown()
+        bt.logging.info(f"{self.service_name} shutdown complete")
+
+    # ============================================================================
+    # POSITION MANAGER ACCESS (forward compatibility - creates own client)
+    # ============================================================================
+
+    @property
+    def position_manager(self):
+        """Get position manager client."""
+        return self._position_client
+
+    @property
+    def contract_manager(self):
+        """Get contract client (forward compatibility - created internally)."""
+        return self._contract_client
+
+    # ============================================================================
+    # RPCServerBase REQUIRED METHODS
+    # ============================================================================
+
+    def run_daemon_iteration(self) -> None:
+        """
+        Single iteration of daemon work.
+
+        Note: PTNRestServer doesn't need a daemon loop - all work is done
+        in Flask request handlers. This is a no-op.
+        """
+        pass
 
     def _jsonify_with_custom_encoder(self, data, status_code=200):
         """
@@ -517,7 +694,7 @@ class VantaRestServer(APIKeyMixin):
                                                                                                         sort_positions=True)
                 if not existing_positions:
                     return jsonify({'error': f'Miner ID {minerid} not found'}), 404
-                filtered_data = self.position_manager.positions_to_dashboard_dict(existing_positions,
+                filtered_data = self._position_client.positions_to_dashboard_dict(existing_positions,
                                                                                   TimeUtil.now_in_millis())
             else:
                 requested_tier = str(api_key_tier)
@@ -567,8 +744,8 @@ class VantaRestServer(APIKeyMixin):
             if not self.is_valid_api_key(api_key):
                 return jsonify({'error': 'Unauthorized access'}), 401
 
-            emissions_ledger_manager = self.debt_ledger_manager.emissions_ledger_manager
-            data = emissions_ledger_manager.get_ledger(minerid)
+            # Use RPC getter to access emissions ledger via debt ledger manager
+            data = self._debt_ledger_client.get_emissions_ledger(minerid)
 
             if data is None:
                 return jsonify({'error': 'Emissions ledger data not found'}), 404
@@ -576,19 +753,73 @@ class VantaRestServer(APIKeyMixin):
                 return self._jsonify_with_custom_encoder(data)
 
         @self.app.route("/debt-ledger/<minerid>", methods=["GET"])
-        def get_debt_ledger(minerid):
+        def get_miner_debt_ledger(minerid):
             api_key = self._get_api_key_safe()
 
             # Check if the API key is valid
             if not self.is_valid_api_key(api_key):
                 return jsonify({'error': 'Unauthorized access'}), 401
 
-            data = self.debt_ledger_manager.get_ledger(minerid)
+            data = self._debt_ledger_client.get_ledger(minerid)
 
             if data is None:
                 return jsonify({'error': 'Debt ledger data not found'}), 404
             else:
                 return self._jsonify_with_custom_encoder(data)
+
+        @self.app.route("/perf-ledger/<minerid>", methods=["GET"])
+        def get_perf_ledger(minerid):
+            api_key = self._get_api_key_safe()
+
+            # Check if the API key is valid
+            if not self.is_valid_api_key(api_key):
+                return jsonify({'error': 'Unauthorized access'}), 401
+
+            # Check if perf ledger client is available
+            if not self._perf_ledger_client:
+                return jsonify({'error': 'Perf ledger data not available'}), 503
+
+            try:
+                # Use dedicated RPC method to get only this miner's ledger (efficient - no bulk transfer)
+                data = self._perf_ledger_client.get_perf_ledger_for_hotkey(minerid)
+
+                if data is None:
+                    return jsonify({'error': f'Perf ledger data not found for miner {minerid}'}), 404
+
+                return self._jsonify_with_custom_encoder(data)
+
+            except Exception as e:
+                bt.logging.error(f"Error retrieving perf ledger for {minerid}: {e}")
+                return jsonify({'error': 'Internal server error retrieving perf ledger data'}), 500
+
+        @self.app.route("/debt-ledger", methods=["GET"])
+        def get_debt_ledger():
+            api_key = self._get_api_key_safe()
+
+            # Check if the API key is valid
+            if not self.is_valid_api_key(api_key):
+                return jsonify({'error': 'Unauthorized access'}), 401
+
+            # Check if debt ledger manager is available
+            if not self._debt_ledger_client:
+                return jsonify({'error': 'Debt ledger data not available'}), 503
+
+            try:
+                # Get compressed summaries directly from RPC (faster than disk I/O)
+                # RPC call retrieves pre-compressed gzip bytes from memory
+                compressed_data = self._debt_ledger_client.get_compressed_summaries_rpc()
+
+                if compressed_data is None or len(compressed_data) == 0:
+                    return jsonify({'error': 'Debt ledger data not found'}), 404
+
+                # Return pre-compressed data with gzip header (browser decompresses automatically)
+                return Response(compressed_data, content_type='application/json', headers={
+                    'Content-Encoding': 'gzip'
+                })
+
+            except Exception as e:
+                bt.logging.error(f"Error retrieving debt ledger summaries via RPC: {e}")
+                return jsonify({'error': 'Internal server error retrieving debt ledger data'}), 500
 
         @self.app.route("/penalty-ledger/<minerid>", methods=["GET"])
         def get_penalty_ledger(minerid):
@@ -598,8 +829,8 @@ class VantaRestServer(APIKeyMixin):
             if not self.is_valid_api_key(api_key):
                 return jsonify({'error': 'Unauthorized access'}), 401
 
-            penalty_ledger_manager = self.debt_ledger_manager.penalty_ledger_manager
-            data = penalty_ledger_manager.get_penalty_ledger(minerid)
+            # Use RPC getter to access penalty ledger via debt ledger manager
+            data = self._debt_ledger_client.get_penalty_ledger(minerid)
 
             if data is None:
                 return jsonify({'error': 'Penalty ledger data not found'}), 404
@@ -618,11 +849,11 @@ class VantaRestServer(APIKeyMixin):
             if not self.can_access_tier(api_key, 100):
                 return jsonify({'error': 'Validator checkpoint data requires tier 100 access'}), 403
 
-            # Try to get compressed data from memory cache first
+            # Try to get compressed data from memory cache first via CoreOutputsClient
             compressed_data = None
-            if self.request_core_manager:
+            if self._core_outputs_client:
                 try:
-                    compressed_data = self.request_core_manager.get_compressed_checkpoint_from_memory()
+                    compressed_data = self._core_outputs_client.get_compressed_checkpoint_from_memory()
                 except Exception as e:
                     bt.logging.debug(f"Error accessing compressed checkpoint cache: {e}")
 
@@ -660,16 +891,25 @@ class VantaRestServer(APIKeyMixin):
             show_checkpoints = request.args.get("checkpoints", "true").lower()
             include_checkpoints = show_checkpoints == "true"
 
-            # Try to use pre-compressed payload for maximum performance
-            if self.miner_statistics_manager:
-                compressed_data = self.miner_statistics_manager.get_compressed_statistics(include_checkpoints)
+            # PRIMARY: Try to use pre-compressed payload from memory cache (fastest)
+            if self._statistics_outputs_client:
+                compressed_data = self._statistics_outputs_client.get_compressed_statistics(include_checkpoints)
                 if compressed_data:
                     # Return pre-compressed JSON directly
                     return Response(compressed_data, content_type='application/json', headers={
                         'Content-Encoding': 'gzip'
                     })
 
-            # Fallback: get raw data from disk if pre-compressed not available
+            # FALLBACK 1: If no modification needed, serve compressed file directly
+            if show_checkpoints == "true":
+                f_gz = ValiBkpUtils.get_miner_stats_dir() + ".gz"
+                if os.path.exists(f_gz):
+                    compressed_data = self._get_file(f_gz, binary=True)
+                    return Response(compressed_data, content_type='application/json', headers={
+                        'Content-Encoding': 'gzip'
+                    })
+
+            # FALLBACK 2: Decompress and modify if needed (checkpoints=false or no .gz file)
             f = ValiBkpUtils.get_miner_stats_dir()
             data = self._get_file(f)
             if not data:
@@ -725,6 +965,29 @@ class VantaRestServer(APIKeyMixin):
                 return jsonify({'error': 'Eliminations data not found'}), 404
             else:
                 return self._jsonify_with_custom_encoder(data)
+
+        @self.app.route("/limit-orders/<minerid>", methods=["GET"])
+        def get_limit_orders_unique(minerid):
+            api_key = self._get_api_key_safe()
+
+            if not self.is_valid_api_key(api_key):
+                return jsonify({'error': 'Unauthorized access'}), 401
+
+            api_key_tier = self.get_api_key_tier(api_key)
+            if api_key_tier == 100 and self._limit_order_client:
+                orders_data = self._limit_order_client.to_dashboard_dict(minerid)
+                if not orders_data:
+                    return jsonify({'error': f'No limit orders found for miner {minerid}'}), 404
+            else:
+                try:
+                    orders_data = ValiBkpUtils.get_limit_orders(minerid, running_unit_tests=False)
+                    if not orders_data:
+                        return jsonify({'error': f'No limit orders found for miner {minerid}'}), 404
+                except Exception as e:
+                    bt.logging.error(f"Error retrieving limit orders for {minerid}: {e}")
+                    return jsonify({'error': 'Error retrieving limit orders'}), 500
+
+            return jsonify(orders_data)
 
         @self.app.route("/collateral/deposit", methods=["POST"])
         def deposit_collateral():
@@ -1063,7 +1326,7 @@ class VantaRestServer(APIKeyMixin):
                     return jsonify({'error': 'Coldkey does not own the specified hotkey'}), 403
 
                 # Process the asset selection using verified data
-                result = self.asset_selection_manager.process_asset_selection_request(
+                result = self._asset_selection_client.process_asset_selection_request(
                     asset_selection=data['asset_selection'],
                     miner=data['miner_hotkey']
                 )
@@ -1086,12 +1349,12 @@ class VantaRestServer(APIKeyMixin):
                 if not self.is_valid_api_key(api_key):
                     return jsonify({'error': 'Unauthorized access'}), 401
 
-                # Check if asset selection manager is available
-                if not self.asset_selection_manager:
+                # Check if asset selection client is available
+                if not self._asset_selection_client:
                     return jsonify({'error': 'Asset selection data not available'}), 503
 
                 # Get all miner selection data using the getter method
-                selections_data = self.asset_selection_manager.get_all_miner_selections()
+                selections_data = self._asset_selection_client.get_all_miner_selections()
 
                 return jsonify({
                     'miner_selections': selections_data,
@@ -1102,6 +1365,194 @@ class VantaRestServer(APIKeyMixin):
             except Exception as e:
                 bt.logging.error(f"Error retrieving miner selections: {e}")
                 return jsonify({'error': 'Internal server error retrieving miner selections'}), 500
+
+        @self.app.route("/development/order", methods=["POST"])
+        def process_development_order():
+            """
+            Process development orders for testing market, limit, and cancel operations.
+            Uses fixed hotkey 'DEVELOPMENT' for all operations.
+
+            Example requests:
+
+            # Market order
+            curl -X POST http://localhost:48888/development/order \\
+              -H "Authorization: Bearer YOUR_API_KEY" \\
+              -H "Content-Type: application/json" \\
+              -d '{"execution_type": "MARKET", "trade_pair_id": "BTCUSD", "order_type": "LONG", "leverage": 1.0}'
+
+            # Limit order
+            curl -X POST http://localhost:48888/development/order \\
+              -H "Authorization: Bearer YOUR_API_KEY" \\
+              -H "Content-Type": application/json" \\
+              -d '{"execution_type": "LIMIT", "trade_pair_id": "BTCUSD", "order_type": "LONG", "leverage": 1.0, "limit_price": 50000.0}'
+
+            # Bracket order (requires existing position)
+            curl -X POST http://localhost:48888/development/order \\
+              -H "Authorization: Bearer YOUR_API_KEY" \\
+              -H "Content-Type: application/json" \\
+              -d '{"execution_type": "BRACKET", "trade_pair_id": "BTCUSD", "stop_loss": 48000.0, "take_profit": 52000.0}'
+
+            # Cancel specific limit order
+            curl -X POST http://localhost:48888/development/order \\
+              -H "Authorization: Bearer YOUR_API_KEY" \\
+              -H "Content-Type: application/json" \\
+              -d '{"execution_type": "LIMIT_CANCEL", "trade_pair_id": "BTCUSD", "order_uuid": "specific-uuid"}'
+
+            # Cancel all limit orders for trade pair
+            curl -X POST http://localhost:48888/development/order \\
+              -H "Authorization: Bearer YOUR_API_KEY" \\
+              -H "Content-Type: application/json" \\
+              -d '{"execution_type": "LIMIT_CANCEL", "trade_pair_id": "BTCUSD"}'
+            """
+            DEVELOPMENT_HOTKEY = ValiConfig.DEVELOPMENT_HOTKEY
+
+            # Check API key authentication
+            api_key = self._get_api_key_safe()
+            if not self.is_valid_api_key(api_key):
+                return jsonify({'error': 'Unauthorized access'}), 401
+
+            try:
+                # Parse and validate request
+                if not request.is_json:
+                    return jsonify({'error': 'Content-Type must be application/json'}), 400
+
+                # Log raw request data for debugging JSON parse errors
+                raw_data = request.get_data(as_text=True)
+                bt.logging.debug(f"[DEV_ORDER] Raw request body (first 300 chars): {raw_data[:300]}")
+                bt.logging.debug(f"[DEV_ORDER] Request body length: {len(raw_data)} chars")
+
+                try:
+                    data = request.get_json()
+                except json.JSONDecodeError as e:
+                    bt.logging.error(
+                        f"[DEV_ORDER] JSON parse error at position {e.pos}: {e.msg}\n"
+                        f"  Raw body: {raw_data}\n"
+                        f"  Error context (char {max(0, e.pos-20)} to {min(len(raw_data), e.pos+20)}): "
+                        f"{raw_data[max(0, e.pos-20):min(len(raw_data), e.pos+20)]}"
+                    )
+                    return jsonify({
+                        'error': f'Invalid JSON at position {e.pos}: {e.msg}',
+                        'position': e.pos
+                    }), 400
+
+                if not data:
+                    return jsonify({'error': 'Invalid JSON body'}), 400
+
+                # Create signal dict from request data
+                signal = {
+                    'trade_pair': {'trade_pair_id': data.get('trade_pair_id')},
+                    'order_type': data.get('order_type', '').upper(),
+                    'leverage': data.get('leverage'),
+                    'execution_type': data.get('execution_type', 'MARKET').upper()
+                }
+
+                # Add limit_price for limit orders
+                if 'limit_price' in data:
+                    signal['limit_price'] = data['limit_price']
+
+                if 'stop_loss' in data:
+                    signal['stop_loss'] = data['stop_loss']
+
+                if 'take_profit' in data:
+                    signal['take_profit'] = data['take_profit']
+
+                # Use OrderProcessor to parse signal (same logic as validator.py)
+                trade_pair, execution_type, order_uuid = OrderProcessor.parse_signal_data(
+                    signal, data.get('order_uuid')
+                )
+
+                now_ms = TimeUtil.now_in_millis()
+                miner_repo_version = "development"
+
+                # Route based on execution type (same logic as validator.py)
+                if execution_type == ExecutionType.LIMIT:
+                    # Check if limit order client is available
+                    if not self._limit_order_client:
+                        return jsonify({'error': 'Limit order operations not available'}), 503
+
+                    # Use OrderProcessor to handle LIMIT order
+                    order = OrderProcessor.process_limit_order(
+                        signal, trade_pair, order_uuid, now_ms,
+                        DEVELOPMENT_HOTKEY, self._limit_order_client
+                    )
+
+                    return jsonify({
+                        'status': 'success',
+                        'execution_type': 'LIMIT',
+                        'order_uuid': order_uuid,
+                        'order': str(order)
+                    })
+
+                elif execution_type == ExecutionType.BRACKET:
+                    # Check if limit order client is available
+                    if not self._limit_order_client:
+                        return jsonify({'error': 'Bracket order operations not available'}), 503
+
+                    # Use OrderProcessor to handle BRACKET order
+                    order = OrderProcessor.process_bracket_order(
+                        signal, trade_pair, order_uuid, now_ms,
+                        DEVELOPMENT_HOTKEY, self._limit_order_client
+                    )
+
+                    return jsonify({
+                        'status': 'success',
+                        'execution_type': 'BRACKET',
+                        'order_uuid': order_uuid,
+                        'order': str(order)
+                    })
+
+                elif execution_type == ExecutionType.LIMIT_CANCEL:
+                    # Check if limit order client is available
+                    if not self._limit_order_client:
+                        return jsonify({'error': 'Limit order operations not available'}), 503
+
+                    # Use OrderProcessor to handle LIMIT_CANCEL
+                    result = OrderProcessor.process_limit_cancel(
+                        signal, trade_pair, order_uuid, now_ms,
+                        DEVELOPMENT_HOTKEY, self._limit_order_client
+                    )
+
+                    return jsonify({
+                        'status': 'success',
+                        'execution_type': 'LIMIT_CANCEL',
+                        'result': result
+                    })
+
+                else:  # ExecutionType.MARKET
+                    # Check if market order manager is available
+                    if not self.market_order_manager:
+                        return jsonify({'error': 'Market order operations not available'}), 503
+
+                    # Use OrderProcessor to handle MARKET order (consistent interface)
+                    err_msg, updated_position, created_order = OrderProcessor.process_market_order(
+                        signal, trade_pair, order_uuid, now_ms,
+                        DEVELOPMENT_HOTKEY, miner_repo_version,
+                        self.market_order_manager
+                    )
+
+                    if err_msg:
+                        return jsonify({
+                            'status': 'error',
+                            'execution_type': 'MARKET',
+                            'error': err_msg
+                        }), 400
+                    else:
+                        order_json = created_order.__str__() if created_order else None
+                        return jsonify({
+                            'status': 'success',
+                            'execution_type': 'MARKET',
+                            'order_uuid': order_uuid,
+                            'order': order_json
+                        })
+
+            except SignalException as e:
+                bt.logging.error(f"SignalException in development order: {e}")
+                return jsonify({'error': f'Signal error: {str(e)}'}), 400
+
+            except Exception as e:
+                bt.logging.error(f"Error processing development order: {e}")
+                bt.logging.error(traceback.format_exc())
+                return jsonify({'error': f'Internal server error: {str(e)}'}), 500
 
     def _verify_coldkey_owns_hotkey(self, coldkey_ss58: str, hotkey_ss58: str) -> bool:
         """
@@ -1215,13 +1666,25 @@ class VantaRestServer(APIKeyMixin):
         return None
 
     def run(self):
-        """Start the REST server using Waitress."""
-        print(f"[{current_process().name}] Starting REST server at http://{self.host}:{self.port}")
+        """
+        Start the Flask REST server using Waitress.
+
+        Called in background thread by start_flask_server().
+        Signals _flask_ready event once Waitress is listening.
+        """
+        print(f"[{current_process().name}] Starting Flask REST server at http://{self.flask_host}:{self.flask_port}")
         setproctitle(f"vali_{self.__class__.__name__}")
+
+        # Signal that Flask is about to start (Waitress will bind to port immediately)
+        # Note: Waitress doesn't provide a callback for when it's ready, so we signal before serve()
+        # The actual readiness check happens via the timeout in start_flask_server()
+        self._flask_ready.set()
+
+        # Start serving (blocks until shutdown)
         serve(
-            self.app, 
-            host=self.host, 
-            port=self.port, 
+            self.app,
+            host=self.flask_host,
+            port=self.flask_port,
             connection_limit=1000,
             threads=10,  # Increased from 6 to handle queue depth
             channel_timeout=60,  # Reduced from 120 to close stuck connections faster
@@ -1242,8 +1705,6 @@ if __name__ == "__main__":
     # Set up command line argument parsing
     parser = argparse.ArgumentParser(description="Run the REST API server with API key authentication")
     parser.add_argument("--api-keys", type=str, default="api_keys.json", help="Path to API keys JSON file")
-    parser.add_argument("--host", type=str, default="127.0.0.1", help="Host to bind the server to")
-    parser.add_argument("--port", type=int, default=48888, help="Port to bind the server to")
 
     args = parser.parse_args()
 
@@ -1253,11 +1714,11 @@ if __name__ == "__main__":
             json.dump({"test_user": "test_key", "client": "abc"}, f)
         print(f"Created test API keys file at {args.api_keys}")
 
-    # Create and run the server
-    server = PTNRestServer(
+    print(f"REST server will run on {ValiConfig.REST_API_HOST}:{ValiConfig.REST_API_PORT} (hardcoded in ValiConfig)")
+
+    # Create and run the server (host/port read from ValiConfig)
+    server = VantaRestServer(
         api_keys_file=args.api_keys,
-        host=args.host,
-        port=args.port,
         metrics_interval_minutes=1
     )
     server.run()

@@ -4,6 +4,8 @@
 # Copyright © 2024 Taoshi Inc
 
 import typing
+import uuid
+
 import bittensor as bt
 from pydantic import Field
 
@@ -18,6 +20,16 @@ class SendSignal(bt.Synapse):
     order_json: str = Field("", title="New Order JSON set by validator", frozen=False)
     miner_order_uuid: str = Field("", title="Order UUID set by miner", frozen=False, max_length=256)
     computed_body_hash: str = Field("", title="Computed Body Hash", frozen=False)
+
+    @staticmethod
+    def parse_miner_uuid(synapse: "SendSignal"):
+        temp = synapse.miner_order_uuid
+        assert isinstance(temp, str), f"excepted string miner uuid but got {temp}"
+        if not temp:
+            bt.logging.warning(f'miner_order_uuid is empty for miner_hotkey [{synapse.dendrite.hotkey}] miner_repo_version '
+                               f'[{synapse.repo_version}]. Generating a new one.')
+            temp = str(uuid.uuid4())
+        return temp
 
 SendSignal.required_hash_fields = ["signal"]
 
@@ -38,12 +50,6 @@ class ValidatorCheckpoint(bt.Synapse):
     computed_body_hash: str = Field("", title="Computed Body Hash", frozen=False)
 ValidatorCheckpoint.required_hash_fields = ["checkpoint"]
 
-class GetDashData(bt.Synapse):
-    data: typing.Dict = Field(default_factory=dict, title="Dashboard Data", frozen=False)
-    successfully_processed: bool = Field(False, title="Successfully Processed", frozen=False)
-    error_message: str = Field("", title="Error Message", frozen=False)
-    computed_body_hash: str = Field("", title="Computed Body Hash", frozen=False)
-GetDashData.required_hash_fields = ["data"]
 
 class CollateralRecord(bt.Synapse):
     collateral_record: typing.Dict = Field(default_factory=dict, title="Collateral Record", frozen=False, max_length=4096)

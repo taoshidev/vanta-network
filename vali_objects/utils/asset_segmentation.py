@@ -88,7 +88,13 @@ class AssetSegmentation:
             ledger_checkpoints = ledger.cps
             for checkpoint in ledger_checkpoints:
                 if checkpoint.last_update_ms not in aggregated_dict_ledger:
-                    aggregated_dict_ledger[checkpoint.last_update_ms] = copy.deepcopy(checkpoint)
+                    checkpoint_copy = copy.deepcopy(checkpoint)
+                    # Ensure realized_pnl and unrealized_pnl exist for old checkpoints
+                    if not hasattr(checkpoint_copy, 'realized_pnl'):
+                        checkpoint_copy.realized_pnl = 0.0
+                    if not hasattr(checkpoint_copy, 'unrealized_pnl'):
+                        checkpoint_copy.unrealized_pnl = 0.0
+                    aggregated_dict_ledger[checkpoint.last_update_ms] = checkpoint_copy
                 else:
                     existing_checkpoint = aggregated_dict_ledger.get(checkpoint.last_update_ms)
 
@@ -98,8 +104,10 @@ class AssetSegmentation:
                     existing_checkpoint.loss += checkpoint.loss
                     existing_checkpoint.spread_fee_loss += checkpoint.spread_fee_loss
                     existing_checkpoint.carry_fee_loss += checkpoint.carry_fee_loss
-                    existing_checkpoint.realized_pnl += checkpoint.realized_pnl
-                    existing_checkpoint.unrealized_pnl += checkpoint.unrealized_pnl
+
+                    # Use getattr() to safely handle old checkpoints without realized_pnl/unrealized_pnl
+                    existing_checkpoint.realized_pnl = getattr(existing_checkpoint, 'realized_pnl', 0.0) + getattr(checkpoint, 'realized_pnl', 0.0)
+                    existing_checkpoint.unrealized_pnl = getattr(existing_checkpoint, 'unrealized_pnl', 0.0) + getattr(checkpoint, 'unrealized_pnl', 0.0)
 
                     aggregated_dict_ledger[checkpoint.last_update_ms] = existing_checkpoint
 

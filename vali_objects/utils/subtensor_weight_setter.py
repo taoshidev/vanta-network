@@ -5,29 +5,39 @@ from setproctitle import setproctitle
 
 import bittensor as bt
 
-from miner_objects.slack_notifier import SlackNotifier
+from shared_objects.slack_notifier import SlackNotifier
+from shared_objects.metagraph_server import MetagraphClient
 from time_util.time_util import TimeUtil
-from vali_objects.utils.asset_segmentation import AssetSegmentation
-from vali_objects.utils.ledger_utils import LedgerUtils
+from shared_objects.shutdown_coordinator import ShutdownCoordinator
 from vali_objects.utils.miner_bucket_enum import MinerBucket
-from vali_objects.vali_config import ValiConfig
+from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 from shared_objects.cache_controller import CacheController
-from vali_objects.utils.position_manager import PositionManager
-from vali_objects.scoring.scoring import Scoring
 from vali_objects.scoring.debt_based_scoring import DebtBasedScoring
-from vali_objects.vali_dataclasses.perf_ledger import PerfLedger
 from shared_objects.error_utils import ErrorUtils
-
+from vali_objects.utils.position_manager_client import PositionManagerClient
+from vali_objects.utils.challengeperiod_client import ChallengePeriodClient
+from vali_objects.utils.contract_server import ContractClient
+from vali_objects.vali_dataclasses.debt_ledger_server import DebtLedgerClient
 
 
 class SubtensorWeightSetter(CacheController):
-    def __init__(self, metagraph, position_manager: PositionManager,
-                 running_unit_tests=False, is_backtesting=False, use_slack_notifier=False,
-                 shutdown_dict=None, weight_request_queue=None, config=None, hotkey=None, contract_manager=None,
-                 debt_ledger_manager=None, is_mainnet=True):
-        super().__init__(metagraph, running_unit_tests=running_unit_tests, is_backtesting=is_backtesting)
-        self.position_manager = position_manager
-        self.perf_ledger_manager = position_manager.perf_ledger_manager
+    def __init__(self, connection_mode: "RPCConnectionMode" = RPCConnectionMode.RPC, is_backtesting=False, use_slack_notifier=False,
+                 metagraph_updater_rpc=None, config=None, hotkey=None, is_mainnet=True):
+        self.connection_mode = connection_mode
+        running_unit_tests = connection_mode == RPCConnectionMode.LOCAL
+
+        super().__init__(running_unit_tests=running_unit_tests, is_backtesting=is_backtesting, connection_mode=connection_mode)
+
+        self._position_client = PositionManagerClient(
+            port=ValiConfig.RPC_POSITIONMANAGER_PORT,
+            connect_immediately=not running_unit_tests
+        )
+        self._challenge_period_client = ChallengePeriodClient(
+            connection_mode=connection_mode
+        )
+        # Create own ContractClient (forward compatibility - no parameter passing)
+        self._contract_client = ContractClient(running_unit_tests=running_unit_tests)
+        # Note: perf_ledger_manager removed - no longer used (debt-based scoring uses debt_ledger_manager)
         self.subnet_version = 200
         # Store weights for use in backtesting
         self.checkpoint_results = []
@@ -36,16 +46,23 @@ class SubtensorWeightSetter(CacheController):
         self._slack_notifier = None
         self.config = config
         self.hotkey = hotkey
-        self.contract_manager = contract_manager
 
         # Debt-based scoring dependencies
-        # DebtLedgerManager provides encapsulated access to IPC-shared debt_ledgers dict
-        self.debt_ledger_manager = debt_ledger_manager
+        # DebtLedgerClient provides encapsulated access to debt ledgers
+        # In backtesting mode, delay connection until first use
+        self._debt_ledger_client = DebtLedgerClient(
+            connection_mode=connection_mode,
+            connect_immediately=not is_backtesting
+        )
         self.is_mainnet = is_mainnet
 
-        # IPC setup
-        self.shutdown_dict = shutdown_dict if shutdown_dict is not None else {}
-        self.weight_request_queue = weight_request_queue
+        # RPC client for weight setting (replaces queue)
+        self.metagraph_updater_rpc = metagraph_updater_rpc
+
+    @property
+    def metagraph(self):
+        """Get metagraph client (forward compatibility - created internally)."""
+        return self._metagraph_client
 
     @property
     def slack_notifier(self):
@@ -56,20 +73,30 @@ class SubtensorWeightSetter(CacheController):
                                                 is_miner=False)  # This is a validator
         return self._slack_notifier
 
+    @property
+    def position_manager(self):
+        """Get position manager client."""
+        return self._position_client
+
+    @property
+    def contract_manager(self):
+        """Get contract client (forward compatibility - created internally)."""
+        return self._contract_client
+
     def compute_weights_default(self, current_time: int) -> tuple[list[tuple[str, float]], list[tuple[str, float]]]:
         if current_time is None:
             current_time = TimeUtil.now_in_millis()
 
         # Collect metagraph hotkeys to ensure we are only setting weights for miners in the metagraph
-        metagraph_hotkeys = list(self.metagraph.hotkeys)
+        metagraph_hotkeys = list(self.metagraph.get_hotkeys())
         metagraph_hotkeys_set = set(metagraph_hotkeys)
         hotkey_to_idx = {hotkey: idx for idx, hotkey in enumerate(metagraph_hotkeys)}
 
         # Get all miners from all buckets
-        challenge_hotkeys = list(self.position_manager.challengeperiod_manager.get_hotkeys_by_bucket(MinerBucket.CHALLENGE))
-        probation_hotkeys = list(self.position_manager.challengeperiod_manager.get_hotkeys_by_bucket(MinerBucket.PROBATION))
-        plagiarism_hotkeys = list(self.position_manager.challengeperiod_manager.get_hotkeys_by_bucket(MinerBucket.PLAGIARISM))
-        success_hotkeys = list(self.position_manager.challengeperiod_manager.get_hotkeys_by_bucket(MinerBucket.MAINCOMP))
+        challenge_hotkeys = list(self._challenge_period_client.get_hotkeys_by_bucket(MinerBucket.CHALLENGE))
+        probation_hotkeys = list(self._challenge_period_client.get_hotkeys_by_bucket(MinerBucket.PROBATION))
+        plagiarism_hotkeys = list(self._challenge_period_client.get_hotkeys_by_bucket(MinerBucket.PLAGIARISM))
+        success_hotkeys = list(self._challenge_period_client.get_hotkeys_by_bucket(MinerBucket.MAINCOMP))
 
         # DebtBasedScoring handles all miners together - it applies:
         # - Debt-based weights for MAINCOMP/PROBATION (earning periods)
@@ -119,23 +146,18 @@ class SubtensorWeightSetter(CacheController):
 
         bt.logging.info(f"Calculating new subtensor weights for {miner_group} using debt-based scoring...")
 
-        # Get debt ledgers for the specified miners
-        # Access IPC-shared debt_ledgers dict through manager for proper encapsulation
-        if self.debt_ledger_manager is None:
-            bt.logging.warning("debt_ledger_manager not available for scoring")
-            return [], []
-
         # Filter debt ledgers to only include specified hotkeys
-        # debt_ledger_manager.debt_ledgers is an IPC-managed dict
+        # Get all debt ledgers via RPC
+        all_debt_ledgers = self._debt_ledger_client.get_all_debt_ledgers()
         filtered_debt_ledgers = {
             hotkey: ledger
-            for hotkey, ledger in self.debt_ledger_manager.debt_ledgers.items()
+            for hotkey, ledger in all_debt_ledgers.items()
             if hotkey in hotkeys_to_compute_weights_for
         }
 
         if len(filtered_debt_ledgers) == 0:
             # Diagnostic logging to understand the mismatch
-            total_ledgers = len(self.debt_ledger_manager.debt_ledgers)
+            total_ledgers = len(all_debt_ledgers)
             if total_ledgers == 0:
                 bt.logging.info(
                     f"No debt ledgers loaded yet for {miner_group}. "
@@ -147,13 +169,13 @@ class SubtensorWeightSetter(CacheController):
                 bt.logging.warning(
                     f"No debt ledgers found for {miner_group}. "
                     f"Requested {len(hotkeys_to_compute_weights_for)} hotkeys, "
-                    f"debt_ledger_manager has {total_ledgers} ledgers loaded."
+                    f"debt_ledger_server has {total_ledgers} ledgers loaded."
                 )
-                if hotkeys_to_compute_weights_for and self.debt_ledger_manager.debt_ledgers:
+                if hotkeys_to_compute_weights_for and all_debt_ledgers:
                     bt.logging.debug(
                         f"Sample requested hotkey: {hotkeys_to_compute_weights_for[0][:16]}..."
                     )
-                    sample_available = list(self.debt_ledger_manager.debt_ledgers.keys())[0]
+                    sample_available = list(all_debt_ledgers.keys())[0]
                     bt.logging.debug(f"Sample available hotkey: {sample_available[:16]}...")
             return [], []
 
@@ -162,8 +184,8 @@ class SubtensorWeightSetter(CacheController):
         checkpoint_results = DebtBasedScoring.compute_results(
             ledger_dict=filtered_debt_ledgers,
             metagraph=self.metagraph,  # Shared metagraph with substrate reserves
-            challengeperiod_manager=self.position_manager.challengeperiod_manager,
-            contract_manager=self.contract_manager,  # For collateral-aware weight assignment
+            challengeperiod_client=self._challenge_period_client,
+            contract_client=self._contract_client,  # For collateral-aware weight assignment
             current_time_ms=current_time,
             verbose=True,
             is_testnet=not self.is_mainnet
@@ -189,16 +211,16 @@ class SubtensorWeightSetter(CacheController):
 
     def run_update_loop(self):
         """
-        Weight setter loop that sends fire-and-forget requests to MetagraphUpdater.
+        Weight setter loop that sends RPC requests to MetagraphUpdater.
         """
         setproctitle(f"vali_{self.__class__.__name__}")
         bt.logging.enable_info()
-        bt.logging.info("Starting weight setter update loop (fire-and-forget IPC mode)")
+        bt.logging.info("Starting weight setter update loop (RPC mode)")
 
-        while not self.shutdown_dict:
+        while not ShutdownCoordinator.is_shutdown():
             try:
                 if self.refresh_allowed(ValiConfig.SET_WEIGHT_REFRESH_TIME_MS):
-                    bt.logging.info("Computing weights for IPC request")
+                    bt.logging.info("Computing weights for RPC request")
                     current_time = TimeUtil.now_in_millis()
 
                     # Compute weights (existing logic)
@@ -206,25 +228,18 @@ class SubtensorWeightSetter(CacheController):
                     self.checkpoint_results = checkpoint_results
                     self.transformed_list = transformed_list
 
-                    if transformed_list and self.weight_request_queue:
-                        # Send weight setting request (fire-and-forget)
-                        self._send_weight_request(transformed_list)
+                    if transformed_list and self.metagraph_updater_rpc:
+                        # Send weight setting request via RPC (synchronous with feedback)
+                        self.metagraph_updater_rpc._send_weight_request(transformed_list)
                         self.set_last_update_time()
                     else:
-                        # No weights computed - likely debt_ledger_manager not ready yet
-                        # Sleep for 5 minutes to avoid busy looping and log spam
-                        if self.debt_ledger_manager is None:
-                            bt.logging.warning(
-                                "debt_ledger_manager not available. "
-                                "Waiting 5 minutes before retry..."
-                            )
-                        elif not transformed_list:
+                        if not transformed_list:
                             bt.logging.warning(
                                 "No weights computed (debt ledgers may still be initializing). "
                                 "Waiting 5 minutes before retry..."
                             )
                         else:
-                            bt.logging.debug("No IPC queue available")
+                            bt.logging.debug("No RPC client available")
 
                         # Always sleep 5 minutes when weights aren't ready to avoid spam
                         time.sleep(300)
@@ -251,25 +266,31 @@ class SubtensorWeightSetter(CacheController):
         bt.logging.info("Weight setter update loop shutting down")
     
     def _send_weight_request(self, transformed_list):
-        """Send weight setting request to MetagraphUpdater (fire-and-forget)"""
+        """Send weight setting request to MetagraphUpdater via RPC (synchronous with feedback)"""
         try:
             uids = [x[0] for x in transformed_list]
             weights = [x[1] for x in transformed_list]
-            
-            # Send request (no response expected)
+
+            # Send request via RPC (synchronous - get success/failure feedback)
             # MetagraphUpdater will use its own config for netuid and wallet
-            request = {
-                'uids': uids,
-                'weights': weights,
-                'version_key': self.subnet_version,
-                'timestamp': TimeUtil.now_in_millis()
-            }
-            
-            self.weight_request_queue.put_nowait(request)
-            bt.logging.info(f"Weight request sent: {len(uids)} UIDs via IPC")
-            
+            result = self.metagraph_updater_rpc.set_weights_rpc(
+                uids=uids,
+                weights=weights,
+                version_key=self.subnet_version
+            )
+
+            if result.get('success'):
+                bt.logging.info(f"✓ Weight request succeeded: {len(uids)} UIDs via RPC")
+            else:
+                error = result.get('error', 'Unknown error')
+                bt.logging.error(f"✗ Weight request failed: {error}")
+
+                # NOTE: Don't send Slack alert here - MetagraphUpdater handles alerting
+                # with proper benign error filtering (e.g., "too soon to commit weights").
+                # Alerting here would create duplicate spam for normal/expected failures.
+
         except Exception as e:
-            bt.logging.error(f"Error sending weight request: {e}")
+            bt.logging.error(f"Error sending weight request via RPC: {e}")
             bt.logging.error(traceback.format_exc())
 
             # Send error notification
@@ -277,9 +298,9 @@ class SubtensorWeightSetter(CacheController):
                 # Get compact stack trace using shared utility
                 compact_trace = ErrorUtils.get_compact_stacktrace(e)
                 self.slack_notifier.send_message(
-                    f"❌ Weight request IPC error!\n"
+                    f"❌ Weight request RPC error!\n"
                     f"Error: {str(e)}\n"
-                    f"This occurred while sending weight request via IPC\n"
+                    f"This occurred while sending weight request via RPC\n"
                     f"Trace: {compact_trace}",
                     level="error"
                 )

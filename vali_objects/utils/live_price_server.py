@@ -1,0 +1,376 @@
+"""
+LivePriceFetcher Client/Server - RPC architecture for price fetching.
+
+This module follows the same pattern as PerfLedgerClient/PerfLedgerServer:
+- LivePriceFetcherClient: Lightweight RPC client (extends RPCClientBase)
+- LivePriceFetcherServer: Server that delegates to LivePriceFetcher instance (inherits from RPCServerBase)
+- LivePriceFetcher: Contains all heavy logic for price fetching (in live_price_fetcher.py)
+
+Usage in validator.py:
+    # Start the server (once, early in initialization)
+    self.live_price_fetcher_server = LivePriceFetcherServer(
+        secrets=self.secrets,
+        disable_ws=False,
+        slack_notifier=self.slack_notifier,
+        start_server=True,
+        start_daemon=True  # Optional - enables health monitoring
+    )
+
+    # In other components, create lightweight clients
+    client = LivePriceFetcherClient(running_unit_tests=False)
+    price = client.get_latest_price(trade_pair)
+"""
+import time
+from typing import List, Tuple, Dict
+
+from time_util.time_util import TimeUtil, UnifiedMarketCalendar
+from shared_objects.rpc_client_base import RPCClientBase
+from shared_objects.rpc_server_base import RPCServerBase
+import bittensor as bt
+from vali_objects.vali_config import RPCConnectionMode
+
+from vali_objects.vali_config import TradePair, ValiConfig
+from vali_objects.utils.live_price_fetcher import LivePriceFetcher
+from vali_objects.vali_dataclasses.price_source import PriceSource
+
+
+class LivePriceFetcherClient(RPCClientBase):
+    """
+    Lightweight RPC client for LivePriceFetcherServer.
+
+    Can be created in ANY process. No server ownership.
+    Port is obtained from ValiConfig.RPC_LIVEPRICEFETCHER_PORT.
+
+    In test mode (running_unit_tests=True), the client won't connect via RPC.
+    Instead, use set_direct_server() to provide a direct LivePriceFetcherServer instance.
+    """
+
+
+    def __init__(self, running_unit_tests: bool = False,
+                 connection_mode: RPCConnectionMode = RPCConnectionMode.RPC):
+        """
+        Initialize live price fetcher client.
+
+        Args:
+            port: Port number of the server (default: ValiConfig.RPC_LIVEPRICEFETCHER_PORT)
+            running_unit_tests: If True, don't connect via RPC (use set_direct_server() instead)
+        """
+        self.running_unit_tests = running_unit_tests
+
+        # Market calendar for local (non-RPC) market hours checking
+        self._market_calendar = UnifiedMarketCalendar()
+
+        # In test mode, don't connect via RPC - tests will set direct server
+        super().__init__(
+            service_name=ValiConfig.RPC_LIVEPRICEFETCHER_SERVICE_NAME,
+            port=ValiConfig.RPC_LIVEPRICEFETCHER_PORT,
+            max_retries=5,
+            retry_delay_s=1.0,
+            connect_immediately=False,
+            connection_mode=connection_mode
+        )
+
+    @property
+    def _server(self):
+        # Use parent class's _server which handles lazy connection
+        return super()._server
+
+    # ========== Local methods (no RPC) ==========
+
+    def is_market_open(self, trade_pair: TradePair, time_ms=None) -> bool:
+        """
+        Check if market is open for a trade pair. Executes locally (no RPC).
+
+        Args:
+            trade_pair: The trade pair to check
+            time_ms: Optional timestamp in milliseconds (defaults to now)
+
+        Returns:
+            bool: True if market is open, False otherwise
+        """
+        if time_ms is None:
+            time_ms = TimeUtil.now_in_millis()
+        return self._market_calendar.is_market_open(trade_pair, time_ms)
+
+    def get_unsupported_trade_pairs(self):
+        """
+        Return static tuple of unsupported trade pairs. Executes locally (no RPC).
+
+        Returns:
+            Tuple of TradePair constants that are unsupported
+        """
+        return ValiConfig.UNSUPPORTED_TRADE_PAIRS
+
+    # ========== RPC proxy methods ==========
+
+    def stop_all_threads(self):
+        """Stop all data service threads on the server."""
+        return self._server.stop_all_threads()
+
+    def get_usd_base_conversion(self, trade_pair, time_ms, price, order_type, position):
+        return self._server.get_usd_base_conversion(trade_pair, time_ms, price, order_type, position)
+
+    def health_check(self) -> dict:
+        """Health check - returns server status."""
+        return self._server.health_check()
+
+    def get_ws_price_sources_in_window(self, trade_pair: TradePair, start_ms: int, end_ms: int) -> List[PriceSource]:
+        """Get WebSocket price sources in time window."""
+        return self._server.get_ws_price_sources_in_window(trade_pair, start_ms, end_ms)
+
+    def get_currency_conversion(self, base: str, quote: str):
+        """Get currency conversion rate."""
+        return self._server.get_currency_conversion(base, quote)
+
+    def unified_candle_fetcher(self, trade_pair, start_date, order_date, timespan="day"):
+        """Fetch candles for a trade pair."""
+        return self._server.unified_candle_fetcher(trade_pair, start_date, order_date, timespan)
+
+    def get_latest_price(self, trade_pair: TradePair, time_ms=None) -> Tuple[float, List[PriceSource]] | Tuple[None, None]:
+        """Get the latest price for a trade pair."""
+        return self._server.get_latest_price(trade_pair, time_ms)
+
+    def get_sorted_price_sources_for_trade_pair(self, trade_pair: TradePair, time_ms: int) -> List[PriceSource] | None:
+        """Get sorted price sources for a trade pair."""
+        return self._server.get_sorted_price_sources_for_trade_pair(trade_pair, time_ms)
+
+    def get_tp_to_sorted_price_sources(self, trade_pairs: List[TradePair],
+                                       trade_pair_to_last_order_time_ms: Dict[TradePair, int] = None) -> Dict[TradePair, List[PriceSource]]:
+        """Get sorted price sources for multiple trade pairs."""
+        return self._server.get_tp_to_sorted_price_sources(trade_pairs, trade_pair_to_last_order_time_ms)
+
+    def time_since_last_ws_ping_s(self, trade_pair: TradePair) -> float | None:
+        """Get time since last websocket ping for a trade pair."""
+        return self._server.time_since_last_ws_ping_s(trade_pair)
+
+    def get_candles(self, trade_pairs, start_time_ms, end_time_ms) -> dict:
+        """Fetch candles for multiple trade pairs in a time window."""
+        return self._server.get_candles(trade_pairs, start_time_ms, end_time_ms)
+
+    def get_close_at_date(self, trade_pair, timestamp_ms, order=None, verbose=True):
+        """Get closing price at a specific date."""
+        return self._server.get_close_at_date(trade_pair, timestamp_ms, order, verbose)
+
+    def get_quote(self, trade_pair: TradePair, processed_ms: int) -> Tuple[float, float, int]:
+        """Get bid/ask quote for a trade pair."""
+        return self._server.get_quote(trade_pair, processed_ms)
+
+    def get_quote_usd_conversion(self, order, position):
+        """Get the conversion rate between an order's quote currency and USD."""
+        return self._server.get_quote_usd_conversion(order, position)
+
+    def set_test_price_source(self, trade_pair: TradePair, price_source: PriceSource) -> None:
+        """Set test price source for a specific trade pair (test-only)."""
+        return self._server.set_test_price_source(trade_pair, price_source)
+
+    def clear_test_price_sources(self) -> None:
+        """Clear all test price sources (test-only)."""
+        return self._server.clear_test_price_sources()
+
+    def set_test_market_open(self, is_open: bool) -> None:
+        """Set market open override for testing (test-only)."""
+        return self._server.set_test_market_open(is_open)
+
+    def clear_test_market_open(self) -> None:
+        """Clear market open override (test-only)."""
+        return self._server.clear_test_market_open()
+
+
+
+class LivePriceFetcherServer(RPCServerBase):
+    """
+    RPC server for live price fetching.
+
+    Inherits from RPCServerBase for unified RPC server lifecycle and daemon management.
+    Manages connections to Polygon and Tiingo data services.
+    Exposes methods via RPC to LivePriceFetcherClient.
+
+    Architecture:
+    - Runs RPC server in background thread (via RPCServerBase)
+    - Optional daemon for health monitoring
+    - Automatic shutdown via ShutdownCoordinator (inherited from RPCServerBase)
+    - Handles all price fetching logic
+    - Port is obtained from ValiConfig.RPC_LIVEPRICEFETCHER_PORT
+    """
+    service_name = ValiConfig.RPC_LIVEPRICEFETCHER_SERVICE_NAME
+    service_port = ValiConfig.RPC_LIVEPRICEFETCHER_PORT
+
+    def __init__(self, secrets, disable_ws=False, is_backtesting=False,
+                 running_unit_tests=False, slack_notifier=None,
+                 start_server=True, start_daemon=False, connection_mode=RPCConnectionMode.RPC):
+        """
+        Initialize the LivePriceFetcherServer.
+
+        Args:
+            secrets: Dictionary containing API keys for data services
+            disable_ws: Whether to disable websocket connections
+            is_backtesting: Whether running in backtesting mode
+            running_unit_tests: Whether running unit tests
+            slack_notifier: SlackNotifier for error reporting
+            start_server: If True, start the RPC server immediately
+            start_daemon: If True, start daemon for health monitoring
+        """
+        self.is_backtesting = is_backtesting
+        self.running_unit_tests = running_unit_tests
+        self.last_health_check_ms = 0
+        self._secrets = secrets
+        self._disable_ws = disable_ws
+
+        # Create the actual LivePriceFetcher instance (contains all heavy logic)
+        # This follows the PerfLedgerServer pattern: server holds manager/fetcher instance
+        self._fetcher = LivePriceFetcher(
+            secrets=secrets,
+            disable_ws=disable_ws,
+            is_backtesting=is_backtesting,
+            running_unit_tests=running_unit_tests
+        )
+
+        # Initialize RPCServerBase (handles RPC server and daemon lifecycle)
+        RPCServerBase.__init__(
+            self,
+            service_name=ValiConfig.RPC_LIVEPRICEFETCHER_SERVICE_NAME,
+            port=ValiConfig.RPC_LIVEPRICEFETCHER_PORT,
+            connection_mode=connection_mode,
+            slack_notifier=slack_notifier,
+            start_server=start_server,
+            start_daemon=start_daemon,
+            daemon_interval_s=10.0,  # Health check every 10 seconds
+            hang_timeout_s=120.0  # Alert if no heartbeat for 2 minutes
+        )
+
+    # ============================================================================
+    # RPCServerBase ABSTRACT METHOD IMPLEMENTATIONS
+    # ============================================================================
+
+    def run_daemon_iteration(self) -> None:
+        """
+        Called repeatedly by RPCServerBase daemon loop.
+
+        Since price fetching is on-demand (via RPC calls), the daemon
+        primarily serves as a health monitoring mechanism. The heartbeat
+        updates automatically via RPCServerBase, ensuring watchdog monitoring.
+        """
+        # Check shutdown signal
+        if self._is_shutdown():
+            return
+
+        # Optional: Could add periodic health checks for data services here
+        # For now, heartbeat is sufficient for monitoring
+
+    # ============================================================================
+    # SHUTDOWN OVERRIDE (clean up data services)
+    # ============================================================================
+
+    def shutdown(self):
+        """Override shutdown to clean up data service threads."""
+        bt.logging.info("LivePriceFetcherServer shutting down data services...")
+        self.stop_all_threads()
+        super().shutdown()
+
+    def stop_all_threads(self):
+        """Stop all data service threads - delegates to fetcher."""
+        if hasattr(self, '_fetcher'):
+            self._fetcher.stop_all_threads()
+
+    # ============================================================================
+    # HEALTH CHECK (RPC method)
+    # ============================================================================
+
+    def get_health_check_details(self) -> dict:
+        """Add service-specific health check details."""
+        return {
+            "is_backtesting": self.is_backtesting
+        }
+
+    def health_check(self) -> dict:
+        """
+        Alias for health_check_rpc() for backward compatibility with client.
+        """
+        return self.health_check_rpc()
+
+    # ============================================================================
+    # DELEGATION METHODS (all business logic delegates to _fetcher)
+    # ============================================================================
+
+    def get_usd_base_conversion(self, trade_pair, time_ms, price, order_type, position):
+        """Delegate to fetcher."""
+        return self._fetcher.get_usd_base_conversion(trade_pair, time_ms, price, order_type, position)
+
+    def get_ws_price_sources_in_window(self, trade_pair: TradePair, start_ms: int, end_ms: int) -> List[PriceSource]:
+        """Delegate to fetcher."""
+        return self._fetcher.get_ws_price_sources_in_window(trade_pair, start_ms, end_ms)
+
+    def get_currency_conversion(self, base: str, quote: str):
+        """Delegate to fetcher."""
+        return self._fetcher.get_currency_conversion(base, quote)
+
+    def unified_candle_fetcher(self, trade_pair, start_date, order_date, timespan="day"):
+        """Delegate to fetcher."""
+        return self._fetcher.unified_candle_fetcher(trade_pair, start_date, order_date, timespan)
+
+    def get_latest_price(self, trade_pair: TradePair, time_ms=None) -> Tuple[float, List[PriceSource]] | Tuple[None, None]:
+        """Delegate to fetcher."""
+        return self._fetcher.get_latest_price(trade_pair, time_ms)
+
+    def get_sorted_price_sources_for_trade_pair(self, trade_pair: TradePair, time_ms: int) -> List[PriceSource] | None:
+        """Delegate to fetcher."""
+        return self._fetcher.get_sorted_price_sources_for_trade_pair(trade_pair, time_ms)
+
+    def get_tp_to_sorted_price_sources(self, trade_pairs: List[TradePair],
+                                       trade_pair_to_last_order_time_ms: Dict[TradePair, int] = None) -> Dict[TradePair, List[PriceSource]]:
+        """Delegate to fetcher."""
+        return self._fetcher.get_tp_to_sorted_price_sources(trade_pairs, trade_pair_to_last_order_time_ms)
+
+    def time_since_last_ws_ping_s(self, trade_pair: TradePair) -> float | None:
+        """Delegate to fetcher."""
+        return self._fetcher.time_since_last_ws_ping_s(trade_pair)
+
+    def get_candles(self, trade_pairs, start_time_ms, end_time_ms) -> dict:
+        """Delegate to fetcher."""
+        return self._fetcher.get_candles(trade_pairs, start_time_ms, end_time_ms)
+
+    def get_close_at_date(self, trade_pair, timestamp_ms, order=None, verbose=True):
+        """Delegate to fetcher."""
+        return self._fetcher.get_close_at_date(trade_pair, timestamp_ms, order, verbose)
+
+    def get_quote(self, trade_pair: TradePair, processed_ms: int) -> Tuple[float, float, int]:
+        """Delegate to fetcher."""
+        return self._fetcher.get_quote(trade_pair, processed_ms)
+
+    def get_quote_usd_conversion(self, order, position):
+        """Delegate to fetcher."""
+        return self._fetcher.get_quote_usd_conversion(order, position)
+
+    def set_test_price_source(self, trade_pair: TradePair, price_source: PriceSource) -> None:
+        """
+        Test-only RPC method to set price source for a trade pair.
+        Only available when running_unit_tests=True.
+        """
+        return self._fetcher.set_test_price_source(trade_pair, price_source)
+
+    def clear_test_price_sources(self) -> None:
+        """Test-only RPC method to clear all test price sources."""
+        return self._fetcher.clear_test_price_sources()
+
+    def set_test_market_open(self, is_open: bool) -> None:
+        """
+        Test-only RPC method to override market open status.
+        Only available when running_unit_tests=True.
+        """
+        return self._fetcher.set_test_market_open(is_open)
+
+    def clear_test_market_open(self) -> None:
+        """Test-only RPC method to clear market open override."""
+        return self._fetcher.clear_test_market_open()
+
+
+
+if __name__ == "__main__":
+    from vali_objects.utils.vali_utils import ValiUtils
+    from vali_objects.vali_config import TradePair
+
+    secrets = ValiUtils.get_secrets()
+    server = LivePriceFetcherServer(secrets, disable_ws=True, start_server=False)
+    ans = server.get_close_at_date(TradePair.TAOUSD, 1733304060475)
+    print('@@@@', ans, '@@@@@')
+    time.sleep(100000)

@@ -20,14 +20,15 @@ from vali_objects.vali_dataclasses.order import Order
 from vali_objects.utils.validator_sync_base import ValidatorSyncBase
 
 class P2PSyncer(ValidatorSyncBase):
-    def __init__(self, wallet=None, metagraph=None, is_testnet=None, shutdown_dict=None, signal_sync_lock=None,
+    def __init__(self, wallet=None, is_testnet=None, shutdown_dict=None, signal_sync_lock=None,
                  signal_sync_condition=None, n_orders_being_processed=None, running_unit_tests=False,
-                 position_manager=None, ipc_manager=None):
-        super().__init__(shutdown_dict, signal_sync_lock, signal_sync_condition, n_orders_being_processed,
-                         running_unit_tests=running_unit_tests, position_manager=position_manager,
-                         ipc_manager=ipc_manager)
+                 position_manager=None):
+        #super().__init__(shutdown_dict, signal_sync_lock, signal_sync_condition, n_orders_being_processed, position_manager=position_manager)
+
+        # Create own MetagraphClient (forward compatibility - no parameter passing).
+        from shared_objects.metagraph_server import MetagraphClient
+        self._metagraph_client = MetagraphClient()
         self.wallet = wallet
-        self.metagraph = metagraph
         self.golden = None
         if self.wallet is not None:
             self.hotkey = self.wallet.hotkey.ss58_address
@@ -36,6 +37,72 @@ class P2PSyncer(ValidatorSyncBase):
         self.created_golden = False
         self.last_signal_sync_time_ms = 0
         self.running_unit_tests = running_unit_tests
+
+    @property
+    def metagraph(self):
+        """Get metagraph client (forward compatibility - created internally)."""
+        return self._metagraph_client
+
+    def receive_checkpoint(self, synapse: template.protocol.ValidatorCheckpoint) -> template.protocol.ValidatorCheckpoint:
+        """
+        TODO: properly integrate with validator.py
+        receive checkpoint request, and ensure that only requests received from valid validators are processed.
+        """
+        sender_hotkey = synapse.dendrite.hotkey
+
+        # validator responds to poke from validator and attaches their checkpoint
+        if sender_hotkey in [axon.hotkey for axon in self.get_validators()]:
+            synapse.validator_receive_hotkey = self.wallet.hotkey.ss58_address
+
+            bt.logging.info(f"Received checkpoint request poke from validator hotkey [{sender_hotkey}].")
+            if self.should_fail_early(synapse, SynapseMethod.CHECKPOINT):
+                return synapse
+
+            error_message = ""
+            try:
+                with self.checkpoint_lock:
+                    # reset checkpoint after 10 minutes
+                    if TimeUtil.now_in_millis() - self.last_checkpoint_time > 1000 * 60 * 10:
+                        self.encoded_checkpoint = ""
+                    # save checkpoint so we only generate it once for all requests
+                    if not self.encoded_checkpoint:
+                        # get our current checkpoint
+                        self.last_checkpoint_time = TimeUtil.now_in_millis()
+                        # Don't create production files - just get checkpoint dict for P2P sharing
+                        # RequestOutputGenerator handles scheduled disk writes and uploads
+                        checkpoint_dict = self.request_core_manager.generate_request_core(
+                            create_production_files=False,
+                            save_production_files=False,
+                            upload_production_files=False
+                        )
+
+                        # compress json and encode as base64 to keep as a string
+                        checkpoint_str = json.dumps(checkpoint_dict, cls=CustomEncoder)
+                        compressed = gzip.compress(checkpoint_str.encode("utf-8"))
+                        self.encoded_checkpoint = base64.b64encode(compressed).decode("utf-8")
+
+                    # only send a checkpoint if we are an up-to-date validator
+                    timestamp = self.timestamp_manager.get_last_order_timestamp()
+                    if TimeUtil.now_in_millis() - timestamp < 1000 * 60 * 60 * 10:  # validators with no orders processed in 10 hrs are considered stale
+                        synapse.checkpoint = self.encoded_checkpoint
+                    else:
+                        error_message = f"Validator is stale, no orders received in 10 hrs, last order timestamp {timestamp}, {round((TimeUtil.now_in_millis() - timestamp)/(1000 * 60 * 60))} hrs ago"
+            except Exception as e:
+                error_message = f"Error processing checkpoint request poke from [{sender_hotkey}] with error [{e}]"
+                bt.logging.error(traceback.format_exc())
+
+            if error_message == "":
+                synapse.successfully_processed = True
+            else:
+                bt.logging.error(error_message)
+                synapse.successfully_processed = False
+            synapse.error_message = error_message
+            bt.logging.success(f"Sending checkpoint back to validator [{sender_hotkey}]")
+        else:
+            bt.logging.info(f"Received a checkpoint poke from non validator [{sender_hotkey}]")
+            synapse.error_message = "Rejecting checkpoint poke from non validator"
+            synapse.successfully_processed = False
+        return synapse
 
     async def send_checkpoint_requests(self):
         """
@@ -61,7 +128,7 @@ class P2PSyncer(ValidatorSyncBase):
             hotkey_to_received_checkpoint = {}
 
             hotkey_to_v_trust = {}
-            for neuron in self.metagraph.neurons:
+            for neuron in self.metagraph.get_neurons():
                 if neuron.validator_trust >= 0:
                     hotkey_to_v_trust[neuron.hotkey] = neuron.validator_trust
 
@@ -130,7 +197,7 @@ class P2PSyncer(ValidatorSyncBase):
             bt.logging.info(f"{hotkey} sent checkpoint {self.checkpoint_summary(chk)}")
             bt.logging.info("--------------------------------------------------")
 
-        golden_eliminations = self.position_manager.elimination_manager.get_eliminations_from_memory()
+        golden_eliminations = self._position_manager_client.elimination_handle.get_eliminations_from_memory()
         golden_positions = self.p2p_sync_positions(valid_checkpoints)
         golden_challengeperiod = self.p2p_sync_challengeperiod(valid_checkpoints)
 
@@ -288,7 +355,7 @@ class P2PSyncer(ValidatorSyncBase):
 
                 new_position.orders.sort(key=lambda o: o.processed_ms)
                 try:
-                    new_position.rebuild_position_with_updated_orders(self.position_manager.live_price_fetcher)
+                    new_position.rebuild_position_with_updated_orders(self._position_manager_client.price_fetcher_client)
                     position_dict = json.loads(new_position.to_json_string())
                     uuid_matched_positions.append(position_dict)
                 except ValueError as v:
@@ -553,9 +620,9 @@ class P2PSyncer(ValidatorSyncBase):
         stake > 1000 and validator_trust > 0.5
         """
         if self.is_testnet:
-            return self.metagraph.axons
+            return self.metagraph.get_axons()
         if neurons is None:
-            neurons = self.metagraph.neurons
+            neurons = self.metagraph.get_neurons()
         validator_axons = [n.axon_info for n in neurons
                            if n.stake > bt.Balance(ValiConfig.STAKE_MIN)
                            and n.axon_info.ip != ValiConfig.AXON_NO_IP]
@@ -569,7 +636,7 @@ class P2PSyncer(ValidatorSyncBase):
         if self.is_testnet:
             return self.get_validators()
         if neurons is None:
-            neurons = self.metagraph.neurons
+            neurons = self.metagraph.get_neurons()
         sorted_stake_neurons = sorted(neurons, key=lambda n: n.stake, reverse=True)
 
         return self.get_validators(sorted_stake_neurons)[:top_n_validators]

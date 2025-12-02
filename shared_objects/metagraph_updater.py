@@ -4,7 +4,7 @@
 import time
 import traceback
 import threading
-import queue
+from dataclasses import dataclass
 from setproctitle import setproctitle
 
 from vali_objects.vali_config import ValiConfig, TradePair
@@ -12,9 +12,66 @@ from shared_objects.cache_controller import CacheController
 from shared_objects.error_utils import ErrorUtils
 from shared_objects.metagraph_utils import is_anomalous_hotkey_loss
 from shared_objects.subtensor_lock import get_subtensor_lock
+from shared_objects.rpc_client_base import RPCClientBase
+from shared_objects.shutdown_coordinator import ShutdownCoordinator
 from time_util.time_util import TimeUtil
 
 import bittensor as bt
+
+
+# Simple picklable data structures for unit testing (must be module-level to be picklable)
+@dataclass
+class SimpleAxonInfo:
+    """Simple picklable axon info for testing."""
+    ip: str
+    port: int
+
+
+@dataclass
+class SimpleNeuron:
+    """Simple picklable neuron for testing."""
+    uid: int
+    hotkey: str
+    incentive: float
+    validator_trust: float
+    axon_info: SimpleAxonInfo
+
+
+# ==================== Client for WeightSetter RPC ====================
+
+class MetagraphUpdaterClient(RPCClientBase):
+    """
+    RPC client for calling set_weights_rpc on MetagraphUpdater.
+
+    Used by WeightCalculatorServer to send weight setting requests
+    to MetagraphUpdater running in a separate process.
+
+    Usage:
+        client = MetagraphUpdaterClient()
+        result = client.set_weights_rpc(uids=[1,2,3], weights=[0.3,0.3,0.4], version_key=200)
+    """
+
+    def __init__(self, running_unit_tests=False, connect_immediately=True):
+        super().__init__(
+            service_name=ValiConfig.RPC_WEIGHT_SETTER_SERVICE_NAME,
+            port=ValiConfig.RPC_WEIGHT_SETTER_PORT,
+            connect_immediately=connect_immediately and not running_unit_tests
+        )
+        self.running_unit_tests = running_unit_tests
+
+    def set_weights_rpc(self, uids: list, weights: list, version_key: int) -> dict:
+        """
+        Send weight setting request to MetagraphUpdater.
+
+        Args:
+            uids: List of UIDs to set weights for
+            weights: List of weights corresponding to UIDs
+            version_key: Subnet version key
+
+        Returns:
+            dict: {"success": bool, "error": str or None}
+        """
+        return self.call("set_weights_rpc", uids, weights, version_key)
 
 
 class WeightFailureTracker:
@@ -114,12 +171,31 @@ class WeightFailureTracker:
 
 
 class MetagraphUpdater(CacheController):
-    def __init__(self, config, metagraph, hotkey, is_miner, position_inspector=None, position_manager=None,
-                 shutdown_dict=None, slack_notifier=None, weight_request_queue=None, live_price_fetcher=None):
-        super().__init__(metagraph)
+    """
+    Run locally to interface with the Subtensor object without RPC overhead
+    """
+    def __init__(self, config, hotkey, is_miner, position_inspector=None, position_manager=None,
+                 slack_notifier=None, running_unit_tests=False):
+        super().__init__()
+        self.is_miner = is_miner
+        self.is_validator = not is_miner
         self.config = config
-        self.subtensor = bt.subtensor(config=self.config)
-        self.live_price_fetcher = live_price_fetcher  # For TAO/USD price queries (validators only)
+        self.running_unit_tests = running_unit_tests
+
+        # Create subtensor (mock if running unit tests)
+        if running_unit_tests:
+            self.subtensor = self._create_mock_subtensor()
+        else:
+            self.subtensor = bt.subtensor(config=self.config)
+
+        # Create own LivePriceFetcherClient for validators (forward compatibility - no parameter passing)
+        # Only validators need this for TAO/USD price queries
+        if self.is_validator:
+            from vali_objects.utils.live_price_server import LivePriceFetcherClient
+            self._live_price_client = LivePriceFetcherClient(running_unit_tests=running_unit_tests)
+        else:
+            assert position_inspector is not None, "Position inspector must be provided for miners"
+            self._live_price_client = None
         # Parse out the arg for subtensor.network. If it is "finney" or "subvortex", we will roundrobin on metagraph failure
         self.round_robin_networks = ['finney', 'subvortex']
         self.round_robin_enabled = False
@@ -133,20 +209,18 @@ class MetagraphUpdater(CacheController):
         self.likely_validators = {}
         self.likely_miners = {}
         self.hotkey = hotkey
-        if is_miner:
-            assert position_inspector is not None, "Position inspector must be provided for miners"
         self.is_miner = is_miner
         self.interval_wait_time_ms = ValiConfig.METAGRAPH_UPDATE_REFRESH_TIME_MINER_MS if self.is_miner else \
             ValiConfig.METAGRAPH_UPDATE_REFRESH_TIME_VALIDATOR_MS
         self.position_inspector = position_inspector
         self.position_manager = position_manager
-        self.shutdown_dict = shutdown_dict  # Flag to control the loop
         self.slack_notifier = slack_notifier  # Add slack notifier for error reporting
 
-        # Weight setting for validators only
-        self.weight_request_queue = weight_request_queue if not is_miner else None
+        # Weight setting for validators only (RPC-based, no queue)
         self.last_weight_set = 0
         self.weight_failure_tracker = WeightFailureTracker() if not is_miner else None
+        self.rpc_server = None
+        self.rpc_thread = None
 
         # Exponential backoff parameters
         self.min_backoff = 10 if self.round_robin_enabled else 120
@@ -154,11 +228,212 @@ class MetagraphUpdater(CacheController):
         self.backoff_factor = 2  # Double the wait time on each retry
         self.current_backoff = self.min_backoff
         self.consecutive_failures = 0
-        
+
+        # Hotkeys cache for fast lookups (refreshed atomically during metagraph updates)
+        # No lock needed - set assignment is atomic in Python
+        self._hotkeys_cache = set()
+
+        # Start RPC server (allows SubtensorWeightCalculator to call set_weights_rpc)
+        # Skip RPC server in unit tests to avoid port conflicts
+        if self.is_validator and not running_unit_tests:
+            self._start_weight_setter_rpc_server()
+
         # Log mode
         mode = "miner" if is_miner else "validator"
-        weight_mode = "enabled" if self.weight_request_queue else "disabled"
-        bt.logging.info(f"MetagraphUpdater initialized in {mode} mode, weight setting: {weight_mode}")
+        bt.logging.info(f"MetagraphUpdater initialized in {mode} mode, weight setting via RPC")
+
+    @property
+    def live_price_fetcher(self):
+        """Get live price fetcher client (validators only)."""
+        return self._live_price_client
+
+    def _create_mock_subtensor(self):
+        """Create a mock subtensor for unit testing."""
+        from unittest.mock import Mock
+
+        mock_subtensor = Mock()
+
+        # Mock metagraph() method to return empty metagraph
+        def mock_metagraph_func(netuid):
+            mock_metagraph = Mock()
+            mock_metagraph.hotkeys = []
+            mock_metagraph.uids = []
+            mock_metagraph.neurons = []
+            mock_metagraph.block_at_registration = []
+            mock_metagraph.emission = []
+            mock_metagraph.axons = []
+
+            # Mock pool data
+            mock_metagraph.pool = Mock()
+            mock_metagraph.pool.tao_in = 1000.0
+            mock_metagraph.pool.alpha_in = 5000.0
+
+            return mock_metagraph
+
+        mock_subtensor.metagraph = Mock(side_effect=mock_metagraph_func)
+
+        # Mock set_weights method (for validators)
+        mock_subtensor.set_weights = Mock(return_value=(True, None))
+
+        # Mock substrate connection for cleanup
+        mock_subtensor.substrate = Mock()
+        mock_subtensor.substrate.close = Mock()
+
+        return mock_subtensor
+
+    def _create_mock_wallet(self):
+        """Create a mock wallet for unit testing."""
+        from unittest.mock import Mock
+
+        mock_wallet = Mock()
+        mock_wallet.hotkey = Mock()
+        mock_wallet.hotkey.ss58_address = self.hotkey
+        return mock_wallet
+
+    def set_mock_metagraph_data(self, hotkeys, neurons=None):
+        """
+        Set mock metagraph data for unit testing.
+
+        Args:
+            hotkeys: List of hotkeys to populate mock metagraph with
+            neurons: Optional list of neuron objects (if None, will create basic picklable neurons)
+        """
+        if not self.running_unit_tests:
+            raise RuntimeError("set_mock_metagraph_data() can only be used in test mode")
+
+        from unittest.mock import Mock
+
+        # Create neurons if not provided (using module-level dataclasses)
+        if neurons is None:
+            neurons = []
+            for i, hk in enumerate(hotkeys):
+                axon_info = SimpleAxonInfo(ip="192.168.1.1", port=8091)
+                neuron = SimpleNeuron(
+                    uid=i,
+                    hotkey=hk,
+                    incentive=0.1,
+                    validator_trust=0.1 if i == 0 else 0.0,  # First one is validator
+                    axon_info=axon_info
+                )
+                neurons.append(neuron)
+
+        # Update the mock metagraph function to return this data
+        def mock_metagraph_func(netuid):
+            mock_metagraph = Mock()
+            mock_metagraph.hotkeys = hotkeys
+            mock_metagraph.uids = list(range(len(hotkeys)))
+            mock_metagraph.neurons = neurons
+            mock_metagraph.block_at_registration = [1000] * len(hotkeys)
+            mock_metagraph.emission = [1.0] * len(hotkeys)
+            mock_metagraph.axons = [n.axon_info for n in neurons]
+
+            # Mock pool data
+            mock_metagraph.pool = Mock()
+            mock_metagraph.pool.tao_in = 1000.0
+            mock_metagraph.pool.alpha_in = 5000.0
+
+            return mock_metagraph
+
+        self.subtensor.metagraph = Mock(side_effect=mock_metagraph_func)
+
+    def _start_weight_setter_rpc_server(self):
+        """Start RPC server for weight setting requests (validators only)."""
+        from multiprocessing.managers import BaseManager
+
+        # Define RPC manager
+        class WeightSetterRPC(BaseManager):
+            pass
+
+        # Register this instance to handle RPC calls
+        WeightSetterRPC.register(
+            'WeightSetterServer',
+            callable=lambda: self
+        )
+
+        # Start RPC server in a thread
+        address = ("localhost", ValiConfig.RPC_WEIGHT_SETTER_PORT)
+        authkey = ValiConfig.get_rpc_authkey(
+            ValiConfig.RPC_WEIGHT_SETTER_SERVICE_NAME,
+            ValiConfig.RPC_WEIGHT_SETTER_PORT
+        )
+
+        manager = WeightSetterRPC(address=address, authkey=authkey)
+        self.rpc_server = manager.get_server()
+
+        # Run server in daemon thread
+        self.rpc_thread = threading.Thread(
+            target=self.rpc_server.serve_forever,
+            daemon=True,
+            name="WeightSetterRPC"
+        )
+        self.rpc_thread.start()
+        bt.logging.info(f"WeightSetter RPC server started on port {ValiConfig.RPC_WEIGHT_SETTER_PORT}")
+
+    # ==================== RPC Methods (exposed to SubtensorWeightCalculator) ====================
+
+    def set_weights_rpc(self, uids, weights, version_key):
+        """
+        RPC method to set weights synchronously (called from SubtensorWeightCalculator).
+
+        Args:
+            uids: List of UIDs to set weights for
+            weights: List of weights corresponding to UIDs
+            version_key: Subnet version key
+
+        Returns:
+            dict: {"success": bool, "error": str}
+        """
+        try:
+            # Use our own config for netuid
+            netuid = self.config.netuid
+
+            # Create wallet from our own config (mock if running unit tests)
+            if self.running_unit_tests:
+                wallet = self._create_mock_wallet()
+            else:
+                wallet = bt.wallet(config=self.config)
+
+            bt.logging.info(f"[RPC] Processing weight setting request for {len(uids)} UIDs")
+
+            # Set weights with retry logic
+            success, error_msg = self._set_weights_with_retry(
+                netuid=netuid,
+                wallet=wallet,
+                uids=uids,
+                weights=weights,
+                version_key=version_key
+            )
+
+            if success:
+                self.last_weight_set = time.time()
+                bt.logging.success("[RPC] Weight setting completed successfully")
+
+                # Track success and check for recovery alerts
+                if self.weight_failure_tracker:
+                    should_send_recovery = self.weight_failure_tracker.track_success()
+                    if should_send_recovery and self.slack_notifier:
+                        self._send_recovery_alert(wallet)
+
+                return {"success": True, "error": None}
+            else:
+                bt.logging.warning(f"[RPC] Weight setting failed: {error_msg}")
+
+                # Track failure and send alerts
+                if self.weight_failure_tracker:
+                    failure_type = self.weight_failure_tracker.classify_failure(error_msg)
+                    self.weight_failure_tracker.track_failure(error_msg, failure_type)
+
+                    if self.weight_failure_tracker.should_alert(failure_type, self.weight_failure_tracker.consecutive_failures):
+                        self._send_weight_failure_alert(error_msg, failure_type, wallet)
+                        self.weight_failure_tracker.last_alert_time = time.time()
+
+                return {"success": False, "error": error_msg}
+
+        except Exception as e:
+            error_msg = f"Error in set_weights_rpc: {e}"
+            bt.logging.error(error_msg)
+            bt.logging.error(traceback.format_exc())
+            return {"success": False, "error": error_msg}
 
     def _current_timestamp(self):
         return time.time()
@@ -210,24 +485,24 @@ class MetagraphUpdater(CacheController):
         # Wait for initial metagraph population before proceeding
         bt.logging.info("Waiting for initial metagraph population...")
         start_time = time.time()
-        while not self.metagraph.hotkeys and (time.time() - start_time) < max_wait_time:
+        while not self._metagraph_client.get_hotkeys() and (time.time() - start_time) < max_wait_time:
             time.sleep(1)
-        
-        if not self.metagraph.hotkeys:
+
+        if not self._metagraph_client.get_hotkeys():
             error_msg = f"Failed to populate metagraph within {max_wait_time} seconds"
             bt.logging.error(error_msg)
             if slack_notifier:
                 slack_notifier.send_message(f"❌ {error_msg}", level="error")
             exit()
-        
-        bt.logging.info(f"Metagraph populated with {len(self.metagraph.hotkeys)} hotkeys")
+
+        bt.logging.info(f"Metagraph populated with {len(self._metagraph_client.get_hotkeys())} hotkeys")
         return updater_thread
 
     def estimate_number_of_validators(self):
         # Filter out expired validators
         self.likely_validators = {k: v for k, v in self.likely_validators.items() if not self._is_expired(v)}
         hotkeys_with_v_trust = set() if self.is_miner else {self.hotkey}
-        for neuron in self.metagraph.neurons:
+        for neuron in self._metagraph_client.get_neurons():
             if neuron.validator_trust > 0:
                 hotkeys_with_v_trust.add(neuron.hotkey)
         return len(hotkeys_with_v_trust.union(set(self.likely_validators.keys())))
@@ -236,8 +511,8 @@ class MetagraphUpdater(CacheController):
         mode_name = "miner" if self.is_miner else "validator"
         setproctitle(f"metagraph_updater_{mode_name}_{self.hotkey}")
         bt.logging.enable_info()
-        
-        while not self.shutdown_dict:
+
+        while not ShutdownCoordinator.is_shutdown():
             try:
                 self.update_metagraph()
                 # Reset backoff on successful update
@@ -288,112 +563,6 @@ class MetagraphUpdater(CacheController):
                 # Wait with exponential backoff
                 time.sleep(self.current_backoff)
 
-    def run_weight_processing_loop(self):
-        """
-        Dedicated loop for processing weight requests using blocking queue.
-        Runs in a separate thread. Blocks until a request arrives (efficient, no polling).
-        """
-        setproctitle(f"weight_processor_{self.hotkey}")
-        bt.logging.enable_info()
-        bt.logging.info("Starting dedicated weight processing loop")
-
-        while not self.shutdown_dict:
-            try:
-                # Process weight requests if we're a validator
-                if self.weight_request_queue:
-                    self._process_weight_requests()
-                else:
-                    time.sleep(5)  # No queue configured, sleep
-
-            except Exception as e:
-                bt.logging.error(f"Error in weight processing loop: {e}")
-                bt.logging.error(traceback.format_exc())
-                time.sleep(10)  # Longer sleep on error
-
-        bt.logging.info("Weight processing loop shutting down")
-
-    def _process_weight_requests(self):
-        """
-        Process pending weight setting requests (validators only).
-        Uses blocking queue.get() to efficiently wait for requests without polling.
-        """
-        try:
-            # Block until a request arrives (timeout 30s to check shutdown_dict periodically)
-            try:
-                request = self.weight_request_queue.get(timeout=30)
-                self._handle_weight_request(request)
-
-                # After processing first request, drain any additional pending requests
-                # (non-blocking to avoid waiting if queue is empty)
-                processed_count = 1
-                while processed_count < 5:  # Process max 5 requests per cycle
-                    try:
-                        request = self.weight_request_queue.get_nowait()
-                        self._handle_weight_request(request)
-                        processed_count += 1
-                    except queue.Empty:
-                        break  # No more pending requests
-
-                if processed_count > 1:
-                    bt.logging.debug(f"Processed {processed_count} weight requests in batch")
-
-            except queue.Empty:
-                # Timeout reached, no requests - this is normal, just loop back
-                pass
-
-        except Exception as e:
-            bt.logging.error(f"Error processing weight requests: {e}")
-            bt.logging.error(traceback.format_exc())
-    
-    def _handle_weight_request(self, request):
-        """Handle a single weight setting request (no response needed)"""
-        try:
-            uids = request['uids']
-            weights = request['weights']
-            version_key = request['version_key']
-            
-            # Use our own config for netuid
-            netuid = self.config.netuid
-            
-            # Create wallet from our own config
-            wallet = bt.wallet(config=self.config)
-            
-            bt.logging.info(f"Processing weight setting request for {len(uids)} UIDs")
-            
-            # Set weights with retry logic
-            success, error_msg = self._set_weights_with_retry(
-                netuid=netuid,
-                wallet=wallet,
-                uids=uids,
-                weights=weights,
-                version_key=version_key
-            )
-            
-            if success:
-                self.last_weight_set = time.time()
-                bt.logging.success("Weight setting completed successfully")
-                
-                # Track success and check for recovery alerts
-                if self.weight_failure_tracker:
-                    should_send_recovery = self.weight_failure_tracker.track_success()
-                    if should_send_recovery and self.slack_notifier:
-                        self._send_recovery_alert(wallet)
-            else:
-                bt.logging.warning(f"Weight setting failed: {error_msg}")
-                
-                # Track failure and send alerts
-                if self.weight_failure_tracker:
-                    failure_type = self.weight_failure_tracker.classify_failure(error_msg)
-                    self.weight_failure_tracker.track_failure(error_msg, failure_type)
-                    
-                    if self.weight_failure_tracker.should_alert(failure_type, self.weight_failure_tracker.consecutive_failures):
-                        self._send_weight_failure_alert(error_msg, failure_type, wallet)
-                        self.weight_failure_tracker.last_alert_time = time.time()
-            
-        except Exception as e:
-            bt.logging.error(f"Error handling weight request: {e}")
-            bt.logging.error(traceback.format_exc())
-    
     def _set_weights_with_retry(self, netuid, wallet, uids, weights, version_key):
         """Set weights with round-robin retry using existing subtensor"""
         max_retries = len(self.round_robin_networks) if self.round_robin_enabled else 1
@@ -453,7 +622,10 @@ class MetagraphUpdater(CacheController):
         
         # Create new subtensor connection if requested
         if create_new_subtensor:
-            self.subtensor = bt.subtensor(config=self.config)
+            if self.running_unit_tests:
+                self.subtensor = self._create_mock_subtensor()
+            else:
+                self.subtensor = bt.subtensor(config=self.config)
     
     def _send_weight_failure_alert(self, err_msg, failure_type, wallet):
         """Send contextual Slack alert for weight setting failure"""
@@ -575,7 +747,7 @@ class MetagraphUpdater(CacheController):
         # Filter out expired miners
         self.likely_miners = {k: v for k, v in self.likely_miners.items() if not self._is_expired(v)}
         hotkeys_with_incentive = {self.hotkey} if self.is_miner else set()
-        for neuron in self.metagraph.neurons:
+        for neuron in self._metagraph_client.get_neurons():
             if neuron.incentive > 0:
                 hotkeys_with_incentive.add(neuron.hotkey)
 
@@ -601,7 +773,7 @@ class MetagraphUpdater(CacheController):
 
         bt.logging.info(
             f"metagraph state (approximation): {n_validators} active validators, {n_miners} active miners, hotkeys: "
-            f"{len(self.metagraph.hotkeys)}")
+            f"{len(self._metagraph_client.get_hotkeys())}")
 
     def sync_lists(self, shared_list, updated_list, brute_force=False):
         if brute_force:
@@ -631,16 +803,34 @@ class MetagraphUpdater(CacheController):
         """
         Returns the metagraph object.
         """
-        return self.metagraph
+        return self._metagraph_client
 
-    def refresh_substrate_reserves(self, metagraph_clone):
+    def is_hotkey_registered_cached(self, hotkey: str) -> bool:
         """
-        Refresh TAO and ALPHA reserve balances from metagraph.pool and store in shared metagraph.
+        Fast local check if hotkey is registered (no RPC call!).
+
+        Uses local cache that is atomically refreshed during metagraph updates.
+        Much faster than calling metagraph.has_hotkey() which does RPC.
+
+        Args:
+            hotkey: The hotkey to check
+
+        Returns:
+            True if hotkey is registered in metagraph, False otherwise
+        """
+        return hotkey in self._hotkeys_cache
+
+    def _get_substrate_reserves(self, metagraph_clone):
+        """
+        Get TAO and ALPHA reserve balances from metagraph.pool.
         Uses built-in metagraph.pool data (verified to be identical to direct substrate queries).
         Fails fast - exceptions propagate to slack alert mechanism.
 
         Args:
             metagraph_clone: Freshly synced metagraph with pool data
+
+        Returns:
+            tuple: (tao_reserve_rao, alpha_reserve_rao)
         """
         # Extract reserve data from metagraph.pool
         if not hasattr(metagraph_clone, 'pool') or not metagraph_clone.pool:
@@ -658,27 +848,36 @@ class MetagraphUpdater(CacheController):
         if alpha_reserve_rao == 0:
             raise ValueError("Alpha reserve is zero - cannot calculate conversion rate")
 
-        # Update shared metagraph (accessible from all processes via IPC)
-        # Use .value accessor for manager.Value() thread-safe synchronization
-        self.metagraph.tao_reserve_rao.value = tao_reserve_rao
-        self.metagraph.alpha_reserve_rao.value = alpha_reserve_rao
-
         bt.logging.info(
-            f"Updated reserves from metagraph.pool: TAO={tao_reserve_rao / 1e9:.2f} TAO "
+            f"Got reserves from metagraph.pool: TAO={tao_reserve_rao / 1e9:.2f} TAO "
             f"({tao_reserve_rao:.0f} RAO), ALPHA={alpha_reserve_rao / 1e9:.2f} ALPHA "
             f"({alpha_reserve_rao:.0f} RAO)"
         )
 
-    def refresh_tao_usd_price(self):
+        return tao_reserve_rao, alpha_reserve_rao
+
+    def refresh_substrate_reserves(self, metagraph_clone):
         """
-        Refresh TAO/USD price using live_price_fetcher and store in shared metagraph.
+        Refresh TAO and ALPHA reserve balances from metagraph.pool and store in shared metagraph.
+        DEPRECATED: Use _get_substrate_reserves() and update_metagraph() for atomic updates.
+
+        Args:
+            metagraph_clone: Freshly synced metagraph with pool data
+        """
+        tao_reserve_rao, alpha_reserve_rao = self._get_substrate_reserves(metagraph_clone)
+        self._metagraph_client.set_tao_reserve_rao(tao_reserve_rao)
+        self._metagraph_client.set_alpha_reserve_rao(alpha_reserve_rao)
+
+    def _get_tao_usd_rate(self):
+        """
+        Get current TAO/USD price using live_price_fetcher.
         Uses current timestamp to get latest available price.
 
-        Non-blocking: If price refresh fails, logs error but continues metagraph update.
+        Non-blocking: If price fetch fails, logs error and returns None.
         Better to use a slightly stale TAO/USD price than block metagraph updates.
 
         Returns:
-            bool: True if price was successfully updated, False otherwise
+            float: TAO/USD rate, or None if unavailable
         """
         try:
             if not self.live_price_fetcher:
@@ -686,7 +885,7 @@ class MetagraphUpdater(CacheController):
                     "live_price_fetcher not available - cannot query TAO/USD price. "
                     "Using existing price from metagraph (may be stale)."
                 )
-                return False
+                return None
 
             # Get current timestamp for price query
             current_time_ms = TimeUtil.now_in_millis()
@@ -703,7 +902,7 @@ class MetagraphUpdater(CacheController):
                     f"Using existing price from metagraph (may be stale). "
                     f"price_source={price_source}"
                 )
-                return False
+                return None
 
             tao_to_usd_rate = float(price_source.close)
 
@@ -713,24 +912,35 @@ class MetagraphUpdater(CacheController):
                     f"Invalid TAO/USD price: ${tao_to_usd_rate}. "
                     f"Using existing price from metagraph (may be stale)."
                 )
-                return False
-
-            # Update shared metagraph (accessible from all processes via IPC)
-            self.metagraph.tao_to_usd_rate = tao_to_usd_rate
+                return None
 
             bt.logging.info(
-                f"Updated TAO/USD price: ${tao_to_usd_rate:.2f}/TAO "
+                f"Got TAO/USD price: ${tao_to_usd_rate:.2f}/TAO "
                 f"(timestamp: {current_time_ms})"
             )
-            return True
+            return tao_to_usd_rate
 
         except Exception as e:
             bt.logging.error(
-                f"Error refreshing TAO/USD price: {e}. "
+                f"Error fetching TAO/USD price: {e}. "
                 f"Using existing price from metagraph (may be stale)."
             )
             bt.logging.error(traceback.format_exc())
-            return False
+            return None
+
+    def refresh_tao_usd_price(self):
+        """
+        Refresh TAO/USD price using live_price_fetcher and store in shared metagraph.
+        DEPRECATED: Use _get_tao_usd_rate() and update_metagraph() for atomic updates.
+
+        Returns:
+            bool: True if price was successfully updated, False otherwise
+        """
+        tao_to_usd_rate = self._get_tao_usd_rate()
+        if tao_to_usd_rate:
+            self.metagraph.set_tao_to_usd_rate(tao_to_usd_rate)
+            return True
+        return False
 
     def update_metagraph(self):
         if not self.refresh_allowed(self.interval_wait_time_ms):
@@ -741,25 +951,32 @@ class MetagraphUpdater(CacheController):
                 # Use modularized round-robin switching
                 bt.logging.warning(f"Switching to next network in round-robin due to consecutive failures")
                 self._switch_to_next_network(cleanup_connection=False, create_new_subtensor=False)
-            
+
             # CRITICAL: Close existing connection before creating new one to prevent file descriptor leak
             self._cleanup_subtensor_connection()
-            self.subtensor = bt.subtensor(config=self.config)
+            if self.running_unit_tests:
+                self.subtensor = self._create_mock_subtensor()
+            else:
+                self.subtensor = bt.subtensor(config=self.config)
+
         recently_acked_miners = None
         recently_acked_validators = None
         if self.is_miner:
             recently_acked_validators = self.position_inspector.get_recently_acked_validators()
         else:
-            if self.position_manager:
-                recently_acked_miners = self.position_manager.get_recently_updated_miner_hotkeys()
-            else:
-                recently_acked_miners = []
+            # REMOVED: Expensive filesystem scan (127s) for unused log_metagraph_state() feature
+            # if self.position_manager:
+            #     recently_acked_miners = self.position_manager.get_recently_updated_miner_hotkeys()
+            # else:
+            #     recently_acked_miners = []
+            recently_acked_miners = []
 
-        hotkeys_before = set(self.metagraph.hotkeys)
-        
+        hotkeys_before = set(self._metagraph_client.get_hotkeys())
+
         # Synchronize with weight setting operations to prevent WebSocket concurrency errors
         with get_subtensor_lock():
             metagraph_clone = self.subtensor.metagraph(self.config.netuid)
+
         assert hasattr(metagraph_clone, 'hotkeys'), "Metagraph clone does not have hotkeys attribute"
         bt.logging.info("Updating metagraph...")
         # metagraph_clone.sync(subtensor=self.subtensor) The call to subtensor.metagraph() already syncs the metagraph.
@@ -787,28 +1004,36 @@ class MetagraphUpdater(CacheController):
                 )
             return  # Actually block the metagraph update
 
-        self.sync_lists(self.metagraph.neurons, list(metagraph_clone.neurons), brute_force=True)
-        self.sync_lists(self.metagraph.uids, metagraph_clone.uids, brute_force=True)
-        self.sync_lists(self.metagraph.hotkeys, metagraph_clone.hotkeys, brute_force=True)
-        # Tuple doesn't support item assignment.
-        self.sync_lists(self.metagraph.block_at_registration, metagraph_clone.block_at_registration,
-                        brute_force=True)
-        if self.is_miner:
-            self.sync_lists(self.metagraph.axons, metagraph_clone.axons, brute_force=True)
+        # Gather validator-specific data (reserves and TAO/USD price) if needed
+        tao_reserve_rao = None
+        alpha_reserve_rao = None
+        tao_to_usd_rate = None
+
+        if self.is_validator:  # Only validators need reserves/prices for weight calculation
+            tao_reserve_rao, alpha_reserve_rao = self._get_substrate_reserves(metagraph_clone)
+            tao_to_usd_rate = self._get_tao_usd_rate()
+
+        # Single atomic RPC call to update all metagraph fields
+        # Much faster than multiple calls - all fields updated together under one lock
+        self._metagraph_client.update_metagraph(
+            neurons=list(metagraph_clone.neurons),
+            uids=list(metagraph_clone.uids),
+            hotkeys=list(metagraph_clone.hotkeys),  # Server will update cached set
+            block_at_registration=list(metagraph_clone.block_at_registration),
+            axons=list(metagraph_clone.axons) if self.is_miner else None,
+            emission=list(metagraph_clone.emission),
+            tao_reserve_rao=tao_reserve_rao,
+            alpha_reserve_rao=alpha_reserve_rao,
+            tao_to_usd_rate=tao_to_usd_rate
+        )
+
+        # Update local hotkeys cache atomically (no lock needed - set assignment is atomic)
+        self._hotkeys_cache = set(metagraph_clone.hotkeys)
 
         if recently_acked_miners:
             self.update_likely_miners(recently_acked_miners)
         if recently_acked_validators:
             self.update_likely_validators(recently_acked_validators)
-
-        # Update shared emission data (TAO per tempo for each UID)
-        self.sync_lists(self.metagraph.emission, metagraph_clone.emission, brute_force=True)
-
-        # Refresh reserve data (TAO and ALPHA) from metagraph.pool for debt-based scoring
-        # Also refresh TAO/USD price for USD-based payout calculations
-        if not self.is_miner:  # Only validators need this for weight calculation
-            self.refresh_substrate_reserves(metagraph_clone)
-            self.refresh_tao_usd_price()
 
         # self.log_metagraph_state()
         self.set_last_update_time()

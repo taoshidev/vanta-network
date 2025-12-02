@@ -5,13 +5,13 @@ from vali_objects.position import Position
 from vali_objects.utils.vali_bkp_utils import CustomEncoder
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair
-from vali_objects.utils.live_price_fetcher import LivePriceFetcher
+from vali_objects.utils.live_price_server import LivePriceFetcherServer
 
 positions_to_snap = []
 
 if __name__ == "__main__":
     secrets = ValiUtils.get_secrets()
-    lpf = LivePriceFetcher(secrets, disable_ws=True)
+    lpf = LivePriceFetcherServer(secrets, disable_ws=True)
     for i, position_json in enumerate(positions_to_snap):
         # build the positions as the order edits did not propagate to position-level attributes.
         pos = Position(**position_json)

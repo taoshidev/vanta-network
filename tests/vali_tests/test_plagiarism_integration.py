@@ -2,13 +2,13 @@ import uuid
 
 from tests.shared_objects.mock_classes import (
     MockPlagiarismDetector,
-    MockPositionManager, MockLivePriceFetcher,
+    MockPositionManager, MockLivePriceFetcherServer,
 )
 from shared_objects.mock_metagraph import MockMetagraph
 from tests.vali_tests.base_objects.test_base import TestBase
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.position import Position
-from vali_objects.utils.elimination_manager import EliminationManager
+from vali_objects.utils.elimination_server import EliminationServer
 from vali_objects.utils.plagiarism_events import PlagiarismEvents
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
@@ -35,13 +35,20 @@ class TestPlagiarismIntegration(TestBase):
         self.MINER_NAMES = [f"test_miner{i}" for i in range(self.N_MINERS)]
         self.DEFAULT_ACCOUNT_SIZES = 100_000
         secrets = ValiUtils.get_secrets(running_unit_tests=True)
-        self.live_price_fetcher = MockLivePriceFetcher(secrets=secrets, disable_ws=True)
+        self.live_price_fetcher = MockLivePriceFetcherServer(secrets=secrets, disable_ws=True)
         self.mock_metagraph = MockMetagraph(self.MINER_NAMES)
         self.current_time = ValiConfig.PLAGIARISM_LOOKBACK_RANGE_MS
-        self.elimination_manager = EliminationManager(self.mock_metagraph, None, None, running_unit_tests=True)
 
-        self.position_manager = MockPositionManager(metagraph=self.mock_metagraph, perf_ledger_manager=None,
-                                                    elimination_manager=self.elimination_manager)
+        # Create position manager first (it creates its own EliminationClient internally)
+        self.position_manager = MockPositionManager(metagraph=self.mock_metagraph, perf_ledger_manager=None)
+
+        # Create elimination server and connect it to position manager's client
+        self.elimination_server = EliminationServer(
+            metagraph=self.mock_metagraph,
+            position_manager=self.position_manager,
+            running_unit_tests=True
+        )
+        self.position_manager.elimination_client.set_direct_server(self.elimination_server)
         self.plagiarism_detector = MockPlagiarismDetector(self.mock_metagraph, self.position_manager)
 
         self.DEFAULT_TEST_POSITION_UUID = "test_position"
@@ -50,7 +57,7 @@ class TestPlagiarismIntegration(TestBase):
         self.position_manager.clear_all_miner_positions()
         self.plagiarism_detector.clear_plagiarism_from_disk()
 
-        self.elimination_manager.clear_eliminations()
+        self.elimination_server.clear_eliminations()
         self.position_counter = 0
         PlagiarismEvents.clear_plagiarism_events()
 

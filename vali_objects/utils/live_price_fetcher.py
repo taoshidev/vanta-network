@@ -1,4 +1,3 @@
-from multiprocessing.managers import BaseManager
 import time
 from typing import List, Tuple, Dict
 
@@ -6,63 +5,28 @@ import numpy as np
 from data_generator.tiingo_data_service import TiingoDataService
 from data_generator.polygon_data_service import PolygonDataService
 from time_util.time_util import TimeUtil
-
-from vali_objects.vali_config import TradePair
-from vali_objects.position import Position
 from vali_objects.utils.vali_utils import ValiUtils
+from vali_objects.vali_config import TradePair, ValiConfig
 import bittensor as bt
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 from vali_objects.vali_dataclasses.order import OrderSource
 from vali_objects.vali_dataclasses.price_source import PriceSource
-from statistics import median
 
-class LivePriceFetcherClient(BaseManager): pass
-LivePriceFetcherClient.register('LivePriceFetcher')
-
-def get_live_price_client(address=('localhost', 50000), authkey=b'secret', max_retries = 5):
-    bt.logging.info(f"Attempting to connect to LivePriceFetcher server")
-    for attempt in range(max_retries):
-        try:
-            manager = LivePriceFetcherClient(address=address, authkey=authkey)
-            manager.connect()
-            bt.logging.success(f"Successfully connected to LivePriceFetcher server")
-            return manager.LivePriceFetcher()
-        except Exception as e:
-            if attempt < max_retries - 1:
-                bt.logging.warning(f"Failed to connect to LivePriceFetcher server (attempt {attempt + 1}/{max_retries}): {e}. Retrying in 1s...")
-                time.sleep(1)
-            else:
-                bt.logging.error(f"Failed to connect to LivePriceFetcher server after {max_retries} attempts: {e}")
-                raise
-
-class LivePriceFetcherServer(BaseManager): pass
-
-def run_live_price_server(secrets, address=('localhost', 50000), authkey=b'secret', disable_ws=False, ipc_manager=None, is_backtesting=False):
-    bt.logging.info(f"Starting LivePriceFetcher server ...")
-    try:
-        live_price_fetcher = LivePriceFetcher(secrets, disable_ws, ipc_manager, is_backtesting)
-        bt.logging.info(f"LivePriceFetcher instance created successfully")
-        LivePriceFetcherServer.register('LivePriceFetcher', callable=lambda: live_price_fetcher)
-        manager = LivePriceFetcherServer(address=address, authkey=authkey)
-        server = manager.get_server()
-        bt.logging.success(f"LivePriceFetcher server is now listening")
-        server.serve_forever()
-    except Exception as e:
-        bt.logging.error(f"Failed to start LivePriceFetcher server {e}")
-        raise
 
 class LivePriceFetcher:
-    def __init__(self, secrets, disable_ws=False, ipc_manager=None, is_backtesting=False):
+    def __init__(self, secrets, disable_ws=False, is_backtesting=False, running_unit_tests=False):
         self.is_backtesting = is_backtesting
+        self.running_unit_tests = running_unit_tests
+        self.last_health_check_ms = 0
         if "tiingo_apikey" in secrets:
             self.tiingo_data_service = TiingoDataService(api_key=secrets["tiingo_apikey"], disable_ws=disable_ws,
-                                                         ipc_manager=ipc_manager)
+                                                         running_unit_tests=running_unit_tests)
         else:
             raise Exception("Tiingo API key not found in secrets.json")
         if "polygon_apikey" in secrets:
             self.polygon_data_service = PolygonDataService(api_key=secrets["polygon_apikey"], disable_ws=disable_ws,
-                                                           ipc_manager=ipc_manager, is_backtesting=is_backtesting)
+                                                           is_backtesting=is_backtesting, running_unit_tests=running_unit_tests)
         else:
             raise Exception("Polygon API key not found in secrets.json")
 
@@ -70,11 +34,67 @@ class LivePriceFetcher:
         self.tiingo_data_service.stop_threads()
         self.polygon_data_service.stop_threads()
 
-    def is_market_open(self, trade_pair: TradePair) -> bool:
-        return self.polygon_data_service.is_market_open(trade_pair)
+    def set_test_price_source(self, trade_pair: TradePair, price_source: PriceSource) -> None:
+        """
+        Test-only method to inject price sources for specific trade pairs.
+        Delegates to PolygonDataService.
+        """
+        self.polygon_data_service.set_test_price_source(trade_pair, price_source)
+
+    def clear_test_price_sources(self) -> None:
+        """Clear all test price sources. Delegates to PolygonDataService."""
+        self.polygon_data_service.clear_test_price_sources()
+
+    def set_test_market_open(self, is_open: bool) -> None:
+        """
+        Test-only method to override market open status.
+        When set, all markets will return this status regardless of actual time.
+        """
+        self.polygon_data_service.set_test_market_open(is_open)
+
+    def clear_test_market_open(self) -> None:
+        """Clear market open override and use real calendar."""
+        self.polygon_data_service.clear_test_market_open()
+
+    def health_check(self) -> dict:
+        """
+        Health check method for RPC connection between client and server.
+        Returns a simple status indicating the server is alive and responsive.
+        """
+        current_time_ms = TimeUtil.now_in_millis()
+        return {
+            "status": "ok",
+            "timestamp_ms": current_time_ms,
+            "is_backtesting": self.is_backtesting
+        }
+
+    def is_market_open(self, trade_pair: TradePair, time_ms=None) -> bool:
+        """
+        Check if market is open for a trade pair.
+
+        Args:
+            trade_pair: The trade pair to check
+            time_ms: Optional timestamp in milliseconds (defaults to now)
+
+        Returns:
+            bool: True if market is open, False otherwise
+        """
+        if time_ms is None:
+            time_ms = TimeUtil.now_in_millis()
+        return self.polygon_data_service.is_market_open(trade_pair, time_ms)
 
     def get_unsupported_trade_pairs(self):
-        return self.polygon_data_service.UNSUPPORTED_TRADE_PAIRS
+        """
+        Return static tuple of unsupported trade pairs without RPC overhead.
+
+        These trade pairs are permanently unsupported (not temporarily halted),
+        so no need to fetch from polygon_data_service on every call.
+
+        Returns:
+            Tuple of TradePair constants that are unsupported
+        """
+        # Return ValiConfig constant
+        return ValiConfig.UNSUPPORTED_TRADE_PAIRS
 
     def get_currency_conversion(self, base: str, quote: str):
         return self.polygon_data_service.get_currency_conversion(base=base, quote=quote)
@@ -207,10 +227,10 @@ class LivePriceFetcher:
 
         # Function to calculate bounds
         def calculate_bounds(prices):
-            median = np.median(prices)
+            median_val = np.median(prices)
             # Calculate bounds as 5% less than and more than the median
-            lower_bound = median * 0.95
-            upper_bound = median * 1.05
+            lower_bound = median_val * 0.95
+            upper_bound = median_val * 1.05
             return lower_bound, upper_bound
 
         # Calculate bounds for each price type
@@ -232,55 +252,12 @@ class LivePriceFetcher:
         filtered_data.sort(key=lambda x: x.start_ms, reverse=True)
         return filtered_data
 
-    def parse_price_from_candle_data(self, data: List[PriceSource], trade_pair: TradePair) -> float | None:
-        if not data or len(data) == 0:
-            # Market is closed for this trade pair
-            bt.logging.trace(f"No ps data to parse for realtime price for trade pair {trade_pair.trade_pair_id}. data: {data}")
-            return None
-
-        # Data by timestamp in ascending order so that the largest timestamp is first
-        return data[0].close
 
     def get_quote(self, trade_pair: TradePair, processed_ms: int) -> (float, float, int):
         """
         returns the bid and ask quote for a trade_pair at processed_ms. Only Polygon supports point-in-time bid/ask.
         """
         return self.polygon_data_service.get_quote(trade_pair, processed_ms)
-
-    def parse_extreme_price_in_window(self, candle_data: Dict[TradePair, List[PriceSource]], open_position: Position, parse_min: bool = True) -> Tuple[float, PriceSource] | Tuple[None, None]:
-        trade_pair = open_position.trade_pair
-        dat = candle_data.get(trade_pair)
-        if dat is None:
-            # Market is closed for this trade pair
-            return None, None
-
-        min_allowed_timestamp_ms = open_position.orders[-1].processed_ms
-        prices = []
-        corresponding_sources = []
-
-        for a in dat:
-            if a.end_ms < min_allowed_timestamp_ms:
-                continue
-            price = a.low if parse_min else a.high
-            if price is not None:
-                prices.append(price)
-                corresponding_sources.append(a)
-
-        if not prices:
-            return None, None
-
-        if len(prices) % 2 == 1:
-            med_price = median(prices)  # Direct median if the list is odd
-        else:
-            # If even, choose the lower middle element to ensure it exists in the list
-            sorted_prices = sorted(prices)
-            middle_index = len(sorted_prices) // 2 - 1
-            med_price = sorted_prices[middle_index]
-
-        med_index = prices.index(med_price)
-        med_source = corresponding_sources[med_index]
-
-        return med_price, med_source
 
     def get_candles(self, trade_pairs, start_time_ms, end_time_ms) -> dict:
         ans = {}
@@ -438,6 +415,7 @@ class LivePriceFetcher:
         bt.logging.error(f"Unable to fetch USD to base currency {trade_pair.base} conversion at time {time_ms}.")
         return 1.0
 
+
 if __name__ == "__main__":
     secrets = ValiUtils.get_secrets()
     live_price_fetcher = LivePriceFetcher(secrets, disable_ws=True)
@@ -446,9 +424,10 @@ if __name__ == "__main__":
     time.sleep(100000)
 
     trade_pairs = [TradePair.BTCUSD, TradePair.ETHUSD, ]
+    now_ms = TimeUtil.now_in_millis()
     while True:
         for tp in TradePair:
-            print(f"{tp.trade_pair}: {live_price_fetcher.get_close(tp)}")
+            print(f"{tp.trade_pair}: {live_price_fetcher.get_close_at_date(tp, now_ms)}")
         time.sleep(10)
     # ans = live_price_fetcher.get_closes(trade_pairs)
     # for k, v in ans.items():

@@ -8,7 +8,6 @@ import os
 import logging
 from multiprocessing import Manager
 from collections import defaultdict, deque
-from multiprocessing import current_process
 from typing import Dict, Any, Optional, Set, Deque
 import bittensor as bt
 
@@ -19,51 +18,77 @@ from vali_objects.utils.vali_bkp_utils import CustomEncoder, ValiBkpUtils
 
 # Assuming APIKeyMixin is in api.api_key_refresh
 from vanta_api.api_key_refresh import APIKeyMixin
-from vali_objects.vali_config import TradePair
+from vali_objects.vali_config import TradePair, ValiConfig, RPCConnectionMode
+from shared_objects.rpc_server_base import RPCServerBase
 
 # Maximum number of websocket connections allowed per API key
 MAX_N_WS_PER_API_KEY = 5
 
+class WebSocketServer(APIKeyMixin, RPCServerBase):
+    """
+    WebSocket server with RPC interface for position broadcasting.
 
-class WebSocketServer(APIKeyMixin):
-    """Handles WebSocket connections with authentication and message broadcasting."""
+    Inherits from:
+    - APIKeyMixin: Provides API key authentication and refresh
+    - RPCServerBase: Provides RPC server lifecycle management
+
+    The server runs a WebSocket server on the specified port (default 8765) and
+    also exposes RPC methods on ValiConfig.RPC_WEBSOCKET_NOTIFIER_PORT (50014)
+    for other processes to queue position updates for broadcasting.
+    """
+
+    service_name = ValiConfig.RPC_WEBSOCKET_NOTIFIER_SERVICE_NAME
+    service_port = ValiConfig.RPC_WEBSOCKET_NOTIFIER_PORT
 
     def __init__(self,
                  api_keys_file: str,
                  shared_queue: Optional[Any] = None,
-                 host: str = "localhost",
-                 port: int = 8765,
                  reconnect_interval: int = 3,
                  max_reconnect_attempts: int = 10,
                  refresh_interval: int = 15,
                  send_test_positions: bool = False,
-                 test_position_interval: int = 5):
+                 test_position_interval: int = 5,
+                 start_server: bool = True,
+                 running_unit_tests: bool = False,
+                 connection_mode: RPCConnectionMode = RPCConnectionMode.RPC,
+                 websocket_host: Optional[str] = None,
+                 websocket_port: Optional[int] = None):
         """Initialize the WebSocket server.
+
+        The server runs on configurable endpoints (defaults from ValiConfig):
+        - WebSocket: websocket_host:websocket_port (default: ValiConfig.VANTA_WEBSOCKET_HOST:VANTA_WEBSOCKET_PORT)
+        - RPC health: ValiConfig.RPC_WEBSOCKET_NOTIFIER_PORT (50014)
 
         Args:
             api_keys_file: Path to the API keys file
-            shared_queue: Queue for receiving messages from other processes
-            host: Hostname to bind the WebSocket server to
-            port: Port to bind the WebSocket server to
+            shared_queue: Queue for receiving messages from other processes (deprecated - use RPC instead)
             reconnect_interval: Seconds between reconnection attempts
             max_reconnect_attempts: Maximum number of reconnection attempts (0=infinite)
             refresh_interval: How often to check for API key changes (seconds)
             send_test_positions: Whether to periodically send test orders (for testing only)
-            test_positions_interval: How often to send test orders (seconds)
+            test_position_interval: How often to send test orders (seconds)
+            start_server: Whether to start the RPC server immediately
+            running_unit_tests: Whether running in unit test mode
+            connection_mode: RPC connection mode (RPC or LOCAL)
+            websocket_host: Host address for WebSocket server (default: ValiConfig.VANTA_WEBSOCKET_HOST)
+            websocket_port: Port for WebSocket server (default: ValiConfig.VANTA_WEBSOCKET_PORT)
         """
         # Initialize API key handling
         APIKeyMixin.__init__(self, api_keys_file, refresh_interval)
 
-        # WebSocket server configuration
-        self.host = host
-        self.port = port
+        # Store for later use
+        self.running_unit_tests = running_unit_tests
+
+        # WebSocket server configuration - use provided host/port or fall back to ValiConfig defaults
+        self.host = websocket_host if websocket_host is not None else ValiConfig.VANTA_WEBSOCKET_HOST
+        self.port = websocket_port if websocket_port is not None else ValiConfig.VANTA_WEBSOCKET_PORT
         self.reconnect_interval = reconnect_interval
         self.max_reconnect_attempts = max_reconnect_attempts
         self.server = None
         self.shutdown_event = None
 
         # Client tracking
-        self.connected_clients: Dict[str, websockets.WebSocketServerProtocol] = {}
+        self.connected_clients: Dict[str, "websockets.WebSocketServerProtocol"] = {}
 
         # Track API key and tier for each client
         self.client_auth: Dict[str, Dict[str, Any]] = {}
@@ -101,6 +126,25 @@ class WebSocketServer(APIKeyMixin):
         bt.logging.info(f"WebSocketServer: Initialized with {len(self.accessible_api_keys)} API keys")
         if self.send_test_positions:
             bt.logging.info(f"WebSocketServer: Test orders will be sent every {self.test_positions_interval} seconds")
+
+        # IMPORTANT: Save WebSocket port before RPCServerBase.__init__ overwrites self.port
+        websocket_port = self.port
+
+        # Initialize RPCServerBase (provides RPC server for other processes to queue messages)
+        # This will set self.port = ValiConfig.RPC_WEBSOCKET_NOTIFIER_PORT (50014)
+        RPCServerBase.__init__(
+            self,
+            service_name=ValiConfig.RPC_WEBSOCKET_NOTIFIER_SERVICE_NAME,
+            port=ValiConfig.RPC_WEBSOCKET_NOTIFIER_PORT,
+            connection_mode=connection_mode,
+            start_server=start_server,
+            start_daemon=False  # WebSocket server doesn't need a daemon loop
+        )
+
+        # Restore WebSocket port (RPC port is stored in parent class attributes)
+        self.port = websocket_port
+
+        bt.logging.success(f"WebSocketServer: RPC server initialized on port {ValiConfig.RPC_WEBSOCKET_NOTIFIER_PORT}")
 
     def _load_sequence_number(self) -> None:
         """Load the last sequence number from disk."""
@@ -428,7 +472,7 @@ class WebSocketServer(APIKeyMixin):
         """
         try:
             if self.loop is None:
-                bt.logging.error(f"WebSocketServer: Cannot send message: server not started")
+                bt.logging.warning(f"WebSocketServer: Cannot send message: event loop not started (call run() first)")
                 return False
 
             # Use run_coroutine_threadsafe to safely run in the event loop
@@ -441,6 +485,55 @@ class WebSocketServer(APIKeyMixin):
             bt.logging.error(f"WebSocketServer: Error queueing message: {e}")
             bt.logging.error(traceback.format_exc())
             return False
+
+    # ==================== RPCServerBase Abstract Methods ====================
+
+    def run_daemon_iteration(self) -> None:
+        """
+        Single iteration of daemon work.
+
+        Note: WebSocketServer doesn't need a daemon loop - all work is done
+        asynchronously in the WebSocket event loop. This is a no-op.
+        """
+        pass
+
+    # ==================== RPC Methods (exposed to other processes) ====================
+
+    def get_health_check_details(self) -> dict:
+        """Add service-specific health check details."""
+        return {
+            "connected_clients": len(self.connected_clients),
+            "subscribed_clients": len(self.subscribed_clients),
+            "queue_size": self.message_queue.qsize() if self.message_queue else 0,
+            "queue_maxsize": 1000
+        }
+
+    def broadcast_position_update_rpc(self, position: Position, miner_repo_version: str = None) -> bool:
+        """
+        RPC method to broadcast a position update to all subscribed WebSocket clients.
+
+        This method is called via RPC from other processes (MarketOrderManager,
+        PositionManager, EliminationServer) to notify WebSocket clients of position changes.
+
+        Args:
+            position: Position object to broadcast
+            miner_repo_version: Optional miner repository version for the websocket dict
+
+        Returns:
+            bool: True if message was queued successfully, False otherwise
+        """
+        try:
+            # Convert Position object to websocket dict here (centralized conversion)
+            position_dict = position.to_websocket_dict(miner_repo_version=miner_repo_version)
+
+            # Queue message using existing thread-safe method
+            return self.send_message(position_dict)
+        except Exception as e:
+            bt.logging.error(f"WebSocketServer: Error broadcasting position update: {e}")
+            bt.logging.error(traceback.format_exc())
+            return False
+
+    # ==================== WebSocket Client Handling ====================
 
     async def handle_client(self, websocket) -> None:
         """Handle client connection with authentication and subscriptions.
@@ -829,6 +922,64 @@ class WebSocketServer(APIKeyMixin):
         self._save_sequence_number()
         bt.logging.info(f"WebSocketServer: WebSocket server shutdown complete")
 
+    @classmethod
+    def entry_point_start_server(cls, **kwargs):
+        """
+        Entry point for WebSocket server process.
+
+        Overrides RPCServerBase.entry_point_start_server() because WebSocketServer
+        needs to run an async event loop via run(), not just block.
+        """
+        from shared_objects.shutdown_coordinator import ShutdownCoordinator
+
+        assert cls.service_name, f"{cls.__name__} must set service_name class attribute"
+        assert cls.service_port, f"{cls.__name__} must set service_port class attribute"
+
+        # Set process title
+        setproctitle(f"vali_{cls.service_name}")
+
+        # Extract ServerProcessHandle-specific parameters
+        server_ready = kwargs.pop('server_ready', None)
+        kwargs.pop('health_check_interval_s', None)
+        kwargs.pop('enable_auto_restart', None)
+
+        # Add required parameters
+        kwargs['start_server'] = True
+        kwargs['connection_mode'] = RPCConnectionMode.RPC
+
+        # Filter kwargs to only include valid parameters
+        import inspect
+        sig = inspect.signature(cls.__init__)
+        valid_params = set(sig.parameters.keys()) - {'self'}
+        filtered_kwargs = {k: v for k, v in kwargs.items() if k in valid_params}
+
+        # Log filtered parameters
+        filtered_out = set(kwargs.keys()) - set(filtered_kwargs.keys())
+        if filtered_out:
+            bt.logging.debug(f"[{cls.service_name}] Filtered out parameters: {filtered_out}")
+
+        # Create server instance (starts RPC server)
+        bt.logging.info(f"[{cls.service_name}] Creating server instance...")
+        server_instance = cls(**filtered_kwargs)
+
+        bt.logging.success(f"[{cls.service_name}] RPC server ready on port {cls.service_port}")
+
+        # Signal ready BEFORE starting async loop (so clients can connect to RPC)
+        if server_ready:
+            server_ready.set()
+            bt.logging.info(f"[{cls.service_name}] Server ready event signaled")
+
+        # Now start the WebSocket async event loop (this blocks)
+        bt.logging.info(f"[{cls.service_name}] Starting WebSocket async event loop...")
+        try:
+            server_instance.run()
+        except Exception as e:
+            bt.logging.error(f"[{cls.service_name}] WebSocket loop error: {e}")
+            bt.logging.error(traceback.format_exc())
+            raise
+
+        bt.logging.info(f"[{cls.service_name}] process exiting")
+
     def run(self):
         """Start the server in the current process."""
         bt.logging.info(f"WebSocketServer: Starting WebSocket server...")
@@ -891,8 +1042,6 @@ if __name__ == "__main__":
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='WebSocket Server for PTN Data API')
     parser.add_argument('--api-keys-file', type=str, help='Path to the API keys file', default="api_keys.json")
-    parser.add_argument('--host', type=str, help='Hostname to bind the server to', default="localhost")
-    parser.add_argument('--port', type=int, help='Port to bind the server to', default=8765)
     parser.add_argument('--test-positions', action='store_true', help='Enable periodic test positions', default=True)
     parser.add_argument('--test-position-interval', type=int, help='Interval in seconds between test positions', default=5)
     parser.set_defaults(test_positions=True)
@@ -909,17 +1058,15 @@ if __name__ == "__main__":
     mp_manager = Manager()
     test_queue = mp_manager.Queue()
 
-    bt.logging.info(f"WebSocketServer: Starting WebSocket server on {args.host}:{args.port}")
+    bt.logging.info(f"WebSocketServer: Starting WebSocket server on {ValiConfig.VANTA_WEBSOCKET_HOST}:{ValiConfig.VANTA_WEBSOCKET_PORT} (hardcoded in ValiConfig)")
     bt.logging.info(f"WebSocketServer: Test positions: {'Enabled' if args.test_positions else 'Disabled'}")
     if args.test_positions:
         bt.logging.info(f"WebSocketServer: Test position interval: {args.test_position_interval} seconds")
 
-    # Create and run the server
+    # Create and run the server (host/port read from ValiConfig)
     server = WebSocketServer(
         api_keys_file=args.api_keys_file,
         shared_queue=test_queue,
-        host=args.host,
-        port=args.port,
         send_test_positions=args.test_positions,
         test_position_interval=args.test_position_interval
     )

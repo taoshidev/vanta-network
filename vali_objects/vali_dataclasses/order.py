@@ -5,7 +5,8 @@ from time_util.time_util import TimeUtil
 from pydantic import field_validator, model_validator
 
 from vali_objects.enums.order_type_enum import OrderType
-from vali_objects.vali_config import ValiConfig
+from vali_objects.enums.execution_type_enum import ExecutionType
+from vali_objects.vali_config import TradePair
 from vali_objects.vali_dataclasses.order_signal import Signal
 from vali_objects.vali_dataclasses.price_source import PriceSource
 from enum import Enum, IntEnum, auto
@@ -17,6 +18,30 @@ class OrderSource(IntEnum):
     DEPRECATION_FLAT = 2               # order inserted when a trade pair is removed (0 used for price)
     PRICE_FILLED_ELIMINATION_FLAT = 3  # order inserted when a miner is eliminated but we price fill it accurately.
     MAX_ORDERS_PER_POSITION_CLOSE = 4  # order inserted when position hits max orders limit and needs to be closed
+    LIMIT_UNFILLED = 5                 # limit order created but not yet filled
+    LIMIT_FILLED = 6                   # limit order that was filled
+    LIMIT_CANCELLED = 7                # limit order that was cancelled
+    BRACKET_UNFILLED = 8               # bracket order (stop loss/take profit) created but not yet filled
+    BRACKET_FILLED = 9                 # bracket order (stop loss/take profit) that was filled
+    BRACKET_CANCELLED = 10             # bracket order (stop loss/take profit) that was cancelled
+
+    @staticmethod
+    def get_fill(order_src):
+        if order_src == OrderSource.LIMIT_UNFILLED:
+            return OrderSource.LIMIT_FILLED
+        elif order_src == OrderSource.BRACKET_UNFILLED:
+            return OrderSource.BRACKET_FILLED
+        else:
+            return None
+
+    @staticmethod
+    def get_cancel(order_src):
+        if order_src in [OrderSource.LIMIT_UNFILLED, OrderSource.LIMIT_FILLED]:
+            return OrderSource.LIMIT_CANCELLED
+        elif order_src in [OrderSource.BRACKET_UNFILLED, OrderSource.BRACKET_FILLED]:
+            return OrderSource.BRACKET_CANCELLED
+        else:
+            return None
 
 # Backward compatibility constants - to be removed after migration
 ORDER_SRC_ORGANIC = OrderSource.ORGANIC
@@ -24,6 +49,12 @@ ORDER_SRC_ELIMINATION_FLAT = OrderSource.ELIMINATION_FLAT
 ORDER_SRC_DEPRECATION_FLAT = OrderSource.DEPRECATION_FLAT
 ORDER_SRC_PRICE_FILLED_ELIMINATION_FLAT = OrderSource.PRICE_FILLED_ELIMINATION_FLAT
 ORDER_SRC_MAX_ORDERS_PER_POSITION_CLOSE = OrderSource.MAX_ORDERS_PER_POSITION_CLOSE
+ORDER_SRC_LIMIT_UNFILLED = OrderSource.LIMIT_UNFILLED
+ORDER_SRC_LIMIT_FILLED = OrderSource.LIMIT_FILLED
+ORDER_SRC_LIMIT_CANCELLED = OrderSource.LIMIT_CANCELLED
+ORDER_SRC_BRACKET_UNFILLED = OrderSource.BRACKET_UNFILLED
+ORDER_SRC_BRACKET_FILLED = OrderSource.BRACKET_FILLED
+ORDER_SRC_BRACKET_CANCELLED = OrderSource.BRACKET_CANCELLED
 
 class Order(Signal):
     price: float                # Quote currency
@@ -35,7 +66,32 @@ class Order(Signal):
     processed_ms: int
     order_uuid: str
     price_sources: list = []
-    src: int = ORDER_SRC_ORGANIC
+    src: int = OrderSource.ORGANIC
+
+    @field_validator('trade_pair', mode='before')
+    @classmethod
+    def convert_trade_pair(cls, v):
+        """Convert trade_pair_id string to TradePair object if needed."""
+        if isinstance(v, str):
+            return TradePair.from_trade_pair_id(v)
+        return v
+
+    @field_validator('execution_type', mode='before')
+    @classmethod
+    def convert_execution_type(cls, v):
+        """Convert execution_type string to ExecutionType enum if needed."""
+        if isinstance(v, str):
+            return ExecutionType.from_string(v)
+        return v
+
+    @model_validator(mode='before')
+    @classmethod
+    def handle_trade_pair_id(cls, values):
+        """Handle dict input with 'trade_pair_id' instead of 'trade_pair'."""
+        if isinstance(values, dict) and 'trade_pair_id' in values and 'trade_pair' not in values:
+            # Create new dict with trade_pair instead of trade_pair_id (immutable approach)
+            return {k: v for k, v in values.items() if k != 'trade_pair_id'} | {'trade_pair': values['trade_pair_id']}
+        return values
 
     @model_validator(mode="after")
     def set_conversion_defaults(self):
@@ -107,11 +163,13 @@ class Order(Signal):
         """
         return values
 
-    # Using Pydantic's constructor instead of a custom from_dict method
     @classmethod
     def from_dict(cls, order_dict):
-        # This method is now simplified as Pydantic can automatically
-        # handle the conversion from dict to model instance
+        """
+        Create Order from dict. Pydantic validators handle all conversions:
+        - trade_pair_id (str) -> trade_pair (TradePair)
+        - order_type (str) -> order_type (OrderType)
+        """
         return cls(**order_dict)
 
     def get_order_age(self, order):
@@ -120,20 +178,25 @@ class Order(Signal):
     def to_python_dict(self):
         trade_pair_id = self.trade_pair.trade_pair_id if hasattr(self.trade_pair, 'trade_pair_id') else 'unknown'
         return {'trade_pair_id': trade_pair_id,
-                    'order_type': self.order_type.name,
-                    'leverage': self.leverage,
-                    'value': self.value,
-                    'quantity': self.quantity,
-                    'price': self.price,
-                    'bid': self.bid,
-                    'ask': self.ask,
-                    'slippage': self.slippage,
-                    'quote_usd_rate': self.quote_usd_rate,
-                    'usd_base_rate': self.usd_base_rate,
-                    'processed_ms': self.processed_ms,
-                    'price_sources': self.price_sources,
-                    'order_uuid': self.order_uuid,
-                    'src': self.src}
+                'order_type': self.order_type.name,
+                'leverage': self.leverage,
+                'value': self.value,
+                'quantity': self.quantity,
+                'price': self.price,
+                'bid': self.bid,
+                'ask': self.ask,
+                'slippage': self.slippage,
+                'quote_usd_rate': self.quote_usd_rate,
+                'usd_base_rate': self.usd_base_rate,
+                'processed_ms': self.processed_ms,
+                'price_sources': self.price_sources,
+                'order_uuid': self.order_uuid,
+                'src': self.src,
+                'execution_type': self.execution_type.name if self.execution_type else None,
+                'limit_price': self.limit_price,
+                'stop_loss': self.stop_loss,
+                'take_profit': self.take_profit}
+
     def __str__(self):
         # Ensuring the `trade_pair.trade_pair_id` is accessible for the string representation
         # This assumes that trade_pair_id is a valid attribute of trade_pair

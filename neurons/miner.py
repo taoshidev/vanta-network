@@ -15,19 +15,12 @@ from miner_config import MinerConfig
 from miner_objects.dashboard import Dashboard
 from miner_objects.prop_net_order_placer import PropNetOrderPlacer
 from miner_objects.position_inspector import PositionInspector
-from miner_objects.slack_notifier import SlackNotifier
+from shared_objects.slack_notifier import SlackNotifier
 from shared_objects.metagraph_updater import MetagraphUpdater
+from shared_objects.metagraph_server import MetagraphServer, MetagraphClient
 from vali_objects.decoders.generalized_json_decoder import GeneralizedJSONDecoder
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
-
-class MinerMetagraph():
-    def __init__(self):
-        # Only essential attributes used in miner codebase
-        self.neurons = []         # Used to access neuron properties (stake, validator_trust, axon_info)
-        self.hotkeys = []         # Used for registration check and UID lookup  
-        self.uids = []            # Used by shared code
-        self.block_at_registration = []  # Used by metagraph_updater.py sync_lists
-        self.axons = []           # Used in dashboard.py for testnet validator queries
+from vali_objects.vali_config import RPCConnectionMode
 
 
 class Miner:
@@ -43,11 +36,16 @@ class Miner:
         self.slack_notifier = SlackNotifier(
             hotkey=self.wallet.hotkey.ss58_address,
             webhook_url=self.config.slack_webhook_url,
-            error_webhook_url=self.config.slack_error_webhook_url
+            error_webhook_url=self.config.slack_error_webhook_url,
+            is_miner=True,
+            enable_metrics=True,
+            enable_daily_summary=True
         )
-        self.metagraph = MinerMetagraph()
-        self.position_inspector = PositionInspector(self.wallet, self.metagraph, self.config)
-        self.metagraph_updater = MetagraphUpdater(self.config, self.metagraph, self.wallet.hotkey.ss58_address,
+        # Create metagraph in miner mode (no RPC server, direct in-process access)
+        # Uses same interface as validator's MetagraphServer but auto-configured for miners
+        self.metagraph_server = MetagraphServer(is_miner=True)
+        self.position_inspector = PositionInspector(self.wallet, self.config)
+        self.metagraph_updater = MetagraphUpdater(self.config, self.wallet.hotkey.ss58_address,
                                                   True, position_inspector=self.position_inspector,
                                                     slack_notifier=self.slack_notifier)
         self.prop_net_order_placer = PropNetOrderPlacer(
@@ -66,7 +64,7 @@ class Miner:
         )
         
         self.check_miner_registration()
-        self.my_subnet_uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
+        self.my_subnet_uid = self.metagraph_server.hotkeys.index(self.wallet.hotkey.ss58_address)
         bt.logging.info(f"Running miner on netuid {self.config.netuid} with uid: {self.my_subnet_uid}")
 
 
@@ -88,7 +86,7 @@ class Miner:
         # Dashboard
         # Start the miner data api in its own thread
         try:
-            self.dashboard = Dashboard(self.wallet, self.metagraph, self.config, self.is_testnet)
+            self.dashboard = Dashboard(self.wallet, self.metagraph_server, self.config, self.is_testnet)
             self.dashboard_api_thread = threading.Thread(target=self.dashboard.run, daemon=True)
             self.dashboard_api_thread.start()
         except OSError as e:
@@ -106,7 +104,7 @@ class Miner:
             os.makedirs(self.config.full_path, exist_ok=True)
 
     def check_miner_registration(self):
-        if self.wallet.hotkey.ss58_address not in self.metagraph.hotkeys:
+        if self.wallet.hotkey.ss58_address not in self.metagraph_server.hotkeys:
             error_msg = "Your miner is not registered. Please register and try again."
             bt.logging.error(error_msg)
             self.slack_notifier.send_message(f"❌ {error_msg}", level="error")

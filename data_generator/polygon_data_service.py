@@ -1,6 +1,5 @@
 import threading
 import traceback
-from multiprocessing import Process
 
 import requests
 
@@ -81,13 +80,63 @@ class ExchangeMappingHelper:
             "nasdaq": 12,
             "consolidated tape association": 13,
             "long-term stock exchange": 14,
-            "investors exchange": 15
+            "investors exchange": 15,
+            "cboe stock exchange": 16,
+            "nasdaq philadelphia exchange llc": 17,
+            "cboe byx": 18,
+            "cboe bzx": 19,
+            "miax pearl": 20,
+            "members exchange": 21,
+            "finra nyse trf": 201,
+            "finra nasdaq trf carteret": 202,
+            "finra nasdaq trf chicago": 203,
+            "otc equity security": 62
         }
         self.crypto_mapping = {}
         self.stock_mapping = {}
 
         self.create_crypto_mapping()
         self.create_stock_mapping()
+
+    def _validate_mapping_against_fallback(self, live_mapping: dict, fallback_mapping: dict, asset_class: str):
+        """
+        Compare live API mapping against fallback mapping and log errors if they diverge.
+        Only called when fetch_live_mapping=True to respect no network calls in unit tests.
+
+        Args:
+            live_mapping: Mapping fetched from Polygon API
+            fallback_mapping: Hard-coded fallback mapping
+            asset_class: "crypto" or "stocks" for logging purposes
+        """
+        if not self.fetch_live_mapping:
+            return  # Skip validation when using fallback (unit tests)
+
+        # Check for exchanges in fallback that have different IDs in live mapping
+        for exchange_name, fallback_id in fallback_mapping.items():
+            if exchange_name in live_mapping:
+                live_id = live_mapping[exchange_name]
+                if live_id != fallback_id:
+                    bt.logging.error(
+                        f"[ExchangeMappingHelper] {asset_class.upper()} mapping divergence detected! "
+                        f"Exchange '{exchange_name}': fallback ID={fallback_id}, live API ID={live_id}. "
+                        f"Please update the fallback mapping in polygon_data_service.py"
+                    )
+
+        # Check for exchanges in fallback that are missing from live mapping
+        missing_in_live = set(fallback_mapping.keys()) - set(live_mapping.keys())
+        if missing_in_live:
+            bt.logging.warning(
+                f"[ExchangeMappingHelper] {asset_class.upper()} exchanges in fallback but missing from live API: "
+                f"{sorted(missing_in_live)}. These exchanges may have been deprecated by Polygon."
+            )
+
+        # Check for new exchanges in live mapping not in fallback (informational)
+        new_in_live = set(live_mapping.keys()) - set(fallback_mapping.keys())
+        if new_in_live:
+            bt.logging.info(
+                f"[ExchangeMappingHelper] New {asset_class} exchanges available in Polygon API (not in fallback): "
+                f"{sorted(new_in_live)}"
+            )
 
     def create_crypto_mapping(self):
         if not self.fetch_live_mapping:
@@ -110,13 +159,19 @@ class ExchangeMappingHelper:
                     entry['name'].lower(): entry['id']
                     for entry in data['results']
                 }
-                print("Successfully created crypto mapping from API.")
+                bt.logging.info("Successfully created crypto mapping from API.")
+                # Validate live mapping against fallback to detect divergences
+                self._validate_mapping_against_fallback(
+                    self.crypto_mapping,
+                    self.crypto_fallback_mapping,
+                    "crypto"
+                )
             else:
-                print("Unexpected response structure. Using fallback mapping.")
+                bt.logging.warning("Unexpected response structure. Using fallback mapping.")
                 self.crypto_mapping = self.crypto_fallback_mapping
 
         except Exception as e:
-            print(f"API request failed: {e}. Using fallback mapping.")
+            bt.logging.error(f"Crypto mapping API request failed: {e}. Using fallback mapping.")
             self.crypto_mapping = self.crypto_fallback_mapping
 
     def create_stock_mapping(self):
@@ -140,21 +195,39 @@ class ExchangeMappingHelper:
                     entry['name'].lower(): entry['id']
                     for entry in data['results']
                 }
-                print("Successfully created stock mapping from API.")
+                bt.logging.info("Successfully created stock mapping from API.")
+                # Validate live mapping against fallback to detect divergences
+                self._validate_mapping_against_fallback(
+                    self.stock_mapping,
+                    self.stock_fallback_mapping,
+                    "stocks"
+                )
             else:
-                print("Unexpected response structure. Using fallback mapping.")
+                bt.logging.warning("Unexpected response structure. Using fallback mapping.")
                 self.stock_mapping = self.stock_fallback_mapping
 
         except Exception as e:
-            print(f"API request failed: {e}. Using fallback mapping.")
+            bt.logging.error(f"Stock mapping API request failed: {e}. Using fallback mapping.")
             self.stock_mapping = self.stock_fallback_mapping
 
 
 
 class PolygonDataService(BaseDataService):
-
-    def __init__(self, api_key, disable_ws=False, ipc_manager=None, is_backtesting=False):
+    DEFAULT_TESTING_FALLBACK_PRICE_SOURCE = PriceSource(
+            source='test',
+            timespan_ms=1000,
+            open=50000,
+            close=50000,
+            vwap=50000,
+            high=50000,
+            low=50000,
+            start_ms=69,
+            websocket=False,
+            lag_ms=0
+        )
+    def __init__(self, api_key, disable_ws=False, is_backtesting=False, running_unit_tests=False):
         self.init_time = time.time()
+        self.running_unit_tests = running_unit_tests
         self._api_key = api_key
         ehm = ExchangeMappingHelper(api_key, fetch_live_mapping = not disable_ws)
         self.crypto_mapping = ehm.crypto_mapping
@@ -166,7 +239,11 @@ class PolygonDataService(BaseDataService):
         self.stocks_feed_round_robin_map = {0: Feed.RealTime, 1: Feed.Business}
         self.stocks_feed_round_robin_counter = 0
 
-        super().__init__(provider_name=POLYGON_PROVIDER_NAME, ipc_manager=ipc_manager)
+        # Test price source registry (only used when running_unit_tests=True)
+        # Allows tests to inject specific price sources via IPC instead of hardcoded values
+        self._test_price_sources = {}
+
+        super().__init__(provider_name=POLYGON_PROVIDER_NAME)
 
         self.MARKET_STATUS = None
 
@@ -176,11 +253,94 @@ class PolygonDataService(BaseDataService):
         if disable_ws:
             self.websocket_manager_thread = None
         else:
-            if ipc_manager:
-                self.websocket_manager_thread = Process(target=self.websocket_manager, daemon=True)
-            else:
-                self.websocket_manager_thread = threading.Thread(target=self.websocket_manager, daemon=True)
+            self.websocket_manager_thread = threading.Thread(target=self.websocket_manager, daemon=True)
             self.websocket_manager_thread.start()
+
+    def set_test_price_source(self, trade_pair: TradePair, price_source: PriceSource) -> None:
+        """
+        Test-only method to inject price sources for specific trade pairs.
+        Only works when running_unit_tests=True for safety.
+
+        Args:
+            trade_pair: TradePair to set price for
+            price_source: PriceSource to return for this trade pair
+        """
+        if not self.running_unit_tests:
+            raise RuntimeError("set_test_price_source can only be used in unit test mode")
+        self._test_price_sources[trade_pair] = price_source
+
+        # ALSO inject into RecentEventTracker so get_ws_price_sources_in_window() can find it
+        # This ensures test price sources are visible to daemon code paths like check_and_fill_limit_orders()
+        # Update timestamp to NOW so it's within the time window that the daemon searches
+        from time_util.time_util import TimeUtil
+        updated_price_source = PriceSource(
+            source=price_source.source,
+            timespan_ms=price_source.timespan_ms,
+            open=price_source.open,
+            close=price_source.close,
+            vwap=price_source.vwap,
+            high=price_source.high,
+            low=price_source.low,
+            start_ms=TimeUtil.now_in_millis(),  # Update to current time
+            websocket=price_source.websocket,
+            lag_ms=price_source.lag_ms,
+            bid=price_source.bid,
+            ask=price_source.ask
+        )
+        # Use STRING key (trade_pair.trade_pair) to match how websocket code populates the dict
+        symbol = trade_pair.trade_pair
+        if symbol not in self.trade_pair_to_recent_events:
+            self.trade_pair_to_recent_events[symbol] = RecentEventTracker()
+        self.trade_pair_to_recent_events[symbol].add_event(updated_price_source)
+
+    def clear_test_price_sources(self) -> None:
+        """Clear all test price sources (for test isolation)."""
+        if not self.running_unit_tests:
+            return
+        self._test_price_sources.clear()
+
+        # ALSO clear RecentEventTracker to remove injected test events
+        # This ensures clean state between tests
+        for tracker in self.trade_pair_to_recent_events.values():
+            tracker.clear_all_events(running_unit_tests=True)
+
+    def _get_test_price_source(self, trade_pair: TradePair, timestamp_ms: int) -> PriceSource | None:
+        """
+        Helper method to get test price source for a trade pair.
+        Returns None if not in unit test mode.
+
+        Args:
+            trade_pair: TradePair to get price for
+            timestamp_ms: Timestamp to use in the returned PriceSource
+            default_timespan_ms: Default timespan for fallback price source
+
+        Returns:
+            PriceSource if in test mode, None otherwise
+        """
+        if not self.running_unit_tests:
+            return None
+
+        # Check test registry first for specific override
+        if trade_pair in self._test_price_sources:
+            test_ps = self._test_price_sources[trade_pair]
+            # Clone and update timestamp to match request
+            return PriceSource(
+                source=test_ps.source,
+                timespan_ms=test_ps.timespan_ms,
+                open=test_ps.open,
+                close=test_ps.close,
+                vwap=test_ps.vwap,
+                high=test_ps.high,
+                low=test_ps.low,
+                start_ms=timestamp_ms,
+                websocket=test_ps.websocket,
+                lag_ms=test_ps.lag_ms,
+                bid=test_ps.bid,
+                ask=test_ps.ask
+            )
+
+        # Fallback: return default test data if no specific override
+        return self.DEFAULT_TESTING_FALLBACK_PRICE_SOURCE
 
     def parse_price_for_forex(self, m, stats=None, is_ws=False) -> (float, float, float):
         t_ms = m.timestamp if is_ws else m.participant_timestamp // 1000000
@@ -227,7 +387,7 @@ class PolygonDataService(BaseDataService):
                 #print(f'Received forex message {symbol} price {new_price} time {TimeUtil.millis_to_formatted_date_str(start_timestamp)}')
                 end_timestamp = start_timestamp + 999
                 if symbol in self.trade_pair_to_recent_events and self.trade_pair_to_recent_events[symbol].timestamp_exists(start_timestamp):
-                    buffer = self.trade_pair_to_recent_events_realtime if self.using_ipc else self.trade_pair_to_recent_events
+                    buffer = self.trade_pair_to_recent_events
                     buffer[symbol].update_prices_for_median(start_timestamp, bid, ask)
                     buffer[symbol].update_prices_for_median(start_timestamp + 999, bid, ask)
                     return None, None
@@ -329,14 +489,8 @@ class PolygonDataService(BaseDataService):
                         continue
                     self.latest_websocket_events[symbol] = ps
                     if symbol not in self.trade_pair_to_recent_events:
-                        if self.using_ipc:
-                            self.trade_pair_to_recent_events[symbol] = RecentEventTracker()
-                        else:
-                            self.trade_pair_to_recent_events_realtime[symbol] = RecentEventTracker()
-                    if self.using_ipc:
-                        self.trade_pair_to_recent_events_realtime[symbol].add_event(ps, tp.is_forex, f"{self.provider_name}:{tp.trade_pair}")
-                    else:
-                        self.trade_pair_to_recent_events[symbol].add_event(ps, tp.is_forex, f"{self.provider_name}:{tp.trade_pair}")
+                        self.trade_pair_to_recent_events_realtime[symbol] = RecentEventTracker()
+                    self.trade_pair_to_recent_events[symbol].add_event(ps, tp.is_forex, f"{self.provider_name}:{tp.trade_pair}")
 
                 if DEBUG:
                     formatted_time = TimeUtil.millis_to_formatted_date_str(TimeUtil.now_in_millis())
@@ -461,6 +615,12 @@ class PolygonDataService(BaseDataService):
     ) -> PriceSource | None:
         if not timestamp_ms:
             timestamp_ms = TimeUtil.now_in_millis()
+
+        # Return test data in unit test mode
+        test_price = self._get_test_price_source(trade_pair, timestamp_ms)
+        if test_price:
+            return test_price
+
         if self.is_backtesting:
             # Check that we are within market hours for genuine ptn orders
             if order is not None and order.src == 0:
@@ -507,6 +667,11 @@ class PolygonDataService(BaseDataService):
             raise ValueError(f"Unknown trade pair category: {trade_pair.trade_pair_category}")
 
     def get_event_before_market_close(self, trade_pair: TradePair, target_time_ms:int) -> PriceSource | None:
+        # Return test data in unit test mode
+        test_price = self._get_test_price_source(trade_pair, target_time_ms)
+        if test_price:
+            return test_price
+
         # The caller made sure the market is closed.
         if trade_pair in self.UNSUPPORTED_TRADE_PAIRS:
             return None
@@ -547,6 +712,10 @@ class PolygonDataService(BaseDataService):
 
 
     def get_close_in_past_hour_fallback(self, trade_pair: TradePair, timestamp_ms: int):
+        # Return test data in unit test mode
+        if self.running_unit_tests:
+            return 50000
+
         polygon_ticker = self.trade_pair_to_polygon_ticker(trade_pair)  # noqa: F841
 
         prev_timestamp = None
@@ -583,6 +752,11 @@ class PolygonDataService(BaseDataService):
 
 
     def get_close_at_date_minute_fallback(self, trade_pair: TradePair, target_timestamp_ms: int) -> PriceSource | None:
+        # Return test data in unit test mode
+        test_price = self._get_test_price_source(trade_pair, target_timestamp_ms)
+        if test_price:
+            return test_price
+
         polygon_ticker = self.trade_pair_to_polygon_ticker(trade_pair)  # noqa: F841
 
         prev_timestamp = None
@@ -615,6 +789,11 @@ class PolygonDataService(BaseDataService):
         return corresponding_price_source
 
     def get_close_at_date_second(self, trade_pair: TradePair, target_timestamp_ms: int, order: Order = None) -> PriceSource | None:
+        # Return test data in unit test mode
+        test_price = self._get_test_price_source(trade_pair, target_timestamp_ms)
+        if test_price:
+            return test_price
+
         prev_timestamp = None
         smallest_delta = None
         corresponding_price_source = None
@@ -832,6 +1011,10 @@ class PolygonDataService(BaseDataService):
         agg Agg(open=63010.86, high=63010.86, low=63010.86, close=63010.86, volume=2.158e-05, vwap=63010.86,
          timestamp=1713273888000, transactions=1, otc=None)
         """
+
+        # Return empty list in unit test mode
+        if self.running_unit_tests:
+            return []
 
         delta_time_ms = end_timestamp_ms - start_timestamp_ms
         delta_time_seconds = delta_time_ms / 1000

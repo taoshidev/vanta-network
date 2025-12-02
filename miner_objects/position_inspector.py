@@ -5,16 +5,19 @@ import time
 import asyncio
 
 from miner_config import MinerConfig
+from shared_objects.metagraph_server import MetagraphClient
 from template.protocol import GetPositions
+from vali_objects.vali_config import RPCConnectionMode
+
 
 class PositionInspector:
     MAX_RETRIES = 1
     INITIAL_RETRY_DELAY = 3  # seconds
     UPDATE_INTERVAL_S = 5 * 60  # 5 minutes
 
-    def __init__(self, wallet, metagraph, config):
+    def __init__(self, wallet, config):
+        self._metagraph_client = MetagraphClient(connect_immediately=False, connection_mode=RPCConnectionMode.LOCAL)
         self.wallet = wallet
-        self.metagraph = metagraph
         self.config = config
         self.last_update_time = 0
         self.recently_acked_validators = []
@@ -46,9 +49,9 @@ class PositionInspector:
         # Right now bittensor has no functionality to know if a hotkey 100% corresponds to a validator
         # Revisit this in the future.
         if self.is_testnet:
-            return [n.axon_info for n in self.metagraph.neurons if n.axon_info.ip != MinerConfig.AXON_NO_IP]
+            return [n.axon_info for n in self._metagraph_client.get_neurons() if n.axon_info.ip != MinerConfig.AXON_NO_IP]
         else:
-            return [n.axon_info for n in self.metagraph.neurons
+            return [n.axon_info for n in self._metagraph_client.get_neurons()
                     if n.stake > bt.Balance(MinerConfig.STAKE_MIN)
                     and n.axon_info.ip != MinerConfig.AXON_NO_IP]
 
@@ -59,7 +62,7 @@ class PositionInspector:
         async with bt.dendrite(wallet=self.wallet) as dendrite:
             responses = await dendrite.aquery(remaining_validators_to_query, GetPositions(version=1), deserialize=True)
         
-        hotkey_to_v_trust = {neuron.hotkey: neuron.validator_trust for neuron in self.metagraph.neurons}
+        hotkey_to_v_trust = {neuron.hotkey: neuron.validator_trust for neuron in self._metagraph_client.get_neurons()}
         ret = []
         for validator, response in zip(remaining_validators_to_query, responses):
             v_trust = hotkey_to_v_trust.get(validator.hotkey, 0)
@@ -72,7 +75,7 @@ class PositionInspector:
 
     def reconcile_validator_positions(self, hotkey_to_positions, validators):
         hotkey_to_validator = {v.hotkey: v for v in validators}
-        hotkey_to_v_trust = {neuron.hotkey: neuron.validator_trust for neuron in self.metagraph.neurons}
+        hotkey_to_v_trust = {neuron.hotkey: neuron.validator_trust for neuron in self._metagraph_client.get_neurons()}
         orders_count = defaultdict(int)
         max_order_count = 0
         corresponding_positions = []

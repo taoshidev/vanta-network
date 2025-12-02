@@ -1,4 +1,4 @@
-from vali_objects.utils.elimination_manager import EliminationManager
+from vali_objects.utils.elimination_server import EliminationServer
 from vali_objects.utils.logger_utils import LoggerUtils
 from vali_objects.utils.plagiarism_detector import PlagiarismDetector
 from vali_objects.utils.position_manager import PositionManager
@@ -13,7 +13,8 @@ if __name__ == "__main__":
     current_time = TimeUtil.now_in_millis()
 
     perf_ledger_manager = PerfLedgerManager(None)
-    elimination_manager = EliminationManager(None, None, None)
+    # EliminationServer creates its own RPC clients internally (forward compatibility pattern)
+    elimination_manager = EliminationServer(running_unit_tests=True)
     position_manager = PositionManager(None, None, elimination_manager=elimination_manager,
                                        challengeperiod_manager=None,
                                        perf_ledger_manager=perf_ledger_manager)
@@ -40,7 +41,7 @@ if __name__ == "__main__":
 
     ## filter the ledger for the miners that passed the challenge period
     success_hotkeys = list(inspection_hotkeys_dict.keys())
-    filtered_ledger = perf_ledger_manager.filtered_ledger_for_scoring(hotkeys=success_hotkeys)
+    filtered_ledger = perf_ledger_manager.filtered_ledger_for_scoring(hotkeys=success_hotkeys, portfolio_only=False)
 
     # Get all possible positions, even beyond the lookback range
     success, demoted, eliminations = challengeperiod_manager.inspect(

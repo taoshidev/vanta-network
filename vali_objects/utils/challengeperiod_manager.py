@@ -1,176 +1,168 @@
-# developer: trdougherty
-from collections import defaultdict
-import time
-import bittensor as bt
-import copy
+# developer: trdougherty, jbonilla
+# Copyright © 2024 Taoshi Inc
+"""
+ChallengePeriodManager - Core business logic for challenge period management.
 
+This manager handles all heavy logic for challenge period operations.
+ChallengePeriodServer wraps this and exposes methods via RPC.
+
+This follows the same pattern as EliminationManager.
+"""
+import time
+from collections import defaultdict
+
+import bittensor as bt
+import threading
+import copy
+from typing import Dict, Optional, Tuple
 from datetime import datetime
 
+from vali_objects.utils.elimination_client import EliminationClient
+from vali_objects.utils.position_manager_client import PositionManagerClient
 from vali_objects.utils.asset_segmentation import AssetSegmentation
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
-from vali_objects.vali_config import TradePairCategory, ValiConfig
+from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 from shared_objects.cache_controller import CacheController
 from vali_objects.scoring.scoring import Scoring
 from time_util.time_util import TimeUtil
-from vali_objects.vali_dataclasses.perf_ledger import PerfLedgerManager, PerfLedger
+from vali_objects.vali_dataclasses.perf_ledger import PerfLedger, TP_ID_PORTFOLIO
+from vali_objects.vali_dataclasses.perf_ledger_server import PerfLedgerClient
 from vali_objects.utils.ledger_utils import LedgerUtils
-from vali_objects.utils.position_manager import PositionManager
 from vali_objects.position import Position
 from vali_objects.utils.elimination_manager import EliminationReason
 from vali_objects.utils.miner_bucket_enum import MinerBucket
+from vali_objects.utils.plagiarism_server import PlagiarismClient
+from vali_objects.utils.contract_server import ContractClient
+from shared_objects.common_data_server import CommonDataClient
+
 
 class ChallengePeriodManager(CacheController):
+    """
+    Challenge Period Manager - Contains all business logic for challenge period management.
+
+    This manager is wrapped by ChallengePeriodServer which exposes methods via RPC.
+    All heavy logic resides here - server delegates to this manager.
+
+    Pattern:
+    - Server holds a `self._manager` instance
+    - Server delegates all RPC methods to manager methods
+    - Manager creates its own clients internally (forward compatibility)
+    """
+
     def __init__(
-            self,
-            metagraph,
-            perf_ledger_manager : PerfLedgerManager=None,
-            position_manager: PositionManager=None,
-            ipc_manager=None,
-            contract_manager=None,
-            plagiarism_manager=None,
-            *,
-            running_unit_tests=False,
-            is_backtesting=False):
-        super().__init__(metagraph, running_unit_tests=running_unit_tests, is_backtesting=is_backtesting)
-        self.perf_ledger_manager = perf_ledger_manager if perf_ledger_manager else \
-            PerfLedgerManager(metagraph, running_unit_tests=running_unit_tests)
-        self.position_manager = position_manager
-        self.elimination_manager = self.position_manager.elimination_manager
-        self.eliminations_with_reasons: dict[str, tuple[str, float]] = {}
-        self.contract_manager = contract_manager
-        self.plagiarism_manager = plagiarism_manager
+        self,
+        *,
+        is_backtesting=False,
+        running_unit_tests: bool = False,
+        connection_mode: RPCConnectionMode = RPCConnectionMode.RPC
+    ):
+        """
+        Initialize ChallengePeriodManager.
+
+        Args:
+            is_backtesting: Whether running in backtesting mode
+            running_unit_tests: Whether running in test mode
+            connection_mode: RPCConnectionMode.LOCAL for tests, RPCConnectionMode.RPC for production
+        """
+        super().__init__(running_unit_tests=running_unit_tests, is_backtesting=is_backtesting, connection_mode=connection_mode)
+
+        self.running_unit_tests = running_unit_tests
+        self.connection_mode = connection_mode
+
+        # Create clients internally (forward compatibility - no parameter passing)
+        self._perf_ledger_client = PerfLedgerClient(
+            connection_mode=connection_mode,
+            connect_immediately=False,
+            running_unit_tests=running_unit_tests
+        )
+
+        self._position_client = PositionManagerClient(
+            connect_immediately=False,
+            connection_mode=connection_mode
+        )
+
+        self.elim_client = EliminationClient(
+            connection_mode=connection_mode,
+            connect_immediately=False
+        )
+
+        self._plagiarism_client = PlagiarismClient(
+            connection_mode=connection_mode,
+            connect_immediately=False
+        )
+
+        self._contract_client = ContractClient(
+            connection_mode=connection_mode,
+            connect_immediately=False
+        )
+
+        # Create own CommonDataClient (forward compatibility - no parameter passing)
+        self._common_data_client = CommonDataClient(
+            connect_immediately=False,
+            connection_mode=connection_mode
+        )
+
+        # Local dicts (NOT IPC managerized) - much faster!
+        self.eliminations_with_reasons: Dict[str, Tuple[str, float]] = {}
+        self.active_miners: Dict[str, Tuple[MinerBucket, int, Optional[MinerBucket], Optional[int]]] = {}
+
+        # Local lock (NOT shared across processes) - RPC methods are auto-serialized
+        self.eliminations_lock = threading.Lock()
 
         self.CHALLENGE_FILE = ValiBkpUtils.get_challengeperiod_file_location(running_unit_tests=running_unit_tests)
 
-        self.active_miners = {}
+        # Load initial active_miners from disk
         initial_active_miners = {}
         if not self.is_backtesting:
             disk_data = ValiUtils.get_vali_json_file_dict(self.CHALLENGE_FILE)
             initial_active_miners = self.parse_checkpoint_dict(disk_data)
 
-        if ipc_manager:
-            self.active_miners = ipc_manager.dict(initial_active_miners)
-        else:
-            self.active_miners = initial_active_miners
+        self.active_miners = initial_active_miners
 
         if not self.is_backtesting and len(self.active_miners) == 0:
             self._write_challengeperiod_from_memory_to_disk()
 
         self.refreshed_challengeperiod_start_time = False
 
-    #Used to bypass running challenge period, but still adds miners to success for statistics
-    def add_all_miners_to_success(self, current_time_ms, run_elimination=True):
-        assert self.is_backtesting, "This function is only for backtesting"
-        eliminations = []
-        if run_elimination:
-            # The refresh should just read the current eliminations
-            eliminations = self.elimination_manager.get_eliminations_from_memory()
+        bt.logging.info("[CP_MANAGER] ChallengePeriodManager initialized with local dicts (no IPC)")
 
-            # Collect challenge period and update with new eliminations criteria
-            self.remove_eliminated(eliminations=eliminations)
+    # ==================== Core Business Logic ====================
 
-        challenge_hk_to_positions, challenge_hk_to_first_order_time = self.position_manager.filtered_positions_for_scoring(
-            hotkeys=self.metagraph.hotkeys)
-
-        self._add_challengeperiod_testing_in_memory_and_disk(
-            new_hotkeys=self.metagraph.hotkeys,
-            eliminations=eliminations,
-            hk_to_first_order_time=challenge_hk_to_first_order_time,
-            default_time=current_time_ms
-        )
-
-        miners_to_promote = self.get_hotkeys_by_bucket(MinerBucket.CHALLENGE) \
-                          + self.get_hotkeys_by_bucket(MinerBucket.PROBATION)
-
-        #Finally promote all testing miners to success
-        self._promote_challengeperiod_in_memory(miners_to_promote, current_time_ms)
-
-    def _add_challengeperiod_testing_in_memory_and_disk(
-            self,
-            new_hotkeys: list[str],
-            eliminations: list[dict],
-            hk_to_first_order_time: dict[str, int],
-            default_time: int
-    ):
-        if not eliminations:
-            eliminations = self.elimination_manager.get_eliminations_from_memory()
-
-        elimination_hotkeys = set(x['hotkey'] for x in eliminations)
-        maincomp_hotkeys = self.get_hotkeys_by_bucket(MinerBucket.MAINCOMP)
-        probation_hotkeys = self.get_hotkeys_by_bucket(MinerBucket.PROBATION)
-        plagiarism_hotkeys = self.get_hotkeys_by_bucket(MinerBucket.PLAGIARISM)
-
-        any_changes = False
-        for hotkey in new_hotkeys:
-            if hotkey in elimination_hotkeys:
-                continue
-
-            if hotkey in maincomp_hotkeys or hotkey in probation_hotkeys or hotkey in plagiarism_hotkeys:
-                continue
-
-            first_order_time = hk_to_first_order_time.get(hotkey)
-            if first_order_time is None:
-                if hotkey not in self.active_miners:
-                    self.active_miners[hotkey] = (MinerBucket.CHALLENGE, default_time, None, None)
-                    bt.logging.info(f"Adding {hotkey} to challenge period with start time {default_time}")
-                    any_changes = True
-                continue
-
-            # Has a first order time but not yet stored in memory
-            # Has a first order time but start time is set as default
-            if hotkey not in self.active_miners or self.active_miners[hotkey][1] != first_order_time:
-                self.active_miners[hotkey] = (MinerBucket.CHALLENGE, first_order_time, None, None)
-                bt.logging.info(f"Adding {hotkey} to challenge period with first order time {first_order_time}")
-                any_changes = True
-
-        if any_changes:
-            self._write_challengeperiod_from_memory_to_disk()
-
-    def _refresh_challengeperiod_start_time(self, hk_to_first_order_time_ms: dict[str, int]):
+    def refresh(self, current_time: int = None, iteration_epoch=None):
         """
-        retroactively update the challengeperiod_testing start time based on time of first order.
-        used when a miner is un-eliminated, and positions are preserved.
+        Refresh the challenge period manager.
+
+        Args:
+            current_time: Current time in milliseconds. If None, uses TimeUtil.now_in_millis().
+            iteration_epoch: Epoch captured at start of iteration. Used to detect stale data.
         """
-        bt.logging.info("Refreshing challengeperiod start times")
+        if current_time is None:
+            current_time = TimeUtil.now_in_millis()
 
-        any_changes = False
-        for hotkey in self.get_testing_miners().keys():
-            start_time_ms = self.active_miners[hotkey][1]
-            if hotkey not in hk_to_first_order_time_ms:
-                #bt.logging.warning(f"Hotkey {hotkey} in challenge period has no first order time. Skipping for now.")
-                continue
-            first_order_time_ms = hk_to_first_order_time_ms[hotkey]
-
-            if start_time_ms != first_order_time_ms:
-                bt.logging.info(f"Challengeperiod start time for {hotkey} updated from: {datetime.utcfromtimestamp(start_time_ms/1000)} "
-                                f"to: {datetime.utcfromtimestamp(first_order_time_ms/1000)}, {(start_time_ms-first_order_time_ms)/1000}s delta")
-                self.active_miners[hotkey] = (MinerBucket.CHALLENGE, first_order_time_ms, None, None)
-                any_changes = True
-
-        if any_changes:
-            self._write_challengeperiod_from_memory_to_disk()
-
-        bt.logging.info("All challengeperiod start times up to date")
-
-    def refresh(self, current_time: int):
         if not self.refresh_allowed(ValiConfig.CHALLENGE_PERIOD_REFRESH_TIME_MS):
             time.sleep(1)
             return
-        bt.logging.info(f"Refreshing challenge period. invalidation data {self.perf_ledger_manager.perf_ledger_hks_to_invalidate}")
-        # The refresh should just read the current eliminations
-        eliminations = self.elimination_manager.get_eliminations_from_memory()
+        bt.logging.info("Refreshing challenge period")
+
+        # Store iteration epoch for this refresh cycle
+        self._current_iteration_epoch = iteration_epoch
+
+        # Read current eliminations
+        eliminations = self.elim_client.get_eliminations_from_memory()
 
         self.update_plagiarism_miners(current_time, self.get_plagiarism_miners())
 
         # Collect challenge period and update with new eliminations criteria
         self.remove_eliminated(eliminations=eliminations)
 
-        hk_to_positions, hk_to_first_order_time = self.position_manager.filtered_positions_for_scoring(hotkeys=self.metagraph.hotkeys)
+        hk_to_positions, hk_to_first_order_time = self._position_client.filtered_positions_for_scoring(
+            hotkeys=self._metagraph_client.get_hotkeys()
+        )
 
-        # challenge period adds to testing if not in eliminated, already in the challenge period, or in the new eliminations list from disk
+        # Add to testing if not in eliminated, already in the challenge period, or in the new eliminations list
         self._add_challengeperiod_testing_in_memory_and_disk(
-            new_hotkeys=self.metagraph.hotkeys,
+            new_hotkeys=self._metagraph_client.get_hotkeys(),
             eliminations=eliminations,
             hk_to_first_order_time=hk_to_first_order_time,
             default_time=current_time
@@ -185,8 +177,7 @@ class ChallengePeriodManager(CacheController):
             self.refreshed_challengeperiod_start_time = True
             self._refresh_challengeperiod_start_time(hk_to_first_order_time)
 
-        ledger = self.perf_ledger_manager.filtered_ledger_for_scoring(hotkeys=all_miners)
-        ledger = {hotkey: ledger.get(hotkey, None) for hotkey in all_miners}
+        ledger = self._perf_ledger_client.filtered_ledger_for_scoring(hotkeys=all_miners, portfolio_only=False)
 
         inspection_miners = self.get_testing_miners() | self.get_probation_miners()
         challengeperiod_success, challengeperiod_demoted, challengeperiod_eliminations = self.inspect(
@@ -198,11 +189,13 @@ class ChallengePeriodManager(CacheController):
             current_time=current_time,
             hk_to_first_order_time=hk_to_first_order_time
         )
+
         # Update plagiarism eliminations
         plagiarism_elim_miners = self.prepare_plagiarism_elimination_miners(current_time=current_time)
         challengeperiod_eliminations.update(plagiarism_elim_miners)
 
-        self.eliminations_with_reasons = challengeperiod_eliminations
+        # Update elimination reasons atomically
+        self.update_elimination_reasons(challengeperiod_eliminations)
 
         any_changes = bool(challengeperiod_success) or bool(challengeperiod_eliminations) or bool(challengeperiod_demoted)
 
@@ -211,12 +204,15 @@ class ChallengePeriodManager(CacheController):
         self._demote_challengeperiod_in_memory(challengeperiod_demoted, current_time)
         self._eliminate_challengeperiod_in_memory(eliminations_with_reasons=challengeperiod_eliminations)
 
-        # Now remove any miners who are no longer in the metagraph
+        # Remove any miners who are no longer in the metagraph
         any_changes |= self._prune_deregistered_metagraph()
 
-        # Now sync challenge period with the disk
+        # Sync challenge period with disk
         if any_changes:
             self._write_challengeperiod_from_memory_to_disk()
+
+        # Clear iteration epoch after refresh completes
+        self._current_iteration_epoch = None
 
         self.set_last_update_time()
 
@@ -229,43 +225,35 @@ class ChallengePeriodManager(CacheController):
         )
 
     def _prune_deregistered_metagraph(self, hotkeys=None) -> bool:
-        """
-        Prune the challenge period of all miners who are no longer in the metagraph
-        """
+        """Prune the challenge period of all miners who are no longer in the metagraph."""
         if not hotkeys:
-            hotkeys = self.metagraph.hotkeys
+            hotkeys = self._metagraph_client.get_hotkeys()
 
         any_changes = False
-        for hotkey in list(self.active_miners.keys()):
+        for hotkey in self.get_all_miner_hotkeys():
             if hotkey not in hotkeys:
-                del self.active_miners[hotkey]
+                self.remove_miner(hotkey)
                 any_changes = True
 
         return any_changes
 
     @staticmethod
     def is_recently_re_registered(ledger, hotkey, hk_to_first_order_time):
-        """
-        A miner can re-register and their perf ledger may still be old.
-        This function checks for that condition and blocks challenge period failure so that
-        the perf ledger can rebuild.
-        """
+        """Check if a miner recently re-registered (edge case detection)."""
         if not hk_to_first_order_time:
             return False
         if ledger:
             time_of_ledger_start = ledger.start_time_ms
         else:
-            # No ledger? No edge case.
             return False
 
         first_order_time = hk_to_first_order_time.get(hotkey, None)
         if first_order_time is None:
-            # No positions? Perf ledger must be stale.
             msg = f'No positions for hotkey {hotkey} - ledger start time: {time_of_ledger_start}'
             print(msg)
             return True
 
-        # A perf ledger can never begin before the first order. Edge case confirmed.
+        # A perf ledger can never begin before the first order
         ans = time_of_ledger_start < first_order_time
         if ans:
             msg = (f'Hotkey {hotkey} has a ledger start time of {TimeUtil.millis_to_formatted_date_str(time_of_ledger_start)},'
@@ -312,8 +300,14 @@ class ChallengePeriodManager(CacheController):
         miners_not_enough_positions = []
 
         # Used for checking base cases
-        #TODO revisit this
-        portfolio_only_ledgers = {hotkey: asset_ledgers.get("portfolio") for hotkey, asset_ledgers in ledger.items() if asset_ledgers is not None}
+        portfolio_only_ledgers = {}
+        for hotkey, asset_ledgers in ledger.items():
+            if asset_ledgers is not None:
+                if isinstance(asset_ledgers, dict):
+                    portfolio_only_ledgers[hotkey] = asset_ledgers.get(TP_ID_PORTFOLIO)
+                else:
+                    raise TypeError(f"Expected asset_ledgers to be dict, got {type(asset_ledgers)}")
+
         valid_candidate_hotkeys = []
         for hotkey, bucket_start_time in inspection_hotkeys.items():
 
@@ -344,7 +338,8 @@ class ChallengePeriodManager(CacheController):
                 continue
 
             # This step we want to check their drawdown. If they fail, we can move on.
-            ledger_element = inspection_ledger[hotkey]
+            # inspection_ledger is already the PerfLedger object for this hotkey (not a dict)
+            ledger_element = inspection_ledger
             exceeds_max_drawdown, recorded_drawdown_percentage = LedgerUtils.is_beyond_max_drawdown(ledger_element)
             if exceeds_max_drawdown:
                 bt.logging.info(f'Hotkey {hotkey} has failed the {miner_bucket.value} period due to drawdown {recorded_drawdown_percentage}. cp_failed')
@@ -357,14 +352,15 @@ class ChallengePeriodManager(CacheController):
             valid_candidate_hotkeys.append(hotkey)
 
         # Calculate dynamic minimum participation days for asset classes
-        maincomp_ledger = {hotkey: ledger_data for hotkey, ledger_data in ledger.items() if hotkey in [*success_hotkeys, *probation_hotkeys]}   # ledger of all miners in maincomp, including probation
+        combined_hotkeys = set(success_hotkeys + probation_hotkeys)
+        maincomp_ledger = {hotkey: ledger_data for hotkey, ledger_data in ledger.items() if hotkey in combined_hotkeys}
         asset_classes = list(AssetSegmentation.distill_asset_classes(ValiConfig.ASSET_CLASS_BREAKDOWN))
         asset_class_min_days = LedgerUtils.calculate_dynamic_minimum_days_for_asset_classes(
             maincomp_ledger, asset_classes
         )
         bt.logging.info(f"challengeperiod_manager asset class minimum days: {asset_class_min_days}")
 
-        all_miner_account_sizes = self.contract_manager.get_all_miner_account_sizes(timestamp_ms=current_time)
+        all_miner_account_sizes = self._contract_client.get_all_miner_account_sizes(timestamp_ms=current_time)
 
         # If success_scoring_dict is already calculated, no need to calculate scores. Useful for testing
         if not success_scores_dict:
@@ -412,7 +408,7 @@ class ChallengePeriodManager(CacheController):
             success_scores_dict,
             candidate_hotkeys,
             inspection_scores_dict
-            ) -> tuple[list[str], list[str]]:
+    ) -> tuple[list[str], list[str]]:
         # combine maincomp and challenge/probation miners into one scoring dict
         combined_scores_dict = copy.deepcopy(success_scores_dict)
         for asset_class, candidate_scores_dict in inspection_scores_dict.items():
@@ -438,7 +434,7 @@ class ChallengePeriodManager(CacheController):
             threshold_score = 0
             if len(asset_scores) >= promotion_threshold_rank:
                 sorted_scores = sorted(asset_scores.values(), reverse=True)
-                threshold_score = sorted_scores[promotion_threshold_rank-1]
+                threshold_score = sorted_scores[promotion_threshold_rank - 1]
 
             for hotkey, score in asset_scores.items():
                 if score >= threshold_score and score > 0:
@@ -447,10 +443,12 @@ class ChallengePeriodManager(CacheController):
             # logging
             for hotkey in success_hotkeys:
                 if hotkey not in asset_scores:
-                    bt.logging.warning(f"Could not find MAINCOMP hotkey {hotkey} when scoring, miner will not be evaluated")
+                    bt.logging.warning(
+                        f"Could not find MAINCOMP hotkey {hotkey} when scoring, miner will not be evaluated")
             for hotkey in candidate_hotkeys:
                 if hotkey not in asset_scores:
-                    bt.logging.warning(f"Could not find CHALLENGE/PROBATION hotkey {hotkey} when scoring, miner will not be evaluated")
+                    bt.logging.warning(
+                        f"Could not find CHALLENGE/PROBATION hotkey {hotkey} when scoring, miner will not be evaluated")
 
         promote_hotkeys = maincomp_hotkeys - set(success_hotkeys)
         demote_hotkeys = set(success_hotkeys) - maincomp_hotkeys
@@ -459,9 +457,7 @@ class ChallengePeriodManager(CacheController):
 
     @staticmethod
     def screen_minimum_interaction(ledger_element) -> bool:
-        """
-        Returns False if the miner doesn't have the minimum number of trading days.
-        """
+        """Check if miner has minimum number of trading days."""
         if ledger_element is None:
             bt.logging.warning("Ledger element is None. Returning False.")
             return False
@@ -483,38 +479,31 @@ class ChallengePeriodManager(CacheController):
 
     @staticmethod
     def screen_minimum_ledger(
-            ledger: dict[str, PerfLedger],
-            inspection_hotkey: str
-    ) -> tuple[bool, dict[str, PerfLedger]]:
-        """
-        Ensures there is enough ledger data globally and for the specific miner to evaluate challenge period.
-        """
+        ledger: dict[str, PerfLedger],
+        inspection_hotkey: str
+    ) -> tuple[bool, PerfLedger] | tuple[bool, None]:
+        """Ensure there is enough ledger data for the specific miner."""
+        # Note: Caller should check if ledger dict is empty before calling this in a loop
         if ledger is None or len(ledger) == 0:
-            bt.logging.info(f"No ledgers for any miner to evaluate for challenge period. ledger: {ledger}")
-            return False, {}
+            return False, None
 
         single_ledger = ledger.get(inspection_hotkey, None)
         if single_ledger is None:
-            return False, {}
+            return False, None
 
         has_minimum_ledger = len(single_ledger.cps) > 0
 
         if not has_minimum_ledger:
-            bt.logging.info(f"Hotkey: {inspection_hotkey} doesn't have the minimum ledger for challenge period. ledger: {single_ledger}")
+            bt.logging.debug(f"Hotkey: {inspection_hotkey} doesn't have the minimum ledger for challenge period.")
 
-        inspection_ledger = {inspection_hotkey: single_ledger} if has_minimum_ledger else {}
-
-        return has_minimum_ledger, inspection_ledger
+        return has_minimum_ledger, single_ledger
 
     @staticmethod
     def screen_minimum_positions(
-            positions: dict[str, list[Position]],
-            inspection_hotkey: str
+        positions: dict[str, list[Position]],
+        inspection_hotkey: str
     ) -> tuple[bool, dict[str, list[Position]]]:
-        """
-        Ensures there are enough positions globally and for the specific miner to evaluate challenge period.
-        """
-
+        """Ensure there are enough positions for the specific miner."""
         if positions is None or len(positions) == 0:
             bt.logging.info(f"No positions for any miner to evaluate for challenge period. positions: {positions}")
             return False, {}
@@ -527,63 +516,74 @@ class ChallengePeriodManager(CacheController):
         return has_minimum_positions, inspection_positions
 
     def sync_challenge_period_data(self, active_miners_sync):
+        """Sync challenge period data from another validator."""
         if not active_miners_sync:
             bt.logging.error(f'challenge_period_data {active_miners_sync} appears invalid')
 
         synced_miners = self.parse_checkpoint_dict(active_miners_sync)
 
-        self.active_miners.clear()
-        self.active_miners.update(synced_miners)
+        self.clear_active_miners()
+        self.update_active_miners(synced_miners)
         self._write_challengeperiod_from_memory_to_disk()
 
     def get_hotkeys_by_bucket(self, bucket: MinerBucket) -> list[str]:
+        """Get all hotkeys in a specific bucket."""
         return [hotkey for hotkey, (b, _, _, _) in self.active_miners.items() if b == bucket]
 
     def _remove_eliminated_from_memory(self, eliminations: list[dict] = None) -> bool:
-        if eliminations is None:
-            eliminations_hotkeys = self.elimination_manager.get_eliminated_hotkeys()
-        else:
+        """Remove eliminated miners from memory."""
+        if eliminations:
             eliminations_hotkeys = set([x['hotkey'] for x in eliminations])
+        else:
+            eliminations_hotkeys = self.elim_client.get_eliminated_hotkeys()
+
+        bt.logging.info(f"[CP_DEBUG] _remove_eliminated_from_memory processing {len(eliminations_hotkeys)} eliminated hotkeys")
 
         any_changes = False
         for hotkey in eliminations_hotkeys:
-            if hotkey in self.active_miners:
-                del self.active_miners[hotkey]
+            if self.has_miner(hotkey):
+                bt.logging.info(f"[CP_DEBUG] Removing already-eliminated hotkey {hotkey} from active_miners")
+                self.remove_miner(hotkey)
                 any_changes = True
 
         return any_changes
 
     def remove_eliminated(self, eliminations=None):
-        # Pass eliminations directly to _remove_eliminated_from_memory
-        # Don't convert None to [] - let the inner function handle None properly
+        """Remove eliminated miners and sync to disk."""
         any_changes = self._remove_eliminated_from_memory(eliminations=eliminations)
         if any_changes:
             self._write_challengeperiod_from_memory_to_disk()
 
     def _clear_challengeperiod_in_memory_and_disk(self):
-        self.active_miners.clear()
+        """Clear all challenge period data."""
+        if not self.running_unit_tests:
+            raise Exception("Clearing challenge period is only allowed during unit tests.")
+        self.clear_active_miners()
         self._write_challengeperiod_from_memory_to_disk()
 
     def update_plagiarism_miners(self, current_time, plagiarism_miners):
-
-        new_plagiarism_miners, whitelisted_miners = self.plagiarism_manager.update_plagiarism_miners(current_time, plagiarism_miners)
+        """Update plagiarism miners status."""
+        new_plagiarism_miners, whitelisted_miners = self._plagiarism_client.update_plagiarism_miners(
+            current_time, plagiarism_miners
+        )
         self._demote_plagiarism_in_memory(new_plagiarism_miners, current_time)
         self._promote_plagiarism_to_previous_bucket_in_memory(whitelisted_miners, current_time)
 
     def prepare_plagiarism_elimination_miners(self, current_time):
-
-        miners_to_eliminate = self.plagiarism_manager.plagiarism_miners_to_eliminate(current_time)
+        """Prepare plagiarism miners for elimination."""
+        miners_to_eliminate = self._plagiarism_client.plagiarism_miners_to_eliminate(current_time)
         elim_miners_to_return = {}
         for hotkey in miners_to_eliminate:
-            if hotkey in self.active_miners:
+            if self.has_miner(hotkey):
                 bt.logging.info(
                     f'Hotkey {hotkey} is overdue in {MinerBucket.PLAGIARISM} at time {current_time}')
                 elim_miners_to_return[hotkey] = (EliminationReason.PLAGIARISM.value, -1)
-                self.plagiarism_manager.send_plagiarism_elimination_notification(hotkey)
+                self._plagiarism_client.send_plagiarism_elimination_notification(hotkey)
 
         return elim_miners_to_return
 
     def _promote_challengeperiod_in_memory(self, hotkeys: list[str], current_time: int):
+        """Promote miners to main competition."""
         if len(hotkeys) > 0:
             bt.logging.info(f"Promoting {len(hotkeys)} miners to main competition.")
 
@@ -593,9 +593,10 @@ class ChallengePeriodManager(CacheController):
                 bt.logging.error(f"Hotkey {hotkey} is not an active miner. Skipping promotion")
                 continue
             bt.logging.info(f"Promoting {hotkey} from {self.get_miner_bucket(hotkey).value} to MAINCOMP")
-            self.active_miners[hotkey] = (MinerBucket.MAINCOMP, current_time, None, None)
+            self.set_miner_bucket(hotkey, MinerBucket.MAINCOMP, current_time)
 
     def _promote_plagiarism_to_previous_bucket_in_memory(self, hotkeys: list[str], current_time):
+        """Promote plagiarism miners to their previous bucket."""
         if len(hotkeys) > 0:
             bt.logging.info(f"Promoting {len(hotkeys)} plagiarism miners to probation.")
 
@@ -605,33 +606,41 @@ class ChallengePeriodManager(CacheController):
                 if bucket_value is None or bucket_value != MinerBucket.PLAGIARISM:
                     bt.logging.error(f"Hotkey {hotkey} is not an active miner. Skipping promotion")
                     continue
-                # Extra tuple values are set when demoting due to plagiarism
-                previous_bucket = self.active_miners.get(hotkey)[2]
-                previous_time = self.active_miners.get(hotkey)[3]
-                #TODO Possibly calculate how long miner has been in plagiarism, give them this time back
 
-                # Miner is a plagiarist
+                previous_bucket = self.get_miner_previous_bucket(hotkey)
+                previous_time = self.get_miner_previous_time(hotkey)
+
                 bt.logging.info(f"Promoting {hotkey} from {bucket_value.value} to {previous_bucket.value} with time {previous_time}")
-                self.active_miners[hotkey] = (previous_bucket, previous_time, None, None)
+                self.set_miner_bucket(hotkey, previous_bucket, previous_time)
 
                 # Send Slack notification
-                self.plagiarism_manager.send_plagiarism_promotion_notification(hotkey)
+                self._plagiarism_client.send_plagiarism_promotion_notification(hotkey)
             except Exception as e:
                 bt.logging.error(f"Failed to promote {hotkey} from plagiarism at time {current_time}: {e}")
 
     def _eliminate_challengeperiod_in_memory(self, eliminations_with_reasons: dict[str, tuple[str, float]]):
+        """Eliminate miners from challenge period."""
         hotkeys = eliminations_with_reasons.keys()
         if hotkeys:
-            bt.logging.info(f"Removing {len(hotkeys)} hotkeys from challenge period.")
+            bt.logging.info(f"[CP_DEBUG] Removing {len(hotkeys)} hotkeys from challenge period: {list(hotkeys)}")
+            bt.logging.info(f"[CP_DEBUG] active_miners has {len(self.active_miners)} entries before elimination")
 
         for hotkey in hotkeys:
-            if hotkey in self.active_miners:
-                bt.logging.info(f"Eliminating {hotkey}")
-                del self.active_miners[hotkey]
+            if self.has_miner(hotkey):
+                bucket = self.get_miner_bucket(hotkey)
+                bt.logging.info(f"[CP_DEBUG] Eliminating {hotkey} from bucket {bucket.value}")
+                self.remove_miner(hotkey)
+
+                # Verify deletion
+                if not self.has_miner(hotkey):
+                    bt.logging.info(f"[CP_DEBUG] ✓ Verified {hotkey} was removed from active_miners")
+                else:
+                    bt.logging.error(f"[CP_DEBUG] ✗ FAILED to remove {hotkey} from active_miners!")
             else:
-                bt.logging.error(f"Hotkey {hotkey} was not in challengeperiod_testing but demotion to failure was attempted.")
+                bt.logging.error(f"[CP_DEBUG] Hotkey {hotkey} was not in active_miners but elimination was attempted. active_miners keys: {self.get_all_miner_hotkeys()}")
 
     def _demote_challengeperiod_in_memory(self, hotkeys: list[str], current_time):
+        """Demote miners to probation."""
         if hotkeys:
             bt.logging.info(f"Demoting {len(hotkeys)} miners to probation")
 
@@ -641,43 +650,283 @@ class ChallengePeriodManager(CacheController):
                 bt.logging.error(f"Hotkey {hotkey} is not an active miner. Skipping demotion")
                 continue
             bt.logging.info(f"Demoting {hotkey} to PROBATION")
-            self.active_miners[hotkey] = (MinerBucket.PROBATION, current_time, None, None)
+            self.set_miner_bucket(hotkey, MinerBucket.PROBATION, current_time)
 
     def _demote_plagiarism_in_memory(self, hotkeys: list[str], current_time):
+        """Demote miners to plagiarism bucket."""
         for hotkey in hotkeys:
             try:
                 prev_bucket_value = self.get_miner_bucket(hotkey)
-                # Check if miner is an active miner, if not, no need to demote
                 if prev_bucket_value is None:
                     continue
-                prev_bucket_time = self.active_miners.get(hotkey)[1]
+                prev_bucket_time = self.get_miner_start_time(hotkey)
                 bt.logging.info(f"Demoting {hotkey} to PLAGIARISM from {prev_bucket_value}")
                 # Maintain previous state to make reverting easier
-                self.active_miners[hotkey] = (MinerBucket.PLAGIARISM, current_time, prev_bucket_value, prev_bucket_time)
+                self.set_miner_bucket(hotkey, MinerBucket.PLAGIARISM, current_time, prev_bucket_value, prev_bucket_time)
 
                 # Send Slack notification
-                self.plagiarism_manager.send_plagiarism_demotion_notification(hotkey)
+                self._plagiarism_client.send_plagiarism_demotion_notification(hotkey)
             except Exception as e:
                 bt.logging.error(f"Failed to demote {hotkey} for plagiarism at time {current_time}: {e}")
 
-
     def _write_challengeperiod_from_memory_to_disk(self):
+        """Write challenge period data from memory to disk."""
         if self.is_backtesting:
             return
+
+        # Epoch-based validation: check if sync occurred during our iteration
+        if hasattr(self, '_current_iteration_epoch') and self._current_iteration_epoch is not None:
+            current_epoch = self._common_data_client.get_sync_epoch()
+            if current_epoch != self._current_iteration_epoch:
+                bt.logging.warning(
+                    f"Sync occurred during ChallengePeriodManager iteration "
+                    f"(epoch {self._current_iteration_epoch} -> {current_epoch}). "
+                    f"Skipping save to avoid data corruption"
+                )
+                return
+
         challengeperiod_data = self.to_checkpoint_dict()
         ValiBkpUtils.write_file(self.CHALLENGE_FILE, challengeperiod_data)
 
-    def get_miner_bucket(self, hotkey): return self.active_miners.get(hotkey, [None])[0]
-    def get_testing_miners(self):   return copy.deepcopy(self._bucket_view(MinerBucket.CHALLENGE))
-    def get_success_miners(self):   return copy.deepcopy(self._bucket_view(MinerBucket.MAINCOMP))
-    def get_probation_miners(self): return copy.deepcopy(self._bucket_view(MinerBucket.PROBATION))
-    def get_plagiarism_miners(self): return copy.deepcopy(self._bucket_view(MinerBucket.PLAGIARISM))
+    def _add_challengeperiod_testing_in_memory_and_disk(
+        self,
+        new_hotkeys: list[str],
+        eliminations: list[dict],
+        hk_to_first_order_time: dict[str, int],
+        default_time: int
+    ):
+        """Add miners to challenge period testing."""
+        if not eliminations:
+            eliminations = self.elim_client.get_eliminations_from_memory()
+
+        elimination_hotkeys = set(x['hotkey'] for x in eliminations)
+
+        # Get local eliminations that haven't been persisted yet
+        with self.eliminations_lock:
+            local_elimination_hotkeys = set(self.eliminations_with_reasons.keys())
+
+        maincomp_hotkeys = self.get_hotkeys_by_bucket(MinerBucket.MAINCOMP)
+        probation_hotkeys = self.get_hotkeys_by_bucket(MinerBucket.PROBATION)
+        plagiarism_hotkeys = self.get_hotkeys_by_bucket(MinerBucket.PLAGIARISM)
+
+        any_changes = False
+        for hotkey in new_hotkeys:
+            # Skip if miner is in persisted eliminations
+            if hotkey in elimination_hotkeys:
+                continue
+
+            # Skip if miner is in local eliminations
+            if hotkey in local_elimination_hotkeys:
+                bt.logging.info(f"[CP_DEBUG] Skipping {hotkey[:16]}...{hotkey[-8:]} - in eliminations_with_reasons (not yet persisted)")
+                continue
+
+            if hotkey in maincomp_hotkeys or hotkey in probation_hotkeys or hotkey in plagiarism_hotkeys:
+                continue
+
+            first_order_time = hk_to_first_order_time.get(hotkey)
+            if first_order_time is None:
+                if not self.has_miner(hotkey):
+                    self.set_miner_bucket(hotkey, MinerBucket.CHALLENGE, default_time)
+                    bt.logging.info(f"Adding {hotkey} to challenge period with start time {default_time}")
+                    any_changes = True
+                continue
+
+            # Has a first order time but not yet stored in memory or start time is set as default
+            start_time = self.get_miner_start_time(hotkey)
+            if not self.has_miner(hotkey) or start_time != first_order_time:
+                self.set_miner_bucket(hotkey, MinerBucket.CHALLENGE, first_order_time)
+                bt.logging.info(f"Adding {hotkey} to challenge period with first order time {first_order_time}")
+                any_changes = True
+
+        if any_changes:
+            self._write_challengeperiod_from_memory_to_disk()
+
+    def _refresh_challengeperiod_start_time(self, hk_to_first_order_time_ms: dict[str, int]):
+        """Retroactively update the challengeperiod_testing start time based on time of first order."""
+        bt.logging.info("Refreshing challengeperiod start times")
+
+        any_changes = False
+        for hotkey in self.get_testing_miners().keys():
+            start_time_ms = self.get_miner_start_time(hotkey)
+            if hotkey not in hk_to_first_order_time_ms:
+                continue
+            first_order_time_ms = hk_to_first_order_time_ms[hotkey]
+
+            if start_time_ms != first_order_time_ms:
+                bt.logging.info(f"Challengeperiod start time for {hotkey} updated from: {datetime.fromtimestamp(start_time_ms/1000)} "
+                                f"to: {datetime.fromtimestamp(first_order_time_ms/1000)}, {(start_time_ms-first_order_time_ms)/1000}s delta")
+                self.set_miner_bucket(hotkey, MinerBucket.CHALLENGE, first_order_time_ms)
+                any_changes = True
+
+        if any_changes:
+            self._write_challengeperiod_from_memory_to_disk()
+
+        bt.logging.info("All challengeperiod start times up to date")
+
+    def add_all_miners_to_success(self, current_time_ms, run_elimination=True):
+        """Used to bypass running challenge period, but still adds miners to success for statistics."""
+        assert self.is_backtesting, "This function is only for backtesting"
+        eliminations = []
+        if run_elimination:
+            eliminations = self.elim_client.get_eliminations_from_memory()
+            self.remove_eliminated(eliminations=eliminations)
+
+        challenge_hk_to_positions, challenge_hk_to_first_order_time = self._position_client.filtered_positions_for_scoring(
+            hotkeys=self._metagraph_client.get_hotkeys())
+
+        self._add_challengeperiod_testing_in_memory_and_disk(
+            new_hotkeys=self._metagraph_client.get_hotkeys(),
+            eliminations=eliminations,
+            hk_to_first_order_time=challenge_hk_to_first_order_time,
+            default_time=current_time_ms
+        )
+
+        miners_to_promote = self.get_hotkeys_by_bucket(MinerBucket.CHALLENGE) \
+                          + self.get_hotkeys_by_bucket(MinerBucket.PROBATION)
+
+        # Finally promote all testing miners to success
+        self._promote_challengeperiod_in_memory(miners_to_promote, current_time_ms)
+
+    # ==================== Internal Getter/Setter Methods ====================
+
+    def set_miner_bucket(
+        self,
+        hotkey: str,
+        bucket: MinerBucket,
+        start_time: int,
+        prev_bucket: MinerBucket = None,
+        prev_time: int = None
+    ) -> bool:
+        """Set or update a miner's bucket information."""
+        is_new = hotkey not in self.active_miners
+        self.active_miners[hotkey] = (bucket, start_time, prev_bucket, prev_time)
+        return is_new
+
+    def get_miner_start_time(self, hotkey: str) -> int:
+        """Get the start time of a miner's current bucket."""
+        info = self.active_miners.get(hotkey)
+        return info[1] if info else None
+
+    def get_miner_previous_bucket(self, hotkey: str) -> MinerBucket:
+        """Get the previous bucket of a miner."""
+        info = self.active_miners.get(hotkey)
+        return info[2] if info else None
+
+    def get_miner_previous_time(self, hotkey: str) -> int:
+        """Get the start time of a miner's previous bucket."""
+        info = self.active_miners.get(hotkey)
+        return info[3] if info else None
+
+    def has_miner(self, hotkey: str) -> bool:
+        """Fast check if a miner is in active_miners (O(1))."""
+        return hotkey in self.active_miners
+
+    def remove_miner(self, hotkey: str) -> bool:
+        """Remove a miner from active_miners."""
+        if hotkey in self.active_miners:
+            del self.active_miners[hotkey]
+            return True
+        return False
+
+    def clear_active_miners(self):
+        """Clear all miners from active_miners."""
+        self.active_miners.clear()
+
+    def update_active_miners(self, miners_dict: dict) -> int:
+        """
+        Bulk update active_miners from a dict.
+
+        Args:
+            miners_dict: Can be either:
+                - Dict mapping hotkey to tuple (bucket, start_time, prev_bucket, prev_time)
+                - Dict mapping hotkey to dict with keys: bucket, start_time, prev_bucket, prev_time
+                  (for RPC serialization compatibility)
+
+        Returns:
+            Number of miners updated
+        """
+        # Handle both tuple format and dict format (for RPC compatibility)
+        normalized_dict = {}
+        for hotkey, data in miners_dict.items():
+            if isinstance(data, tuple):
+                # Already in tuple format
+                normalized_dict[hotkey] = data
+            elif isinstance(data, dict):
+                # Convert from RPC dict format to tuple format
+                bucket = MinerBucket(data["bucket"]) if isinstance(data["bucket"], str) else data["bucket"]
+                start_time = data["start_time"]
+                prev_bucket = MinerBucket(data["prev_bucket"]) if (data.get("prev_bucket") and isinstance(data["prev_bucket"], str)) else data.get("prev_bucket")
+                prev_time = data.get("prev_time")
+
+                normalized_dict[hotkey] = (bucket, start_time, prev_bucket, prev_time)
+            else:
+                raise ValueError(f"Invalid data type for miner {hotkey}: {type(data)}")
+
+        count = len(normalized_dict)
+        self.active_miners.update(normalized_dict)
+        return count
+
+    def iter_active_miners(self):
+        """Iterate over active miners."""
+        for hotkey, (bucket, start_time, prev_bucket, prev_time) in self.active_miners.items():
+            yield hotkey, bucket, start_time, prev_bucket, prev_time
+
+    def get_all_miner_hotkeys(self) -> list:
+        """Get list of all active miner hotkeys."""
+        return list(self.active_miners.keys())
+
+    def get_all_elimination_reasons(self) -> dict:
+        """Get all elimination reasons as a dict."""
+        with self.eliminations_lock:
+            return dict(self.eliminations_with_reasons)
+
+    def has_elimination_reasons(self) -> bool:
+        """Check if there are any elimination reasons."""
+        with self.eliminations_lock:
+            return bool(self.eliminations_with_reasons)
+
+    def pop_elimination_reason(self, hotkey: str) -> Optional[Tuple[str, float]]:
+        """Atomically get and remove an elimination reason for a single hotkey."""
+        with self.eliminations_lock:
+            return self.eliminations_with_reasons.pop(hotkey, None)
+
+    def clear_elimination_reasons(self):
+        """Clear all elimination reasons."""
+        with self.eliminations_lock:
+            self.eliminations_with_reasons.clear()
+
+    def update_elimination_reasons(self, reasons_dict: dict) -> int:
+        """Accumulate elimination reasons from a dict."""
+        with self.eliminations_lock:
+            self.eliminations_with_reasons.update(reasons_dict)
+        return len(self.eliminations_with_reasons)
+
+    def get_miner_bucket(self, hotkey):
+        """Get the bucket of a miner."""
+        return self.active_miners.get(hotkey, [None])[0]
+
+    def get_testing_miners(self):
+        """Get all CHALLENGE bucket miners."""
+        return copy.deepcopy(self._bucket_view(MinerBucket.CHALLENGE))
+
+    def get_success_miners(self):
+        """Get all MAINCOMP bucket miners."""
+        return copy.deepcopy(self._bucket_view(MinerBucket.MAINCOMP))
+
+    def get_probation_miners(self):
+        """Get all PROBATION bucket miners."""
+        return copy.deepcopy(self._bucket_view(MinerBucket.PROBATION))
+
+    def get_plagiarism_miners(self):
+        """Get all PLAGIARISM bucket miners."""
+        return copy.deepcopy(self._bucket_view(MinerBucket.PLAGIARISM))
 
     def _bucket_view(self, bucket: MinerBucket):
+        """Get all miners in a specific bucket as {hotkey: start_time} dict."""
         return {hk: ts for hk, (b, ts, _, _) in self.active_miners.items() if b == bucket}
 
     def to_checkpoint_dict(self):
-        snapshot = list(self.active_miners.items())
+        """Get challenge period data as a checkpoint dict for serialization."""
         json_dict = {
             hotkey: {
                 "bucket": bucket.value,
@@ -685,12 +934,13 @@ class ChallengePeriodManager(CacheController):
                 "previous_bucket": previous_bucket.value if previous_bucket else None,
                 "previous_bucket_start_time": previous_bucket_time
             }
-            for hotkey, (bucket, start_time, previous_bucket, previous_bucket_time) in snapshot
+            for hotkey, bucket, start_time, previous_bucket, previous_bucket_time in self.iter_active_miners()
         }
         return json_dict
 
     @staticmethod
     def parse_checkpoint_dict(json_dict):
+        """Parse checkpoint dict from disk."""
         formatted_dict = {}
 
         if "testing" in json_dict.keys() and "success" in json_dict.keys():
@@ -700,7 +950,6 @@ class ChallengePeriodManager(CacheController):
                 formatted_dict[hotkey] = (MinerBucket.CHALLENGE, start_time, None, None)
             for hotkey, start_time in success.items():
                 formatted_dict[hotkey] = (MinerBucket.MAINCOMP, start_time, None, None)
-
         else:
             for hotkey, info in json_dict.items():
                 bucket = MinerBucket(info["bucket"]) if info.get("bucket") else None
@@ -711,4 +960,3 @@ class ChallengePeriodManager(CacheController):
                 formatted_dict[hotkey] = (bucket, bucket_start_time, previous_bucket, previous_bucket_start_time)
 
         return formatted_dict
-
