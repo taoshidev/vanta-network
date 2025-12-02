@@ -1568,10 +1568,7 @@ class VantaRestServer(RPCServerBase, APIKeyMixin):
             bool: True if coldkey owns the hotkey, False otherwise
         """
         try:
-            subtensor_api = self.contract_manager.collateral_manager.subtensor_api
-            coldkey_owner = subtensor_api.queries.query_subtensor("Owner", None, [hotkey_ss58])
-
-            return coldkey_owner == coldkey_ss58
+            return self.contract_manager.verify_coldkey_owns_hotkey(coldkey_ss58, hotkey_ss58)
         except Exception as e:
             bt.logging.error(f"Error verifying coldkey-hotkey ownership: {e}")
             return False

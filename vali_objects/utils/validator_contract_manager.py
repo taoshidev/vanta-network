@@ -1091,3 +1091,22 @@ class ValidatorContractManager:
             import traceback
             bt.logging.error(traceback.format_exc())
             return False
+
+    def verify_coldkey_owns_hotkey(self, coldkey_ss58: str, hotkey_ss58: str) -> bool:
+        """
+        Verify that a coldkey owns a specific hotkey using subtensor.
+
+        Args:
+            coldkey_ss58: The coldkey SS58 address
+            hotkey_ss58: The hotkey SS58 address to verify ownership of
+
+        Returns:
+            bool: True if coldkey owns the hotkey, False otherwise
+        """
+        try:
+            subtensor_api = self.collateral_manager.subtensor_api
+            coldkey_owner = subtensor_api.queries.query_subtensor("Owner", None, [hotkey_ss58])
+            return coldkey_owner == coldkey_ss58
+        except Exception as e:
+            bt.logging.error(f"Error verifying coldkey-hotkey ownership: {e}")
+            return False

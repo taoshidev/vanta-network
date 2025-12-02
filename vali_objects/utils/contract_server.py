@@ -199,6 +199,10 @@ class ContractServer(RPCServerBase):
         """Process an incoming CollateralRecord synapse and update miner_account_sizes."""
         return self._manager.receive_collateral_record_update(collateral_record_data)
 
+    def verify_coldkey_owns_hotkey_rpc(self, coldkey_ss58: str, hotkey_ss58: str) -> bool:
+        """Verify that a coldkey owns a specific hotkey using subtensor."""
+        return self._manager.verify_coldkey_owns_hotkey(coldkey_ss58, hotkey_ss58)
+
     # ==================== Forward-Compatible Aliases (without _rpc suffix) ====================
     # These allow direct use of the server in tests without RPC
 
@@ -250,6 +254,9 @@ class ContractServer(RPCServerBase):
 
     def receive_collateral_record_update(self, collateral_record_data: dict) -> bool:
         return self._manager.receive_collateral_record_update(collateral_record_data)
+
+    def verify_coldkey_owns_hotkey(self, coldkey_ss58: str, hotkey_ss58: str) -> bool:
+        return self._manager.verify_coldkey_owns_hotkey(coldkey_ss58, hotkey_ss58)
 
     @staticmethod
     def min_collateral_penalty(collateral: float) -> float:
@@ -384,6 +391,10 @@ class ContractClient(RPCClientBase):
     def receive_collateral_record_update(self, collateral_record_data: dict) -> bool:
         """Process an incoming CollateralRecord and update miner_account_sizes."""
         return self._server.receive_collateral_record_update_rpc(collateral_record_data)
+
+    def verify_coldkey_owns_hotkey(self, coldkey_ss58: str, hotkey_ss58: str) -> bool:
+        """Verify that a coldkey owns a specific hotkey using subtensor."""
+        return self._server.verify_coldkey_owns_hotkey_rpc(coldkey_ss58, hotkey_ss58)
 
     # ==================== Setup Methods ====================
 
