@@ -130,14 +130,13 @@ class LivePriceFetcherClient(RPCClientBase):
         """Get the latest price for a trade pair."""
         return self._server.get_latest_price(trade_pair, time_ms)
 
-    def get_sorted_price_sources_for_trade_pair(self, trade_pair: TradePair, time_ms: int) -> List[PriceSource] | None:
+    def get_sorted_price_sources_for_trade_pair(self, trade_pair: TradePair, time_ms: int, live=True) -> List[PriceSource] | None:
         """Get sorted price sources for a trade pair."""
-        return self._server.get_sorted_price_sources_for_trade_pair(trade_pair, time_ms)
+        return self._server.get_sorted_price_sources_for_trade_pair(trade_pair, time_ms, live)
 
-    def get_tp_to_sorted_price_sources(self, trade_pairs: List[TradePair],
-                                       trade_pair_to_last_order_time_ms: Dict[TradePair, int] = None) -> Dict[TradePair, List[PriceSource]]:
+    def get_tp_to_sorted_price_sources(self, trade_pairs: List[TradePair], time_ms: int, live=True) -> Dict[TradePair, List[PriceSource]]:
         """Get sorted price sources for multiple trade pairs."""
-        return self._server.get_tp_to_sorted_price_sources(trade_pairs, trade_pair_to_last_order_time_ms)
+        return self._server.get_tp_to_sorted_price_sources(trade_pairs, time_ms, live)
 
     def time_since_last_ws_ping_s(self, trade_pair: TradePair) -> float | None:
         """Get time since last websocket ping for a trade pair."""
@@ -312,14 +311,13 @@ class LivePriceFetcherServer(RPCServerBase):
         """Delegate to fetcher."""
         return self._fetcher.get_latest_price(trade_pair, time_ms)
 
-    def get_sorted_price_sources_for_trade_pair(self, trade_pair: TradePair, time_ms: int) -> List[PriceSource] | None:
+    def get_sorted_price_sources_for_trade_pair(self, trade_pair: TradePair, time_ms: int, live=True) -> List[PriceSource] | None:
         """Delegate to fetcher."""
-        return self._fetcher.get_sorted_price_sources_for_trade_pair(trade_pair, time_ms)
+        return self._fetcher.get_sorted_price_sources_for_trade_pair(trade_pair, time_ms, live)
 
-    def get_tp_to_sorted_price_sources(self, trade_pairs: List[TradePair],
-                                       trade_pair_to_last_order_time_ms: Dict[TradePair, int] = None) -> Dict[TradePair, List[PriceSource]]:
+    def get_tp_to_sorted_price_sources(self, trade_pairs: List[TradePair], time_ms: int, live=True) -> Dict[TradePair, List[PriceSource]]:
         """Delegate to fetcher."""
-        return self._fetcher.get_tp_to_sorted_price_sources(trade_pairs, trade_pair_to_last_order_time_ms)
+        return self._fetcher.get_tp_to_sorted_price_sources(trade_pairs, time_ms, live)
 
     def time_since_last_ws_ping_s(self, trade_pair: TradePair) -> float | None:
         """Delegate to fetcher."""
