@@ -346,7 +346,7 @@ class TestLimitOrderIntegration(TestBase):
         self.set_market_open(is_open=True)
 
         # Fill the limit order
-        self.limit_order_client.check_and_fill_limit_orders()
+        self.limit_order_client.check_and_fill_limit_orders(call_id=1)
 
         # Verify bracket order was created
         bracket_orders = self.limit_order_client.get_limit_orders_for_trade_pair(
@@ -382,8 +382,14 @@ class TestLimitOrderIntegration(TestBase):
             print(f"DEBUG: Position has {len(position_before_bracket.orders)} orders")
             print(f"DEBUG: Position net leverage: {position_before_bracket.net_leverage}")
 
+        # Force fresh RPC connection to avoid caching
+        self.limit_order_client.disconnect()
+        self.limit_order_client.connect()
+
         # Fill the bracket order
-        self.limit_order_client.check_and_fill_limit_orders()
+        print("[TEST DEBUG] About to call check_and_fill_limit_orders(call_id=2)")
+        result = self.limit_order_client.check_and_fill_limit_orders(call_id=2)
+        print(f"[TEST DEBUG] Result from second call: {result}")
 
         # Verify bracket order filled (position closed/reduced)
         bracket_orders_after = self.limit_order_client.get_limit_orders_for_trade_pair(

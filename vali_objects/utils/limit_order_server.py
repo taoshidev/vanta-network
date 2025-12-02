@@ -213,18 +213,22 @@ class LimitOrderServer(RPCServerBase):
             raise Exception('clear_limit_orders_rpc can only be called in unit test mode')
         return self._manager.clear_limit_orders()
 
-    def check_and_fill_limit_orders_rpc(self):
+    def check_and_fill_limit_orders_rpc(self, call_id=None):
         """
         RPC method to manually trigger limit order check and fill (daemon method).
 
         This is primarily used for testing to trigger fills without waiting for daemon.
+
+        Args:
+            call_id: Optional unique identifier to prevent RPC caching. Pass a unique value
+                    (like timestamp) in tests to ensure each call executes.
 
         Returns:
             dict: Execution stats with {'checked': int, 'filled': int, 'timestamp_ms': int}
         """
         if not self.running_unit_tests:
             raise Exception('check_and_fill_limit_orders_rpc can only be called in unit test mode')
-        return self._manager.check_and_fill_limit_orders()
+        return self._manager.check_and_fill_limit_orders(call_id)
 
     def get_limit_orders_dict_rpc(self):
         """
@@ -601,16 +605,20 @@ class LimitOrderClient(RPCClientBase):
 
     # ==================== Test-Only Methods ====================
 
-    def check_and_fill_limit_orders(self) -> dict:
+    def check_and_fill_limit_orders(self, call_id=None) -> dict:
         """
         Manually trigger limit order check and fill (daemon method) via RPC.
 
         This is primarily used for testing to trigger fills without waiting for daemon.
 
+        Args:
+            call_id: Optional unique identifier to prevent RPC caching. Pass a unique value
+                    (like timestamp) in tests to ensure each call executes.
+
         Returns:
             dict: Execution stats with {'checked': int, 'filled': int, 'timestamp_ms': int}
         """
-        return self._server.check_and_fill_limit_orders_rpc()
+        return self._server.check_and_fill_limit_orders_rpc(call_id)
 
     def get_limit_orders_dict(self) -> dict:
         """

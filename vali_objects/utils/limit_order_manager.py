@@ -433,9 +433,14 @@ class LimitOrderManager(CacheController):
     # ============================================================================
 
 
-    def check_and_fill_limit_orders(self):
+    def check_and_fill_limit_orders(self, call_id=None):
         """
         Iterate through all trade pairs and attempt to fill unfilled limit orders.
+
+        Args:
+            call_id: Optional unique identifier for this call. Used to prevent RPC caching.
+                    In production (daemon), this is not needed. In tests, pass a unique value
+                    (like timestamp) to ensure each call executes.
 
         Returns:
             dict: Execution stats with {
@@ -448,11 +453,16 @@ class LimitOrderManager(CacheController):
         total_checked = 0
         total_filled = 0
 
+        if self.running_unit_tests:
+            print(f"[CHECK_AND_FILL_CALLED] check_and_fill_limit_orders(call_id={call_id}) called, {len(self._limit_orders)} trade pairs")
+
         bt.logging.info(f"Checking limit orders across {len(self._limit_orders)} trade pairs")
 
         for trade_pair, hotkey_dict in self._limit_orders.items():
             # Check if market is open
             if not self.live_price_fetcher.is_market_open(trade_pair, now_ms):
+                if self.running_unit_tests:
+                    print(f"[CHECK_ORDERS DEBUG] Market closed for {trade_pair.trade_pair_id}")
                 bt.logging.debug(f"Market closed for {trade_pair.trade_pair_id}, skipping")
                 continue
 
@@ -460,6 +470,8 @@ class LimitOrderManager(CacheController):
             # price_sources = self.live_price_fetcher.get_sorted_price_sources_for_trade_pair(trade_pair, now_ms)
             price_sources = self._get_best_price_source(trade_pair, now_ms)
             if not price_sources:
+                if self.running_unit_tests:
+                    print(f"[CHECK_ORDERS DEBUG] No price sources for {trade_pair.trade_pair_id}")
                 bt.logging.debug(f"No price sources for {trade_pair.trade_pair_id}, skipping")
                 continue
 
@@ -469,13 +481,23 @@ class LimitOrderManager(CacheController):
                 time_since_last_fill = now_ms - last_fill_time
 
                 if time_since_last_fill < ValiConfig.LIMIT_ORDER_FILL_INTERVAL_MS:
+                    if self.running_unit_tests:
+                        print(f"[CHECK_ORDERS DEBUG] Fill interval not met: {time_since_last_fill}ms < {ValiConfig.LIMIT_ORDER_FILL_INTERVAL_MS}ms")
                     bt.logging.debug(f"Skipping {trade_pair.trade_pair_id} for {miner_hotkey}: {time_since_last_fill}ms since last fill")
                     continue
+
+                if self.running_unit_tests:
+                    print(f"[CHECK_ORDERS DEBUG] Checking {len(orders)} orders for {miner_hotkey}")
 
                 for order in orders:
                     # Check both regular limit orders and SL/TP Bracket orders
                     if order.src not in [OrderSource.LIMIT_UNFILLED, OrderSource.BRACKET_UNFILLED]:
+                        if self.running_unit_tests:
+                            print(f"[CHECK_ORDERS DEBUG] Skipping order {order.order_uuid} with src={order.src}")
                         continue
+
+                    if self.running_unit_tests:
+                        print(f"[CHECK_ORDERS DEBUG] Attempting to fill order {order.order_uuid} type={order.execution_type}")
 
                     total_checked += 1
 
@@ -597,13 +619,13 @@ class LimitOrderManager(CacheController):
                 trigger_price = self._evaluate_trigger_price(order, position, best_price_source)
 
                 if self.running_unit_tests and order.execution_type == ExecutionType.BRACKET:
-                    bt.logging.info(f"[BRACKET DEBUG] position={position is not None}, trigger_price={trigger_price}, ps.bid={best_price_source.bid}, ps.ask={best_price_source.ask}")
+                    print(f"[BRACKET DEBUG] position={position is not None}, trigger_price={trigger_price}, ps.bid={best_price_source.bid}, ps.ask={best_price_source.ask}, order={order.order_uuid}")
 
                 if trigger_price is not None:
                     should_fill = True
 
             if order.execution_type == ExecutionType.BRACKET and not position:
-                bt.logging.warning(f"[BRACKET CANCELLED] No position found for bracket order {order.order_uuid}, cancelling")
+                print(f"[BRACKET CANCELLED] No position found for bracket order {order.order_uuid}, cancelling")
                 self._close_limit_order(miner_hotkey, order, OrderSource.BRACKET_CANCELLED, now_ms)
                 return False
 

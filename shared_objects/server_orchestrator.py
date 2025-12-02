@@ -153,7 +153,7 @@ class ServerOrchestrator:
             client_class=None,
             required_in_testing=True,
             required_in_miner=True,  # Miners need metagraph data
-            spawn_kwargs={}
+            spawn_kwargs={'start_server': True}  # Miners need RPC server for MetagraphUpdater
         ),
         'position_lock': ServerConfig(
             server_class=None,
