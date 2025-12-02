@@ -127,7 +127,8 @@ class MDDChecker(CacheController):
 
             now = TimeUtil.now_in_millis()
             trade_pair_to_price_sources = self.live_price_fetcher.get_tp_to_sorted_price_sources(
-                list(required_trade_pairs_for_candles)
+                list(required_trade_pairs_for_candles),
+                now
             )
 
             for tp, sources in trade_pair_to_price_sources.items():

@@ -381,7 +381,7 @@ class BaseDataService():
     def instantiate_not_pickleable_objects(self):
         raise NotImplementedError
 
-    def get_closes_websocket(self, trade_pairs: List[TradePair], trade_pair_to_last_order_time_ms) -> dict[str: PriceSource]:
+    def get_closes_websocket(self, trade_pairs: List[TradePair], time_ms) -> dict[str: PriceSource]:
         events = {}
         for trade_pair in trade_pairs:
             symbol = trade_pair.trade_pair
@@ -389,14 +389,13 @@ class BaseDataService():
                 continue
 
             # Get the closest aligned event
-            time_ms = trade_pair_to_last_order_time_ms[trade_pair]
             symbol = trade_pair.trade_pair
             latest_event = self.trade_pair_to_recent_events[symbol].get_closest_event(time_ms)
             events[trade_pair] = latest_event
 
         return events
 
-    def get_closes_rest(self, trade_pairs: List[TradePair]) -> dict[str: float]:
+    def get_closes_rest(self, trade_pairs: List[TradePair], time_ms) -> dict[str: float]:
         pass
 
     def get_websocket_lag_for_trade_pair_s(self, tp: str, now_ms: int) -> float | None:

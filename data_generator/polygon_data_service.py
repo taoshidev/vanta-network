@@ -559,12 +559,12 @@ class PolygonDataService(BaseDataService):
             raise ValueError(f"Unknown symbol: {symbol}")
         return tp
 
-    def get_closes_rest(self, pairs: List[TradePair]) -> dict:
+    def get_closes_rest(self, trade_pairs: List[TradePair], time_ms, live=True) -> dict:
         # In unit test mode, return test price sources instead of making network calls
         if self.running_unit_tests:
             result = {}
-            for trade_pair in pairs:
-                test_price = self._get_test_price_source(trade_pair, TimeUtil.now_in_millis())
+            for trade_pair in trade_pairs:
+                test_price = self._get_test_price_source(trade_pair, time_ms)
                 if test_price:
                     result[trade_pair] = test_price
             return result
@@ -573,7 +573,7 @@ class PolygonDataService(BaseDataService):
         # Multi-threaded fetching of REST data over all requested trade pairs. Max parallelism is 5.
         with ThreadPoolExecutor(max_workers=5) as executor:
             # Dictionary to keep track of futures
-            future_to_trade_pair = {executor.submit(self.get_close_rest, p): p for p in pairs}
+            future_to_trade_pair = {executor.submit(self.get_close_rest, p, time_ms): p for p in trade_pairs}
 
             for future in as_completed(future_to_trade_pair):
                 tp = future_to_trade_pair[future]
@@ -1140,7 +1140,7 @@ if __name__ == "__main__":
         #if tp != TradePair.GBPUSD:
         #    continue
 
-        print('getting close for', tp.trade_pair_id, ':', polygon_data_provider.get_close_rest(tp))
+        print('getting close for', tp.trade_pair_id, ':', polygon_data_provider.get_close_rest(tp, TimeUtil.now_in_millis()))
 
     time.sleep(100000)
 

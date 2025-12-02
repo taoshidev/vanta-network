@@ -4,6 +4,7 @@
 import bittensor as bt
 from typing import Optional
 from pydantic import BaseModel
+from time_util.time_util import TimeUtil
 
 from vali_objects.enums.order_type_enum import OrderType
 
@@ -55,7 +56,9 @@ class PriceSource(BaseModel):
     def get_start_time_ms(self):
         return self.start_ms
 
-    def time_delta_from_now_ms(self, now_ms: int) -> int:
+    def time_delta_from_now_ms(self, now_ms:int = None) -> int:
+        if not now_ms:
+            now_ms = TimeUtil.now_in_millis()
         if self.websocket:
             return abs(now_ms - self.start_ms)
         else:
@@ -63,6 +66,8 @@ class PriceSource(BaseModel):
                        abs(now_ms - self.end_ms))
 
     def parse_best_best_price_legacy(self, now_ms: int):
+        if not now_ms:
+            now_ms = TimeUtil.now_in_millis()
         if self.websocket:
             return self.open
         else:
