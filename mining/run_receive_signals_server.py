@@ -68,8 +68,10 @@ def handle_data():
         signal = Signal(
             trade_pair=trade_pair,
             order_type=OrderType.from_string(data["order_type"].upper()),
-            leverage=float(data["leverage"]),
-            execution_type=data.get("execution_type", "MARKET").upper(),
+            leverage=float(data["leverage"]) if "leverage" in data else None,
+            value=float(data["value"]) if "value" in data else None,
+            quantity=float(data["quantity"]) if "quantity" in data else None,
+            execution_type = ExecutionType.from_string(data.get("execution_type", "MARKET").upper()),
             limit_price=float(data["limit_price"]) if "limit_price" in data else None,
             stop_loss=float(data["stop_loss"]) if "stop_loss" in data else None,
             take_profit=float(data["take_profit"]) if "take_profit" in data else None

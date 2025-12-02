@@ -24,7 +24,9 @@ class Signal(BaseModel):
         Ensure that only ONE of leverage, value, or quantity is filled.
         Exception: BRACKET orders can have all fields as None (will be populated from position).
         """
-        execution_type = values.get('execution_type', ExecutionType.MARKET)
+        execution_type = values.get('execution_type')
+        if execution_type == ExecutionType.LIMIT_CANCEL:
+            return values
 
         fields = ['leverage', 'value', 'quantity']
         filled = [f for f in fields if values.get(f) is not None]
@@ -35,11 +37,33 @@ class Signal(BaseModel):
         return values
 
     @model_validator(mode='before')
+    def check_price_fields(cls, values):
+        execution_type = values.get('execution_type')
+
+        if execution_type == ExecutionType.LIMIT:
+            limit_price = values.get('limit_price')
+            if not limit_price:
+                raise ValueError(f"Limit price must be specified for LIMIT orders")
+
+        elif execution_type == ExecutionType.BRACKET:
+            sl = values.get('stop_loss')
+            tp = values.get('take_profit')
+            if not sl and not tp:
+                raise ValueError(f"Either stop_loss or take_profit must be set for BRACKET orders")
+
+        return values
+
+
+    @model_validator(mode='before')
     def set_size(cls, values):
         """
         Ensure that long orders have positive size, and short orders have negative size,
         applied to all non-None of leverage, value, and quantity.
         """
+        execution_type = values.get('execution_type')
+        if execution_type == ExecutionType.LIMIT_CANCEL:
+            return values
+
         order_type = values['order_type']
 
         # Apply sign correction to leverage, value, and quantity

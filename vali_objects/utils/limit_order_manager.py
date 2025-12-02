@@ -564,7 +564,7 @@ class LimitOrderManager(CacheController):
         orders_to_cancel = []
         if trade_pair in self._limit_orders and miner_hotkey in self._limit_orders[trade_pair]:
             for order in self._limit_orders[trade_pair][miner_hotkey]:
-                if order.src == OrderSource.LIMIT_UNFILLED:
+                if order.src in [OrderSource.LIMIT_UNFILLED, OrderSource.BRACKET_UNFILLED]:
                     orders_to_cancel.append(order)
         return orders_to_cancel
 
