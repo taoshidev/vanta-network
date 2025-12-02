@@ -1443,6 +1443,8 @@ class VantaRestServer(RPCServerBase, APIKeyMixin):
                     'trade_pair': {'trade_pair_id': data.get('trade_pair_id')},
                     'order_type': data.get('order_type', '').upper(),
                     'leverage': data.get('leverage'),
+                    'value': data.get('value'),
+                    'quantity': data.get('quantity'),
                     'execution_type': data.get('execution_type', 'MARKET').upper()
                 }
 

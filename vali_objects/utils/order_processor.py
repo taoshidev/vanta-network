@@ -99,8 +99,6 @@ class OrderProcessor:
             raise SignalException("Missing required field: order_type")
         if not limit_price:
             raise SignalException("must set limit_price for limit order")
-        if leverage is None:
-            raise SignalException("Missing required field: leverage")
 
         # Parse order type
         try:
