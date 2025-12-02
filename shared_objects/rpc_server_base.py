@@ -69,7 +69,7 @@ import threading
 import traceback
 import bittensor as bt
 from abc import ABC, abstractmethod
-from multiprocessing import Process
+from multiprocessing import Process, Event
 from multiprocessing.managers import BaseManager
 from typing import Optional, Callable
 from setproctitle import setproctitle
@@ -1083,7 +1083,6 @@ class RPCServerBase(ABC):
             # ... do other work ...
             # Eventually create client when you know server is ready
         """
-        from multiprocessing import Event
 
         entry_kwargs = {
             'slack_notifier': slack_notifier,

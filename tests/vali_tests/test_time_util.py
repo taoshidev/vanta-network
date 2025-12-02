@@ -8,20 +8,11 @@ Tests TimeUtil functions with proper server/client setup.
 from copy import deepcopy
 from datetime import datetime, timezone
 
-from shared_objects.common_data_server import CommonDataServer
-from shared_objects.metagraph_server import MetagraphServer, MetagraphClient
-from shared_objects.port_manager import PortManager
-from shared_objects.rpc_client_base import RPCClientBase
-from shared_objects.rpc_server_base import RPCServerBase
+from shared_objects.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
 from time_util.time_util import MS_IN_8_HOURS, MS_IN_24_HOURS, TimeUtil
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.position import FEE_V6_TIME_MS, Position
-from vali_objects.utils.challengeperiod_server import ChallengePeriodServer
-from vali_objects.utils.live_price_server import LivePriceFetcherServer, LivePriceFetcherClient
-from vali_objects.utils.position_manager_client import PositionManagerClient
-from vali_objects.utils.position_manager_server import PositionManagerServer
-from vali_objects.utils.contract_server import ContractServer
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair
 from vali_objects.vali_dataclasses.order import Order
@@ -29,20 +20,15 @@ from vali_objects.vali_dataclasses.order import Order
 
 class TestTimeUtil(TestBase):
     """
-    Time utility tests using class-level server setup.
+    Time utility tests using ServerOrchestrator singleton pattern.
 
-    Server infrastructure is started once in setUpClass and shared across all tests.
+    Server infrastructure is managed by ServerOrchestrator and shared across all test classes.
     Per-test isolation is achieved by clearing data state (not restarting servers).
     """
 
-    # Class-level server/client references
-    common_data_server = None
-    metagraph_server = None
-    live_price_fetcher_server = None
+    # Class-level references (set in setUpClass via ServerOrchestrator)
+    orchestrator = None
     live_price_fetcher_client = None
-    contract_server = None
-    challengeperiod_server = None
-    position_server = None
     position_client = None
     metagraph_client = None
 
@@ -54,53 +40,46 @@ class TestTimeUtil(TestBase):
 
     @classmethod
     def setUpClass(cls):
-        """One-time setup: Start all servers (expensive operation done once)."""
-        PortManager.force_kill_all_rpc_ports()
+        """One-time setup: Start all servers using ServerOrchestrator (shared across all test classes)."""
+        # Get the singleton orchestrator and start all required servers
+        cls.orchestrator = ServerOrchestrator.get_instance()
 
-        # Start infrastructure servers
+        # Start all servers in TESTING mode (idempotent - safe if already started by another test class)
         secrets = ValiUtils.get_secrets(running_unit_tests=True)
-        cls.live_price_fetcher_server = LivePriceFetcherServer(
-            secrets=secrets,
-            disable_ws=True,
-            start_server=True,
-            running_unit_tests=True
+        cls.orchestrator.start_all_servers(
+            mode=ServerMode.TESTING,
+            secrets=secrets
         )
-        cls.common_data_server = CommonDataServer(start_server=True)
-        cls.metagraph_server = MetagraphServer(start_server=True, running_unit_tests=True)
-        cls.contract_server = ContractServer(start_server=True, running_unit_tests=True)
-        cls.challengeperiod_server = ChallengePeriodServer(running_unit_tests=True, start_daemon=False)
 
-        # Create clients
-        cls.live_price_fetcher_client = LivePriceFetcherClient()
-        cls.metagraph_client = MetagraphClient()
+        # Get clients from orchestrator (servers guaranteed ready, no connection delays)
+        cls.live_price_fetcher_client = cls.orchestrator.get_client('live_price_fetcher')
+        cls.position_client = cls.orchestrator.get_client('position_manager')
+        cls.metagraph_client = cls.orchestrator.get_client('metagraph')
+
+        # Set test hotkeys for metagraph
         cls.metagraph_client.set_hotkeys([cls.DEFAULT_MINER_HOTKEY])
-
-        # Start position server after dependencies
-        cls.position_server = PositionManagerServer(
-            running_unit_tests=True,
-            start_server=True
-        )
-        cls.position_client = PositionManagerClient()
 
     @classmethod
     def tearDownClass(cls):
-        """One-time teardown: Stop all servers."""
-        RPCClientBase.disconnect_all()
-        RPCServerBase.shutdown_all(force_kill_ports=True)
+        """
+        One-time teardown: No action needed.
+
+        Note: Servers and clients are managed by ServerOrchestrator singleton and shared
+        across all test classes. They will be shut down automatically at process exit.
+        """
+        pass
 
     def setUp(self):
         """Per-test setup: Reset data state (fast - no server restarts)."""
-        # NOTE: Skip super().setUp() to avoid killing ports (servers already running)
-
-        # Clear all data for test isolation
-        self.position_client.clear_all_miner_positions_and_disk()
+        # Clear all data for test isolation (both memory and disk)
+        self.orchestrator.clear_all_test_data()
 
         # Create fresh test data
         self._create_test_data()
 
     def tearDown(self):
         """Per-test teardown: Clear data for next test."""
-        self.position_client.clear_all_miner_positions_and_disk()
+        self.orchestrator.clear_all_test_data()
 
     def _create_test_data(self):
         """Helper to create fresh test data for each test."""

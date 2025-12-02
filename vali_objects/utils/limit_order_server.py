@@ -6,16 +6,6 @@ LimitOrderServer - RPC server for limit order management.
 This server runs in its own process and exposes limit order management via RPC.
 Clients connect using LimitOrderClient.
 
-Usage:
-    # Validator spawns the server at startup
-    from vali_objects.utils.limit_order_server import start_limit_order_server
-
-    process = Process(target=start_limit_order_server, args=(...))
-    process.start()
-
-    # Other processes connect via LimitOrderClient
-    from vali_objects.utils.limit_order_server import LimitOrderClient
-    client = LimitOrderClient()  # Uses ValiConfig.RPC_LIMITORDERMANAGER_PORT
 """
 import time
 
@@ -743,55 +733,3 @@ class LimitOrderClient(RPCClientBase):
             order, position, price_source
         )
 
-
-# ==================== Server Entry Point ====================
-
-def start_limit_order_server(
-    running_unit_tests=False,
-    slack_notifier=None,
-    server_ready=None
-):
-    """
-    Entry point for server process.
-
-    The server creates its own clients internally (forward compatibility pattern):
-    - CommonDataClient (for shutdown_dict)
-    - LivePriceFetcherClient
-    - PositionManagerClient
-    - EliminationClient
-    - MarketOrderManager
-
-    RPC ports are obtained from ValiConfig:
-    - ValiConfig.RPC_LIMITORDERMANAGER_PORT (this server)
-    - ValiConfig.RPC_POSITIONMANAGER_PORT
-    - ValiConfig.RPC_ELIMINATION_PORT
-    - ValiConfig.RPC_COMMONDATA_PORT
-
-    Args:
-        running_unit_tests: Whether running in test mode
-        slack_notifier: Optional SlackNotifier for health check alerts
-        server_ready: Event to signal when server is ready
-    """
-    setproctitle("vali_LimitOrderServerProcess")
-
-    # Create server with auto-start of RPC server and daemon
-    server_instance = LimitOrderServer(
-        running_unit_tests=running_unit_tests,
-        slack_notifier=slack_notifier,
-        start_server=True,
-        start_daemon=True
-    )
-
-    bt.logging.success(f"LimitOrderServer ready on port {ValiConfig.RPC_LIMITORDERMANAGER_PORT}")
-
-    if server_ready:
-        server_ready.set()
-
-    # Block until shutdown (RPCServerBase runs server in background thread)
-    # Shutdown coordinated via ShutdownCoordinator singleton
-    while not ShutdownCoordinator.is_shutdown():
-        time.sleep(1)
-
-    # Graceful shutdown
-    server_instance.shutdown()
-    bt.logging.info("LimitOrderServer process exiting")

@@ -84,6 +84,13 @@ class MarketOrderManager():
         """Get contract client (forward compatibility - created internally)."""
         return self._contract_client
 
+    def clear_order_cooldown_cache(self):
+        """Clear the order cooldown cache. Used for testing."""
+        if not self.running_unit_tests:
+            raise Exception('clear_order_cooldown_cache can only be called in unit test mode')
+        self.last_order_time_cache.clear()
+        bt.logging.debug("Cleared market order cooldown cache")
+
     def _get_or_create_open_position_from_new_order(self, trade_pair: TradePair, order_type: OrderType, order_time_ms: int,
                                         miner_hotkey: str, miner_order_uuid: str, now_ms:int, price_sources, miner_repo_version, account_size):
 

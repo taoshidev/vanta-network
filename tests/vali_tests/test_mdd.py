@@ -38,7 +38,7 @@ class TestMDDChecker(TestBase):
     position_client = None
     elimination_client = None
     metagraph_client = None
-    mdd_checker_server = None
+    mdd_checker_client = None
 
     # Mock patch for price data
     data_patch = None
@@ -90,9 +90,7 @@ class TestMDDChecker(TestBase):
         cls.metagraph_client = cls.orchestrator.get_client('metagraph')
         cls.position_client = cls.orchestrator.get_client('position_manager')
         cls.elimination_client = cls.orchestrator.get_client('elimination')
-
-        # Get MDD checker server reference for test-specific configuration
-        cls.mdd_checker_server = cls.orchestrator.get_server('mdd_checker')
+        cls.mdd_checker_client = cls.orchestrator.get_client('mdd_checker')
 
         # Initialize metagraph with test hotkey
         cls.metagraph_client.set_hotkeys([cls.MINER_HOTKEY])
@@ -119,9 +117,9 @@ class TestMDDChecker(TestBase):
         # Create fresh test data
         self._create_test_data()
 
-        # Reset MDD checker state
-        self.mdd_checker_server.reset_debug_counters()
-        self.mdd_checker_server.price_correction_enabled = False  # Disabled by default, enable per test
+        # Reset MDD checker state via client
+        self.mdd_checker_client.reset_debug_counters()
+        self.mdd_checker_client.price_correction_enabled = False  # Disabled by default, enable per test
 
     def tearDown(self):
         """Per-test teardown: Clear data for next test."""
@@ -230,7 +228,7 @@ class TestMDDChecker(TestBase):
         self.assertTrue(all([x.close > 0 for x in price_sources]))
 
     def test_mdd_price_correction(self):
-        self.mdd_checker_server.price_correction_enabled = True
+        self.mdd_checker_client.price_correction_enabled = True
         self.verify_elimination_data_in_memory_and_disk([])
         o1 = Order(order_type=OrderType.SHORT,
                 leverage=1.0,
@@ -240,16 +238,16 @@ class TestMDDChecker(TestBase):
                 order_uuid="1000")
 
         relevant_position = self.trade_pair_to_default_position[TradePair.BTCUSD]
-        self.mdd_checker_server.last_price_fetch_time_ms = TimeUtil.now_in_millis() - 1000 * 30
-        self.mdd_checker_server.mdd_check()
+        self.mdd_checker_client.last_price_fetch_time_ms = TimeUtil.now_in_millis() - 1000 * 30
+        self.mdd_checker_client.mdd_check()
         # Running mdd_check with no positions should not cause any eliminations but it should write an empty list to disk
         self.verify_elimination_data_in_memory_and_disk([])
 
         self.add_order_to_position_and_save_to_disk(relevant_position, o1)
         self.assertFalse(relevant_position.is_closed_position)
         self.verify_positions_on_disk([relevant_position], assert_all_open=True)
-        self.mdd_checker_server.last_price_fetch_time_ms = TimeUtil.now_in_millis() - 1000 * 30
-        self.mdd_checker_server.mdd_check()
+        self.mdd_checker_client.last_price_fetch_time_ms = TimeUtil.now_in_millis() - 1000 * 30
+        self.mdd_checker_client.mdd_check()
         self.verify_elimination_data_in_memory_and_disk([])
         self.verify_positions_on_disk([relevant_position], assert_all_open=True, verify_positions_same=False, assert_price_changes=True)
 
@@ -271,22 +269,22 @@ class TestMDDChecker(TestBase):
                 processed_ms=2000,
                 order_uuid="2000")
 
-        self.mdd_checker_server.last_price_fetch_time_ms = TimeUtil.now_in_millis()
+        self.mdd_checker_client.last_price_fetch_time_ms = TimeUtil.now_in_millis()
 
         relevant_position = self.trade_pair_to_default_position[TradePair.BTCUSD]
-        self.mdd_checker_server.mdd_check()
+        self.mdd_checker_client.mdd_check()
         # Running mdd_check with no positions should not cause any eliminations but it should write an empty list to disk
         self.verify_elimination_data_in_memory_and_disk([])
 
         self.add_order_to_position_and_save_to_disk(relevant_position, o1)
-        self.mdd_checker_server.mdd_check()
+        self.mdd_checker_client.mdd_check()
         self.assertEqual(relevant_position.is_closed_position, False)
         self.verify_elimination_data_in_memory_and_disk([])
         self.verify_positions_on_disk([relevant_position], assert_all_open=True, verify_positions_same=False, assert_price_changes=True)
 
         self.add_order_to_position_and_save_to_disk(relevant_position, o2)
         self.assertEqual(relevant_position.is_closed_position, False)
-        self.mdd_checker_server.mdd_check()
+        self.mdd_checker_client.mdd_check()
         self.verify_elimination_data_in_memory_and_disk([])
         self.verify_positions_on_disk([relevant_position], assert_all_open=True)
 
@@ -305,14 +303,14 @@ class TestMDDChecker(TestBase):
             order_uuid="1000"
         )
 
-        self.mdd_checker_server.last_price_fetch_time_ms = TimeUtil.now_in_millis()
+        self.mdd_checker_client.last_price_fetch_time_ms = TimeUtil.now_in_millis()
 
         # Running mdd_check with no positions should not cause any eliminations
-        self.mdd_checker_server.mdd_check()
+        self.mdd_checker_client.mdd_check()
         self.verify_elimination_data_in_memory_and_disk([])
 
         self.add_order_to_position_and_save_to_disk(position_btc, o1)
-        self.mdd_checker_server.mdd_check()
+        self.mdd_checker_client.mdd_check()
         self.assertEqual(position_btc.is_closed_position, False)
         self.verify_elimination_data_in_memory_and_disk([])
 
@@ -337,7 +335,7 @@ class TestMDDChecker(TestBase):
         )
 
         self.add_order_to_position_and_save_to_disk(position_eth, o2)
-        self.mdd_checker_server.mdd_check()
+        self.mdd_checker_client.mdd_check()
         positions_from_disk = self.position_client.get_positions_for_one_hotkey(self.MINER_HOTKEY)
         self.assertEqual(len(positions_from_disk), 2)
 

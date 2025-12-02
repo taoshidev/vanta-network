@@ -330,8 +330,6 @@ class DebtLedgerServer(RPCServerBase):
 
         self.running_unit_tests = running_unit_tests
 
-        bt.logging.success("DebtLedgerServer initialized with self._manager pattern")
-
     # ========================================================================
     # PROPERTIES (forward to manager)
     # ========================================================================

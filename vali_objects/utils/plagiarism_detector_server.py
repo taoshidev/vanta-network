@@ -495,8 +495,6 @@ def start_plagiarism_detector_server(
         start_daemon=True
     )
 
-    bt.logging.success(f"PlagiarismDetectorServer ready on port {ValiConfig.RPC_PLAGIARISM_DETECTOR_PORT}")
-
     if server_ready:
         server_ready.set()
 

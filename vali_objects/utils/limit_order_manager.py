@@ -58,10 +58,12 @@ class LimitOrderManager(CacheController):
         from vali_objects.utils.elimination_client import EliminationClient
         self._position_client = PositionManagerClient(
             port=ValiConfig.RPC_POSITIONMANAGER_PORT,
-            connect_immediately=False
+            connect_immediately=False,
+            connection_mode=connection_mode
         )
         self._elimination_client = EliminationClient(
-            connect_immediately=False
+            connect_immediately=False,
+            connection_mode=connection_mode
         )
 
         self.running_unit_tests = running_unit_tests
@@ -948,4 +950,6 @@ class LimitOrderManager(CacheController):
         """
         self._limit_orders.clear()
         self._last_fill_time.clear()
+        # Also clear market order manager's cooldown cache
+        self.market_order_manager.clear_order_cooldown_cache()
         bt.logging.info("Cleared all limit orders from memory")

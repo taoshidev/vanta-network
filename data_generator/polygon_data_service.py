@@ -256,18 +256,23 @@ class PolygonDataService(BaseDataService):
             self.websocket_manager_thread = threading.Thread(target=self.websocket_manager, daemon=True)
             self.websocket_manager_thread.start()
 
-    def set_test_price_source(self, trade_pair: TradePair, price_source: PriceSource) -> None:
+    def set_test_price_source(self, trade_pair: TradePair, price_source: PriceSource | None) -> None:
         """
         Test-only method to inject price sources for specific trade pairs.
         Only works when running_unit_tests=True for safety.
 
         Args:
             trade_pair: TradePair to set price for
-            price_source: PriceSource to return for this trade pair
+            price_source: PriceSource to return for this trade pair, or None to explicitly disable fallback
         """
         if not self.running_unit_tests:
             raise RuntimeError("set_test_price_source can only be used in unit test mode")
         self._test_price_sources[trade_pair] = price_source
+
+        # If price_source is None, we're explicitly saying "no price source for this pair"
+        # Don't inject into RecentEventTracker
+        if price_source is None:
+            return
 
         # ALSO inject into RecentEventTracker so get_ws_price_sources_in_window() can find it
         # This ensures test price sources are visible to daemon code paths like check_and_fill_limit_orders()
@@ -312,7 +317,6 @@ class PolygonDataService(BaseDataService):
         Args:
             trade_pair: TradePair to get price for
             timestamp_ms: Timestamp to use in the returned PriceSource
-            default_timespan_ms: Default timespan for fallback price source
 
         Returns:
             PriceSource if in test mode, None otherwise
@@ -320,9 +324,12 @@ class PolygonDataService(BaseDataService):
         if not self.running_unit_tests:
             return None
 
-        # Check test registry first for specific override
+        # Check test registry first for specific override (including explicit None)
         if trade_pair in self._test_price_sources:
             test_ps = self._test_price_sources[trade_pair]
+            # If explicitly set to None, return None (no price source for this pair)
+            if test_ps is None:
+                return None
             # Clone and update timestamp to match request
             return PriceSource(
                 source=test_ps.source,
@@ -339,7 +346,7 @@ class PolygonDataService(BaseDataService):
                 ask=test_ps.ask
             )
 
-        # Fallback: return default test data if no specific override
+        # Default fallback: return test data if no specific override
         return self.DEFAULT_TESTING_FALLBACK_PRICE_SOURCE
 
     def parse_price_for_forex(self, m, stats=None, is_ws=False) -> (float, float, float):

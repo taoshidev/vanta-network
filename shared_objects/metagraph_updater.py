@@ -367,7 +367,6 @@ class MetagraphUpdater(CacheController):
             name="WeightSetterRPC"
         )
         self.rpc_thread.start()
-        bt.logging.info(f"WeightSetter RPC server started on port {ValiConfig.RPC_WEIGHT_SETTER_PORT}")
 
     # ==================== RPC Methods (exposed to SubtensorWeightCalculator) ====================
 

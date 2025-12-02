@@ -105,8 +105,6 @@ class PositionManager:
         if self.split_positions_on_disk_load:
             self._apply_position_splitting_on_startup()
 
-        bt.logging.success("PositionManager initialized")
-
     def _default_split_stats(self):
         return {
             'n_positions_split': 0,

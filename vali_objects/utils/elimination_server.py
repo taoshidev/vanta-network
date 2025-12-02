@@ -343,6 +343,21 @@ class EliminationServer(RPCServerBase):
         """Check for MDD eliminations."""
         self._manager.handle_mdd_eliminations(iteration_epoch=iteration_epoch)
 
+    def handle_eliminated_miner_rpc(self, hotkey: str,
+                                    trade_pair_to_price_source_dict: dict = None,
+                                    iteration_epoch=None) -> None:
+        """Handle cleanup for eliminated miner (deletes limit orders, closes positions)."""
+        # Convert dict to TradePair objects (RPC can't serialize TradePair directly)
+        from vali_objects.vali_dataclasses.price_source import PriceSource
+        trade_pair_to_price_source = {}
+        if trade_pair_to_price_source_dict:
+            for trade_pair_id, ps_dict in trade_pair_to_price_source_dict.items():
+                trade_pair = TradePair.from_trade_pair_id(trade_pair_id)
+                price_source = PriceSource(**ps_dict) if isinstance(ps_dict, dict) else ps_dict
+                trade_pair_to_price_source[trade_pair] = price_source
+
+        self._manager.handle_eliminated_miner(hotkey, trade_pair_to_price_source, iteration_epoch)
+
     def save_eliminations_rpc(self) -> None:
         """Save eliminations to disk."""
         self._manager.save_eliminations()
@@ -350,6 +365,18 @@ class EliminationServer(RPCServerBase):
     def write_eliminations_to_disk_rpc(self, eliminations: list) -> None:
         """Write eliminations to disk."""
         self._manager.write_eliminations_to_disk(eliminations)
+
+    def load_eliminations_from_disk_rpc(self) -> None:
+        """Load eliminations from disk into memory (for testing recovery scenarios)."""
+        self._manager._load_eliminations_from_disk()
+
+    def refresh_allowed_rpc(self, interval_ms: int) -> bool:
+        """Check if cache refresh is allowed based on time elapsed since last update."""
+        return self._manager.refresh_allowed(interval_ms)
+
+    def set_last_update_time_rpc(self) -> None:
+        """Set the last update time to current time (for cache management)."""
+        self._manager.set_last_update_time()
 
     def get_eliminations_dict_rpc(self) -> Dict[str, dict]:
         """Get eliminations dict (copy)."""
@@ -392,6 +419,18 @@ class EliminationServer(RPCServerBase):
     def get_eliminations_from_disk(self) -> list:
         """Load eliminations from disk"""
         return self._manager.get_eliminations_from_disk()
+
+    def _load_eliminations_from_disk(self):
+        """Load eliminations from disk into memory (for testing recovery scenarios)"""
+        self._manager._load_eliminations_from_disk()
+
+    def refresh_allowed(self, interval_ms: int) -> bool:
+        """Check if cache refresh is allowed"""
+        return self._manager.refresh_allowed(interval_ms)
+
+    def set_last_update_time(self):
+        """Set the last update time"""
+        self._manager.set_last_update_time()
 
     @property
     def first_refresh_ran(self):

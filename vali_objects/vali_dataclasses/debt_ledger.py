@@ -564,8 +564,6 @@ class DebtLedgerManager():
         # Load from disk on startup
         self.load_data_from_disk()
 
-        bt.logging.success("DebtLedgerManager initialized with normal Python dict")
-
     @property
     def contract_manager(self):
         """Get contract client (forward compatibility - created internally)."""

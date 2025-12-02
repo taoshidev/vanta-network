@@ -1,10 +1,10 @@
 # developer: jbonilla
 # Copyright © 2024 Taoshi Inc
 """
-Test PositionLockServer/Client with modern server/client architecture.
+Test PositionLockServer/Client with ServerOrchestrator architecture.
 
 This module includes comprehensive tests for:
-- Server/client RPC architecture (class-level setup)
+- Server/client RPC architecture via ServerOrchestrator
 - Thread safety within single process
 - Multi-process lock coordination
 - Race condition prevention
@@ -14,43 +14,52 @@ import threading
 import unittest
 from multiprocessing import Process, Queue, Value
 
-from shared_objects.port_manager import PortManager
-from shared_objects.rpc_client_base import RPCClientBase
-from shared_objects.rpc_server_base import RPCServerBase
+from shared_objects.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
-from vali_objects.utils.position_lock_server import PositionLockServer, PositionLockClient
+from vali_objects.utils.position_lock_server import PositionLockClient
+from vali_objects.utils.vali_utils import ValiUtils
 
 
 class TestPositionLockBasic(TestBase):
     """
-    Test basic position lock functionality using server/client architecture.
-    Uses class-level server setup for efficiency - server starts once and is shared.
+    Test basic position lock functionality using ServerOrchestrator.
+
+    Servers start once (via singleton orchestrator) and are shared across all test classes.
+    Per-test isolation is achieved by auto-releasing locks (no data state to clear).
     """
 
-    # Class-level server/client references
-    lock_server = None
+    # Class-level references (set in setUpClass via ServerOrchestrator)
+    orchestrator = None
     lock_client = None
 
     @classmethod
     def setUpClass(cls):
-        """One-time setup: Start lock server (expensive operation done once)."""
-        PortManager.force_kill_all_rpc_ports()
+        """One-time setup: Start all servers using ServerOrchestrator (shared across all test classes)."""
+        # Get the singleton orchestrator and start all required servers
+        cls.orchestrator = ServerOrchestrator.get_instance()
 
-        # Start position lock server
-        cls.lock_server = PositionLockServer(start_server=True, running_unit_tests=True)
+        # Start all servers in TESTING mode (idempotent - safe if already started by another test class)
+        secrets = ValiUtils.get_secrets(running_unit_tests=True)
+        cls.orchestrator.start_all_servers(
+            mode=ServerMode.TESTING,
+            secrets=secrets
+        )
 
-        # Create client
-        cls.lock_client = PositionLockClient()
+        # Get position lock client from orchestrator
+        cls.lock_client = cls.orchestrator.get_client('position_lock')
 
     @classmethod
     def tearDownClass(cls):
-        """One-time teardown: Stop server."""
-        RPCClientBase.disconnect_all()
-        RPCServerBase.shutdown_all(force_kill_ports=True)
+        """
+        One-time teardown: No action needed.
+
+        Note: Servers and clients are managed by ServerOrchestrator singleton and shared
+        across all test classes. They will be shut down automatically at process exit.
+        """
+        pass
 
     def setUp(self):
-        """Per-test setup: No server restart needed."""
-        # Skip super().setUp() to avoid killing ports (server already running)
+        """Per-test setup: No server restart needed, locks auto-release."""
         pass
 
     def tearDown(self):
@@ -177,23 +186,34 @@ class TestPositionLockMultiProcess(TestBase):
     - All processes need to acquire locks for the same miner/trade_pair
     - Race conditions must be prevented
 
-    Uses class-level server setup for efficiency.
+    Uses ServerOrchestrator singleton for server lifecycle management.
     """
 
-    # Class-level server reference
-    lock_server = None
+    # Class-level references (set in setUpClass via ServerOrchestrator)
+    orchestrator = None
 
     @classmethod
     def setUpClass(cls):
-        """One-time setup: Start lock server."""
-        PortManager.force_kill_all_rpc_ports()
-        cls.lock_server = PositionLockServer(start_server=True, running_unit_tests=True)
+        """One-time setup: Start all servers using ServerOrchestrator (shared across all test classes)."""
+        # Get the singleton orchestrator and start all required servers
+        cls.orchestrator = ServerOrchestrator.get_instance()
+
+        # Start all servers in TESTING mode (idempotent - safe if already started by another test class)
+        secrets = ValiUtils.get_secrets(running_unit_tests=True)
+        cls.orchestrator.start_all_servers(
+            mode=ServerMode.TESTING,
+            secrets=secrets
+        )
 
     @classmethod
     def tearDownClass(cls):
-        """One-time teardown: Stop server."""
-        RPCClientBase.disconnect_all()
-        RPCServerBase.shutdown_all(force_kill_ports=True)
+        """
+        One-time teardown: No action needed.
+
+        Note: Servers and clients are managed by ServerOrchestrator singleton and shared
+        across all test classes. They will be shut down automatically at process exit.
+        """
+        pass
 
     def setUp(self):
         """Per-test setup: No server restart needed."""
@@ -346,26 +366,41 @@ def _counter_worker(result_queue: Queue, worker_id: int, miner_hotkey: str,
 
 class TestPositionLockBehavior(TestBase):
     """
-    Test specific lock behaviors and edge cases.
-    Uses class-level server setup for efficiency.
+    Test specific lock behaviors and edge cases using ServerOrchestrator.
+
+    Servers start once (via singleton orchestrator) and are shared across all test classes.
+    Per-test isolation is achieved by auto-releasing locks (no data state to clear).
     """
 
-    # Class-level server/client references
-    lock_server = None
+    # Class-level references (set in setUpClass via ServerOrchestrator)
+    orchestrator = None
     lock_client = None
 
     @classmethod
     def setUpClass(cls):
-        """One-time setup: Start lock server."""
-        PortManager.force_kill_all_rpc_ports()
-        cls.lock_server = PositionLockServer(start_server=True, running_unit_tests=True)
-        cls.lock_client = PositionLockClient()
+        """One-time setup: Start all servers using ServerOrchestrator (shared across all test classes)."""
+        # Get the singleton orchestrator and start all required servers
+        cls.orchestrator = ServerOrchestrator.get_instance()
+
+        # Start all servers in TESTING mode (idempotent - safe if already started by another test class)
+        secrets = ValiUtils.get_secrets(running_unit_tests=True)
+        cls.orchestrator.start_all_servers(
+            mode=ServerMode.TESTING,
+            secrets=secrets
+        )
+
+        # Get position lock client from orchestrator
+        cls.lock_client = cls.orchestrator.get_client('position_lock')
 
     @classmethod
     def tearDownClass(cls):
-        """One-time teardown: Stop server."""
-        RPCClientBase.disconnect_all()
-        RPCServerBase.shutdown_all(force_kill_ports=True)
+        """
+        One-time teardown: No action needed.
+
+        Note: Servers and clients are managed by ServerOrchestrator singleton and shared
+        across all test classes. They will be shut down automatically at process exit.
+        """
+        pass
 
     def setUp(self):
         """Per-test setup: No server restart needed."""

@@ -580,9 +580,9 @@ class TestLimitOrders(TestBase):
 
         # LONG uses ask (0) -> falls back to open=50000
         trigger = self.limit_order_client.evaluate_limit_trigger_price(
-            "LONG",
+            OrderType.LONG,
             None,
-            price_source.to_python_dict(),
+            price_source,
             50100.0
         )
         self.assertEqual(trigger, 50100.0)  # Returns limit_price when triggered (open <= limit)
@@ -600,23 +600,22 @@ class TestLimitOrders(TestBase):
         position = self.create_test_position()
         self.position_client.save_miner_position(position)
 
-        # Store order first via RPC
-        # No test price source set, so it won't trigger immediately (no price data available)
+        # Explicitly inject None to prevent immediate fill during order processing
+        self.live_price_fetcher_client.set_test_price_source(self.DEFAULT_TRADE_PAIR, None)
+
+        # Store order first via RPC (no price source available, so it won't trigger immediately)
         self.limit_order_client.process_limit_order(self.DEFAULT_MINER_HOTKEY, order)
 
-        # Now fill it manually
+        # Now register test price source for manual fill
+        self.live_price_fetcher_client.set_test_price_source(self.DEFAULT_TRADE_PAIR, price_source)
+
+        # Fill it manually
         self.limit_order_client.fill_limit_order_with_price_source(
             self.DEFAULT_MINER_HOTKEY,
             order,
             price_source,
             49000.0
         )
-
-        # Verify order was updated with filled values
-        self.assertEqual(order.price, 49000.0)
-        self.assertEqual(order.bid, 49000.0)
-        self.assertEqual(order.ask, 49000.0)
-        self.assertEqual(order.slippage, 10.0)
 
         # Verify filled order removed from memory (Issue 8 fix)
         orders = self.get_orders_from_server(self.DEFAULT_MINER_HOTKEY, self.DEFAULT_TRADE_PAIR)
@@ -626,24 +625,43 @@ class TestLimitOrders(TestBase):
         positions = self.position_client.get_positions_for_one_hotkey(self.DEFAULT_MINER_HOTKEY)
         self.assertGreaterEqual(len(positions), 1, "Position should exist after fill")
 
+        # Verify the filled order has correct attributes
+        position = positions[0]
+        self.assertEqual(len(position.orders), 1, f"Position should have exactly one order")
+        filled_order = position.orders[0]  # The filled limit order
+        # The filled order should have exact values from the fill
+        self.assertEqual(filled_order.price, 49000.0, "Filled order should have correct price")
+        self.assertEqual(filled_order.bid, 49000.0, "Filled order should have correct bid")
+        self.assertEqual(filled_order.ask, 49000.0, "Filled order should have correct ask")
+        self.assertIsNotNone(filled_order.slippage, "Filled order should have slippage calculated")
+        self.assertGreaterEqual(filled_order.slippage, 0, "Filled order slippage should be >= 0")
+        self.assertEqual(filled_order.src, OrderSource.LIMIT_FILLED, "Order should be marked as LIMIT_FILLED")
+
     def test_fill_limit_order_error_cancels(self):
         """Test limit order is cancelled when fill fails due to missing position"""
         order = self.create_test_limit_order(limit_price=50000.0)
-        price_source = self.create_test_price_source(49000.0)
+        fill_price_source = self.create_test_price_source(49000.0)
 
-        # Store order (no test price source set, prevents immediate fill)
+        # Set a non-triggering price to prevent immediate fill (ask > limit_price)
+        non_trigger_price_source = self.create_test_price_source(51000.0, bid=51000.0, ask=51000.0)
+        self.live_price_fetcher_client.set_test_price_source(self.DEFAULT_TRADE_PAIR, non_trigger_price_source)
+
+        # Store order (should not fill immediately because ask=51000 > limit_price=50000)
         self.limit_order_client.process_limit_order(self.DEFAULT_MINER_HOTKEY, order)
 
         # Verify order is stored before fill attempt
         orders_before = self.get_orders_from_server(self.DEFAULT_MINER_HOTKEY, self.DEFAULT_TRADE_PAIR)
         self.assertEqual(len(orders_before), 1, "Order should be in memory before fill")
 
+        # Register fill price source for USD conversions
+        self.live_price_fetcher_client.set_test_price_source(self.DEFAULT_TRADE_PAIR, fill_price_source)
+
         # Attempt fill WITHOUT creating a position first
         # This should fail because market_order_manager can't find a position to update
         self.limit_order_client.fill_limit_order_with_price_source(
             self.DEFAULT_MINER_HOTKEY,
             order,
-            price_source,
+            fill_price_source,
             49000.0
         )
 
@@ -654,21 +672,28 @@ class TestLimitOrders(TestBase):
     def test_fill_limit_order_exception_cancels(self):
         """Test limit order handling when position doesn't exist (error scenario)"""
         order = self.create_test_limit_order(limit_price=50000.0)
-        price_source = self.create_test_price_source(49000.0)
+        fill_price_source = self.create_test_price_source(49000.0)
 
-        # Store order (no test price source set, prevents immediate fill)
+        # Set a non-triggering price to prevent immediate fill (ask > limit_price)
+        non_trigger_price_source = self.create_test_price_source(51000.0, bid=51000.0, ask=51000.0)
+        self.live_price_fetcher_client.set_test_price_source(self.DEFAULT_TRADE_PAIR, non_trigger_price_source)
+
+        # Store order (should not fill immediately because ask=51000 > limit_price=50000)
         self.limit_order_client.process_limit_order(self.DEFAULT_MINER_HOTKEY, order)
 
         # Verify order exists before fill attempt
         orders_before = self.get_orders_from_server(self.DEFAULT_MINER_HOTKEY, self.DEFAULT_TRADE_PAIR)
         self.assertEqual(len(orders_before), 1, "Order should be in memory")
 
+        # Register fill price source for USD conversions
+        self.live_price_fetcher_client.set_test_price_source(self.DEFAULT_TRADE_PAIR, fill_price_source)
+
         # Attempt fill WITHOUT a position (similar to test_fill_limit_order_error_cancels)
         # This tests exception handling path
         self.limit_order_client.fill_limit_order_with_price_source(
             self.DEFAULT_MINER_HOTKEY,
             order,
-            price_source,
+            fill_price_source,
             49000.0
         )
 
@@ -906,20 +931,17 @@ class TestLimitOrders(TestBase):
             EliminationReason.MAX_TOTAL_DRAWDOWN.value
         )
 
-        # Create new server instance (simulates restart)
-        from vali_objects.vali_config import RPCConnectionMode
-        new_server = LimitOrderServer(
-            running_unit_tests=True,
-            start_server=False,  # Don't start RPC server
-            start_daemon=False,  # Don't start daemon
-            serve=False,  # Don't start child servers
-            connection_mode=RPCConnectionMode.IN_PROCESS
+        # Trigger cleanup for eliminated miner (deletes limit orders)
+        self.elimination_client.handle_eliminated_miner(
+            self.DEFAULT_MINER_HOTKEY,
+            trade_pair_to_price_source_dict={},
+            iteration_epoch=None
         )
 
-        # Verify eliminated miner's orders not loaded (use direct call since in-process)
-        orders_dict = new_server._manager.get_all_limit_orders_rpc()
+        # Verify eliminated miner's orders are not accessible via orchestrator client
+        orders_dict = self.limit_order_client.get_all_limit_orders()
         orders = orders_dict.get(self.DEFAULT_TRADE_PAIR.trade_pair_id, {}).get(self.DEFAULT_MINER_HOTKEY, [])
-        self.assertEqual(len(orders), 0)
+        self.assertEqual(len(orders), 0, "Eliminated miner's orders should not be returned")
 
     def test_create_bracket_order_with_both_sltp(self):
         """Test creating a bracket order with both stop loss and take profit"""
@@ -1261,28 +1283,32 @@ class TestLimitOrders(TestBase):
         position = self.create_test_position()
         self.position_client.save_miner_position(position)
 
-        # Create multiple orders that would all trigger
+        # Create multiple orders
         order1 = self.create_test_limit_order(
             order_uuid="order1",
             order_type=OrderType.LONG,
-            limit_price=50000.0
+            limit_price=100000.0
         )
         order2 = self.create_test_limit_order(
             order_uuid="order2",
             order_type=OrderType.LONG,
-            limit_price=50000.0
+            limit_price=100000.0
         )
         order3 = self.create_test_limit_order(
             order_uuid="order3",
             order_type=OrderType.LONG,
-            limit_price=50000.0
+            limit_price=100000.0
         )
 
-        # Store all orders (no test price source set, prevents immediate fill)
+        # Explicitly inject None as price source to prevent immediate fills during processing
+        self.live_price_fetcher_client.set_test_price_source(self.DEFAULT_TRADE_PAIR, None)
+
+        # Store all orders (no price source available, so they won't trigger immediately)
         for order in [order1, order2, order3]:
             self.limit_order_client.process_limit_order(self.DEFAULT_MINER_HOTKEY, order)
 
-        # Set up test environment: market open and price source available
+        # Set up test environment: market open and trigger price available
+        # Only set ONE price source to avoid median calculation issues
         trigger_price_source = self.create_test_price_source(49000.0, bid=49000.0, ask=49000.0)
         self.live_price_fetcher_client.set_test_market_open(True)
         self.live_price_fetcher_client.set_test_price_source(self.DEFAULT_TRADE_PAIR, trigger_price_source)

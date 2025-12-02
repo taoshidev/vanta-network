@@ -13,6 +13,7 @@ from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.exceptions.signal_exception import SignalException
 from vali_objects.position import Position
+from vali_objects.utils.market_order_manager import MarketOrderManager
 from vali_objects.utils.position_manager_client import PositionManagerClient
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair, ValiConfig
@@ -65,7 +66,7 @@ class TestMarketOrderManager(TestBase):
         cls.contract_client = cls.orchestrator.get_client('contract')
 
         # Get market order manager instance from orchestrator
-        cls.market_order_manager = cls.orchestrator.get_market_order_manager()
+        cls.market_order_manager = MarketOrderManager(False, running_unit_tests=True)
 
         # Initialize metagraph with test miners
         cls.metagraph_client.set_hotkeys([cls.DEFAULT_MINER_HOTKEY])
@@ -141,7 +142,8 @@ class TestMarketOrderManager(TestBase):
             position.position_type = position_type
         return position
 
-    def create_test_signal(self, order_type=OrderType.LONG, leverage=1.0, execution_type=ExecutionType.MARKET):
+    @staticmethod
+    def create_test_signal(order_type:OrderType=OrderType.LONG, leverage=1.0, execution_type:ExecutionType=ExecutionType.MARKET):
         """Helper to create signal dict"""
         return {
             "order_type": order_type.name,

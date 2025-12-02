@@ -206,6 +206,32 @@ class EliminationClient(RPCClientBase):
         """Write eliminations to disk."""
         self._server.write_eliminations_to_disk_rpc(eliminations)
 
+    def load_eliminations_from_disk(self) -> None:
+        """Load eliminations from disk into memory (for testing recovery scenarios)."""
+        self._server.load_eliminations_from_disk_rpc()
+
+    def reload_from_disk(self) -> None:
+        """Alias for load_eliminations_from_disk for backward compatibility."""
+        self.load_eliminations_from_disk()
+
+    # ==================== Cache Timing Methods ====================
+
+    def refresh_allowed(self, interval_ms: int) -> bool:
+        """
+        Check if cache refresh is allowed based on time elapsed since last update.
+
+        Args:
+            interval_ms: Minimum interval in milliseconds between refreshes
+
+        Returns:
+            True if refresh is allowed, False otherwise
+        """
+        return self._server.refresh_allowed_rpc(interval_ms)
+
+    def set_last_update_time(self) -> None:
+        """Set the last update time to current time (for cache management)."""
+        self._server.set_last_update_time_rpc()
+
     # ==================== Departed Hotkeys Methods ====================
 
     def is_hotkey_re_registered(self, hotkey: str) -> bool:
@@ -250,6 +276,23 @@ class EliminationClient(RPCClientBase):
     def handle_mdd_eliminations(self, iteration_epoch=None) -> None:
         """Check for maximum drawdown eliminations."""
         self._server.handle_mdd_eliminations_rpc(
+            iteration_epoch=iteration_epoch
+        )
+
+    def handle_eliminated_miner(self, hotkey: str,
+                               trade_pair_to_price_source_dict: dict = None,
+                               iteration_epoch=None) -> None:
+        """
+        Handle cleanup for eliminated miner (deletes limit orders, closes positions).
+
+        Args:
+            hotkey: The hotkey to clean up
+            trade_pair_to_price_source_dict: Dict mapping trade_pair_id (str) to price_source dict
+            iteration_epoch: Optional iteration epoch for validation
+        """
+        self._server.handle_eliminated_miner_rpc(
+            hotkey,
+            trade_pair_to_price_source_dict=trade_pair_to_price_source_dict,
             iteration_epoch=iteration_epoch
         )
 

@@ -110,9 +110,30 @@ class PerfLedgerClient(RPCClientBase):
             hotkeys=hotkeys
         )
 
-    def get_perf_ledger_eliminations(self) -> list:
-        """Get performance ledger eliminations."""
-        return self._server.get_perf_ledger_eliminations_rpc()
+    def get_perf_ledger_eliminations(self, first_fetch: bool = False) -> list:
+        """
+        Get performance ledger eliminations.
+
+        Args:
+            first_fetch: If True, load from disk instead of memory
+
+        Returns:
+            List of elimination dictionaries
+        """
+        return self._server.get_perf_ledger_eliminations_rpc(first_fetch=first_fetch)
+
+    def write_perf_ledger_eliminations_to_disk(self, eliminations: list) -> None:
+        """
+        Write performance ledger eliminations to disk.
+
+        Args:
+            eliminations: List of elimination dictionaries to write
+        """
+        self._server.write_perf_ledger_eliminations_to_disk_rpc(eliminations)
+
+    def clear_perf_ledger_eliminations(self) -> None:
+        """Clear all perf ledger eliminations in memory (for testing)."""
+        self._server.clear_perf_ledger_eliminations_rpc()
 
     def save_perf_ledgers(self, perf_ledgers: dict) -> None:
         """
@@ -372,9 +393,30 @@ class PerfLedgerServer(RPCServerBase):
             hotkeys=hotkeys
         )
 
-    def get_perf_ledger_eliminations_rpc(self) -> list:
-        """Get performance ledger eliminations via RPC."""
-        return list(self._manager.get_perf_ledger_eliminations())
+    def get_perf_ledger_eliminations_rpc(self, first_fetch: bool = False) -> list:
+        """
+        Get performance ledger eliminations via RPC.
+
+        Args:
+            first_fetch: If True, load from disk instead of memory
+
+        Returns:
+            List of elimination dictionaries
+        """
+        return list(self._manager.get_perf_ledger_eliminations(first_fetch=first_fetch))
+
+    def write_perf_ledger_eliminations_to_disk_rpc(self, eliminations: list) -> None:
+        """
+        Write performance ledger eliminations to disk via RPC.
+
+        Args:
+            eliminations: List of elimination dictionaries to write
+        """
+        self._manager.write_perf_ledger_eliminations_to_disk(eliminations)
+
+    def clear_perf_ledger_eliminations_rpc(self) -> None:
+        """Clear all perf ledger eliminations in memory via RPC (for testing)."""
+        self._manager.pl_elimination_rows.clear()
 
     def save_perf_ledgers_rpc(self, perf_ledgers: dict) -> None:
         """Save performance ledgers via RPC."""

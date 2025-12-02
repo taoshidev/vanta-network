@@ -134,6 +134,26 @@ class MDDCheckerServer(RPCServerBase):
         """
         self._checker.mdd_check(iteration_epoch=iteration_epoch)
 
+    def reset_debug_counters_rpc(self) -> None:
+        """Reset debug counters via RPC."""
+        self._checker.reset_debug_counters()
+
+    def get_price_correction_enabled_rpc(self) -> bool:
+        """Get price correction enabled flag via RPC."""
+        return self._checker.price_correction_enabled
+
+    def set_price_correction_enabled_rpc(self, value: bool) -> None:
+        """Set price correction enabled flag via RPC."""
+        self._checker.price_correction_enabled = value
+
+    def get_last_price_fetch_time_ms_rpc(self) -> int:
+        """Get last price fetch time via RPC."""
+        return self._checker.last_price_fetch_time_ms
+
+    def set_last_price_fetch_time_ms_rpc(self, value: int) -> None:
+        """Set last price fetch time via RPC."""
+        self._checker.last_price_fetch_time_ms = value
+
     # ==================== Direct Access Methods (for backward compatibility in tests) ====================
 
     def reset_debug_counters(self):

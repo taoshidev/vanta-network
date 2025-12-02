@@ -533,8 +533,6 @@ class EmissionsLedgerManager:
         self.subtensor = None
         self.live_price_fetcher = None
 
-        if rate_limit_per_second < 10:
-            bt.logging.warning(f"Rate limit set to {rate_limit_per_second} req/sec - queries will be slow")
         self.load_from_disk()
         bt.logging.info("EmissionsLedgerManager initialized (non-pickleable components will be lazy-initialized)")
 
@@ -1028,6 +1026,8 @@ class EmissionsLedgerManager:
         self.instantiate_non_pickleable_components()
         start_exec_time = time.time()
         bt.logging.info("Building emissions ledgers for all hotkeys (aligned with perf ledgers)")
+        if self.rate_limit_per_second < 10:
+            bt.logging.warning(f"Emissions ledger network rate limit set to {self.rate_limit_per_second} req/sec - queries will be slow")
 
         # Get all perf ledgers (portfolio only) to use as checkpoint reference
         all_perf_ledgers: dict[str, 'PerfLedger'] = self._perf_ledger_client.get_perf_ledgers(
@@ -1788,6 +1788,9 @@ class EmissionsLedgerManager:
         """
         if lag_time_ms is None:
             lag_time_ms = self.DEFAULT_LAG_TIME_MS
+
+        if self.rate_limit_per_second < 10:
+            bt.logging.warning(f"Emissions ledger network rate limit set to {self.rate_limit_per_second} req/sec - queries will be slow")
 
         start_time = time.time()
 

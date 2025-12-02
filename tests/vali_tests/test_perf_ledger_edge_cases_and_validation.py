@@ -385,69 +385,76 @@ class TestPerfLedgerEdgeCasesAndValidation(TestBase):
                         current_ms += 60000  # 1 minute
             
             return candles
-        
+
         mock_pds.unified_candle_fetcher.side_effect = mock_unified_candle_fetcher
         mock_pds.tp_to_mfs = {}
-        mock_lpf.return_value.polygon_data_service = mock_pds
-        
-        plm = PerfLedgerManager(
-            running_unit_tests=True,
-            parallel_mode=ParallelizationMode.SERIAL,
-            is_backtesting=True,  # Ensure we process historical data
-        )
-        
-        base_time = self.now_ms - (20 * MS_IN_24_HOURS)
-        
-        # Create losing positions to test MDD
-        losses = [
-            ("loss1", 50000.0, 49000.0),  # -2%
-            ("loss2", 49000.0, 47000.0),  # -4%
-            ("loss3", 47000.0, 45000.0),  # -4.3%
-            ("recovery", 45000.0, 46000.0),  # +2.2%
-        ]
-        
-        for i, (name, open_price, close_price) in enumerate(losses):
-            # Add small offset to prevent timestamp collisions between positions
-            open_time = base_time + (i * MS_IN_24_HOURS) + (i * 1000)  # Add 1 second offset per position
-            close_time = base_time + ((i + 1) * MS_IN_24_HOURS) - 1000  # Close 1 second before next position starts
-            
-            position = self._create_position(
-                name, TradePair.BTCUSD,
-                open_time,
-                close_time,
-                open_price, close_price, OrderType.LONG
+
+        # Patch the polygon_data_service on the live price fetcher client
+        original_pds = self.live_price_fetcher_client.polygon_data_service
+        self.live_price_fetcher_client.polygon_data_service = mock_pds
+
+        try:
+            plm = PerfLedgerManager(
+                running_unit_tests=True,
+                parallel_mode=ParallelizationMode.SERIAL,
+                is_backtesting=True,  # Ensure we process historical data
             )
-            self.position_client.save_miner_position(position)
-        
-        # Update incrementally to build up state properly
-        current_time = base_time
-        step_size = 12 * 60 * 60 * 1000  # 12 hours
-        final_time = base_time + (10 * MS_IN_24_HOURS)
-        
-        while current_time < final_time:
-            next_time = min(current_time + step_size, final_time)
-            plm.update(t_ms=next_time)
-            current_time = next_time
-        
-        # Check MDD
-        bundles = plm.get_perf_ledgers(portfolio_only=False)
-        self.assertIn(self.test_hotkey, bundles, f"Should have bundles for test miner {self.test_hotkey}")
-        self.assertIn(TradePair.BTCUSD.trade_pair_id, bundles[self.test_hotkey], "Should have BTC ledger")
-        btc_ledger = bundles[self.test_hotkey][TradePair.BTCUSD.trade_pair_id]
-        
-        # MDD should be less than 1.0 (indicating drawdown)
-        # Find a checkpoint with actual updates (n_updates > 0)
-        checkpoint_with_data = None
-        for cp in reversed(btc_ledger.cps):
-            if cp.n_updates > 0:
-                checkpoint_with_data = cp
-                break
-        
-        if checkpoint_with_data:
-            self.assertLess(checkpoint_with_data.mdd, 1.0, 
-                          f"Should have drawdown with losing positions. MDD={checkpoint_with_data.mdd}")
-        else:
-            self.fail("No checkpoint with updates found")
+
+            base_time = self.now_ms - (20 * MS_IN_24_HOURS)
+
+            # Create losing positions to test MDD
+            losses = [
+                ("loss1", 50000.0, 49000.0),  # -2%
+                ("loss2", 49000.0, 47000.0),  # -4%
+                ("loss3", 47000.0, 45000.0),  # -4.3%
+                ("recovery", 45000.0, 46000.0),  # +2.2%
+            ]
+
+            for i, (name, open_price, close_price) in enumerate(losses):
+                # Add small offset to prevent timestamp collisions between positions
+                open_time = base_time + (i * MS_IN_24_HOURS) + (i * 1000)  # Add 1 second offset per position
+                close_time = base_time + ((i + 1) * MS_IN_24_HOURS) - 1000  # Close 1 second before next position starts
+
+                position = self._create_position(
+                    name, TradePair.BTCUSD,
+                    open_time,
+                    close_time,
+                    open_price, close_price, OrderType.LONG
+                )
+                self.position_client.save_miner_position(position)
+
+            # Update incrementally to build up state properly
+            current_time = base_time
+            step_size = 12 * 60 * 60 * 1000  # 12 hours
+            final_time = base_time + (10 * MS_IN_24_HOURS)
+
+            while current_time < final_time:
+                next_time = min(current_time + step_size, final_time)
+                plm.update(t_ms=next_time)
+                current_time = next_time
+
+            # Check MDD
+            bundles = plm.get_perf_ledgers(portfolio_only=False)
+            self.assertIn(self.test_hotkey, bundles, f"Should have bundles for test miner {self.test_hotkey}")
+            self.assertIn(TradePair.BTCUSD.trade_pair_id, bundles[self.test_hotkey], "Should have BTC ledger")
+            btc_ledger = bundles[self.test_hotkey][TradePair.BTCUSD.trade_pair_id]
+
+            # MDD should be less than 1.0 (indicating drawdown)
+            # Find a checkpoint with actual updates (n_updates > 0)
+            checkpoint_with_data = None
+            for cp in reversed(btc_ledger.cps):
+                if cp.n_updates > 0:
+                    checkpoint_with_data = cp
+                    break
+
+            if checkpoint_with_data:
+                self.assertLess(checkpoint_with_data.mdd, 1.0,
+                              f"Should have drawdown with losing positions. MDD={checkpoint_with_data.mdd}")
+            else:
+                self.fail("No checkpoint with updates found")
+        finally:
+            # Restore original polygon_data_service
+            self.live_price_fetcher_client.polygon_data_service = original_pds
 
     def test_fee_edge_cases(self):
         """Test edge cases in fee calculations."""

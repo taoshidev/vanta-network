@@ -16,12 +16,7 @@ from vali_objects.utils.auto_sync import PositionSyncer
 from vali_objects.utils.validator_sync_base import AUTO_SYNC_ORDER_LAG_MS
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.vali_dataclasses.order import Order
-from vali_objects.utils.live_price_fetcher import LivePriceFetcherClient
 from vali_objects.utils.vali_utils import ValiUtils
-from vali_objects.utils.position_manager_client import PositionManagerClient
-from vali_objects.vali_dataclasses.perf_ledger_client import PerfLedgerClient
-from vali_objects.utils.challengeperiod_client import ChallengePeriodClient
-from vali_objects.utils.elimination_client import EliminationClient
 
 
 class TestAutoSyncTxtFiles(TestBase):

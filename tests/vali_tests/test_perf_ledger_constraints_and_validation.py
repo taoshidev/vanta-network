@@ -1608,198 +1608,210 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
                     current_ms += step
             
             return candles
-        
-        # Note: Mock setup removed - using real price fetching through servers
 
-        # Create PerfLedgerManager with mocked price fetcher
-        # Set is_backtesting=True to avoid the ledger window cutoff
-        plm = PerfLedgerManager(
-            running_unit_tests=True,
-            parallel_mode=ParallelizationMode.SERIAL,
-            is_backtesting=True,  # This prevents the OUTSIDE_WINDOW shortcut
-        )
-        plm.clear_all_ledger_data()
-        
-        # Create open positions for multiple assets
-        positions = []
-        for tp, start_price in [
-            (TradePair.BTCUSD, 50000.0),
-            (TradePair.ETHUSD, 3000.0),
-            (TradePair.EURUSD, 1.1000),
-        ]:
-            position = Position(
-                miner_hotkey=self.test_hotkey,
-                position_uuid=f"{tp.trade_pair_id}_tracking_test",
-                open_ms=base_time,
-                trade_pair=tp,
-                account_size=self.DEFAULT_ACCOUNT_SIZE,
-                orders=[Order(
-                    price=start_price,
-                    processed_ms=base_time,
-                    order_uuid=f"{tp.trade_pair_id}_open",
-                    trade_pair=tp,
-                    order_type=OrderType.LONG,
-                    leverage=1.0
-                )],
-                position_type=OrderType.LONG,
+        # Mock the unified_candle_fetcher to provide test price data
+        mock_pds = Mock()
+        mock_pds.unified_candle_fetcher.side_effect = mock_unified_candle_fetcher
+        mock_pds.tp_to_mfs = {}
+
+        # Patch the polygon_data_service on the live price fetcher client
+        original_pds = self.live_price_fetcher_client.polygon_data_service
+        self.live_price_fetcher_client.polygon_data_service = mock_pds
+
+        try:
+            # Create PerfLedgerManager with mocked price fetcher
+            # Set is_backtesting=True to avoid the ledger window cutoff
+            plm = PerfLedgerManager(
+                running_unit_tests=True,
+                parallel_mode=ParallelizationMode.SERIAL,
+                is_backtesting=True,  # This prevents the OUTSIDE_WINDOW shortcut
             )
-            position.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
-            positions.append(position)
-            self.position_client.save_miner_position(position)
-        
-        # Important: For open positions to get prices tracked, we need to ensure the ledger
-        # thinks there's been trading activity. Let's force a checkpoint update by
-        # aligning time to checkpoint boundaries
-        checkpoint_duration = 12 * 60 * 60 * 1000  # 12 hours
-        aligned_base_time = (base_time // checkpoint_duration) * checkpoint_duration
-        
-        # First update - align to next checkpoint boundary
-        update_time_1 = aligned_base_time + checkpoint_duration
-        
-        # Add debug to understand what's happening
-        import logging
-        logging.basicConfig(level=logging.DEBUG)
-        
-        # Mock market calendar to ensure it returns open
-        mock_market_calendar = Mock()
-        mock_market_calendar.is_market_open.return_value = True
-        plm.market_calendar = mock_market_calendar
-        
-        print(f"Base time: {base_time} ({TimeUtil.millis_to_formatted_date_str(base_time)})")
-        print(f"Update time: {update_time_1} ({TimeUtil.millis_to_formatted_date_str(update_time_1)})")
-        print(f"Time difference: {(update_time_1 - base_time) / 3600000} hours")
-        
-        # Do initial update to establish ledger state at base_time
-        print("\nDoing initial update to create ledger bundles...")
-        plm.update(t_ms=base_time)
-        
-        # Now do incremental updates to build up to the target time
-        # This avoids the large time jump validation error
-        print(f"\nDoing incremental updates from base_time to update_time_1")
-        current_time = base_time
-        step_size = 12 * 60 * 60 * 1000  # 12 hours - matches checkpoint duration
-        
-        while current_time < update_time_1:
-            next_time = min(current_time + step_size, update_time_1)
-            print(f"  Updating to {TimeUtil.millis_to_formatted_date_str(next_time)}")
-            plm.update(t_ms=next_time)
-            current_time = next_time
-        
-        # Get ledgers and verify price tracking
-        bundles_1 = plm.get_perf_ledgers(portfolio_only=False)
-        
-        # Check if the test_hotkey exists in bundles
-        if self.test_hotkey not in bundles_1:
-            self.fail(f"Test hotkey '{self.test_hotkey}' not found in bundles. Available keys: {list(bundles_1.keys())}")
-        
-        portfolio_ledger_1 = bundles_1[self.test_hotkey][TP_ID_PORTFOLIO]
-        
-        # Debug: Print what we have
-        print(f"\nPortfolio ledger last_known_prices: {portfolio_ledger_1.last_known_prices}")
-        print(f"Portfolio ledger checkpoints: {len(portfolio_ledger_1.cps)}")
-        if portfolio_ledger_1.cps:
-            print(f"Last checkpoint update time: {portfolio_ledger_1.cps[-1].last_update_ms}")
-            print(f"Last checkpoint n_updates: {portfolio_ledger_1.cps[-1].n_updates}")
-        
-        # Check individual ledgers too
-        for tp_id in [TradePair.BTCUSD.trade_pair_id, TradePair.ETHUSD.trade_pair_id, TradePair.EURUSD.trade_pair_id]:
-            if tp_id in bundles_1[self.test_hotkey]:
-                ledger = bundles_1[self.test_hotkey][tp_id]
-                print(f"{tp_id} ledger: checkpoints={len(ledger.cps)}, last_update={ledger.last_update_ms}")
-                if hasattr(ledger, 'last_known_prices'):
-                    print(f"  last_known_prices: {ledger.last_known_prices}")
-        
-        # Check if positions are open
-        for p in positions:
-            print(f"Position {p.trade_pair.trade_pair_id}: is_open={p.is_open_position}, is_closed={p.is_closed_position}")
-            print(f"  Orders: {len(p.orders)}, last order time: {p.orders[-1].processed_ms if p.orders else 'N/A'}")
-        
-        # Debug: Check if prices were populated in trade_pair_to_price_info
-        if hasattr(plm, 'trade_pair_to_price_info'):
-            print(f"\nPrice info keys: {list(plm.trade_pair_to_price_info.keys())}")
-            for mode in plm.trade_pair_to_price_info:
-                print(f"  Mode {mode}: {list(plm.trade_pair_to_price_info[mode].keys())}")
-        
-        # Skip the rest of the test if there was an error during update
-        # The important part is that last_known_prices was populated
-        if len(portfolio_ledger_1.last_known_prices) > 0:
-            print("\n✅ SUCCESS: Price continuity tracking is working!")
-            print(f"   Tracked {len(portfolio_ledger_1.last_known_prices)} trade pairs")
-            for tp_id, (price, timestamp) in portfolio_ledger_1.last_known_prices.items():
-                print(f"   - {tp_id}: price={price:.2f}, time={TimeUtil.millis_to_formatted_date_str(timestamp)}")
-        
-        # Verify all three positions have prices tracked
-        # Filter out _prev entries to count only current prices
-        current_prices = {k: v for k, v in portfolio_ledger_1.last_known_prices.items() if not k.endswith('_prev')}
-        self.assertEqual(len(current_prices), 3, 
-                        f"Expected 3 tracked prices, got {len(current_prices)}. "
-                        f"Tracked: {list(current_prices.keys())}")
-        
-        # Verify the prices are reasonable (based on our mock data)
-        btc_price, btc_time = portfolio_ledger_1.last_known_prices[TradePair.BTCUSD.trade_pair_id]
-        eth_price, eth_time = portfolio_ledger_1.last_known_prices[TradePair.ETHUSD.trade_pair_id]
-        eur_price, eur_time = portfolio_ledger_1.last_known_prices[TradePair.EURUSD.trade_pair_id]
-        
-        # Note: Actual prices might be slightly different due to checkpoint alignment
-        # So we'll check they're in the expected range
-        self.assertGreater(btc_price, 50000.0)  # Should have increased
-        self.assertLess(eth_price, 3000.0)     # Should have decreased
-        self.assertGreater(eur_price, 1.1000)  # Should have increased
-        
-        # Test cleanup functionality separately
-        # Create a new ETH position that's already closed from the start
-        closed_eth_position = Position(
-            miner_hotkey=self.test_hotkey,
-            position_uuid="eth_closed_test",
-            open_ms=base_time - 7200000,  # 2 hours before base
-            close_ms=base_time - 3600000,  # 1 hour before base
-            trade_pair=TradePair.ETHUSD,
-            account_size=self.DEFAULT_ACCOUNT_SIZE,
-            orders=[
-                Order(
-                    price=2950.0,
-                    processed_ms=base_time - 7200000,
-                    order_uuid="eth_closed_open",
-                    trade_pair=TradePair.ETHUSD,
-                    order_type=OrderType.SHORT,
-                    leverage=-1.0
-                ),
-                Order(
-                    price=2920.0,
-                    processed_ms=base_time - 3600000,
-                    order_uuid="eth_closed_close",
-                    trade_pair=TradePair.ETHUSD,
-                    order_type=OrderType.FLAT,
-                    leverage=0.0
+            plm.clear_all_ledger_data()
+
+            # Create open positions for multiple assets
+            positions = []
+            for tp, start_price in [
+                (TradePair.BTCUSD, 50000.0),
+                (TradePair.ETHUSD, 3000.0),
+                (TradePair.EURUSD, 1.1000),
+            ]:
+                position = Position(
+                    miner_hotkey=self.test_hotkey,
+                    position_uuid=f"{tp.trade_pair_id}_tracking_test",
+                    open_ms=base_time,
+                    trade_pair=tp,
+                    account_size=self.DEFAULT_ACCOUNT_SIZE,
+                    orders=[Order(
+                        price=start_price,
+                        processed_ms=base_time,
+                        order_uuid=f"{tp.trade_pair_id}_open",
+                        trade_pair=tp,
+                        order_type=OrderType.LONG,
+                        leverage=1.0
+                    )],
+                    position_type=OrderType.LONG,
                 )
-            ],
-            position_type=OrderType.FLAT,
-            is_closed_position=True
-        )
-        closed_eth_position.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
-        self.position_client.save_miner_position(closed_eth_position)
+                position.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
+                positions.append(position)
+                self.position_client.save_miner_position(position)
         
-        # Do another update to verify prices are still tracked for open positions only
-        update_time_2 = update_time_1 + step_size
-        print(f"\nDoing second update to {TimeUtil.millis_to_formatted_date_str(update_time_2)}")
-        plm.update(t_ms=update_time_2)
+            # Important: For open positions to get prices tracked, we need to ensure the ledger
+            # thinks there's been trading activity. Let's force a checkpoint update by
+            # aligning time to checkpoint boundaries
+            checkpoint_duration = 12 * 60 * 60 * 1000  # 12 hours
+            aligned_base_time = (base_time // checkpoint_duration) * checkpoint_duration
         
-        bundles_2 = plm.get_perf_ledgers(portfolio_only=False)
-        portfolio_ledger_2 = bundles_2[self.test_hotkey][TP_ID_PORTFOLIO]
+            # First update - align to next checkpoint boundary
+            update_time_1 = aligned_base_time + checkpoint_duration
         
-        # After adding a closed ETH position, the cleanup logic will remove ETH from tracking
-        # because it processes all positions for that trade pair together
-        print(f"\nAfter second update:")
-        print(f"Portfolio ledger last_known_prices: {portfolio_ledger_2.last_known_prices}")
+            # Add debug to understand what's happening
+            import logging
+            logging.basicConfig(level=logging.DEBUG)
         
-        # The system correctly cleaned up ETHUSD when it found a closed position for that pair
-        # We should have 2 current prices (BTCUSD, EURUSD) and 2 previous prices
-        current_prices_2 = {k: v for k, v in portfolio_ledger_2.last_known_prices.items() if not k.endswith('_prev')}
-        self.assertEqual(len(current_prices_2), 2,
-                        f"ETHUSD should be removed after closed position is added. Current prices: {list(current_prices_2.keys())}")
-        self.assertNotIn(TradePair.ETHUSD.trade_pair_id, current_prices_2,
-                        "ETHUSD should not be in current prices after position closed")
+            # Mock market calendar to ensure it returns open
+            mock_market_calendar = Mock()
+            mock_market_calendar.is_market_open.return_value = True
+            plm.market_calendar = mock_market_calendar
         
+            print(f"Base time: {base_time} ({TimeUtil.millis_to_formatted_date_str(base_time)})")
+            print(f"Update time: {update_time_1} ({TimeUtil.millis_to_formatted_date_str(update_time_1)})")
+            print(f"Time difference: {(update_time_1 - base_time) / 3600000} hours")
+        
+            # Do initial update to establish ledger state at base_time
+            print("\nDoing initial update to create ledger bundles...")
+            plm.update(t_ms=base_time)
+        
+            # Now do incremental updates to build up to the target time
+            # This avoids the large time jump validation error
+            print(f"\nDoing incremental updates from base_time to update_time_1")
+            current_time = base_time
+            step_size = 12 * 60 * 60 * 1000  # 12 hours - matches checkpoint duration
+        
+            while current_time < update_time_1:
+                next_time = min(current_time + step_size, update_time_1)
+                print(f"  Updating to {TimeUtil.millis_to_formatted_date_str(next_time)}")
+                plm.update(t_ms=next_time)
+                current_time = next_time
+        
+            # Get ledgers and verify price tracking
+            bundles_1 = plm.get_perf_ledgers(portfolio_only=False)
+        
+            # Check if the test_hotkey exists in bundles
+            if self.test_hotkey not in bundles_1:
+                self.fail(f"Test hotkey '{self.test_hotkey}' not found in bundles. Available keys: {list(bundles_1.keys())}")
+        
+            portfolio_ledger_1 = bundles_1[self.test_hotkey][TP_ID_PORTFOLIO]
+        
+            # Debug: Print what we have
+            print(f"\nPortfolio ledger last_known_prices: {portfolio_ledger_1.last_known_prices}")
+            print(f"Portfolio ledger checkpoints: {len(portfolio_ledger_1.cps)}")
+            if portfolio_ledger_1.cps:
+                print(f"Last checkpoint update time: {portfolio_ledger_1.cps[-1].last_update_ms}")
+                print(f"Last checkpoint n_updates: {portfolio_ledger_1.cps[-1].n_updates}")
+        
+            # Check individual ledgers too
+            for tp_id in [TradePair.BTCUSD.trade_pair_id, TradePair.ETHUSD.trade_pair_id, TradePair.EURUSD.trade_pair_id]:
+                if tp_id in bundles_1[self.test_hotkey]:
+                    ledger = bundles_1[self.test_hotkey][tp_id]
+                    print(f"{tp_id} ledger: checkpoints={len(ledger.cps)}, last_update={ledger.last_update_ms}")
+                    if hasattr(ledger, 'last_known_prices'):
+                        print(f"  last_known_prices: {ledger.last_known_prices}")
+        
+            # Check if positions are open
+            for p in positions:
+                print(f"Position {p.trade_pair.trade_pair_id}: is_open={p.is_open_position}, is_closed={p.is_closed_position}")
+                print(f"  Orders: {len(p.orders)}, last order time: {p.orders[-1].processed_ms if p.orders else 'N/A'}")
+        
+            # Debug: Check if prices were populated in trade_pair_to_price_info
+            if hasattr(plm, 'trade_pair_to_price_info'):
+                print(f"\nPrice info keys: {list(plm.trade_pair_to_price_info.keys())}")
+                for mode in plm.trade_pair_to_price_info:
+                    print(f"  Mode {mode}: {list(plm.trade_pair_to_price_info[mode].keys())}")
+        
+            # Skip the rest of the test if there was an error during update
+            # The important part is that last_known_prices was populated
+            if len(portfolio_ledger_1.last_known_prices) > 0:
+                print("\n✅ SUCCESS: Price continuity tracking is working!")
+                print(f"   Tracked {len(portfolio_ledger_1.last_known_prices)} trade pairs")
+                for tp_id, (price, timestamp) in portfolio_ledger_1.last_known_prices.items():
+                    print(f"   - {tp_id}: price={price:.2f}, time={TimeUtil.millis_to_formatted_date_str(timestamp)}")
+        
+            # Verify all three positions have prices tracked
+            # Filter out _prev entries to count only current prices
+            current_prices = {k: v for k, v in portfolio_ledger_1.last_known_prices.items() if not k.endswith('_prev')}
+            self.assertEqual(len(current_prices), 3, 
+                            f"Expected 3 tracked prices, got {len(current_prices)}. "
+                            f"Tracked: {list(current_prices.keys())}")
+        
+            # Verify the prices are reasonable (based on our mock data)
+            btc_price, btc_time = portfolio_ledger_1.last_known_prices[TradePair.BTCUSD.trade_pair_id]
+            eth_price, eth_time = portfolio_ledger_1.last_known_prices[TradePair.ETHUSD.trade_pair_id]
+            eur_price, eur_time = portfolio_ledger_1.last_known_prices[TradePair.EURUSD.trade_pair_id]
+        
+            # Note: Actual prices might be slightly different due to checkpoint alignment
+            # So we'll check they're in the expected range
+            self.assertGreater(btc_price, 50000.0)  # Should have increased
+            self.assertLess(eth_price, 3000.0)     # Should have decreased
+            self.assertGreater(eur_price, 1.1000)  # Should have increased
+        
+            # Test cleanup functionality separately
+            # Create a new ETH position that's already closed from the start
+            closed_eth_position = Position(
+                miner_hotkey=self.test_hotkey,
+                position_uuid="eth_closed_test",
+                open_ms=base_time - 7200000,  # 2 hours before base
+                close_ms=base_time - 3600000,  # 1 hour before base
+                trade_pair=TradePair.ETHUSD,
+                account_size=self.DEFAULT_ACCOUNT_SIZE,
+                orders=[
+                    Order(
+                        price=2950.0,
+                        processed_ms=base_time - 7200000,
+                        order_uuid="eth_closed_open",
+                        trade_pair=TradePair.ETHUSD,
+                        order_type=OrderType.SHORT,
+                        leverage=-1.0
+                    ),
+                    Order(
+                        price=2920.0,
+                        processed_ms=base_time - 3600000,
+                        order_uuid="eth_closed_close",
+                        trade_pair=TradePair.ETHUSD,
+                        order_type=OrderType.FLAT,
+                        leverage=0.0
+                    )
+                ],
+                position_type=OrderType.FLAT,
+                is_closed_position=True
+            )
+            closed_eth_position.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
+            self.position_client.save_miner_position(closed_eth_position)
+        
+            # Do another update to verify prices are still tracked for open positions only
+            update_time_2 = update_time_1 + step_size
+            print(f"\nDoing second update to {TimeUtil.millis_to_formatted_date_str(update_time_2)}")
+            plm.update(t_ms=update_time_2)
+        
+            bundles_2 = plm.get_perf_ledgers(portfolio_only=False)
+            portfolio_ledger_2 = bundles_2[self.test_hotkey][TP_ID_PORTFOLIO]
+        
+            # After adding a closed ETH position, the cleanup logic will remove ETH from tracking
+            # because it processes all positions for that trade pair together
+            print(f"\nAfter second update:")
+            print(f"Portfolio ledger last_known_prices: {portfolio_ledger_2.last_known_prices}")
+        
+            # The system correctly cleaned up ETHUSD when it found a closed position for that pair
+            # We should have 2 current prices (BTCUSD, EURUSD) and 2 previous prices
+            current_prices_2 = {k: v for k, v in portfolio_ledger_2.last_known_prices.items() if not k.endswith('_prev')}
+            self.assertEqual(len(current_prices_2), 2,
+                            f"ETHUSD should be removed after closed position is added. Current prices: {list(current_prices_2.keys())}")
+            self.assertNotIn(TradePair.ETHUSD.trade_pair_id, current_prices_2,
+                            "ETHUSD should not be in current prices after position closed")
+        
+        finally:
+            # Restore original polygon_data_service
+            self.live_price_fetcher_client.polygon_data_service = original_pds
+
         # Verify prices have been updated
         btc_price_2, btc_time_2 = portfolio_ledger_2.last_known_prices[TradePair.BTCUSD.trade_pair_id]
         self.assertGreater(btc_time_2, btc_time, "BTC price timestamp should be updated")

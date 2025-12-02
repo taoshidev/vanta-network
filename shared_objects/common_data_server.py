@@ -101,11 +101,6 @@ class CommonDataServer(RPCServerBase):
             connection_mode=connection_mode
         )
 
-        if connection_mode == RPCConnectionMode.RPC and start_server:
-            bt.logging.success(
-                f"[COMMON_DATA] Server started on port {ValiConfig.RPC_COMMONDATA_PORT}"
-            )
-
     # ==================== RPCServerBase Abstract Methods ====================
 
     def run_daemon_iteration(self) -> None:

@@ -4,7 +4,7 @@ Server Orchestrator - Centralized server lifecycle management.
 This module provides a singleton that manages all RPC servers, ensuring:
 - Servers start once and are shared across tests, backtesting, and validator
 - Fast test execution (no per-test-class server startup)
-- Proper cleanup on process exit
+- Graceful cleanup on process exit, interruption (Ctrl+C), or kill signals
 - Thread-safe initialization
 
 Usage in tests:
@@ -50,9 +50,30 @@ Usage in backtesting:
         secrets=secrets,
         config=config
     )
+
+Cleanup and Interruption Handling:
+
+    The orchestrator automatically registers cleanup handlers to ensure servers
+    are properly shut down in all scenarios:
+
+    - Normal exit: atexit handler calls shutdown_all_servers()
+    - Ctrl+C (SIGINT): Signal handler catches interrupt and shuts down gracefully
+    - Kill signal (SIGTERM): Signal handler catches and shuts down gracefully
+    - Destructor: __del__ method ensures cleanup even if handlers fail
+
+    This prevents:
+    - Orphaned server processes
+    - Port conflicts on subsequent test runs
+    - Resource leaks
+    - Stale RPC connections
+
+    No manual cleanup needed - the orchestrator handles it automatically!
 """
 
 import threading
+import signal
+import atexit
+import sys
 import bittensor as bt
 from typing import Dict, Optional, Any
 from dataclasses import dataclass
@@ -193,6 +214,12 @@ class ServerOrchestrator:
             required_in_testing=True,
             spawn_kwargs={'start_daemon': False}  # No daemon in testing
         ),
+        'mdd_checker': ServerConfig(
+            server_class=None,
+            client_class=None,
+            required_in_testing=True,
+            spawn_kwargs={'start_daemon': False}  # No daemon in testing
+        ),
     }
 
     @classmethod
@@ -236,6 +263,9 @@ class ServerOrchestrator:
         # Lazy-load server/client classes to avoid circular imports
         self._classes_loaded = False
 
+        # Register cleanup handlers for graceful shutdown on interruption
+        self._register_cleanup_handlers()
+
     def _load_classes(self):
         """Lazy-load server and client classes (avoids circular imports)."""
         if self._classes_loaded:
@@ -262,6 +292,8 @@ class ServerOrchestrator:
         from vali_objects.vali_dataclasses.debt_ledger_server import DebtLedgerServer, DebtLedgerClient
         from runnable.core_outputs_server import CoreOutputsServer, CoreOutputsClient
         from runnable.miner_statistics_server import MinerStatisticsServer, MinerStatisticsClient
+        from vali_objects.utils.mdd_checker_server import MDDCheckerServer
+        from vali_objects.utils.mdd_checker_client import MDDCheckerClient
 
         # Update registry with classes
         self.SERVERS['common_data'].server_class = CommonDataServer
@@ -312,7 +344,60 @@ class ServerOrchestrator:
         self.SERVERS['miner_statistics'].server_class = MinerStatisticsServer
         self.SERVERS['miner_statistics'].client_class = MinerStatisticsClient
 
+        self.SERVERS['mdd_checker'].server_class = MDDCheckerServer
+        self.SERVERS['mdd_checker'].client_class = MDDCheckerClient
+
         self._classes_loaded = True
+
+    def _register_cleanup_handlers(self):
+        """
+        Register signal handlers and atexit hook for graceful cleanup.
+
+        This ensures servers are properly shut down even if:
+        - User hits Ctrl+C (SIGINT)
+        - Process is killed (SIGTERM)
+        - Python exits normally (atexit)
+        """
+        # Register atexit handler for normal exit
+        atexit.register(self._cleanup_on_exit)
+
+        # Register signal handlers for interruptions
+        # Use a flag to prevent recursive signal handling
+        self._shutting_down = False
+
+        def signal_handler(signum, frame):
+            """Handle SIGINT and SIGTERM gracefully."""
+            if self._shutting_down:
+                return
+            self._shutting_down = True
+
+            signal_name = "SIGINT" if signum == signal.SIGINT else "SIGTERM"
+            bt.logging.info(f"\n{signal_name} received, shutting down servers gracefully...")
+
+            try:
+                self.shutdown_all_servers()
+            except Exception as e:
+                bt.logging.error(f"Error during signal cleanup: {e}")
+            finally:
+                # Re-raise to allow default signal handling
+                sys.exit(0)
+
+        # Register handlers for SIGINT (Ctrl+C) and SIGTERM (kill)
+        try:
+            signal.signal(signal.SIGINT, signal_handler)
+            signal.signal(signal.SIGTERM, signal_handler)
+        except (ValueError, OSError):
+            # Signal registration may fail in some contexts (e.g., threads)
+            bt.logging.debug("Could not register signal handlers (not in main thread?)")
+
+    def _cleanup_on_exit(self):
+        """Cleanup handler called by atexit on normal exit."""
+        if not self._shutting_down and self._started:
+            bt.logging.debug("atexit: Cleaning up servers...")
+            try:
+                self.shutdown_all_servers()
+            except Exception as e:
+                bt.logging.error(f"Error during atexit cleanup: {e}")
 
     def start_all_servers(
         self,
@@ -398,6 +483,7 @@ class ServerOrchestrator:
         - plagiarism: depends on position_manager
         - plagiarism_detector: depends on plagiarism, position_manager
         - limit_order: depends on position_manager
+        - mdd_checker: depends on position_manager, elimination
         - core_outputs: depends on all above (aggregates checkpoint data)
         - miner_statistics: depends on all above (generates miner statistics)
 
@@ -420,6 +506,7 @@ class ServerOrchestrator:
             'plagiarism',
             'plagiarism_detector',
             'limit_order',
+            'mdd_checker',
             'core_outputs',
             'miner_statistics'
         ]
@@ -555,6 +642,10 @@ class ServerOrchestrator:
         if 'plagiarism' in self._clients:
             self._clients['plagiarism'].clear_plagiarism_data()
 
+        # Clear limit order data
+        if 'limit_order' in self._clients:
+            self._clients['limit_order'].clear_limit_orders()
+
         bt.logging.debug("All test data cleared")
 
     def is_running(self) -> bool:
@@ -575,6 +666,12 @@ class ServerOrchestrator:
         if not self._started:
             bt.logging.debug("No servers to shutdown")
             return
+
+        # Prevent recursive shutdowns
+        if hasattr(self, '_shutting_down') and self._shutting_down:
+            return
+        if hasattr(self, '_shutting_down'):
+            self._shutting_down = True
 
         bt.logging.info("Shutting down all servers...")
 

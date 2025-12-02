@@ -101,11 +101,6 @@ class WatchdogMonitor:
 
     def _watchdog_loop(self) -> None:
         """Background thread that monitors heartbeat and alerts on hangs."""
-        bt.logging.info(
-            f"{self.service_name} watchdog loop started "
-            f"(timeout: {self.hang_timeout_s}s)"
-        )
-
         while not ShutdownCoordinator.is_shutdown() and self._started:
             time.sleep(self.check_interval_s)
 
