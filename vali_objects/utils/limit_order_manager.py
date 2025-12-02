@@ -149,6 +149,16 @@ class LimitOrderManager(CacheController):
         Returns:
             dict with status and order_uuid
         """
+        bt.logging.info(f"[LIMIT_ORDER_MANAGER] Received RPC call to process_limit_order")
+        bt.logging.info(f"[LIMIT_ORDER_MANAGER] Miner: {miner_hotkey}")
+        bt.logging.info(f"[LIMIT_ORDER_MANAGER] Order UUID: {order.order_uuid}")
+        bt.logging.info(f"[LIMIT_ORDER_MANAGER] Trade pair: {order.trade_pair.trade_pair_id}")
+        bt.logging.info(f"[LIMIT_ORDER_MANAGER] Execution type: {order.execution_type.name}")
+        bt.logging.info(f"[LIMIT_ORDER_MANAGER] Order type: {order.order_type.name}")
+        bt.logging.info(f"[LIMIT_ORDER_MANAGER] Limit price: {order.limit_price}")
+        bt.logging.info(f"[LIMIT_ORDER_MANAGER] Leverage: {order.leverage}, Value: {order.value}, Quantity: {order.quantity}")
+        bt.logging.info(f"[LIMIT_ORDER_MANAGER] Stop Loss: {order.stop_loss}, Take Profit: {order.take_profit}")
+
         trade_pair = order.trade_pair
 
         # Variables to track whether to fill immediately
@@ -210,9 +220,6 @@ class LimitOrderManager(CacheController):
             if order.order_type == OrderType.FLAT:
                 raise SignalException(f"FLAT order is not supported for LIMIT orders")
 
-            self._write_to_disk(miner_hotkey, order)
-            self._limit_orders[trade_pair][miner_hotkey].append(order)
-
             if order.execution_type == ExecutionType.BRACKET:
                 bt.logging.info(
                     f"INCOMING BRACKET ORDER | {trade_pair.trade_pair_id} | "
@@ -223,6 +230,9 @@ class LimitOrderManager(CacheController):
                     f"INCOMING LIMIT ORDER | {trade_pair.trade_pair_id} | "
                     f"{order.order_type.name} @ {order.limit_price}"
                 )
+
+            self._write_to_disk(miner_hotkey, order)
+            self._limit_orders[trade_pair][miner_hotkey].append(order)
 
             # Check if order can be filled immediately
             price_sources = self.live_price_fetcher.get_sorted_price_sources_for_trade_pair(trade_pair, order.processed_ms)
@@ -773,9 +783,9 @@ class LimitOrderManager(CacheController):
                 processed_ms=now_ms,
                 price=0.0,
                 order_type=parent_order.order_type,
-                leverage=parent_order.leverage,
+                leverage=None,
                 value=None,
-                quantity=parent_order.quantity,
+                quantity=parent_order.quantity,  # Unify to quantity
                 execution_type=ExecutionType.BRACKET,
                 limit_price=None,  # Not used for bracket orders
                 stop_loss=parent_order.stop_loss,

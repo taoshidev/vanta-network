@@ -745,6 +745,8 @@ class Validator(ValidatorBase):
             parse_ms = TimeUtil.now_in_millis() - parse_start
             bt.logging.info(f"[TIMING] Parse operations took {parse_ms}ms")
 
+
+            bt.logging.info(f"Execution type: {execution_type}")
             if execution_type == ExecutionType.LIMIT:
                 # Use OrderProcessor to handle LIMIT order
                 order = OrderProcessor.process_limit_order(

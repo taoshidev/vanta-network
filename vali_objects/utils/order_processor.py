@@ -77,6 +77,10 @@ class OrderProcessor:
         Raises:
             SignalException: If required fields are missing or processing fails
         """
+        bt.logging.info(f"[ORDER_PROCESSOR] Starting LIMIT order processing for {miner_hotkey}")
+        bt.logging.info(f"[ORDER_PROCESSOR] Order UUID: {order_uuid}")
+        bt.logging.info(f"[ORDER_PROCESSOR] Trade pair: {trade_pair.trade_pair_id if trade_pair else 'None'}")
+
         # Extract signal data
         leverage = signal.get("leverage")
         value = signal.get("value")
@@ -88,12 +92,11 @@ class OrderProcessor:
         take_profit = signal.get("take_profit")
 
         # Convert size fields to float if provided (needed for proper validation in Order model)
-        if leverage is not None:
-            leverage = float(leverage)
-        if value is not None:
-            value = float(value)
-        if quantity is not None:
-            quantity = float(quantity)
+        leverage = float(leverage) if leverage else None
+        value = float(value) if value else None
+        quantity = float(quantity) if quantity else None
+
+        bt.logging.info(f"[ORDER_PROCESSOR] Converted size fields - leverage: {leverage}, value: {value}, quantity: {quantity}")
 
         # Validate required fields
         if not signal_order_type_str:
@@ -133,6 +136,7 @@ class OrderProcessor:
                 raise SignalException(f"For SHORT orders, take_profit ({take_profit}) must be less than limit_price ({limit_price})")
 
         # Create order object
+        bt.logging.info(f"[ORDER_PROCESSOR] Creating Order object...")
         order = Order(
             trade_pair=trade_pair,
             order_uuid=order_uuid,
@@ -148,11 +152,11 @@ class OrderProcessor:
             take_profit=take_profit,
             src=OrderSource.LIMIT_UNFILLED
         )
+        bt.logging.info(f"[ORDER_PROCESSOR] Order object created successfully {order.to_python_dict()}")
 
-        # Process the limit order (may throw SignalException)
         limit_order_client.process_limit_order(miner_hotkey, order)
 
-        bt.logging.debug(f"Processed LIMIT order: {order.order_uuid} for {miner_hotkey}")
+        bt.logging.info(f"[ORDER_PROCESSOR] Processed LIMIT order: {order.order_uuid} for {miner_hotkey}")
         return order
 
     @staticmethod
@@ -186,7 +190,7 @@ class OrderProcessor:
             now_ms
         )
 
-        bt.logging.debug(f"Cancelled LIMIT order(s) for {miner_hotkey}: {order_uuid or 'all'}")
+        bt.logging.info(f"Cancelled LIMIT order(s) for {miner_hotkey}: {order_uuid or 'all'}")
         return result
 
     @staticmethod
@@ -214,7 +218,7 @@ class OrderProcessor:
             SignalException: If required fields are missing, no position exists, or processing fails
         """
         # Extract signal data
-        leverage = signal.get("leverage", 0.0)  # Default to 0.0 if not provided
+        leverage = signal.get("leverage")
         value = signal.get("value")
         quantity = signal.get("quantity")
 
@@ -222,11 +226,10 @@ class OrderProcessor:
         take_profit = signal.get("take_profit")
 
         # Convert size fields to float if provided (needed for proper validation in Order model)
-        leverage = float(leverage)
-        if value is not None:
-            value = float(value)
-        if quantity is not None:
-            quantity = float(quantity)
+        leverage = float(leverage) if leverage else None
+        value = float(value) if value else None
+        quantity = float(quantity) if quantity else None
+
 
         # Validate that at least one of SL or TP is set
         if stop_loss is None and take_profit is None:
@@ -264,7 +267,7 @@ class OrderProcessor:
         # Process the bracket order - manager validates position and sets correct order_type/leverage
         limit_order_client.process_limit_order(miner_hotkey, order)
 
-        bt.logging.debug(f"Processed BRACKET order: {order.order_uuid} for {miner_hotkey}")
+        bt.logging.info(f"Processed BRACKET order: {order.order_uuid} for {miner_hotkey}")
         return order
 
     @staticmethod
