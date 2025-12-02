@@ -436,6 +436,13 @@ class LimitOrderManager(CacheController):
     def check_and_fill_limit_orders(self):
         """
         Iterate through all trade pairs and attempt to fill unfilled limit orders.
+
+        Returns:
+            dict: Execution stats with {
+                'checked': int,      # Orders checked
+                'filled': int,       # Orders filled
+                'timestamp_ms': int  # Execution timestamp
+            }
         """
         now_ms = TimeUtil.now_in_millis()
         total_checked = 0
@@ -481,6 +488,12 @@ class LimitOrderManager(CacheController):
                         break
 
         bt.logging.info(f"Limit order check complete: checked={total_checked}, filled={total_filled}")
+
+        return {
+            'checked': total_checked,
+            'filled': total_filled,
+            'timestamp_ms': now_ms
+        }
 
     # ============================================================================
     # Internal Helper Methods
@@ -583,10 +596,14 @@ class LimitOrderManager(CacheController):
                 position = self._get_position_for(miner_hotkey, order)
                 trigger_price = self._evaluate_trigger_price(order, position, best_price_source)
 
+                if self.running_unit_tests and order.execution_type == ExecutionType.BRACKET:
+                    bt.logging.info(f"[BRACKET DEBUG] position={position is not None}, trigger_price={trigger_price}, ps.bid={best_price_source.bid}, ps.ask={best_price_source.ask}")
+
                 if trigger_price is not None:
                     should_fill = True
 
             if order.execution_type == ExecutionType.BRACKET and not position:
+                bt.logging.warning(f"[BRACKET CANCELLED] No position found for bracket order {order.order_uuid}, cancelling")
                 self._close_limit_order(miner_hotkey, order, OrderSource.BRACKET_CANCELLED, now_ms)
                 return False
 

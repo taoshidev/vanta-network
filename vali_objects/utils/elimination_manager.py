@@ -223,7 +223,9 @@ class EliminationManager(CacheController):
         )
 
         self.first_refresh_ran = False
-        self.websocket_notifier_client = WebSocketNotifierClient(connection_mode=connection_mode)
+        # Use LOCAL mode for WebSocketNotifier in tests (server not started in test mode)
+        ws_connection_mode = RPCConnectionMode.LOCAL if running_unit_tests else connection_mode
+        self.websocket_notifier_client = WebSocketNotifierClient(connection_mode=ws_connection_mode)
         self.live_price_fetcher_client = LivePriceFetcherClient(running_unit_tests=running_unit_tests, connection_mode=connection_mode)
 
         # Create own ContractClient (forward compatibility - no parameter passing)

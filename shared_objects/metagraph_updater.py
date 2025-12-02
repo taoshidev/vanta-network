@@ -1042,12 +1042,19 @@ class MetagraphUpdater(CacheController):
 if __name__ == "__main__":
     from neurons.miner import Miner
     from miner_objects.position_inspector import PositionInspector
+    from shared_objects.metagraph_server import MetagraphClient
 
     config = Miner.get_config()  # Must run this via commandline to populate correctly
-    subtensor = bt.subtensor(config=config)
-    metagraph = subtensor.metagraph(config.netuid)
-    position_inspector = PositionInspector(bt.wallet(config=config), metagraph, config)
-    mgu = MetagraphUpdater(config, metagraph, "test", is_miner=True, position_inspector=position_inspector)
+
+    # Create MetagraphClient (not raw metagraph)
+    metagraph_client = MetagraphClient()
+
+    # Create PositionInspector with client
+    position_inspector = PositionInspector(bt.wallet(config=config), metagraph_client, config)
+
+    # Create MetagraphUpdater
+    mgu = MetagraphUpdater(config, config.wallet.hotkey, is_miner=True, position_inspector=position_inspector)
+
     while True:
         mgu.update_metagraph()
         time.sleep(60)

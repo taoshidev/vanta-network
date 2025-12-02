@@ -62,7 +62,7 @@ class Miner:
 
         bt.logging.success("Miner servers initialized successfully")
 
-        self.position_inspector = PositionInspector(self.wallet, self.config)
+        self.position_inspector = PositionInspector(self.wallet, self.metagraph_client, self.config)
         self.metagraph_updater = MetagraphUpdater(self.config, self.wallet.hotkey.ss58_address,
                                                   True, position_inspector=self.position_inspector,
                                                     slack_notifier=self.slack_notifier)

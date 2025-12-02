@@ -24,7 +24,9 @@ class MarketOrderManager():
         self.serve = serve
         self.running_unit_tests = running_unit_tests
 
-        self.websocket_notifier = WebSocketNotifierClient(connection_mode=connection_mode, connect_immediately=False)
+        # Use LOCAL mode for WebSocketNotifier in tests (server not started in test mode)
+        ws_connection_mode = RPCConnectionMode.LOCAL if running_unit_tests else connection_mode
+        self.websocket_notifier = WebSocketNotifierClient(connection_mode=ws_connection_mode, connect_immediately=False)
         # Create own ContractClient (forward compatibility - no parameter passing)
         from vali_objects.utils.contract_server import ContractClient
         self._contract_client = ContractClient(running_unit_tests=running_unit_tests, connection_mode=connection_mode)

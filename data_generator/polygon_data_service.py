@@ -296,6 +296,12 @@ class PolygonDataService(BaseDataService):
         symbol = trade_pair.trade_pair
         if symbol not in self.trade_pair_to_recent_events:
             self.trade_pair_to_recent_events[symbol] = RecentEventTracker()
+
+        # CRITICAL FIX: Clear old test prices before adding new one
+        # Without this, the median selection in _get_best_price_source() can pick stale prices
+        # from previous test injections instead of the current test price
+        self.trade_pair_to_recent_events[symbol].clear_all_events(running_unit_tests=True)
+
         self.trade_pair_to_recent_events[symbol].add_event(updated_price_source)
 
     def clear_test_price_sources(self) -> None:

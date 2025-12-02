@@ -5,9 +5,7 @@ import time
 import asyncio
 
 from miner_config import MinerConfig
-from shared_objects.metagraph_server import MetagraphClient
 from template.protocol import GetPositions
-from vali_objects.vali_config import RPCConnectionMode
 
 
 class PositionInspector:
@@ -15,9 +13,9 @@ class PositionInspector:
     INITIAL_RETRY_DELAY = 3  # seconds
     UPDATE_INTERVAL_S = 5 * 60  # 5 minutes
 
-    def __init__(self, wallet, config):
-        self._metagraph_client = MetagraphClient(connect_immediately=False, connection_mode=RPCConnectionMode.LOCAL)
+    def __init__(self, wallet, metagraph_client, config):
         self.wallet = wallet
+        self._metagraph_client = metagraph_client
         self.config = config
         self.last_update_time = 0
         self.recently_acked_validators = []
