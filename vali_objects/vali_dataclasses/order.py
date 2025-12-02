@@ -71,9 +71,13 @@ class Order(Signal):
     @field_validator('trade_pair', mode='before')
     @classmethod
     def convert_trade_pair(cls, v):
-        """Convert trade_pair_id string to TradePair object if needed."""
+        """Convert trade_pair_id string or dict to TradePair object if needed."""
         if isinstance(v, str):
             return TradePair.from_trade_pair_id(v)
+        elif isinstance(v, dict):
+            # Handle dict with 'trade_pair_id' key (from disk serialization)
+            if 'trade_pair_id' in v:
+                return TradePair.from_trade_pair_id(v['trade_pair_id'])
         return v
 
     @field_validator('execution_type', mode='before')
