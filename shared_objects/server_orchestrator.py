@@ -276,7 +276,7 @@ class ServerOrchestrator:
             client_class=None,
             required_in_testing=False,  # Only in validator mode
             required_in_miner=False,
-            required_in_validator=True,
+            required_in_validator=False,  # Must be started manually AFTER MetagraphUpdater (depends on WeightSetterServer)
             spawn_kwargs={'start_daemon': False}  # Daemon started later
         ),
         'websocket_notifier': ServerConfig(
@@ -565,11 +565,11 @@ class ServerOrchestrator:
         - contract: no dependencies
         - perf_ledger: no dependencies
         - live_price_fetcher: no dependencies
-        - debt_ledger: depends on perf_ledger
         - asset_selection: depends on common_data
         - challenge_period: depends on common_data, asset_selection
         - elimination: depends on perf_ledger, challenge_period
         - position_manager: depends on challenge_period, elimination
+        - debt_ledger: depends on perf_ledger, position_manager (PenaltyLedgerManager uses PositionManagerClient)
         - websocket_notifier: depends on position_manager (broadcasts position updates)
         - plagiarism: depends on position_manager
         - plagiarism_detector: depends on plagiarism, position_manager
@@ -577,6 +577,7 @@ class ServerOrchestrator:
         - mdd_checker: depends on position_manager, elimination
         - core_outputs: depends on all above (aggregates checkpoint data)
         - miner_statistics: depends on all above (generates miner statistics)
+        - weight_calculator: depends on MetagraphUpdater/WeightSetterServer (NOT orchestrator-managed, started manually in validator.py)
 
         Returns:
             List of server names in start order
@@ -589,11 +590,11 @@ class ServerOrchestrator:
             'contract',
             'perf_ledger',
             'live_price_fetcher',
-            'debt_ledger',
             'asset_selection',
             'challenge_period',
             'elimination',
             'position_manager',
+            'debt_ledger',         # Must come AFTER position_manager (PenaltyLedgerManager uses PositionManagerClient)
             'websocket_notifier',
             'plagiarism',
             'plagiarism_detector',
@@ -809,6 +810,31 @@ class ServerOrchestrator:
     def get_mode(self) -> Optional[ServerMode]:
         """Get current server mode."""
         return self._mode
+
+    def start_individual_server(self, server_name: str, **kwargs) -> None:
+        """
+        Start a single server that was not started during initial startup.
+
+        This is useful for servers that have required_in_validator=False but need
+        to be started manually after certain dependencies are available.
+
+        Args:
+            server_name: Name of server to start
+            **kwargs: Additional kwargs to pass to spawn_process
+
+        Example:
+            # Start weight_calculator after MetagraphUpdater is running
+            orchestrator.start_individual_server('weight_calculator')
+        """
+        if server_name in self._servers:
+            bt.logging.debug(f"{server_name} server already started")
+            return
+
+        if server_name not in self.SERVERS:
+            raise ValueError(f"Unknown server: {server_name}")
+
+        bt.logging.info(f"Starting individual server: {server_name}")
+        self._start_server(server_name, secrets=None, mode=self._mode, **kwargs)
 
     def start_server_daemons(self, server_names: list) -> None:
         """

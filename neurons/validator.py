@@ -222,6 +222,11 @@ class Validator(ValidatorBase):
         )
         bt.logging.success("[INIT] MetagraphUpdater started and populated")
 
+        # Start weight_calculator now that MetagraphUpdater (WeightSetterServer) is running
+        # WeightCalculatorServer.__init__ creates MetagraphUpdaterClient which connects to WeightSetterServer
+        orchestrator.start_individual_server('weight_calculator')
+        bt.logging.success("[INIT] WeightCalculatorServer started")
+
         # Now start server daemons and run pre-run setup (safe now that metagraph is populated)
         # Order follows dependency graph: perf_ledger → challenge_period → elimination → position_manager
         orchestrator.start_server_daemons([
@@ -229,7 +234,8 @@ class Validator(ValidatorBase):
             'challenge_period',   # Depends on common_data, asset_selection (already running)
             'elimination',        # Depends on perf_ledger, challenge_period
             'position_manager',   # Depends on challenge_period, elimination
-            'debt_ledger'         # Depends on perf_ledger
+            'debt_ledger',        # Depends on perf_ledger, position_manager
+            'weight_calculator'   # Depends on MetagraphUpdater (WeightSetterServer)
         ])
         orchestrator.call_pre_run_setup(perform_order_corrections=True)
         bt.logging.success("[INIT] Server daemons started and pre-run setup completed")
