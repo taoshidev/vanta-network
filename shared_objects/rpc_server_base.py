@@ -828,7 +828,8 @@ class RPCServerBase(ABC):
                 bt.logging.info(f"{self.service_name} backing off for {backoff_seconds:.0f}s before retry")
                 time.sleep(backoff_seconds)
 
-        bt.logging.info(f"{self.service_name} daemon shutting down")
+        # Skip logging to avoid race condition with pytest closing stdout/stderr
+        # bt.logging.info(f"{self.service_name} daemon shutting down")
 
     def stop_daemon(self):
         """Signal daemon to stop (via shutdown_dict)."""

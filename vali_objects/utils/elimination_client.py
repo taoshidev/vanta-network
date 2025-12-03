@@ -198,6 +198,23 @@ class EliminationClient(RPCClientBase):
         """Clear all departed hotkeys."""
         self._server.clear_departed_hotkeys_rpc()
 
+    def clear_test_state(self) -> None:
+        """
+        Clear ALL test-sensitive state (comprehensive reset for test isolation).
+
+        This is a high-level cleanup method that resets:
+        - Eliminations data
+        - Departed hotkeys
+        - first_refresh_ran flag
+        - Any other stateful flags
+
+        Should be called by ServerOrchestrator.clear_all_test_data() to ensure
+        complete test isolation when servers are shared across tests.
+
+        Use this instead of clear_eliminations() alone to prevent test contamination.
+        """
+        self._server.clear_test_state_rpc()
+
     def save_eliminations(self) -> None:
         """Save eliminations to disk."""
         self._server.save_eliminations_rpc()

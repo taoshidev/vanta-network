@@ -507,11 +507,9 @@ class RPCClientBase:
 
         # Unregister from instance tracking
         RPCClientBase._unregister_instance(self)
-        elapsed_ms = (time.time() - start_time) * 1000
-        try:
-            bt.logging.debug(f"{self.service_name}Client disconnected ({elapsed_ms:.0f}ms)")
-        except (ValueError, OSError):
-            pass  # Logging stream already closed (pytest teardown)
+        # Skip logging disconnect to avoid race condition with pytest closing stdout/stderr
+        # elapsed_ms = (time.time() - start_time) * 1000
+        # bt.logging.debug(f"{self.service_name}Client disconnected ({elapsed_ms:.0f}ms)")
 
     # ==================== Local Cache Support ====================
 
@@ -563,10 +561,8 @@ class RPCClientBase:
             # Wait for next refresh cycle (interruptible)
             self._cache_refresh_shutdown.wait(timeout=refresh_interval_s)
 
-        try:
-            bt.logging.info(f"[{self.service_name}] Local cache refresh daemon stopped")
-        except (ValueError, OSError):
-            pass  # Logging stream already closed (pytest teardown)
+        # Skip logging to avoid race condition with pytest closing stdout/stderr
+        # bt.logging.info(f"[{self.service_name}] Local cache refresh daemon stopped")
 
     def populate_cache(self) -> Dict[str, Any]:
         """

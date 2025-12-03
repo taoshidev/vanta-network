@@ -175,6 +175,26 @@ class CommonDataServer(RPCServerBase):
         with self._state_lock:
             self._sync_epoch = value
 
+    # ==================== Test State Cleanup ====================
+
+    def clear_test_state_rpc(self) -> None:
+        """
+        Clear ALL test-sensitive state (for test isolation).
+
+        This includes:
+        - shutdown_dict (prevents false shutdown in tests)
+        - sync_in_progress (prevents daemons from incorrectly pausing)
+        - sync_epoch (resets stale data detection counter)
+
+        Should be called by ServerOrchestrator.clear_all_test_data() to ensure
+        complete test isolation when servers are shared across tests.
+        """
+        with self._state_lock:
+            self._shutdown_dict.clear()
+            self._sync_in_progress = False
+            self._sync_epoch = 0
+            bt.logging.debug("[COMMON_DATA] Test state cleared (shutdown, sync_in_progress, sync_epoch reset)")
+
     # ==================== Combined State RPC Methods ====================
 
     def get_all_state_rpc(self) -> dict:
@@ -296,6 +316,22 @@ class CommonDataClient(RPCClientBase):
     def get_all_state(self) -> dict:
         """Get all shared state in a single call."""
         return self.call("get_all_state_rpc")
+
+    # ==================== Test State Cleanup ====================
+
+    def clear_test_state(self) -> None:
+        """
+        Clear ALL test-sensitive state (comprehensive reset for test isolation).
+
+        This resets:
+        - shutdown_dict (prevents false shutdown in tests)
+        - sync_in_progress (prevents daemons from incorrectly pausing)
+        - sync_epoch (resets stale data detection counter)
+
+        Should be called by ServerOrchestrator.clear_all_test_data() to ensure
+        complete test isolation when servers are shared across tests.
+        """
+        self.call("clear_test_state_rpc")
 
     # ==================== Convenience Properties ====================
 

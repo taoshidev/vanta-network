@@ -807,6 +807,12 @@ class ServerOrchestrator:
         if metagraph_client:
             safe_clear('metagraph', lambda: metagraph_client.set_hotkeys([]))
 
+        # Clear common_data state (includes all test-sensitive state)
+        common_data_client = get_client_safe('common_data')
+        if common_data_client:
+            # Use comprehensive clear_test_state() to reset shutdown_dict, sync_in_progress, sync_epoch
+            safe_clear('common_data', lambda: common_data_client.clear_test_state())
+
         # Clear position manager data (positions and disk)
         position_client = get_client_safe('position_manager')
         if position_client:
@@ -817,18 +823,19 @@ class ServerOrchestrator:
         if perf_ledger_client:
             safe_clear('perf_ledger', perf_ledger_client.clear_all_ledger_data)
 
-        # Clear elimination data
+        # Clear elimination data (includes all test-sensitive state)
         elimination_client = get_client_safe('elimination')
         if elimination_client:
-            safe_clear('elimination', lambda: elimination_client.clear_eliminations())
+            # Use comprehensive clear_test_state() instead of clear_eliminations() alone
+            # This resets ALL test-sensitive flags (eliminations, departed_hotkeys, first_refresh_ran, etc.)
+            safe_clear('elimination', lambda: elimination_client.clear_test_state())
 
-        # Clear challenge period data
+        # Clear challenge period data (includes all test-sensitive state)
         challenge_period_client = get_client_safe('challenge_period')
         if challenge_period_client:
-            def clear_challenge_period():
-                challenge_period_client._clear_challengeperiod_in_memory_and_disk()
-                challenge_period_client.clear_elimination_reasons()
-            safe_clear('challenge_period', clear_challenge_period)
+            # Use comprehensive clear_test_state() instead of individual clear methods
+            # This resets ALL test-sensitive flags (active_miners, elimination_reasons, refreshed_challengeperiod_start_time, etc.)
+            safe_clear('challenge_period', lambda: challenge_period_client.clear_test_state())
 
         # Clear plagiarism data
         plagiarism_client = get_client_safe('plagiarism')

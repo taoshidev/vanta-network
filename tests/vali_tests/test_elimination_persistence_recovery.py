@@ -213,6 +213,7 @@ class TestEliminationPersistenceRecovery(TestBase):
                      f"RECOVERY_MINER not in loaded hotkeys: {hotkeys}")
 
         # Verify first refresh handles recovered eliminations
+        # Note: orchestrator.clear_all_test_data() already resets first_refresh_ran via clear_test_state()
         self.elimination_client.handle_first_refresh()
 
         # Check that positions were closed for eliminated miners

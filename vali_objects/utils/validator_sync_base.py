@@ -399,26 +399,61 @@ class ValidatorSyncBase():
         """
         p1 and p2 are both open positions for a hotkey+trade pair, so we want to close the older one.
         We add a synthetic FLAT order before closing to maintain position invariants.
+
+        Args:
+            p1: The position we're about to save (from sync batch)
+            p2: The previous position from the sync batch (can be None)
+
+        Returns:
+            The position to keep open (newest by open_ms)
         """
-        if p2 is None:
+        # First, check if there's already an open position in memory for this miner+trade_pair
+        # This catches the case where memory has a different position than what we're syncing
+        existing_in_memory = self._position_manager_client.get_open_position_for_trade_pair(
+            p1.miner_hotkey,
+            p1.trade_pair.trade_pair_id
+        )
+
+        # Collect all open positions we need to consider, ensuring uniqueness by UUID
+        positions_by_uuid = {}
+
+        # Add positions, keyed by UUID to ensure uniqueness
+        if existing_in_memory:
+            positions_by_uuid[existing_in_memory.position_uuid] = existing_in_memory
+        if p2 is not None:
+            positions_by_uuid[p2.position_uuid] = p2
+        positions_by_uuid[p1.position_uuid] = p1
+
+        # If there's only one unique position, nothing to close
+        if len(positions_by_uuid) == 1:
             return p1
 
-        self.global_stats['n_positions_closed_duplicate_opens_for_trade_pair'] += 1
+        # Convert to list for sorting
+        positions_to_compare = list(positions_by_uuid.values())
 
-        # Determine which to close and which to keep
-        if p2.open_ms < p1.open_ms:
-            position_to_close = p2
-            position_to_keep = p1
-        else:
-            position_to_close = p1
-            position_to_keep = p2
+        # Sort by open_ms to find the newest position (the one to keep)
+        positions_sorted = sorted(positions_to_compare, key=lambda p: p.open_ms)
+        position_to_keep = positions_sorted[-1]  # Newest
+        positions_to_close = positions_sorted[:-1]  # All older ones
 
-        # Add synthetic FLAT order to properly close the position
-        close_time_ms = position_to_close.orders[-1].processed_ms + 1
-        flat_order = Position.generate_fake_flat_order(position_to_close, close_time_ms, self.live_price_fetcher)
-        position_to_close.orders.append(flat_order)
-        position_to_close.close_out_position(close_time_ms)
-        self._position_manager_client.overwrite_position_on_disk(position_to_close)
+        # Close all older positions
+        for position_to_close in positions_to_close:
+            self.global_stats['n_positions_closed_duplicate_opens_for_trade_pair'] += 1
+
+            # Add synthetic FLAT order to properly close the position
+            close_time_ms = position_to_close.orders[-1].processed_ms + 1
+            flat_order = Position.generate_fake_flat_order(position_to_close, close_time_ms, self.live_price_fetcher)
+            position_to_close.orders.append(flat_order)
+            position_to_close.close_out_position(close_time_ms)
+            # Save the closed position back to disk
+            self._position_manager_client.save_miner_position(position_to_close, delete_open_position_if_exists=False)
+
+            bt.logging.warning(
+                f"Closed duplicate open position {position_to_close.position_uuid} (open_ms={position_to_close.open_ms}) "
+                f"in favor of newer position {position_to_keep.position_uuid} (open_ms={position_to_keep.open_ms}) "
+                f"for miner {p1.miner_hotkey} trade_pair {p1.trade_pair.trade_pair_id}"
+            )
+
         return position_to_keep  # Return the one to keep open
 
 

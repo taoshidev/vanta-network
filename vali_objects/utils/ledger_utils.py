@@ -615,9 +615,17 @@ class LedgerUtils:
 
         Returns:
             dict: Dictionary mapping asset class to min days requirement (between 7-60 days)
+
+        Note on return values:
+            - Empty ledger_dict → CEIL (60 days): No data source at all, use maximum safety requirement
+            - Invalid entries filtered out → FLOOR (7 days): Entries exist but aren't valid participants
+              (semantically equivalent to having no participants in that asset class)
         """
+        # Default to CEIL (60 days) for all asset classes as a conservative starting point
         asset_class_min_days = {asset_class: ValiConfig.STATISTICAL_CONFIDENCE_MINIMUM_N_CEIL for asset_class in asset_classes}
 
+        # Empty ledger dict means no data source at all → return CEIL (maximum safety requirement)
+        # This is different from having entries that get filtered out (which means no valid participants → FLOOR)
         if not ledger_dict:
             return asset_class_min_days
 
@@ -639,8 +647,13 @@ class LedgerUtils:
                 # Sort in descending order (longest participation first)
                 miner_participation_days.sort(reverse=True)
 
+                # If fewer than DYNAMIC_MIN_DAYS_NUM_MINERS (20) valid participants exist, return FLOOR (7 days)
+                # This includes cases where:
+                #   - Invalid/malformed entries were filtered out by AssetSegmentation (logs warnings)
+                #   - No miners participate in this asset class (e.g., all miners trade forex, none trade crypto)
+                # Both scenarios mean: "insufficient competition data for this asset class" → use minimum requirement
                 if len(miner_participation_days) < ValiConfig.DYNAMIC_MIN_DAYS_NUM_MINERS:
-                    minimum_days = ValiConfig.STATISTICAL_CONFIDENCE_MINIMUM_N_FLOOR  # Not enough participating miners, return floor
+                    minimum_days = ValiConfig.STATISTICAL_CONFIDENCE_MINIMUM_N_FLOOR
                 else:
                     # Use the shorter of Nth longest participating miner (index N-1), or median of all participating miners
                     minimum_days = min(miner_participation_days[ValiConfig.DYNAMIC_MIN_DAYS_NUM_MINERS - 1], int(statistics.median(miner_participation_days)))

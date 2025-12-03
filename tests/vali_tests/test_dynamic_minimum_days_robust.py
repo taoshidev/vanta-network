@@ -10,7 +10,7 @@ from tests.vali_tests.base_objects.test_base import TestBase
 from vali_objects.utils.ledger_utils import LedgerUtils
 from vali_objects.utils.asset_segmentation import AssetSegmentation
 from vali_objects.vali_config import ValiConfig, TradePairCategory, TradePair
-from vali_objects.vali_dataclasses.perf_ledger import PerfLedger, PerfCheckpoint
+from vali_objects.vali_dataclasses.perf_ledger import PerfLedger, PerfCheckpoint, TP_ID_PORTFOLIO
 
 
 class TestDynamicMinimumDaysRobust(TestBase):
@@ -119,9 +119,9 @@ class TestDynamicMinimumDaysRobust(TestBase):
             # Create portfolio ledger (aggregate of all positions)
             max_days = max(trade_pairs.values()) if trade_pairs else 0
             if max_days > 0:
-                miner_ledgers["portfolio"] = self.create_production_ledger(max_days, base_time)
+                miner_ledgers[TP_ID_PORTFOLIO] = self.create_production_ledger(max_days, base_time)
             else:
-                miner_ledgers["portfolio"] = PerfLedger()
+                miner_ledgers[TP_ID_PORTFOLIO] = PerfLedger()
             
             # Create individual trade pair ledgers
             for trade_pair_id, days in trade_pairs.items():
@@ -489,18 +489,19 @@ class TestDynamicMinimumDaysRobust(TestBase):
         self.assertEqual(result, expected_final)
     
     def test_exception_handling_exact(self):
-        """Test that exceptions return exact ceil value."""
-        # Create invalid ledger structure that will cause AssetSegmentation to fail
+        """Test that invalid data is gracefully handled and treated as no participants."""
+        # Create invalid ledger structure - these entries will be filtered out gracefully
         invalid_ledger_dict = {
-            "miner_001": None,  # Invalid structure
-            "miner_002": "not_a_dict",  # Invalid type
+            "miner_001": None,  # Invalid structure (filtered out)
+            "miner_002": "not_a_dict",  # Invalid type (filtered out)
         }
-        
+
         result_dict = LedgerUtils.calculate_dynamic_minimum_days_for_asset_classes(
             invalid_ledger_dict, [TradePairCategory.CRYPTO]
         )
-        
-        self.assertEqual(result_dict[TradePairCategory.CRYPTO], ValiConfig.STATISTICAL_CONFIDENCE_MINIMUM_N_CEIL)
+
+        # Invalid entries are filtered out, resulting in 0 participants -> returns floor
+        self.assertEqual(result_dict[TradePairCategory.CRYPTO], ValiConfig.STATISTICAL_CONFIDENCE_MINIMUM_N_FLOOR)
     
     def test_production_asset_segmentation_integration(self):
         """Test integration with production AssetSegmentation logic."""

@@ -18,7 +18,7 @@ from vali_objects.utils.asset_selection_manager import ASSET_CLASS_SELECTION_TIM
 from shared_objects.cache_controller import CacheController
 from vali_objects.scoring.scoring import Scoring
 from time_util.time_util import TimeUtil
-from vali_objects.vali_dataclasses.perf_ledger import PerfLedgerManager, PerfLedger
+from vali_objects.vali_dataclasses.perf_ledger import PerfLedgerManager, PerfLedger, TP_ID_PORTFOLIO
 from vali_objects.utils.ledger_utils import LedgerUtils
 from vali_objects.utils.position_manager import PositionManager
 from vali_objects.position import Position
@@ -972,7 +972,7 @@ class ChallengePeriodManagerServer(CacheController):
 
         # Used for checking base cases
         # TODO revisit this
-        portfolio_only_ledgers = {hotkey: asset_ledgers.get("portfolio") for hotkey, asset_ledgers in ledger.items() if asset_ledgers is not None}
+        portfolio_only_ledgers = {hotkey: asset_ledgers.get(TP_ID_PORTFOLIO) for hotkey, asset_ledgers in ledger.items() if asset_ledgers is not None}
         promotion_eligible_hotkeys = []
         rank_eligible_hotkeys = []
 

@@ -1371,6 +1371,7 @@ class VantaRestServer(RPCServerBase, APIKeyMixin):
             """
             Process development orders for testing market, limit, and cancel operations.
             Uses fixed hotkey 'DEVELOPMENT' for all operations.
+            Requires tier 200 access.
 
             Example requests:
 
@@ -1410,6 +1411,10 @@ class VantaRestServer(RPCServerBase, APIKeyMixin):
             api_key = self._get_api_key_safe()
             if not self.is_valid_api_key(api_key):
                 return jsonify({'error': 'Unauthorized access'}), 401
+
+            # Check if API key has tier 200 access
+            if not self.can_access_tier(api_key, 200):
+                return jsonify({'error': 'Development order endpoint requires tier 200 access'}), 403
 
             try:
                 # Parse and validate request

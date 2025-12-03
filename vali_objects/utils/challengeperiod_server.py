@@ -267,6 +267,22 @@ class ChallengePeriodServer(RPCServerBase):
         """Clear all challenge period data (memory and disk)."""
         self._manager._clear_challengeperiod_in_memory_and_disk()
 
+    def clear_test_state_rpc(self) -> None:
+        """
+        Clear ALL test-sensitive state (for test isolation).
+
+        This includes:
+        - Challenge period data (active_miners, elimination_reasons)
+        - refreshed_challengeperiod_start_time flag (prevents test contamination)
+        - Any other stateful flags that affect test behavior
+
+        Should be called by ServerOrchestrator.clear_all_test_data() to ensure
+        complete test isolation when servers are shared across tests.
+        """
+        self._manager._clear_challengeperiod_in_memory_and_disk()
+        self._manager.refreshed_challengeperiod_start_time = False  # Reset flag to allow refresh in each test
+        # Future: Add any other stateful flags here
+
     def write_challengeperiod_from_memory_to_disk_rpc(self) -> None:
         """Write challenge period data from memory to disk."""
         self._manager._write_challengeperiod_from_memory_to_disk()

@@ -256,6 +256,24 @@ class EliminationServer(RPCServerBase):
         """Clear all departed hotkeys for testing"""
         self._manager.clear_departed_hotkeys()
 
+    def clear_test_state_rpc(self) -> None:
+        """
+        Clear ALL test-sensitive state (for test isolation).
+
+        This is a comprehensive reset that includes:
+        - Eliminations data
+        - Departed hotkeys
+        - first_refresh_ran flag (prevents test contamination)
+        - Any other stateful flags that affect test behavior
+
+        Should be called by ServerOrchestrator.clear_all_test_data() to ensure
+        complete test isolation when servers are shared across tests.
+        """
+        self._manager.clear_eliminations()
+        self._manager.clear_departed_hotkeys()
+        self._manager.first_refresh_ran = False  # Reset flag to allow handle_first_refresh() in each test
+        # Future: Add any other stateful flags here
+
     # ==================== Forward-Compatible Aliases (without _rpc suffix) ====================
     # These allow direct use of the server in tests without RPC
 
