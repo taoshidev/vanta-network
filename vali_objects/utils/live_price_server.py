@@ -88,6 +88,9 @@ class LivePriceFetcherClient(RPCClientBase):
         Returns:
             bool: True if market is open, False otherwise
         """
+        if self.running_unit_tests:
+            return self._server.is_market_open(trade_pair, time_ms)
+
         if time_ms is None:
             time_ms = TimeUtil.now_in_millis()
         return self._market_calendar.is_market_open(trade_pair, time_ms)
@@ -379,6 +382,9 @@ class LivePriceFetcherServer(RPCServerBase):
     def clear_test_candle_data(self) -> None:
         """Test-only RPC method to clear all test candle data."""
         return self._fetcher.clear_test_candle_data()
+
+    def is_market_open(self, trade_pair: TradePair, time_ms: int) -> bool:
+        return self._fetcher.is_market_open(trade_pair, time_ms)
 
 
 
