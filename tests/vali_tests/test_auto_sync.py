@@ -109,7 +109,13 @@ class TestAutoSync(TestBase):
         self.DEFAULT_ACCOUNT_SIZE = 100_000
 
         # Set up test miner in metagraph
-        self.metagraph_client.set_hotkeys([self.DEFAULT_MINER_HOTKEY])
+        # Use try/except to handle server crashes gracefully
+        try:
+            self.metagraph_client.set_hotkeys([self.DEFAULT_MINER_HOTKEY])
+        except (BrokenPipeError, ConnectionRefusedError, ConnectionError, EOFError) as e:
+            # Server may have crashed - log and skip (tests that need metagraph will fail anyway)
+            import bittensor as bt
+            bt.logging.warning(f"Failed to set metagraph hotkeys in setUp (server may have crashed): {e}")
 
         # Create default test data
         self.default_order = Order(

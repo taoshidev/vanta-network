@@ -79,11 +79,13 @@ class TestDebtBasedScoring(TestBase):
 
         # Set metagraph data via RPC
         # metagraph.emission is in TAO per tempo (360 blocks)
-        # To get 10 TAO/block total, we need 10 * 360 = 3600 TAO per tempo
+        # Create emission for 10 active miners + 246 inactive miners (total 256)
+        emission_list = [360] * 10 + [0] * 246  # First 10 miners get 360 TAO/tempo, rest get 0
+
         self.metagraph_client.update_metagraph(
             hotkeys=hotkeys_list,
             uids=list(range(256)),
-            emission=[360] * 10,  # 10 miners, 360 TAO per tempo each = 1 TAO/block each
+            emission=emission_list,  # ✓ Fixed: 256 emissions to match 256 hotkeys
             tao_reserve_rao=1_000_000 * 1e9,  # 1M TAO in RAO
             alpha_reserve_rao=2_000_000 * 1e9,  # 2M ALPHA in RAO (2.0 ALPHA per TAO)
             tao_to_usd_rate=500.0  # $500/TAO

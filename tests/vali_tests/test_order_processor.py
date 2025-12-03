@@ -847,8 +847,8 @@ class TestOrderProcessor(TestBase):
         self.assertIsNone(order.stop_loss)
         self.assertEqual(order.take_profit, 52000.0)
 
-    def test_process_bracket_order_leverage_defaults_to_zero(self):
-        """Test bracket order with no leverage defaults to 0"""
+    def test_process_bracket_order_leverage_defaults_to_none(self):
+        """Test bracket order with no leverage defaults to None"""
         signal = {
             "stop_loss": 49000.0,
         }
@@ -865,7 +865,8 @@ class TestOrderProcessor(TestBase):
             limit_order_client=limit_order_client
         )
 
-        self.assertEqual(order.leverage, 0.0)
+        # Leverage should be None when not provided (will be determined by manager)
+        self.assertIsNone(order.leverage)
 
     # ============================================================================
     # Test: process_bracket_order - Validation Errors

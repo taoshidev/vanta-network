@@ -257,10 +257,10 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
 
     def test_multiple_open_positions_same_trade_pair_violation(self):
         """Test that multiple open positions for same trade pair are properly rejected."""
-        from multiprocessing.managers import RemoteError
+        from vali_objects.exceptions.vali_records_misalignment_exception import ValiRecordsMisalignmentException
 
         base_time = self.now_ms - (5 * MS_IN_24_HOURS)
-        
+
         # Create two positions that are both open at the same time
         position1 = Position(
             miner_hotkey=self.test_hotkey,
@@ -282,7 +282,7 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
             position_type=OrderType.LONG,
             is_closed_position=False,
         )
-        
+
         position2 = Position(
             miner_hotkey=self.test_hotkey,
             position_uuid="open2",
@@ -303,20 +303,21 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
             position_type=OrderType.LONG,
             is_closed_position=False,
         )
-        
+
         position1.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
         position2.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
-        
+
         # First position should save successfully
         self.position_client.save_miner_position(position1)
-        
-        # Second position should be rejected with ValiRecordsMisalignmentException (wrapped in RemoteError)
-        with self.assertRaises(RemoteError) as context:
+
+        # Second position should be rejected with ValiRecordsMisalignmentException
+        # Note: The exception is raised directly (not wrapped in RemoteError) because
+        # ValiRecordsMisalignmentException can be properly unpickled on the client side
+        with self.assertRaises(ValiRecordsMisalignmentException) as context:
             self.position_client.save_miner_position(position2)
 
         # Verify the exception message contains expected details
         error_msg = str(context.exception)
-        self.assertIn("ValiRecordsMisalignmentException", error_msg, "Exception should be ValiRecordsMisalignmentException")
         self.assertIn("existing open position", error_msg, "Exception should mention existing open position")
         self.assertIn("BTCUSD", error_msg, "Exception should mention the trade pair")
         self.assertIn("open1", error_msg, "Exception should mention the first position ID")

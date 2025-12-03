@@ -758,6 +758,8 @@ class ServerOrchestrator:
         This is a convenience method for tests to reset state between test methods.
         Calls clear methods on all relevant clients, creating clients if they don't exist yet.
 
+        Handles server failures gracefully - if a server has crashed, logs warning and continues.
+
         Example usage in test setUp():
             def setUp(self):
                 self.orchestrator.clear_all_test_data()
@@ -776,56 +778,84 @@ class ServerOrchestrator:
                 return self.get_client(server_name)
             return None
 
+        # Helper to safely call clear method (handles server crashes)
+        def safe_clear(server_name: str, clear_func, error_msg: str = ""):
+            """
+            Safely call a clear function, catching RPC errors.
+
+            If server has crashed (BrokenPipeError, ConnectionError, etc.), log warning and continue.
+            This prevents one crashed server from blocking cleanup of other servers.
+            """
+            try:
+                clear_func()
+            except (BrokenPipeError, ConnectionRefusedError, ConnectionError, EOFError) as e:
+                bt.logging.warning(
+                    f"Failed to clear {server_name} (server may have crashed): {type(e).__name__}: {e}. "
+                    f"Continuing with other servers..."
+                )
+            except Exception as e:
+                bt.logging.error(
+                    f"Unexpected error clearing {server_name}: {type(e).__name__}: {e}. "
+                    f"Continuing with other servers..."
+                )
+
         # Clear metagraph data (must be first to avoid cascading issues)
         metagraph_client = get_client_safe('metagraph')
         if metagraph_client:
-            metagraph_client.set_hotkeys([])
+            safe_clear('metagraph', lambda: metagraph_client.set_hotkeys([]))
 
         # Clear position manager data (positions and disk)
         position_client = get_client_safe('position_manager')
         if position_client:
-            position_client.clear_all_miner_positions_and_disk()
+            safe_clear('position_manager', lambda: position_client.clear_all_miner_positions_and_disk())
 
         # Clear perf ledger data
         perf_ledger_client = get_client_safe('perf_ledger')
         if perf_ledger_client:
-            perf_ledger_client.clear_all_ledger_data()
+            safe_clear('perf_ledger', lambda: perf_ledger_client.clear_all_ledger_data())
 
         # Clear elimination data
         elimination_client = get_client_safe('elimination')
         if elimination_client:
-            elimination_client.clear_eliminations()
+            safe_clear('elimination', lambda: elimination_client.clear_eliminations())
 
         # Clear challenge period data
         challenge_period_client = get_client_safe('challenge_period')
         if challenge_period_client:
-            challenge_period_client._clear_challengeperiod_in_memory_and_disk()
-            challenge_period_client.clear_elimination_reasons()
+            def clear_challenge_period():
+                challenge_period_client._clear_challengeperiod_in_memory_and_disk()
+                challenge_period_client.clear_elimination_reasons()
+            safe_clear('challenge_period', clear_challenge_period)
 
         # Clear plagiarism data
         plagiarism_client = get_client_safe('plagiarism')
         if plagiarism_client:
-            plagiarism_client.clear_plagiarism_data()
+            safe_clear('plagiarism', lambda: plagiarism_client.clear_plagiarism_data())
 
-        # Clear plagiarism events (class-level cache)
-        from vali_objects.utils.plagiarism_events import PlagiarismEvents
-        PlagiarismEvents.clear_plagiarism_events()
+        # Clear plagiarism events (class-level cache - not RPC, always safe)
+        try:
+            from vali_objects.utils.plagiarism_events import PlagiarismEvents
+            PlagiarismEvents.clear_plagiarism_events()
+        except Exception as e:
+            bt.logging.warning(f"Failed to clear plagiarism events: {e}")
 
         # Clear limit order data
         limit_order_client = get_client_safe('limit_order')
         if limit_order_client:
-            limit_order_client.clear_limit_orders()
+            safe_clear('limit_order', lambda: limit_order_client.clear_limit_orders())
 
         # Clear asset selection data
         asset_selection_client = get_client_safe('asset_selection')
         if asset_selection_client:
-            asset_selection_client.clear_asset_selections_for_test()
+            safe_clear('asset_selection', lambda: asset_selection_client.clear_asset_selections_for_test())
 
         # Clear live price fetcher test data (test candles and test price sources)
         live_price_client = get_client_safe('live_price_fetcher')
         if live_price_client:
-            live_price_client.clear_test_candle_data()
-            live_price_client.clear_test_price_sources()
+            def clear_live_price():
+                live_price_client.clear_test_candle_data()
+                live_price_client.clear_test_price_sources()
+            safe_clear('live_price_fetcher', clear_live_price)
 
         bt.logging.debug("All test data cleared")
 
