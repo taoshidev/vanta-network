@@ -247,6 +247,35 @@ class PerfLedgerClient(RPCClientBase):
         """
         self._server.add_elimination_row_rpc(elimination_row)
 
+    def get_bypass_values_if_applicable(
+        self,
+        ledger: PerfLedger,
+        trade_pair: str,
+        tp_status: str,
+        tp_return: float,
+        spread_fee_pct: float,
+        carry_fee_pct: float,
+        active_positions: dict
+    ) -> tuple:
+        """
+        Test-only method to get bypass values if applicable.
+
+        Args:
+            ledger: PerfLedger instance
+            trade_pair: Trade pair identifier
+            tp_status: TradePairReturnStatus value
+            tp_return: Trade pair return value
+            spread_fee_pct: Spread fee percentage
+            carry_fee_pct: Carry fee percentage
+            active_positions: Dict of active positions
+
+        Returns:
+            Tuple of (return, spread_fee, carry_fee)
+        """
+        return self._server.get_bypass_values_if_applicable_rpc(
+            ledger, trade_pair, tp_status, tp_return, spread_fee_pct, carry_fee_pct, active_positions
+        )
+
     def health_check(self) -> dict:
         """Check server health."""
         return self._server.health_check_rpc()
@@ -550,6 +579,35 @@ class PerfLedgerServer(RPCServerBase):
             elimination_row: Elimination dict with hotkey, reason, dd, etc.
         """
         self._manager.pl_elimination_rows.append(elimination_row)
+
+    def get_bypass_values_if_applicable_rpc(
+        self,
+        ledger: PerfLedger,
+        trade_pair: str,
+        tp_status: str,
+        tp_return: float,
+        spread_fee_pct: float,
+        carry_fee_pct: float,
+        active_positions: dict
+    ) -> tuple:
+        """
+        Test-only RPC method to get bypass values if applicable.
+
+        Args:
+            ledger: PerfLedger instance
+            trade_pair: Trade pair identifier
+            tp_status: TradePairReturnStatus value
+            tp_return: Trade pair return value
+            spread_fee_pct: Spread fee percentage
+            carry_fee_pct: Carry fee percentage
+            active_positions: Dict of active positions
+
+        Returns:
+            Tuple of (return, spread_fee, carry_fee)
+        """
+        return self._manager.get_bypass_values_if_applicable(
+            ledger, trade_pair, tp_status, tp_return, spread_fee_pct, carry_fee_pct, active_positions
+        )
 
     # ==================== Direct Access (for backward compatibility in tests) ====================
 

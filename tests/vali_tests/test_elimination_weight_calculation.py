@@ -137,7 +137,7 @@ class TestEliminationWeightCalculation(TestBase):
             self.ZOMBIE_MINER
         ]
 
-        # Set up metagraph with all miner names
+        # Re-initialize metagraph after clear_all_test_data()
         self.metagraph_client.set_hotkeys(self.all_miners)
 
         # Set up initial state
@@ -209,7 +209,7 @@ class TestEliminationWeightCalculation(TestBase):
         # Update using client API
         self.challenge_period_client.clear_all_miners()
         self.challenge_period_client.update_miners(miners)
-        self.challenge_period_client._write_challengeperiod_from_memory_to_disk()
+        # Note: Data persistence handled automatically by server - no manual disk write needed
 
     def _setup_perf_ledgers(self):
         """Set up performance ledgers for testing"""
@@ -258,9 +258,6 @@ class TestEliminationWeightCalculation(TestBase):
 
     def _build_debt_ledgers(self):
         """Build debt ledgers from perf ledgers for weight calculation tests."""
-        # Get the debt_ledger_server handle from orchestrator (needed for direct server access)
-        debt_ledger_server = self.orchestrator._servers.get('debt_ledger')
-
         # The DebtLedgerServer builds debt ledgers from THREE sources:
         # 1. Performance ledgers (via PerfLedgerClient) ✅ Already set up
         # 2. Emissions ledgers (via EmissionsLedgerManager) ⚠️ Need to build
@@ -268,15 +265,15 @@ class TestEliminationWeightCalculation(TestBase):
 
         # Build penalty ledgers FIRST (they depend on perf ledgers and challenge period data)
         bt.logging.info("Building penalty ledgers...")
-        debt_ledger_server.penalty_ledger_manager.build_penalty_ledgers(verbose=False, delta_update=False)
+        self.debt_ledger_client.build_penalty_ledgers(verbose=False, delta_update=False)
 
         # Build emissions ledgers SECOND (they depend on metagraph data)
         bt.logging.info("Building emissions ledgers...")
-        debt_ledger_server.emissions_ledger_manager.build_delta_update()
+        self.debt_ledger_client.build_emissions_ledgers(delta_update=False)
 
         # Now build debt ledgers THIRD (combines all three sources)
         bt.logging.info("Building debt ledgers...")
-        debt_ledger_server.build_debt_ledgers(verbose=False, delta_update=False)
+        self.debt_ledger_client.build_debt_ledgers(verbose=False, delta_update=False)
 
         bt.logging.info(f"Built debt ledgers for {len(self.all_miners)} miners")
 
@@ -471,8 +468,7 @@ class TestEliminationWeightCalculation(TestBase):
         # Re-add the eliminated miner to active_miners since we cleared eliminations
         miners = {self.ELIMINATED_MINER: (MinerBucket.MAINCOMP, 0, None, None)}
         self.challenge_period_client.update_miners(miners)
-        current_time = TimeUtil.now_in_millis()
-        _, transformed_list = self.weight_setter.compute_weights_default(current_time)
+        _, transformed_list = self.weight_setter.compute_weights_default(self.TEST_TIME_MS)
 
         # The transformed_list contains raw scores, not normalized weights
         # The actual normalization happens in the subtensor.set_weights call
@@ -481,7 +477,7 @@ class TestEliminationWeightCalculation(TestBase):
 
         # Test with eliminations - verify eliminated miners get zero
         self._setup_eliminations()
-        _, transformed_list = self.weight_setter.compute_weights_default(current_time)
+        _, transformed_list = self.weight_setter.compute_weights_default(self.TEST_TIME_MS)
 
         # Find eliminated miner in results
         metagraph_hotkeys = self.metagraph_client.get_hotkeys()
@@ -491,10 +487,8 @@ class TestEliminationWeightCalculation(TestBase):
 
     def test_progressive_elimination_weight_behavior(self):
         """Test weight behavior as miners are progressively eliminated"""
-        current_time = TimeUtil.now_in_millis()
-
         # Initial state - one elimination
-        _, initial_weights = self.weight_setter.compute_weights_default(current_time)
+        _, initial_weights = self.weight_setter.compute_weights_default(self.TEST_TIME_MS)
         initial_non_zero = sum(1 for _, w in initial_weights if w > 0)
 
         # Add another elimination
@@ -509,7 +503,7 @@ class TestEliminationWeightCalculation(TestBase):
         self.challenge_period_client.remove_eliminated()
 
         # Recompute weights
-        _, new_weights = self.weight_setter.compute_weights_default(current_time)
+        _, new_weights = self.weight_setter.compute_weights_default(self.TEST_TIME_MS)
         new_non_zero = sum(1 for _, w in new_weights if w > 0)
 
         # Fewer miners should have non-zero weights
@@ -525,8 +519,7 @@ class TestEliminationWeightCalculation(TestBase):
     def test_weight_normalization_by_subtensor(self):
         """Test that our weight setter properly formats weights for Bittensor"""
         # Get the weights that would be sent to Bittensor
-        current_time = TimeUtil.now_in_millis()
-        checkpoint_results, transformed_list = self.weight_setter.compute_weights_default(current_time)
+        checkpoint_results, transformed_list = self.weight_setter.compute_weights_default(self.TEST_TIME_MS)
 
         # The transformed_list contains (uid, score) tuples
         # These are the raw scores that will be sent to Bittensor

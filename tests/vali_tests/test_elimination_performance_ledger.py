@@ -168,7 +168,7 @@ class TestPerfLedgerEliminations(TestBase):
         }
 
         # Add to perf ledger eliminations
-        self.perf_ledger_client.add_pl_elimination_row(elim_row)
+        self.perf_ledger_client.add_elimination_row(elim_row)
 
         # Get eliminations
         eliminations = self.perf_ledger_client.get_perf_ledger_eliminations()
@@ -306,7 +306,7 @@ class TestPerfLedgerEliminations(TestBase):
             'elimination_initiated_time_ms': TimeUtil.now_in_millis(),
             'price_info': {}
         }
-        self.perf_ledger_client.add_pl_elimination_row(elim_row)
+        self.perf_ledger_client.add_elimination_row(elim_row)
 
         # Process eliminations through elimination manager
         self.elimination_client.handle_perf_ledger_eliminations(self.position_locks)
@@ -370,7 +370,7 @@ class TestPerfLedgerEliminations(TestBase):
             'elimination_initiated_time_ms': TimeUtil.now_in_millis(),
             'price_info': {str(TradePair.BTCUSD): 50000}
         }
-        self.perf_ledger_client.add_pl_elimination_row(pl_elim)
+        self.perf_ledger_client.add_elimination_row(pl_elim)
 
         # Process through elimination manager
         self.elimination_client.handle_perf_ledger_eliminations(self.position_locks)

@@ -438,7 +438,9 @@ class TestAutoSyncTxtFiles(TestBase):
         
         # Step 2: Create modified version of candidate positions
         print("\nStep 2: Creating modified version of candidate positions")
-        # Use deep copy to avoid modifying the original candidate_positions
+        # Use deepcopy to create independent copies
+        # Note: PriceSource was refactored from Pydantic BaseModel to dataclass
+        # to avoid pickle recursion issues when passing through RPC
         from copy import deepcopy
         modified_positions = deepcopy(candidate_positions)
         
@@ -480,7 +482,7 @@ class TestAutoSyncTxtFiles(TestBase):
                             deleted_order = position.orders.pop(idx)
                             orders_deleted += 1
                             print(f"  Deleted order {deleted_order.order_uuid} from position {position.position_uuid}")
-                        
+
                         # Properly rebuild position after order deletion
                         position.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
 

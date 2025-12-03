@@ -211,6 +211,11 @@ class PlagiarismServer(RPCServerBase):
         if api_base_url is None:
             api_base_url = self.plagiarism_url
 
+        # During unit tests, skip API calls and just return in-memory data
+        # Tests use set_plagiarism_miners_for_test() to inject test data
+        if self.running_unit_tests:
+            return self.plagiarism_miners
+
         if self._check_plagiarism_refresh_rpc(current_time):
             try:
                 response = requests.get(f"{api_base_url}/elimination_scores")

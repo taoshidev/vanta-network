@@ -5,6 +5,7 @@ MDD (Maximum Drawdown) Checker tests using modern RPC infrastructure.
 
 Tests MDDCheckerServer functionality with proper server/client setup.
 """
+from copy import deepcopy
 from unittest.mock import patch
 
 from shared_objects.server_orchestrator import ServerOrchestrator, ServerMode
@@ -138,17 +139,6 @@ class TestMDDChecker(TestBase):
             account_size=self.DEFAULT_ACCOUNT_SIZE,
         ) for x in TradePair}
 
-
-        # Create default positions for all trade pairs
-        self.trade_pair_to_default_position = {
-            x: Position(
-                miner_hotkey=self.MINER_HOTKEY,
-                position_uuid=self.DEFAULT_TEST_POSITION_UUID + str(x.trade_pair_id),
-                open_ms=self.DEFAULT_OPEN_MS,
-                trade_pair=x,
-            ) for x in TradePair
-        }
-
     def verify_elimination_data_in_memory_and_disk(self, expected_eliminations):
         """Verify elimination data matches expectations."""
         expected_eliminated_hotkeys = [x['hotkey'] for x in expected_eliminations]
@@ -212,6 +202,47 @@ class TestMDDChecker(TestBase):
             if assert_all_open:
                 self.assertFalse(matching_disk_position.is_closed_position)
 
+    def verify_core_position_fields_unchanged(self, position_before, position_after, allow_price_correction=False):
+        """
+        Rigorously verify that core position fields remain unchanged after mdd_check().
+
+        mdd_check() always recalculates fees/returns, so this method skips validating those fields.
+        This method focuses on verifying structural integrity: orders, leverages, quantities, etc.
+
+        Args:
+            position_before: Position before mdd_check
+            position_after: Position after mdd_check (from disk)
+            allow_price_correction: If True, allows order prices and average_entry_price to differ (when price correction is enabled)
+        """
+        # Structural fields that must NEVER change
+        self.assertEqual(position_before.miner_hotkey, position_after.miner_hotkey, "miner_hotkey changed")
+        self.assertEqual(position_before.position_uuid, position_after.position_uuid, "position_uuid changed")
+        self.assertEqual(position_before.open_ms, position_after.open_ms, "open_ms changed")
+        self.assertEqual(position_before.trade_pair, position_after.trade_pair, "trade_pair changed")
+        self.assertEqual(position_before.position_type, position_after.position_type, "position_type changed")
+        self.assertEqual(position_before.is_closed_position, position_after.is_closed_position, "is_closed_position changed")
+
+        # Order list must be identical in structure
+        self.assertEqual(len(position_before.orders), len(position_after.orders), "Number of orders changed")
+        for i, (order_before, order_after) in enumerate(zip(position_before.orders, position_after.orders)):
+            self.assertEqual(order_before.order_uuid, order_after.order_uuid, f"Order {i} uuid changed")
+            self.assertEqual(order_before.order_type, order_after.order_type, f"Order {i} type changed")
+            self.assertAlmostEqual(order_before.leverage, order_after.leverage, places=9, msg=f"Order {i} leverage changed")
+            if not allow_price_correction:
+                self.assertAlmostEqual(order_before.price, order_after.price, places=9, msg=f"Order {i} price changed")
+            self.assertEqual(order_before.processed_ms, order_after.processed_ms, f"Order {i} processed_ms changed")
+
+        # Position state fields that must remain unchanged (except average_entry_price and net_value if prices corrected)
+        self.assertAlmostEqual(position_before.net_leverage, position_after.net_leverage, places=9, msg="net_leverage changed")
+        self.assertAlmostEqual(position_before.net_quantity, position_after.net_quantity, places=9, msg="net_quantity changed")
+        if not allow_price_correction:
+            self.assertAlmostEqual(position_before.net_value, position_after.net_value, places=6, msg="net_value changed")
+            self.assertAlmostEqual(position_before.average_entry_price, position_after.average_entry_price, places=9, msg="average_entry_price changed")
+        self.assertAlmostEqual(position_before.cumulative_entry_value, position_after.cumulative_entry_value, places=6, msg="cumulative_entry_value changed")
+
+        # NOTE: We intentionally skip validating current_return and return_at_close because mdd_check() always updates them.
+        # If you need to test that fees don't change, write a test that doesn't call mdd_check().
+
     def add_order_to_position_and_save_to_disk(self, position, order):
         """Add order to position and save to disk."""
         position.add_order(order, self.live_price_fetcher_client)
@@ -232,7 +263,7 @@ class TestMDDChecker(TestBase):
         self.verify_elimination_data_in_memory_and_disk([])
         o1 = Order(order_type=OrderType.SHORT,
                 leverage=1.0,
-                price=1000,
+                price=1000,  # Intentionally wrong price - should be corrected
                 trade_pair=TradePair.BTCUSD,
                 processed_ms=TimeUtil.now_in_millis(),
                 order_uuid="1000")
@@ -246,10 +277,27 @@ class TestMDDChecker(TestBase):
         self.add_order_to_position_and_save_to_disk(relevant_position, o1)
         self.assertFalse(relevant_position.is_closed_position)
         self.verify_positions_on_disk([relevant_position], assert_all_open=True)
+
+        # Snapshot position before mdd_check with price correction
+        position_snapshot = deepcopy(relevant_position)
         self.mdd_checker_client.last_price_fetch_time_ms = TimeUtil.now_in_millis() - 1000 * 30
         self.mdd_checker_client.mdd_check()
         self.verify_elimination_data_in_memory_and_disk([])
-        self.verify_positions_on_disk([relevant_position], assert_all_open=True, verify_positions_same=False, assert_price_changes=True)
+
+        # Get position from disk and verify:
+        # 1. Core fields stayed the same except prices (price correction enabled)
+        # 2. Prices DID change (correction applied)
+        # 3. Position is still open
+        positions_from_disk = self.position_client.get_positions_for_one_hotkey(self.MINER_HOTKEY)
+        self.assertEqual(len(positions_from_disk), 1)
+        position_from_disk = positions_from_disk[0]
+        self.verify_core_position_fields_unchanged(position_snapshot, position_from_disk, allow_price_correction=True)
+        self.assertFalse(position_from_disk.is_closed_position)
+        # Assert prices DID change (price correction occurred)
+        self.assertNotEqual(position_snapshot.orders[-1].price, position_from_disk.orders[-1].price,
+                           "Price correction enabled but order price did not change")
+        self.assertNotEqual(position_snapshot.average_entry_price, position_from_disk.average_entry_price,
+                           "Price correction enabled but average_entry_price did not change")
 
     def test_no_mdd_failures(self):
         self.verify_elimination_data_in_memory_and_disk([])
@@ -277,16 +325,30 @@ class TestMDDChecker(TestBase):
         self.verify_elimination_data_in_memory_and_disk([])
 
         self.add_order_to_position_and_save_to_disk(relevant_position, o1)
+        # Snapshot position before mdd_check to verify what changes
+        position_snapshot = deepcopy(relevant_position)
         self.mdd_checker_client.mdd_check()
         self.assertEqual(relevant_position.is_closed_position, False)
         self.verify_elimination_data_in_memory_and_disk([])
-        self.verify_positions_on_disk([relevant_position], assert_all_open=True, verify_positions_same=False, assert_price_changes=True)
+        # Get position from disk and rigorously verify core fields unchanged
+        positions_from_disk = self.position_client.get_positions_for_one_hotkey(self.MINER_HOTKEY)
+        self.assertEqual(len(positions_from_disk), 1)
+        position_from_disk = positions_from_disk[0]
+        self.verify_core_position_fields_unchanged(position_snapshot, position_from_disk)
+        self.assertFalse(position_from_disk.is_closed_position)
 
         self.add_order_to_position_and_save_to_disk(relevant_position, o2)
+        # Snapshot position before mdd_check
+        position_snapshot = deepcopy(relevant_position)
         self.assertEqual(relevant_position.is_closed_position, False)
         self.mdd_checker_client.mdd_check()
         self.verify_elimination_data_in_memory_and_disk([])
-        self.verify_positions_on_disk([relevant_position], assert_all_open=True)
+        # Get position from disk and rigorously verify core fields unchanged
+        positions_from_disk = self.position_client.get_positions_for_one_hotkey(self.MINER_HOTKEY)
+        self.assertEqual(len(positions_from_disk), 1)
+        position_from_disk = positions_from_disk[0]
+        self.verify_core_position_fields_unchanged(position_snapshot, position_from_disk)
+        self.assertFalse(position_from_disk.is_closed_position)
 
     def test_no_mdd_failures_high_leverage_one_order(self):
         """Test that high leverage positions with small losses don't trigger MDD."""

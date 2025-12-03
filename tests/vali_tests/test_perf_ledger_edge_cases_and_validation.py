@@ -11,9 +11,7 @@ This file consolidates all edge case, stress test, validation, and error handlin
 """
 
 import unittest
-from unittest.mock import patch, Mock, MagicMock
-import math
-from decimal import Decimal
+from unittest.mock import Mock
 
 from shared_objects.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
@@ -27,7 +25,6 @@ from vali_objects.vali_dataclasses.perf_ledger import (
     PerfLedger,
     PerfLedgerManager,
     PerfCheckpoint,
-    TP_ID_PORTFOLIO,
     ParallelizationMode,
     TradePairReturnStatus,
 )
@@ -338,123 +335,112 @@ class TestPerfLedgerEdgeCasesAndValidation(TestBase):
 
     def test_negative_returns_and_mdd(self):
         """Test maximum drawdown calculation with negative returns."""
-        from collections import namedtuple
-        Candle = namedtuple('Candle', ['timestamp', 'close'])
-        
-        mock_pds = Mock()
-        
-        # Mock candle data to provide prices for the positions
-        def mock_unified_candle_fetcher(*args, **kwargs):
-            # Extract parameters
-            if args:
-                trade_pair = args[0]
-                start_ms = args[1] if len(args) > 1 else kwargs.get('start_timestamp_ms')
-                end_ms = args[2] if len(args) > 2 else kwargs.get('end_timestamp_ms')
-            else:
-                trade_pair = kwargs.get('trade_pair')
-                start_ms = kwargs.get('start_timestamp_ms')
-                end_ms = kwargs.get('end_timestamp_ms')
-            
-            # Generate candles with prices matching our position prices
-            candles = []
-            base_time = self.now_ms - (20 * MS_IN_24_HOURS)
-            
-            # Define prices at key timestamps to match position open/close prices
-            price_schedule = [
-                (base_time, 50000.0),  # Start of loss1
-                (base_time + MS_IN_24_HOURS, 49000.0),  # End of loss1, start of loss2
-                (base_time + 2 * MS_IN_24_HOURS, 47000.0),  # End of loss2, start of loss3
-                (base_time + 3 * MS_IN_24_HOURS, 45000.0),  # End of loss3, start of recovery
-                (base_time + 4 * MS_IN_24_HOURS, 46000.0),  # End of recovery
-                (base_time + 10 * MS_IN_24_HOURS, 46000.0),  # Final update time
-            ]
-            
-            # Generate minute candles between start_ms and end_ms
-            for i in range(len(price_schedule) - 1):
-                t1, p1 = price_schedule[i]
-                t2, p2 = price_schedule[i + 1]
-                
-                if t1 <= end_ms and t2 >= start_ms:
-                    # Generate candles for this period
-                    current_ms = max(t1, start_ms)
-                    while current_ms <= min(t2, end_ms):
-                        # Linear interpolation between prices
-                        progress = (current_ms - t1) / (t2 - t1) if t2 > t1 else 0
-                        price = p1 + (p2 - p1) * progress
-                        candles.append(Candle(timestamp=current_ms, close=price))
-                        current_ms += 60000  # 1 minute
-            
-            return candles
+        from vali_objects.vali_dataclasses.price_source import PriceSource
 
-        mock_pds.unified_candle_fetcher.side_effect = mock_unified_candle_fetcher
-        mock_pds.tp_to_mfs = {}
+        base_time = self.now_ms - (20 * MS_IN_24_HOURS)
 
-        # Patch the polygon_data_service on the live price fetcher client
-        original_pds = self.live_price_fetcher_client.polygon_data_service
-        self.live_price_fetcher_client.polygon_data_service = mock_pds
+        # Define prices at key timestamps to match position open/close prices
+        price_schedule = [
+            (base_time, 50000.0),  # Start of loss1
+            (base_time + MS_IN_24_HOURS, 49000.0),  # End of loss1, start of loss2
+            (base_time + 2 * MS_IN_24_HOURS, 47000.0),  # End of loss2, start of loss3
+            (base_time + 3 * MS_IN_24_HOURS, 45000.0),  # End of loss3, start of recovery
+            (base_time + 4 * MS_IN_24_HOURS, 46000.0),  # End of recovery
+            (base_time + 10 * MS_IN_24_HOURS, 46000.0),  # Final update time
+        ]
 
-        try:
-            plm = PerfLedgerManager(
-                running_unit_tests=True,
-                parallel_mode=ParallelizationMode.SERIAL,
-                is_backtesting=True,  # Ensure we process historical data
+        # Generate PriceSource candles for the entire time window
+        candles = []
+        for i in range(len(price_schedule) - 1):
+            t1, p1 = price_schedule[i]
+            t2, p2 = price_schedule[i + 1]
+
+            # Generate minute candles for this period
+            current_ms = t1
+            while current_ms <= t2:
+                # Linear interpolation between prices
+                progress = (current_ms - t1) / (t2 - t1) if t2 > t1 else 0
+                price = p1 + (p2 - p1) * progress
+                candles.append(PriceSource(
+                    source='test',
+                    timespan_ms=60000,  # 1 minute
+                    start_ms=current_ms,
+                    close=price,
+                    open=price,  # Simplified: same as close for this test
+                    high=price,
+                    low=price,
+                    vwap=price
+                ))
+                current_ms += 60000  # 1 minute
+
+        # Set test candle data via RPC (cleared automatically by orchestrator.clear_all_test_data() in tearDown())
+        start_ms = base_time
+        end_ms = base_time + (10 * MS_IN_24_HOURS)
+        self.live_price_fetcher_client.set_test_candle_data(
+            TradePair.BTCUSD,
+            start_ms,
+            end_ms,
+            candles
+        )
+
+        plm = PerfLedgerManager(
+            running_unit_tests=True,
+            parallel_mode=ParallelizationMode.SERIAL,
+            is_backtesting=True,  # Ensure we process historical data
+        )
+
+        base_time = self.now_ms - (20 * MS_IN_24_HOURS)
+
+        # Create losing positions to test MDD
+        losses = [
+            ("loss1", 50000.0, 49000.0),  # -2%
+            ("loss2", 49000.0, 47000.0),  # -4%
+            ("loss3", 47000.0, 45000.0),  # -4.3%
+            ("recovery", 45000.0, 46000.0),  # +2.2%
+        ]
+
+        for i, (name, open_price, close_price) in enumerate(losses):
+            # Add small offset to prevent timestamp collisions between positions
+            open_time = base_time + (i * MS_IN_24_HOURS) + (i * 1000)  # Add 1 second offset per position
+            close_time = base_time + ((i + 1) * MS_IN_24_HOURS) - 1000  # Close 1 second before next position starts
+
+            position = self._create_position(
+                name, TradePair.BTCUSD,
+                open_time,
+                close_time,
+                open_price, close_price, OrderType.LONG
             )
+            self.position_client.save_miner_position(position)
 
-            base_time = self.now_ms - (20 * MS_IN_24_HOURS)
+        # Update incrementally to build up state properly
+        current_time = base_time
+        step_size = 12 * 60 * 60 * 1000  # 12 hours
+        final_time = base_time + (10 * MS_IN_24_HOURS)
 
-            # Create losing positions to test MDD
-            losses = [
-                ("loss1", 50000.0, 49000.0),  # -2%
-                ("loss2", 49000.0, 47000.0),  # -4%
-                ("loss3", 47000.0, 45000.0),  # -4.3%
-                ("recovery", 45000.0, 46000.0),  # +2.2%
-            ]
+        while current_time < final_time:
+            next_time = min(current_time + step_size, final_time)
+            plm.update(t_ms=next_time)
+            current_time = next_time
 
-            for i, (name, open_price, close_price) in enumerate(losses):
-                # Add small offset to prevent timestamp collisions between positions
-                open_time = base_time + (i * MS_IN_24_HOURS) + (i * 1000)  # Add 1 second offset per position
-                close_time = base_time + ((i + 1) * MS_IN_24_HOURS) - 1000  # Close 1 second before next position starts
+        # Check MDD
+        bundles = plm.get_perf_ledgers(portfolio_only=False)
+        self.assertIn(self.test_hotkey, bundles, f"Should have bundles for test miner {self.test_hotkey}")
+        self.assertIn(TradePair.BTCUSD.trade_pair_id, bundles[self.test_hotkey], "Should have BTC ledger")
+        btc_ledger = bundles[self.test_hotkey][TradePair.BTCUSD.trade_pair_id]
 
-                position = self._create_position(
-                    name, TradePair.BTCUSD,
-                    open_time,
-                    close_time,
-                    open_price, close_price, OrderType.LONG
-                )
-                self.position_client.save_miner_position(position)
+        # MDD should be less than 1.0 (indicating drawdown)
+        # Find a checkpoint with actual updates (n_updates > 0)
+        checkpoint_with_data = None
+        for cp in reversed(btc_ledger.cps):
+            if cp.n_updates > 0:
+                checkpoint_with_data = cp
+                break
 
-            # Update incrementally to build up state properly
-            current_time = base_time
-            step_size = 12 * 60 * 60 * 1000  # 12 hours
-            final_time = base_time + (10 * MS_IN_24_HOURS)
-
-            while current_time < final_time:
-                next_time = min(current_time + step_size, final_time)
-                plm.update(t_ms=next_time)
-                current_time = next_time
-
-            # Check MDD
-            bundles = plm.get_perf_ledgers(portfolio_only=False)
-            self.assertIn(self.test_hotkey, bundles, f"Should have bundles for test miner {self.test_hotkey}")
-            self.assertIn(TradePair.BTCUSD.trade_pair_id, bundles[self.test_hotkey], "Should have BTC ledger")
-            btc_ledger = bundles[self.test_hotkey][TradePair.BTCUSD.trade_pair_id]
-
-            # MDD should be less than 1.0 (indicating drawdown)
-            # Find a checkpoint with actual updates (n_updates > 0)
-            checkpoint_with_data = None
-            for cp in reversed(btc_ledger.cps):
-                if cp.n_updates > 0:
-                    checkpoint_with_data = cp
-                    break
-
-            if checkpoint_with_data:
-                self.assertLess(checkpoint_with_data.mdd, 1.0,
-                              f"Should have drawdown with losing positions. MDD={checkpoint_with_data.mdd}")
-            else:
-                self.fail("No checkpoint with updates found")
-        finally:
-            # Restore original polygon_data_service
-            self.live_price_fetcher_client.polygon_data_service = original_pds
+        if checkpoint_with_data:
+            self.assertLess(checkpoint_with_data.mdd, 1.0,
+                          f"Should have drawdown with losing positions. MDD={checkpoint_with_data.mdd}")
+        else:
+            self.fail("No checkpoint with updates found")
 
     def test_fee_edge_cases(self):
         """Test edge cases in fee calculations."""

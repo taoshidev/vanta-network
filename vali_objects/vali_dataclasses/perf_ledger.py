@@ -1175,20 +1175,26 @@ class PerfLedgerManager(CacheController):
         #print(f"Starting #{requested_seconds} candle fetch for {tp.trade_pair}")
         if self.pds is None:
             if self.running_unit_tests:
-                # Create a minimal mock data service for testing
-                from unittest.mock import Mock
-                self.pds = Mock()
-                self.pds.unified_candle_fetcher.return_value = []
-                self.pds.tp_to_mfs = {}
+                # Use LivePriceFetcherClient in test mode to support RPC test data injection
+                # (e.g., via set_test_candle_data() RPC method)
+                price_info_raw = self._live_price_client.unified_candle_fetcher(
+                    trade_pair=tp, start_date=start_time_ms, order_date=end_time_ms, timespan=mode)
+                self.n_api_calls += 1
+                #print(f'Fetched candles for tp {tp.trade_pair} for window {TimeUtil.millis_to_formatted_date_str(start_time_ms)} to {TimeUtil.millis_to_formatted_date_str(end_time_ms)}')
+                #print(f'Got {len(price_info)} candles after request of {requested_seconds} candles for tp {tp.trade_pair} in {time.time() - t0}s')
             else:
                 # Production path - create real price fetcher
-                self.pds = PolygonDataService(api_key=self.secrets["polygon_apikey"], disable_ws=True, is_backtesting=self.is_backtesting)
-
-
-        price_info_raw = self.pds.unified_candle_fetcher(
-            trade_pair=tp, start_timestamp_ms=start_time_ms, end_timestamp_ms=end_time_ms, timespan=mode)
-        self.tp_to_mfs.update(self.pds.tp_to_mfs)
-        self.n_api_calls += 1
+                self.pds = PolygonDataService(api_key=self.secrets["polygon_apikey"], disable_ws=True, is_backtesting=self.is_backtesting, running_unit_tests=self.running_unit_tests)
+                price_info_raw = self.pds.unified_candle_fetcher(
+                    trade_pair=tp, start_timestamp_ms=start_time_ms, end_timestamp_ms=end_time_ms, timespan=mode)
+                self.tp_to_mfs.update(self.pds.tp_to_mfs)
+                self.n_api_calls += 1
+        else:
+            # Use existing PDS instance
+            price_info_raw = self.pds.unified_candle_fetcher(
+                trade_pair=tp, start_timestamp_ms=start_time_ms, end_timestamp_ms=end_time_ms, timespan=mode)
+            self.tp_to_mfs.update(self.pds.tp_to_mfs)
+            self.n_api_calls += 1
         #print(f'Fetched candles for tp {tp.trade_pair} for window {TimeUtil.millis_to_formatted_date_str(start_time_ms)} to {TimeUtil.millis_to_formatted_date_str(end_time_ms)}')
         #print(f'Got {len(price_info)} candles after request of {requested_seconds} candles for tp {tp.trade_pair} in {time.time() - t0}s')
 
@@ -2560,6 +2566,7 @@ class PerfLedgerManager(CacheController):
             target_ledger_window_ms=self.target_ledger_window_ms,
             is_backtesting=is_backtesting,
             use_slippage=self.use_slippage,
+            running_unit_tests=self.running_unit_tests,
         )
         worker_plm.now_ms = now_ms
 

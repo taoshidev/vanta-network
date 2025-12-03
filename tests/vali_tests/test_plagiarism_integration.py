@@ -1,15 +1,10 @@
 import uuid
 
-from tests.shared_objects.mock_classes import (
-    MockPlagiarismDetector,
-    MockPositionManager, MockLivePriceFetcherServer,
-)
-from shared_objects.mock_metagraph import MockMetagraph
+from tests.shared_objects.mock_classes import MockPlagiarismDetector
+from shared_objects.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.position import Position
-from vali_objects.utils.elimination_server import EliminationServer
-from vali_objects.utils.plagiarism_events import PlagiarismEvents
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair, ValiConfig
@@ -17,15 +12,61 @@ from vali_objects.vali_dataclasses.order import Order
 
 
 class TestPlagiarismIntegration(TestBase):
+    """
+    Plagiarism integration tests using ServerOrchestrator for shared server infrastructure.
+
+    Tests the plagiarism detection algorithm with real position data.
+    Servers start once (via singleton orchestrator) and are shared across all test classes.
+    Per-test isolation is achieved by clearing data state (not restarting servers).
+    """
+
+    # Class-level references (set in setUpClass via ServerOrchestrator)
+    orchestrator = None
+    position_manager_client = None
+    plagiarism_detector_client = None
+    elimination_client = None
+    metagraph_client = None
+    live_price_fetcher_client = None
+
+    @classmethod
+    def setUpClass(cls):
+        """One-time setup: Start all servers using ServerOrchestrator (shared across all test classes)."""
+        # Get the singleton orchestrator and start all required servers
+        cls.orchestrator = ServerOrchestrator.get_instance()
+
+        # Start all servers in TESTING mode (idempotent - safe if already started by another test class)
+        secrets = ValiUtils.get_secrets(running_unit_tests=True)
+        cls.orchestrator.start_all_servers(
+            mode=ServerMode.TESTING,
+            secrets=secrets
+        )
+
+        # Get clients from orchestrator (servers guaranteed ready, no connection delays)
+        cls.position_manager_client = cls.orchestrator.get_client('position_manager')
+        cls.plagiarism_detector_client = cls.orchestrator.get_client('plagiarism_detector')
+        cls.elimination_client = cls.orchestrator.get_client('elimination')
+        cls.metagraph_client = cls.orchestrator.get_client('metagraph')
+        cls.live_price_fetcher_client = cls.orchestrator.get_client('live_price_fetcher')
+
+    @classmethod
+    def tearDownClass(cls):
+        """
+        One-time teardown: No action needed.
+
+        Note: Servers and clients are managed by ServerOrchestrator singleton and shared
+        across all test classes. They will be shut down automatically at process exit.
+        """
+        pass
 
     def setUp(self):
-
-        super().setUp()
-        # Clear ALL test miner positions BEFORE creating PositionManager
+        """Per-test setup: Reset data state (fast - no server restarts)."""
+        # Clear ALL test miner positions BEFORE creating test data
         ValiBkpUtils.clear_directory(
             ValiBkpUtils.get_miner_dir(running_unit_tests=True)
         )
 
+        # Clear all data for test isolation (both memory and disk)
+        self.orchestrator.clear_all_test_data()
 
         self.ONE_DAY_MS = 1000 * 60 * 60 * 24
         self.ONE_HOUR_MS = 1000 * 60 * 60
@@ -34,38 +75,25 @@ class TestPlagiarismIntegration(TestBase):
         self.N_MINERS = 6
         self.MINER_NAMES = [f"test_miner{i}" for i in range(self.N_MINERS)]
         self.DEFAULT_ACCOUNT_SIZES = 100_000
-        secrets = ValiUtils.get_secrets(running_unit_tests=True)
-        self.live_price_fetcher = MockLivePriceFetcherServer(secrets=secrets, disable_ws=True)
-        self.mock_metagraph = MockMetagraph(self.MINER_NAMES)
         self.current_time = ValiConfig.PLAGIARISM_LOOKBACK_RANGE_MS
 
-        # Create position manager first (it creates its own EliminationClient internally)
-        self.position_manager = MockPositionManager(metagraph=self.mock_metagraph, perf_ledger_manager=None)
+        # Set up metagraph with test miners
+        self.metagraph_client.set_hotkeys(self.MINER_NAMES)
 
-        # Create elimination server and connect it to position manager's client
-        self.elimination_server = EliminationServer(
-            metagraph=self.mock_metagraph,
-            position_manager=self.position_manager,
-            running_unit_tests=True
-        )
-        self.position_manager.elimination_client.set_direct_server(self.elimination_server)
-        self.plagiarism_detector = MockPlagiarismDetector(self.mock_metagraph, self.position_manager)
+        # Use MockPlagiarismDetector for direct algorithm testing
+        # Note: This is a special case where we need direct access to plagiarism_data
+        # Most tests should use plagiarism_detector_client instead
+        self.plagiarism_detector = MockPlagiarismDetector()
 
         self.DEFAULT_TEST_POSITION_UUID = "test_position"
         self.DEFAULT_OPEN_MS = 1
 
-        self.position_manager.clear_all_miner_positions()
-        self.plagiarism_detector.clear_plagiarism_from_disk()
-
-        self.elimination_server.clear_eliminations()
         self.position_counter = 0
-        PlagiarismEvents.clear_plagiarism_events()
 
-        # Set up miners with postions for btc and eth
+        # Set up miners with positions for btc and eth
         # This will involve setting up 6 positions that aren't plagiarism
 
         # One position with low leverage and orders a day apart
-
         self.miner_0_btc_lev = [0.01, 0.02, -0.01]
         self.generate_one_position(hotkey=self.MINER_NAMES[0],
                                    trade_pair=TradePair.BTCUSD,
@@ -170,9 +198,13 @@ class TestPlagiarismIntegration(TestBase):
                                    times_apart=[0, self.ONE_DAY_MS, self.ONE_DAY_MS * 2],
                                    open_ms=self.ONE_MIN_MS * 10)
 
+    def tearDown(self):
+        """Per-test teardown: Clear data for next test."""
+        self.orchestrator.clear_all_test_data()
+
     def add_order_to_position_and_save_to_disk(self, position, order):
-        position.add_order(order, self.live_price_fetcher)
-        self.position_manager.save_miner_position(position, delete_open_position_if_exists=True)
+        position.add_order(order, self.live_price_fetcher_client)
+        self.position_manager_client.save_miner_position(position, delete_open_position_if_exists=True)
 
     def generate_one_position(self, hotkey, trade_pair, leverages, times_apart, open_ms, close_ms=None, times_after=None):
         if times_after is None:
@@ -216,7 +248,7 @@ class TestPlagiarismIntegration(TestBase):
                 processed_ms= close_ms - 1,
                 order_uuid=str(uuid.uuid4()))
             self.add_order_to_position_and_save_to_disk(order=close_order, position=position)
-        self.position_manager.save_miner_position(position, delete_open_position_if_exists=True)
+        self.position_manager_client.save_miner_position(position, delete_open_position_if_exists=True)
 
     def check_one_plagiarist(self, plagiarist_id, victim_id, trade_pair_name):
         self.plagiarism_detector.detect()
@@ -263,11 +295,11 @@ class TestPlagiarismIntegration(TestBase):
 
     def test_no_plagiarism(self):
         # There should be no false positives
-        positions = self.position_manager.get_positions_for_hotkeys(
-                self.mock_metagraph.hotkeys,
+        positions = self.position_manager_client.get_positions_for_hotkeys(
+                self.metagraph_client.get_hotkeys(),
             )
 
-        self.plagiarism_detector.detect(hotkeys= self.mock_metagraph.hotkeys,
+        self.plagiarism_detector.detect(hotkeys=self.metagraph_client.get_hotkeys(),
             hotkey_positions=positions)
 
         self.plagiarism_detector._update_plagiarism_scores_in_memory()

@@ -44,8 +44,12 @@ class MockPerfLedgerManager(PerfLedgerManager):
 
 
 class MockPlagiarismDetector(PlagiarismDetector):
-    def __init__(self, metagraph, position_manager=None):
-        super().__init__(metagraph, connection_mode=RPCConnectionMode.LOCAL)
+    def __init__(self):
+        # Use RPC mode so clients connect to orchestrator servers
+        # (LOCAL mode would create disconnected clients expecting set_direct_server())
+        super().__init__(connection_mode=RPCConnectionMode.RPC)
+        # Override to get test-specific behaviors (fixed time, test directories)
+        self.running_unit_tests = True
 
     # Lets us bypass the wait period in PlagiarismDetector
     def get_last_update_time_ms(self):

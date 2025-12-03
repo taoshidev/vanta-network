@@ -360,8 +360,8 @@ class TestPlagiarism(TestBase):
         for hotkey, (reason, timestamp) in elimination_result.items():
             self.elimination_client.append_elimination_row(hotkey, timestamp, reason)
 
-        # Remove from challenge period
-        self.challenge_period_client.remove_eliminated(eliminations=elimination_result)
+        # Remove from challenge period (pass None to fetch from elimination_manager)
+        self.challenge_period_client.remove_eliminated(eliminations=None)
 
         # Verify miner was eliminated
         self.assertFalse(self.challenge_period_client.has_miner(self.MINER_HOTKEY3))

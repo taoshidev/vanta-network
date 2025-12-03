@@ -174,10 +174,13 @@ class TestProbationComprehensive(TestBase):
         for hotkey in self.ELIMINATED_MINER_NAMES:
             miners[hotkey] = (MinerBucket.CHALLENGE, self.START_TIME, None, None)
 
+        # Initialize metagraph with all test miners (CRITICAL - needed for scoring)
+        self.metagraph_client.set_hotkeys(self.ALL_MINER_NAMES)
+
         # Clear and update miners via client
         self.challenge_period_client.clear_all_miners()
         self.challenge_period_client.update_miners(miners)
-        self.challenge_period_client._write_challengeperiod_from_memory_to_disk()
+        # Note: Data persistence handled automatically by server - no manual disk write needed
 
     def test_probation_timeout_elimination(self):
         """

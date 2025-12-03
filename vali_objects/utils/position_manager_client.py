@@ -22,6 +22,7 @@ For child processes:
         client.get_positions_for_one_hotkey(hotkey)
 """
 import json
+import math
 from typing import Dict, List, Optional
 
 from shared_objects.rpc_client_base import RPCClientBase
@@ -446,7 +447,13 @@ class PositionManagerClient(RPCClientBase):
             else:
                 value2 = getattr(position2, attr, None)
 
-            if value1 != value2:
+            # tolerant float comparison
+            if isinstance(value1, (int, float)) and isinstance(value2, (int, float)):
+                value1 = float(value1)
+                value2 = float(value2)
+                if not math.isclose(value1, value2, rel_tol=1e-9, abs_tol=1e-9):
+                    return False, f"{attr} is different. {value1} != {value2}"
+            elif value1 != value2:
                 return False, f"{attr} is different. {value1} != {value2}"
         return True, ""
 

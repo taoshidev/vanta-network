@@ -156,7 +156,7 @@ class TestMinerStatistics(TestBase):
 
         self.challenge_period_client.clear_all_miners()
         self.challenge_period_client.update_miners(miners_dict)
-        self.challenge_period_client._write_challengeperiod_from_memory_to_disk()
+        # Note: Data persistence handled automatically by server - no manual disk write needed
 
     # ==================== Basic Server Tests ====================
 

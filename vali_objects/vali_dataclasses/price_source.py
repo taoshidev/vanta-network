@@ -2,19 +2,29 @@
 # Copyright © 2024 Taoshi Inc
 
 import bittensor as bt
+from dataclasses import dataclass
 from typing import Optional
-from pydantic import BaseModel
 from time_util.time_util import TimeUtil
 
 from vali_objects.enums.order_type_enum import OrderType
 
 
 # Point-in-time (ws) or second candles only
-class PriceSource(BaseModel):
+@dataclass
+class PriceSource:
+    """
+    Dataclass representing a price source for a trading instrument.
+
+    Refactored from Pydantic BaseModel to standard dataclass to avoid
+    pickle recursion issues when passing through RPC boundaries.
+
+    Note: Dataclasses are naturally pickleable and don't have the complex
+    internal state that Pydantic models have, making them ideal for RPC.
+    """
     source: str = 'unknown'
     timespan_ms: int = 0
-    open: float = None
-    close: float = None
+    open: Optional[float] = None
+    close: Optional[float] = None
     vwap: Optional[float] = None
     high: Optional[float] = None
     low: Optional[float] = None
@@ -23,6 +33,24 @@ class PriceSource(BaseModel):
     lag_ms: int = 0
     bid: Optional[float] = 0.0
     ask: Optional[float] = 0.0
+
+    def to_dict(self):
+        """Convert to dictionary (compatibility method for serialization)."""
+        from dataclasses import asdict
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict):
+        """
+        Create PriceSource from dictionary.
+
+        Args:
+            data: Dictionary containing PriceSource fields
+
+        Returns:
+            PriceSource instance
+        """
+        return cls(**data)
 
     def __eq__(self, other):
         if not isinstance(other, PriceSource):

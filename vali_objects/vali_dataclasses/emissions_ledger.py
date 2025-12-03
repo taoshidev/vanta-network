@@ -789,6 +789,10 @@ class EmissionsLedgerManager:
             ValueError: If query returns None or invalid data
             Exception: If substrate query fails
         """
+        # In test mode, return mock balance
+        if self.running_unit_tests:
+            return 100.0  # Mock TAO balance
+
         self._rate_limit()
 
         try:
@@ -841,6 +845,14 @@ class EmissionsLedgerManager:
             if ledger.coldkey:
                 return ledger.coldkey
 
+        # In test mode, return mock coldkey
+        if self.running_unit_tests:
+            mock_coldkey = f"5Mock{hotkey_ss58[5:48]}"  # Mock coldkey based on hotkey
+            # Update ledger with mock coldkey if ledger exists
+            if hotkey_ss58 in self.emissions_ledgers:
+                self.emissions_ledgers[hotkey_ss58].coldkey = mock_coldkey
+            return mock_coldkey
+
         # Query substrate for coldkey
         self._rate_limit()
 
@@ -890,6 +902,10 @@ class EmissionsLedgerManager:
             ValueError: If query returns invalid data
             Exception: If substrate query fails
         """
+        # In test mode, return mock balance
+        if self.running_unit_tests:
+            return 50.0  # Mock ALPHA balance
+
         # Get coldkey for this hotkey (checks ledger first, then queries)
         coldkey = self._get_coldkey_for_hotkey(hotkey_ss58)
 
@@ -925,6 +941,11 @@ class EmissionsLedgerManager:
         """
         # Initialize subtensor if not already initialized
         if self.subtensor is None:
+            # Skip subtensor initialization in test mode (uses mock data instead)
+            if self.running_unit_tests:
+                bt.logging.debug("Skipping subtensor initialization in test mode (uses mock data)")
+                return
+
             bt.logging.info(f"Initializing subtensor connection to {self.archive_endpoint}, netuid: {self.netuid}")
 
             parser = argparse.ArgumentParser()
@@ -963,6 +984,12 @@ class EmissionsLedgerManager:
         Returns:
             Tuple of (avg_alpha_to_tao_rate, avg_tao_to_usd_rate). Returns (0.0, 0.0) on failure.
         """
+        # In test mode, return mock rates
+        if self.running_unit_tests:
+            MOCK_ALPHA_TO_TAO_RATE = 1.0
+            MOCK_TAO_TO_USD_RATE = 500.0
+            return MOCK_ALPHA_TO_TAO_RATE, MOCK_TAO_TO_USD_RATE
+
         bt.logging.debug(
             f"No emissions found in chunk, querying rates directly for zero-emission checkpoints"
         )
@@ -1023,7 +1050,10 @@ class EmissionsLedgerManager:
             end_time_ms: Optional end time (default: current time)
         """
 
-        self.instantiate_non_pickleable_components()
+        # In test mode, skip connection setup but still process all business logic
+        if not self.running_unit_tests:
+            self.instantiate_non_pickleable_components()
+
         start_exec_time = time.time()
         bt.logging.info("Building emissions ledgers for all hotkeys (aligned with perf ledgers)")
         if self.rate_limit_per_second < 10:
@@ -1061,16 +1091,21 @@ class EmissionsLedgerManager:
             f"target_cp_duration_ms: {reference_portfolio_ledger.target_cp_duration_ms}ms)"
         )
 
-        # Rate limit before initial query
-        self._rate_limit()
+        # Rate limit before initial query (skip in test mode)
+        if not self.running_unit_tests:
+            self._rate_limit()
 
         # Verify max UIDs is still 256 (sanity check - has never changed in Bittensor history)
-        current_max_uids_result = self.subtensor.substrate.query(
-            module='SubtensorModule',
-            storage_function='SubnetworkN',
-            params=[self.netuid]
-        )
-        current_max_uids = int(current_max_uids_result.value if hasattr(current_max_uids_result, 'value') else current_max_uids_result) if current_max_uids_result else 0
+        if self.running_unit_tests:
+            # In test mode, assume standard 256 UIDs
+            current_max_uids = 256
+        else:
+            current_max_uids_result = self.subtensor.substrate.query(
+                module='SubtensorModule',
+                storage_function='SubnetworkN',
+                params=[self.netuid]
+            )
+            current_max_uids = int(current_max_uids_result.value if hasattr(current_max_uids_result, 'value') else current_max_uids_result) if current_max_uids_result else 0
         assert current_max_uids == 256, f"Expected max UIDs to be 256, but got {current_max_uids}. The hardcoded value needs to be updated!"
 
         # Validate that start_time_ms doesn't conflict with existing data
@@ -1089,19 +1124,23 @@ class EmissionsLedgerManager:
         # Default end time is now with lag
         current_time_ms = int(time.time() * 1000)
         if end_time_ms is None:
-            end_time_ms = current_time_ms - self.DEFAULT_LAG_TIME_MS
+            # In test mode, use no lag since test data is created "now"
+            lag_ms = 0 if self.running_unit_tests else self.DEFAULT_LAG_TIME_MS
+            end_time_ms = current_time_ms - lag_ms
 
         # CRITICAL: Enforce 12-hour lag to ensure we never build checkpoints too close to real-time
         # This prevents incomplete or unreliable data from being included
-        min_allowed_end_time_ms = current_time_ms - self.DEFAULT_LAG_TIME_MS
-        if end_time_ms > min_allowed_end_time_ms:
-            bt.logging.warning(
-                f"Requested end_time_ms ({TimeUtil.millis_to_formatted_date_str(end_time_ms)}) "
-                f"is too recent (within {self.DEFAULT_LAG_TIME_MS / 1000 / 3600:.1f} hours of current time). "
-                f"Adjusting to enforce mandatory {self.DEFAULT_LAG_TIME_MS / 1000 / 3600:.1f}-hour lag: "
-                f"{TimeUtil.millis_to_formatted_date_str(min_allowed_end_time_ms)}"
-            )
-            end_time_ms = min_allowed_end_time_ms
+        # Skip this enforcement in test mode
+        if not self.running_unit_tests:
+            min_allowed_end_time_ms = current_time_ms - self.DEFAULT_LAG_TIME_MS
+            if end_time_ms > min_allowed_end_time_ms:
+                bt.logging.warning(
+                    f"Requested end_time_ms ({TimeUtil.millis_to_formatted_date_str(end_time_ms)}) "
+                    f"is too recent (within {self.DEFAULT_LAG_TIME_MS / 1000 / 3600:.1f} hours of current time). "
+                    f"Adjusting to enforce mandatory {self.DEFAULT_LAG_TIME_MS / 1000 / 3600:.1f}-hour lag: "
+                    f"{TimeUtil.millis_to_formatted_date_str(min_allowed_end_time_ms)}"
+                )
+                end_time_ms = min_allowed_end_time_ms
 
         # Filter perf checkpoints to those within our time range and that are complete (not active)
         target_cp_duration_ms = reference_portfolio_ledger.target_cp_duration_ms
@@ -1141,8 +1180,13 @@ class EmissionsLedgerManager:
         )
 
         # Get current block for estimating block ranges
-        self._rate_limit()
-        current_block = self.subtensor.get_current_block()
+        if not self.running_unit_tests:
+            self._rate_limit()
+            current_block = self.subtensor.get_current_block()
+        else:
+            # In test mode, estimate current block based on time
+            # Bittensor blocks are ~12 seconds, assume we started at block 1M
+            current_block = 1000000 + int(time.time() / self.SECONDS_PER_BLOCK)
         current_time_ms = int(time.time() * 1000)
 
         chunk_count = 0
@@ -1231,13 +1275,17 @@ class EmissionsLedgerManager:
                 )
 
             # Query block hash for balance snapshots at checkpoint end
-            self._rate_limit()
-            end_block_hash = self.subtensor.substrate.get_block_hash(chunk_end_block)
-            if not end_block_hash:
-                raise ValueError(
-                    f"Failed to get block_hash for block {chunk_end_block} "
-                    f"(chunk {current_chunk_start_ms}-{current_chunk_end_ms})"
-                )
+            if self.running_unit_tests:
+                # In test mode, use a mock block hash
+                end_block_hash = f"0x{'0' * 64}"  # Mock hash
+            else:
+                self._rate_limit()
+                end_block_hash = self.subtensor.substrate.get_block_hash(chunk_end_block)
+                if not end_block_hash:
+                    raise ValueError(
+                        f"Failed to get block_hash for block {chunk_end_block} "
+                        f"(chunk {current_chunk_start_ms}-{current_chunk_end_ms})"
+                    )
 
             # Single loop: create checkpoints for ALL hotkeys in all_hotkeys_seen
             # (includes both hotkeys with emissions and hotkeys without emissions)
@@ -1395,6 +1443,53 @@ class EmissionsLedgerManager:
 
         return uid_to_hotkey
 
+    def _get_mock_emissions_for_tests(self, all_hotkeys_seen: Optional[set] = None) -> Dict[str, tuple[float, float, float, float, float, int]]:
+        """
+        Get mock emissions data for unit tests (avoids blockchain queries).
+
+        This method returns mock data in the same format as _calculate_emissions_for_all_hotkeys(),
+        allowing all downstream business logic to run normally while avoiding network calls.
+
+        Args:
+            all_hotkeys_seen: Set to track all hotkeys encountered
+
+        Returns:
+            Dictionary mapping hotkey to (alpha_emissions, tao_emissions, usd_emissions,
+                                         avg_alpha_to_tao_rate, avg_tao_to_usd_rate, num_blocks)
+        """
+        # Get hotkeys from perf ledgers to generate mock emissions
+        from vali_objects.vali_dataclasses.perf_ledger import TP_ID_PORTFOLIO
+        all_perf_ledgers = self._perf_ledger_client.get_perf_ledgers(portfolio_only=False)
+
+        if not all_perf_ledgers:
+            return {}
+
+        # Mock constants (realistic but zero to not affect tests)
+        MOCK_ALPHA_EMISSIONS = 0.0
+        MOCK_ALPHA_TO_TAO_RATE = 1.0
+        MOCK_TAO_TO_USD_RATE = 500.0
+        MOCK_NUM_BLOCKS = 1
+
+        result = {}
+        for hotkey in all_perf_ledgers.keys():
+            if all_hotkeys_seen is not None:
+                all_hotkeys_seen.add(hotkey)
+
+            # Return tuple: (alpha_emissions, tao_emissions, usd_emissions, avg_alpha_to_tao_rate, avg_tao_to_usd_rate, num_blocks)
+            tao_emissions = MOCK_ALPHA_EMISSIONS * MOCK_ALPHA_TO_TAO_RATE
+            usd_emissions = tao_emissions * MOCK_TAO_TO_USD_RATE
+
+            result[hotkey] = (
+                MOCK_ALPHA_EMISSIONS,
+                tao_emissions,
+                usd_emissions,
+                MOCK_ALPHA_TO_TAO_RATE,
+                MOCK_TAO_TO_USD_RATE,
+                MOCK_NUM_BLOCKS
+            )
+
+        bt.logging.debug(f"Generated mock emissions for {len(result)} hotkeys in test mode")
+        return result
 
     def _calculate_emissions_for_all_hotkeys(
         self,
@@ -1421,6 +1516,11 @@ class EmissionsLedgerManager:
                                          avg_alpha_to_tao_rate, avg_tao_to_usd_rate, num_blocks)
             All rate values are guaranteed to be floats (not None).
         """
+        # In unit test mode, return mock emissions data to avoid blockchain queries
+        # This exercises all downstream business logic (chunking, aggregation, checkpoint creation)
+        # while avoiding expensive network calls
+        if self.running_unit_tests:
+            return self._get_mock_emissions_for_tests(all_hotkeys_seen)
         # Sample blocks at regular intervals
         sample_interval = int(3600 / self.SECONDS_PER_BLOCK)  # ~300 blocks per hour
         sampled_blocks = list(range(start_block, end_block + 1, sample_interval))
@@ -1767,6 +1867,35 @@ class EmissionsLedgerManager:
     # DELTA UPDATE METHODS
     # ============================================================================
 
+    def build_emissions_ledgers(self, delta_update: bool = True, lag_time_ms: Optional[int] = None) -> int:
+        """
+        Build emissions ledgers with control over delta vs full rebuild.
+
+        IMPORTANT: This method is for testing/manual use only. Production code should use
+        the automatic daemon which calls build_delta_update() directly.
+
+        Args:
+            delta_update: If True, only process new data. If False, clear and rebuild from scratch.
+            lag_time_ms: Stay this far behind current time (default: 12 hours)
+
+        Returns:
+            Number of chunks built
+
+        Raises:
+            RuntimeError: If called in production (running_unit_tests=False)
+        """
+        if not self.running_unit_tests:
+            raise RuntimeError(
+                "build_emissions_ledgers() is for testing only. "
+                "Production code should not call this method directly. "
+                "The emissions ledger daemon handles automatic updates."
+            )
+
+        if not delta_update:
+            # Clear existing ledgers to force full rebuild
+            self.emissions_ledgers.clear()
+        return self.build_delta_update(lag_time_ms=lag_time_ms)
+
     def build_delta_update(self, lag_time_ms: Optional[int] = None) -> int:
         """
         Build emissions ledgers from scratch (full rebuild).
@@ -1787,7 +1916,8 @@ class EmissionsLedgerManager:
             Number of chunks built
         """
         if lag_time_ms is None:
-            lag_time_ms = self.DEFAULT_LAG_TIME_MS
+            # In test mode, use no lag since test data is created "now"
+            lag_time_ms = 0 if self.running_unit_tests else self.DEFAULT_LAG_TIME_MS
 
         if self.rate_limit_per_second < 10:
             bt.logging.warning(f"Emissions ledger network rate limit set to {self.rate_limit_per_second} req/sec - queries will be slow")

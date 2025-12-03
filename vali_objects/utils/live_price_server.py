@@ -174,6 +174,14 @@ class LivePriceFetcherClient(RPCClientBase):
         """Clear market open override (test-only)."""
         return self._server.clear_test_market_open()
 
+    def set_test_candle_data(self, trade_pair: TradePair, start_ms: int, end_ms: int, candles: List[PriceSource]) -> None:
+        """Set test candle data for a specific trade pair and time window (test-only)."""
+        return self._server.set_test_candle_data(trade_pair, start_ms, end_ms, candles)
+
+    def clear_test_candle_data(self) -> None:
+        """Clear all test candle data (test-only)."""
+        return self._server.clear_test_candle_data()
+
 
 
 class LivePriceFetcherServer(RPCServerBase):
@@ -360,6 +368,17 @@ class LivePriceFetcherServer(RPCServerBase):
     def clear_test_market_open(self) -> None:
         """Test-only RPC method to clear market open override."""
         return self._fetcher.clear_test_market_open()
+
+    def set_test_candle_data(self, trade_pair: TradePair, start_ms: int, end_ms: int, candles: List[PriceSource]) -> None:
+        """
+        Test-only RPC method to inject candle data for specific trade pair and time window.
+        Only available when running_unit_tests=True.
+        """
+        return self._fetcher.set_test_candle_data(trade_pair, start_ms, end_ms, candles)
+
+    def clear_test_candle_data(self) -> None:
+        """Test-only RPC method to clear all test candle data."""
+        return self._fetcher.clear_test_candle_data()
 
 
 

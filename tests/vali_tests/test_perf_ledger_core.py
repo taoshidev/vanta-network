@@ -10,6 +10,7 @@ This file contains the essential tests for performance ledger functionality:
 Uses the newest client/server RPC architecture demonstrated in test_elimination_core.py.
 """
 
+import math
 from shared_objects.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
 from time_util.time_util import TimeUtil, MS_IN_24_HOURS, MS_IN_8_HOURS
@@ -341,6 +342,7 @@ class TestPerfLedgerCore(TestBase):
                 self.validate_checkpoint(cp, "Fee calculation checkpoint")
 
                 # Carry fee should be applied over 5 days
+                # Expected range: between 0.95 and 1.0 (less than 5% decay over 5 days)
                 last_cp = btc_ledger.cps[-1]
                 self.assertLess(cp.prev_portfolio_carry_fee, 1.0,
                                f"Carry fee should be applied over 5 days #{i}:{cp} {last_cp}")
@@ -348,8 +350,11 @@ class TestPerfLedgerCore(TestBase):
                                f"Carry fee should not be too large for 5 days #{i}:{cp} {last_cp}")
 
                 # Spread fee behavior validation
-                self.assertLessEqual(cp.prev_portfolio_spread_fee, 1.0)
-                self.assertGreater(cp.prev_portfolio_spread_fee, 0.99)
+                # For a 1x leverage position, spread fee should be very close to 1.0 (0.1% fee = 0.999)
+                self.assertTrue(
+                    math.isclose(cp.prev_portfolio_spread_fee, 1.0, rel_tol=0.01, abs_tol=0.001),
+                    f"Spread fee should be close to 1.0 for low leverage position, got {cp.prev_portfolio_spread_fee}"
+                )
 
                 # Additional fee validation - allow small negative values due to floating point precision
                 self.assertGreaterEqual(cp.carry_fee_loss, -0.01, "Carry fee loss should be reasonable (small negative values allowed for FP precision)")
@@ -585,44 +590,6 @@ class TestPerfLedgerCore(TestBase):
             f"Checkpoint open_ms should be sum of position durations. "
             f"Expected {expected_total_hours:.2f}h, got {checkpoint.open_ms/(60*60*1000):.2f}h"
         )
-
-    def _create_position(self, position_id: str, trade_pair: TradePair,
-                        open_ms: int, close_ms: int, open_price: float,
-                        close_price: float, order_type: OrderType,
-                        leverage: float = 1.0) -> Position:
-        """Helper to create a position with specified parameters."""
-        open_order = Order(
-            price=open_price,
-            processed_ms=open_ms,
-            order_uuid=f"{position_id}_open",
-            trade_pair=trade_pair,
-            order_type=order_type,
-            leverage=leverage if order_type == OrderType.LONG else -leverage,
-        )
-
-        close_order = Order(
-            price=close_price,
-            processed_ms=close_ms,
-            order_uuid=f"{position_id}_close",
-            trade_pair=trade_pair,
-            order_type=OrderType.FLAT,
-            leverage=0.0,
-        )
-
-        position = Position(
-            miner_hotkey=self.TEST_HOTKEY,
-            position_uuid=position_id,
-            open_ms=open_ms,
-            close_ms=close_ms,
-            trade_pair=trade_pair,
-            orders=[open_order, close_order],
-            position_type=OrderType.FLAT,
-            is_closed_position=True,
-            account_size=self.DEFAULT_ACCOUNT_SIZE,
-        )
-
-        position.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
-        return position
 
 
 if __name__ == '__main__':

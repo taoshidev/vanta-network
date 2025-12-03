@@ -25,9 +25,15 @@ class P2PSyncer(ValidatorSyncBase):
                  position_manager=None):
         #super().__init__(shutdown_dict, signal_sync_lock, signal_sync_condition, n_orders_being_processed, position_manager=position_manager)
 
-        # Create own MetagraphClient (forward compatibility - no parameter passing).
+        # Create own clients (forward compatibility - no parameter passing).
         from shared_objects.metagraph_server import MetagraphClient
+        from vali_objects.utils.elimination_client import EliminationClient
+        from vali_objects.utils.price_fetcher_client import PriceFetcherClient
+
         self._metagraph_client = MetagraphClient()
+        self._elimination_client = EliminationClient()
+        self._price_fetcher_client = PriceFetcherClient()
+
         self.wallet = wallet
         self.golden = None
         if self.wallet is not None:
@@ -37,6 +43,9 @@ class P2PSyncer(ValidatorSyncBase):
         self.created_golden = False
         self.last_signal_sync_time_ms = 0
         self.running_unit_tests = running_unit_tests
+
+        # Store position_manager client (needed for create_golden and rebuild_position_with_updated_orders)
+        self._position_manager_client = position_manager
 
     @property
     def metagraph(self):
@@ -197,7 +206,7 @@ class P2PSyncer(ValidatorSyncBase):
             bt.logging.info(f"{hotkey} sent checkpoint {self.checkpoint_summary(chk)}")
             bt.logging.info("--------------------------------------------------")
 
-        golden_eliminations = self._position_manager_client.elimination_handle.get_eliminations_from_memory()
+        golden_eliminations = self._elimination_client.get_eliminations_from_memory()
         golden_positions = self.p2p_sync_positions(valid_checkpoints)
         golden_challengeperiod = self.p2p_sync_challengeperiod(valid_checkpoints)
 
@@ -355,7 +364,7 @@ class P2PSyncer(ValidatorSyncBase):
 
                 new_position.orders.sort(key=lambda o: o.processed_ms)
                 try:
-                    new_position.rebuild_position_with_updated_orders(self._position_manager_client.price_fetcher_client)
+                    new_position.rebuild_position_with_updated_orders(self._price_fetcher_client)
                     position_dict = json.loads(new_position.to_json_string())
                     uuid_matched_positions.append(position_dict)
                 except ValueError as v:

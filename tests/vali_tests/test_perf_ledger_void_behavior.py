@@ -284,11 +284,8 @@ class TestPerfLedgerVoidBehavior(TestBase):
         self.assertGreater(eth_void, jpy_void)
 
     def test_bypass_logic_direct(self):
-        """Test the bypass logic utility function directly."""
+        """Test the bypass logic utility function via RPC client."""
         # No mocking needed - LivePriceFetcherClient with running_unit_tests=True handles test data
-
-        # Access the server's internal manager for testing internal logic
-        plm = self.perf_ledger_server._manager
 
         # Create test ledger with checkpoint
         ledger = PerfLedger(initialization_time_ms=self.now_ms)
@@ -303,7 +300,7 @@ class TestPerfLedgerVoidBehavior(TestBase):
         ledger.cps.append(prev_cp)
 
         # Test case 1: Should use bypass
-        ret, spread, carry = plm.get_bypass_values_if_applicable(
+        ret, spread, carry = self.perf_ledger_client.get_bypass_values_if_applicable(
             ledger, "BTCUSD", TradePairReturnStatus.TP_NO_OPEN_POSITIONS,
             1.0, .999, .998, {"BTCUSD": None}
         )
@@ -312,25 +309,27 @@ class TestPerfLedgerVoidBehavior(TestBase):
         self.assertEqual(carry, 0.998)
 
         # Test case 2: Should NOT use bypass (position just closed)
-        # Create a position to simulate a position that just closed
-        from unittest.mock import Mock
-        mock_closed_position = Mock()
-        mock_closed_position.is_open_position = False
-        ret, spread, carry = plm.get_bypass_values_if_applicable(
+        # Create a closed position to simulate a position that just closed
+        closed_position = self._create_position(
+            "closed_test", TradePair.BTCUSD,
+            self.now_ms - MS_IN_24_HOURS, self.now_ms,
+            50000.0, 50000.0, OrderType.LONG
+        )
+        ret, spread, carry = self.perf_ledger_client.get_bypass_values_if_applicable(
             ledger, "BTCUSD", TradePairReturnStatus.TP_NO_OPEN_POSITIONS,
-            1.0, 1.0, 1.0, {"BTCUSD": mock_closed_position}
+            1.0, 1.0, 1.0, {"BTCUSD": closed_position}
         )
         self.assertEqual(ret, 1.0)
 
         # Test case 3: Should NOT use bypass (positions open)
-        ret, spread, carry = plm.get_bypass_values_if_applicable(
+        ret, spread, carry = self.perf_ledger_client.get_bypass_values_if_applicable(
             ledger, "BTCUSD", TradePairReturnStatus.TP_MARKET_OPEN_PRICE_CHANGE,
             1.0, 1.0, 1.0, {"BTCUSD": None}
         )
         self.assertEqual(ret, 1.0)
 
         # Test case 4: Should NOT use bypass (different TP)
-        ret, spread, carry = plm.get_bypass_values_if_applicable(
+        ret, spread, carry = self.perf_ledger_client.get_bypass_values_if_applicable(
             ledger, "ETHUSD", TradePairReturnStatus.TP_NO_OPEN_POSITIONS,
             1.0, 1.0, 1.0, {"BTCUSD": None}
         )

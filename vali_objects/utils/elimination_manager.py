@@ -944,6 +944,37 @@ class EliminationManager(CacheController):
         )
         self.eliminations.clear()
 
+    def _load_eliminations_from_disk(self) -> None:
+        """
+        Load eliminations from disk into memory (for testing recovery scenarios).
+        This method reloads the eliminations dict from disk, useful for simulating
+        validator restarts in tests.
+        """
+        if not self.running_unit_tests:
+            raise Exception('_load_eliminations_from_disk can only be called during unit tests')
+
+        with self.eliminations_lock:
+            # Load from disk
+            eliminations_from_disk = self.get_eliminations_from_disk()
+
+            # Clear and repopulate, filtering out development hotkey
+            self.eliminations.clear()
+            filtered_count = 0
+
+            for elim in eliminations_from_disk:
+                hotkey = elim['hotkey']
+                # Skip development hotkey - it should never be eliminated
+                if hotkey == ValiConfig.DEVELOPMENT_HOTKEY:
+                    filtered_count += 1
+                    bt.logging.debug(f"[ELIM_RELOAD] Filtered out DEVELOPMENT_HOTKEY from eliminations during disk reload")
+                    continue
+                self.eliminations[hotkey] = elim
+
+            if filtered_count > 0:
+                bt.logging.info(f"[ELIM_RELOAD] Filtered out {filtered_count} DEVELOPMENT_HOTKEY elimination(s) from disk reload")
+
+            bt.logging.info(f"[ELIM_RELOAD] Loaded {len(self.eliminations)} elimination(s) from disk")
+
     def clear_departed_hotkeys(self) -> None:
         """Clear all departed hotkeys for testing"""
         if not self.running_unit_tests:

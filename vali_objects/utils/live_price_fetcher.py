@@ -56,6 +56,17 @@ class LivePriceFetcher:
         """Clear market open override and use real calendar."""
         self.polygon_data_service.clear_test_market_open()
 
+    def set_test_candle_data(self, trade_pair: TradePair, start_ms: int, end_ms: int, candles: List[PriceSource]) -> None:
+        """
+        Test-only method to inject candle data for specific trade pair and time window.
+        Delegates to PolygonDataService.
+        """
+        self.polygon_data_service.set_test_candle_data(trade_pair, start_ms, end_ms, candles)
+
+    def clear_test_candle_data(self) -> None:
+        """Clear all test candle data. Delegates to PolygonDataService."""
+        self.polygon_data_service.clear_test_candle_data()
+
     def health_check(self) -> dict:
         """
         Health check method for RPC connection between client and server.

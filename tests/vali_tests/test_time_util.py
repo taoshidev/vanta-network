@@ -56,9 +56,6 @@ class TestTimeUtil(TestBase):
         cls.position_client = cls.orchestrator.get_client('position_manager')
         cls.metagraph_client = cls.orchestrator.get_client('metagraph')
 
-        # Set test hotkeys for metagraph
-        cls.metagraph_client.set_hotkeys([cls.DEFAULT_MINER_HOTKEY])
-
     @classmethod
     def tearDownClass(cls):
         """
@@ -73,6 +70,9 @@ class TestTimeUtil(TestBase):
         """Per-test setup: Reset data state (fast - no server restarts)."""
         # Clear all data for test isolation (both memory and disk)
         self.orchestrator.clear_all_test_data()
+
+        # Re-set metagraph hotkeys (cleared by clear_all_test_data)
+        self.metagraph_client.set_hotkeys([self.DEFAULT_MINER_HOTKEY])
 
         # Create fresh test data
         self._create_test_data()

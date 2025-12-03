@@ -223,6 +223,27 @@ class DebtLedgerClient(RPCClientBase):
             bt.logging.debug(f"DebtLedgerClient: Set emissions ledger failed: {e}")
             return None
 
+    def build_emissions_ledgers(self, delta_update: bool = True):
+        """
+        Build emissions ledgers (RPC method for testing/manual use ONLY).
+
+        IMPORTANT: This method will raise RuntimeError if called in production.
+        Only available when running_unit_tests=True.
+
+        Args:
+            delta_update: If True, only process new data. If False, rebuild from scratch.
+
+        Raises:
+            RuntimeError: If called in production (running_unit_tests=False)
+        """
+        try:
+            return self._server.build_emissions_ledgers_rpc(delta_update=delta_update)
+        except Exception as e:
+            bt.logging.error(f"DebtLedgerClient: Build emissions ledgers failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+
     # ==================== Penalty Ledger Methods ====================
 
     def get_penalty_ledger(self, hotkey: str):
@@ -533,6 +554,21 @@ class DebtLedgerServer(RPCServerBase):
             delta_update: If True, only process new checkpoints. If False, rebuild from scratch.
         """
         return self._manager.penalty_ledger_manager.build_penalty_ledgers(verbose=verbose, delta_update=delta_update)
+
+    def build_emissions_ledgers_rpc(self, delta_update: bool = True):
+        """
+        Build emissions ledgers (RPC method for testing/manual use ONLY).
+
+        IMPORTANT: This method will raise RuntimeError if called in production.
+        Only available when running_unit_tests=True.
+
+        Args:
+            delta_update: If True, only process new data. If False, rebuild from scratch.
+
+        Raises:
+            RuntimeError: If called in production (running_unit_tests=False)
+        """
+        return self._manager.emissions_ledger_manager.build_emissions_ledgers(delta_update=delta_update)
 
     # ========================================================================
     # MANUAL BUILD (for testing/manual use)

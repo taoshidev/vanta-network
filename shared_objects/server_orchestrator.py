@@ -28,15 +28,18 @@ Usage in tests:
 
 Usage in validator.py:
 
-    from shared_objects.server_orchestrator import ServerOrchestrator, ServerMode
+    from shared_objects.server_orchestrator import ServerOrchestrator, ServerMode, ValidatorContext
 
-    # Start all servers once at validator startup
+    # Start all servers once at validator startup (recommended pattern with context)
     orchestrator = ServerOrchestrator.get_instance()
-    orchestrator.start_all_servers(
-        mode=ServerMode.PRODUCTION,
+    context = ValidatorContext(
+        slack_notifier=self.slack_notifier,
+        config=self.config,
+        wallet=self.wallet,
         secrets=self.secrets,
-        config=self.config
+        is_mainnet=self.is_mainnet
     )
+    orchestrator.start_all_servers(mode=ServerMode.VALIDATOR, context=context)
 
     # Get clients
     self.position_client = orchestrator.get_client('position_manager')
@@ -59,13 +62,13 @@ Usage in miner.py:
 
 Usage in backtesting:
 
-    from shared_objects.server_orchestrator import ServerOrchestrator
+    from shared_objects.server_orchestrator import ServerOrchestrator, ServerMode
 
     # Reuse same infrastructure
     orchestrator = ServerOrchestrator.get_instance()
     orchestrator.start_all_servers(
-        secrets=secrets,
-        config=config
+        mode=ServerMode.BACKTESTING,
+        secrets=secrets
     )
 
 Cleanup and Interruption Handling:
@@ -106,17 +109,39 @@ class ServerMode(Enum):
     TESTING = "testing"           # Unit tests - minimal servers, no WebSockets
     BACKTESTING = "backtesting"   # Backtesting - full servers, no WebSockets
     PRODUCTION = "production"     # Live validator - full servers with WebSockets
+    VALIDATOR = "validator"       # Live validator - full servers with all features
     MINER = "miner"              # Live miner - minimal servers needed for signal submission
 
 
 @dataclass
+class ValidatorContext:
+    """Context object for validator-specific server configuration."""
+    slack_notifier: Any = None
+    config: Any = None
+    wallet: Any = None
+    secrets: Dict = None
+    is_mainnet: bool = False
+
+    @property
+    def validator_hotkey(self) -> str:
+        """Extract hotkey from wallet."""
+        return self.wallet.hotkey.ss58_address if self.wallet else None
+
+
+@dataclass
 class ServerConfig:
-    """Configuration for a single server."""
-    server_class: type              # Server class (e.g., PositionManagerServer)
-    client_class: type              # Client class (e.g., PositionManagerClient)
-    required_in_testing: bool       # Whether needed in TESTING mode
-    required_in_miner: bool = False # Whether needed in MINER mode (signal submission)
-    spawn_kwargs: Dict[str, Any] = None  # Additional kwargs for spawn_process()
+    """
+    Configuration for a single server.
+
+    Note: server_class and client_class are Optional to support lazy loading
+    (avoiding circular imports). They are populated in _load_classes() before use.
+    """
+    server_class: Optional[type]              # Server class (e.g., PositionManagerServer) - loaded lazily
+    client_class: Optional[type]              # Client class (e.g., PositionManagerClient) - loaded lazily
+    required_in_testing: bool                 # Whether needed in TESTING mode
+    required_in_miner: bool = False           # Whether needed in MINER mode (signal submission)
+    required_in_validator: bool = True        # Whether needed in VALIDATOR mode (default: all servers)
+    spawn_kwargs: Optional[Dict[str, Any]] = None  # Additional kwargs for spawn_process()
 
     def __post_init__(self):
         if self.spawn_kwargs is None:
@@ -246,6 +271,14 @@ class ServerOrchestrator:
             required_in_testing=True,
             spawn_kwargs={'start_daemon': False}  # No daemon in testing
         ),
+        'weight_calculator': ServerConfig(
+            server_class=None,
+            client_class=None,
+            required_in_testing=False,  # Only in validator mode
+            required_in_miner=False,
+            required_in_validator=True,
+            spawn_kwargs={'start_daemon': False}  # Daemon started later
+        ),
         'websocket_notifier': ServerConfig(
             server_class=None,
             client_class=None,
@@ -327,6 +360,9 @@ class ServerOrchestrator:
         from runnable.miner_statistics_server import MinerStatisticsServer, MinerStatisticsClient
         from vali_objects.utils.mdd_checker_server import MDDCheckerServer
         from vali_objects.utils.mdd_checker_client import MDDCheckerClient
+        from vali_objects.utils.weight_calculator_server import WeightCalculatorServer
+        # WeightCalculatorClient doesn't exist yet - server manages its own clients internally
+        # from vali_objects.utils.weight_calculator_client import WeightCalculatorClient
         from vanta_api.websocket_server import WebSocketServer
         from vanta_api.websocket_notifier import WebSocketNotifierClient
 
@@ -381,6 +417,9 @@ class ServerOrchestrator:
 
         self.SERVERS['mdd_checker'].server_class = MDDCheckerServer
         self.SERVERS['mdd_checker'].client_class = MDDCheckerClient
+
+        self.SERVERS['weight_calculator'].server_class = WeightCalculatorServer
+        self.SERVERS['weight_calculator'].client_class = None  # No client - server manages its own clients
 
         self.SERVERS['websocket_notifier'].server_class = WebSocketServer
         self.SERVERS['websocket_notifier'].client_class = WebSocketNotifierClient
@@ -441,7 +480,7 @@ class ServerOrchestrator:
         self,
         mode: ServerMode = ServerMode.TESTING,
         secrets: Optional[Dict] = None,
-        config: Optional[Any] = None,
+        context: Optional[ValidatorContext] = None,
         **kwargs
     ) -> None:
         """
@@ -451,21 +490,27 @@ class ServerOrchestrator:
         If servers are already running, does nothing.
 
         Args:
-            mode: ServerMode enum (TESTING, BACKTESTING, PRODUCTION)
-            secrets: API secrets dictionary (required for live_price_fetcher)
-            config: Optional configuration object
+            mode: ServerMode enum (TESTING, BACKTESTING, PRODUCTION, VALIDATOR)
+            secrets: API secrets dictionary (required for live_price_fetcher in legacy mode)
+            context: ValidatorContext for VALIDATOR mode (contains config, wallet, slack_notifier, secrets, etc.)
             **kwargs: Additional server-specific kwargs
 
         Example:
             # In tests
-            orchestrator.start_all_servers(mode=ServerMode.TESTING)
+            orchestrator.start_all_servers(mode=ServerMode.TESTING, secrets=secrets)
 
-            # In validator
-            orchestrator.start_all_servers(
-                mode=ServerMode.PRODUCTION,
+            # In miner
+            orchestrator.start_all_servers(mode=ServerMode.MINER, secrets=secrets)
+
+            # In validator (recommended pattern with context)
+            context = ValidatorContext(
+                slack_notifier=self.slack_notifier,
+                config=self.config,
+                wallet=self.wallet,
                 secrets=self.secrets,
-                config=self.config
+                is_mainnet=self.is_mainnet
             )
+            orchestrator.start_all_servers(mode=ServerMode.VALIDATOR, context=context)
         """
         with self._init_lock:
             if self._started and self._mode == mode:
@@ -483,15 +528,20 @@ class ServerOrchestrator:
             self._mode = mode
             self._load_classes()
 
+            # Store context for use in _start_server
+            self._context = context
+
             # Kill any stale servers from previous runs
             PortManager.force_kill_all_rpc_ports()
 
             # Determine which servers to start based on mode
             servers_to_start = []
-            for server_name, config in self.SERVERS.items():
-                if mode == ServerMode.TESTING and not config.required_in_testing:
+            for server_name, server_config in self.SERVERS.items():
+                if mode == ServerMode.TESTING and not server_config.required_in_testing:
                     continue
-                if mode == ServerMode.MINER and not config.required_in_miner:
+                if mode == ServerMode.MINER and not server_config.required_in_miner:
+                    continue
+                if mode == ServerMode.VALIDATOR and not server_config.required_in_validator:
                     continue
                 servers_to_start.append(server_name)
 
@@ -550,7 +600,8 @@ class ServerOrchestrator:
             'limit_order',
             'mdd_checker',
             'core_outputs',
-            'miner_statistics'
+            'miner_statistics',
+            'weight_calculator'  # Depends on perf_ledger, position_manager (reads data for weight calculation)
         ]
 
         # Filter to only requested servers, preserving order
@@ -563,7 +614,7 @@ class ServerOrchestrator:
         mode: ServerMode = ServerMode.TESTING,
         **kwargs
     ) -> None:
-        """Start a single server."""
+        """Start a single server with context-aware configuration."""
         if server_name in self._servers:
             bt.logging.debug(f"{server_name} server already started")
             return
@@ -582,8 +633,51 @@ class ServerOrchestrator:
             **kwargs
         }
 
-        # Add secrets for servers that need them
-        if server_name == 'live_price_fetcher':
+        # Inject context-specific parameters if context is available
+        context = getattr(self, '_context', None)
+        if context:
+            # Add slack_notifier to ALL servers in validator mode
+            if context.slack_notifier and 'slack_notifier' not in spawn_kwargs:
+                spawn_kwargs['slack_notifier'] = context.slack_notifier
+
+            # Server-specific context injection
+            if server_name == 'live_price_fetcher':
+                if context.secrets:
+                    spawn_kwargs['secrets'] = context.secrets
+                if mode == ServerMode.VALIDATOR:
+                    spawn_kwargs['disable_ws'] = False  # Validator needs WebSockets
+                    spawn_kwargs['start_daemon'] = True
+
+            elif server_name == 'weight_calculator':
+                if context.config:
+                    spawn_kwargs['config'] = context.config
+                if context.validator_hotkey:
+                    spawn_kwargs['hotkey'] = context.validator_hotkey
+                spawn_kwargs['is_mainnet'] = context.is_mainnet
+                spawn_kwargs['start_daemon'] = True  # Start daemon in validator mode
+
+            elif server_name == 'debt_ledger':
+                if context.config and hasattr(context.config, 'slack_error_webhook_url'):
+                    spawn_kwargs['slack_webhook_url'] = context.config.slack_error_webhook_url
+                if context.validator_hotkey:
+                    spawn_kwargs['validator_hotkey'] = context.validator_hotkey
+
+            elif server_name in ('contract', 'asset_selection'):
+                if context.config:
+                    spawn_kwargs['config'] = context.config
+
+            elif server_name == 'elimination':
+                if context.config and hasattr(context.config, 'serve'):
+                    spawn_kwargs['serve'] = context.config.serve
+
+            elif server_name == 'common_data':
+                spawn_kwargs['start_daemon'] = False  # No daemon for common_data
+
+            elif server_name == 'metagraph':
+                spawn_kwargs['start_daemon'] = False  # No daemon for metagraph
+
+        # Legacy support: Add secrets for servers that need them (if not already added via context)
+        if server_name == 'live_price_fetcher' and 'secrets' not in spawn_kwargs:
             if secrets is None:
                 raise ValueError("secrets required for live_price_fetcher server")
             spawn_kwargs['secrets'] = secrets
@@ -593,14 +687,12 @@ class ServerOrchestrator:
             from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
             spawn_kwargs['api_keys_file'] = ValiBkpUtils.get_api_keys_file_path()
 
-        # Handle WebSocket configuration based on mode
+        # Handle WebSocket configuration based on mode (if not already set by context)
         if mode in (ServerMode.TESTING, ServerMode.BACKTESTING, ServerMode.MINER):
             # Testing/backtesting/miner: no WebSockets
             # Miners generate their own signals, validators need WebSockets for live validation
-            if server_name == 'live_price_fetcher':
+            if server_name == 'live_price_fetcher' and 'disable_ws' not in spawn_kwargs:
                 spawn_kwargs['disable_ws'] = True
-
-        bt.logging.info(f"Starting {server_name} server...")
 
         # Spawn server process (blocks until ready)
         handle = server_class.spawn_process(**spawn_kwargs)
@@ -670,6 +762,10 @@ class ServerOrchestrator:
 
         bt.logging.debug("Clearing all test data...")
 
+        # Clear metagraph data (must be first to avoid cascading issues)
+        if 'metagraph' in self._clients:
+            self._clients['metagraph'].set_hotkeys([])
+
         # Clear position manager data (positions and disk)
         if 'position_manager' in self._clients:
             self._clients['position_manager'].clear_all_miner_positions_and_disk()
@@ -691,9 +787,18 @@ class ServerOrchestrator:
         if 'plagiarism' in self._clients:
             self._clients['plagiarism'].clear_plagiarism_data()
 
+        # Clear plagiarism events (class-level cache)
+        from vali_objects.utils.plagiarism_events import PlagiarismEvents
+        PlagiarismEvents.clear_plagiarism_events()
+
         # Clear limit order data
         if 'limit_order' in self._clients:
             self._clients['limit_order'].clear_limit_orders()
+
+        # Clear live price fetcher test data (test candles and test price sources)
+        if 'live_price_fetcher' in self._clients:
+            self._clients['live_price_fetcher'].clear_test_candle_data()
+            self._clients['live_price_fetcher'].clear_test_price_sources()
 
         bt.logging.debug("All test data cleared")
 
@@ -704,6 +809,122 @@ class ServerOrchestrator:
     def get_mode(self) -> Optional[ServerMode]:
         """Get current server mode."""
         return self._mode
+
+    def start_server_daemons(self, server_names: list) -> None:
+        """
+        Start daemons for servers that defer daemon initialization.
+
+        This is useful for servers that spawn with start_daemon=False
+        and need their daemons started after all servers are initialized.
+
+        Args:
+            server_names: List of server names to start daemons for
+
+        Example:
+            # Start daemons for servers that deferred startup
+            orchestrator.start_server_daemons([
+                'position_manager',
+                'elimination',
+                'challenge_period',
+                'perf_ledger',
+                'debt_ledger'
+            ])
+        """
+        if not self._started:
+            bt.logging.warning("Servers not started, cannot start daemons")
+            return
+
+        for server_name in server_names:
+            client = self.get_client(server_name)
+            if hasattr(client, 'start_daemon'):
+                bt.logging.info(f"Starting daemon for {server_name}...")
+                client.start_daemon()
+                bt.logging.success(f"{server_name} daemon started")
+            else:
+                bt.logging.warning(f"{server_name} client has no start_daemon method")
+
+    def call_pre_run_setup(self, perform_order_corrections: bool = True) -> None:
+        """
+        Call pre_run_setup on PositionManagerClient.
+
+        Handles order corrections, perf ledger wiping, etc.
+
+        Args:
+            perform_order_corrections: Whether to perform order corrections
+
+        Example:
+            orchestrator.call_pre_run_setup(perform_order_corrections=True)
+        """
+        if not self._started:
+            bt.logging.warning("Servers not started, cannot run pre_run_setup")
+            return
+
+        if 'position_manager' in self._clients:
+            bt.logging.info("Running pre_run_setup on PositionManagerClient...")
+            self._clients['position_manager'].pre_run_setup(
+                perform_order_corrections=perform_order_corrections
+            )
+            bt.logging.success("pre_run_setup completed")
+        else:
+            bt.logging.warning("PositionManagerClient not available")
+
+    def start_validator_servers(
+        self,
+        context: ValidatorContext,
+        start_daemons: bool = True,
+        run_pre_setup: bool = True
+    ) -> None:
+        """
+        Start all servers for validator with proper initialization sequence.
+
+        This is a high-level method that:
+        1. Starts all required servers in dependency order
+        2. Creates clients
+        3. Optionally starts daemons for servers that defer initialization
+        4. Optionally runs pre_run_setup on PositionManager
+
+        Args:
+            context: Validator context (slack_notifier, config, wallet, secrets, etc.)
+            start_daemons: Whether to start daemons for deferred servers (default: True)
+            run_pre_setup: Whether to run PositionManager pre_run_setup (default: True)
+
+        Example:
+            context = ValidatorContext(
+                slack_notifier=self.slack_notifier,
+                config=self.config,
+                wallet=self.wallet,
+                secrets=self.secrets,
+                is_mainnet=self.is_mainnet
+            )
+
+            orchestrator.start_validator_servers(context)
+
+            # Get clients for use in validator
+            self.position_manager_client = orchestrator.get_client('position_manager')
+            self.perf_ledger_client = orchestrator.get_client('perf_ledger')
+        """
+        # Start all servers with context injection
+        self.start_all_servers(
+            mode=ServerMode.VALIDATOR,
+            context=context
+        )
+
+        # Start daemons for servers that deferred initialization
+        if start_daemons:
+            daemon_servers = [
+                'position_manager',
+                'elimination',
+                'challenge_period',
+                'perf_ledger',
+                'debt_ledger'
+            ]
+            self.start_server_daemons(daemon_servers)
+
+        # Run pre-run setup if requested
+        if run_pre_setup:
+            self.call_pre_run_setup(perform_order_corrections=True)
+
+        bt.logging.success("All validator servers started and initialized")
 
     def shutdown_all_servers(self) -> None:
         """

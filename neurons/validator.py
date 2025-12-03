@@ -9,6 +9,7 @@ import threading
 import signal
 
 from vanta_api.api_manager import APIManager
+from shared_objects.server_orchestrator import ServerOrchestrator, ValidatorContext
 
 
 import template
@@ -171,41 +172,35 @@ class Validator(ValidatorBase):
         ShutdownCoordinator.initialize(reset_on_attach=True)
         bt.logging.success("[INIT] ShutdownCoordinator initialized (shared memory)")
 
-        # Spawn CommonDataServer in separate process
-        self.common_data_server_handle = CommonDataServer.spawn_process(
-            slack_notifier=self.slack_notifier,
-            start_daemon=False
-        )
-
-        # Create global CommonDataClient for auto-sync coordination
-        _common_data_client = CommonDataClient(connect_immediately=True)
-
-        # Spawn LivePriceFetcherServer in separate process
-        # Server inherits from RPCServerBase for unified lifecycle management
-        # Daemon monitors health; shutdown handled automatically via ShutdownCoordinator
-        self.live_price_fetcher_handle = LivePriceFetcherServer.spawn_process(
-            slack_notifier=self.slack_notifier,
-            start_daemon=True,  # Enable daemon for health monitoring
-            secrets=self.secrets,
-            disable_ws=False
-        )
-
-        # Create lightweight LivePriceFetcher client (connects to server via RPC)
-        self.price_fetcher_client = LivePriceFetcherClient(running_unit_tests=False)
-
         bt.logging.info(f"Wallet: {self.wallet}")
 
-        # metagraph provides the network's current state, holding state about other participants in a subnet.
-        # IMPORTANT: Only update this variable in-place. Otherwise, the reference will be lost in the helper classes.
-        # Uses RPC-based MetagraphServer with server-side hotkeys_set cache for O(1) has_hotkey() lookups
-        # MetagraphServer inherits from RPCServerBase and exposes data via RPC for consumers
-        self.metagraph_server_handle = MetagraphServer.spawn_process(
+        # ============================================================================
+        # SERVER ORCHESTRATOR - Centralized server lifecycle management
+        # ============================================================================
+        # Create validator context with all dependencies
+        context = ValidatorContext(
             slack_notifier=self.slack_notifier,
-            start_daemon=False  # No daemon needed for metagraph server
+            config=self.config,
+            wallet=self.wallet,
+            secrets=self.secrets,
+            is_mainnet=self.is_mainnet
         )
 
-        # Create MetagraphClient for RPC communication with MetagraphServer
-        self.metagraph_client = MetagraphClient()
+        # Start all servers (but defer daemon/pre-run setup until after MetagraphUpdater)
+        orchestrator = ServerOrchestrator.get_instance()
+        orchestrator.start_validator_servers(context, start_daemons=False, run_pre_setup=False)
+        bt.logging.success("[INIT] All servers started via ServerOrchestrator (daemons deferred)")
+
+        # Get clients from orchestrator (cached, fast)
+        self.metagraph_client = orchestrator.get_client('metagraph')
+        self.price_fetcher_client = orchestrator.get_client('live_price_fetcher')
+        self.position_manager_client = orchestrator.get_client('position_manager')
+        self.elimination_client = orchestrator.get_client('elimination')
+        self.challengeperiod_client = orchestrator.get_client('challenge_period')
+        self.limit_order_client = orchestrator.get_client('limit_order')
+        self.asset_selection_client = orchestrator.get_client('asset_selection')
+        self.perf_ledger_client = orchestrator.get_client('perf_ledger')
+        self.debt_ledger_client = orchestrator.get_client('debt_ledger')
 
         # Create MetagraphUpdater with simple parameters (no PTNManager)
         # This will run in a thread in the main process
@@ -219,50 +214,28 @@ class Validator(ValidatorBase):
         self.subtensor = self.metagraph_updater.subtensor
         bt.logging.info(f"Subtensor: {self.subtensor}")
 
-
-        # Start the metagraph updater and wait for initial population. CRITICAL: This must complete before EliminationManager starts.
+        # Start the metagraph updater and wait for initial population.
+        # CRITICAL: This must complete before EliminationManager daemon starts.
         self.metagraph_updater_thread = self.metagraph_updater.start_and_wait_for_initial_update(
             max_wait_time=60,
             slack_notifier=self.slack_notifier
         )
+        bt.logging.success("[INIT] MetagraphUpdater started and populated")
 
-        # Spawn ContractServer in separate process for collateral operations (uses RPC - no IPC overhead)
-        # ContractServer creates its own MetagraphClient internally (forward compatibility)
-        # Consumers create their own ContractClient instances (forward compatibility pattern)
-        self.contract_server_handle = ContractServer.spawn_process(
-            slack_notifier=self.slack_notifier,
-            start_daemon=False,  # No daemon needed for contract server
-            config=self.config
-        )
+        # Now start server daemons and run pre-run setup (safe now that metagraph is populated)
+        # Order follows dependency graph: perf_ledger → challenge_period → elimination → position_manager
+        orchestrator.start_server_daemons([
+            'perf_ledger',        # No dependencies
+            'challenge_period',   # Depends on common_data, asset_selection (already running)
+            'elimination',        # Depends on perf_ledger, challenge_period
+            'position_manager',   # Depends on challenge_period, elimination
+            'debt_ledger'         # Depends on perf_ledger
+        ])
+        orchestrator.call_pre_run_setup(perform_order_corrections=True)
+        bt.logging.success("[INIT] Server daemons started and pre-run setup completed")
+        # ============================================================================
 
-
-        self.position_manager_server_handle = PositionManagerServer.spawn_process(
-            slack_notifier=self.slack_notifier,
-            start_daemon=False   # Defer daemon start, will use client
-        )
-
-        self.elimination_server_handle = EliminationServer.spawn_process(
-            slack_notifier=self.slack_notifier,
-            start_daemon=False,   # Defer daemon start, will use client
-            serve=self.config.serve
-        )
-
-        # Spawn AssetSelectionServer in separate process
-        # AssetSelectionServer creates its own MetagraphClient internally (forward compatibility)
-        # Consumers create their own AssetSelectionClient instances
-        self.asset_selection_server_handle = AssetSelectionServer.spawn_process(
-            slack_notifier=self.slack_notifier,
-            start_daemon=False,  # No daemon needed
-            config=self.config
-        )
-
-        # Spawn PerfLedgerServer in separate process
-        # PerfLedgerServer manages perf ledgers and exposes them via RPC
-        self.perf_ledger_server_handle = PerfLedgerServer.spawn_process(
-            slack_notifier=self.slack_notifier,
-            start_daemon=False  # Defer daemon start, will use client
-        )
-
+        # Create PositionSyncer (not a server, runs in main process)
         self.position_syncer = PositionSyncer(
             signal_sync_lock=self.signal_sync_lock,
             signal_sync_condition=self.signal_sync_condition,
@@ -280,73 +253,18 @@ class Validator(ValidatorBase):
             running_unit_tests=False
         )
 
-        # Create PositionManagerClient for runtime client operations (forward compatibility)
-        # This is the primary way to interact with PositionManagerServer
-        self.position_manager_client = PositionManagerClient()
-        bt.logging.info("[INIT] PositionManagerClient created (for runtime operations)")
-
-        self.position_lock_server_handle = PositionLockServer.spawn_process(
-            slack_notifier=self.slack_notifier,
-            start_daemon=False  # No daemon needed for lock service
-        )
-
-        self.plagiarism_server_handle = PlagiarismServer.spawn_process(
-            slack_notifier=self.slack_notifier,
-            start_daemon=False  # No daemon needed currently (refresh on-demand)
-        )
-
         # MarketOrderManager creates its own ContractClient internally (forward compatibility)
         self.market_order_manager = MarketOrderManager(self.config.serve, slack_notifier=self.slack_notifier)
 
-        #force_validator_to_restore_from_checkpoint(self.wallet.hotkey.ss58_address, self.metagraph, self.config, self.secrets)
-
-        # Spawn ChallengePeriodServer in separate process (daemon start deferred)
-        self.challengeperiod_handle = ChallengePeriodServer.spawn_process(slack_notifier=self.slack_notifier, start_daemon=False)
-
-        # Create client for RPC communication
-        self.challengeperiod_client = ChallengePeriodClient()
-        # EliminationClient with local cache for fast lookups (no RPC per order!)
-        # Cache refreshes every 5 seconds in background thread
-        self.elimination_client = EliminationClient(local_cache_refresh_period_ms=5000)
-        # Start daemons via clients (multi-process architecture)
-        self.position_manager_client.start_daemon()
-        self.elimination_client.start_daemon()
-        self.challengeperiod_client.start_daemon()
-
-        self.limit_order_server_handle = LimitOrderServer.spawn_process(
-            slack_notifier=self.slack_notifier,
-            start_daemon=True
-        )
-
-        # Run pre-run setup on the server (order corrections, perf ledger wiping, etc.)
-        # PositionManagerServer handles perf ledger wiping internally via PerfLedgerClient
-        self.position_manager_client.pre_run_setup(perform_order_corrections=True)
-
+        # Initialize UUID tracker with existing positions
         self.uuid_tracker.add_initial_uuids(self.position_manager_client.get_positions_for_all_miners())
 
-        # Spawn DebtLedgerServer in separate process
-        # DebtLedgerManager creates its own clients internally (forward compatibility):
-        # - PerfLedgerClient, AssetSelectionClient, ContractClient
-        self.debt_ledger_server_handle = DebtLedgerServer.spawn_process(
-            slack_notifier=self.slack_notifier,
-            start_daemon=False,  # Defer daemon start, will use client
-            slack_webhook_url=self.config.slack_error_webhook_url,
-            validator_hotkey=self.wallet.hotkey.ss58_address
-        )
-
-
-        # Create LimitOrderClient for validator's own use
-        # Consumers (EliminationServer, PositionSyncer, etc.) create their own LimitOrderClient instances
-        self.limit_order_client = LimitOrderClient()
-        # AssetSelectionClient with local cache for fast lookups (no RPC per order!)
-        # Cache refreshes every 5 seconds in background thread (replaces _asset_selections_cache)
-        self.asset_selection_client = AssetSelectionClient(local_cache_refresh_period_ms=5000)
-
-
+        # Checkpoint management (not a server)
         self.checkpoint_lock = threading.Lock()
         self.encoded_checkpoint = ""
         self.last_checkpoint_time = 0
 
+        # Verify hotkey is registered
         bt.logging.info(f"Metagraph n_entries: {len(self.metagraph_client.get_hotkeys())}")
         if not self.metagraph_client.has_hotkey(self.wallet.hotkey.ss58_address):
             bt.logging.error(
@@ -364,50 +282,10 @@ class Validator(ValidatorBase):
                          metagraph=self.metagraph_client, p2p_syncer=self.p2p_syncer,
                          asset_selection_client=self.asset_selection_client, subtensor=self.subtensor)
 
+        # Rate limiters for incoming requests
         self.order_rate_limiter = RateLimiter()
         self.position_inspector_rate_limiter = RateLimiter(max_requests_per_window=1, rate_limit_window_duration_seconds=60 * 4)
         self.checkpoint_rate_limiter = RateLimiter(max_requests_per_window=1, rate_limit_window_duration_seconds=60 * 60 * 6)
-
-
-        self.plagiarism_detector_server_handle = PlagiarismDetectorServer.spawn_process(
-            slack_notifier=self.slack_notifier,
-            start_daemon=True
-        )
-
-        self.mdd_checker_server_handle = MDDCheckerServer.spawn_process(
-            slack_notifier=self.slack_notifier,
-            start_daemon=True    # Start daemon immediately (all dependencies ready)
-        )
-
-        # Step 5 & 6: RPC servers (EliminationServer and ChallengePeriodManagerServer)
-        # Already started above with deferred initialization pattern
-        # Both servers use RPCServerBase for unified RPC server and daemon management
-        bt.logging.info("Step 5-6: EliminationServer and ChallengePeriodManagerServer RPC servers and daemons already started")
-
-        self.core_outputs_server_handle = CoreOutputsServer.spawn_process(
-            slack_notifier=self.slack_notifier,
-            start_daemon=True
-        )
-        self.statistics_outputs_server_handle = MinerStatisticsServer.spawn_process(
-            slack_notifier=self.slack_notifier,
-            start_daemon=True
-        )
-
-        # Create clients for daemon management (multi-process architecture)
-        self.perf_ledger_client = PerfLedgerClient()
-        self.debt_ledger_client = DebtLedgerClient()
-
-        # Start daemons via clients
-        self.perf_ledger_client.start_daemon()
-        self.debt_ledger_client.start_daemon()
-
-        self.weight_calculator_server_handle = WeightCalculatorServer.spawn_process(
-            slack_notifier=self.slack_notifier,
-            start_daemon=True,
-            config=self.config,
-            hotkey=self.wallet.hotkey.ss58_address,
-            is_mainnet=self.is_mainnet
-        )
 
         # Start API services (if enabled)
         if self.config.serve:

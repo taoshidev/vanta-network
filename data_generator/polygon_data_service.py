@@ -139,7 +139,8 @@ class ExchangeMappingHelper:
             )
 
     def create_crypto_mapping(self):
-        if not self.fetch_live_mapping:
+        # Skip API calls if fetch_live_mapping is False OR if API key is empty (test mode)
+        if not self.fetch_live_mapping or not self.api_key:
             self.crypto_mapping = self.crypto_fallback_mapping
             return
         endpoint = "https://api.polygon.io/v3/reference/exchanges"
@@ -175,7 +176,8 @@ class ExchangeMappingHelper:
             self.crypto_mapping = self.crypto_fallback_mapping
 
     def create_stock_mapping(self):
-        if not self.fetch_live_mapping:
+        # Skip API calls if fetch_live_mapping is False OR if API key is empty (test mode)
+        if not self.fetch_live_mapping or not self.api_key:
             self.stock_mapping = self.stock_fallback_mapping
             return
         endpoint = "https://api.polygon.io/v3/reference/exchanges"
@@ -242,6 +244,11 @@ class PolygonDataService(BaseDataService):
         # Test price source registry (only used when running_unit_tests=True)
         # Allows tests to inject specific price sources via IPC instead of hardcoded values
         self._test_price_sources = {}
+
+        # Test candle data registry (only used when running_unit_tests=True)
+        # Allows tests to inject candle data for specific trade pairs and time windows
+        # Key: (trade_pair, start_ms, end_ms) -> Value: List[PriceSource]
+        self._test_candle_data = {}
 
         super().__init__(provider_name=POLYGON_PROVIDER_NAME)
 
@@ -314,6 +321,72 @@ class PolygonDataService(BaseDataService):
         # This ensures clean state between tests
         for tracker in self.trade_pair_to_recent_events.values():
             tracker.clear_all_events(running_unit_tests=True)
+
+    def set_test_candle_data(self, trade_pair: TradePair, start_ms: int, end_ms: int, candles: List[PriceSource]) -> None:
+        """
+        Test-only method to inject candle data for a specific trade pair and time window.
+        Only works when running_unit_tests=True for safety.
+
+        Args:
+            trade_pair: TradePair to set candles for
+            start_ms: Start timestamp of the time window
+            end_ms: End timestamp of the time window
+            candles: List of PriceSource objects to return for this window
+        """
+        if not self.running_unit_tests:
+            raise RuntimeError("set_test_candle_data can only be used in unit test mode")
+
+        key = (trade_pair, start_ms, end_ms)
+        self._test_candle_data[key] = candles
+
+    def clear_test_candle_data(self) -> None:
+        """Clear all test candle data (for test isolation)."""
+        if not self.running_unit_tests:
+            return
+        self._test_candle_data.clear()
+
+    def _get_test_candle_data(self, trade_pair: TradePair, start_ms: int, end_ms: int) -> List[PriceSource] | None:
+        """
+        Helper method to get test candle data for a trade pair and time window.
+        Returns candles that overlap with the requested time window.
+
+        Args:
+            trade_pair: TradePair to get candles for
+            start_ms: Start timestamp of the time window
+            end_ms: End timestamp of the time window
+
+        Returns:
+            List of PriceSource if in test mode and data exists, None otherwise
+        """
+        if not self.running_unit_tests:
+            return None
+
+        # First try exact key match (optimization for common case)
+        exact_key = (trade_pair, start_ms, end_ms)
+        if exact_key in self._test_candle_data:
+            return self._test_candle_data[exact_key]
+
+        # Otherwise, search for overlapping windows and filter candles by timestamp
+        for (tp, registered_start, registered_end), candles in self._test_candle_data.items():
+            if tp != trade_pair:
+                continue
+
+            # Check if windows overlap
+            windows_overlap = (start_ms <= registered_end and end_ms >= registered_start)
+            if not windows_overlap:
+                continue
+
+            # Filter candles to only return those within requested window
+            filtered_candles = [
+                candle for candle in candles
+                if start_ms <= candle.start_ms <= end_ms
+            ]
+
+            if filtered_candles:
+                return filtered_candles
+
+        # No matching test data found
+        return None
 
     def _get_test_price_source(self, trade_pair: TradePair, timestamp_ms: int) -> PriceSource | None:
         """
@@ -865,9 +938,26 @@ class PolygonDataService(BaseDataService):
         return ret
 
     def unified_candle_fetcher(self, trade_pair: TradePair, start_timestamp_ms: int, end_timestamp_ms: int, timespan: str=None):
-        # In unit test mode, don't make network calls - return empty list
-        # Tests should inject price data via set_test_price_source
+        # In unit test mode, check for injected test candle data first
         if self.running_unit_tests:
+            test_data = self._get_test_candle_data(trade_pair, start_timestamp_ms, end_timestamp_ms)
+            if test_data is not None:
+                # Convert PriceSource objects to Agg objects for compatibility with production code
+                return [
+                    Agg(
+                        open=ps.open,
+                        close=ps.close,
+                        high=ps.high,
+                        low=ps.low,
+                        vwap=ps.vwap,
+                        timestamp=ps.start_ms,  # PriceSource uses start_ms, Agg uses timestamp
+                        bid=ps.bid if hasattr(ps, 'bid') else 0,
+                        ask=ps.ask if hasattr(ps, 'ask') else 0,
+                        volume=0  # Test data doesn't have volume
+                    )
+                    for ps in test_data
+                ]
+            # No test data found - return empty list (don't make network calls in test mode)
             return []
 
         def _fetch_raw_polygon_aggs():
@@ -1038,8 +1128,12 @@ class PolygonDataService(BaseDataService):
          timestamp=1713273888000, transactions=1, otc=None)
         """
 
-        # Return empty list in unit test mode
+        # In unit test mode, check test registry first
         if self.running_unit_tests:
+            test_candles = self._get_test_candle_data(trade_pair, start_timestamp_ms, end_timestamp_ms)
+            if test_candles is not None:
+                return test_candles
+            # No test data registered, return empty list
             return []
 
         delta_time_ms = end_timestamp_ms - start_timestamp_ms
