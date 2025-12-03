@@ -565,8 +565,8 @@ class DebtBasedScoring:
                 # Fetch ALL ledgers at once
                 all_emissions_ledgers = debt_ledger_client.get_all_emissions_ledgers() or {}
                 all_penalty_ledgers = debt_ledger_client.get_all_penalty_ledgers() or {}
-                # Note: get_perf_ledgers() without hotkey returns all ledgers for all hotkeys
-                all_perf_ledgers = perf_ledger_client.get_all_perf_ledgers() or {}
+                # Get all perf ledgers (portfolio_only=False returns per-trade-pair bundles)
+                all_perf_ledgers = perf_ledger_client.get_perf_ledgers(portfolio_only=False, from_disk=False) or {}
 
                 bt.logging.debug(
                     f"Pre-fetched source ledgers for diagnostics: "
@@ -579,10 +579,12 @@ class DebtBasedScoring:
                 if all_perf_ledgers:
                     sample_hotkey = next(iter(all_perf_ledgers.keys()))
                     sample_perf_dict = all_perf_ledgers[sample_hotkey]
+                    from vali_objects.vali_dataclasses.perf_ledger import TP_ID_PORTFOLIO
                     bt.logging.debug(
                         f"Sample perf ledger for {sample_hotkey[:16]}...{sample_hotkey[-8:]}: "
                         f"type={type(sample_perf_dict).__name__}, "
-                        f"keys={list(sample_perf_dict.keys()) if isinstance(sample_perf_dict, dict) else 'N/A'}"
+                        f"keys={list(sample_perf_dict.keys()) if isinstance(sample_perf_dict, dict) else 'N/A'}, "
+                        f"has_portfolio={TP_ID_PORTFOLIO in sample_perf_dict if isinstance(sample_perf_dict, dict) else False}"
                     )
             except Exception as e:
                 bt.logging.debug(f"Could not pre-fetch source ledgers for diagnostics: {e}")
