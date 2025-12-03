@@ -7,7 +7,6 @@ Tests departed hotkey tracking, re-registration detection, and anomaly protectio
 import os
 
 from shared_objects.server_orchestrator import ServerOrchestrator, ServerMode
-from shared_objects.metagraph_utils import ANOMALY_DETECTION_MIN_LOST, ANOMALY_DETECTION_PERCENT_THRESHOLD
 from tests.shared_objects.test_utilities import generate_winning_ledger
 from tests.vali_tests.base_objects.test_base import TestBase
 from time_util.time_util import TimeUtil, MS_IN_24_HOURS

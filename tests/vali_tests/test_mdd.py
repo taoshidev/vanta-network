@@ -256,9 +256,6 @@ class TestMDDChecker(TestBase):
         self.assertTrue(price_sources)
         self.assertTrue(all([x.close > 0 for x in price_sources]))
 
-        # Clean up
-        self.live_price_fetcher_client.clear_test_price_sources()
-
     def test_mdd_price_correction(self):
         """Test that price correction updates order prices when enabled."""
         self.mdd_checker_client.price_correction_enabled = True
@@ -331,9 +328,6 @@ class TestMDDChecker(TestBase):
             msg=f"Price should be corrected to ~{correct_price}, got {position_from_disk.orders[-1].price}"
         )
 
-        # Clean up
-        self.live_price_fetcher_client.clear_test_price_sources()
-
     def test_no_mdd_failures(self):
         self.verify_elimination_data_in_memory_and_disk([])
         self.position = self.trade_pair_to_default_position[TradePair.BTCUSD]
@@ -390,9 +384,6 @@ class TestMDDChecker(TestBase):
         position_from_disk = positions_from_disk[0]
         self.verify_core_position_fields_unchanged(position_snapshot, position_from_disk)
         self.assertFalse(position_from_disk.is_closed_position)
-
-        # Clean up
-        self.live_price_fetcher_client.clear_test_price_sources()
 
     def test_no_mdd_failures_high_leverage_one_order(self):
         """Test that high leverage positions with small losses don't trigger MDD."""
@@ -456,9 +447,6 @@ class TestMDDChecker(TestBase):
         self.mdd_checker_client.mdd_check()
         positions_from_disk = self.position_client.get_positions_for_one_hotkey(self.MINER_HOTKEY)
         self.assertEqual(len(positions_from_disk), 2)
-
-        # Clean up
-        self.live_price_fetcher_client.clear_test_price_sources()
 
 
 if __name__ == '__main__':

@@ -72,15 +72,8 @@ class TestValidatorContractManager(TestBase):
 
     def setUp(self):
         """Per-test setup: Reset data state (fast - no server restarts)."""
-        # Clear all standard test data (positions, perf_ledger, eliminations, etc.)
+        # Clear all test data (includes contract-specific cleanup as of orchestrator update)
         self.orchestrator.clear_all_test_data()
-
-        # Contract-specific clears (not in orchestrator.clear_all_test_data())
-        self.contract_client.sync_miner_account_sizes_data({})  # Clear account sizes
-        self.contract_client.re_init_account_sizes()  # Reload from disk after clearing
-
-        # Clear test collateral balances
-        self.contract_client.clear_test_collateral_balances()
 
         # Inject default test balances using data injection pattern (like polygon_data_service.py)
         self.contract_client.set_test_collateral_balance(self.MINER_1, 1000000)  # 1M rao
@@ -88,13 +81,8 @@ class TestValidatorContractManager(TestBase):
 
     def tearDown(self):
         """Per-test teardown: Clear data for next test."""
-        # Clear all standard test data
+        # Clear all test data (includes contract-specific cleanup)
         self.orchestrator.clear_all_test_data()
-
-        # Contract-specific clears
-        self.contract_client.sync_miner_account_sizes_data({})
-        self.contract_client.re_init_account_sizes()  # Reload from disk after clearing
-        self.contract_client.clear_test_collateral_balances()
 
     def test_collateral_record_creation(self):
         """Test CollateralRecord creation and properties"""

@@ -20,41 +20,22 @@ import bittensor as bt
 from typing import Tuple
 from setproctitle import setproctitle
 from neurons.validator_base import ValidatorBase
-from shared_objects.metagraph_server import MetagraphServer, MetagraphClient
 from enum import Enum
-from runnable.core_outputs_server import CoreOutputsServer
-from runnable.miner_statistics_server import MinerStatisticsServer
 from template.protocol import SendSignal
 from vali_objects.utils.asset_selection_manager import ASSET_CLASS_SELECTION_TIME_MS
-from vali_objects.utils.asset_selection_client import AssetSelectionClient
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.utils.auto_sync import PositionSyncer
 from vali_objects.utils.p2p_syncer import P2PSyncer
-from vali_objects.utils.elimination_client import EliminationClient
-from vali_objects.utils.limit_order_server import LimitOrderServer, LimitOrderClient
 from vali_objects.utils.market_order_manager import MarketOrderManager
 from shared_objects.rate_limiter import RateLimiter
-from vali_objects.utils.plagiarism_server import PlagiarismServer
-from vali_objects.utils.position_lock_server import PositionLockServer
 from vali_objects.uuid_tracker import UUIDTracker
 from time_util.time_util import TimeUtil, timeme
 from vali_objects.exceptions.signal_exception import SignalException
 from shared_objects.metagraph_updater import MetagraphUpdater
 from shared_objects.error_utils import ErrorUtils
 from shared_objects.slack_notifier import SlackNotifier
-from vali_objects.utils.elimination_server import EliminationServer
-from vali_objects.utils.live_price_server import LivePriceFetcherClient, LivePriceFetcherServer
-from vali_objects.utils.weight_calculator_server import WeightCalculatorServer
-from vali_objects.utils.mdd_checker_server import MDDCheckerServer
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
-from vali_objects.vali_dataclasses.debt_ledger_server import DebtLedgerServer
 from vali_objects.vali_dataclasses.order import Order
-from vali_objects.vali_dataclasses.perf_ledger_server import PerfLedgerServer, PerfLedgerClient
-from vali_objects.vali_dataclasses.debt_ledger_server import DebtLedgerClient
-from vali_objects.utils.position_manager_client import PositionManagerClient
-from vali_objects.utils.position_manager_server import PositionManagerServer
-from vali_objects.utils.challengeperiod_server import ChallengePeriodServer
-from vali_objects.utils.challengeperiod_client import ChallengePeriodClient
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.utils.order_processor import OrderProcessor
 from shared_objects.shutdown_coordinator import ShutdownCoordinator
@@ -224,14 +205,15 @@ class Validator(ValidatorBase):
         bt.logging.success("[INIT] WeightCalculatorServer started")
 
         # Now start server daemons and run pre-run setup (safe now that metagraph is populated)
-        # Order follows dependency graph: perf_ledger → challenge_period → elimination → position_manager
+        # Order follows dependency graph: perf_ledger → challenge_period → elimination → position_manager → limit_order
         # Note: weight_calculator daemon already started via spawn_kwargs (has no client class)
         orchestrator.start_server_daemons([
             'perf_ledger',        # No dependencies
             'challenge_period',   # Depends on common_data, asset_selection (already running)
             'elimination',        # Depends on perf_ledger, challenge_period
             'position_manager',   # Depends on challenge_period, elimination
-            'debt_ledger'         # Depends on perf_ledger, position_manager
+            'debt_ledger',        # Depends on perf_ledger, position_manager
+            'limit_order'         # Depends on position_manager
         ])
         orchestrator.call_pre_run_setup(perform_order_corrections=True)
         bt.logging.success("[INIT] Server daemons started and pre-run setup completed")

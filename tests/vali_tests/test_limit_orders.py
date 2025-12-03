@@ -73,15 +73,11 @@ class TestLimitOrders(TestBase):
 
     def setUp(self):
         """Per-test setup: Reset data state (fast - no server restarts)."""
-        # Clear all data for test isolation (both memory and disk)
+        # Clear all data for test isolation (includes price sources and market open)
         self.orchestrator.clear_all_test_data()
 
         # Set up metagraph with test miner
         self.metagraph_client.set_hotkeys([self.DEFAULT_MINER_HOTKEY])
-
-        # Clear test price sources for isolation
-        self.live_price_fetcher_client.clear_test_price_sources()
-        self.live_price_fetcher_client.clear_test_market_open()
 
         # Create fresh test data
         self.DEFAULT_POSITION_UUID = "test_position"
@@ -91,9 +87,6 @@ class TestLimitOrders(TestBase):
     def tearDown(self):
         """Per-test teardown: Clear data for next test."""
         self.orchestrator.clear_all_test_data()
-
-        # Clear test price sources
-        self.live_price_fetcher_client.clear_test_price_sources()
 
     # ============================================================================
     # Helper Methods

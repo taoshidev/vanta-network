@@ -458,11 +458,11 @@ class ServerOrchestrator:
     def _cleanup_on_exit(self):
         """Cleanup handler called by atexit on normal exit."""
         if not self._shutting_down and self._started:
-            bt.logging.debug("atexit: Cleaning up servers...")
             try:
                 self.shutdown_all_servers()
-            except Exception as e:
-                bt.logging.error(f"Error during atexit cleanup: {e}")
+            except Exception:
+                # Silently ignore errors during atexit cleanup
+                pass
 
     def start_all_servers(
         self,
@@ -760,6 +760,9 @@ class ServerOrchestrator:
 
         Handles server failures gracefully - if a server has crashed, logs warning and continues.
 
+        Note: If your test starts any daemons, you should explicitly stop them in tearDown()
+        using orchestrator.stop_all_daemons() or by calling stop_daemon() on specific clients.
+
         Example usage in test setUp():
             def setUp(self):
                 self.orchestrator.clear_all_test_data()
@@ -812,7 +815,10 @@ class ServerOrchestrator:
         # Clear perf ledger data
         perf_ledger_client = get_client_safe('perf_ledger')
         if perf_ledger_client:
-            safe_clear('perf_ledger', lambda: perf_ledger_client.clear_all_ledger_data())
+            def clear_and_reinit_perf_ledger():
+                perf_ledger_client.clear_all_ledger_data()
+                perf_ledger_client.re_init_perf_ledger_data()  # Reinit after clear for clean state
+            safe_clear('perf_ledger', clear_and_reinit_perf_ledger)
 
         # Clear elimination data
         elimination_client = get_client_safe('elimination')
@@ -849,13 +855,23 @@ class ServerOrchestrator:
         if asset_selection_client:
             safe_clear('asset_selection', lambda: asset_selection_client.clear_asset_selections_for_test())
 
-        # Clear live price fetcher test data (test candles and test price sources)
+        # Clear live price fetcher test data (test candles, test price sources, and market open override)
         live_price_client = get_client_safe('live_price_fetcher')
         if live_price_client:
             def clear_live_price():
                 live_price_client.clear_test_candle_data()
                 live_price_client.clear_test_price_sources()
+                live_price_client.clear_test_market_open()
             safe_clear('live_price_fetcher', clear_live_price)
+
+        # Clear contract data (collateral balances and account sizes)
+        contract_client = get_client_safe('contract')
+        if contract_client:
+            def clear_contract():
+                contract_client.clear_test_collateral_balances()
+                contract_client.sync_miner_account_sizes_data({})  # Empty dict = clear all
+                contract_client.re_init_account_sizes()  # Reload from disk
+            safe_clear('contract', clear_contract)
 
         bt.logging.debug("All test data cleared")
 
@@ -924,6 +940,58 @@ class ServerOrchestrator:
                 bt.logging.success(f"{server_name} daemon started")
             else:
                 bt.logging.warning(f"{server_name} client has no start_daemon method")
+
+    def stop_all_daemons(self) -> None:
+        """
+        Stop all daemons for test isolation.
+
+        Tests that start daemons should explicitly call this in tearDown() to prevent
+        cross-test contamination. Not called automatically by clear_all_test_data().
+
+        Handles failures gracefully - if a daemon can't be stopped, logs warning and continues.
+
+        Example usage:
+            def tearDown(self):
+                self.orchestrator.stop_all_daemons()
+        """
+        if not self._started:
+            return
+
+        bt.logging.debug("Stopping all daemons...")
+
+        # List of all servers that might have daemons
+        daemon_servers = [
+            'position_manager',
+            'elimination',
+            'challenge_period',
+            'perf_ledger',
+            'debt_ledger',
+            'mdd_checker',
+            'core_outputs',
+            'miner_statistics'
+        ]
+
+        for server_name in daemon_servers:
+            if server_name not in self._clients:
+                continue  # Client not created yet, no daemon running
+
+            try:
+                client = self._clients[server_name]
+                if hasattr(client, 'stop_daemon'):
+                    client.stop_daemon()
+                    bt.logging.debug(f"Stopped daemon for {server_name}")
+            except (BrokenPipeError, ConnectionRefusedError, ConnectionError, EOFError) as e:
+                bt.logging.debug(
+                    f"Failed to stop {server_name} daemon (server may have crashed): {type(e).__name__}. "
+                    f"Continuing..."
+                )
+            except Exception as e:
+                bt.logging.warning(
+                    f"Error stopping {server_name} daemon: {type(e).__name__}: {e}. "
+                    f"Continuing..."
+                )
+
+        bt.logging.debug("All daemons stopped")
 
     def call_pre_run_setup(self, perform_order_corrections: bool = True) -> None:
         """
@@ -1016,7 +1084,10 @@ class ServerOrchestrator:
         Can also be called manually for cleanup.
         """
         if not self._started:
-            bt.logging.debug("No servers to shutdown")
+            try:
+                bt.logging.debug("No servers to shutdown")
+            except (ValueError, OSError):
+                pass  # Logging stream already closed (pytest teardown)
             return
 
         # Prevent recursive shutdowns
@@ -1025,7 +1096,10 @@ class ServerOrchestrator:
         if hasattr(self, '_shutting_down'):
             self._shutting_down = True
 
-        bt.logging.info("Shutting down all servers...")
+        try:
+            bt.logging.info("Shutting down all servers...")
+        except (ValueError, OSError):
+            pass  # Logging stream already closed (pytest teardown)
 
         # Disconnect all clients first
         RPCClientBase.disconnect_all()
@@ -1038,7 +1112,10 @@ class ServerOrchestrator:
         self._started = False
         self._mode = None
 
-        bt.logging.success("All servers shutdown complete")
+        try:
+            bt.logging.success("All servers shutdown complete")
+        except (ValueError, OSError):
+            pass  # Logging stream already closed (pytest teardown)
 
     def __del__(self):
         """Cleanup on destruction."""

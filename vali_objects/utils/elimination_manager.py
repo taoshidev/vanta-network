@@ -214,7 +214,8 @@ class EliminationManager(CacheController):
         # Create own PositionManagerClient (forward compatibility - no parameter passing)
         self._position_client = PositionManagerClient(
             port=ValiConfig.RPC_POSITIONMANAGER_PORT,
-            connect_immediately=False
+            connect_immediately=False,
+            connection_mode=connection_mode
         )
 
         # Create RPC client for ChallengePeriodManager

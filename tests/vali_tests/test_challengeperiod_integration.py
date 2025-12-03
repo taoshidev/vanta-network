@@ -236,6 +236,7 @@ class TestChallengePeriodIntegration(TestBase):
         # Finally update the challenge period to default state
         self.elimination_client.clear_eliminations()
 
+        # Populate initial buckets (FAILING miners are NOT included initially - tests add them if needed)
         self._populate_active_miners(maincomp=self.SUCCESS_MINER_NAMES,
                                      challenge=self.TESTING_MINER_NAMES,
                                      probation=self.PROBATION_MINER_NAMES)
@@ -253,6 +254,13 @@ class TestChallengePeriodIntegration(TestBase):
         self.challenge_period_client._write_challengeperiod_from_memory_to_disk()  # Ensure disk matches memory
 
     def test_refresh_populations(self):
+        # Add failing miners to challenge bucket so they can be evaluated
+        self._populate_active_miners(maincomp=self.SUCCESS_MINER_NAMES,
+                                     challenge=self.TESTING_MINER_NAMES + self.FAILING_MINER_NAMES,
+                                     probation=self.PROBATION_MINER_NAMES)
+
+        # Force-allow refresh by resetting last update time
+        self.challenge_period_client.set_last_update_time(0)
         self.challenge_period_client.refresh(current_time=self.max_open_ms)
         self.elimination_client.process_eliminations()
         testing_length = len(self.challenge_period_client.get_testing_miners())
@@ -275,6 +283,13 @@ class TestChallengePeriodIntegration(TestBase):
             time_criteria = self.max_open_ms - inspection_time <= ValiConfig.CHALLENGE_PERIOD_MAXIMUM_MS
             self.assertTrue(time_criteria, f"Time criteria failed for {hotkey}")
 
+        # Add failing miners to challenge bucket so they can be evaluated
+        self._populate_active_miners(maincomp=self.SUCCESS_MINER_NAMES,
+                                     challenge=self.TESTING_MINER_NAMES + self.FAILING_MINER_NAMES,
+                                     probation=self.PROBATION_MINER_NAMES)
+
+        # Force-allow refresh by resetting last update time
+        self.challenge_period_client.set_last_update_time(0)
         self.challenge_period_client.refresh(current_time=self.max_open_ms)
         self.elimination_client.process_eliminations()
 
@@ -441,7 +456,14 @@ class TestChallengePeriodIntegration(TestBase):
             )
             self.assertEqual(failing_screen, False)
 
+        # Add failing miners to challenge bucket so they can be evaluated
+        self._populate_active_miners(maincomp=self.SUCCESS_MINER_NAMES,
+                                     challenge=self.TESTING_MINER_NAMES + self.FAILING_MINER_NAMES,
+                                     probation=self.PROBATION_MINER_NAMES)
+
         refresh_time = self.HK_TO_OPEN_MS['eliminated_miner1'] + ValiConfig.CHALLENGE_PERIOD_MAXIMUM_MS + 1
+        # Force-allow refresh by resetting last update time
+        self.challenge_period_client.set_last_update_time(0)
         self.challenge_period_client.refresh(refresh_time)
 
         elimination_reasons = self.challenge_period_client.get_all_elimination_reasons()
@@ -619,6 +641,13 @@ class TestChallengePeriodIntegration(TestBase):
 
     def test_miner_elimination_reasons_mdd(self):
         """Test that miners are properly being eliminated when beyond mdd"""
+        # Add failing miners to challenge bucket so they can be evaluated
+        self._populate_active_miners(maincomp=self.SUCCESS_MINER_NAMES,
+                                     challenge=self.TESTING_MINER_NAMES + self.FAILING_MINER_NAMES,
+                                     probation=self.PROBATION_MINER_NAMES)
+
+        # Force-allow refresh by resetting last update time
+        self.challenge_period_client.set_last_update_time(0)
         self.challenge_period_client.refresh(current_time=self.max_open_ms)
         self.elimination_client.process_eliminations()
 
@@ -631,6 +660,13 @@ class TestChallengePeriodIntegration(TestBase):
 
     def test_miner_elimination_reasons_time(self):
         """Test that miners who aren't passing challenge period are properly eliminated for time."""
+        # Add failing miners to challenge bucket so they can be evaluated
+        self._populate_active_miners(maincomp=self.SUCCESS_MINER_NAMES,
+                                     challenge=self.TESTING_MINER_NAMES + self.FAILING_MINER_NAMES,
+                                     probation=self.PROBATION_MINER_NAMES)
+
+        # Force-allow refresh by resetting last update time
+        self.challenge_period_client.set_last_update_time(0)
         self.challenge_period_client.refresh(current_time=self.OUTSIDE_OF_CHALLENGE)
         self.elimination_client.process_eliminations()
         eliminations_length = len(self.elimination_client.get_eliminations_from_memory())

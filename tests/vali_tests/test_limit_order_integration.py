@@ -81,7 +81,6 @@ class TestLimitOrderIntegration(TestBase):
 
     def tearDown(self):
         """Per-test teardown: Clear data for next test."""
-        self.clear_test_price_data()
         self.orchestrator.clear_all_test_data()
 
     # ============================================================================
@@ -182,11 +181,6 @@ class TestLimitOrderIntegration(TestBase):
         # Use client RPC method to set market open state
         self.live_price_fetcher_client.set_test_market_open(is_open)
 
-    def clear_test_price_data(self):
-        """Clear injected test price data using client RPC methods."""
-        # Use client RPC method to clear test data
-        self.live_price_fetcher_client.clear_test_price_sources()
-
     # ============================================================================
     # Integration Tests: Full Fill Path
     # ============================================================================
@@ -214,7 +208,8 @@ class TestLimitOrderIntegration(TestBase):
         limit_order = self.create_limit_order(order_type=OrderType.LONG, limit_price=48000.0, leverage=0.2)
 
         # Ensure no price data available during order submission (prevents immediate fill)
-        self.live_price_fetcher_client.clear_test_price_sources()
+        # Orchestrator cleanup already cleared price sources, inject None to keep it clear
+        self.inject_price_data(self.DEFAULT_TRADE_PAIR, None)
 
         # Submit order (stored unfilled - won't fill until we run daemon with price data)
         result = self.limit_order_client.process_limit_order(self.DEFAULT_MINER_HOTKEY, limit_order)

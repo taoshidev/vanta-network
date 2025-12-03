@@ -116,7 +116,7 @@ class TestMinerStatistics(TestBase):
     def _create_test_positions(self):
         """Create some test positions for miners to avoid empty data errors."""
         current_time = TimeUtil.now_in_millis()
-        start_time = current_time - 1000 * 60 * 60 * 24  # 1 day ago
+        start_time = current_time - 1000 * 60 * 60 * 24 * 60  # 60 days ago (required for 60 complete days = 120 checkpoints)
 
         # Build ledgers dictionary: {hotkey: {TP_ID_PORTFOLIO: PerfLedger, "BTCUSD": PerfLedger}}
         ledgers = {}
@@ -130,6 +130,7 @@ class TestMinerStatistics(TestBase):
                 position_uuid=f"test_position_{hotkey}",
                 open_ms=current_time - 1000 * 60 * 60,  # 1 hour ago
                 trade_pair=TradePair.BTCUSD,
+                account_size=100_000,  # Required for scoring
                 orders=[
                     Order(
                         price=60000,
@@ -148,6 +149,18 @@ class TestMinerStatistics(TestBase):
         # Save all ledgers at once
         self.perf_ledger_client.save_perf_ledgers(ledgers)
         self.perf_ledger_client.re_init_perf_ledger_data()  # Force reload after save
+
+        # Verify ledgers were saved and can be retrieved for scoring
+        filtered_ledgers = self.perf_ledger_client.filtered_ledger_for_scoring(hotkeys=self.test_hotkeys)
+        from vali_objects.vali_dataclasses.perf_ledger import TP_ID_PORTFOLIO
+        from vali_objects.utils.ledger_utils import LedgerUtils
+        for hotkey in self.test_hotkeys:
+            if hotkey in filtered_ledgers and TP_ID_PORTFOLIO in filtered_ledgers[hotkey]:
+                ledger = filtered_ledgers[hotkey][TP_ID_PORTFOLIO]
+                daily_returns = LedgerUtils.daily_return_log(ledger)
+                assert len(daily_returns) >= 60, f"{hotkey} has only {len(daily_returns)} daily returns (need 60+)"
+            else:
+                raise AssertionError(f"Ledger data not found for {hotkey} after save/reload")
 
         # Add miners to challenge period using batch update (matches reference test pattern)
         miners_dict = {}
@@ -233,6 +246,7 @@ class TestMinerStatistics(TestBase):
         # Verify data contains our test miners
         data = stats_data.get('data', [])
         self.assertIsInstance(data, list)
+        self.assertGreater(len(data), 0, "Should have at least one miner")
 
         # At least some of our test miners should be present
         hotkeys_in_data = [miner_dict.get('hotkey') for miner_dict in data]

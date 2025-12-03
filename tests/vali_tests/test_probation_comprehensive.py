@@ -7,6 +7,7 @@ and ensure production-ready confidence for the probation bucket feature.
 
 Refactored to use client/server architecture matching test_elimination_core.py pattern.
 """
+import unittest
 
 from shared_objects.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.shared_objects.test_utilities import (
@@ -19,7 +20,6 @@ from vali_objects.position import Position
 from vali_objects.utils.challengeperiod_manager import ChallengePeriodManager
 from vali_objects.utils.elimination_manager import EliminationReason
 from vali_objects.utils.miner_bucket_enum import MinerBucket
-from vali_objects.utils.position_lock import PositionLocks
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.vali_dataclasses.order import Order
@@ -83,9 +83,6 @@ class TestProbationComprehensive(TestBase):
         cls.ELIMINATED_MINER_NAMES = [f"eliminated_miner{i}" for i in range(1, cls.N_ELIMINATED_MINERS + 1)]
         cls.ALL_MINER_NAMES = (cls.SUCCESS_MINER_NAMES + cls.CHALLENGE_MINER_NAMES +
                                cls.PROBATION_MINER_NAMES + cls.ELIMINATED_MINER_NAMES)
-
-        # Create position locks instance
-        cls.position_locks = PositionLocks()
 
     @classmethod
     def tearDownClass(cls):

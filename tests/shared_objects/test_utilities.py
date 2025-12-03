@@ -126,7 +126,7 @@ def generate_ledger(
                 loss=loss,
                 prev_portfolio_ret=1.0,
                 open_ms=checkpoint_open_ms,
-                accum_ms=checkpoint_open_ms,
+                accum_ms=ValiConfig.TARGET_CHECKPOINT_DURATION_MS,  # Full checkpoint duration for complete days
                 mdd=mdd,
             ),
         )

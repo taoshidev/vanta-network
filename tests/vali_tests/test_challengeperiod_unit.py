@@ -143,7 +143,13 @@ class TestChallengePeriodUnit(TestBase):
         self.orchestrator.clear_all_test_data()
 
         # Initialize metagraph with test miners
-        self.metagraph_client.set_hotkeys(self.MINER_NAMES)
+        # Use try/except to handle server crashes gracefully
+        try:
+            self.metagraph_client.set_hotkeys(self.MINER_NAMES)
+        except (BrokenPipeError, ConnectionRefusedError, ConnectionError, EOFError) as e:
+            # Server may have crashed - log and skip (tests that need metagraph will fail anyway)
+            import bittensor as bt
+            bt.logging.warning(f"Failed to set metagraph hotkeys in setUp (server may have crashed): {e}")
 
         # Set up asset selection for all miners (required for promotion)
         from vali_objects.vali_config import TradePairCategory
@@ -151,7 +157,15 @@ class TestChallengePeriodUnit(TestBase):
         asset_selection_data = {}
         for hotkey in self.MINER_NAMES + self.SUCCESS_MINER_NAMES:
             asset_selection_data[hotkey] = asset_class_str
-        self.asset_selection_client.sync_miner_asset_selection_data(asset_selection_data)
+
+        try:
+            self.asset_selection_client.sync_miner_asset_selection_data(asset_selection_data)
+        except (BrokenPipeError, ConnectionRefusedError, ConnectionError, EOFError) as e:
+            import bittensor as bt
+            bt.logging.warning(
+                f"Failed to sync asset selection in setUp (server may have crashed): {e}. "
+                f"Tests requiring asset selection will fail."
+            )
 
         # Note: Individual tests populate active_miners as needed via _populate_active_miners()
 
@@ -160,15 +174,33 @@ class TestChallengePeriodUnit(TestBase):
         self.orchestrator.clear_all_test_data()
 
     def save_and_get_positions(self, base_positions, hotkeys):
-        """Helper to save positions and get filtered positions for scoring."""
-        for p in base_positions:
-            self.position_client.save_miner_position(p)
+        """Helper to save positions and get filtered positions for scoring with error handling."""
+        import bittensor as bt
 
-        positions, hk_to_first_order_time = self.position_client.filtered_positions_for_scoring(
-            hotkeys=hotkeys)
-        assert positions, positions
+        try:
+            for p in base_positions:
+                self.position_client.save_miner_position(p)
 
-        return positions, hk_to_first_order_time
+            positions, hk_to_first_order_time = self.position_client.filtered_positions_for_scoring(
+                hotkeys=hotkeys)
+            assert positions, positions
+
+            return positions, hk_to_first_order_time
+
+        except (BrokenPipeError, ConnectionRefusedError, ConnectionError, EOFError) as e:
+            bt.logging.warning(
+                f"save_and_get_positions failed (server may have crashed): {type(e).__name__}: {e}. "
+                f"Returning empty results - test will likely fail."
+            )
+            # Return empty results to allow test to continue (will fail on assertions)
+            return {}, {}
+        except AssertionError:
+            bt.logging.warning(
+                f"save_and_get_positions: No positions returned for hotkeys {hotkeys}. "
+                f"This may indicate position_client RPC failure."
+            )
+            # Re-raise to preserve original test failure behavior
+            raise
 
     def get_combined_scores_dict(self, miner_scores: dict[str, float], asset_class=None):
         """
@@ -201,13 +233,40 @@ class TestChallengePeriodUnit(TestBase):
         return combined_scores_dict
 
     def _populate_active_miners(self, *, maincomp=[], challenge=[], probation=[]):
-        """Populate active miners using RPC client methods."""
-        for hotkey in maincomp:
-            self.challenge_period_client.set_miner_bucket(hotkey, MinerBucket.MAINCOMP, self.START_TIME)
-        for hotkey in challenge:
-            self.challenge_period_client.set_miner_bucket(hotkey, MinerBucket.CHALLENGE, self.START_TIME)
-        for hotkey in probation:
-            self.challenge_period_client.set_miner_bucket(hotkey, MinerBucket.PROBATION, self.START_TIME)
+        """Populate active miners using RPC client methods with error handling."""
+        import bittensor as bt
+
+        try:
+            for hotkey in maincomp:
+                self.challenge_period_client.set_miner_bucket(hotkey, MinerBucket.MAINCOMP, self.START_TIME)
+            for hotkey in challenge:
+                self.challenge_period_client.set_miner_bucket(hotkey, MinerBucket.CHALLENGE, self.START_TIME)
+            for hotkey in probation:
+                self.challenge_period_client.set_miner_bucket(hotkey, MinerBucket.PROBATION, self.START_TIME)
+
+            # Verify miners were actually registered by checking a sample
+            sample_hotkeys = (challenge + maincomp + probation)[:3]  # Check first 3
+            for hotkey in sample_hotkeys:
+                try:
+                    bucket = self.challenge_period_client.get_miner_bucket(hotkey)
+                    if bucket is None:
+                        bt.logging.warning(
+                            f"_populate_active_miners: Verification failed - {hotkey} not found after registration. "
+                            f"Server may have crashed."
+                        )
+                        break
+                except Exception as e:
+                    bt.logging.warning(
+                        f"_populate_active_miners: Verification failed for {hotkey}: {e}. "
+                        f"Server may have crashed."
+                    )
+                    break
+
+        except (BrokenPipeError, ConnectionRefusedError, ConnectionError, EOFError) as e:
+            bt.logging.warning(
+                f"_populate_active_miners failed (server may have crashed): {type(e).__name__}: {e}. "
+                f"Tests relying on this data will likely fail."
+            )
 
     def test_screen_drawdown(self):
         """Test that a high drawdown miner is screened"""

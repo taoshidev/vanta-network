@@ -283,7 +283,8 @@ class PolygonDataService(BaseDataService):
 
         # ALSO inject into RecentEventTracker so get_ws_price_sources_in_window() can find it
         # This ensures test price sources are visible to daemon code paths like check_and_fill_limit_orders()
-        # Update timestamp to NOW so it's within the time window that the daemon searches
+        # IMPORTANT: Preserve the original timestamp so mdd_check() can find the price source
+        # when querying for the exact order timestamp
         from time_util.time_util import TimeUtil
         updated_price_source = PriceSource(
             source=price_source.source,
@@ -293,7 +294,7 @@ class PolygonDataService(BaseDataService):
             vwap=price_source.vwap,
             high=price_source.high,
             low=price_source.low,
-            start_ms=TimeUtil.now_in_millis(),  # Update to current time
+            start_ms=price_source.start_ms,  # Preserve original timestamp for exact matching
             websocket=price_source.websocket,
             lag_ms=price_source.lag_ms,
             bid=price_source.bid,
