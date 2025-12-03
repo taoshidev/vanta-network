@@ -1022,20 +1022,27 @@ class DebtLedgerManager():
                 if not portfolio_ledger or not portfolio_ledger.cps:
                     continue
 
-                if not perf_checkpoint:
+                # CRITICAL FIX: Get THIS MINER'S checkpoint at the current timestamp,
+                # not the reference checkpoint (which would use the same PnL for all miners)
+                miner_perf_checkpoint = portfolio_ledger.get_checkpoint_at_time(
+                    perf_checkpoint.last_update_ms,
+                    target_cp_duration_ms
+                )
+
+                if not miner_perf_checkpoint:
                     continue  # This hotkey doesn't have a perf checkpoint at this timestamp
 
                 # Get corresponding penalty checkpoint (efficient O(1) lookup)
                 penalty_ledger = self.penalty_ledger_manager.get_penalty_ledger(hotkey)
                 penalty_checkpoint = None
                 if penalty_ledger:
-                    penalty_checkpoint = penalty_ledger.get_checkpoint_at_time(perf_checkpoint.last_update_ms, target_cp_duration_ms)
+                    penalty_checkpoint = penalty_ledger.get_checkpoint_at_time(miner_perf_checkpoint.last_update_ms, target_cp_duration_ms)
 
                 # Get corresponding emissions checkpoint (efficient O(1) lookup)
                 emissions_ledger = self.emissions_ledger_manager.get_ledger(hotkey)
                 emissions_checkpoint = None
                 if emissions_ledger:
-                    emissions_checkpoint = emissions_ledger.get_checkpoint_at_time(perf_checkpoint.last_update_ms, target_cp_duration_ms)
+                    emissions_checkpoint = emissions_ledger.get_checkpoint_at_time(miner_perf_checkpoint.last_update_ms, target_cp_duration_ms)
 
                 # Skip if we don't have both penalty and emissions data
                 if not penalty_checkpoint or not emissions_checkpoint:
@@ -1043,19 +1050,27 @@ class DebtLedgerManager():
                     continue
 
                 # Validate timestamps match
-                if penalty_checkpoint.last_processed_ms != perf_checkpoint.last_update_ms:
+                if miner_perf_checkpoint.last_update_ms != perf_checkpoint.last_update_ms:
                     if verbose:
                         bt.logging.warning(
-                            f"Penalty checkpoint timestamp mismatch for {hotkey}: "
-                            f"expected {perf_checkpoint.last_update_ms}, got {penalty_checkpoint.last_processed_ms}"
+                            f"Perf checkpoint timestamp mismatch for {hotkey}: "
+                            f"expected {perf_checkpoint.last_update_ms}, got {miner_perf_checkpoint.last_update_ms}"
                         )
                     continue
 
-                if emissions_checkpoint.chunk_end_ms != perf_checkpoint.last_update_ms:
+                if penalty_checkpoint.last_processed_ms != miner_perf_checkpoint.last_update_ms:
+                    if verbose:
+                        bt.logging.warning(
+                            f"Penalty checkpoint timestamp mismatch for {hotkey}: "
+                            f"expected {miner_perf_checkpoint.last_update_ms}, got {penalty_checkpoint.last_processed_ms}"
+                        )
+                    continue
+
+                if emissions_checkpoint.chunk_end_ms != miner_perf_checkpoint.last_update_ms:
                     if verbose:
                         bt.logging.warning(
                             f"Emissions checkpoint end time mismatch for {hotkey}: "
-                            f"expected {perf_checkpoint.last_update_ms}, got {emissions_checkpoint.chunk_end_ms}"
+                            f"expected {miner_perf_checkpoint.last_update_ms}, got {emissions_checkpoint.chunk_end_ms}"
                         )
                     continue
 
@@ -1068,17 +1083,18 @@ class DebtLedgerManager():
                 # Skip if this hotkey already has a checkpoint at this timestamp (delta update safety check)
                 if delta_update and debt_ledger.checkpoints:
                     last_checkpoint_ms = debt_ledger.checkpoints[-1].timestamp_ms
-                    if perf_checkpoint.last_update_ms <= last_checkpoint_ms:
+                    if miner_perf_checkpoint.last_update_ms <= last_checkpoint_ms:
                         if verbose:
                             bt.logging.info(
-                                f"Skipping checkpoint for {hotkey} at {perf_checkpoint.last_update_ms} "
+                                f"Skipping checkpoint for {hotkey} at {miner_perf_checkpoint.last_update_ms} "
                                 f"(already processed, last checkpoint: {last_checkpoint_ms})"
                             )
                         continue
 
                 # Create unified debt checkpoint combining all three sources
+                # CRITICAL: Use miner_perf_checkpoint (this miner's data), not perf_checkpoint (reference miner's data)
                 debt_checkpoint = DebtCheckpoint(
-                    timestamp_ms=perf_checkpoint.last_update_ms,
+                    timestamp_ms=miner_perf_checkpoint.last_update_ms,
                     # Emissions data (chunk only - cumulative calculated by summing)
                     chunk_emissions_alpha=emissions_checkpoint.chunk_emissions,
                     chunk_emissions_tao=emissions_checkpoint.chunk_emissions_tao,
@@ -1087,17 +1103,17 @@ class DebtLedgerManager():
                     avg_tao_to_usd_rate=emissions_checkpoint.avg_tao_to_usd_rate,
                     tao_balance_snapshot=emissions_checkpoint.tao_balance_snapshot,
                     alpha_balance_snapshot=emissions_checkpoint.alpha_balance_snapshot,
-                    # Performance data - access attributes directly from PerfCheckpoint
-                    portfolio_return=perf_checkpoint.gain,  # Current portfolio multiplier
-                    realized_pnl=perf_checkpoint.realized_pnl,  # Realized PnL during this checkpoint period
-                    unrealized_pnl=perf_checkpoint.unrealized_pnl,  # Unrealized PnL during this checkpoint period
-                    spread_fee_loss=perf_checkpoint.spread_fee_loss,  # Spread fees during this checkpoint
-                    carry_fee_loss=perf_checkpoint.carry_fee_loss,  # Carry fees during this checkpoint
-                    max_drawdown=perf_checkpoint.mdd,  # Max drawdown
-                    max_portfolio_value=perf_checkpoint.mpv,  # Max portfolio value achieved
-                    open_ms=perf_checkpoint.open_ms,
-                    accum_ms=perf_checkpoint.accum_ms,
-                    n_updates=perf_checkpoint.n_updates,
+                    # Performance data - access attributes directly from THIS MINER'S PerfCheckpoint
+                    portfolio_return=miner_perf_checkpoint.gain,  # Current portfolio multiplier
+                    realized_pnl=miner_perf_checkpoint.realized_pnl,  # Realized PnL during this checkpoint period
+                    unrealized_pnl=miner_perf_checkpoint.unrealized_pnl,  # Unrealized PnL during this checkpoint period
+                    spread_fee_loss=miner_perf_checkpoint.spread_fee_loss,  # Spread fees during this checkpoint
+                    carry_fee_loss=miner_perf_checkpoint.carry_fee_loss,  # Carry fees during this checkpoint
+                    max_drawdown=miner_perf_checkpoint.mdd,  # Max drawdown
+                    max_portfolio_value=miner_perf_checkpoint.mpv,  # Max portfolio value achieved
+                    open_ms=miner_perf_checkpoint.open_ms,
+                    accum_ms=miner_perf_checkpoint.accum_ms,
+                    n_updates=miner_perf_checkpoint.n_updates,
                     # Penalty data
                     drawdown_penalty=penalty_checkpoint.drawdown_penalty,
                     risk_profile_penalty=penalty_checkpoint.risk_profile_penalty,

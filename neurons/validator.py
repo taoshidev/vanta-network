@@ -709,9 +709,9 @@ class Validator(ValidatorBase):
             final_processing_ms = TimeUtil.now_in_millis() - final_processing_start
             bt.logging.info(f"[TIMING] Final synapse setup took {final_processing_ms}ms")
 
-            processing_time_s_3_decimals = round((TimeUtil.now_in_millis() - now_ms) / 1000.0, 3)
+            processing_time_ms = TimeUtil.now_in_millis() - now_ms
             bt.logging.success(f"Sending ack back to miner [{miner_hotkey}]. Synapse Message: {synapse.error_message}. "
-                               f"Process time {processing_time_s_3_decimals} seconds. order {order}")
+                               f"Process time {processing_time_ms}ms. order {order}")
 
             # CRITICAL: Decrement counter in finally block to prevent deadlock
             # This ensures the counter is always decremented, even if an unhandled exception occurs

@@ -1190,6 +1190,21 @@ class DebtBasedScoring:
 
                 bt.logging.info("=" * 80)
 
+        # Step 9a: Calculate projected emissions (needed for weight normalization)
+        # Get projected ALPHA emissions
+        projected_alpha_available = DebtBasedScoring._estimate_alpha_emissions_until_target(
+            metagraph=metagraph,
+            days_until_target=days_until_target,
+            verbose=verbose
+        )
+
+        # Convert projected ALPHA to USD for comparison
+        projected_usd_available = DebtBasedScoring._convert_alpha_to_usd(
+            alpha_amount=projected_alpha_available,
+            metagraph=metagraph,
+            verbose=verbose
+        )
+
         if total_remaining_payout_usd > 0 and days_until_target > 0:
             DebtBasedScoring.log_projections(metagraph, days_until_target, verbose, total_remaining_payout_usd)
         else:
@@ -1223,7 +1238,14 @@ class DebtBasedScoring:
         # All miners get minimum "dust" weights based on their current status
         # Dust is a static value from ValiConfig.CHALLENGE_PERIOD_MIN_WEIGHT
         # Weights are performance-scaled by 30-day PnL within each bucket
-        # NOTE: Weights are unitless proportions, derived from daily target USD payouts
+        # NOTE: Weights are unitless proportions, normalized against projected daily emissions
+        # Calculate projected daily emissions in USD
+        if days_until_target > 0:
+            projected_daily_usd = projected_usd_available / days_until_target
+        else:
+            # Past deadline, use full remaining emissions for today
+            projected_daily_usd = projected_usd_available
+
         miner_weights_with_minimums = DebtBasedScoring._apply_minimum_weights(
             ledger_dict=ledger_dict,
             miner_remaining_payouts_usd=miner_daily_target_payouts_usd,
@@ -1231,6 +1253,7 @@ class DebtBasedScoring:
             contract_client=contract_client,
             metagraph=metagraph,
             current_time_ms=current_time_ms,
+            projected_daily_emissions_usd=projected_daily_usd,
             verbose=verbose
         )
 
@@ -1955,6 +1978,7 @@ class DebtBasedScoring:
         contract_client: 'ContractClient',
         metagraph: 'bt.metagraph_handle',
         current_time_ms: int = None,
+        projected_daily_emissions_usd: float = None,
         verbose: bool = False
     ) -> dict[str, float]:
         """
@@ -1972,13 +1996,17 @@ class DebtBasedScoring:
         penalty-adjusted PnL (in USD), with range [floor, floor+1 DUST], where floor is
         the bucket's static dust multiplier and ceiling is floor + base dust amount.
 
+        IMPORTANT: Weights are normalized against projected daily emissions (NOT total payouts).
+        This ensures excess emissions are burned when we have surplus capacity.
+
         Args:
             ledger_dict: Dict of {hotkey: DebtLedger}
-            miner_remaining_payouts_usd: Dict of {hotkey: remaining_payout_usd} in USD
+            miner_remaining_payouts_usd: Dict of {hotkey: remaining_payout_usd} in USD (daily targets)
             challengeperiod_client: Client for querying current challenge period status (required)
             contract_client: Client for querying miner collateral balances (required)
             metagraph: Shared IPC metagraph (not used for dust calculation)
             current_time_ms: Current timestamp (required for performance scaling)
+            projected_daily_emissions_usd: Projected daily emissions in USD (for normalization)
             verbose: Enable detailed logging
 
         Returns:
@@ -2032,19 +2060,40 @@ class DebtBasedScoring:
             else:
                 miner_statuses[hotkey] = bucket.value
 
-        # Step 1: Normalize remaining payouts from USD to proportional weights (sum to 1.0)
-        # This ensures we're comparing apples to apples when applying dust minimums
-        total_remaining_payout = sum(miner_remaining_payouts_usd.values())
+        # Step 1: Convert daily target payouts to weights based on projected daily emissions
+        # CRITICAL FIX: Normalize against projected emissions (NOT total payouts!)
+        # This ensures excess emissions are burned when we have surplus capacity.
+        # Example: If daily targets = $30k but emissions = $1.7M, weights sum to 0.0175 (1.75%)
+        # and burn address gets 0.9825 (98.25%)
+        total_daily_target_payout = sum(miner_remaining_payouts_usd.values())
 
-        if total_remaining_payout > 0:
-            # Normalize USD amounts to proportional weights
+        if projected_daily_emissions_usd is None or projected_daily_emissions_usd <= 0:
+            # Fallback to old behavior (normalize to 1.0) if projected emissions not provided
+            bt.logging.warning(
+                "projected_daily_emissions_usd not provided or invalid. "
+                "Falling back to normalizing against total payouts (may not burn excess emissions)."
+            )
+            if total_daily_target_payout > 0:
+                normalized_debt_weights = {
+                    hotkey: (payout_usd / total_daily_target_payout)
+                    for hotkey, payout_usd in miner_remaining_payouts_usd.items()
+                }
+            else:
+                normalized_debt_weights = {hotkey: 0.0 for hotkey in ledger_dict.keys()}
+        else:
+            # NEW: Normalize against projected daily emissions (enables burning surplus)
+            if verbose:
+                bt.logging.info(
+                    f"Normalizing weights against projected daily emissions: "
+                    f"total_daily_target=${total_daily_target_payout:.2f}, "
+                    f"projected_daily_emissions=${projected_daily_emissions_usd:.2f}, "
+                    f"payout_fraction={total_daily_target_payout/projected_daily_emissions_usd:.4f}"
+                )
+
             normalized_debt_weights = {
-                hotkey: (payout_usd / total_remaining_payout)
+                hotkey: (payout_usd / projected_daily_emissions_usd)
                 for hotkey, payout_usd in miner_remaining_payouts_usd.items()
             }
-        else:
-            # No payouts needed, all weights start at 0
-            normalized_debt_weights = {hotkey: 0.0 for hotkey in ledger_dict.keys()}
 
         # Step 2: Apply minimum weights (now both are in 0-1 range)
         miner_weights_with_minimums = {}
