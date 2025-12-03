@@ -3190,9 +3190,7 @@ class TestOverlapDetection(TestBase):
         cls.elimination_client = cls.orchestrator.get_client('elimination')
         cls.position_client = cls.orchestrator.get_client('position_manager')
 
-        # Create PositionSyncer - pass running_unit_tests=False so it uses RPC mode
-        # ServerOrchestrator runs servers via RPC, so clients need RPC mode
-        cls.position_syncer = PositionSyncer(running_unit_tests=False, enable_position_splitting=True)
+        cls.position_syncer = PositionSyncer(running_unit_tests=True, enable_position_splitting=True)
 
     @classmethod
     def tearDownClass(cls):
@@ -3210,7 +3208,6 @@ class TestOverlapDetection(TestBase):
 
         self.metagraph_client.set_hotkeys([self.DEFAULT_MINER_HOTKEY])
 
-        # Create PositionSyncer - pass running_unit_tests=False so it uses RPC mode
         self.position_syncer = PositionSyncer(
             running_unit_tests=True,
             enable_position_splitting=True
