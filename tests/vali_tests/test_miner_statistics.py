@@ -80,7 +80,8 @@ class TestMinerStatistics(TestBase):
         One-time teardown: No action needed.
 
         Note: Servers and clients are managed by ServerOrchestrator singleton and shared
-        across all test classes. They will be shut down automatically at process exit.
+        across all test classes. Cleanup is handled by the session-scoped fixture in
+        conftest.py, which ensures all servers shut down cleanly after ALL tests complete.
         """
         pass
 
