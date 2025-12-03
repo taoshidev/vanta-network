@@ -827,10 +827,82 @@ class DebtBasedScoring:
 
             # Debug: Log when needed_payout > 0 but remaining_payout = 0 (already fully paid)
             if verbose and needed_payout_usd > 0 and remaining_payout_usd == 0.0:
+                # Calculate raw payouts without any filters for diagnostics
+                raw_pnl_sum = sum(cp.realized_pnl for cp in all_prev_month_checkpoints)
+                raw_pnl_with_penalty = sum(cp.realized_pnl * cp.total_penalty for cp in all_prev_month_checkpoints)
+                raw_emissions_sum = sum(cp.chunk_emissions_usd for cp in all_prev_month_checkpoints)
+
+                # Get unrealized PnL from last checkpoint (all statuses)
+                last_cp_all = all_prev_month_checkpoints[-1] if all_prev_month_checkpoints else None
+                unrealized_pnl_all = last_cp_all.unrealized_pnl if last_cp_all else 0.0
+                unrealized_with_penalty_all = unrealized_pnl_all * last_cp_all.total_penalty if last_cp_all else 0.0
+
+                # Split actual_payout into November vs December
+                nov_emissions = sum(cp.chunk_emissions_usd for cp in prev_month_checkpoints)
+                dec_emissions = sum(cp.chunk_emissions_usd for cp in current_month_checkpoints)
+
+                # Break down by status
+                status_breakdown_detailed = {}
+                for cp in all_prev_month_checkpoints:
+                    status = cp.challenge_period_status
+                    if status not in status_breakdown_detailed:
+                        status_breakdown_detailed[status] = {
+                            'count': 0,
+                            'pnl': 0.0,
+                            'pnl_with_penalty': 0.0,
+                            'emissions': 0.0
+                        }
+                    status_breakdown_detailed[status]['count'] += 1
+                    status_breakdown_detailed[status]['pnl'] += cp.realized_pnl
+                    status_breakdown_detailed[status]['pnl_with_penalty'] += cp.realized_pnl * cp.total_penalty
+                    status_breakdown_detailed[status]['emissions'] += cp.chunk_emissions_usd
+
+                # Find top 5 checkpoints by realized PnL
+                sorted_checkpoints = sorted(all_prev_month_checkpoints, key=lambda cp: cp.realized_pnl, reverse=True)
+                top_5_cps = sorted_checkpoints[:5]
+                top_5_info = []
+                for cp in top_5_cps:
+                    cp_date = TimeUtil.millis_to_formatted_date_str(cp.timestamp_ms)
+                    top_5_info.append(
+                        f"{cp_date}({cp.challenge_period_status}): pnl=${cp.realized_pnl:.2f}, "
+                        f"penalty={cp.total_penalty:.4f}, emissions=${cp.chunk_emissions_usd:.2f}"
+                    )
+
+                # Calculate what-if: if ALL checkpoints were MAINCOMP
+                what_if_all_maincomp = sum(cp.realized_pnl * cp.total_penalty for cp in all_prev_month_checkpoints)
+                what_if_all_maincomp += min(0.0, unrealized_pnl_all) * last_cp_all.total_penalty if last_cp_all else 0.0
+
+                # Format status breakdown
+                status_details = []
+                for status, data in sorted(status_breakdown_detailed.items()):
+                    status_details.append(
+                        f"{status}(n={data['count']}, pnl=${data['pnl']:.2f}, "
+                        f"pnl_w_penalty=${data['pnl_with_penalty']:.2f}, emissions=${data['emissions']:.2f})"
+                    )
+
                 bt.logging.info(
                     f"{hotkey[:16]}...{hotkey[-8:]}: ALREADY FULLY PAID - "
-                    f"needed_payout=${needed_payout_usd:.2f}, actual_payout=${actual_payout_usd:.2f}, "
-                    f"remaining=${remaining_payout_usd:.2f}"
+                    f"needed_payout=${needed_payout_usd:.2f}, actual_payout=${actual_payout_usd:.2f} "
+                    f"(Nov=${nov_emissions:.2f} + Dec=${dec_emissions:.2f}), remaining=${remaining_payout_usd:.2f}"
+                )
+                bt.logging.info(
+                    f"{hotkey[:16]}...{hotkey[-8:]}: RAW NOVEMBER TOTALS - "
+                    f"all_checkpoints_pnl=${raw_pnl_sum:.2f} (no penalty, no filter), "
+                    f"all_checkpoints_pnl_w_penalty=${raw_pnl_with_penalty:.2f}, "
+                    f"all_checkpoints_emissions=${raw_emissions_sum:.2f}, "
+                    f"unrealized_pnl=${unrealized_pnl_all:.2f} (w_penalty=${unrealized_with_penalty_all:.2f})"
+                )
+                bt.logging.info(
+                    f"{hotkey[:16]}...{hotkey[-8:]}: STATUS BREAKDOWN - {'; '.join(status_details)}"
+                )
+                bt.logging.info(
+                    f"{hotkey[:16]}...{hotkey[-8:]}: TOP 5 CHECKPOINTS BY PNL - {'; '.join(top_5_info)}"
+                )
+                bt.logging.info(
+                    f"{hotkey[:16]}...{hotkey[-8:]}: WHAT-IF ANALYSIS - "
+                    f"if_all_60_were_MAINCOMP=${what_if_all_maincomp:.2f}, "
+                    f"actual_needed_payout=${needed_payout_usd:.2f}, "
+                    f"gap=${what_if_all_maincomp - needed_payout_usd:.2f}"
                 )
 
             if verbose:
