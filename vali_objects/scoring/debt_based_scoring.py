@@ -549,6 +549,34 @@ class DebtBasedScoring:
         miner_actual_payouts_usd = {}  # Track what's been paid so far this month
         miner_penalty_loss_usd = {}  # Track how much was lost to penalties
 
+        # Pre-fetch source ledgers for diagnostics (create clients once, fetch all ledgers once)
+        all_emissions_ledgers = {}
+        all_penalty_ledgers = {}
+        all_perf_ledgers = {}
+        if verbose:
+            try:
+                from vali_objects.vali_dataclasses.debt_ledger_server import DebtLedgerClient
+                from vali_objects.vali_dataclasses.perf_ledger_server import PerfLedgerClient
+
+                # Create clients once
+                debt_ledger_client = DebtLedgerClient(connection_mode=RPCConnectionMode.RPC, connect_immediately=True)
+                perf_ledger_client = PerfLedgerClient(connection_mode=RPCConnectionMode.RPC, connect_immediately=True)
+
+                # Fetch ALL ledgers at once
+                all_emissions_ledgers = debt_ledger_client.get_all_emissions_ledgers() or {}
+                all_penalty_ledgers = debt_ledger_client.get_all_penalty_ledgers() or {}
+                # Note: get_perf_ledgers() without hotkey returns all ledgers for all hotkeys
+                all_perf_ledgers = perf_ledger_client.get_all_perf_ledgers() or {}
+
+                bt.logging.debug(
+                    f"Pre-fetched source ledgers for diagnostics: "
+                    f"{len(all_emissions_ledgers)} emissions, "
+                    f"{len(all_penalty_ledgers)} penalty, "
+                    f"{len(all_perf_ledgers)} perf"
+                )
+            except Exception as e:
+                bt.logging.debug(f"Could not pre-fetch source ledgers for diagnostics: {e}")
+
         for hotkey, debt_ledger in ledger_dict.items():
             if not debt_ledger.checkpoints:
                 if verbose:
@@ -648,8 +676,8 @@ class DebtBasedScoring:
                 payout_without_penalties += min(0.0, last_checkpoint.unrealized_pnl)
                 penalty_loss_usd = payout_without_penalties - needed_payout_usd
 
-                # Diagnostic: Show breakdown if needed_payout is zero but checkpoints exist
-                if verbose and needed_payout_usd == 0.0:
+                # Diagnostic: Show comprehensive breakdown for all miners with earning checkpoints
+                if verbose:
                     total_realized = sum(cp.realized_pnl for cp in prev_month_checkpoints)
                     avg_penalty = sum(cp.total_penalty for cp in prev_month_checkpoints) / len(prev_month_checkpoints)
                     last_cp_date = TimeUtil.millis_to_formatted_date_str(last_checkpoint.timestamp_ms)
@@ -698,18 +726,13 @@ class DebtBasedScoring:
                     }
 
                     # NEW: Access source ledgers to show Nov checkpoint counts from each ledger type
+                    # Use pre-fetched ledgers to avoid creating new clients for each miner
+                    source_ledger_info = ""
                     try:
-                        from vali_objects.vali_dataclasses.debt_ledger_server import DebtLedgerClient
-                        from vali_objects.vali_dataclasses.perf_ledger_server import PerfLedgerClient
-
-                        # Create clients to access source ledgers
-                        debt_ledger_client = DebtLedgerClient(connection_mode=RPCConnectionMode.RPC, connect_immediately=True)
-                        perf_ledger_client = PerfLedgerClient(connection_mode=RPCConnectionMode.RPC, connect_immediately=True)
-
-                        # Get source ledgers for this hotkey
-                        emissions_ledger = debt_ledger_client.get_emissions_ledger(hotkey)
-                        penalty_ledger = debt_ledger_client.get_penalty_ledger(hotkey)
-                        perf_ledgers_dict = perf_ledger_client.get_perf_ledgers(hotkey, portfolio_only=False)
+                        # Get source ledgers for this hotkey from pre-fetched dicts
+                        emissions_ledger = all_emissions_ledgers.get(hotkey)
+                        penalty_ledger = all_penalty_ledgers.get(hotkey)
+                        perf_ledgers_dict = all_perf_ledgers.get(hotkey)
 
                         # Count Nov checkpoints in each source ledger
                         emissions_nov_count = 0
@@ -734,10 +757,13 @@ class DebtBasedScoring:
                         source_ledger_info = f"Source ledger Nov checkpoints: debt={len(all_prev_month_checkpoints)}, emissions={emissions_nov_count}, penalty={penalty_nov_count}, perf={perf_nov_count}. "
                     except Exception as e:
                         bt.logging.debug(f"Could not access source ledgers for diagnostic: {e}")
-                        source_ledger_info = ""
 
-                    bt.logging.warning(
-                        f"{hotkey[:16]}...{hotkey[-8:]}: ZERO needed_payout despite {len(prev_month_checkpoints)} earning checkpoints! "
+                    # Use WARNING for zero payout (problematic), INFO for non-zero payout (normal)
+                    log_level = bt.logging.warning if needed_payout_usd == 0.0 else bt.logging.info
+                    payout_status = "ZERO needed_payout" if needed_payout_usd == 0.0 else f"needed_payout=${needed_payout_usd:.2f}"
+
+                    log_level(
+                        f"{hotkey[:16]}...{hotkey[-8:]}: {payout_status} despite {len(prev_month_checkpoints)} earning checkpoints! "
                         f"Total Nov checkpoints: {len(all_prev_month_checkpoints)} (by status: {status_info}). "
                         f"{source_ledger_info}"
                         f"Total realized_pnl=${total_realized:.2f}, avg_penalty={avg_penalty:.4f}, "
@@ -861,9 +887,10 @@ class DebtBasedScoring:
         if verbose:
             bt.logging.info(f"Debt-based weights computed for {len(result)} miners")
             if result:
-                top_5 = result[:5]
-                bt.logging.info("Top 5 miners:")
-                for hotkey, weight in top_5:
+                # Filter for miners with non-zero needed_payout (dynamic count)
+                miners_with_payout = [(hk, w) for hk, w in result if miner_remaining_payouts_usd.get(hk, 0.0) > 0]
+                bt.logging.info(f"Miners with non-zero needed_payout ({len(miners_with_payout)}):")
+                for hotkey, weight in miners_with_payout:
                     daily_target = miner_daily_target_payouts_usd.get(hotkey, 0.0)
                     monthly_target = miner_remaining_payouts_usd.get(hotkey, 0.0)
                     actual_paid = miner_actual_payouts_usd.get(hotkey, 0.0)
