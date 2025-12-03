@@ -182,11 +182,22 @@ class MetagraphUpdater(CacheController):
         self.config = config
         self.running_unit_tests = running_unit_tests
 
+        # Initialize failure tracking BEFORE subtensor creation (needed if creation fails)
+        self.consecutive_failures = 0
+
         # Create subtensor (mock if running unit tests)
         if running_unit_tests:
             self.subtensor = self._create_mock_subtensor()
         else:
-            self.subtensor = bt.subtensor(config=self.config)
+            try:
+                self.subtensor = bt.subtensor(config=self.config)
+            except (ConnectionRefusedError, ConnectionError, OSError) as e:
+                bt.logging.error(f"Failed to create initial subtensor connection: {e}")
+                bt.logging.warning("Will retry during first metagraph update loop iteration")
+                # Set to None - update loop will recreate it (using consecutive_failures > 0 logic)
+                self.subtensor = None
+                # Increment consecutive_failures so update loop tries to recreate immediately
+                self.consecutive_failures = 1
 
         # Create own LivePriceFetcherClient for validators (forward compatibility - no parameter passing)
         # Only validators need this for TAO/USD price queries
@@ -227,7 +238,6 @@ class MetagraphUpdater(CacheController):
         self.max_backoff = 43200  # 12 hours maximum (12 * 60 * 60)
         self.backoff_factor = 2  # Double the wait time on each retry
         self.current_backoff = self.min_backoff
-        self.consecutive_failures = 0
 
         # Hotkeys cache for fast lookups (refreshed atomically during metagraph updates)
         # No lock needed - set assignment is atomic in Python
@@ -564,8 +574,14 @@ class MetagraphUpdater(CacheController):
 
     def _set_weights_with_retry(self, netuid, wallet, uids, weights, version_key):
         """Set weights with round-robin retry using existing subtensor"""
+        # Check if subtensor is available before attempting weight setting
+        if self.subtensor is None:
+            error_msg = "Subtensor connection not available (initialization or reconnection in progress)"
+            bt.logging.error(error_msg)
+            return False, error_msg
+
         max_retries = len(self.round_robin_networks) if self.round_robin_enabled else 1
-        
+
         for attempt in range(max_retries):
             try:
                 with get_subtensor_lock():
@@ -576,10 +592,10 @@ class MetagraphUpdater(CacheController):
                         weights=weights,
                         version_key=version_key
                     )
-                
+
                 bt.logging.info(f"Weight setting attempt {attempt + 1}: success={success}, error={error_msg}")
                 return success, error_msg
-                
+
             except Exception as e:
                 bt.logging.warning(f"Weight setting failed (attempt {attempt + 1}): {e}")
                 # Let the metagraph updater handle round-robin switching to avoid potential race conditions and rate limit issues
@@ -588,7 +604,7 @@ class MetagraphUpdater(CacheController):
                 #    self._switch_to_next_network()
                 #else:
                 #    return False, str(e)
-        
+
         return False, "All retry attempts failed"
     
     def _switch_to_next_network(self, cleanup_connection=True, create_new_subtensor=True):
@@ -951,12 +967,34 @@ class MetagraphUpdater(CacheController):
                 bt.logging.warning(f"Switching to next network in round-robin due to consecutive failures")
                 self._switch_to_next_network(cleanup_connection=False, create_new_subtensor=False)
 
-            # CRITICAL: Close existing connection before creating new one to prevent file descriptor leak
-            self._cleanup_subtensor_connection()
-            if self.running_unit_tests:
-                self.subtensor = self._create_mock_subtensor()
-            else:
-                self.subtensor = bt.subtensor(config=self.config)
+            # Try to create new subtensor BEFORE cleaning up old one
+            # This ensures we never leave self.subtensor in a broken state that breaks other components
+            try:
+                if self.running_unit_tests:
+                    new_subtensor = self._create_mock_subtensor()
+                else:
+                    new_subtensor = bt.subtensor(config=self.config)
+
+                # Only cleanup old connection after new one successfully created (prevents file descriptor leak)
+                self._cleanup_subtensor_connection()
+                self.subtensor = new_subtensor
+                bt.logging.info("Successfully recreated subtensor connection after previous failures")
+
+            except (ConnectionRefusedError, ConnectionError, OSError) as e:
+                # Connection errors during subtensor creation - keep old subtensor and re-raise
+                bt.logging.error(f"Failed to recreate subtensor connection (connection error): {e}")
+                # Don't cleanup old connection - let it stay alive for other components (weight setting, etc.)
+                # Re-raise so outer exception handler applies exponential backoff
+                raise
+            except Exception as e:
+                # Other unexpected errors - still keep old subtensor but log differently
+                bt.logging.error(f"Failed to recreate subtensor connection (unexpected error): {e}")
+                # Don't cleanup old connection
+                raise
+
+        # Check if subtensor is available before attempting metagraph sync
+        if self.subtensor is None:
+            raise RuntimeError("Subtensor connection not available - cannot sync metagraph")
 
         recently_acked_miners = None
         recently_acked_validators = None

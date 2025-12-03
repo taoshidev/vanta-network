@@ -574,6 +574,16 @@ class DebtBasedScoring:
                     f"{len(all_penalty_ledgers)} penalty, "
                     f"{len(all_perf_ledgers)} perf"
                 )
+
+                # Debug: Sample one perf ledger to see its structure
+                if all_perf_ledgers:
+                    sample_hotkey = next(iter(all_perf_ledgers.keys()))
+                    sample_perf_dict = all_perf_ledgers[sample_hotkey]
+                    bt.logging.debug(
+                        f"Sample perf ledger for {sample_hotkey[:16]}...{sample_hotkey[-8:]}: "
+                        f"type={type(sample_perf_dict).__name__}, "
+                        f"keys={list(sample_perf_dict.keys()) if isinstance(sample_perf_dict, dict) else 'N/A'}"
+                    )
             except Exception as e:
                 bt.logging.debug(f"Could not pre-fetch source ledgers for diagnostics: {e}")
 
@@ -753,6 +763,18 @@ class DebtBasedScoring:
                             if portfolio_ledger and portfolio_ledger.cps:
                                 perf_nov_count = sum(1 for cp in portfolio_ledger.cps
                                                     if prev_month_start_ms <= cp.last_update_ms <= prev_month_end_ms)
+                                # Debug: Log perf ledger checkpoint info when count is 0
+                                if perf_nov_count == 0 and len(portfolio_ledger.cps) > 0:
+                                    first_cp_ts = portfolio_ledger.cps[0].last_update_ms
+                                    last_cp_ts = portfolio_ledger.cps[-1].last_update_ms
+                                    first_cp_date = TimeUtil.millis_to_formatted_date_str(first_cp_ts)
+                                    last_cp_date = TimeUtil.millis_to_formatted_date_str(last_cp_ts)
+                                    bt.logging.debug(
+                                        f"{hotkey[:16]}...{hotkey[-8:]}: perf_nov_count=0 but has {len(portfolio_ledger.cps)} total cps. "
+                                        f"Perf checkpoint range: {first_cp_date} to {last_cp_date}. "
+                                        f"Nov range: {TimeUtil.millis_to_formatted_date_str(prev_month_start_ms)} to "
+                                        f"{TimeUtil.millis_to_formatted_date_str(prev_month_end_ms)}"
+                                    )
 
                         source_ledger_info = f"Source ledger Nov checkpoints: debt={len(all_prev_month_checkpoints)}, emissions={emissions_nov_count}, penalty={penalty_nov_count}, perf={perf_nov_count}. "
                     except Exception as e:
@@ -802,6 +824,14 @@ class DebtBasedScoring:
             miner_remaining_payouts_usd[hotkey] = remaining_payout_usd
             miner_actual_payouts_usd[hotkey] = actual_payout_usd
             miner_penalty_loss_usd[hotkey] = penalty_loss_usd
+
+            # Debug: Log when needed_payout > 0 but remaining_payout = 0 (already fully paid)
+            if verbose and needed_payout_usd > 0 and remaining_payout_usd == 0.0:
+                bt.logging.info(
+                    f"{hotkey[:16]}...{hotkey[-8:]}: ALREADY FULLY PAID - "
+                    f"needed_payout=${needed_payout_usd:.2f}, actual_payout=${actual_payout_usd:.2f}, "
+                    f"remaining=${remaining_payout_usd:.2f}"
+                )
 
             if verbose:
                 bt.logging.debug(
@@ -895,10 +925,26 @@ class DebtBasedScoring:
                     monthly_target = miner_remaining_payouts_usd.get(hotkey, 0.0)
                     actual_paid = miner_actual_payouts_usd.get(hotkey, 0.0)
                     penalty_loss = miner_penalty_loss_usd.get(hotkey, 0.0)
+
+                    # Get perf ledger checkpoint range
+                    perf_range_str = "N/A"
+                    try:
+                        perf_ledgers_dict = all_perf_ledgers.get(hotkey)
+                        if perf_ledgers_dict:
+                            from vali_objects.vali_dataclasses.perf_ledger import TP_ID_PORTFOLIO
+                            portfolio_ledger = perf_ledgers_dict.get(TP_ID_PORTFOLIO)
+                            if portfolio_ledger and portfolio_ledger.cps:
+                                first_cp_date = TimeUtil.millis_to_formatted_date_str(portfolio_ledger.cps[0].last_update_ms)
+                                last_cp_date = TimeUtil.millis_to_formatted_date_str(portfolio_ledger.cps[-1].last_update_ms)
+                                perf_range_str = f"{first_cp_date} to {last_cp_date} ({len(portfolio_ledger.cps)} cps)"
+                    except Exception:
+                        pass
+
                     bt.logging.info(
                         f"  {hotkey[:16]}...{hotkey[-8:]}: weight={weight:.6f}, "
                         f"daily_target_usd=${daily_target:.2f}, monthly_target_usd=${monthly_target:.2f}, "
-                        f"paid_this_month_usd=${actual_paid:.2f}, penalty_loss_usd=${penalty_loss:.2f}"
+                        f"paid_this_month_usd=${actual_paid:.2f}, penalty_loss_usd=${penalty_loss:.2f}, "
+                        f"perf_range=[{perf_range_str}]"
                     )
 
         return result
