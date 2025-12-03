@@ -544,6 +544,8 @@ class TestLimitOrderIntegration(TestBase):
         # Configure market as CLOSED
         self.set_market_open(is_open=False)
 
+        self.assertFalse(self.live_price_fetcher_client.is_market_open(limit_order.trade_pair))
+
         # Run daemon - market closed prevents fill
         self.limit_order_client.check_and_fill_limit_orders()
 

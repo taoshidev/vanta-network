@@ -25,6 +25,36 @@ class OrderProcessor:
     """
 
     @staticmethod
+    def parse_size(signal: dict) -> tuple:
+        """
+        Parse and convert size fields (leverage, value, quantity) from signal.
+
+        Args:
+            signal: Signal dictionary containing size fields
+
+        Returns:
+            Tuple of (leverage, value, quantity) as floats or None
+
+        Raises:
+            SignalException: If conversion fails
+        """
+        leverage = signal.get("leverage")
+        value = signal.get("value")
+        quantity = signal.get("quantity")
+
+        # Convert size fields to float if provided (needed for proper validation in Order model)
+        try:
+            leverage = float(leverage) if leverage is not None else None
+            value = float(value) if value is not None else None
+            quantity = float(quantity) if quantity is not None else None
+        except (ValueError, TypeError) as e:
+            raise SignalException(f"Invalid size field: {str(e)}")
+
+        bt.logging.info(f"[ORDER_PROCESSOR] Parsed size fields - leverage: {leverage}, value: {value}, quantity: {quantity}")
+
+        return leverage, value, quantity
+
+    @staticmethod
     def parse_signal_data(signal: dict, miner_order_uuid: str = None) -> tuple:
         """
         Parse and validate common fields from a signal dict.
@@ -77,22 +107,16 @@ class OrderProcessor:
         Raises:
             SignalException: If required fields are missing or processing fails
         """
-        # Extract signal data
-        leverage = signal.get("leverage")
-        value = signal.get("value")
-        quantity = signal.get("quantity")
+        # Parse size fields using common method
+        leverage, value, quantity = OrderProcessor.parse_size(signal)
+        if not leverage and not value and not quantity:
+            raise SignalException("Order size must be set: leverage, value, or quantity")
 
+        # Extract other signal data
         signal_order_type_str = signal.get("order_type")
         limit_price = signal.get("limit_price")
         stop_loss = signal.get("stop_loss")
         take_profit = signal.get("take_profit")
-
-        # Convert size fields to float if provided (needed for proper validation in Order model)
-        leverage = float(leverage) if leverage else None
-        value = float(value) if value else None
-        quantity = float(quantity) if quantity else None
-
-        bt.logging.info(f"[ORDER_PROCESSOR] Converted size fields - leverage: {leverage}, value: {value}, quantity: {quantity}")
 
         # Validate required fields
         if not signal_order_type_str:
@@ -210,18 +234,12 @@ class OrderProcessor:
         Raises:
             SignalException: If required fields are missing, no position exists, or processing fails
         """
-        # Extract signal data
-        leverage = signal.get("leverage")
-        value = signal.get("value")
-        quantity = signal.get("quantity")
+        # Parse size fields using common method
+        leverage, value, quantity = OrderProcessor.parse_size(signal)
 
+        # Extract other signal data
         stop_loss = signal.get("stop_loss")
         take_profit = signal.get("take_profit")
-
-        # Convert size fields to float if provided (needed for proper validation in Order model)
-        leverage = float(leverage) if leverage else None
-        value = float(value) if value else None
-        quantity = float(quantity) if quantity else None
 
         # Validate that at least one of SL or TP is set
         if stop_loss is None and take_profit is None:

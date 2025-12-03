@@ -94,7 +94,7 @@ class TestLimitOrders(TestBase):
 
     def create_test_limit_order(self, order_type: OrderType = OrderType.LONG, limit_price=49000.0,
                                trade_pair=None, leverage=0.5, order_uuid=None,
-                               stop_loss=None, take_profit=None):
+                               stop_loss=None, take_profit=None, quantity=None):
         """Helper to create test limit orders"""
         if trade_pair is None:
             trade_pair = self.DEFAULT_TRADE_PAIR
@@ -108,6 +108,7 @@ class TestLimitOrders(TestBase):
             price=0.0,
             order_type=order_type,
             leverage=leverage,
+            quantity=quantity,
             execution_type=ExecutionType.LIMIT,
             limit_price=limit_price,
             stop_loss=stop_loss,
@@ -603,11 +604,13 @@ class TestLimitOrders(TestBase):
         self.live_price_fetcher_client.set_test_price_source(self.DEFAULT_TRADE_PAIR, price_source)
 
         # Fill it manually
+        # For LONG order with limit_price=50000 and ask=49000, the order fills at limit_price (50000)
+        # This is because when ask <= limit_price, the order gets the limit price
         self.limit_order_client.fill_limit_order_with_price_source(
             self.DEFAULT_MINER_HOTKEY,
             order,
             price_source,
-            49000.0
+            50000.0  # Fill at limit price, not ask price
         )
 
         # Verify filled order removed from memory (Issue 8 fix)
@@ -623,9 +626,8 @@ class TestLimitOrders(TestBase):
         self.assertEqual(len(position.orders), 1, f"Position should have exactly one order")
         filled_order = position.orders[0]  # The filled limit order
         # The filled order should have exact values from the fill
-        self.assertEqual(filled_order.price, 49000.0, "Filled order should have correct price")
-        self.assertEqual(filled_order.bid, 49000.0, "Filled order should have correct bid")
-        self.assertEqual(filled_order.ask, 49000.0, "Filled order should have correct ask")
+        # For a LONG limit order, when ask <= limit_price, the order fills at limit_price (50000)
+        self.assertEqual(filled_order.price, 50000.0, "Filled order should have correct price (limit price)")
         self.assertIsNotNone(filled_order.slippage, "Filled order should have slippage calculated")
         self.assertGreaterEqual(filled_order.slippage, 0, "Filled order slippage should be >= 0")
         self.assertEqual(filled_order.src, OrderSource.LIMIT_FILLED, "Order should be marked as LIMIT_FILLED")
@@ -938,11 +940,13 @@ class TestLimitOrders(TestBase):
 
     def test_create_bracket_order_with_both_sltp(self):
         """Test creating a bracket order with both stop loss and take profit"""
-        # Create parent limit order with SL and TP
+        # Create parent limit order with SL and TP using quantity
         parent_order = self.create_test_limit_order(
             limit_price=50000.0,
             stop_loss=49000.0,
-            take_profit=51000.0
+            take_profit=51000.0,
+            leverage=None,  # Use quantity instead
+            quantity=0.5  # 0.5 BTC
         )
 
         # Manually call _create_sltp_orders as it's called after fill
@@ -960,7 +964,8 @@ class TestLimitOrders(TestBase):
         self.assertEqual(bracket_order.take_profit, 51000.0)
         self.assertEqual(bracket_order.src, OrderSource.BRACKET_UNFILLED)
         self.assertEqual(bracket_order.order_type, OrderType.LONG)  # Same as parent
-        self.assertEqual(bracket_order.leverage, parent_order.leverage)  # Same leverage
+        self.assertEqual(bracket_order.quantity, parent_order.quantity)  # Same quantity (0.5 BTC)
+        self.assertIsNone(bracket_order.leverage)  # Bracket orders have None leverage
 
     def test_create_bracket_order_with_only_sl(self):
         """Test creating a bracket order with only stop loss"""
@@ -1266,6 +1271,10 @@ class TestLimitOrders(TestBase):
         This enforces LIMIT_ORDER_FILL_INTERVAL_MS rate limiting by breaking after the first fill.
         Even if multiple orders are triggered, only the first one fills, and subsequent orders
         must wait for the next interval.
+
+        Note: This test bypasses process_limit_order() which has its own immediate fill logic
+        and interval enforcement. Instead, it directly injects orders into the server to test
+        ONLY the check_and_fill_limit_orders() daemon's interval enforcement.
         """
         # Setup position first (required for market_order_manager)
         position = self.create_test_position()
@@ -1288,12 +1297,18 @@ class TestLimitOrders(TestBase):
             limit_price=100000.0
         )
 
-        # Explicitly inject None as price source to prevent immediate fills during processing
-        self.live_price_fetcher_client.set_test_price_source(self.DEFAULT_TRADE_PAIR, None)
-
-        # Store all orders (no price source available, so they won't trigger immediately)
-        for order in [order1, order2, order3]:
-            self.limit_order_client.process_limit_order(self.DEFAULT_MINER_HOTKEY, order)
+        # Directly inject orders into the server to bypass process_limit_order's immediate fill logic
+        # This allows us to test ONLY the check_and_fill_limit_orders daemon's interval enforcement
+        orders_dict = {
+            self.DEFAULT_TRADE_PAIR.trade_pair_id: {
+                self.DEFAULT_MINER_HOTKEY: [
+                    order1.to_python_dict(),
+                    order2.to_python_dict(),
+                    order3.to_python_dict()
+                ]
+            }
+        }
+        self.limit_order_client.set_limit_orders_dict(orders_dict)
 
         # Set up test environment: market open and trigger price available
         # Only set ONE price source to avoid median calculation issues
@@ -1301,7 +1316,7 @@ class TestLimitOrders(TestBase):
         self.live_price_fetcher_client.set_test_market_open(True)
         self.live_price_fetcher_client.set_test_price_source(self.DEFAULT_TRADE_PAIR, trigger_price_source)
 
-        # Run FULL daemon code flow
+        # Run FULL daemon code flow - this is where interval enforcement happens
         self.limit_order_client.check_and_fill_limit_orders()
 
         # Verify ONLY the first order was filled (and removed from memory due to Issue 8 fix)
@@ -1324,6 +1339,10 @@ class TestLimitOrders(TestBase):
         """
         Test that fill interval enforcement is per (trade_pair, hotkey) pair.
         Multiple miners can fill on the same trade pair in the same interval.
+
+        Note: This test bypasses process_limit_order() which has its own immediate fill logic
+        and interval enforcement. Instead, it directly injects orders into the server to test
+        ONLY the check_and_fill_limit_orders() daemon's interval enforcement.
         """
         miner2 = "miner2"
         self.metagraph_client.set_hotkeys([self.DEFAULT_MINER_HOTKEY, miner2])
@@ -1346,16 +1365,22 @@ class TestLimitOrders(TestBase):
             limit_price=50000.0
         )
 
-        # Store orders (no test price source set, prevents immediate fill)
-        self.limit_order_client.process_limit_order(self.DEFAULT_MINER_HOTKEY, order1)
-        self.limit_order_client.process_limit_order(miner2, order2)
+        # Directly inject orders into the server to bypass process_limit_order's immediate fill logic
+        # This allows us to test ONLY the check_and_fill_limit_orders daemon's interval enforcement
+        orders_dict = {
+            self.DEFAULT_TRADE_PAIR.trade_pair_id: {
+                self.DEFAULT_MINER_HOTKEY: [order1.to_python_dict()],
+                miner2: [order2.to_python_dict()]
+            }
+        }
+        self.limit_order_client.set_limit_orders_dict(orders_dict)
 
         # Set up test environment: market open and price source available
         trigger_price_source = self.create_test_price_source(49000.0, bid=49000.0, ask=49000.0)
         self.live_price_fetcher_client.set_test_market_open(True)
         self.live_price_fetcher_client.set_test_price_source(self.DEFAULT_TRADE_PAIR, trigger_price_source)
 
-        # Run FULL daemon code flow
+        # Run FULL daemon code flow - this is where interval enforcement happens
         self.limit_order_client.check_and_fill_limit_orders()
 
         # Verify BOTH miners' orders were filled and removed from memory (Issue 8 fix)
@@ -1391,7 +1416,8 @@ class TestLimitOrders(TestBase):
             order_uuid="parent123",
             limit_price=50000.0,
             stop_loss=49000.0,
-            take_profit=51000.0
+            take_profit=51000.0,
+            leverage=0.1
         )
 
         # Manually create bracket order (as would happen after fill)
@@ -1508,7 +1534,8 @@ class TestLimitOrders(TestBase):
                 parent_order = self.create_test_limit_order(
                     order_uuid=parent_uuid,
                     limit_price=50000.0,
-                    stop_loss=49000.0
+                    stop_loss=49000.0,
+                    leverage=0.1
                 )
 
                 # Create bracket order
