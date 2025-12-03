@@ -259,6 +259,7 @@ class Scoring:
 
                     # Check if the miner has full penalty - if not include them in the scoring competition
                     if miner in full_penalty_miners:
+                        bt.logging.info(f"Skipping {miner} in {asset_class.value}/{config_name} (full penalty)")
                         continue
 
                     score = config['function'](
@@ -298,6 +299,7 @@ class Scoring:
             for config_name, config in asset_scores["metrics"].items():
 
                 percentile_scores = Scoring.miner_scores_percentiles(config["scores"])
+
                 for miner, percentile_rank in percentile_scores:
                     if miner not in combined_scores:
                         combined_scores[miner] = 0

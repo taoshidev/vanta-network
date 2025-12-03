@@ -45,6 +45,12 @@ class TestEliminationPersistenceRecovery(TestBase):
     RECOVERY_MINER = "recovery_miner"
     DEFAULT_ACCOUNT_SIZE = 100_000
 
+    # Fixed time constants (avoid TimeUtil.now_in_millis() race conditions)
+    BASE_TIME = 1000000000000  # Fixed base time in ms
+    POSITION_TIME = BASE_TIME  # Positions created at base time
+    ELIMINATION_TIME_RECENT = BASE_TIME - MS_IN_24_HOURS  # 1 day before positions
+    ELIMINATION_TIME_OLD = BASE_TIME - (MS_IN_24_HOURS * 3)  # 3 days before positions
+
     @classmethod
     def setUpClass(cls):
         """One-time setup: Start all servers using ServerOrchestrator (shared across all test classes)."""
@@ -105,19 +111,19 @@ class TestEliminationPersistenceRecovery(TestBase):
         self.orchestrator.clear_all_test_data()
 
     def _setup_positions(self):
-        """Create test positions"""
+        """Create test positions with fixed timestamps (avoid race conditions)"""
         for miner in self.all_miners:
             for trade_pair in [TradePair.BTCUSD, TradePair.ETHUSD]:
                 position = Position(
                     miner_hotkey=miner,
                     position_uuid=f"{miner}_{trade_pair.trade_pair_id}",
-                    open_ms=TimeUtil.now_in_millis() - MS_IN_24_HOURS,
+                    open_ms=self.POSITION_TIME,
                     trade_pair=trade_pair,
                     is_closed_position=False,
                     account_size=self.DEFAULT_ACCOUNT_SIZE,
                     orders=[Order(
                         price=60000 if trade_pair == TradePair.BTCUSD else 3000,
-                        processed_ms=TimeUtil.now_in_millis() - MS_IN_24_HOURS,
+                        processed_ms=self.POSITION_TIME,
                         order_uuid=f"order_{miner}_{trade_pair.trade_pair_id}",
                         trade_pair=trade_pair,
                         order_type=OrderType.LONG,
@@ -172,19 +178,19 @@ class TestEliminationPersistenceRecovery(TestBase):
 
     def test_elimination_recovery_on_restart(self):
         """Test that eliminations are recovered correctly on validator restart"""
-        # Create and save eliminations
+        # Create and save eliminations with fixed timestamps (BEFORE position time)
         test_eliminations = [
             {
                 'hotkey': self.PERSISTENT_MINER_1,
                 'reason': EliminationReason.MAX_TOTAL_DRAWDOWN.value,
                 'dd': 0.12,
-                'elimination_initiated_time_ms': TimeUtil.now_in_millis() - MS_IN_24_HOURS * 3
+                'elimination_initiated_time_ms': self.ELIMINATION_TIME_OLD  # 3 days before positions
             },
             {
                 'hotkey': self.RECOVERY_MINER,
                 'reason': EliminationReason.ZOMBIE.value,
                 'dd': None,
-                'elimination_initiated_time_ms': TimeUtil.now_in_millis() - MS_IN_24_HOURS
+                'elimination_initiated_time_ms': self.ELIMINATION_TIME_RECENT  # 1 day before positions
             }
         ]
 
@@ -192,17 +198,19 @@ class TestEliminationPersistenceRecovery(TestBase):
         self.elimination_client.write_eliminations_to_disk(test_eliminations)
 
         # Simulate restart by reloading data from disk
-        # load_eliminations_from_disk() already clears memory before loading
         self.elimination_client.load_eliminations_from_disk()
 
         # Verify eliminations were loaded
         loaded_eliminations = self.elimination_client.get_eliminations_from_memory()
-        self.assertEqual(len(loaded_eliminations), 2)
+        self.assertEqual(len(loaded_eliminations), 2,
+                        f"Expected 2 eliminations, got {len(loaded_eliminations)}")
 
         # Verify content
         hotkeys = [e['hotkey'] for e in loaded_eliminations]
-        self.assertIn(self.PERSISTENT_MINER_1, hotkeys)
-        self.assertIn(self.RECOVERY_MINER, hotkeys)
+        self.assertIn(self.PERSISTENT_MINER_1, hotkeys,
+                     f"PERSISTENT_MINER_1 not in loaded hotkeys: {hotkeys}")
+        self.assertIn(self.RECOVERY_MINER, hotkeys,
+                     f"RECOVERY_MINER not in loaded hotkeys: {hotkeys}")
 
         # Verify first refresh handles recovered eliminations
         self.elimination_client.handle_first_refresh()
@@ -211,7 +219,9 @@ class TestEliminationPersistenceRecovery(TestBase):
         for elim in test_eliminations:
             positions = self.position_client.get_positions_for_one_hotkey(elim['hotkey'])
             for pos in positions:
-                self.assertTrue(pos.is_closed_position)
+                self.assertTrue(pos.is_closed_position,
+                              f"Position {pos.position_uuid} for eliminated miner {elim['hotkey']} "
+                              f"should be closed but is_closed_position={pos.is_closed_position}")
 
     def test_elimination_backup_and_restore(self):
         """Test backup and restore functionality for eliminations"""

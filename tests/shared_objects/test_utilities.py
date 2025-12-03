@@ -181,7 +181,7 @@ def generate_winning_ledger(start, end):
 
     return {
             TP_ID_PORTFOLIO: portfolio_ledger[TP_ID_PORTFOLIO],
-            "BTCUSD": btc_ledger[TP_ID_PORTFOLIO]
+            TradePair.BTCUSD.trade_pair_id: btc_ledger[TP_ID_PORTFOLIO]
             }
 
 def generate_losing_ledger(start, end):
@@ -191,7 +191,7 @@ def generate_losing_ledger(start, end):
 
     return {
         TP_ID_PORTFOLIO: portfolio_ledger[TP_ID_PORTFOLIO],
-        "BTCUSD": btc_ledger[TP_ID_PORTFOLIO]
+        TradePair.BTCUSD.trade_pair_id: btc_ledger[TP_ID_PORTFOLIO]
     }
 
 def create_daily_checkpoints_with_pnl(realized_pnl_values: list[float], unrealized_pnl_values: list[float]) -> PerfLedger:

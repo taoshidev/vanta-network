@@ -9,6 +9,7 @@ This test ensures that MinerStatisticsServer can:
 - Properly handle various parameter combinations
 """
 import unittest
+import bittensor as bt
 
 from shared_objects.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.shared_objects.test_utilities import generate_winning_ledger
@@ -85,6 +86,9 @@ class TestMinerStatistics(TestBase):
 
     def setUp(self):
         """Per-test setup: Reset data state (fast - no server restarts)."""
+        # Enable debug logging to see bt.logging.info() statements
+        bt.logging.set_debug()
+
         # Clear all data for test isolation (both memory and disk)
         self.orchestrator.clear_all_test_data()
 
@@ -118,13 +122,43 @@ class TestMinerStatistics(TestBase):
         current_time = TimeUtil.now_in_millis()
         start_time = current_time - 1000 * 60 * 60 * 24 * 60  # 60 days ago (required for 60 complete days = 120 checkpoints)
 
-        # Build ledgers dictionary: {hotkey: {TP_ID_PORTFOLIO: PerfLedger, "BTCUSD": PerfLedger}}
+        # Build ledgers dictionary with VARIED performance data
+        # Each miner needs different performance to get non-zero scores from metrics
+        from tests.shared_objects.test_utilities import create_daily_checkpoints_with_pnl
+        from vali_objects.vali_dataclasses.perf_ledger import TP_ID_PORTFOLIO, PerfLedger
+        import numpy as np
+
         ledgers = {}
-        for hotkey in self.test_hotkeys:
-            # Create a winning perf ledger (positive returns, no elimination)
-            ledgers[hotkey] = generate_winning_ledger(start_time, current_time)
+        for i, hotkey in enumerate(self.test_hotkeys):
+            # Create VARIED daily PnL for each miner to ensure different scores
+            # Miner 0: Best performance (high positive returns)
+            # Miner 1: Medium performance
+            # Miner 2: Lower performance (but still positive)
+
+            # Generate 60 days of varied daily returns
+            np.random.seed(i)  # Different seed per miner for reproducible variance
+            base_returns = [0.015, 0.010, 0.005]  # Different base daily returns per miner
+
+            # Create varied daily PnL values (60 days)
+            realized_pnl_list = []
+            unrealized_pnl_list = []
+            for day in range(60):
+                # Add slight variation to each day while maintaining overall trend
+                daily_return = base_returns[i] * (1 + np.random.uniform(-0.2, 0.2))
+                realized_pnl_list.append(daily_return * 100000)  # Scale by initial capital
+                unrealized_pnl_list.append(0.0)  # No unrealized PnL for closed positions
+
+            # Create ledger with varied daily checkpoints
+            portfolio_ledger = create_daily_checkpoints_with_pnl(realized_pnl_list, unrealized_pnl_list)
+            btc_ledger = create_daily_checkpoints_with_pnl(realized_pnl_list, unrealized_pnl_list)
+
+            ledgers[hotkey] = {
+                TP_ID_PORTFOLIO: portfolio_ledger,
+                TradePair.BTCUSD.trade_pair_id: btc_ledger
+            }
 
             # Create a simple test position for this hotkey
+            # NOTE: Positions MUST be closed for scoring (filter_positions_for_duration skips open positions)
             test_position = Position(
                 miner_hotkey=hotkey,
                 position_uuid=f"test_position_{hotkey}",
@@ -143,7 +177,7 @@ class TestMinerStatistics(TestBase):
                 ]
             )
             test_position.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
-            test_position.close_out_position(current_time - 1000 * 60 * 30)  # 30 min ago
+            test_position.close_out_position(current_time - 1000 * 60 * 30)  # Close 30 min ago (meets 1min minimum)
             self.position_client.save_miner_position(test_position)
 
         # Save all ledgers at once
@@ -170,6 +204,28 @@ class TestMinerStatistics(TestBase):
         self.challenge_period_client.clear_all_miners()
         self.challenge_period_client.update_miners(miners_dict)
         # Note: Data persistence handled automatically by server - no manual disk write needed
+
+        # Inject account sizes data for all test miners (required for scoring penalty calculations)
+        contract_client = self.orchestrator.get_client('contract')
+        account_sizes_data = {}
+        for hotkey in self.test_hotkeys:
+            # Create dummy account size records with correct format
+            # CollateralRecord requires: account_size, account_size_theta, update_time_ms
+            # IMPORTANT: Must be >= MIN_COLLATERAL_VALUE ($150k) to avoid penalty
+            account_sizes_data[hotkey] = [
+                {
+                    'account_size': 200000.0,  # $200k account size (above $150k minimum)
+                    'account_size_theta': 200000.0,  # Same as account_size for tests
+                    'update_time_ms': start_time
+                },
+                {
+                    'account_size': 200000.0,
+                    'account_size_theta': 200000.0,
+                    'update_time_ms': current_time
+                }
+            ]
+        contract_client.sync_miner_account_sizes_data(account_sizes_data)
+        contract_client.re_init_account_sizes()  # Force reload from disk
 
     # ==================== Basic Server Tests ====================
 
