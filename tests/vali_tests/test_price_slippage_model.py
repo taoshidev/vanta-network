@@ -10,6 +10,7 @@ from time_util.time_util import TimeUtil
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.position import Position
 
+from shared_objects.server_registry import ServerRegistry
 from vali_objects.utils.price_slippage_model import PriceSlippageModel
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair
@@ -31,6 +32,13 @@ class TestPriceSlippageModel(TestBase):
         self.default_bid = 99
         self.default_ask = 100
         self.DEFAULT_ACCOUNT_SIZE = 100_000
+
+    def tearDown(self):
+        # Clear the ServerRegistry to prevent "already registered" errors between tests
+        ServerRegistry._active_instances.clear()
+        ServerRegistry._active_by_name.clear()
+        ServerRegistry._active_by_port.clear()
+        super().tearDown()
 
 
     def test_open_position_returns_with_slippage(self):
@@ -228,6 +236,10 @@ class TestPriceSlippageModelCriticalBugs(TestBase):
         PriceSlippageModel.parameters = {}
 
     def tearDown(self):
+        # Clear the ServerRegistry to prevent "already registered" errors between tests
+        ServerRegistry._active_instances.clear()
+        ServerRegistry._active_by_name.clear()
+        ServerRegistry._active_by_port.clear()
         # Clean up class-level state
         PriceSlippageModel.features.clear()
         PriceSlippageModel.slippage_estimates = {}

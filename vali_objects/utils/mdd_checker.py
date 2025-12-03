@@ -285,30 +285,15 @@ class MDDChecker(CacheController):
             tp_to_price_sources_for_realtime_price: Price sources for realtime price
             iteration_epoch: Epoch captured at start of iteration. If changed, data is stale.
         """
-        with open('/tmp/mdd_debug.log', 'a') as f:
-            f.write(f"[DEBUG] _update_position_returns_and_persist_to_disk called: position={position.position_uuid}, price_correction_enabled={self.price_correction_enabled}\n")
-            f.flush()
-
         def _get_sources_for_order(order, trade_pair: TradePair):
             self.n_poly_api_requests += 1
 
             fetch_start = time.perf_counter()
-            with open('/tmp/mdd_debug.log', 'a') as f:
-                f.write(f"[DEBUG] _get_sources_for_order called for order at {order.processed_ms}, trade_pair={trade_pair.trade_pair_id}\n")
-                f.flush()
             price_sources = self.live_price_fetcher.get_sorted_price_sources_for_trade_pair(trade_pair, order.processed_ms)
             fetch_ms = (time.perf_counter() - fetch_start) * 1000
 
             now_ms = TimeUtil.now_in_millis()
             order_age_ms = now_ms - order.processed_ms
-
-            # DEBUG: Log price source details
-            with open('/tmp/mdd_debug.log', 'a') as f:
-                if price_sources:
-                    f.write(f"[DEBUG] Found {len(price_sources)} price sources: {[(ps.start_ms, ps.close, ps.source) for ps in price_sources]}\n")
-                else:
-                    f.write(f"[DEBUG] NO price sources found for order at {order.processed_ms}\n")
-                f.flush()
 
             bt.logging.info(
                 f"[MDD_PRICE_TIMING] get_price_sources for order={fetch_ms:.2f}ms, "
@@ -416,19 +401,12 @@ class MDDChecker(CacheController):
         iteration_epoch: int = None
     ) -> bool:
         """Perform price corrections for a miner's positions."""
-        with open('/tmp/mdd_debug.log', 'a') as f:
-            f.write(f"[DEBUG] perform_price_corrections called: hotkey={hotkey}, n_positions={len(sorted_positions)}\n")
-            f.flush()
-
         if len(sorted_positions) == 0:
             return False
 
         now_ms = TimeUtil.now_in_millis()
         for position in sorted_positions:
             is_candidate = self._position_is_candidate_for_price_correction(position, now_ms)
-            with open('/tmp/mdd_debug.log', 'a') as f:
-                f.write(f"[DEBUG] Position {position.position_uuid}: is_candidate={is_candidate}, is_open={position.is_open_position}, n_orders={len(position.orders)}\n")
-                f.flush()
             if is_candidate:
                 self._update_position_returns_and_persist_to_disk(
                     hotkey, position, tp_to_price_sources, iteration_epoch

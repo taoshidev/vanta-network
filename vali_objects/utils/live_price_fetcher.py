@@ -128,15 +128,7 @@ class LivePriceFetcher:
         if not best_event:
             return None
 
-        # DEBUG: Log filtering decision
-        time_delta = best_event.time_delta_from_now_ms(current_time_ms)
-        with open('/tmp/mdd_debug.log', 'a') as f:
-            f.write(f"[DEBUG] sorted_valid_price_sources: filter_recent_only={filter_recent_only}, time_delta={time_delta}ms\n")
-            f.flush()
-        if filter_recent_only and time_delta > 8000:
-            with open('/tmp/mdd_debug.log', 'a') as f:
-                f.write(f"[DEBUG] FILTERED OUT: delta={time_delta}ms > 8000ms, source_time={best_event.start_ms}, query_time={current_time_ms}\n")
-                f.flush()
+        if filter_recent_only and best_event.time_delta_from_now_ms(current_time_ms) > 8000:
             return None
 
         return PriceSource.non_null_events_sorted(valid_events, current_time_ms)

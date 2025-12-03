@@ -389,6 +389,8 @@ class PositionManager:
         bt.logging.info("Cleared all positions, open index, and split statistics")
 
     def clear_all_miner_positions_and_disk(self, hotkey=None):
+        if not self.running_unit_tests:
+            raise Exception("Only available in unit tests")
         if hotkey is None:
             """Clear all positions from memory AND disk (for testing)."""
             # Clear memory first

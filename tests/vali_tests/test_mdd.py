@@ -84,6 +84,9 @@ class TestMDDChecker(TestBase):
         # Clear all data for test isolation (both memory and disk)
         self.orchestrator.clear_all_test_data()
 
+        # Re-initialize metagraph with test hotkey (cleared by clear_all_test_data())
+        self.metagraph_client.set_hotkeys([self.MINER_HOTKEY])
+
         # Create fresh test data
         self._create_test_data()
 

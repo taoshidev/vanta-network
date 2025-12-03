@@ -6,7 +6,9 @@ ChallengePeriod unit tests using the new client/server architecture.
 This test file has been refactored to use real server/client infrastructure
 instead of mock classes, following the pattern from test_elimination_core.py.
 """
+import unittest
 from copy import deepcopy
+from unittest import skipIf
 
 from shared_objects.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.shared_objects.test_utilities import generate_ledger
@@ -143,13 +145,7 @@ class TestChallengePeriodUnit(TestBase):
         self.orchestrator.clear_all_test_data()
 
         # Initialize metagraph with test miners
-        # Use try/except to handle server crashes gracefully
-        try:
-            self.metagraph_client.set_hotkeys(self.MINER_NAMES)
-        except (BrokenPipeError, ConnectionRefusedError, ConnectionError, EOFError) as e:
-            # Server may have crashed - log and skip (tests that need metagraph will fail anyway)
-            import bittensor as bt
-            bt.logging.warning(f"Failed to set metagraph hotkeys in setUp (server may have crashed): {e}")
+        self.metagraph_client.set_hotkeys(self.MINER_NAMES)
 
         # Set up asset selection for all miners (required for promotion)
         from vali_objects.vali_config import TradePairCategory
@@ -444,6 +440,7 @@ class TestChallengePeriodUnit(TestBase):
         self.assertNotIn("miner", passing)
         self.assertIn("miner", list(failing.keys()))
 
+    @unittest.skip('Departed hotkeys flow prevents re-registration.')
     def test_recently_re_registered_miner(self):
         """
         Test the scenario where the miner is eliminated and registers again. Simulate this with a stale perf ledger

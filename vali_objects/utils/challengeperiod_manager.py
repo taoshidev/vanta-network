@@ -296,7 +296,6 @@ class ChallengePeriodManager(CacheController):
             current_time = TimeUtil.now_in_millis()
 
         miners_to_eliminate = {}
-        miners_recently_reregistered = set()
         miners_not_enough_positions = []
 
         # Used for checking base cases
@@ -311,9 +310,8 @@ class ChallengePeriodManager(CacheController):
         valid_candidate_hotkeys = []
         for hotkey, bucket_start_time in inspection_hotkeys.items():
 
-            if ChallengePeriodManager.is_recently_re_registered(portfolio_only_ledgers.get(hotkey), hotkey, hk_to_first_order_time):
-                miners_recently_reregistered.add(hotkey)
-                continue
+            if not self.running_unit_tests and ChallengePeriodManager.is_recently_re_registered(portfolio_only_ledgers.get(hotkey), hotkey, hk_to_first_order_time):
+                bt.logging.warning(f'Found a re-registered hotkey with a perf ledger. Alert the team ASAP {hotkey}')
 
             if bucket_start_time is None:
                 bt.logging.warning(f'Hotkey {hotkey} has no inspection time. Unexpected.')
@@ -398,7 +396,6 @@ class ChallengePeriodManager(CacheController):
         bt.logging.info(f"Hotkeys to demote: {hotkeys_to_demote}")
         bt.logging.info(f"Hotkeys to eliminate: {list(miners_to_eliminate.keys())}")
         bt.logging.info(f"Miners with no positions (skipped): {len(miners_not_enough_positions)}")
-        bt.logging.info(f"Miners recently re-registered (skipped): {list(miners_recently_reregistered)}")
 
         return hotkeys_to_promote, hotkeys_to_demote, miners_to_eliminate
 

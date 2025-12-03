@@ -196,43 +196,43 @@ class ServerOrchestrator:
             server_class=None,
             client_class=None,
             required_in_testing=True,
-            spawn_kwargs={}
+            spawn_kwargs={'start_daemon': False}  # Daemon started later via orchestrator
         ),
         'challenge_period': ServerConfig(
             server_class=None,
             client_class=None,
             required_in_testing=True,
-            spawn_kwargs={'start_daemon': False}
+            spawn_kwargs={'start_daemon': False}  # Daemon started later via orchestrator
         ),
         'elimination': ServerConfig(
             server_class=None,
             client_class=None,
             required_in_testing=True,
-            spawn_kwargs={}
+            spawn_kwargs={'start_daemon': False}  # Daemon started later via orchestrator
         ),
         'position_manager': ServerConfig(
             server_class=None,
             client_class=None,
             required_in_testing=True,
-            spawn_kwargs={}
+            spawn_kwargs={'start_daemon': False}  # Daemon started later via orchestrator
         ),
         'plagiarism': ServerConfig(
             server_class=None,
             client_class=None,
             required_in_testing=True,
-            spawn_kwargs={}
+            spawn_kwargs={'start_daemon': False}  # Daemon started later via orchestrator (not currently used)
         ),
         'plagiarism_detector': ServerConfig(
             server_class=None,
             client_class=None,
             required_in_testing=True,
-            spawn_kwargs={}
+            spawn_kwargs={'start_daemon': False}  # Daemon started later via orchestrator (overrides default=True)
         ),
         'limit_order': ServerConfig(
             server_class=None,
             client_class=None,
             required_in_testing=True,
-            spawn_kwargs={}
+            spawn_kwargs={'start_daemon': False}  # Daemon started later via orchestrator
         ),
         'asset_selection': ServerConfig(
             server_class=None,
@@ -815,10 +815,7 @@ class ServerOrchestrator:
         # Clear perf ledger data
         perf_ledger_client = get_client_safe('perf_ledger')
         if perf_ledger_client:
-            def clear_and_reinit_perf_ledger():
-                perf_ledger_client.clear_all_ledger_data()
-                perf_ledger_client.re_init_perf_ledger_data()  # Reinit after clear for clean state
-            safe_clear('perf_ledger', clear_and_reinit_perf_ledger)
+            safe_clear('perf_ledger', perf_ledger_client.clear_all_ledger_data)
 
         # Clear elimination data
         elimination_client = get_client_safe('elimination')
@@ -966,6 +963,8 @@ class ServerOrchestrator:
             'challenge_period',
             'perf_ledger',
             'debt_ledger',
+            'limit_order',
+            'plagiarism_detector',
             'mdd_checker',
             'core_outputs',
             'miner_statistics'

@@ -348,3 +348,7 @@ class ChallengePeriodServer(RPCServerBase):
     def to_checkpoint_dict_rpc(self) -> dict:
         """Get challenge period data as a checkpoint dict for serialization."""
         return self._manager.to_checkpoint_dict()
+
+    def set_last_update_time_rpc(self, timestamp_ms: int = 0) -> None:
+        """Set the last update time (for testing - to force-allow refresh)."""
+        self._manager._last_update_time_ms = timestamp_ms
