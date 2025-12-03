@@ -143,13 +143,38 @@ class TestMarketOrderManager(TestBase):
         return position
 
     @staticmethod
-    def create_test_signal(order_type:OrderType=OrderType.LONG, leverage=1.0, execution_type:ExecutionType=ExecutionType.MARKET):
-        """Helper to create signal dict"""
-        return {
+    def create_test_signal(order_type:OrderType=OrderType.LONG, leverage=1.0, execution_type:ExecutionType=ExecutionType.MARKET,
+                          limit_price=None, stop_loss=None, take_profit=None):
+        """Helper to create signal dict with optional execution parameters"""
+        signal = {
             "order_type": order_type.name,
             "leverage": leverage,
             "execution_type": execution_type.name
         }
+
+        # Add limit_price if execution_type is LIMIT (required by Order validation)
+        if execution_type == ExecutionType.LIMIT:
+            if limit_price is None:
+                # Default to a reasonable test value if not provided
+                limit_price = 50000.0
+            signal["limit_price"] = limit_price
+
+        # Add bracket parameters if execution_type is BRACKET
+        if execution_type == ExecutionType.BRACKET:
+            if stop_loss is not None:
+                signal["stop_loss"] = stop_loss
+            if take_profit is not None:
+                signal["take_profit"] = take_profit
+
+        # Allow explicit override of execution parameters even for MARKET orders
+        if limit_price is not None and execution_type != ExecutionType.LIMIT:
+            signal["limit_price"] = limit_price
+        if stop_loss is not None and execution_type != ExecutionType.BRACKET:
+            signal["stop_loss"] = stop_loss
+        if take_profit is not None and execution_type != ExecutionType.BRACKET:
+            signal["take_profit"] = take_profit
+
+        return signal
 
     # ============================================================================
     # Test: enforce_order_cooldown
