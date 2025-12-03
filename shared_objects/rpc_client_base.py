@@ -479,6 +479,27 @@ class RPCClientBase:
             self._cache_refresh_thread.join(timeout=2.0)
             self._cache_refresh_thread = None
 
+        # Clean up manager connection (prevents semaphore leaks)
+        # BaseManager creates IPC resources that need explicit cleanup
+        if self._manager is not None:
+            try:
+                # Shutdown the manager's connection to the server
+                # This releases semaphores and shared memory used for IPC
+                if hasattr(self._manager, '_state'):
+                    # Manager has internal state tracking the connection
+                    # Setting to None allows garbage collection of resources
+                    self._manager._state = None
+                if hasattr(self._manager, '_Client'):
+                    # Close the connection to the server
+                    # This prevents lingering socket connections
+                    try:
+                        if self._manager._Client is not None:
+                            self._manager._Client.close()
+                    except Exception:
+                        pass
+            except Exception as e:
+                bt.logging.trace(f"{self.service_name}Client error during manager cleanup: {e}")
+
         self._manager = None
         self._proxy = None
         self._connected = False

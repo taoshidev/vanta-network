@@ -530,6 +530,19 @@ class RPCServerBase(ABC):
                 if rpc_thread.is_alive():
                     bt.logging.trace(f"{self.service_name} RPC thread still alive after join timeout")
 
+            # Clean up any lingering RPC connections/resources (prevents semaphore leaks)
+            # The Server object maintains internal state that needs explicit cleanup
+            try:
+                # Close all tracked connections and clear internal registries
+                if hasattr(rpc_server, 'id_to_obj'):
+                    rpc_server.id_to_obj.clear()
+                if hasattr(rpc_server, 'id_to_refcount'):
+                    rpc_server.id_to_refcount.clear()
+                if hasattr(rpc_server, 'id_to_local_proxy_obj'):
+                    rpc_server.id_to_local_proxy_obj.clear()
+            except Exception as e:
+                bt.logging.trace(f"{self.service_name} error clearing server registries: {e}")
+
             elapsed_ms = (time.time() - start_time) * 1000
             bt.logging.info(f"{self.service_name} RPC server stopped ({elapsed_ms:.0f}ms)")
 
