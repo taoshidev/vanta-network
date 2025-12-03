@@ -277,13 +277,12 @@ class PenaltyLedgerManager:
         Note: Creates its own PerfLedgerClient and AssetSelectionClient internally (forward compatibility).
 
         Args:
-            contract_client: Client for reading miner collateral/account sizes
             running_unit_tests: Whether this is being run in unit tests
             slack_webhook_url: Optional Slack webhook URL for failure notifications
             run_daemon: If True, automatically start daemon process (default: False)
             validator_hotkey: Optional validator hotkey for notifications
         """
-        self.contract_client = ContractClient()
+        self.contract_client = ContractClient(running_unit_tests=running_unit_tests)
         self.running_unit_tests = running_unit_tests
 
         # Create own RPC clients (forward compatibility - no parameter passing)
@@ -292,11 +291,11 @@ class PenaltyLedgerManager:
         from vali_objects.vali_dataclasses.perf_ledger_server import PerfLedgerClient
         self._position_client = PositionManagerClient(
             port=ValiConfig.RPC_POSITIONMANAGER_PORT,
-            connect_immediately=not running_unit_tests
+            connect_immediately=False
         )
-        self._challengeperiod_client = ChallengePeriodClient()
-        self._perf_ledger_client = PerfLedgerClient()
-        self._asset_selection_client = AssetSelectionClient()
+        self._challengeperiod_client = ChallengePeriodClient(running_unit_tests=running_unit_tests)
+        self._perf_ledger_client = PerfLedgerClient(running_unit_tests=running_unit_tests)
+        self._asset_selection_client = AssetSelectionClient(running_unit_tests=running_unit_tests)
 
         # Storage for penalty checkpoints per miner (normal Python dict - managed within DebtLedgerServer process)
         self.penalty_ledgers: Dict[str, PenaltyLedger] = {}

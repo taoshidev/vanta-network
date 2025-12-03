@@ -139,24 +139,6 @@ class PerfCheckpoint:
         for key, value in kwargs.items():
             setattr(self, key, value)
 
-    def __setstate__(self, state):
-        """
-        Handle unpickling of old PerfCheckpoint objects that don't have new PNL fields.
-        This provides backward compatibility when loading old checkpoint files.
-        """
-        # Set all attributes from pickled state
-        self.__dict__.update(state)
-
-        # Add missing PNL fields with default values if they don't exist
-        if not hasattr(self, 'prev_portfolio_realized_pnl'):
-            self.prev_portfolio_realized_pnl = 0.0
-        if not hasattr(self, 'prev_portfolio_unrealized_pnl'):
-            self.prev_portfolio_unrealized_pnl = 0.0
-        if not hasattr(self, 'realized_pnl'):
-            self.realized_pnl = 0.0
-        if not hasattr(self, 'unrealized_pnl'):
-            self.unrealized_pnl = 0.0
-
     def __eq__(self, other):
         """Equality comparison (replaces BaseModel's automatic __eq__)"""
         if not isinstance(other, PerfCheckpoint):
@@ -774,16 +756,12 @@ class PerfLedgerManager(CacheController):
     def get_perf_ledgers(self, portfolio_only=True, from_disk=False) -> dict[str, dict[str, PerfLedger]] | dict[str, PerfLedger]:
         ret = {}
         if from_disk:
-            pkl_path = ValiBkpUtils.get_perf_ledgers_path(self.running_unit_tests)
             compressed_json_path = ValiBkpUtils.get_perf_ledgers_path_compressed_json(self.running_unit_tests)
             legacy_path = ValiBkpUtils.get_perf_ledgers_path_legacy(self.running_unit_tests)
 
             # Try compressed JSON first (primary format)
             if os.path.exists(compressed_json_path):
                 data = ValiBkpUtils.read_compressed_json(compressed_json_path)
-            # Fall back to pickle for backward compatibility
-            elif os.path.exists(pkl_path):
-                data = ValiBkpUtils.read_pickle(pkl_path)
             # Fall back to legacy uncompressed file
             elif os.path.exists(legacy_path):
                 with open(legacy_path, 'r') as file:
@@ -796,31 +774,25 @@ class PerfLedgerManager(CacheController):
             for hk, possible_bundles in data.items():
                 if self._is_v1_perf_ledger(possible_bundles):
                     if portfolio_only:
-                        # Handle both dict (from JSON) and PerfLedger object (from pickle)
-                        ret[hk] = possible_bundles if isinstance(possible_bundles, PerfLedger) else PerfLedger.from_dict(possible_bundles)
+                        # V1 dict format - convert to PerfLedger
+                        ret[hk] = PerfLedger.from_dict(possible_bundles)
                     else:
-                        # Incompatible but we can fake it for now.
-                        # Handle both PerfLedger objects (from pickle) and dicts (from JSON)
-                        if isinstance(possible_bundles, PerfLedger):
-                            # Direct PerfLedger object = portfolio ledger
-                            ret[hk] = {TP_ID_PORTFOLIO: possible_bundles}
-                        elif isinstance(possible_bundles, dict) and 'initialization_time_ms' in possible_bundles:
+                        # Incompatible but we can fake it for now
+                        if 'initialization_time_ms' in possible_bundles:
                             # V1 dict format - convert to PerfLedger
                             ledger = PerfLedger.from_dict(possible_bundles)
                             ret[hk] = {TP_ID_PORTFOLIO: ledger}
-                        elif isinstance(possible_bundles, dict) and TP_ID_PORTFOLIO in possible_bundles:
+                        elif TP_ID_PORTFOLIO in possible_bundles:
                             # Faked V2 dict format with single portfolio key
-                            portfolio_data = possible_bundles[TP_ID_PORTFOLIO]
-                            ledger = portfolio_data if isinstance(portfolio_data, PerfLedger) else PerfLedger.from_dict(portfolio_data)
+                            ledger = PerfLedger.from_dict(possible_bundles[TP_ID_PORTFOLIO])
                             ret[hk] = {TP_ID_PORTFOLIO: ledger}
 
                 else:
                     if portfolio_only:
-                        portfolio_data = possible_bundles[TP_ID_PORTFOLIO]
-                        ret[hk] = portfolio_data if isinstance(portfolio_data, PerfLedger) else PerfLedger.from_dict(portfolio_data)
+                        ret[hk] = PerfLedger.from_dict(possible_bundles[TP_ID_PORTFOLIO])
                     else:
-                        # Handle both dict (from JSON) and PerfLedger object (from pickle)
-                        ret[hk] = {k: (v if isinstance(v, PerfLedger) else PerfLedger.from_dict(v)) for k, v in possible_bundles.items()}
+                        # Convert all dicts to PerfLedger objects
+                        ret[hk] = {k: PerfLedger.from_dict(v) for k, v in possible_bundles.items()}
             return ret
 
         # Everything here is in v2 format
@@ -909,18 +881,14 @@ class PerfLedgerManager(CacheController):
 
     @staticmethod
     def clear_perf_ledgers_from_disk_autosync(hotkeys:list):
-        pkl_path = ValiBkpUtils.get_perf_ledgers_path()
         compressed_json_path = ValiBkpUtils.get_perf_ledgers_path_compressed_json()
         legacy_path = ValiBkpUtils.get_perf_ledgers_path_legacy()
 
         filtered_data = {}
 
-        # Try compressed JSON first (new format)
+        # Try compressed JSON first (primary format)
         if os.path.exists(compressed_json_path):
             existing_data = ValiBkpUtils.read_compressed_json(compressed_json_path)
-        # Fall back to pickle for backward compatibility
-        elif os.path.exists(pkl_path):
-            existing_data = ValiBkpUtils.read_pickle(pkl_path)
         # Fall back to legacy uncompressed file and migrate
         elif os.path.exists(legacy_path):
             with open(legacy_path, 'r') as file:
@@ -932,7 +900,7 @@ class PerfLedgerManager(CacheController):
 
         for hk, bundles in existing_data.items():
             if hk in hotkeys:
-                # Convert PerfLedger objects to dicts if needed (from pickle format)
+                # Convert PerfLedger objects to dicts if needed (defensive check)
                 if isinstance(bundles, dict):
                     filtered_data[hk] = {}
                     for trade_pair_id, ledger in bundles.items():
@@ -941,7 +909,7 @@ class PerfLedgerManager(CacheController):
                         else:
                             filtered_data[hk][trade_pair_id] = ledger
                 elif isinstance(bundles, PerfLedger):
-                    # V1 format
+                    # V1 format - single PerfLedger (portfolio only)
                     filtered_data[hk] = bundles.to_dict()
                 else:
                     # Already dict

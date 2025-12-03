@@ -303,7 +303,7 @@ class ContractClient(RPCClientBase):
     """
 
     def __init__(self, port: int = None, running_unit_tests: bool = False,
-                 connect_immediately: bool = True, connection_mode: RPCConnectionMode = RPCConnectionMode.RPC):
+                 connect_immediately: bool = False, connection_mode: RPCConnectionMode = RPCConnectionMode.RPC):
         """
         Initialize contract client.
 

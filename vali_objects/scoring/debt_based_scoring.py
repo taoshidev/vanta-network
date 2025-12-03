@@ -614,10 +614,15 @@ class DebtBasedScoring:
                 if verbose and needed_payout_usd == 0.0:
                     total_realized = sum(cp.realized_pnl for cp in prev_month_checkpoints)
                     avg_penalty = sum(cp.total_penalty for cp in prev_month_checkpoints) / len(prev_month_checkpoints)
+                    last_cp_date = TimeUtil.millis_to_formatted_date_str(last_checkpoint.timestamp_ms)
                     bt.logging.warning(
                         f"{hotkey[:16]}...{hotkey[-8:]}: ZERO needed_payout despite {len(prev_month_checkpoints)} Nov checkpoints! "
                         f"Total realized_pnl=${total_realized:.2f}, avg_penalty={avg_penalty:.4f}, "
-                        f"realized_component=${realized_component:.2f}, unrealized_component=${unrealized_component:.2f}"
+                        f"realized_component=${realized_component:.2f}, unrealized_component=${unrealized_component:.2f}. "
+                        f"Last checkpoint ({last_cp_date}): realized_pnl=${last_checkpoint.realized_pnl:.2f}, "
+                        f"unrealized_pnl=${last_checkpoint.unrealized_pnl:.2f}, penalty={last_checkpoint.total_penalty:.4f}, "
+                        f"status={last_checkpoint.challenge_period_status}, "
+                        f"        raw cp {last_checkpoint}"
                     )
 
             # Step 5: Calculate actual payout (in USD)
@@ -913,7 +918,7 @@ class DebtBasedScoring:
         ledger: DebtLedger,
         start_time_ms: int,
         end_time_ms: int,
-        earning_statuses: set[int] = None
+        earning_statuses: set[str] = None
     ) -> float:
         """
         Calculate penalty-adjusted PnL for a time period (in USD).
