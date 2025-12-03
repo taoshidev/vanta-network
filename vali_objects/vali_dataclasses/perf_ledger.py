@@ -778,12 +778,12 @@ class PerfLedgerManager(CacheController):
             compressed_json_path = ValiBkpUtils.get_perf_ledgers_path_compressed_json(self.running_unit_tests)
             legacy_path = ValiBkpUtils.get_perf_ledgers_path_legacy(self.running_unit_tests)
 
-            # Try pickle file first (fastest)
-            if os.path.exists(pkl_path):
-                data = ValiBkpUtils.read_pickle(pkl_path)
-            # Fall back to compressed JSON
-            elif os.path.exists(compressed_json_path):
+            # Try compressed JSON first (primary format)
+            if os.path.exists(compressed_json_path):
                 data = ValiBkpUtils.read_compressed_json(compressed_json_path)
+            # Fall back to pickle for backward compatibility
+            elif os.path.exists(pkl_path):
+                data = ValiBkpUtils.read_pickle(pkl_path)
             # Fall back to legacy uncompressed file
             elif os.path.exists(legacy_path):
                 with open(legacy_path, 'r') as file:
@@ -887,10 +887,15 @@ class PerfLedgerManager(CacheController):
         assert self.running_unit_tests, 'this is only valid for unit tests'
         self.hotkey_to_perf_bundle = {}
 
-        # Clear pickle file
-        file_path = ValiBkpUtils.get_perf_ledgers_path(self.running_unit_tests)
-        if os.path.exists(file_path):
-            ValiBkpUtils.write_pickle(file_path, {})
+        # Clear compressed JSON file (new format)
+        json_path = ValiBkpUtils.get_perf_ledgers_path_compressed_json(self.running_unit_tests)
+        if os.path.exists(json_path):
+            ValiBkpUtils.write_compressed_json(json_path, {})
+
+        # Also clear legacy pickle file if it exists
+        pkl_path = ValiBkpUtils.get_perf_ledgers_path(self.running_unit_tests)
+        if os.path.exists(pkl_path):
+            os.remove(pkl_path)
 
         for k in list(self.hotkey_to_perf_bundle.keys()):
             del self.hotkey_to_perf_bundle[k]
@@ -910,12 +915,12 @@ class PerfLedgerManager(CacheController):
 
         filtered_data = {}
 
-        # Try pickle file first (fastest)
-        if os.path.exists(pkl_path):
-            existing_data = ValiBkpUtils.read_pickle(pkl_path)
-        # Fall back to compressed JSON
-        elif os.path.exists(compressed_json_path):
+        # Try compressed JSON first (new format)
+        if os.path.exists(compressed_json_path):
             existing_data = ValiBkpUtils.read_compressed_json(compressed_json_path)
+        # Fall back to pickle for backward compatibility
+        elif os.path.exists(pkl_path):
+            existing_data = ValiBkpUtils.read_pickle(pkl_path)
         # Fall back to legacy uncompressed file and migrate
         elif os.path.exists(legacy_path):
             with open(legacy_path, 'r') as file:
@@ -927,10 +932,23 @@ class PerfLedgerManager(CacheController):
 
         for hk, bundles in existing_data.items():
             if hk in hotkeys:
-                filtered_data[hk] = bundles
+                # Convert PerfLedger objects to dicts if needed (from pickle format)
+                if isinstance(bundles, dict):
+                    filtered_data[hk] = {}
+                    for trade_pair_id, ledger in bundles.items():
+                        if isinstance(ledger, PerfLedger):
+                            filtered_data[hk][trade_pair_id] = ledger.to_dict()
+                        else:
+                            filtered_data[hk][trade_pair_id] = ledger
+                elif isinstance(bundles, PerfLedger):
+                    # V1 format
+                    filtered_data[hk] = bundles.to_dict()
+                else:
+                    # Already dict
+                    filtered_data[hk] = bundles
 
-        # Always write to pickle format
-        ValiBkpUtils.write_pickle(pkl_path, filtered_data)
+        # Always write to compressed JSON format
+        ValiBkpUtils.write_compressed_json(compressed_json_path, filtered_data)
 
 
     def run_update_loop(self):
@@ -2407,8 +2425,27 @@ class PerfLedgerManager(CacheController):
             self.debug_pl_plot(testing_one_hotkey)
 
     def save_perf_ledgers_to_disk(self, perf_ledgers: dict[str, dict[str, PerfLedger]] | dict[str, dict[str, dict]], raw_json=False):
-        file_path = ValiBkpUtils.get_perf_ledgers_path(self.running_unit_tests)
-        ValiBkpUtils.write_pickle(file_path, perf_ledgers)
+        file_path = ValiBkpUtils.get_perf_ledgers_path_compressed_json(self.running_unit_tests)
+
+        # Convert PerfLedger objects to dictionaries for JSON serialization
+        serializable_ledgers = {}
+        for hotkey, bundle in perf_ledgers.items():
+            if isinstance(bundle, dict):
+                serializable_ledgers[hotkey] = {}
+                for trade_pair_id, ledger in bundle.items():
+                    if isinstance(ledger, PerfLedger):
+                        serializable_ledgers[hotkey][trade_pair_id] = ledger.to_dict()
+                    else:
+                        # Already a dict
+                        serializable_ledgers[hotkey][trade_pair_id] = ledger
+            elif isinstance(bundle, PerfLedger):
+                # V1 format - single PerfLedger (portfolio only)
+                serializable_ledgers[hotkey] = bundle.to_dict()
+            else:
+                # Already serialized
+                serializable_ledgers[hotkey] = bundle
+
+        ValiBkpUtils.write_compressed_json(file_path, serializable_ledgers)
 
     def debug_pl_plot(self, testing_one_hotkey):
         all_bundles = self.get_perf_ledgers(portfolio_only=False)

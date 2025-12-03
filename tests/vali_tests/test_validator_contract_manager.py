@@ -340,19 +340,16 @@ class TestValidatorContractManager(TestBase):
 
         # Create unique balances for each update to ensure unique records
         balance_sequence = list(range(1_000_000, 1_000_000 + num_concurrent_updates * 1000, 1000))
-        balance_index = [0]  # Use list to allow modification in nested function
-        balance_lock = threading.Lock()
+
+        # Pre-queue all balances (FIFO order, thread-safe)
+        # This allows each concurrent call to get_miner_collateral_balance() to receive a unique value
+        for balance in balance_sequence:
+            self.contract_client.queue_test_collateral_balance(self.MINER_1, balance)
 
         def concurrent_set_account_size(thread_id):
             """Each thread sets account size for same miner"""
             try:
-                # Inject unique balance for this thread
-                with balance_lock:
-                    idx = balance_index[0]
-                    balance_index[0] += 1
-                    unique_balance = balance_sequence[idx]
-
-                self.contract_client.set_test_collateral_balance(self.MINER_1, unique_balance)
+                # Each call will pop a unique balance from the queue (thread-safe)
                 timestamp = current_time + thread_id  # Unique timestamps
                 result = self.contract_client.set_miner_account_size(self.MINER_1, timestamp)
                 results.append((thread_id, result))
@@ -642,19 +639,15 @@ class TestValidatorContractManager(TestBase):
         """
         num_updates = 50
 
-        # Use incrementing balances (some may be duplicates due to RPC retry logic, that's OK)
-        balance_counter = [0]
-        balance_lock = threading.Lock()
+        # Pre-queue unique balances for each update
+        # Use varying balances to avoid duplicate detection
+        for i in range(num_updates):
+            balance = 1_000_000 + (i % 10) * 100000  # Cycle through 10 different balances
+            self.contract_client.queue_test_collateral_balance(self.MINER_1, balance)
 
         def concurrent_update(thread_id):
             """Update WITHOUT explicit timestamp - let it be generated inside the lock"""
-            # Inject incrementing balance for this thread
-            with balance_lock:
-                balance_counter[0] += 1
-                # Return balances that vary enough to avoid duplicate detection
-                balance = 1_000_000 + (balance_counter[0] % 10) * 100000
-
-            self.contract_client.set_test_collateral_balance(self.MINER_1, balance)
+            # Each call will pop a unique balance from the queue (thread-safe)
             # NO timestamp parameter = generated inside lock = chronological order guaranteed
             self.contract_client.set_miner_account_size(self.MINER_1)
 

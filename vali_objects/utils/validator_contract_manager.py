@@ -122,6 +122,8 @@ class ValidatorContractManager:
         self._account_sizes_lock = threading.RLock()
         # Lock for disk I/O serialization to prevent concurrent file writes
         self._disk_lock = threading.Lock()
+        # Lock for test collateral balances dict (prevents concurrent modifications in tests)
+        self._test_balances_lock = threading.Lock()
 
         # Store network type for dynamic max_theta property
         if config is not None:
@@ -156,6 +158,12 @@ class ValidatorContractManager:
         # Allows tests to inject specific collateral balances instead of making blockchain calls
         # Key: miner_hotkey -> Value: balance in rao (int)
         self._test_collateral_balances: Dict[str, int] = {}
+
+        # Test collateral balance queue (only used when running_unit_tests=True)
+        # Allows tests to inject a sequence of balances for the same miner
+        # Key: miner_hotkey -> Value: list of balances (FIFO queue)
+        # This is needed for race condition tests that simulate multiple concurrent balance changes
+        self._test_collateral_balance_queues: Dict[str, List[int]] = {}
 
         self.setup()
 
@@ -957,21 +965,35 @@ class ValidatorContractManager:
         """
         Return a dict of all miner account sizes at a timestamp_ms
         """
-        if miner_account_sizes is None:
-            miner_account_sizes = self.miner_account_sizes
-
         if timestamp_ms is None:
             timestamp_ms = TimeUtil.now_in_millis()
 
-        # Acquire lock and copy keys to avoid iterator invalidation
-        with self._account_sizes_lock:
-            hotkeys = list(miner_account_sizes.keys())
+        # If external dict provided, use it directly (caller handles locking)
+        if miner_account_sizes is not None:
+            all_miner_account_sizes = {}
+            for hotkey in miner_account_sizes.keys():
+                all_miner_account_sizes[hotkey] = self.get_miner_account_size(
+                    hotkey, timestamp_ms=timestamp_ms, records_dict=miner_account_sizes
+                )
+            return all_miner_account_sizes
 
-        # Now iterate over the copy (get_miner_account_size will acquire lock for each call)
+        # Using self.miner_account_sizes - must prevent race conditions
+        # Copy the ENTIRE dict (not just keys) while holding lock to prevent iterator invalidation
+        # This prevents sync_miner_account_sizes_data() from clearing the dict while we're reading it
+        with self._account_sizes_lock:
+            # Deep copy: create new dict with shallow copies of record lists
+            # We don't need deep copy of CollateralRecord objects (they're immutable)
+            miner_account_sizes_snapshot = {
+                hotkey: list(records)  # Shallow copy of list
+                for hotkey, records in self.miner_account_sizes.items()
+            }
+
+        # Now work with the snapshot (no lock needed - we own this copy)
         all_miner_account_sizes = {}
-        for hotkey in hotkeys:
-            all_miner_account_sizes[hotkey] = self.get_miner_account_size(hotkey, timestamp_ms=timestamp_ms,
-                                                                          records_dict=miner_account_sizes)
+        for hotkey in miner_account_sizes_snapshot.keys():
+            all_miner_account_sizes[hotkey] = self.get_miner_account_size(
+                hotkey, timestamp_ms=timestamp_ms, records_dict=miner_account_sizes_snapshot
+            )
         return all_miner_account_sizes
 
     @staticmethod
@@ -1138,18 +1160,49 @@ class ValidatorContractManager:
         """
         if not self.running_unit_tests:
             raise RuntimeError("set_test_collateral_balance can only be used in unit test mode")
-        self._test_collateral_balances[miner_hotkey] = balance_rao
+
+        # Acquire lock to prevent concurrent modifications (race condition fix)
+        with self._test_balances_lock:
+            self._test_collateral_balances[miner_hotkey] = balance_rao
+
+    def queue_test_collateral_balance(self, miner_hotkey: str, balance_rao: int) -> None:
+        """
+        Test-only method to queue a collateral balance for a miner.
+        Multiple balances can be queued and will be consumed in FIFO order.
+        Only works when running_unit_tests=True for safety.
+
+        This is useful for race condition tests where multiple concurrent operations
+        need different balances for the same miner.
+
+        Args:
+            miner_hotkey: Miner's hotkey (SS58 address)
+            balance_rao: Collateral balance in rao units (int) to add to queue
+        """
+        if not self.running_unit_tests:
+            raise RuntimeError("queue_test_collateral_balance can only be used in unit test mode")
+
+        # Acquire lock to prevent concurrent modifications (race condition fix)
+        with self._test_balances_lock:
+            if miner_hotkey not in self._test_collateral_balance_queues:
+                self._test_collateral_balance_queues[miner_hotkey] = []
+            self._test_collateral_balance_queues[miner_hotkey].append(balance_rao)
 
     def clear_test_collateral_balances(self) -> None:
-        """Clear all test collateral balances (for test isolation)."""
+        """Clear all test collateral balances and queues (for test isolation)."""
         if not self.running_unit_tests:
             return
-        self._test_collateral_balances.clear()
+
+        # Acquire lock to prevent concurrent access (race condition fix)
+        with self._test_balances_lock:
+            self._test_collateral_balances.clear()
+            self._test_collateral_balance_queues.clear()
 
     def _get_test_collateral_balance(self, miner_hotkey: str) -> Optional[int]:
         """
         Helper method to get test collateral balance for a miner.
         Returns None if not in unit test mode or if no test balance registered.
+
+        Checks the queue first (for race condition tests), then falls back to direct balance.
 
         Args:
             miner_hotkey: Miner's hotkey (SS58 address)
@@ -1160,5 +1213,14 @@ class ValidatorContractManager:
         if not self.running_unit_tests:
             return None
 
-        # Return registered test balance (or None if not found)
-        return self._test_collateral_balances.get(miner_hotkey)
+        # Acquire lock to prevent concurrent access (race condition fix)
+        with self._test_balances_lock:
+            # Check if there's a queued balance (for race condition tests)
+            if miner_hotkey in self._test_collateral_balance_queues:
+                queue = self._test_collateral_balance_queues[miner_hotkey]
+                if queue:
+                    # Pop from front of queue (FIFO)
+                    return queue.pop(0)
+
+            # Fall back to direct balance lookup
+            return self._test_collateral_balances.get(miner_hotkey)

@@ -207,6 +207,10 @@ class ContractServer(RPCServerBase):
         """Inject test collateral balance (TEST ONLY - requires running_unit_tests=True)."""
         return self._manager.set_test_collateral_balance(miner_hotkey, balance_rao)
 
+    def queue_test_collateral_balance_rpc(self, miner_hotkey: str, balance_rao: int) -> None:
+        """Queue test collateral balance (TEST ONLY - requires running_unit_tests=True)."""
+        return self._manager.queue_test_collateral_balance(miner_hotkey, balance_rao)
+
     def clear_test_collateral_balances_rpc(self) -> None:
         """Clear all test collateral balances (TEST ONLY)."""
         return self._manager.clear_test_collateral_balances()
@@ -269,6 +273,10 @@ class ContractServer(RPCServerBase):
     def set_test_collateral_balance(self, miner_hotkey: str, balance_rao: int) -> None:
         """Inject test collateral balance (forward-compatible alias)."""
         return self._manager.set_test_collateral_balance(miner_hotkey, balance_rao)
+
+    def queue_test_collateral_balance(self, miner_hotkey: str, balance_rao: int) -> None:
+        """Queue test collateral balance (forward-compatible alias)."""
+        return self._manager.queue_test_collateral_balance(miner_hotkey, balance_rao)
 
     def clear_test_collateral_balances(self) -> None:
         """Clear all test collateral balances (forward-compatible alias)."""
@@ -417,6 +425,10 @@ class ContractClient(RPCClientBase):
     def set_test_collateral_balance(self, miner_hotkey: str, balance_rao: int) -> None:
         """Inject test collateral balance (TEST ONLY - requires running_unit_tests=True)."""
         return self._server.set_test_collateral_balance_rpc(miner_hotkey, balance_rao)
+
+    def queue_test_collateral_balance(self, miner_hotkey: str, balance_rao: int) -> None:
+        """Queue test collateral balance (TEST ONLY - requires running_unit_tests=True)."""
+        return self._server.queue_test_collateral_balance_rpc(miner_hotkey, balance_rao)
 
     def clear_test_collateral_balances(self) -> None:
         """Clear all test collateral balances (TEST ONLY)."""
