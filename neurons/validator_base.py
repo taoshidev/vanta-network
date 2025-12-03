@@ -9,6 +9,7 @@ bt.logging.enable_info()
 
 import template
 from time_util.time_util import timeme
+from shared_objects.subtensor_lock import get_subtensor_lock
 
 
 class ValidatorBase:
@@ -186,7 +187,9 @@ class ValidatorBase:
             f"Serving attached axons on network:"
             f" {self.config.subtensor.chain_endpoint} with netuid: {self.config.netuid}"
         )
-        self.axon.serve(netuid=self.config.netuid, subtensor=self.subtensor)
+        # Use subtensor lock to prevent WebSocket concurrency errors with metagraph_updater thread
+        with get_subtensor_lock():
+            self.axon.serve(netuid=self.config.netuid, subtensor=self.subtensor)
 
         # Starts the miner's axon, making it active on the network.
         bt.logging.info(f"Starting axon server on port: {self.config.axon.port}")

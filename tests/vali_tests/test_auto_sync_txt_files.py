@@ -163,7 +163,7 @@ class TestAutoSyncTxtFiles(TestBase):
         # Load all positions from disk to ensure a clean state
         print("Loading all positions from disk to ensure clean state")
         all_positions = self.get_all_positions_from_disk()
-        print(f"Found {len(all_positions)} positions on disk before test")
+        print(f"Found {len(all_positions)} hotkeys+positions on disk before test")
         # Assert no positions exist before starting the test
         self.assertEqual(len(all_positions), 0, "There should be no positions on disk before the test starts")
         

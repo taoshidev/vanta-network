@@ -87,6 +87,11 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
         self.server = None
         self.shutdown_event = None
 
+        # IMPORTANT: Save WebSocket port to separate attribute BEFORE RPCServerBase.__init__
+        # RPCServerBase.__init__ will overwrite self.port to the RPC port (50014),
+        # but we need to preserve the WebSocket port (8765) for cleanup and binding
+        self.websocket_port = self.port
+
         # Client tracking
         self.connected_clients: Dict[str, "websockets.WebSocketServerProtocol"] = {}
 
@@ -127,11 +132,9 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
         if self.send_test_positions:
             bt.logging.info(f"WebSocketServer: Test orders will be sent every {self.test_positions_interval} seconds")
 
-        # IMPORTANT: Save WebSocket port before RPCServerBase.__init__ overwrites self.port
-        websocket_port = self.port
-
         # Initialize RPCServerBase (provides RPC server for other processes to queue messages)
         # This will set self.port = ValiConfig.RPC_WEBSOCKET_NOTIFIER_PORT (50014)
+        # Note: _cleanup_stale_server() override will be called during this __init__
         RPCServerBase.__init__(
             self,
             service_name=ValiConfig.RPC_WEBSOCKET_NOTIFIER_SERVICE_NAME,
@@ -141,10 +144,40 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
             start_daemon=False  # WebSocket server doesn't need a daemon loop
         )
 
-        # Restore WebSocket port (RPC port is stored in parent class attributes)
-        self.port = websocket_port
+        # Restore WebSocket port for convenience (some methods expect self.port = websocket port)
+        self.port = self.websocket_port
 
         bt.logging.success(f"WebSocketServer: RPC server initialized on port {ValiConfig.RPC_WEBSOCKET_NOTIFIER_PORT}")
+
+    def _cleanup_stale_server(self):
+        """
+        Override RPCServerBase._cleanup_stale_server() to clean up BOTH ports.
+
+        WebSocketServer uniquely uses two ports:
+        - RPC port (self.port during parent __init__): 50014
+        - WebSocket port (self.websocket_port): 8765
+
+        Parent's _cleanup_stale_server() only cleans the RPC port, so we override
+        to clean both ports before binding.
+
+        Note: This is called during RPCServerBase.__init__(), so we use self.websocket_port
+        which was saved before calling parent's __init__.
+        """
+        # Clean up RPC port using parent's logic (cleans self.port = 50014)
+        super()._cleanup_stale_server()
+
+        # Now clean up WebSocket port using self.websocket_port (8765)
+        from shared_objects.port_manager import PortManager
+        if not PortManager.is_port_free(self.websocket_port):
+            bt.logging.warning(f"WebSocketServer: WebSocket port {self.websocket_port} in use, forcing cleanup...")
+            PortManager.force_kill_port(self.websocket_port)
+
+            # Wait for OS to release the port after killing process
+            if not PortManager.wait_for_port_release(self.websocket_port, timeout=2.0):
+                bt.logging.warning(
+                    f"WebSocketServer: WebSocket port {self.websocket_port} still not free after cleanup. "
+                    f"Will attempt to bind anyway (reuse_port may work)"
+                )
 
     def _load_sequence_number(self) -> None:
         """Load the last sequence number from disk."""
