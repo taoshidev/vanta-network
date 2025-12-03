@@ -499,7 +499,7 @@ class DebtLedgerManager():
     DEFAULT_CHECK_INTERVAL_SECONDS = 3600 * 12  # 12 hours
 
     def __init__(self, slack_webhook_url=None, running_unit_tests=False,
-                 validator_hotkey=None, connection_mode=None):
+                 validator_hotkey=None, connection_mode: RPCConnectionMode = RPCConnectionMode.RPC):
         """
         Initialize the manager with a normal Python dict for debt ledgers.
 
@@ -527,8 +527,8 @@ class DebtLedgerManager():
         # In test mode, don't connect via RPC
         from vali_objects.vali_dataclasses.perf_ledger_server import PerfLedgerClient
         self._perf_ledger_client = PerfLedgerClient(
-            connection_mode=connection_mode or RPCConnectionMode.RPC,
-            connect_immediately=not running_unit_tests
+            connection_mode=connection_mode,
+            connect_immediately=False
         )
 
         # Create own ContractClient (forward compatibility - no parameter passing)

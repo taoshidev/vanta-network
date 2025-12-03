@@ -55,7 +55,7 @@ from time_util.time_util import TimeUtil
 from vali_objects.utils.contract_server import ContractClient
 from vali_objects.vali_dataclasses.debt_ledger import DebtLedger
 from vali_objects.utils.miner_bucket_enum import MinerBucket
-from vali_objects.vali_config import ValiConfig
+from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 from vali_objects.scoring.scoring import Scoring
 from collections import defaultdict
 
@@ -547,6 +547,7 @@ class DebtBasedScoring:
         # Step 4-6: Process each miner to calculate remaining payouts (in USD)
         miner_remaining_payouts_usd = {}
         miner_actual_payouts_usd = {}  # Track what's been paid so far this month
+        miner_penalty_loss_usd = {}  # Track how much was lost to penalties
 
         for hotkey, debt_ledger in ledger_dict.items():
             if not debt_ledger.checkpoints:
@@ -633,6 +634,7 @@ class DebtBasedScoring:
             #                   and (unrealized_pnl * total_penalty) of the last checkpoint
             # NOTE: realized_pnl and unrealized_pnl are in USD, per-checkpoint values (NOT cumulative)
             needed_payout_usd = 0.0
+            penalty_loss_usd = 0.0
             if prev_month_checkpoints:
                 # Sum penalty-adjusted PnL across all checkpoints in the month
                 # Each checkpoint has its own PnL (for that 12-hour period) and its own penalty
@@ -640,6 +642,11 @@ class DebtBasedScoring:
                 realized_component = sum(cp.realized_pnl * cp.total_penalty for cp in prev_month_checkpoints)
                 unrealized_component = min(0.0, last_checkpoint.unrealized_pnl) * last_checkpoint.total_penalty
                 needed_payout_usd = realized_component + unrealized_component
+
+                # Calculate penalty loss: what would have been earned WITHOUT penalties
+                payout_without_penalties = sum(cp.realized_pnl for cp in prev_month_checkpoints)
+                payout_without_penalties += min(0.0, last_checkpoint.unrealized_pnl)
+                penalty_loss_usd = payout_without_penalties - needed_payout_usd
 
                 # Diagnostic: Show breakdown if needed_payout is zero but checkpoints exist
                 if verbose and needed_payout_usd == 0.0:
@@ -662,15 +669,87 @@ class DebtBasedScoring:
                     # Build status breakdown string
                     status_info = ", ".join([f"{status}={len(cps)}" for status, cps in sorted(status_breakdown.items())])
 
+                    # NEW: Analyze penalty breakdown to understand why avg_penalty is 0
+                    # Sample 3 earning checkpoints (first, middle, last) to show penalty components
+                    sample_indices = []
+                    if len(prev_month_checkpoints) >= 3:
+                        sample_indices = [0, len(prev_month_checkpoints) // 2, -1]
+                    elif len(prev_month_checkpoints) > 0:
+                        sample_indices = list(range(len(prev_month_checkpoints)))
+
+                    penalty_samples = []
+                    for idx in sample_indices:
+                        cp = prev_month_checkpoints[idx]
+                        cp_date = TimeUtil.millis_to_formatted_date_str(cp.timestamp_ms)
+                        penalty_samples.append(
+                            f"{cp_date}: total_penalty={cp.total_penalty:.4f} "
+                            f"(dd={cp.drawdown_penalty:.4f}, rp={cp.risk_profile_penalty:.4f}, "
+                            f"mc={cp.min_collateral_penalty:.4f}, rap={cp.risk_adjusted_performance_penalty:.4f}), "
+                            f"pnl={cp.realized_pnl:.2f}, emissions=${cp.chunk_emissions_usd:.2f}"
+                        )
+
+                    # Count how many checkpoints have zero penalties for each component
+                    zero_penalties = {
+                        'total': sum(1 for cp in prev_month_checkpoints if cp.total_penalty == 0.0),
+                        'drawdown': sum(1 for cp in prev_month_checkpoints if cp.drawdown_penalty == 0.0),
+                        'risk_profile': sum(1 for cp in prev_month_checkpoints if cp.risk_profile_penalty == 0.0),
+                        'min_collateral': sum(1 for cp in prev_month_checkpoints if cp.min_collateral_penalty == 0.0),
+                        'risk_adjusted_perf': sum(1 for cp in prev_month_checkpoints if cp.risk_adjusted_performance_penalty == 0.0),
+                    }
+
+                    # NEW: Access source ledgers to show Nov checkpoint counts from each ledger type
+                    try:
+                        from vali_objects.vali_dataclasses.debt_ledger_server import DebtLedgerClient
+                        from vali_objects.vali_dataclasses.perf_ledger_server import PerfLedgerClient
+
+                        # Create clients to access source ledgers
+                        debt_ledger_client = DebtLedgerClient(connection_mode=RPCConnectionMode.RPC, connect_immediately=True)
+                        perf_ledger_client = PerfLedgerClient(connection_mode=RPCConnectionMode.RPC, connect_immediately=True)
+
+                        # Get source ledgers for this hotkey
+                        emissions_ledger = debt_ledger_client.get_emissions_ledger(hotkey)
+                        penalty_ledger = debt_ledger_client.get_penalty_ledger(hotkey)
+                        perf_ledgers_dict = perf_ledger_client.get_perf_ledgers(hotkey, portfolio_only=False)
+
+                        # Count Nov checkpoints in each source ledger
+                        emissions_nov_count = 0
+                        penalty_nov_count = 0
+                        perf_nov_count = 0
+
+                        if emissions_ledger and emissions_ledger.checkpoints:
+                            emissions_nov_count = sum(1 for cp in emissions_ledger.checkpoints
+                                                     if prev_month_start_ms <= cp.chunk_end_ms <= prev_month_end_ms)
+
+                        if penalty_ledger and penalty_ledger.checkpoints:
+                            penalty_nov_count = sum(1 for cp in penalty_ledger.checkpoints
+                                                   if prev_month_start_ms <= cp.last_processed_ms <= prev_month_end_ms)
+
+                        if perf_ledgers_dict:
+                            from vali_objects.vali_dataclasses.perf_ledger import TP_ID_PORTFOLIO
+                            portfolio_ledger = perf_ledgers_dict.get(TP_ID_PORTFOLIO)
+                            if portfolio_ledger and portfolio_ledger.cps:
+                                perf_nov_count = sum(1 for cp in portfolio_ledger.cps
+                                                    if prev_month_start_ms <= cp.last_update_ms <= prev_month_end_ms)
+
+                        source_ledger_info = f"Source ledger Nov checkpoints: debt={len(all_prev_month_checkpoints)}, emissions={emissions_nov_count}, penalty={penalty_nov_count}, perf={perf_nov_count}. "
+                    except Exception as e:
+                        bt.logging.debug(f"Could not access source ledgers for diagnostic: {e}")
+                        source_ledger_info = ""
+
                     bt.logging.warning(
                         f"{hotkey[:16]}...{hotkey[-8:]}: ZERO needed_payout despite {len(prev_month_checkpoints)} earning checkpoints! "
                         f"Total Nov checkpoints: {len(all_prev_month_checkpoints)} (by status: {status_info}). "
+                        f"{source_ledger_info}"
                         f"Total realized_pnl=${total_realized:.2f}, avg_penalty={avg_penalty:.4f}, "
                         f"realized_component=${realized_component:.2f}, unrealized_component=${unrealized_component:.2f}. "
                         f"Last earning checkpoint ({last_cp_date}): realized_pnl=${last_checkpoint.realized_pnl:.2f}, "
                         f"unrealized_pnl=${last_checkpoint.unrealized_pnl:.2f}, penalty={last_checkpoint.total_penalty:.4f}, "
                         f"status={last_checkpoint.challenge_period_status}. "
-                        f"Absolute last Nov checkpoint: {absolute_last_cp_date}, status={absolute_last_cp.challenge_period_status if absolute_last_cp else 'N/A'}"
+                        f"Absolute last Nov checkpoint: {absolute_last_cp_date}, status={absolute_last_cp.challenge_period_status if absolute_last_cp else 'N/A'}. "
+                        f"Zero penalty counts (of {len(prev_month_checkpoints)}): total={zero_penalties['total']}, "
+                        f"drawdown={zero_penalties['drawdown']}, risk_profile={zero_penalties['risk_profile']}, "
+                        f"min_collateral={zero_penalties['min_collateral']}, risk_adj_perf={zero_penalties['risk_adjusted_perf']}. "
+                        f"Sample checkpoints: {'; '.join(penalty_samples)}"
                     )
 
             # Step 5: Calculate actual payout (in USD)
@@ -696,13 +775,15 @@ class DebtBasedScoring:
 
             miner_remaining_payouts_usd[hotkey] = remaining_payout_usd
             miner_actual_payouts_usd[hotkey] = actual_payout_usd
+            miner_penalty_loss_usd[hotkey] = penalty_loss_usd
 
             if verbose:
                 bt.logging.debug(
                     f"{hotkey[:16]}...{hotkey[-8:]}: "
                     f"needed_payout_usd=${needed_payout_usd:.2f}, "
                     f"actual_payout_usd=${actual_payout_usd:.2f}, "
-                    f"remaining_usd=${remaining_payout_usd:.2f}"
+                    f"remaining_usd=${remaining_payout_usd:.2f}, "
+                    f"penalty_loss_usd=${penalty_loss_usd:.2f}"
                 )
 
         # Step 7-9: Query real-time emissions and project availability (in USD)
@@ -786,10 +867,11 @@ class DebtBasedScoring:
                     daily_target = miner_daily_target_payouts_usd.get(hotkey, 0.0)
                     monthly_target = miner_remaining_payouts_usd.get(hotkey, 0.0)
                     actual_paid = miner_actual_payouts_usd.get(hotkey, 0.0)
+                    penalty_loss = miner_penalty_loss_usd.get(hotkey, 0.0)
                     bt.logging.info(
                         f"  {hotkey[:16]}...{hotkey[-8:]}: weight={weight:.6f}, "
                         f"daily_target_usd=${daily_target:.2f}, monthly_target_usd=${monthly_target:.2f}, "
-                        f"paid_this_month_usd=${actual_paid:.2f}"
+                        f"paid_this_month_usd=${actual_paid:.2f}, penalty_loss_usd=${penalty_loss:.2f}"
                     )
 
         return result
