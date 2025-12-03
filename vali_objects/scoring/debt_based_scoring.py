@@ -556,12 +556,43 @@ class DebtBasedScoring:
                 miner_actual_payouts_usd[hotkey] = 0.0
                 continue
 
+            # Extract ALL checkpoints for previous month (for diagnostic purposes)
+            all_prev_month_checkpoints = [
+                cp for cp in debt_ledger.checkpoints
+                if prev_month_start_ms <= cp.timestamp_ms <= prev_month_end_ms
+            ]
+
+            # Diagnostic: Log checkpoint coverage for miners with data
+            if verbose and all_prev_month_checkpoints:
+                # Show total checkpoints and date range
+                total_cps = len(debt_ledger.checkpoints)
+                if total_cps > 0:
+                    first_cp_date = TimeUtil.millis_to_formatted_date_str(debt_ledger.checkpoints[0].timestamp_ms)
+                    last_cp_date = TimeUtil.millis_to_formatted_date_str(debt_ledger.checkpoints[-1].timestamp_ms)
+
+                    # Show November checkpoint date range
+                    first_nov_cp_date = TimeUtil.millis_to_formatted_date_str(all_prev_month_checkpoints[0].timestamp_ms)
+                    last_nov_cp_date = TimeUtil.millis_to_formatted_date_str(all_prev_month_checkpoints[-1].timestamp_ms)
+
+                    # Calculate days covered in November
+                    nov_start_day = TimeUtil.millis_to_datetime(all_prev_month_checkpoints[0].timestamp_ms).day
+                    nov_end_day = TimeUtil.millis_to_datetime(all_prev_month_checkpoints[-1].timestamp_ms).day
+                    nov_days_covered = nov_end_day - nov_start_day + 1
+                    expected_cps = nov_days_covered * 2  # 2 checkpoints per day
+
+                    bt.logging.debug(
+                        f"{hotkey[:16]}...{hotkey[-8:]}: Total debt checkpoints: {total_cps} "
+                        f"(range: {first_cp_date} to {last_cp_date}). "
+                        f"Nov checkpoints: {len(all_prev_month_checkpoints)}/60 possible, "
+                        f"Nov date range: {first_nov_cp_date} to {last_nov_cp_date} "
+                        f"({nov_days_covered} days, expected ~{expected_cps} checkpoints)"
+                    )
+
             # Extract checkpoints for previous month
             # Only include checkpoints where status is MAINCOMP or PROBATION (earning periods)
             prev_month_checkpoints = [
-                cp for cp in debt_ledger.checkpoints
-                if prev_month_start_ms <= cp.timestamp_ms <= prev_month_end_ms
-                and cp.challenge_period_status in (MinerBucket.MAINCOMP.value, MinerBucket.PROBATION.value)
+                cp for cp in all_prev_month_checkpoints
+                if cp.challenge_period_status in (MinerBucket.MAINCOMP.value, MinerBucket.PROBATION.value)
             ]
 
             # Extract checkpoints for current month (up to now)
@@ -615,14 +646,31 @@ class DebtBasedScoring:
                     total_realized = sum(cp.realized_pnl for cp in prev_month_checkpoints)
                     avg_penalty = sum(cp.total_penalty for cp in prev_month_checkpoints) / len(prev_month_checkpoints)
                     last_cp_date = TimeUtil.millis_to_formatted_date_str(last_checkpoint.timestamp_ms)
+
+                    # Analyze all November checkpoints to understand the gap
+                    status_breakdown = {}
+                    for cp in all_prev_month_checkpoints:
+                        status = cp.challenge_period_status
+                        if status not in status_breakdown:
+                            status_breakdown[status] = []
+                        status_breakdown[status].append(cp)
+
+                    # Find the absolute last checkpoint in November (any status)
+                    absolute_last_cp = all_prev_month_checkpoints[-1] if all_prev_month_checkpoints else None
+                    absolute_last_cp_date = TimeUtil.millis_to_formatted_date_str(absolute_last_cp.timestamp_ms) if absolute_last_cp else "N/A"
+
+                    # Build status breakdown string
+                    status_info = ", ".join([f"{status}={len(cps)}" for status, cps in sorted(status_breakdown.items())])
+
                     bt.logging.warning(
-                        f"{hotkey[:16]}...{hotkey[-8:]}: ZERO needed_payout despite {len(prev_month_checkpoints)} Nov checkpoints! "
+                        f"{hotkey[:16]}...{hotkey[-8:]}: ZERO needed_payout despite {len(prev_month_checkpoints)} earning checkpoints! "
+                        f"Total Nov checkpoints: {len(all_prev_month_checkpoints)} (by status: {status_info}). "
                         f"Total realized_pnl=${total_realized:.2f}, avg_penalty={avg_penalty:.4f}, "
                         f"realized_component=${realized_component:.2f}, unrealized_component=${unrealized_component:.2f}. "
-                        f"Last checkpoint ({last_cp_date}): realized_pnl=${last_checkpoint.realized_pnl:.2f}, "
+                        f"Last earning checkpoint ({last_cp_date}): realized_pnl=${last_checkpoint.realized_pnl:.2f}, "
                         f"unrealized_pnl=${last_checkpoint.unrealized_pnl:.2f}, penalty={last_checkpoint.total_penalty:.4f}, "
-                        f"status={last_checkpoint.challenge_period_status}, "
-                        f"        raw cp {last_checkpoint}"
+                        f"status={last_checkpoint.challenge_period_status}. "
+                        f"Absolute last Nov checkpoint: {absolute_last_cp_date}, status={absolute_last_cp.challenge_period_status if absolute_last_cp else 'N/A'}"
                     )
 
             # Step 5: Calculate actual payout (in USD)
