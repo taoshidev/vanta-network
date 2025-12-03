@@ -279,13 +279,6 @@ class ServerOrchestrator:
             required_in_validator=False,  # Must be started manually AFTER MetagraphUpdater (depends on WeightSetterServer)
             spawn_kwargs={'start_daemon': False}  # Daemon started later
         ),
-        'websocket_notifier': ServerConfig(
-            server_class=None,
-            client_class=None,
-            required_in_testing=False,  # Optional - only in PRODUCTION mode
-            required_in_miner=False,
-            spawn_kwargs={}
-        ),
     }
 
     @classmethod
@@ -363,8 +356,6 @@ class ServerOrchestrator:
         from vali_objects.utils.weight_calculator_server import WeightCalculatorServer
         # WeightCalculatorClient doesn't exist yet - server manages its own clients internally
         # from vali_objects.utils.weight_calculator_client import WeightCalculatorClient
-        from vanta_api.websocket_server import WebSocketServer
-        from vanta_api.websocket_notifier import WebSocketNotifierClient
 
         # Update registry with classes
         self.SERVERS['common_data'].server_class = CommonDataServer
@@ -420,9 +411,6 @@ class ServerOrchestrator:
 
         self.SERVERS['weight_calculator'].server_class = WeightCalculatorServer
         self.SERVERS['weight_calculator'].client_class = None  # No client - server manages its own clients
-
-        self.SERVERS['websocket_notifier'].server_class = WebSocketServer
-        self.SERVERS['websocket_notifier'].client_class = WebSocketNotifierClient
 
         self._classes_loaded = True
 
