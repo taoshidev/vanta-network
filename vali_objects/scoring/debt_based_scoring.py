@@ -572,7 +572,25 @@ class DebtBasedScoring:
                 and cp.challenge_period_status in (MinerBucket.MAINCOMP.value, MinerBucket.PROBATION.value)
             ]
 
-            if verbose:
+            # Diagnostic logging: Show sample checkpoint data
+            if verbose and prev_month_checkpoints:
+                # Sample first 3 checkpoints from previous month
+                sample_cps = prev_month_checkpoints[:3]
+                sample_info = []
+                for cp in sample_cps:
+                    cp_date = TimeUtil.millis_to_formatted_date_str(cp.timestamp_ms)
+                    sample_info.append(
+                        f"{cp_date}: realized_pnl=${cp.realized_pnl:.2f}, "
+                        f"unrealized_pnl=${cp.unrealized_pnl:.2f}, penalty={cp.total_penalty:.4f}"
+                    )
+
+                bt.logging.debug(
+                    f"{hotkey[:16]}...{hotkey[-8:]}: "
+                    f"{len(prev_month_checkpoints)} prev month checkpoints, "
+                    f"{len(current_month_checkpoints)} current month checkpoints. "
+                    f"Sample Nov checkpoints: {'; '.join(sample_info)}"
+                )
+            elif verbose:
                 bt.logging.debug(
                     f"{hotkey[:16]}...{hotkey[-8:]}: "
                     f"{len(prev_month_checkpoints)} prev month checkpoints, "
@@ -588,8 +606,19 @@ class DebtBasedScoring:
                 # Sum penalty-adjusted PnL across all checkpoints in the month
                 # Each checkpoint has its own PnL (for that 12-hour period) and its own penalty
                 last_checkpoint = prev_month_checkpoints[-1]
-                needed_payout_usd = sum(cp.realized_pnl * cp.total_penalty for cp in prev_month_checkpoints)
-                needed_payout_usd += min(0.0, last_checkpoint.unrealized_pnl) * last_checkpoint.total_penalty
+                realized_component = sum(cp.realized_pnl * cp.total_penalty for cp in prev_month_checkpoints)
+                unrealized_component = min(0.0, last_checkpoint.unrealized_pnl) * last_checkpoint.total_penalty
+                needed_payout_usd = realized_component + unrealized_component
+
+                # Diagnostic: Show breakdown if needed_payout is zero but checkpoints exist
+                if verbose and needed_payout_usd == 0.0:
+                    total_realized = sum(cp.realized_pnl for cp in prev_month_checkpoints)
+                    avg_penalty = sum(cp.total_penalty for cp in prev_month_checkpoints) / len(prev_month_checkpoints)
+                    bt.logging.warning(
+                        f"{hotkey[:16]}...{hotkey[-8:]}: ZERO needed_payout despite {len(prev_month_checkpoints)} Nov checkpoints! "
+                        f"Total realized_pnl=${total_realized:.2f}, avg_penalty={avg_penalty:.4f}, "
+                        f"realized_component=${realized_component:.2f}, unrealized_component=${unrealized_component:.2f}"
+                    )
 
             # Step 5: Calculate actual payout (in USD)
             # Special case for December 2025 (first activation month):
@@ -625,6 +654,21 @@ class DebtBasedScoring:
 
         # Step 7-9: Query real-time emissions and project availability (in USD)
         total_remaining_payout_usd = sum(miner_remaining_payouts_usd.values())
+
+        # Diagnostic summary: Show aggregate statistics
+        if verbose:
+            miners_with_nov_data = sum(1 for hotkey in ledger_dict.keys()
+                                      if any(prev_month_start_ms <= cp.timestamp_ms <= prev_month_end_ms
+                                            for cp in ledger_dict[hotkey].checkpoints))
+            miners_with_zero_needed = sum(1 for needed in miner_remaining_payouts_usd.values() if needed == 0.0)
+            miners_with_nonzero_needed = len(miner_remaining_payouts_usd) - miners_with_zero_needed
+
+            bt.logging.info(
+                f"November data summary: {miners_with_nov_data}/{len(ledger_dict)} miners have Nov checkpoints, "
+                f"{miners_with_nonzero_needed} have non-zero needed_payout, "
+                f"{miners_with_zero_needed} have zero needed_payout, "
+                f"total_remaining=${total_remaining_payout_usd:.2f}"
+            )
 
         if total_remaining_payout_usd > 0 and days_until_target > 0:
             DebtBasedScoring.log_projections(metagraph, days_until_target, verbose, total_remaining_payout_usd)
@@ -662,7 +706,7 @@ class DebtBasedScoring:
         # NOTE: Weights are unitless proportions, derived from daily target USD payouts
         miner_weights_with_minimums = DebtBasedScoring._apply_minimum_weights(
             ledger_dict=ledger_dict,
-            miner_remaining_payouts_usd=miner_remaining_payouts_usd,
+            miner_remaining_payouts_usd=miner_daily_target_payouts_usd,
             challengeperiod_client=challengeperiod_client,
             contract_client=contract_client,
             metagraph=metagraph,
