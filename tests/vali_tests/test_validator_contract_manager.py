@@ -3,10 +3,13 @@
 """
 Integration tests for ValidatorContractManager using server/client architecture.
 Tests end-to-end contract management scenarios with real server infrastructure.
+
+Data injection pattern (polygon_data_service.py): Tests inject collateral balances via
+set_test_collateral_balance() instead of mocking CollateralManager. This avoids network
+calls to the blockchain while maintaining proper multiprocess isolation.
 """
 import time
 import threading
-from unittest.mock import patch, MagicMock
 
 from shared_objects.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
@@ -58,31 +61,15 @@ class TestValidatorContractManager(TestBase):
         cls.perf_ledger_client = cls.orchestrator.get_client('perf_ledger')
         cls.contract_client = cls.orchestrator.get_client('contract')
 
-        # Mock the CollateralManager at the class level to avoid actual contract calls
-        # This is appropriate since CollateralManager interacts with external blockchain
-        cls.mock_collateral_manager_patcher = patch(
-            'vali_objects.utils.validator_contract_manager.CollateralManager'
-        )
-        cls.mock_collateral_manager_class = cls.mock_collateral_manager_patcher.start()
-        cls.mock_collateral_manager_instance = MagicMock()
-        cls.mock_collateral_manager_class.return_value = cls.mock_collateral_manager_instance
-
-        # Set up mock collateral balances
-        cls.mock_balances = {
-            cls.MINER_1: 1000000,  # 1M rao
-            cls.MINER_2: 500000    # 500K rao
-        }
-        cls.mock_collateral_manager_instance.balance_of.side_effect = lambda hotkey: cls.mock_balances.get(hotkey, 0)
-
     @classmethod
     def tearDownClass(cls):
         """
-        One-time teardown: Clean up mocks.
+        One-time teardown: No cleanup needed.
 
         Note: Servers and clients are managed by ServerOrchestrator singleton and shared
         across all test classes. They will be shut down automatically at process exit.
         """
-        cls.mock_collateral_manager_patcher.stop()
+        pass
 
     def setUp(self):
         """Per-test setup: Reset data state (fast - no server restarts)."""
@@ -93,12 +80,12 @@ class TestValidatorContractManager(TestBase):
         self.contract_client.sync_miner_account_sizes_data({})  # Clear account sizes
         self.contract_client.re_init_account_sizes()  # Reload from disk after clearing
 
-        # Reset mock side_effect (in case a test overrode it)
-        self.mock_collateral_manager_instance.balance_of.side_effect = lambda hotkey: self.mock_balances.get(hotkey, 0)
+        # Clear test collateral balances
+        self.contract_client.clear_test_collateral_balances()
 
-        # Reset mock balances to defaults
-        self.mock_balances[self.MINER_1] = 1000000  # 1M rao
-        self.mock_balances[self.MINER_2] = 500000   # 500K rao
+        # Inject default test balances using data injection pattern (like polygon_data_service.py)
+        self.contract_client.set_test_collateral_balance(self.MINER_1, 1000000)  # 1M rao
+        self.contract_client.set_test_collateral_balance(self.MINER_2, 500000)   # 500K rao
 
     def tearDown(self):
         """Per-test teardown: Clear data for next test."""
@@ -108,6 +95,7 @@ class TestValidatorContractManager(TestBase):
         # Contract-specific clears
         self.contract_client.sync_miner_account_sizes_data({})
         self.contract_client.re_init_account_sizes()  # Reload from disk after clearing
+        self.contract_client.clear_test_collateral_balances()
 
     def test_collateral_record_creation(self):
         """Test CollateralRecord creation and properties"""
@@ -134,15 +122,14 @@ class TestValidatorContractManager(TestBase):
         self.assertIsNone(self.contract_client.get_miner_account_size(self.MINER_1))
 
         # Set account size (ValidatorContractManager calculates account size from collateral)
-        self.mock_balances[self.MINER_1] = 1000000  # 1M rao
+        # Test balance already injected in setUp()
         self.contract_client.set_miner_account_size(self.MINER_1, current_time)
 
         # Verify retrieval - should return the calculated account size
         account_size = self.contract_client.get_miner_account_size(self.MINER_1, day_after_current_time)
         self.assertIsNotNone(account_size)
 
-        # Set for second miner
-        self.mock_balances[self.MINER_2] = 500000  # 500K rao
+        # Set for second miner (balance already injected in setUp())
         self.contract_client.set_miner_account_size(self.MINER_2, current_time)
         account_size_2 = self.contract_client.get_miner_account_size(self.MINER_2, day_after_current_time)
         self.assertIsNotNone(account_size_2)
@@ -152,8 +139,7 @@ class TestValidatorContractManager(TestBase):
         current_time = int(time.time() * 1000)
         day_after_current_time = self.DAY_MS + current_time
 
-        # Set account size
-        self.mock_balances[self.MINER_1] = 1000000  # 1M rao
+        # Set account size (balance already injected in setUp())
         self.contract_client.set_miner_account_size(self.MINER_1, current_time)
 
         # Verify it was set
@@ -169,16 +155,14 @@ class TestValidatorContractManager(TestBase):
         """Test that multiple records are stored and sorted correctly"""
         base_time = int(time.time() * 1000)
 
-        # Mock collateral balance for consistent account size calculation
-        self.mock_collateral_manager_instance.balance_of.side_effect = [
-            1_000_000,  # First call
-            2_000_000,  # Second call
-            3_000_000,  # Third call
-        ]
-
-        # Add multiple records with different timestamps
+        # Inject different collateral balances for each call
+        self.contract_client.set_test_collateral_balance(self.MINER_1, 1_000_000)  # First call
         self.contract_client.set_miner_account_size(self.MINER_1, base_time)
+
+        self.contract_client.set_test_collateral_balance(self.MINER_1, 2_000_000)  # Second call
         self.contract_client.set_miner_account_size(self.MINER_1, base_time + 1000)
+
+        self.contract_client.set_test_collateral_balance(self.MINER_1, 3_000_000)  # Third call
         self.contract_client.set_miner_account_size(self.MINER_1, base_time + 2000)
 
         # Verify records are stored
@@ -194,9 +178,7 @@ class TestValidatorContractManager(TestBase):
         """Test that duplicate records are ignored"""
         base_time = int(time.time() * 1000)
 
-        # Mock collateral balance for consistent account size calculation
-        self.mock_balances[self.MINER_1] = 1000000  # 1M rao
-
+        # Use same balance for all calls (already injected in setUp() as 1M rao)
         # Add multiple records with different timestamps but same balance
         self.contract_client.set_miner_account_size(self.MINER_1, base_time)
         self.contract_client.set_miner_account_size(self.MINER_1, base_time + 1000)
@@ -251,11 +233,8 @@ class TestValidatorContractManager(TestBase):
         """Test converting account sizes to checkpoint dictionary format"""
         current_time = int(time.time() * 1000)
 
-        # Set account sizes
-        self.mock_balances[self.MINER_1] = 1000000  # 1M rao
+        # Set account sizes (balances already injected in setUp())
         self.contract_client.set_miner_account_size(self.MINER_1, current_time)
-
-        self.mock_balances[self.MINER_2] = 500000  # 500K rao
         self.contract_client.set_miner_account_size(self.MINER_2, current_time)
 
         # Get checkpoint dict
@@ -276,22 +255,23 @@ class TestValidatorContractManager(TestBase):
 
     def test_collateral_balance_retrieval(self):
         """Test getting collateral balance for miners"""
-        # Mock different balances
-        self.mock_balances[self.MINER_1] = 1500000  # 1.5M rao
+        # Inject test balance
+        self.contract_client.set_test_collateral_balance(self.MINER_1, 1500000)  # 1.5M rao
 
-        # Get balance
+        # Get balance (should return test balance via data injection)
         balance = self.contract_client.get_miner_collateral_balance(self.MINER_1)
         self.assertIsNotNone(balance)
 
-        # Verify the mock was called
-        self.mock_collateral_manager_instance.balance_of.assert_called_with(self.MINER_1)
+        # Verify conversion to theta (1.5M rao = 0.0015 theta)
+        expected_theta = 0.0015
+        self.assertAlmostEqual(balance, expected_theta, places=4)
 
     def test_compute_slash_amount_formula_accuracy(self):
         """Test the exact formula for slash calculation across range of drawdowns"""
-        # Set up real collateral balance via RPC (not mocking!)
+        # Set up real collateral balance via data injection
         balance_theta = 1000.0
         balance_rao = int(balance_theta * 10 ** 9)
-        self.mock_balances[self.MINER_1] = balance_rao
+        self.contract_client.set_test_collateral_balance(self.MINER_1, balance_rao)
 
         # Test cases: (drawdown, expected_drawdown_percentage, expected_slash_proportion)
         test_cases = [
@@ -322,11 +302,8 @@ class TestValidatorContractManager(TestBase):
         """Test getting all miner account sizes at a specific timestamp"""
         current_time = int(time.time() * 1000)
 
-        # Set account sizes for multiple miners
-        self.mock_balances[self.MINER_1] = 1000000
+        # Set account sizes for multiple miners (balances already injected in setUp())
         self.contract_client.set_miner_account_size(self.MINER_1, current_time)
-
-        self.mock_balances[self.MINER_2] = 500000
         self.contract_client.set_miner_account_size(self.MINER_2, current_time)
 
         # Get all account sizes
@@ -366,19 +343,16 @@ class TestValidatorContractManager(TestBase):
         balance_index = [0]  # Use list to allow modification in nested function
         balance_lock = threading.Lock()
 
-        def get_next_balance(hotkey):
-            """Return next unique balance for testing (thread-safe)"""
-            with balance_lock:
-                idx = balance_index[0]
-                balance_index[0] += 1
-                return balance_sequence[idx]
-
-        # Override balance_of to return unique values
-        self.mock_collateral_manager_instance.balance_of.side_effect = get_next_balance
-
         def concurrent_set_account_size(thread_id):
             """Each thread sets account size for same miner"""
             try:
+                # Inject unique balance for this thread
+                with balance_lock:
+                    idx = balance_index[0]
+                    balance_index[0] += 1
+                    unique_balance = balance_sequence[idx]
+
+                self.contract_client.set_test_collateral_balance(self.MINER_1, unique_balance)
                 timestamp = current_time + thread_id  # Unique timestamps
                 result = self.contract_client.set_miner_account_size(self.MINER_1, timestamp)
                 results.append((thread_id, result))
@@ -427,15 +401,13 @@ class TestValidatorContractManager(TestBase):
         # Generate unique miner hotkeys
         test_miners = [f"5Miner{i:0>44}" for i in range(num_miners)]
 
-        # Set up unique balances for each miner
-        for i, miner in enumerate(test_miners):
-            self.mock_balances[miner] = (i + 1) * 100000  # 100K, 200K, 300K, etc.
-
         results = []
 
-        def concurrent_set_for_different_miners(miner_hotkey):
+        def concurrent_set_for_different_miners(miner_hotkey, balance):
             """Each thread sets account size for a different miner"""
             try:
+                # Inject unique balance for this miner
+                self.contract_client.set_test_collateral_balance(miner_hotkey, balance)
                 result = self.contract_client.set_miner_account_size(miner_hotkey, current_time)
                 results.append((miner_hotkey, result))
             except Exception as e:
@@ -443,8 +415,9 @@ class TestValidatorContractManager(TestBase):
 
         # Launch concurrent threads (one per miner)
         threads = []
-        for miner in test_miners:
-            thread = threading.Thread(target=concurrent_set_for_different_miners, args=(miner,))
+        for i, miner in enumerate(test_miners):
+            balance = (i + 1) * 100000  # 100K, 200K, 300K, etc.
+            thread = threading.Thread(target=concurrent_set_for_different_miners, args=(miner, balance))
             threads.append(thread)
             thread.start()
 
@@ -482,7 +455,8 @@ class TestValidatorContractManager(TestBase):
         num_initial_miners = 100
         test_miners = [f"5Init{i:0>45}" for i in range(num_initial_miners)]
         for i, miner in enumerate(test_miners):
-            self.mock_balances[miner] = (i + 1) * 50000
+            balance = (i + 1) * 50000
+            self.contract_client.set_test_collateral_balance(miner, balance)
             self.contract_client.set_miner_account_size(miner, current_time)
 
         # Prepare sync data (different set of miners)
@@ -551,8 +525,7 @@ class TestValidatorContractManager(TestBase):
         """
         current_time = int(time.time() * 1000)
 
-        # Set initial account size
-        self.mock_balances[self.MINER_1] = 1_000_000
+        # Set initial account size (balance already injected in setUp())
         self.contract_client.set_miner_account_size(self.MINER_1, current_time)
 
         # Prepare sync data (same miner, same balance)
@@ -619,17 +592,18 @@ class TestValidatorContractManager(TestBase):
 
         # Set up unique miners and balances
         test_miners = [f"5Disk{i:0>45}" for i in range(num_concurrent_writes)]
-        for i, miner in enumerate(test_miners):
-            self.mock_balances[miner] = (i + 1) * 100000
 
-        def concurrent_write(miner_hotkey):
+        def concurrent_write(miner_hotkey, balance):
             """Each thread triggers a disk write"""
+            # Inject balance for this miner
+            self.contract_client.set_test_collateral_balance(miner_hotkey, balance)
             self.contract_client.set_miner_account_size(miner_hotkey, current_time)
 
         # Launch all threads at once
         threads = []
-        for miner in test_miners:
-            thread = threading.Thread(target=concurrent_write, args=(miner,))
+        for i, miner in enumerate(test_miners):
+            balance = (i + 1) * 100000
+            thread = threading.Thread(target=concurrent_write, args=(miner, balance))
             threads.append(thread)
 
         # Start all threads simultaneously
@@ -672,18 +646,15 @@ class TestValidatorContractManager(TestBase):
         balance_counter = [0]
         balance_lock = threading.Lock()
 
-        def get_incrementing_balance(hotkey):
-            """Return incrementing balance - simulates changing collateral"""
+        def concurrent_update(thread_id):
+            """Update WITHOUT explicit timestamp - let it be generated inside the lock"""
+            # Inject incrementing balance for this thread
             with balance_lock:
                 balance_counter[0] += 1
                 # Return balances that vary enough to avoid duplicate detection
-                return 1_000_000 + (balance_counter[0] % 10) * 100000
+                balance = 1_000_000 + (balance_counter[0] % 10) * 100000
 
-        # Override balance_of to return incrementing balances
-        self.mock_collateral_manager_instance.balance_of.side_effect = get_incrementing_balance
-
-        def concurrent_update(thread_id):
-            """Update WITHOUT explicit timestamp - let it be generated inside the lock"""
+            self.contract_client.set_test_collateral_balance(self.MINER_1, balance)
             # NO timestamp parameter = generated inside lock = chronological order guaranteed
             self.contract_client.set_miner_account_size(self.MINER_1)
 

@@ -10,6 +10,8 @@ from datetime import datetime
 
 from shared_objects.common_data_server import CommonDataServer
 from shared_objects.metagraph_server import MetagraphServer
+from shared_objects.rpc_client_base import RPCClientBase
+from shared_objects.rpc_server_base import RPCServerBase
 from time_util.time_util import TimeUtil
 from vali_objects.position import Position
 from vali_objects.utils.challengeperiod_client import ChallengePeriodClient
@@ -93,16 +95,23 @@ def start_servers_for_restore():
 
     return servers
 
-def shutdown_servers(servers):
-    """Shutdown all RPC servers."""
-    bt.logging.info("Shutting down RPC servers...")
-    for name, server in servers.items():
-        try:
-            server.shutdown()
-            bt.logging.info(f"Shut down {name} server")
-        except Exception as e:
-            bt.logging.warning(f"Error shutting down {name} server: {e}")
-    bt.logging.success("All servers shut down")
+def shutdown_all_servers_and_clients():
+    """
+    Shutdown all RPC servers and clients using proper cleanup methods.
+
+    This ensures complete cleanup and prevents the script from hanging.
+    """
+    bt.logging.info("Shutting down all RPC clients and servers...")
+
+    # Step 1: Disconnect all clients first (prevents clients from holding connections)
+    RPCClientBase.disconnect_all()
+    bt.logging.info("  ✓ All RPC clients disconnected")
+
+    # Step 2: Shutdown all servers and force-kill any processes still using RPC ports
+    RPCServerBase.shutdown_all(force_kill_ports=True)
+    bt.logging.success("  ✓ All RPC servers shut down and ports cleaned up")
+
+    bt.logging.success("All servers and clients shut down successfully")
 
 def backup_validation_directory():
     dir_to_backup = ValiBkpUtils.get_vali_dir()
@@ -418,8 +427,9 @@ def regenerate_miner_positions(perform_backup=True, backup_from_data_dir=False, 
         bt.logging.success("✓ RESTORE COMPLETED SUCCESSFULLY - All data validated and saved")
 
     finally:
-        # Always shutdown servers, even if restore fails
-        shutdown_servers(servers)
+        # Always shutdown servers and clients, even if restore fails
+        # This prevents the script from hanging after completion
+        shutdown_all_servers_and_clients()
 
 if __name__ == "__main__":
     bt.logging.enable_info()

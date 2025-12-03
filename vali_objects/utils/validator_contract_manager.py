@@ -151,6 +151,12 @@ class ValidatorContractManager:
         # Use normal Python dict (no IPC overhead)
         self.miner_account_sizes: Dict[str, List[CollateralRecord]] = {}
         self._load_miner_account_sizes_from_disk()
+
+        # Test collateral balance registry (only used when running_unit_tests=True)
+        # Allows tests to inject specific collateral balances instead of making blockchain calls
+        # Key: miner_hotkey -> Value: balance in rao (int)
+        self._test_collateral_balances: Dict[str, int] = {}
+
         self.setup()
 
     # ==================== Properties ====================
@@ -793,6 +799,11 @@ class ValidatorContractManager:
         Returns:
             Optional[float]: Balance in theta tokens, or None if error
         """
+        # Return test data in unit test mode (data injection pattern from polygon_data_service.py)
+        test_balance_rao = self._get_test_collateral_balance(miner_address)
+        if test_balance_rao is not None:
+            return self.to_theta(test_balance_rao)
+
         for attempt in range(max_retries):
             try:
                 rao_balance = self.collateral_manager.balance_of(miner_address)
@@ -1110,3 +1121,44 @@ class ValidatorContractManager:
         except Exception as e:
             bt.logging.error(f"Error verifying coldkey-hotkey ownership: {e}")
             return False
+
+    # ==================== Test Data Injection Methods ====================
+
+    def set_test_collateral_balance(self, miner_hotkey: str, balance_rao: int) -> None:
+        """
+        Test-only method to inject collateral balances for specific miners.
+        Only works when running_unit_tests=True for safety.
+
+        This follows the same pattern as polygon_data_service.py's set_test_price_source().
+        Allows tests to inject mock collateral balances without making blockchain calls.
+
+        Args:
+            miner_hotkey: Miner's hotkey (SS58 address)
+            balance_rao: Collateral balance in rao units (int)
+        """
+        if not self.running_unit_tests:
+            raise RuntimeError("set_test_collateral_balance can only be used in unit test mode")
+        self._test_collateral_balances[miner_hotkey] = balance_rao
+
+    def clear_test_collateral_balances(self) -> None:
+        """Clear all test collateral balances (for test isolation)."""
+        if not self.running_unit_tests:
+            return
+        self._test_collateral_balances.clear()
+
+    def _get_test_collateral_balance(self, miner_hotkey: str) -> Optional[int]:
+        """
+        Helper method to get test collateral balance for a miner.
+        Returns None if not in unit test mode or if no test balance registered.
+
+        Args:
+            miner_hotkey: Miner's hotkey (SS58 address)
+
+        Returns:
+            Balance in rao (int) if in test mode and registered, None otherwise
+        """
+        if not self.running_unit_tests:
+            return None
+
+        # Return registered test balance (or None if not found)
+        return self._test_collateral_balances.get(miner_hotkey)

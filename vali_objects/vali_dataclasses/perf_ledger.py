@@ -114,8 +114,6 @@ class PerfCheckpoint:
         mpv: float = 0.0,
         realized_pnl: float = 0.0,
         unrealized_pnl: float = 0.0,
-        pnl_gain: float = 0.0,
-        pnl_loss: float = 0.0,
         **kwargs  # Support extra fields like BaseModel's extra="allow"
     ):
         # Type coercion to match BaseModel behavior (handles numpy types and ensures correct types)
@@ -391,15 +389,13 @@ class PerfLedger():
 
             while now_ms - current_boundary > self.target_cp_duration_ms:
                 current_boundary += self.target_cp_duration_ms
-                # Use getattr() to safely handle old checkpoints without realized_pnl/unrealized_pnl
-                prev_cp = self.cps[-1]
                 new_cp = PerfCheckpoint(
                     last_update_ms=current_boundary,
                     prev_portfolio_ret=last_portfolio_return,  # Keep constant during void
-                    prev_portfolio_realized_pnl=getattr(prev_cp, 'prev_portfolio_realized_pnl', 0.0),
-                    prev_portfolio_unrealized_pnl=getattr(prev_cp, 'prev_portfolio_unrealized_pnl', 0.0),
-                    prev_portfolio_spread_fee=prev_cp.prev_portfolio_spread_fee,
-                    prev_portfolio_carry_fee=prev_cp.prev_portfolio_carry_fee,
+                    prev_portfolio_realized_pnl=self.cps[-1].prev_portfolio_realized_pnl,
+                    prev_portfolio_unrealized_pnl=self.cps[-1].prev_portfolio_unrealized_pnl,
+                    prev_portfolio_spread_fee=self.cps[-1].prev_portfolio_spread_fee,
+                    prev_portfolio_carry_fee=self.cps[-1].prev_portfolio_carry_fee,
                     accum_ms=self.target_cp_duration_ms,
                     open_ms=0,  # No market data for void periods
                     mdd=prev_mdd,
@@ -416,15 +412,13 @@ class PerfLedger():
             # Calculate MDD for this checkpoint period based on the change from boundary to now
             # MDD should be the worst decline within this checkpoint period
 
-            # Use getattr() to safely handle old checkpoints without realized_pnl/unrealized_pnl
-            prev_cp = self.cps[-1]
             new_cp = PerfCheckpoint(
                 last_update_ms=now_ms,
                 prev_portfolio_ret=last_portfolio_return, # old for now, update below
-                prev_portfolio_realized_pnl=getattr(prev_cp, 'prev_portfolio_realized_pnl', 0.0),
-                prev_portfolio_unrealized_pnl=getattr(prev_cp, 'prev_portfolio_unrealized_pnl', 0.0),
-                prev_portfolio_spread_fee=prev_cp.prev_portfolio_spread_fee,  # old for now update below
-                prev_portfolio_carry_fee=prev_cp.prev_portfolio_carry_fee,    # old for now update below
+                prev_portfolio_realized_pnl=self.cps[-1].prev_portfolio_realized_pnl,
+                prev_portfolio_unrealized_pnl=self.cps[-1].prev_portfolio_unrealized_pnl,
+                prev_portfolio_spread_fee=self.cps[-1].prev_portfolio_spread_fee,  # old for now update below
+                prev_portfolio_carry_fee=self.cps[-1].prev_portfolio_carry_fee,    # old for now update below
                 carry_fee_loss=0, # 0 for now, update below
                 spread_fee_loss=0, # 0 for now, update below
                 n_updates = 0, # 0 for now, update below
@@ -466,17 +460,8 @@ class PerfLedger():
             n_updates = 0
 
         # Calculate deltas from previous checkpoint
-        # Use getattr() to safely handle old checkpoints without realized_pnl/unrealized_pnl
-        prev_realized_pnl = getattr(current_cp, 'prev_portfolio_realized_pnl', 0.0)
-        prev_unrealized_pnl = getattr(current_cp, 'prev_portfolio_unrealized_pnl', 0.0)
-        delta_realized = current_realized_pnl_usd - prev_realized_pnl
-        delta_unrealized = current_unrealized_pnl_usd - prev_unrealized_pnl
-
-        # Ensure current_cp has these attributes (for old checkpoints)
-        if not hasattr(current_cp, 'realized_pnl'):
-            current_cp.realized_pnl = 0.0
-        if not hasattr(current_cp, 'unrealized_pnl'):
-            current_cp.unrealized_pnl = 0.0
+        delta_realized = current_realized_pnl_usd - current_cp.prev_portfolio_realized_pnl
+        delta_unrealized = current_unrealized_pnl_usd - current_cp.prev_portfolio_unrealized_pnl
 
         current_cp.realized_pnl += delta_realized
         current_cp.unrealized_pnl += delta_unrealized

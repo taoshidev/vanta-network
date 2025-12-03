@@ -203,6 +203,14 @@ class ContractServer(RPCServerBase):
         """Verify that a coldkey owns a specific hotkey using subtensor."""
         return self._manager.verify_coldkey_owns_hotkey(coldkey_ss58, hotkey_ss58)
 
+    def set_test_collateral_balance_rpc(self, miner_hotkey: str, balance_rao: int) -> None:
+        """Inject test collateral balance (TEST ONLY - requires running_unit_tests=True)."""
+        return self._manager.set_test_collateral_balance(miner_hotkey, balance_rao)
+
+    def clear_test_collateral_balances_rpc(self) -> None:
+        """Clear all test collateral balances (TEST ONLY)."""
+        return self._manager.clear_test_collateral_balances()
+
     # ==================== Forward-Compatible Aliases (without _rpc suffix) ====================
     # These allow direct use of the server in tests without RPC
 
@@ -257,6 +265,14 @@ class ContractServer(RPCServerBase):
 
     def verify_coldkey_owns_hotkey(self, coldkey_ss58: str, hotkey_ss58: str) -> bool:
         return self._manager.verify_coldkey_owns_hotkey(coldkey_ss58, hotkey_ss58)
+
+    def set_test_collateral_balance(self, miner_hotkey: str, balance_rao: int) -> None:
+        """Inject test collateral balance (forward-compatible alias)."""
+        return self._manager.set_test_collateral_balance(miner_hotkey, balance_rao)
+
+    def clear_test_collateral_balances(self) -> None:
+        """Clear all test collateral balances (forward-compatible alias)."""
+        return self._manager.clear_test_collateral_balances()
 
     @staticmethod
     def min_collateral_penalty(collateral: float) -> float:
@@ -395,6 +411,16 @@ class ContractClient(RPCClientBase):
     def verify_coldkey_owns_hotkey(self, coldkey_ss58: str, hotkey_ss58: str) -> bool:
         """Verify that a coldkey owns a specific hotkey using subtensor."""
         return self._server.verify_coldkey_owns_hotkey_rpc(coldkey_ss58, hotkey_ss58)
+
+    # ==================== Test Data Injection Methods ====================
+
+    def set_test_collateral_balance(self, miner_hotkey: str, balance_rao: int) -> None:
+        """Inject test collateral balance (TEST ONLY - requires running_unit_tests=True)."""
+        return self._server.set_test_collateral_balance_rpc(miner_hotkey, balance_rao)
+
+    def clear_test_collateral_balances(self) -> None:
+        """Clear all test collateral balances (TEST ONLY)."""
+        return self._server.clear_test_collateral_balances_rpc()
 
     # ==================== Setup Methods ====================
 
