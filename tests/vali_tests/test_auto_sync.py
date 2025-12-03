@@ -96,26 +96,19 @@ class TestAutoSync(TestBase):
         pass
 
     def setUp(self):
+        """Per-test setup: Reset data state (fast - no server restarts)."""
+        # NOTE: Skip super().setUp() to avoid killing ports (servers already running)
 
+        # Clear all data for test isolation (both memory and disk)
+        self.orchestrator.clear_all_test_data()
 
+        # Initialize test constants
         self.DEFAULT_MINER_HOTKEY = "test_miner"
         self.DEFAULT_POSITION_UUID = "test_position"
         self.DEFAULT_ORDER_UUID = "test_order"
         self.DEFAULT_OPEN_MS = 1718071209000
         self.DEFAULT_TRADE_PAIR = TradePair.BTCUSD
         self.DEFAULT_ACCOUNT_SIZE = 100_000
-        self.default_order = Order(price=1, processed_ms=self.DEFAULT_OPEN_MS, order_uuid=self.DEFAULT_ORDER_UUID, trade_pair=self.DEFAULT_TRADE_PAIR,
-                                     order_type=OrderType.LONG, leverage=1)
-        """Per-test setup: Reset data state (fast - no server restarts)."""
-        # NOTE: Skip super().setUp() to avoid killing ports (servers already running)
-
-        # Clear all data for test isolation (both memory and disk)
-        self.position_client.clear_all_miner_positions_and_disk()
-        self.perf_ledger_client.clear_all_ledger_data()
-        self.elimination_client.clear_eliminations()
-        self.challenge_period_client._clear_challengeperiod_in_memory_and_disk()
-        self.challenge_period_client.clear_elimination_reasons()
-        self.plagiarism_client.clear_plagiarism_data()
 
         # Set up test miner in metagraph
         self.metagraph_client.set_hotkeys([self.DEFAULT_MINER_HOTKEY])

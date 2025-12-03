@@ -76,18 +76,8 @@ class TestLedgerPenalty(TestBase):
 
     def test_penalty_ledger_manager_metadata_persistence(self):
         """Test that last_full_rebuild_ms is properly saved and loaded"""
-        # Create mock dependencies
-        mock_position_manager = Mock()
-        mock_perf_ledger_manager = Mock()
-        mock_contract_manager = Mock()
-        mock_asset_selection_manager = Mock()
-
-        # Create manager
+        # Create manager (new API - no mock dependencies needed, creates clients internally)
         manager = PenaltyLedgerManager(
-            position_manager=mock_position_manager,
-            perf_ledger_manager=mock_perf_ledger_manager,
-            contract_manager=mock_contract_manager,
-            asset_selection_manager=mock_asset_selection_manager,
             running_unit_tests=True,
             run_daemon=False
         )
@@ -112,10 +102,6 @@ class TestLedgerPenalty(TestBase):
 
         # Create new manager and verify it loads the timestamp
         manager2 = PenaltyLedgerManager(
-            position_manager=mock_position_manager,
-            perf_ledger_manager=mock_perf_ledger_manager,
-            contract_manager=mock_contract_manager,
-            asset_selection_manager=mock_asset_selection_manager,
             running_unit_tests=True,
             run_daemon=False
         )
@@ -206,18 +192,8 @@ class TestLedgerPenalty(TestBase):
 
     def test_atomic_ledger_replacement_for_full_rebuild(self):
         """Test that full rebuild keeps old and new ledgers in memory until the very end"""
-        # Create mock dependencies
-        mock_position_manager = Mock()
-        mock_perf_ledger_manager = Mock()
-        mock_contract_manager = Mock()
-        mock_asset_selection_manager = Mock()
-
-        # Create manager with an old ledger
+        # Create manager with an old ledger (new API - no mock dependencies needed)
         manager = PenaltyLedgerManager(
-            position_manager=mock_position_manager,
-            perf_ledger_manager=mock_perf_ledger_manager,
-            contract_manager=mock_contract_manager,
-            asset_selection_manager=mock_asset_selection_manager,
             running_unit_tests=True,
             run_daemon=False
         )

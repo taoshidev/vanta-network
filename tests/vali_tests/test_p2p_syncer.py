@@ -3,7 +3,7 @@ from copy import deepcopy
 
 from bittensor import Balance
 
-from shared_objects.mock_metagraph import MockNeuron, MockAxonInfo
+from shared_objects.mock_metagraph import MockNeuron, MockAxonInfo, MockMetagraph
 from shared_objects.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
 from time_util.time_util import TimeUtil
@@ -119,7 +119,8 @@ class TestPositions(TestBase):
         self.default_closed_position.close_out_position(self.DEFAULT_OPEN_MS + 1000 * 60 * 60 * 6)
 
         # Create P2PSyncer with position_manager client
-        self.p2p_syncer = P2PSyncer(running_unit_tests=False, position_manager=self.position_client)
+        # IMPORTANT: running_unit_tests=True prevents checkpoint staleness checks
+        self.p2p_syncer = P2PSyncer(running_unit_tests=True, position_manager=self.position_client)
 
     def tearDown(self):
         """Per-test teardown: Clear data for next test."""

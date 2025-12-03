@@ -44,6 +44,10 @@ class P2PSyncer(ValidatorSyncBase):
         self.last_signal_sync_time_ms = 0
         self.running_unit_tests = running_unit_tests
 
+        # Initialize SYNC_LOOK_AROUND_MS (normally set by ValidatorSyncBase.__init__)
+        # Used for position/order matching heuristics in checkpoint syncing
+        self.SYNC_LOOK_AROUND_MS = 1000 * 60 * 3  # 3 minutes
+
         # Store position_manager client (needed for create_golden and rebuild_position_with_updated_orders)
         self._position_manager_client = position_manager
 

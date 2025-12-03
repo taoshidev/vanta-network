@@ -16,7 +16,6 @@ from vali_objects.position import Position
 from vali_objects.utils.elimination_manager import EliminationReason
 from vali_objects.utils.ledger_utils import LedgerUtils
 from vali_objects.utils.miner_bucket_enum import MinerBucket
-from vali_objects.utils.position_lock import PositionLocks
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair, ValiConfig
@@ -84,9 +83,6 @@ class TestPerfLedgerEliminations(TestBase):
 
         # Set up metagraph with test miners
         cls.metagraph_client.set_hotkeys(cls.all_miners)
-
-        # Create position locks instance
-        cls.position_locks = PositionLocks()
 
     @classmethod
     def tearDownClass(cls):
@@ -309,7 +305,7 @@ class TestPerfLedgerEliminations(TestBase):
         self.perf_ledger_client.add_elimination_row(elim_row)
 
         # Process eliminations through elimination manager
-        self.elimination_client.handle_perf_ledger_eliminations(self.position_locks)
+        self.elimination_client.handle_perf_ledger_eliminations()
 
         # Verify elimination was processed
         eliminations = self.elimination_client.get_eliminations_from_memory()
@@ -373,13 +369,13 @@ class TestPerfLedgerEliminations(TestBase):
         self.perf_ledger_client.add_elimination_row(pl_elim)
 
         # Process through elimination manager
-        self.elimination_client.handle_perf_ledger_eliminations(self.position_locks)
+        self.elimination_client.handle_perf_ledger_eliminations()
 
         # Try to add another elimination for same miner (should be prevented)
         initial_count = len(self.elimination_client.get_eliminations_from_memory())
 
         # Try MDD elimination for already eliminated miner
-        self.elimination_client.handle_mdd_eliminations(self.position_locks)
+        self.elimination_client.handle_mdd_eliminations()
 
         # Verify no duplicate
         final_count = len(self.elimination_client.get_eliminations_from_memory())

@@ -5,7 +5,6 @@ Time utility tests using modern RPC infrastructure.
 
 Tests TimeUtil functions with proper server/client setup.
 """
-from copy import deepcopy
 from datetime import datetime, timezone
 
 from shared_objects.server_orchestrator import ServerOrchestrator, ServerMode
@@ -83,30 +82,13 @@ class TestTimeUtil(TestBase):
 
     def _create_test_data(self):
         """Helper to create fresh test data for each test."""
-        self.DEFAULT_POSITION_UUID = "test_position"
-        self.DEFAULT_OPEN_MS = 1000
-        self.DEFAULT_TRADE_PAIR = TradePair.BTCUSD
-
-        self.default_position = Position(
-            miner_hotkey=self.DEFAULT_MINER_HOTKEY,
-            position_uuid=self.DEFAULT_POSITION_UUID,
-            open_ms=self.DEFAULT_OPEN_MS,
-            trade_pair=self.DEFAULT_TRADE_PAIR,
-            account_size=self.DEFAULT_ACCOUNT_SIZE,
-        )
-
-        self.forex_position = Position(
-            miner_hotkey=self.DEFAULT_MINER_HOTKEY,
-            position_uuid=self.DEFAULT_POSITION_UUID,
-            open_ms=self.DEFAULT_OPEN_MS,
-            trade_pair=TradePair.EURUSD,
-            account_size=self.DEFAULT_ACCOUNT_SIZE,
-        )
+        # No need to create default positions since tests now create fresh instances
+        # This avoids deepcopy issues with RPC-backed domain objects
+        pass
 
     def test_n_crypto_intervals(self):
         prev_delta = None
         for i in range(50):
-            position = deepcopy(self.default_position)
             o1 = Order(
                 order_type=OrderType.LONG,
                 leverage=1.0,
@@ -124,7 +106,15 @@ class TestTimeUtil(TestBase):
                 order_uuid="2000"
             )
 
-            position.orders = [o1, o2]
+            # Create fresh Position with orders (avoid deepcopy to prevent RPC serialization issues)
+            position = Position(
+                miner_hotkey=self.DEFAULT_MINER_HOTKEY,
+                position_uuid=self.DEFAULT_POSITION_UUID,
+                open_ms=self.DEFAULT_OPEN_MS,
+                trade_pair=TradePair.BTCUSD,
+                account_size=self.DEFAULT_ACCOUNT_SIZE,
+                orders=[o1, o2]
+            )
             position.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
 
             self.assertEqual(position.max_leverage_seen(), 1.0)
@@ -141,7 +131,6 @@ class TestTimeUtil(TestBase):
 
     def test_crypto_edge_case(self):
         t_ms = FEE_V6_TIME_MS + 1000*60*60*4  # 4 hours after start_time # 1720756395630
-        position = deepcopy(self.default_position)
         o1 = Order(
             order_type=OrderType.LONG,
             leverage=1.0,
@@ -150,7 +139,16 @@ class TestTimeUtil(TestBase):
             processed_ms=1719596222703,
             order_uuid="1000"
         )
-        position.orders = [o1]
+
+        # Create fresh Position with orders (avoid deepcopy to prevent RPC serialization issues)
+        position = Position(
+            miner_hotkey=self.DEFAULT_MINER_HOTKEY,
+            position_uuid=self.DEFAULT_POSITION_UUID,
+            open_ms=self.DEFAULT_OPEN_MS,
+            trade_pair=TradePair.BTCUSD,
+            account_size=self.DEFAULT_ACCOUNT_SIZE,
+            orders=[o1]
+        )
         position.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
         n_intervals, time_until_next_interval_ms = TimeUtil.n_intervals_elapsed_crypto(
             position.start_carry_fee_accrual_ms, t_ms
@@ -186,7 +184,6 @@ class TestTimeUtil(TestBase):
     def test_n_forex_intervals(self):
         prev_delta = None
         for i in range(50):
-            position = deepcopy(self.forex_position)
             o1 = Order(
                 order_type=OrderType.LONG,
                 leverage=1.0,
@@ -203,7 +200,16 @@ class TestTimeUtil(TestBase):
                 processed_ms=1719843816000 + i + MS_IN_24_HOURS * i,
                 order_uuid="2000"
             )
-            position.orders = [o1, o2]
+
+            # Create fresh Position with orders (avoid deepcopy to prevent RPC serialization issues)
+            position = Position(
+                miner_hotkey=self.DEFAULT_MINER_HOTKEY,
+                position_uuid=self.DEFAULT_POSITION_UUID,
+                open_ms=self.DEFAULT_OPEN_MS,
+                trade_pair=TradePair.EURUSD,
+                account_size=self.DEFAULT_ACCOUNT_SIZE,
+                orders=[o1, o2]
+            )
             position.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
             self.assertEqual(position.max_leverage_seen(), 1.0)
             self.assertEqual(position.get_cumulative_leverage(), 2.0)

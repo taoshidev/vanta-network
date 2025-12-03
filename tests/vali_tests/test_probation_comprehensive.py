@@ -139,13 +139,12 @@ class TestProbationComprehensive(TestBase):
                 miner_hotkey=miner,
                 position_uuid=f"{miner}_position",
                 open_ms=self.START_TIME,
-                close_ms=self.END_TIME,
                 trade_pair=TradePair.BTCUSD,
-                is_closed_position=True,
-                return_at_close=1.1 if miner not in self.ELIMINATED_MINER_NAMES else 0.8,
                 orders=[Order(price=60000, processed_ms=self.START_TIME, order_uuid=f"{miner}_order",
                               trade_pair=TradePair.BTCUSD, order_type=OrderType.LONG, leverage=0.1)],
             )
+            position.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
+            position.close_out_position(self.END_TIME)
             self.POSITIONS[miner] = [position]
             self.HK_TO_OPEN_MS[miner] = self.START_TIME
 
@@ -158,6 +157,9 @@ class TestProbationComprehensive(TestBase):
 
         # Save to managers via clients
         self.perf_ledger_client.save_perf_ledgers(self.LEDGERS)
+        self.perf_ledger_client.re_init_perf_ledger_data()  # Force reload after save
+
+        # Save positions
         for miner, positions in self.POSITIONS.items():
             for position in positions:
                 self.position_client.save_miner_position(position)

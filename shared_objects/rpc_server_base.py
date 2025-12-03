@@ -1099,9 +1099,14 @@ class RPCServerBase(ABC):
         if not cls.service_port:
             raise Exception('No service port provided')
 
+        # Detailed timing breakdown to track spawn performance
+        start_time = time.time()
+
         # Always create server_ready event internally for clean API
+        t0 = time.time()
         server_ready = Event()
         entry_kwargs['server_ready'] = server_ready
+        t1 = time.time()
 
         # Create and start the process
         process = Process(
@@ -1109,14 +1114,31 @@ class RPCServerBase(ABC):
             kwargs=entry_kwargs,
             daemon=True
         )
+        t2 = time.time()
         process.start()
+        t3 = time.time()
 
-        bt.logging.success(f"{cls.service_name} process spawned (PID: {process.pid})")
+        # Calculate timing breakdown
+        elapsed_ms = (t3 - start_time) * 1000
+        event_ms = (t1 - t0) * 1000
+        create_ms = (t2 - t1) * 1000
+        start_ms = (t3 - t2) * 1000
+
+        bt.logging.success(
+            f"{cls.service_name} process spawned (PID: {process.pid}) ({elapsed_ms:.0f}ms) "
+            f"[event={event_ms:.0f}ms, create={create_ms:.0f}ms, start={start_ms:.0f}ms]"
+        )
 
         # Wait for server to be ready (unless wait_for_ready=False)
         if wait_for_ready:
+            t4 = time.time()
             if server_ready.wait(timeout=ready_timeout):
-                bt.logging.success(f"{cls.service_name} server ready")
+                t5 = time.time()
+                ready_ms = (t5 - t4) * 1000
+                total_ms = (t5 - start_time) * 1000
+                bt.logging.success(
+                    f"{cls.service_name} server ready ({total_ms:.0f}ms) [ready={ready_ms:.0f}ms]"
+                )
             else:
                 # Check if process died during startup
                 if not process.is_alive():

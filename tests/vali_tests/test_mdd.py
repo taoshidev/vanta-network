@@ -6,7 +6,6 @@ MDD (Maximum Drawdown) Checker tests using modern RPC infrastructure.
 Tests MDDCheckerServer functionality with proper server/client setup.
 """
 from copy import deepcopy
-from unittest.mock import patch
 
 from shared_objects.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
@@ -41,41 +40,11 @@ class TestMDDChecker(TestBase):
     metagraph_client = None
     mdd_checker_client = None
 
-    # Mock patch for price data
-    data_patch = None
-    mock_fetch_prices = None
-
     MINER_HOTKEY = "test_miner"
 
     @classmethod
     def setUpClass(cls):
-        """One-time setup: Start all servers using ServerOrchestrator and set up price data mock."""
-        # Set up price data mock (kept from original test)
-        cls.data_patch = patch('vali_objects.utils.live_price_fetcher.LivePriceFetcher.get_tp_to_sorted_price_sources')
-        cls.mock_fetch_prices = cls.data_patch.start()
-        cls.mock_fetch_prices.return_value = {
-            TradePair.BTCUSD: [
-                PriceSource(source='Tiingo_rest', timespan_ms=60000, open=64751.73, close=64771.04, vwap=None,
-                           high=64813.66, low=64749.99, start_ms=1721937480000, websocket=False, lag_ms=29041),
-                PriceSource(source='Tiingo_ws', timespan_ms=0, open=64681.6, close=64681.6, vwap=None,
-                           high=64681.6, low=64681.6, start_ms=1721937625000, websocket=True, lag_ms=174041),
-                PriceSource(source='Polygon_ws', timespan_ms=0, open=64693.52, close=64693.52, vwap=64693.7546,
-                           high=64696.22, low=64693.52, start_ms=1721937626000, websocket=True, lag_ms=175041),
-                PriceSource(source='Polygon_rest', timespan_ms=1000, open=64695.87, close=64681.9, vwap=64682.2898,
-                           high=64695.87, low=64681.9, start_ms=1721937628000, websocket=False, lag_ms=177041)
-            ],
-            TradePair.ETHUSD: [
-                PriceSource(source='Polygon_ws', timespan_ms=0, open=3267.8, close=3267.8, vwap=3267.8, high=3267.8,
-                           low=3267.8, start_ms=1722390426999, websocket=True, lag_ms=2470),
-                PriceSource(source='Polygon_rest', timespan_ms=1000, open=3267.8, close=3267.8, vwap=3267.8,
-                           high=3267.8, low=3267.8, start_ms=1722390426000, websocket=False, lag_ms=2470),
-                PriceSource(source='Tiingo_ws', timespan_ms=0, open=3267.9, close=3267.9, vwap=None, high=3267.9,
-                           low=3267.9, start_ms=1722390422000, websocket=True, lag_ms=7469),
-                PriceSource(source='Tiingo_rest', timespan_ms=60000, open=3271.26001, close=3268.6001, vwap=None,
-                           high=3271.26001, low=3268.1001, start_ms=1722389640000, websocket=False, lag_ms=729470)
-            ],
-        }
-
+        """One-time setup: Start all servers using ServerOrchestrator."""
         # Get the singleton orchestrator and start all required servers
         cls.orchestrator = ServerOrchestrator.get_instance()
 
@@ -99,12 +68,12 @@ class TestMDDChecker(TestBase):
     @classmethod
     def tearDownClass(cls):
         """
-        One-time teardown: Clean up mocks only.
+        One-time teardown: No action needed.
 
         Note: Servers and clients are managed by ServerOrchestrator singleton and shared
         across all test classes. They will be shut down automatically at process exit.
         """
-        cls.data_patch.stop()
+        pass
 
     def setUp(self):
         """Per-test setup: Reset data state (fast - no server restarts)."""
@@ -138,6 +107,30 @@ class TestMDDChecker(TestBase):
             trade_pair=x,
             account_size=self.DEFAULT_ACCOUNT_SIZE,
         ) for x in TradePair}
+
+    def create_price_source(self, price, bid=None, ask=None, order_time_ms=None):
+        """Create a price source for test data injection."""
+        if bid is None:
+            bid = price
+        if ask is None:
+            ask = price
+        if order_time_ms is None:
+            order_time_ms = TimeUtil.now_in_millis()
+
+        return PriceSource(
+            source='test',
+            timespan_ms=0,
+            open=price,
+            close=price,
+            vwap=None,
+            high=price,
+            low=price,
+            start_ms=order_time_ms,  # Match order time for price correction
+            websocket=True,
+            lag_ms=100,
+            bid=bid,
+            ask=ask
+        )
 
     def verify_elimination_data_in_memory_and_disk(self, expected_eliminations):
         """Verify elimination data matches expectations."""
@@ -249,24 +242,44 @@ class TestMDDChecker(TestBase):
         self.position_client.save_miner_position(position)
 
     def test_get_live_prices(self):
-        """Test that live price fetching works with mocked data."""
+        """Test that live price fetching works with injected test data."""
+        # Inject test price data
+        test_price = 65000.0
+        price_source = self.create_price_source(test_price)
+        self.live_price_fetcher_client.set_test_price_source(TradePair.BTCUSD, price_source)
+
         live_price, price_sources = self.live_price_fetcher_client.get_latest_price(
             trade_pair=TradePair.BTCUSD,
-            time_ms=TimeUtil.now_in_millis() - 1000 * 180
+            time_ms=TimeUtil.now_in_millis()
         )
         self.assertTrue(live_price > 0)
         self.assertTrue(price_sources)
         self.assertTrue(all([x.close > 0 for x in price_sources]))
 
+        # Clean up
+        self.live_price_fetcher_client.clear_test_price_sources()
+
     def test_mdd_price_correction(self):
+        """Test that price correction updates order prices when enabled."""
         self.mdd_checker_client.price_correction_enabled = True
         self.verify_elimination_data_in_memory_and_disk([])
-        o1 = Order(order_type=OrderType.SHORT,
-                leverage=1.0,
-                price=1000,  # Intentionally wrong price - should be corrected
-                trade_pair=TradePair.BTCUSD,
-                processed_ms=TimeUtil.now_in_millis(),
-                order_uuid="1000")
+
+        # Create order with intentionally wrong price that should be corrected
+        order_time_ms = TimeUtil.now_in_millis()
+        o1 = Order(
+            order_type=OrderType.SHORT,
+            leverage=1.0,
+            price=1000,  # Intentionally wrong price - should be corrected
+            trade_pair=TradePair.BTCUSD,
+            processed_ms=order_time_ms,
+            order_uuid="1000"
+        )
+
+        # Inject correct price source that mdd_check should use for correction
+        # Use a price significantly different from 1000 so we can verify correction
+        correct_price = 65000.0
+        price_source = self.create_price_source(correct_price, order_time_ms=order_time_ms)
+        self.live_price_fetcher_client.set_test_price_source(TradePair.BTCUSD, price_source)
 
         relevant_position = self.trade_pair_to_default_position[TradePair.BTCUSD]
         self.mdd_checker_client.last_price_fetch_time_ms = TimeUtil.now_in_millis() - 1000 * 30
@@ -293,15 +306,43 @@ class TestMDDChecker(TestBase):
         position_from_disk = positions_from_disk[0]
         self.verify_core_position_fields_unchanged(position_snapshot, position_from_disk, allow_price_correction=True)
         self.assertFalse(position_from_disk.is_closed_position)
+
         # Assert prices DID change (price correction occurred)
-        self.assertNotEqual(position_snapshot.orders[-1].price, position_from_disk.orders[-1].price,
-                           "Price correction enabled but order price did not change")
-        self.assertNotEqual(position_snapshot.average_entry_price, position_from_disk.average_entry_price,
-                           "Price correction enabled but average_entry_price did not change")
+        self.assertNotEqual(
+            position_snapshot.orders[-1].price,
+            position_from_disk.orders[-1].price,
+            f"Price correction enabled but order price did not change. "
+            f"Original={position_snapshot.orders[-1].price}, "
+            f"Corrected={position_from_disk.orders[-1].price}"
+        )
+        self.assertNotEqual(
+            position_snapshot.average_entry_price,
+            position_from_disk.average_entry_price,
+            f"Price correction enabled but average_entry_price did not change. "
+            f"Original={position_snapshot.average_entry_price}, "
+            f"Corrected={position_from_disk.average_entry_price}"
+        )
+
+        # Verify price was corrected to the injected value (approximately)
+        self.assertAlmostEqual(
+            position_from_disk.orders[-1].price,
+            correct_price,
+            delta=100,
+            msg=f"Price should be corrected to ~{correct_price}, got {position_from_disk.orders[-1].price}"
+        )
+
+        # Clean up
+        self.live_price_fetcher_client.clear_test_price_sources()
 
     def test_no_mdd_failures(self):
         self.verify_elimination_data_in_memory_and_disk([])
         self.position = self.trade_pair_to_default_position[TradePair.BTCUSD]
+
+        # Inject test price data
+        test_price = 65000.0
+        price_source = self.create_price_source(test_price)
+        self.live_price_fetcher_client.set_test_price_source(TradePair.BTCUSD, price_source)
+
         live_price, _ = self.live_price_fetcher_client.get_latest_price(trade_pair=TradePair.BTCUSD)
         o1 = Order(order_type=OrderType.SHORT,
                 leverage=1.0,
@@ -350,10 +391,19 @@ class TestMDDChecker(TestBase):
         self.verify_core_position_fields_unchanged(position_snapshot, position_from_disk)
         self.assertFalse(position_from_disk.is_closed_position)
 
+        # Clean up
+        self.live_price_fetcher_client.clear_test_price_sources()
+
     def test_no_mdd_failures_high_leverage_one_order(self):
         """Test that high leverage positions with small losses don't trigger MDD."""
         self.verify_elimination_data_in_memory_and_disk([])
         position_btc = self.trade_pair_to_default_position[TradePair.BTCUSD]
+
+        # Inject test price data for BTC
+        btc_price = 65000.0
+        btc_price_source = self.create_price_source(btc_price)
+        self.live_price_fetcher_client.set_test_price_source(TradePair.BTCUSD, btc_price_source)
+
         live_btc_price, _ = self.live_price_fetcher_client.get_latest_price(trade_pair=TradePair.BTCUSD)
 
         o1 = Order(
@@ -385,6 +435,12 @@ class TestMDDChecker(TestBase):
 
         # Add ETH position
         position_eth = self.trade_pair_to_default_position[TradePair.ETHUSD]
+
+        # Inject test price data for ETH
+        eth_price = 3200.0
+        eth_price_source = self.create_price_source(eth_price)
+        self.live_price_fetcher_client.set_test_price_source(TradePair.ETHUSD, eth_price_source)
+
         live_eth_price, _ = self.live_price_fetcher_client.get_latest_price(trade_pair=TradePair.ETHUSD)
 
         o2 = Order(
@@ -400,6 +456,9 @@ class TestMDDChecker(TestBase):
         self.mdd_checker_client.mdd_check()
         positions_from_disk = self.position_client.get_positions_for_one_hotkey(self.MINER_HOTKEY)
         self.assertEqual(len(positions_from_disk), 2)
+
+        # Clean up
+        self.live_price_fetcher_client.clear_test_price_sources()
 
 
 if __name__ == '__main__':

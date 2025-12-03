@@ -575,13 +575,13 @@ class ServerOrchestrator:
             'common_data',
             'metagraph',
             'position_lock',
-            'contract',
             'perf_ledger',
             'live_price_fetcher',
             'asset_selection',
             'challenge_period',
             'elimination',
             'position_manager',
+            'contract',            # Must come AFTER position_manager, perf_ledger, metagraph (ValidatorContractManager uses these clients)
             'debt_ledger',         # Must come AFTER position_manager (PenaltyLedgerManager uses PositionManagerClient)
             'websocket_notifier',
             'plagiarism',
@@ -728,7 +728,25 @@ class ServerOrchestrator:
         bt.logging.debug(f"Creating client for {server_name}")
 
         # Create client (will connect to running server)
-        client = client_class(running_unit_tests=(self._mode == ServerMode.TESTING))
+        # Special handling for clients with local cache support - enable for fast lookups without RPC
+        if server_name == 'asset_selection':
+            # Enable local cache with 5-second refresh period for fast lookups without RPC
+            # This prevents "Selected asset class: [unknown]" errors in validator.py:543
+            client = client_class(
+                running_unit_tests=(self._mode == ServerMode.TESTING),
+                local_cache_refresh_period_ms=5000
+            )
+        elif server_name == 'elimination':
+            # Enable local cache with 5-second refresh period for fast lookups without RPC
+            # Used by validator.py:473 (get_elimination_local_cache) and validator.py:487 (get_departed_hotkey_info_local_cache)
+            # Saves 66.81ms per order for elimination check, 11.26ms per order for re-registration check
+            client = client_class(
+                running_unit_tests=(self._mode == ServerMode.TESTING),
+                local_cache_refresh_period_ms=5000
+            )
+        else:
+            client = client_class(running_unit_tests=(self._mode == ServerMode.TESTING))
+
         self._clients[server_name] = client
 
         return client
@@ -738,7 +756,7 @@ class ServerOrchestrator:
         Clear all test data from all servers for test isolation.
 
         This is a convenience method for tests to reset state between test methods.
-        Calls clear methods on all relevant clients.
+        Calls clear methods on all relevant clients, creating clients if they don't exist yet.
 
         Example usage in test setUp():
             def setUp(self):
@@ -751,43 +769,63 @@ class ServerOrchestrator:
 
         bt.logging.debug("Clearing all test data...")
 
+        # Helper to get client (creates if doesn't exist)
+        def get_client_safe(server_name: str):
+            """Get client, creating it if it doesn't exist yet."""
+            if server_name in self._servers:  # Only if server is running
+                return self.get_client(server_name)
+            return None
+
         # Clear metagraph data (must be first to avoid cascading issues)
-        if 'metagraph' in self._clients:
-            self._clients['metagraph'].set_hotkeys([])
+        metagraph_client = get_client_safe('metagraph')
+        if metagraph_client:
+            metagraph_client.set_hotkeys([])
 
         # Clear position manager data (positions and disk)
-        if 'position_manager' in self._clients:
-            self._clients['position_manager'].clear_all_miner_positions_and_disk()
+        position_client = get_client_safe('position_manager')
+        if position_client:
+            position_client.clear_all_miner_positions_and_disk()
 
         # Clear perf ledger data
-        if 'perf_ledger' in self._clients:
-            self._clients['perf_ledger'].clear_all_ledger_data()
+        perf_ledger_client = get_client_safe('perf_ledger')
+        if perf_ledger_client:
+            perf_ledger_client.clear_all_ledger_data()
 
         # Clear elimination data
-        if 'elimination' in self._clients:
-            self._clients['elimination'].clear_eliminations()
+        elimination_client = get_client_safe('elimination')
+        if elimination_client:
+            elimination_client.clear_eliminations()
 
         # Clear challenge period data
-        if 'challenge_period' in self._clients:
-            self._clients['challenge_period']._clear_challengeperiod_in_memory_and_disk()
-            self._clients['challenge_period'].clear_elimination_reasons()
+        challenge_period_client = get_client_safe('challenge_period')
+        if challenge_period_client:
+            challenge_period_client._clear_challengeperiod_in_memory_and_disk()
+            challenge_period_client.clear_elimination_reasons()
 
         # Clear plagiarism data
-        if 'plagiarism' in self._clients:
-            self._clients['plagiarism'].clear_plagiarism_data()
+        plagiarism_client = get_client_safe('plagiarism')
+        if plagiarism_client:
+            plagiarism_client.clear_plagiarism_data()
 
         # Clear plagiarism events (class-level cache)
         from vali_objects.utils.plagiarism_events import PlagiarismEvents
         PlagiarismEvents.clear_plagiarism_events()
 
         # Clear limit order data
-        if 'limit_order' in self._clients:
-            self._clients['limit_order'].clear_limit_orders()
+        limit_order_client = get_client_safe('limit_order')
+        if limit_order_client:
+            limit_order_client.clear_limit_orders()
+
+        # Clear asset selection data
+        asset_selection_client = get_client_safe('asset_selection')
+        if asset_selection_client:
+            asset_selection_client.clear_asset_selections_for_test()
 
         # Clear live price fetcher test data (test candles and test price sources)
-        if 'live_price_fetcher' in self._clients:
-            self._clients['live_price_fetcher'].clear_test_candle_data()
-            self._clients['live_price_fetcher'].clear_test_price_sources()
+        live_price_client = get_client_safe('live_price_fetcher')
+        if live_price_client:
+            live_price_client.clear_test_candle_data()
+            live_price_client.clear_test_price_sources()
 
         bt.logging.debug("All test data cleared")
 

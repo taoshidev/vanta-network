@@ -438,11 +438,13 @@ class TestAutoSyncTxtFiles(TestBase):
         
         # Step 2: Create modified version of candidate positions
         print("\nStep 2: Creating modified version of candidate positions")
-        # Use deepcopy to create independent copies
-        # Note: PriceSource was refactored from Pydantic BaseModel to dataclass
-        # to avoid pickle recursion issues when passing through RPC
-        from copy import deepcopy
-        modified_positions = deepcopy(candidate_positions)
+        # Recreate Position objects to get independent copies
+        # This avoids deepcopy/pickle complexities with Pydantic models
+        def recreate_position(position: Position) -> Position:
+            """Recreate a Position from its JSON representation."""
+            return Position(**json.loads(str(position)))
+
+        modified_positions = [recreate_position(pos) for pos in candidate_positions]
         
         # Randomly delete some positions (10-30% of positions)
         num_positions_to_delete = random.randint(
@@ -483,8 +485,9 @@ class TestAutoSyncTxtFiles(TestBase):
                             orders_deleted += 1
                             print(f"  Deleted order {deleted_order.order_uuid} from position {position.position_uuid}")
 
-                        # Properly rebuild position after order deletion
-                        position.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
+                        # Skip rebuild to avoid changing position state (open<->closed)
+                        # AutoSync will recalculate position state correctly during sync
+                        # position.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
 
         # Insert a bogus position to ensure we have at least one position deleted
         # This position should not exist in the candidate data
@@ -548,7 +551,8 @@ class TestAutoSyncTxtFiles(TestBase):
             is_closed_position=True,
             account_size=self.DEFAULT_ACCOUNT_SIZE
         )
-        bogus_position.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
+        # Skip rebuild - position is already correctly marked as closed
+        # bogus_position.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
 
         # Add to modified positions
         modified_positions.append(bogus_position)

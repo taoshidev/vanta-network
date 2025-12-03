@@ -56,11 +56,7 @@ from vali_objects.utils.position_manager_server import PositionManagerServer
 from vali_objects.utils.challengeperiod_server import ChallengePeriodServer
 from vali_objects.utils.challengeperiod_client import ChallengePeriodClient
 from vali_objects.utils.vali_utils import ValiUtils
-from vali_objects.utils.plagiarism_detector_server import PlagiarismDetectorServer
-from vali_objects.utils.contract_server import ContractServer
-from vali_objects.utils.asset_selection_server import AssetSelectionServer
 from vali_objects.utils.order_processor import OrderProcessor
-from shared_objects.common_data_server import CommonDataServer, CommonDataClient
 from shared_objects.shutdown_coordinator import ShutdownCoordinator
 
 def is_shutdown() -> bool:

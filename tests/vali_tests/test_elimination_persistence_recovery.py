@@ -192,8 +192,7 @@ class TestEliminationPersistenceRecovery(TestBase):
         self.elimination_client.write_eliminations_to_disk(test_eliminations)
 
         # Simulate restart by reloading data from disk
-        # Clear memory first, then reload from disk
-        self.elimination_client.clear_eliminations()
+        # load_eliminations_from_disk() already clears memory before loading
         self.elimination_client.load_eliminations_from_disk()
 
         # Verify eliminations were loaded
@@ -251,7 +250,7 @@ class TestEliminationPersistenceRecovery(TestBase):
         shutil.copy2(backup_file, original_file)
 
         # Reload data from disk to simulate restart
-        self.elimination_client.clear_eliminations()
+        # load_eliminations_from_disk() already clears memory before loading
         self.elimination_client.load_eliminations_from_disk()
 
         # Verify restoration
@@ -273,7 +272,7 @@ class TestEliminationPersistenceRecovery(TestBase):
 
         # Try to reload (should handle gracefully)
         try:
-            self.elimination_client.clear_eliminations()
+            # load_eliminations_from_disk() already clears memory before loading
             self.elimination_client.load_eliminations_from_disk()
             # Should create empty eliminations
             self.assertEqual(len(self.elimination_client.get_eliminations_from_memory()), 0)
@@ -295,7 +294,7 @@ class TestEliminationPersistenceRecovery(TestBase):
             json.dump(corrupted_data, f)
 
         # Reload data
-        self.elimination_client.clear_eliminations()
+        # load_eliminations_from_disk() already clears memory before loading
         self.elimination_client.load_eliminations_from_disk()
 
         # Should load what it can
@@ -412,7 +411,7 @@ class TestEliminationPersistenceRecovery(TestBase):
             json.dump(old_format_data, f)
 
         # Reload data to test migration
-        self.elimination_client.clear_eliminations()
+        # load_eliminations_from_disk() already clears memory before loading
         self.elimination_client.load_eliminations_from_disk()
 
         # Should either migrate or handle gracefully
