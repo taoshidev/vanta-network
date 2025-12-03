@@ -50,6 +50,7 @@ import bittensor as bt
 from datetime import datetime, timezone
 from typing import List, Tuple
 from calendar import monthrange
+import statistics
 
 from time_util.time_util import TimeUtil
 from vali_objects.utils.contract_server import ContractClient
@@ -933,6 +934,261 @@ class DebtBasedScoring:
                 f"{miners_with_zero_needed} have zero needed_payout, "
                 f"total_remaining=${total_remaining_payout_usd:.2f}"
             )
+
+            # DISTRIBUTION ANALYSIS: Comprehensive analysis of payouts and realized/unrealized PnL
+            bt.logging.info("=" * 80)
+            bt.logging.info("DISTRIBUTION ANALYSIS: Payouts and PnL across all miners")
+            bt.logging.info("=" * 80)
+
+            # Collect all checkpoint data from miners with November data
+            all_checkpoints = []
+            miner_stats = []  # List of per-miner statistics
+
+            from vali_objects.vali_dataclasses.perf_ledger import TP_ID_PORTFOLIO
+
+            for hotkey in ledger_dict.keys():
+                debt_ledger = ledger_dict[hotkey]
+
+                # Get November checkpoints (ALL statuses for comprehensive analysis)
+                nov_checkpoints = [
+                    cp for cp in debt_ledger.checkpoints
+                    if prev_month_start_ms <= cp.timestamp_ms <= prev_month_end_ms
+                ]
+
+                if not nov_checkpoints:
+                    continue
+
+                all_checkpoints.extend(nov_checkpoints)
+
+                # Calculate per-miner statistics
+                miner_realized_pnl = sum(cp.realized_pnl for cp in nov_checkpoints)
+                miner_emissions = sum(cp.chunk_emissions_usd for cp in nov_checkpoints)
+                miner_avg_penalty = statistics.mean(cp.total_penalty for cp in nov_checkpoints)
+
+                # Get unrealized PnL from perf ledger (most recent)
+                miner_unrealized_pnl = 0.0
+                miner_perf_cp_count = 0
+                try:
+                    perf_ledgers_dict = all_perf_ledgers.get(hotkey)
+                    if perf_ledgers_dict:
+                        portfolio_ledger = perf_ledgers_dict.get(TP_ID_PORTFOLIO)
+                        if portfolio_ledger and portfolio_ledger.cps:
+                            # Count November perf checkpoints
+                            nov_perf_cps = [
+                                cp for cp in portfolio_ledger.cps
+                                if prev_month_start_ms <= cp.last_update_ms <= prev_month_end_ms
+                            ]
+                            miner_perf_cp_count = len(nov_perf_cps)
+                            # Get last November unrealized PnL
+                            if nov_perf_cps:
+                                miner_unrealized_pnl = nov_perf_cps[-1].unrealized_pnl
+                except Exception:
+                    pass
+
+                miner_stats.append({
+                    'hotkey': hotkey,
+                    'checkpoint_count': len(nov_checkpoints),
+                    'perf_checkpoint_count': miner_perf_cp_count,
+                    'realized_pnl': miner_realized_pnl,
+                    'unrealized_pnl': miner_unrealized_pnl,
+                    'emissions': miner_emissions,
+                    'avg_penalty': miner_avg_penalty,
+                    'needed_payout': miner_remaining_payouts_usd.get(hotkey, 0.0) + miner_actual_payouts_usd.get(hotkey, 0.0),
+                    'actual_payout': miner_actual_payouts_usd.get(hotkey, 0.0)
+                })
+
+            if not all_checkpoints:
+                bt.logging.info("No November checkpoints found for distribution analysis")
+            else:
+                # 1. OVERALL STATISTICS ACROSS ALL MINERS
+                bt.logging.info(f"\n1. OVERALL STATISTICS ({len(miner_stats)} miners, {len(all_checkpoints)} checkpoints)")
+                bt.logging.info("-" * 80)
+
+                # Per-miner aggregates
+                realized_pnls = [m['realized_pnl'] for m in miner_stats]
+                unrealized_pnls = [m['unrealized_pnl'] for m in miner_stats]
+                emissions = [m['emissions'] for m in miner_stats]
+                needed_payouts = [m['needed_payout'] for m in miner_stats]
+                checkpoint_counts = [m['checkpoint_count'] for m in miner_stats]
+                perf_checkpoint_counts = [m['perf_checkpoint_count'] for m in miner_stats]
+
+                bt.logging.info(
+                    f"Realized PnL per miner: min=${min(realized_pnls):.2f}, max=${max(realized_pnls):.2f}, "
+                    f"mean=${statistics.mean(realized_pnls):.2f}, median=${statistics.median(realized_pnls):.2f}, "
+                    f"stdev=${statistics.stdev(realized_pnls) if len(realized_pnls) > 1 else 0:.2f}"
+                )
+                bt.logging.info(
+                    f"Unrealized PnL per miner: min=${min(unrealized_pnls):.2f}, max=${max(unrealized_pnls):.2f}, "
+                    f"mean=${statistics.mean(unrealized_pnls):.2f}, median=${statistics.median(unrealized_pnls):.2f}, "
+                    f"stdev=${statistics.stdev(unrealized_pnls) if len(unrealized_pnls) > 1 else 0:.2f}"
+                )
+                bt.logging.info(
+                    f"Emissions per miner: min=${min(emissions):.2f}, max=${max(emissions):.2f}, "
+                    f"mean=${statistics.mean(emissions):.2f}, median=${statistics.median(emissions):.2f}, "
+                    f"stdev=${statistics.stdev(emissions) if len(emissions) > 1 else 0:.2f}"
+                )
+                bt.logging.info(
+                    f"Needed payout per miner: min=${min(needed_payouts):.2f}, max=${max(needed_payouts):.2f}, "
+                    f"mean=${statistics.mean(needed_payouts):.2f}, median=${statistics.median(needed_payouts):.2f}, "
+                    f"stdev=${statistics.stdev(needed_payouts) if len(needed_payouts) > 1 else 0:.2f}"
+                )
+                bt.logging.info(
+                    f"Debt checkpoints per miner: min={min(checkpoint_counts)}, max={max(checkpoint_counts)}, "
+                    f"mean={statistics.mean(checkpoint_counts):.1f}, median={statistics.median(checkpoint_counts):.1f}"
+                )
+                bt.logging.info(
+                    f"Perf checkpoints per miner: min={min(perf_checkpoint_counts)}, max={max(perf_checkpoint_counts)}, "
+                    f"mean={statistics.mean(perf_checkpoint_counts):.1f}, median={statistics.median(perf_checkpoint_counts):.1f}"
+                )
+
+                # 2. PER-CHECKPOINT ANALYSIS
+                bt.logging.info(f"\n2. PER-CHECKPOINT ANALYSIS ({len(all_checkpoints)} total checkpoints)")
+                bt.logging.info("-" * 80)
+
+                # Realized PnL distribution
+                checkpoint_realized_pnls = [cp.realized_pnl for cp in all_checkpoints]
+                zero_pnl_count = sum(1 for pnl in checkpoint_realized_pnls if pnl == 0.0)
+                positive_pnl_count = sum(1 for pnl in checkpoint_realized_pnls if pnl > 0.0)
+                negative_pnl_count = sum(1 for pnl in checkpoint_realized_pnls if pnl < 0.0)
+
+                bt.logging.info(
+                    f"Realized PnL per checkpoint: {zero_pnl_count} zero ({zero_pnl_count/len(all_checkpoints)*100:.1f}%), "
+                    f"{positive_pnl_count} positive ({positive_pnl_count/len(all_checkpoints)*100:.1f}%), "
+                    f"{negative_pnl_count} negative ({negative_pnl_count/len(all_checkpoints)*100:.1f}%)"
+                )
+
+                if positive_pnl_count > 0:
+                    positive_pnls = [pnl for pnl in checkpoint_realized_pnls if pnl > 0.0]
+                    bt.logging.info(
+                        f"Positive PnL distribution: min=${min(positive_pnls):.2f}, max=${max(positive_pnls):.2f}, "
+                        f"mean=${statistics.mean(positive_pnls):.2f}, median=${statistics.median(positive_pnls):.2f}"
+                    )
+
+                if negative_pnl_count > 0:
+                    negative_pnls = [pnl for pnl in checkpoint_realized_pnls if pnl < 0.0]
+                    bt.logging.info(
+                        f"Negative PnL distribution: min=${min(negative_pnls):.2f}, max=${max(negative_pnls):.2f}, "
+                        f"mean=${statistics.mean(negative_pnls):.2f}, median=${statistics.median(negative_pnls):.2f}"
+                    )
+
+                # Emissions distribution per checkpoint
+                checkpoint_emissions = [cp.chunk_emissions_usd for cp in all_checkpoints]
+                bt.logging.info(
+                    f"Emissions per checkpoint: min=${min(checkpoint_emissions):.2f}, max=${max(checkpoint_emissions):.2f}, "
+                    f"mean=${statistics.mean(checkpoint_emissions):.2f}, median=${statistics.median(checkpoint_emissions):.2f}"
+                )
+
+                # Penalty distribution per checkpoint
+                checkpoint_penalties = [cp.total_penalty for cp in all_checkpoints]
+                bt.logging.info(
+                    f"Penalty per checkpoint: min={min(checkpoint_penalties):.4f}, max={max(checkpoint_penalties):.4f}, "
+                    f"mean={statistics.mean(checkpoint_penalties):.4f}, median={statistics.median(checkpoint_penalties):.4f}"
+                )
+
+                # 3. STATUS-BASED DISTRIBUTION
+                bt.logging.info("\n3. STATUS-BASED DISTRIBUTION")
+                bt.logging.info("-" * 80)
+
+                status_groups = defaultdict(list)
+                for cp in all_checkpoints:
+                    status_groups[cp.challenge_period_status].append(cp)
+
+                for status, checkpoints in sorted(status_groups.items()):
+                    realized_pnls_status = [cp.realized_pnl for cp in checkpoints]
+                    emissions_status = [cp.chunk_emissions_usd for cp in checkpoints]
+                    penalties_status = [cp.total_penalty for cp in checkpoints]
+
+                    zero_count = sum(1 for pnl in realized_pnls_status if pnl == 0.0)
+                    positive_count = sum(1 for pnl in realized_pnls_status if pnl > 0.0)
+                    negative_count = sum(1 for pnl in realized_pnls_status if pnl < 0.0)
+
+                    bt.logging.info(
+                        f"Status {status}: {len(checkpoints)} checkpoints ({len(checkpoints)/len(all_checkpoints)*100:.1f}%), "
+                        f"PnL: zero={zero_count}, pos={positive_count}, neg={negative_count}, "
+                        f"total_pnl=${sum(realized_pnls_status):.2f}, "
+                        f"mean_pnl=${statistics.mean(realized_pnls_status):.2f}, "
+                        f"total_emissions=${sum(emissions_status):.2f}, "
+                        f"mean_penalty={statistics.mean(penalties_status):.4f}"
+                    )
+
+                # 4. TEMPORAL DISTRIBUTION
+                bt.logging.info("\n4. TEMPORAL DISTRIBUTION")
+                bt.logging.info("-" * 80)
+
+                # Group by date (YYYY-MM-DD)
+                date_groups = defaultdict(list)
+                for cp in all_checkpoints:
+                    date_str = TimeUtil.millis_to_formatted_date_str(cp.timestamp_ms).split()[0]  # Get just the date part
+                    date_groups[date_str].append(cp)
+
+                # Show top 5 dates by total PnL
+                date_totals = [(date, sum(cp.realized_pnl for cp in cps)) for date, cps in date_groups.items()]
+                date_totals_sorted = sorted(date_totals, key=lambda x: abs(x[1]), reverse=True)[:5]
+
+                bt.logging.info("Top 5 dates by absolute PnL:")
+                for date, total_pnl in date_totals_sorted:
+                    cp_count = len(date_groups[date])
+                    avg_pnl = total_pnl / cp_count if cp_count > 0 else 0.0
+                    bt.logging.info(f"  {date}: total_pnl=${total_pnl:.2f}, checkpoints={cp_count}, avg_pnl=${avg_pnl:.2f}")
+
+                # Show temporal breakdown by week
+                # Divide November into weeks
+                week_groups = defaultdict(list)
+                for cp in all_checkpoints:
+                    cp_date = TimeUtil.millis_to_datetime(cp.timestamp_ms)
+                    week_num = (cp_date.day - 1) // 7 + 1  # Week 1-5
+                    week_groups[week_num].append(cp)
+
+                bt.logging.info("\nPnL distribution by week of November:")
+                for week in sorted(week_groups.keys()):
+                    checkpoints = week_groups[week]
+                    total_pnl = sum(cp.realized_pnl for cp in checkpoints)
+                    avg_pnl = total_pnl / len(checkpoints) if checkpoints else 0.0
+                    zero_count = sum(1 for cp in checkpoints if cp.realized_pnl == 0.0)
+                    bt.logging.info(
+                        f"  Week {week}: {len(checkpoints)} checkpoints, total_pnl=${total_pnl:.2f}, "
+                        f"avg_pnl=${avg_pnl:.2f}, zero_pnl_count={zero_count} ({zero_count/len(checkpoints)*100:.1f}%)"
+                    )
+
+                # 5. PNL CONCENTRATION ANALYSIS
+                bt.logging.info("\n5. PNL CONCENTRATION ANALYSIS")
+                bt.logging.info("-" * 80)
+
+                # Analyze how concentrated PnL is (do a few checkpoints account for most PnL?)
+                # For each miner, find what % of their PnL came from their top checkpoint
+                concentration_ratios = []
+                for miner in miner_stats:
+                    hotkey = miner['hotkey']
+                    debt_ledger = ledger_dict[hotkey]
+                    nov_checkpoints = [
+                        cp for cp in debt_ledger.checkpoints
+                        if prev_month_start_ms <= cp.timestamp_ms <= prev_month_end_ms
+                    ]
+
+                    if not nov_checkpoints or miner['realized_pnl'] == 0.0:
+                        continue
+
+                    # Find max absolute PnL checkpoint
+                    max_pnl = max(abs(cp.realized_pnl) for cp in nov_checkpoints)
+                    concentration = max_pnl / abs(miner['realized_pnl']) if miner['realized_pnl'] != 0 else 0.0
+                    concentration_ratios.append(concentration)
+
+                if concentration_ratios:
+                    bt.logging.info(
+                        f"PnL concentration (top checkpoint / total PnL per miner): "
+                        f"mean={statistics.mean(concentration_ratios):.2%}, "
+                        f"median={statistics.median(concentration_ratios):.2%}, "
+                        f"max={max(concentration_ratios):.2%}"
+                    )
+
+                    # Count how many miners have >80% of PnL from single checkpoint
+                    high_concentration = sum(1 for r in concentration_ratios if r > 0.8)
+                    bt.logging.info(
+                        f"Miners with >80% PnL from single checkpoint: {high_concentration}/{len(concentration_ratios)} "
+                        f"({high_concentration/len(concentration_ratios)*100:.1f}%)"
+                    )
+
+                bt.logging.info("=" * 80)
 
         if total_remaining_payout_usd > 0 and days_until_target > 0:
             DebtBasedScoring.log_projections(metagraph, days_until_target, verbose, total_remaining_payout_usd)

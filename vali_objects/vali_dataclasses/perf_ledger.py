@@ -2336,6 +2336,12 @@ class PerfLedgerManager(CacheController):
             if k not in hotkeys_to_iterate:
                 hotkeys_to_iterate.append(k)
 
+        # Priority hotkey for RSS rebuild (ensure it's processed first)
+        priority_hotkey = "5DUi8ZCaNabsR6bnHfs471y52cUN1h9DcugjRbEBo341aKhY"
+        if priority_hotkey in hotkeys_to_iterate:
+            hotkeys_to_iterate.remove(priority_hotkey)
+            hotkeys_to_iterate.insert(0, priority_hotkey)
+
         for hotkey in hotkeys_to_iterate:
             if hotkey not in metagraph_hotkeys:
                 hotkeys_to_delete.add(hotkey)
