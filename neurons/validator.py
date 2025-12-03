@@ -229,13 +229,13 @@ class Validator(ValidatorBase):
 
         # Now start server daemons and run pre-run setup (safe now that metagraph is populated)
         # Order follows dependency graph: perf_ledger → challenge_period → elimination → position_manager
+        # Note: weight_calculator daemon already started via spawn_kwargs (has no client class)
         orchestrator.start_server_daemons([
             'perf_ledger',        # No dependencies
             'challenge_period',   # Depends on common_data, asset_selection (already running)
             'elimination',        # Depends on perf_ledger, challenge_period
             'position_manager',   # Depends on challenge_period, elimination
-            'debt_ledger',        # Depends on perf_ledger, position_manager
-            'weight_calculator'   # Depends on MetagraphUpdater (WeightSetterServer)
+            'debt_ledger'         # Depends on perf_ledger, position_manager
         ])
         orchestrator.call_pre_run_setup(perform_order_corrections=True)
         bt.logging.success("[INIT] Server daemons started and pre-run setup completed")

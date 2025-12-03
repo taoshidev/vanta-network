@@ -28,11 +28,11 @@ class P2PSyncer(ValidatorSyncBase):
         # Create own clients (forward compatibility - no parameter passing).
         from shared_objects.metagraph_server import MetagraphClient
         from vali_objects.utils.elimination_client import EliminationClient
-        from vali_objects.utils.price_fetcher_client import PriceFetcherClient
+        from vali_objects.utils.live_price_server import LivePriceFetcherClient
 
         self._metagraph_client = MetagraphClient()
         self._elimination_client = EliminationClient()
-        self._price_fetcher_client = PriceFetcherClient()
+        self._price_fetcher_client = LivePriceFetcherClient()
 
         self.wallet = wallet
         self.golden = None
