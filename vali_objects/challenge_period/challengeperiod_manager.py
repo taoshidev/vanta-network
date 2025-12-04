@@ -436,7 +436,7 @@ class ChallengePeriodManager(CacheController):
             sorted_scores = sorted(miner_scores.items(), key=lambda item: item[1], reverse=True)
 
             # Only take miners with positive scores
-            top_miners = [(hotkey, score) for hotkey, score in sorted_scores[:promotion_threshold_rank] if score > 0]
+            top_miners = [(hotkey, score) for hotkey, score in sorted_scores[:promotion_threshold_rank] if score >= 0]
             maincomp_hotkeys.update({hotkey for hotkey, _ in top_miners})
 
             bt.logging.info(f"{asset_class}: {len(sorted_scores)} miners ranked for evaluation")
