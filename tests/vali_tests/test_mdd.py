@@ -451,6 +451,48 @@ class TestMDDChecker(TestBase):
         positions_from_disk = self.position_client.get_positions_for_one_hotkey(self.MINER_HOTKEY)
         self.assertEqual(len(positions_from_disk), 2)
 
+    def test_get_quote_returns_three_values(self):
+        """
+        Regression test for get_quote return type.
+
+        Tests that get_quote returns exactly 3 values (bid, ask, timestamp)
+        and can be properly unpacked. This catches the bug where the type
+        annotation was incorrectly set to (float, float, int) instead of
+        Tuple[float, float, int], causing RPC serialization errors.
+        """
+        # Inject test price data with bid/ask
+        test_price = 65000.0
+        bid_price = 64990.0
+        ask_price = 65010.0
+        order_time_ms = TimeUtil.now_in_millis()
+
+        price_source = self.create_price_source(
+            price=test_price,
+            bid=bid_price,
+            ask=ask_price,
+            order_time_ms=order_time_ms
+        )
+        self.live_price_fetcher_client.set_test_price_source(TradePair.BTCUSD, price_source)
+
+        # Test that get_quote returns exactly 3 values
+        result = self.live_price_fetcher_client.get_quote(TradePair.BTCUSD, order_time_ms)
+
+        # Verify it's a tuple with 3 elements
+        self.assertIsInstance(result, tuple, "get_quote should return a tuple")
+        self.assertEqual(len(result), 3, "get_quote should return exactly 3 values")
+
+        # Test unpacking works (this is what failed in production)
+        bid, ask, timestamp = result
+
+        # Verify the values are correct types (or None)
+        self.assertTrue(bid is None or isinstance(bid, (float, int)), "bid should be numeric or None")
+        self.assertTrue(ask is None or isinstance(ask, (float, int)), "ask should be numeric or None")
+        self.assertTrue(timestamp is None or isinstance(timestamp, (float, int)), "timestamp should be numeric or None")
+
+        # Verify bid/ask relationship if both are present
+        if bid is not None and ask is not None and bid > 0 and ask > 0:
+            self.assertGreaterEqual(ask, bid, "ask should be >= bid when both are present")
+
 
 if __name__ == '__main__':
     import unittest

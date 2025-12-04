@@ -256,7 +256,7 @@ class LivePriceFetcher:
         return filtered_data
 
 
-    def get_quote(self, trade_pair: TradePair, processed_ms: int) -> (float, float, int):
+    def get_quote(self, trade_pair: TradePair, processed_ms: int) -> Tuple[float, float, int]:
         """
         returns the bid and ask quote for a trade_pair at processed_ms. Only Polygon supports point-in-time bid/ask.
         """

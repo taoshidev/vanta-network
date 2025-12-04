@@ -253,7 +253,7 @@ class Scoring:
 
                     # Check if the miner has full penalty - if not include them in the scoring competition
                     if miner in full_penalty_miners:
-                        bt.logging.info(f"Skipping {miner} in {asset_class.value}/{config_name} (full penalty)")
+                        #bt.logging.info(f"Skipping {miner} in {asset_class.value}/{config_name} (full penalty)")
                         continue
 
                     score = config['function'](

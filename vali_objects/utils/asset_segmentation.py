@@ -61,7 +61,7 @@ class AssetSegmentation:
         subset_ledger = {}
         for hotkey, full_ledger in self.overall_ledgers.items():
             if full_ledger is None:
-                bt.logging.warning(f"Ledger for miner {hotkey} is None, skipping")
+                #bt.logging.warning(f"Ledger for miner {hotkey} is None, skipping")
                 continue
             if not isinstance(full_ledger, dict):
                 bt.logging.warning(f"Ledger for miner {hotkey} has unexpected type {type(full_ledger).__name__}, expected dict. Skipping.")
