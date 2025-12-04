@@ -1,5 +1,5 @@
 # developer: trdougherty, jbonilla
-# Copyright © 2024 Taoshi Inc
+# Copyright (c) 2024 Taoshi Inc
 """
 ChallengePeriod unit tests using the new client/server architecture.
 

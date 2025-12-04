@@ -1,5 +1,5 @@
 # developer: jbonilla
-# Copyright © 2024 Taoshi Inc
+# Copyright (c) 2024 Taoshi Inc
 """
 CoreOutputsManager - Business logic for checkpoint generation and core outputs.
 

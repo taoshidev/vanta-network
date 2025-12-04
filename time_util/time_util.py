@@ -1,5 +1,5 @@
 # developer: Taoshidev
-# Copyright © 2024 Taoshi Inc
+# Copyright (c) 2024 Taoshi Inc
 import functools
 import re
 import time

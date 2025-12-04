@@ -1,4 +1,4 @@
-# Copyright © 2024 Taoshi Inc
+# Copyright (c) 2024 Taoshi Inc
 import unittest
 
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode

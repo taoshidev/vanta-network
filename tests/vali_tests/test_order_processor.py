@@ -1,5 +1,5 @@
 # developer: jbonilla
-# Copyright © 2024 Taoshi Inc
+# Copyright (c) 2024 Taoshi Inc
 """
 Comprehensive unit tests for OrderProcessor.
 Tests all production code paths to ensure high confidence in production releases.

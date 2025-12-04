@@ -1,5 +1,5 @@
 # developer: jbonilla
-# Copyright © 2024 Taoshi Inc
+# Copyright (c) 2024 Taoshi Inc
 """
 Market order manager tests using modern client/server architecture.
 Tests all market order functionality with proper server/client separation.

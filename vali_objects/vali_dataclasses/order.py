@@ -1,5 +1,5 @@
 # developer: Taoshidev
-# Copyright © 2024 Taoshi Inc
+# Copyright (c) 2024 Taoshi Inc
 
 from time_util.time_util import TimeUtil
 from pydantic import field_validator, model_validator

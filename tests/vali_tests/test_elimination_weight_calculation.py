@@ -1,5 +1,5 @@
 # developer: jbonilla
-# Copyright © 2024 Taoshi Inc
+# Copyright (c) 2024 Taoshi Inc
 """
 Consolidated weight calculation tests for eliminated miners.
 Combines weight calculation behavior and elimination weight tests.

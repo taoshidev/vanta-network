@@ -1,5 +1,5 @@
 # developer: jbonilla
-# Copyright © 2024 Taoshi Inc
+# Copyright (c) 2024 Taoshi Inc
 """
 MinerStatisticsServer and MinerStatisticsClient - RPC-based miner statistics service.
 

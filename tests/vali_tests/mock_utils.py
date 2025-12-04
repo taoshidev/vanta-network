@@ -1,5 +1,5 @@
 # developer: assistant
-# Copyright © 2024 Taoshi Inc
+# Copyright (c) 2024 Taoshi Inc
 
 """
 Enhanced mock utilities for comprehensive elimination testing.

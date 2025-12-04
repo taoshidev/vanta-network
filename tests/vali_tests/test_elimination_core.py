@@ -1,5 +1,5 @@
 # developer: jbonilla
-# Copyright © 2024 Taoshi Inc
+# Copyright (c) 2024 Taoshi Inc
 """
 Consolidated core elimination tests combining basic and comprehensive elimination manager functionality.
 Tests all elimination types, persistence, and core operations.

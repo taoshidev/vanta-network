@@ -1,5 +1,5 @@
 # developer: Taoshidev
-# Copyright © 2024 Taoshi Inc
+# Copyright (c) 2024 Taoshi Inc
 from typing import Optional
 
 from vali_objects.enums.execution_type_enum import ExecutionType

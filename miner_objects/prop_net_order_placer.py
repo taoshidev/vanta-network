@@ -1,7 +1,7 @@
 # The MIT License (MIT)
-# Copyright © 2024 Yuma Rao
+# Copyright (c) 2024 Yuma Rao
 # developer: jbonilla
-# Copyright © 2024 Taoshi Inc
+# Copyright (c) 2024 Taoshi Inc
 import asyncio
 import json
 import os

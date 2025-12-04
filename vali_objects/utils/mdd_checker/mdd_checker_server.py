@@ -1,5 +1,5 @@
 # developer: jbonilla
-# Copyright © 2024 Taoshi Inc
+# Copyright (c) 2024 Taoshi Inc
 """
 MDDCheckerServer - RPC server for MDD (Maximum Drawdown) checking and price corrections.
 

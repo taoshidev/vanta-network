@@ -1,5 +1,5 @@
 # developer: jbonilla
-# Copyright © 2024 Taoshi Inc
+# Copyright (c) 2024 Taoshi Inc
 """
 Integration tests for the complete elimination flow using server/client architecture.
 Tests end-to-end elimination scenarios with real server infrastructure.

@@ -1,5 +1,5 @@
 # developer: Taoshidev
-# Copyright © 2024 Taoshi Inc
+# Copyright (c) 2024 Taoshi Inc
 import os
 from enum import Enum
 from typing import Dict, List, Optional

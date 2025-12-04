@@ -1,5 +1,5 @@
 # developer: jbonilla
-# Copyright © 2024 Taoshi Inc
+# Copyright (c) 2024 Taoshi Inc
 """
 Comprehensive tests for the probation feature implementation.
 These tests verify the critical functionality gaps identified during code review

@@ -1,5 +1,5 @@
 # developer: trdougherty, jbonilla
-# Copyright © 2024 Taoshi Inc
+# Copyright (c) 2024 Taoshi Inc
 """
 Integration tests for challenge period management using server/client architecture.
 Tests end-to-end challenge period scenarios with real server infrastructure.

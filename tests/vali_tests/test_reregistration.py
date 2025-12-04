@@ -1,5 +1,5 @@
 # developer: jbonilla
-# Copyright © 2024 Taoshi Inc
+# Copyright (c) 2024 Taoshi Inc
 """
 Integration tests for re-registration tracking and rejection using client/server architecture.
 Tests departed hotkey tracking, re-registration detection, and anomaly protection.

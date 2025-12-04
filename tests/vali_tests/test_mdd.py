@@ -1,5 +1,5 @@
 # developer: jbonilla
-# Copyright © 2024 Taoshi Inc
+# Copyright (c) 2024 Taoshi Inc
 """
 MDD (Maximum Drawdown) Checker tests using modern RPC infrastructure.
 

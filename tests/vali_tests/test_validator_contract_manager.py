@@ -1,5 +1,5 @@
 # developer: jbonilla
-# Copyright © 2024 Taoshi Inc
+# Copyright (c) 2024 Taoshi Inc
 """
 Integration tests for ValidatorContractManager using server/client architecture.
 Tests end-to-end contract management scenarios with real server infrastructure.
