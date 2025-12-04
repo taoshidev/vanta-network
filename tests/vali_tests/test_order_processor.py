@@ -688,65 +688,67 @@ class TestOrderProcessor(TestBase):
 
         mock_limit_order_client.cancel_limit_order.assert_called_once_with(
             self.DEFAULT_MINER_HOTKEY,
-            self.DEFAULT_TRADE_PAIR.trade_pair_id,
+            # self.DEFAULT_TRADE_PAIR.trade_pair_id, TODO support cancel by trade pair in v2
+            None,
             order_uuid,
             self.DEFAULT_NOW_MS
         )
         self.assertEqual(result, {"status": "cancelled"})
 
-    def test_process_limit_cancel_all_orders(self):
-        """Test cancelling all limit orders (empty uuid)"""
-        signal = {}
-        order_uuid = ""
+    # TODO support cancel by trade pair in v2
+    # def test_process_limit_cancel_all_orders(self):
+    #     """Test cancelling all limit orders (empty uuid)"""
+    #     signal = {}
+    #     order_uuid = ""
 
-        limit_order_client = Mock()
-        limit_order_client.cancel_limit_order = Mock(
-            return_value={"status": "all_cancelled", "count": 3}
-        )
+    #     limit_order_client = Mock()
+    #     limit_order_client.cancel_limit_order = Mock(
+    #         return_value={"status": "all_cancelled", "count": 3}
+    #     )
 
-        result = OrderProcessor.process_limit_cancel(
-            signal=signal,
-            trade_pair=self.DEFAULT_TRADE_PAIR,
-            order_uuid=order_uuid,
-            now_ms=self.DEFAULT_NOW_MS,
-            miner_hotkey=self.DEFAULT_MINER_HOTKEY,
-            limit_order_client=limit_order_client
-        )
+    #     result = OrderProcessor.process_limit_cancel(
+    #         signal=signal,
+    #         trade_pair=self.DEFAULT_TRADE_PAIR,
+    #         order_uuid=order_uuid,
+    #         now_ms=self.DEFAULT_NOW_MS,
+    #         miner_hotkey=self.DEFAULT_MINER_HOTKEY,
+    #         limit_order_client=limit_order_client
+    #     )
 
-        limit_order_client.cancel_limit_order.assert_called_once_with(
-            self.DEFAULT_MINER_HOTKEY,
-            self.DEFAULT_TRADE_PAIR.trade_pair_id,
-            order_uuid,
-            self.DEFAULT_NOW_MS
-        )
-        self.assertEqual(result["status"], "all_cancelled")
-        self.assertEqual(result["count"], 3)
+    #     limit_order_client.cancel_limit_order.assert_called_once_with(
+    #         self.DEFAULT_MINER_HOTKEY,
+    #         self.DEFAULT_TRADE_PAIR.trade_pair_id,
+    #         order_uuid,
+    #         self.DEFAULT_NOW_MS
+    #     )
+    #     self.assertEqual(result["status"], "all_cancelled")
+    #     self.assertEqual(result["count"], 3)
 
-    def test_process_limit_cancel_none_uuid(self):
-        """Test cancelling with None uuid (cancel all)"""
-        signal = {}
-        order_uuid = None
+    # def test_process_limit_cancel_none_uuid(self):
+    #     """Test cancelling with None uuid (cancel all)"""
+    #     signal = {}
+    #     order_uuid = None
 
-        mock_limit_order_client = Mock()
-        mock_limit_order_client.cancel_limit_order = Mock(
-            return_value={"status": "all_cancelled"}
-        )
+    #     mock_limit_order_client = Mock()
+    #     mock_limit_order_client.cancel_limit_order = Mock(
+    #         return_value={"status": "all_cancelled"}
+    #     )
 
-        result = OrderProcessor.process_limit_cancel(
-            signal=signal,
-            trade_pair=self.DEFAULT_TRADE_PAIR,
-            order_uuid=order_uuid,
-            now_ms=self.DEFAULT_NOW_MS,
-            miner_hotkey=self.DEFAULT_MINER_HOTKEY,
-            limit_order_client=mock_limit_order_client
-        )
+    #     result = OrderProcessor.process_limit_cancel(
+    #         signal=signal,
+    #         trade_pair=self.DEFAULT_TRADE_PAIR,
+    #         order_uuid=order_uuid,
+    #         now_ms=self.DEFAULT_NOW_MS,
+    #         miner_hotkey=self.DEFAULT_MINER_HOTKEY,
+    #         limit_order_client=mock_limit_order_client
+    #     )
 
-        mock_limit_order_client.cancel_limit_order.assert_called_once_with(
-            self.DEFAULT_MINER_HOTKEY,
-            self.DEFAULT_TRADE_PAIR.trade_pair_id,
-            order_uuid,
-            self.DEFAULT_NOW_MS
-        )
+    #     mock_limit_order_client.cancel_limit_order.assert_called_once_with(
+    #         self.DEFAULT_MINER_HOTKEY,
+    #         self.DEFAULT_TRADE_PAIR.trade_pair_id,
+    #         order_uuid,
+    #         self.DEFAULT_NOW_MS
+    #     )
 
     def test_process_limit_cancel_manager_raises_exception(self):
         """Test that exceptions from cancel are propagated"""
