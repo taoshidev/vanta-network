@@ -31,10 +31,8 @@ class PositionSyncResultException(Exception):
         super().__init__(self.message)
 
 class ValidatorSyncBase():
-    def __init__(self, signal_sync_lock=None, signal_sync_condition=None,
-                 n_orders_being_processed=None, running_unit_tests=False,
-                 enable_position_splitting=False, verbose=False
-):
+    def __init__(self, order_sync=None, running_unit_tests=False,
+                 enable_position_splitting=False, verbose=False):
         self.verbose = verbose
         self.running_unit_tests = running_unit_tests
         secrets = ValiUtils.get_secrets(running_unit_tests=running_unit_tests)
@@ -47,9 +45,7 @@ class ValidatorSyncBase():
         from vali_objects.contract.contract_server import ContractClient
         self._contract_client = ContractClient(running_unit_tests=running_unit_tests)
         self.last_signal_sync_time_ms = 0
-        self.signal_sync_lock = signal_sync_lock
-        self.signal_sync_condition = signal_sync_condition
-        self.n_orders_being_processed = n_orders_being_processed
+        self.order_sync = order_sync
         self._challenge_period_client = ChallengePeriodClient(running_unit_tests=running_unit_tests)
         # Create own LivePriceFetcherClient (forward compatibility - no parameter passing)
         self._live_price_client = LivePriceFetcherClient(running_unit_tests=running_unit_tests)

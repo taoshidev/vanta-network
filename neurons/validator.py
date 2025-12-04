@@ -25,7 +25,7 @@ from template.protocol import SendSignal
 from vali_objects.utils.asset_selection.asset_selection_manager import ASSET_CLASS_SELECTION_TIME_MS
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.data_sync.auto_sync import PositionSyncer
-from vali_objects.data_sync.p2p_syncer import P2PSyncer
+from vali_objects.data_sync.order_sync_state import OrderSyncState
 from vali_objects.utils.limit_order.market_order_manager import MarketOrderManager
 from shared_objects.rate_limiter import RateLimiter
 from vali_objects.uuid_tracker import UUIDTracker
@@ -84,10 +84,10 @@ class Validator(ValidatorBase):
 
         ValiBkpUtils.clear_tmp_dir()
         self.uuid_tracker = UUIDTracker()
-        # Lock to stop new signals from being processed while a validator is restoring
-        self.signal_sync_lock = threading.Lock()
-        self.signal_sync_condition = threading.Condition(self.signal_sync_lock)
-        self.n_orders_being_processed = [0]  # Allow this to be updated across threads by placing it in a list (mutable)
+
+        # Thread-safe state for coordinating order processing vs. position sync
+        # Tracks in-flight orders and signals when sync is waiting
+        self.order_sync = OrderSyncState()
 
         self.config = self.get_config()
         # Use the getattr function to safely get the autosync attribute with a default of False if not found.
@@ -200,7 +200,7 @@ class Validator(ValidatorBase):
 
         # Now start server daemons and run pre-run setup (safe now that metagraph is populated)
         # Order follows dependency graph: perf_ledger → challenge_period → elimination → position_manager → limit_order
-        # Note: weight_calculator daemon already started via spawn_kwargs (has no client class)
+        # Note: weight_calculator server+daemon started at line 197 (depends on MetagraphUpdater's WeightSetterServer RPC)
         orchestrator.start_server_daemons([
             'perf_ledger',         # No dependencies
             'challenge_period',    # Depends on common_data, asset_selection (already running)
@@ -208,7 +208,10 @@ class Validator(ValidatorBase):
             'position_manager',    # Depends on challenge_period, elimination
             'debt_ledger',         # Depends on perf_ledger, position_manager
             'limit_order',         # Depends on position_manager
-            'plagiarism_detector'  # Depends on plagiarism, position_manager
+            'plagiarism_detector', # Depends on plagiarism, position_manager
+            'mdd_checker',         # Depends on position_manager, live_price, common_data, position_lock (all started)
+            'core_outputs',        # Depends on position_manager, elimination, challenge_period, contract (all started)
+            'miner_statistics'     # Depends on position_manager, perf_ledger, elimination, challenge_period, plagiarism_detector, contract (all started)
         ])
         orchestrator.call_pre_run_setup(perform_order_corrections=True)
         bt.logging.success("[INIT] Server daemons started and pre-run setup completed")
@@ -216,20 +219,8 @@ class Validator(ValidatorBase):
 
         # Create PositionSyncer (not a server, runs in main process)
         self.position_syncer = PositionSyncer(
-            signal_sync_lock=self.signal_sync_lock,
-            signal_sync_condition=self.signal_sync_condition,
-            n_orders_being_processed=self.n_orders_being_processed,
+            order_sync=self.order_sync,
             auto_sync_enabled=self.auto_sync
-        )
-
-        # P2P syncer for checkpoint handling (deprecated but still needed for axon attachment)
-        self.p2p_syncer = P2PSyncer(
-            wallet=self.wallet,
-            is_testnet=not self.is_mainnet,
-            signal_sync_lock=self.signal_sync_lock,
-            signal_sync_condition=self.signal_sync_condition,
-            n_orders_being_processed=self.n_orders_being_processed,
-            running_unit_tests=False
         )
 
         # MarketOrderManager creates its own ContractClient internally (forward compatibility)
@@ -237,11 +228,6 @@ class Validator(ValidatorBase):
 
         # Initialize UUID tracker with existing positions
         self.uuid_tracker.add_initial_uuids(self.position_manager_client.get_positions_for_all_miners())
-
-        # Checkpoint management (not a server)
-        self.checkpoint_lock = threading.Lock()
-        self.encoded_checkpoint = ""
-        self.last_checkpoint_time = 0
 
         # Verify hotkey is registered
         bt.logging.info(f"Metagraph n_entries: {len(self.metagraph_client.get_hotkeys())}")
@@ -258,13 +244,12 @@ class Validator(ValidatorBase):
         # ValidatorBase creates its own clients internally (forward compatibility):
         # - AssetSelectionClient, ContractClient
         super().__init__(wallet=self.wallet, slack_notifier=self.slack_notifier, config=self.config,
-                         metagraph=self.metagraph_client, p2p_syncer=self.p2p_syncer,
+                         metagraph=self.metagraph_client,
                          asset_selection_client=self.asset_selection_client, subtensor=self.subtensor)
 
         # Rate limiters for incoming requests
         self.order_rate_limiter = RateLimiter()
         self.position_inspector_rate_limiter = RateLimiter(max_requests_per_window=1, rate_limit_window_duration_seconds=60 * 4)
-        self.checkpoint_rate_limiter = RateLimiter(max_requests_per_window=1, rate_limit_window_duration_seconds=60 * 60 * 6)
 
         # Start API services (if enabled)
         if self.config.serve:
@@ -401,7 +386,7 @@ class Validator(ValidatorBase):
 
         self.check_shutdown()
 
-    def should_fail_early(self, synapse: template.protocol.SendSignal | template.protocol.GetPositions | template.protocol.ValidatorCheckpoint, method: SynapseMethod,
+    def should_fail_early(self, synapse: template.protocol.SendSignal | template.protocol.GetPositions, method: SynapseMethod,
                           signal:dict=None, now_ms=None) -> bool:
         if is_shutdown():
             synapse.successfully_processed = False
@@ -415,10 +400,8 @@ class Validator(ValidatorBase):
             allowed, wait_time = self.position_inspector_rate_limiter.is_allowed(sender_hotkey)
         elif method == SynapseMethod.SIGNAL:
             allowed, wait_time = self.order_rate_limiter.is_allowed(sender_hotkey)
-        elif method == SynapseMethod.CHECKPOINT:
-            allowed, wait_time = self.checkpoint_rate_limiter.is_allowed(sender_hotkey)
         else:
-            msg = "Received synapse does not match one of expected methods for: receive_signal, get_positions, get_dash_data, or receive_checkpoint"
+            msg = "Received synapse does not match one of expected methods for: receive_signal or get_positions"
             bt.logging.trace(msg)
             synapse.successfully_processed = False
             synapse.error_message = msg
@@ -432,9 +415,7 @@ class Validator(ValidatorBase):
             synapse.error_message = msg
             return True
 
-        if method == SynapseMethod.CHECKPOINT:
-            return False
-        elif method == SynapseMethod.POSITION_INSPECTOR:
+        if method == SynapseMethod.POSITION_INSPECTOR:
             # Check version 0 (old version that was opt-in)
             if synapse.version == 0:
                 synapse.successfully_processed = False
@@ -588,75 +569,72 @@ class Validator(ValidatorBase):
         fail_early_ms = TimeUtil.now_in_millis() - fail_early_start
         bt.logging.info(f"[TIMING] should_fail_early took {fail_early_ms}ms")
 
-        with self.signal_sync_lock:
-            self.n_orders_being_processed[0] += 1
+        # Early rejection if sync is waiting (fast local check, ~0.01ms)
+        if self.order_sync.is_sync_waiting():
+            synapse.successfully_processed = False
+            synapse.error_message = "Validator is syncing positions. Please try again shortly."
+            bt.logging.debug(f"Rejected order from {miner_hotkey} - sync waiting")
+            return synapse
 
-        # error message to send back to miners in case of a problem so they can fix and resend
-        error_message = ""
-        try:
-            # TIMING: Parse operations
-            parse_start = TimeUtil.now_in_millis()
-            miner_order_uuid = SendSignal.parse_miner_uuid(synapse)
-            parse_ms = TimeUtil.now_in_millis() - parse_start
-            bt.logging.info(f"[TIMING] Parse operations took {parse_ms}ms")
+        # Track order processing with context manager (auto-increments/decrements counter)
+        with self.order_sync.begin_order():
+            # error message to send back to miners in case of a problem so they can fix and resend
+            error_message = ""
+            try:
+                # TIMING: Parse operations
+                parse_start = TimeUtil.now_in_millis()
+                miner_order_uuid = SendSignal.parse_miner_uuid(synapse)
+                parse_ms = TimeUtil.now_in_millis() - parse_start
+                bt.logging.info(f"[TIMING] Parse operations took {parse_ms}ms")
 
-            # Use unified OrderProcessor dispatcher (replaces lines 602-661)
-            result = OrderProcessor.process_order(
-                signal=signal,
-                miner_order_uuid=miner_order_uuid,
-                now_ms=now_ms,
-                miner_hotkey=miner_hotkey,
-                miner_repo_version=miner_repo_version,
-                limit_order_client=self.limit_order_client,
-                market_order_manager=self.market_order_manager
-            )
+                # Use unified OrderProcessor dispatcher (replaces lines 602-661)
+                result = OrderProcessor.process_order(
+                    signal=signal,
+                    miner_order_uuid=miner_order_uuid,
+                    now_ms=now_ms,
+                    miner_hotkey=miner_hotkey,
+                    miner_repo_version=miner_repo_version,
+                    limit_order_client=self.limit_order_client,
+                    market_order_manager=self.market_order_manager
+                )
 
-            # Set synapse response (centralized - single line instead of 4)
-            synapse.order_json = result.get_response_json()
+                # Set synapse response (centralized - single line instead of 4)
+                synapse.order_json = result.get_response_json()
 
-            # Track UUID if needed (centralized - single line instead of 3)
-            if result.should_track_uuid:
-                self.uuid_tracker.add(miner_order_uuid)
+                # Track UUID if needed (centralized - single line instead of 3)
+                if result.should_track_uuid:
+                    self.uuid_tracker.add(miner_order_uuid)
 
-            # For logging (used in line 691)
-            order = result.order_for_logging
+                # For logging (used in line 691)
+                order = result.order_for_logging
 
-        except SignalException as e:
-            exception_time = TimeUtil.now_in_millis()
-            error_message = f"Error processing order for [{miner_hotkey}] with error [{e}]"
-            bt.logging.error(traceback.format_exc())
-            bt.logging.info(f"[TIMING] SignalException caught at {exception_time - now_ms}ms from start")
-        except Exception as e:
-            exception_time = TimeUtil.now_in_millis()
-            error_message = f"Error processing order for [{miner_hotkey}] with error [{e}]"
-            bt.logging.error(traceback.format_exc())
-            bt.logging.info(f"[TIMING] General Exception caught at {exception_time - now_ms}ms from start")
-        finally:
-            # CRITICAL: Always execute final processing and decrement counter, even on unhandled exceptions
-            # This prevents deadlock if SystemExit, KeyboardInterrupt, or other BaseException occurs
+            except SignalException as e:
+                exception_time = TimeUtil.now_in_millis()
+                error_message = f"Error processing order for [{miner_hotkey}] with error [{e}]"
+                bt.logging.error(traceback.format_exc())
+                bt.logging.info(f"[TIMING] SignalException caught at {exception_time - now_ms}ms from start")
+            except Exception as e:
+                exception_time = TimeUtil.now_in_millis()
+                error_message = f"Error processing order for [{miner_hotkey}] with error [{e}]"
+                bt.logging.error(traceback.format_exc())
+                bt.logging.info(f"[TIMING] General Exception caught at {exception_time - now_ms}ms from start")
+            finally:
+                # TIMING: Final processing
+                final_processing_start = TimeUtil.now_in_millis()
+                if error_message == "":
+                    synapse.successfully_processed = True
+                else:
+                    bt.logging.error(error_message)
+                    synapse.successfully_processed = False
 
-            # TIMING: Final processing
-            final_processing_start = TimeUtil.now_in_millis()
-            if error_message == "":
-                synapse.successfully_processed = True
-            else:
-                bt.logging.error(error_message)
-                synapse.successfully_processed = False
+                synapse.error_message = error_message
+                final_processing_ms = TimeUtil.now_in_millis() - final_processing_start
+                bt.logging.info(f"[TIMING] Final synapse setup took {final_processing_ms}ms")
 
-            synapse.error_message = error_message
-            final_processing_ms = TimeUtil.now_in_millis() - final_processing_start
-            bt.logging.info(f"[TIMING] Final synapse setup took {final_processing_ms}ms")
-
-            processing_time_ms = TimeUtil.now_in_millis() - now_ms
-            bt.logging.success(f"Sending ack back to miner [{miner_hotkey}]. Synapse Message: {synapse.error_message}. "
-                               f"Process time {processing_time_ms}ms. order {order}")
-
-            # CRITICAL: Decrement counter in finally block to prevent deadlock
-            # This ensures the counter is always decremented, even if an unhandled exception occurs
-            with self.signal_sync_lock:
-                self.n_orders_being_processed[0] -= 1
-                if self.n_orders_being_processed[0] == 0:
-                    self.signal_sync_condition.notify_all()
+                processing_time_ms = TimeUtil.now_in_millis() - now_ms
+                bt.logging.success(f"Sending ack back to miner [{miner_hotkey}]. Synapse Message: {synapse.error_message}. "
+                                   f"Process time {processing_time_ms}ms. order {order}")
+                # Context manager auto-decrements counter and notifies waiters on exit
 
         return synapse
 

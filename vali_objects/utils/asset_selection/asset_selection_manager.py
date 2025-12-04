@@ -306,6 +306,10 @@ class AssetSelectionManager:
         with self._asset_selection_lock:
             return dict(self.asset_selections)
 
+    def get_asset_selection(self, hotkey: str) -> TradePairCategory | None:
+        with self._asset_selection_lock:
+            return self.asset_selections.get(hotkey)
+
     def get_all_miner_selections(self) -> Dict[str, str]:
         """
         Get all miner asset selections as a dictionary.

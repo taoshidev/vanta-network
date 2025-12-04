@@ -9,7 +9,6 @@ ChallengePeriodServer wraps this and exposes methods via RPC.
 This follows the same pattern as EliminationManager.
 """
 import time
-from collections import defaultdict
 
 import bittensor as bt
 import threading
@@ -106,7 +105,7 @@ class ChallengePeriodManager(CacheController):
         )
 
         # Create AssetSelectionClient for asset class selection support
-        self.asset_selection_manager = AssetSelectionClient(
+        self.asset_selection_client = AssetSelectionClient(
             connect_immediately=False,
             connection_mode=connection_mode
         )
@@ -349,10 +348,8 @@ class ChallengePeriodManager(CacheController):
                 continue
 
             # Check if miner has selected an asset class (only enforce after selection time)
-            if self.asset_selection_manager and current_time >= ASSET_CLASS_SELECTION_TIME_MS:
-                if hotkey not in self.asset_selection_manager.asset_selections:
-                    # bt.logging.info(f'Hotkey {hotkey} has not selected an asset class. Skipping evaluation.')
-                    continue
+            if current_time >= ASSET_CLASS_SELECTION_TIME_MS and not self.asset_selection_client.get_asset_selection(hotkey):
+                continue
 
             # Miner passed basic checks - include in ranking for accurate threshold calculation
             rank_eligible_hotkeys.append(hotkey)
@@ -416,13 +413,12 @@ class ChallengePeriodManager(CacheController):
 
         # Get asset class selections for filtering during threshold calculation
         miner_asset_selections = {}
-        if self.asset_selection_manager:
-            all_selections = self.asset_selection_manager.get_all_miner_selections()
-            for hotkey, selection in all_selections.items():
-                if isinstance(selection, str):
-                    miner_asset_selections[hotkey] = TradePairCategory(selection)
-                else:
-                    miner_asset_selections[hotkey] = selection
+        all_selections = self.asset_selection_client.get_all_miner_selections()
+        for hotkey, selection in all_selections.items():
+            if isinstance(selection, str):
+                miner_asset_selections[hotkey] = TradePairCategory(selection)
+            else:
+                miner_asset_selections[hotkey] = selection
 
         maincomp_hotkeys = set()
         promotion_threshold_rank = ValiConfig.PROMOTION_THRESHOLD_RANK

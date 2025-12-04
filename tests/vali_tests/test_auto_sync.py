@@ -6,6 +6,7 @@ from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMod
 from tests.vali_tests.base_objects.test_base import TestBase
 from time_util.time_util import TimeUtil
 from vali_objects.data_sync.auto_sync import PositionSyncer
+from vali_objects.data_sync.order_sync_state import OrderSyncState
 from vali_objects.data_sync.validator_sync_base import AUTO_SYNC_ORDER_LAG_MS, PositionSyncResultException
 from vali_objects.decoders.generalized_json_decoder import GeneralizedJSONDecoder
 from vali_objects.enums.miner_bucket_enum import MinerBucket
@@ -81,7 +82,13 @@ class TestAutoSync(TestBase):
             running_unit_tests=True
         )
 
-        cls.position_syncer = PositionSyncer(running_unit_tests=True, enable_position_splitting=True)
+        # Create OrderSyncState for PositionSyncer
+        cls.order_sync = OrderSyncState()
+        cls.position_syncer = PositionSyncer(
+            order_sync=cls.order_sync,
+            running_unit_tests=True,
+            enable_position_splitting=True
+        )
 
     @classmethod
     def tearDownClass(cls):
@@ -1291,23 +1298,15 @@ class TestAutoSync(TestBase):
         mock_response = Mock()
         mock_response.raise_for_status.side_effect = Exception("Network error")
         mock_get.return_value = mock_response
-        
-        # Should handle error gracefully
-        self.position_syncer.n_orders_being_processed = [0]
-        # Mock lock must support context manager protocol (__enter__ and __exit__)
-        mock_lock = Mock()
-        mock_lock.__enter__ = Mock(return_value=mock_lock)
-        mock_lock.__exit__ = Mock(return_value=None)
-        self.position_syncer.signal_sync_lock = mock_lock
-        self.position_syncer.signal_sync_condition = Mock()
-        
+
+        # Should handle error gracefully (OrderSyncState handles sync state internally)
         # This should not raise an exception
         self.position_syncer.perform_sync()
-        
+
         # Test with successful response but invalid JSON
         mock_response.raise_for_status.side_effect = None
         mock_response.content = b'invalid json'
-        
+
         self.position_syncer.perform_sync()
 
     def test_split_position_on_flat_complex(self):
@@ -3190,7 +3189,13 @@ class TestOverlapDetection(TestBase):
         cls.elimination_client = cls.orchestrator.get_client('elimination')
         cls.position_client = cls.orchestrator.get_client('position_manager')
 
-        cls.position_syncer = PositionSyncer(running_unit_tests=True, enable_position_splitting=True)
+        # Create OrderSyncState for PositionSyncer
+        cls.order_sync = OrderSyncState()
+        cls.position_syncer = PositionSyncer(
+            order_sync=cls.order_sync,
+            running_unit_tests=True,
+            enable_position_splitting=True
+        )
 
     @classmethod
     def tearDownClass(cls):
@@ -3208,7 +3213,10 @@ class TestOverlapDetection(TestBase):
 
         self.metagraph_client.set_hotkeys([self.DEFAULT_MINER_HOTKEY])
 
+        # Create OrderSyncState for PositionSyncer
+        self.order_sync = OrderSyncState()
         self.position_syncer = PositionSyncer(
+            order_sync=self.order_sync,
             running_unit_tests=True,
             enable_position_splitting=True
         )

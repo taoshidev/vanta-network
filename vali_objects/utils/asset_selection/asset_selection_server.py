@@ -142,6 +142,9 @@ class AssetSelectionServer(RPCServerBase):
         """
         return self._manager.get_asset_selections()
 
+    def get_asset_selection_rpc(self, hotkey: str) -> TradePairCategory | None:
+        return self._manager.get_asset_selection(hotkey)
+
     def get_all_miner_selections_rpc(self) -> Dict[str, str]:
         """
         Get all miner asset selections as a string dictionary (RPC method).

@@ -78,6 +78,9 @@ class AssetSelectionClient(RPCClientBase):
         """
         return self._server.get_asset_selections_rpc()
 
+    def get_asset_selection(self, hotkey) -> TradePairCategory | None:
+        return self._server.get_asset_selection_rpc(hotkey)
+
     def get_all_miner_selections(self) -> Dict[str, str]:
         """
         Get all miner asset selections as string dict.

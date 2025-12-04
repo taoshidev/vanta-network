@@ -26,15 +26,15 @@ from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_server import PerfLed
 
 
 class PositionSyncer(ValidatorSyncBase):
-    def __init__(self, signal_sync_lock=None, signal_sync_condition=None,
-                 n_orders_being_processed=None, running_unit_tests=False,
+    def __init__(self, order_sync=None, running_unit_tests=False,
                  auto_sync_enabled=False, enable_position_splitting=False, verbose=False,
                  connection_mode=RPCConnectionMode.RPC):
         # ValidatorSyncBase creates its own LivePriceFetcherClient, PerfLedgerClient, AssetSelectionClient,
         # LimitOrderClient, and ContractClient internally (forward compatibility)
-        super().__init__(signal_sync_lock, signal_sync_condition, n_orders_being_processed,
+        super().__init__(order_sync=order_sync,
                          running_unit_tests=running_unit_tests,
                          enable_position_splitting=enable_position_splitting, verbose=verbose)
+        self.order_sync = order_sync
 
         # Create own CommonDataClient (forward compatibility - no parameter passing)
         from shared_objects.rpc.common_data_server import CommonDataClient
@@ -90,10 +90,8 @@ class PositionSyncer(ValidatorSyncBase):
         return None
 
     def perform_sync(self):
-        with self.signal_sync_lock:
-            while self.n_orders_being_processed[0] > 0:
-                self.signal_sync_condition.wait()
-
+        # Wait for in-flight orders and set sync_waiting flag (context manager handles this)
+        with self.order_sync.begin_sync():
             # Wrap everything in try/finally to guarantee sync_in_progress is always reset
             # This prevents deadlock if an exception occurs anywhere after setting the flag
             try:
@@ -120,9 +118,9 @@ class PositionSyncer(ValidatorSyncBase):
                 # This executes even if exception occurs before sync starts
                 self._common_data_client.set_sync_in_progress(False)
 
-                # Update timestamp inside lock to prevent race condition where another
-                # thread checks the timestamp before it's updated
+                # Update timestamp
                 self.last_signal_sync_time_ms = TimeUtil.now_in_millis()
+        # Context manager auto-clears sync_waiting flag on exit
 
     def sync_positions_with_cooldown(self, auto_sync_enabled:bool):
         if not auto_sync_enabled:

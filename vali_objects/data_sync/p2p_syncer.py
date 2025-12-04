@@ -20,10 +20,9 @@ from vali_objects.vali_dataclasses.order import Order
 from vali_objects.data_sync.validator_sync_base import ValidatorSyncBase
 
 class P2PSyncer(ValidatorSyncBase):
-    def __init__(self, wallet=None, is_testnet=None, shutdown_dict=None, signal_sync_lock=None,
-                 signal_sync_condition=None, n_orders_being_processed=None, running_unit_tests=False,
-                 position_manager=None):
-        #super().__init__(shutdown_dict, signal_sync_lock, signal_sync_condition, n_orders_being_processed, position_manager=position_manager)
+    def __init__(self, wallet=None, is_testnet=None, running_unit_tests=False):
+        # Note: super().__init__ not called - P2PSyncer doesn't use ValidatorSyncBase functionality
+        # P2PSyncer appears to be deprecated/shadow mode only based on TODO at line 680
 
         # Create own clients (forward compatibility - no parameter passing).
         from shared_objects.rpc.metagraph_server import MetagraphClient
@@ -47,9 +46,6 @@ class P2PSyncer(ValidatorSyncBase):
         # Initialize SYNC_LOOK_AROUND_MS (normally set by ValidatorSyncBase.__init__)
         # Used for position/order matching heuristics in checkpoint syncing
         self.SYNC_LOOK_AROUND_MS = 1000 * 60 * 3  # 3 minutes
-
-        # Store position_manager client (needed for create_golden and rebuild_position_with_updated_orders)
-        self._position_manager_client = position_manager
 
     @property
     def metagraph(self):

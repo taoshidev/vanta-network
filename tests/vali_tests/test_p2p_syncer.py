@@ -118,9 +118,9 @@ class TestPositions(TestBase):
         )
         self.default_closed_position.close_out_position(self.DEFAULT_OPEN_MS + 1000 * 60 * 60 * 6)
 
-        # Create P2PSyncer with position_manager client
+        # Create P2PSyncer
         # IMPORTANT: running_unit_tests=True prevents checkpoint staleness checks
-        self.p2p_syncer = P2PSyncer(running_unit_tests=True, position_manager=self.position_client)
+        self.p2p_syncer = P2PSyncer(running_unit_tests=True)
 
     def tearDown(self):
         """Per-test teardown: Clear data for next test."""

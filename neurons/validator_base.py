@@ -11,12 +11,11 @@ from shared_objects.locks.subtensor_lock import get_subtensor_lock
 
 
 class ValidatorBase:
-    def __init__(self, wallet, config, metagraph, p2p_syncer, asset_selection_client, subtensor=None, slack_notifier=None):
+    def __init__(self, wallet, config, metagraph, asset_selection_client, subtensor=None, slack_notifier=None):
         self.wallet = wallet
         self.config = config
         self.metagraph_server = metagraph
         self.slack_notifier = slack_notifier
-        self.p2p_syncer = p2p_syncer
         self.asset_selection_client = asset_selection_client
         self.subtensor = subtensor
 
@@ -149,9 +148,6 @@ class ValidatorBase:
         def gp_blacklist_fn(synapse: template.protocol.GetPositions) -> Tuple[bool, str]:
             return self.blacklist_fn(synapse, self.metagraph_server)
 
-        def rc_blacklist_fn(synapse: template.protocol.ValidatorCheckpoint) -> Tuple[bool, str]:
-            return self.blacklist_fn(synapse, self.metagraph_server)
-
         def cr_blacklist_fn(synapse: template.protocol.CollateralRecord) -> Tuple[bool, str]:
             return self.blacklist_fn(synapse, self.metagraph_server)
 
@@ -165,10 +161,6 @@ class ValidatorBase:
         self.axon.attach(
             forward_fn=self.get_positions,
             blacklist_fn=gp_blacklist_fn
-        )
-        self.axon.attach(
-            forward_fn=self.p2p_syncer.receive_checkpoint,
-            blacklist_fn=rc_blacklist_fn
         )
         self.axon.attach(
             forward_fn=self.contract_manager.receive_collateral_record,
