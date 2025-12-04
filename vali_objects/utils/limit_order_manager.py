@@ -762,6 +762,57 @@ class LimitOrderManager(CacheController):
             bt.logging.debug(f"No SL/TP specified for order [{parent_order.order_uuid}], skipping bracket creation")
             return
 
+        # Validate SL/TP against fill price before creating bracket order
+        fill_price = parent_order.price
+        order_type = parent_order.order_type
+
+        # Validate stop loss and take profit based on order type
+        if order_type == OrderType.LONG:
+            # For LONG positions:
+            # - Stop loss must be BELOW fill price (selling at a loss)
+            # - Take profit must be ABOVE fill price (selling at a gain)
+            if parent_order.stop_loss is not None and parent_order.stop_loss >= fill_price:
+                bt.logging.warning(
+                    f"Invalid LONG bracket order [{parent_order.order_uuid}]: "
+                    f"stop_loss ({parent_order.stop_loss}) must be < fill_price ({fill_price}). "
+                    f"Skipping bracket creation"
+                )
+                return
+
+            if parent_order.take_profit is not None and parent_order.take_profit <= fill_price:
+                bt.logging.warning(
+                    f"Invalid LONG bracket order [{parent_order.order_uuid}]: "
+                    f"take_profit ({parent_order.take_profit}) must be > fill_price ({fill_price}). "
+                    f"Skipping bracket creation"
+                )
+                return
+
+        elif order_type == OrderType.SHORT:
+            # For SHORT positions:
+            # - Stop loss must be ABOVE fill price (buying back at a loss)
+            # - Take profit must be BELOW fill price (buying back at a gain)
+            if parent_order.stop_loss is not None and parent_order.stop_loss <= fill_price:
+                bt.logging.warning(
+                    f"Invalid SHORT bracket order [{parent_order.order_uuid}]: "
+                    f"stop_loss ({parent_order.stop_loss}) must be > fill_price ({fill_price}). "
+                    f"Skipping bracket creation"
+                )
+                return
+
+            if parent_order.take_profit is not None and parent_order.take_profit >= fill_price:
+                bt.logging.warning(
+                    f"Invalid SHORT bracket order [{parent_order.order_uuid}]: "
+                    f"take_profit ({parent_order.take_profit}) must be < fill_price ({fill_price}). "
+                    f"Skipping bracket creation"
+                )
+                return
+        else:
+            bt.logging.error(
+                f"Invalid order type for bracket order [{parent_order.order_uuid}]: {order_type}. "
+                f"Must be LONG or SHORT"
+            )
+            return
+
         try:
             # Create single bracket order with both SL and TP
             # UUID format: "{parent_uuid}-bracket" enables cancellation via parent UUID
