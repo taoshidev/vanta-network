@@ -347,29 +347,30 @@ class TestLimitOrders(TestBase):
         self.assertIsNotNone(order2_in_list)
         self.assertEqual(order2_in_list.src, OrderSource.LIMIT_UNFILLED)
 
-    def test_cancel_limit_order_rpc_all_for_trade_pair(self):
-        """Test cancelling all limit orders for a trade pair"""
-        for i in range(3):
-            order = self.create_test_limit_order(order_uuid=f"order{i}")
-            self.limit_order_client.process_limit_order(
-                self.DEFAULT_MINER_HOTKEY,
-                order
-            )
+    # TODO support cancel by trade pair in v2
+    # def test_cancel_limit_order_rpc_all_for_trade_pair(self):
+    #     """Test cancelling all limit orders for a trade pair"""
+    #     for i in range(3):
+    #         order = self.create_test_limit_order(order_uuid=f"order{i}")
+    #         self.limit_order_client.process_limit_order(
+    #             self.DEFAULT_MINER_HOTKEY,
+    #             order
+    #         )
 
-        # Cancel all (empty order_uuid)
-        result = self.limit_order_client.cancel_limit_order(
-            self.DEFAULT_MINER_HOTKEY,
-            self.DEFAULT_TRADE_PAIR.trade_pair_id,
-            "",
-            TimeUtil.now_in_millis()
-        )
+    #     # Cancel all (empty order_uuid)
+    #     result = self.limit_order_client.cancel_limit_order(
+    #         self.DEFAULT_MINER_HOTKEY,
+    #         self.DEFAULT_TRADE_PAIR.trade_pair_id,
+    #         "",
+    #         TimeUtil.now_in_millis()
+    #     )
 
-        self.assertEqual(result["status"], "cancelled")
-        self.assertEqual(result["num_cancelled"], 3)
+    #     self.assertEqual(result["status"], "cancelled")
+    #     self.assertEqual(result["num_cancelled"], 3)
 
-        # Verify all cancelled orders removed from memory (Issue 8 fix)
-        orders = self.get_orders_from_server(self.DEFAULT_MINER_HOTKEY, self.DEFAULT_TRADE_PAIR)
-        self.assertEqual(len(orders), 0, "All cancelled orders should be removed from memory")
+    #     # Verify all cancelled orders removed from memory (Issue 8 fix)
+    #     orders = self.get_orders_from_server(self.DEFAULT_MINER_HOTKEY, self.DEFAULT_TRADE_PAIR)
+    #     self.assertEqual(len(orders), 0, "All cancelled orders should be removed from memory")
 
     def test_cancel_limit_order_rpc_nonexistent(self):
         """Test cancelling non-existent order raises exception"""

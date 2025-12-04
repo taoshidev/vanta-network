@@ -248,27 +248,26 @@ class LimitOrderManager(CacheController):
         RPC method to cancel limit order(s).
         Args:
             miner_hotkey: The miner's hotkey
-            trade_pair_id: Trade pair ID string (can be None for cancel by UUID)
             order_uuid: UUID of specific order to cancel, or None/empty for all
             now_ms: Current timestamp
         Returns:
             dict with cancellation details
         """
+        # TODO support cancel by trade pair in v2
         try:
             # Parse trade_pair only if trade_pair_id is provided
-            trade_pair = TradePair.from_trade_pair_id(trade_pair_id) if trade_pair_id else None
+            # trade_pair = TradePair.from_trade_pair_id(trade_pair_id) if trade_pair_id else None
 
             # Try to find orders by UUID first
             orders_to_cancel = self._find_orders_to_cancel_by_uuid(miner_hotkey, order_uuid)
 
-            # If no orders found by UUID and trade_pair is provided, try by trade_pair
-            if not orders_to_cancel and trade_pair:
-                orders_to_cancel = self._find_orders_to_cancel_by_trade_pair(miner_hotkey, trade_pair)
+            # Only cancel one order at a time with order_uuid
+            # if not orders_to_cancel and trade_pair:
+            #     orders_to_cancel = self._find_orders_to_cancel_by_trade_pair(miner_hotkey, trade_pair)
 
             if not orders_to_cancel:
                 raise SignalException(
-                    f"No unfilled limit orders found for {miner_hotkey} "
-                    f"(uuid={order_uuid}, trade_pair={trade_pair_id})"
+                    f"No unfilled limit orders found for {miner_hotkey} (uuid={order_uuid})"
                 )
 
             for order in orders_to_cancel:
@@ -279,7 +278,6 @@ class LimitOrderManager(CacheController):
                 "status": "cancelled",
                 "order_uuid": order_uuid if order_uuid else "all",
                 "miner_hotkey": miner_hotkey,
-                "trade_pair_id": trade_pair_id,
                 "cancelled_ms": now_ms,
                 "num_cancelled": len(orders_to_cancel)
             }

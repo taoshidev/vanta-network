@@ -196,13 +196,11 @@ class OrderProcessor:
         Raises:
             SignalException: If cancellation fails
         """
-        # Extract trade_pair_id (can be None for cancel by UUID)
-        trade_pair_id = trade_pair.trade_pair_id if trade_pair else None
 
         # Call cancel limit order (may throw SignalException)
         result = limit_order_client.cancel_limit_order(
             miner_hotkey,
-            trade_pair_id,
+            None,  # TODO support cancel by trade pair in v2
             order_uuid,
             now_ms
         )
