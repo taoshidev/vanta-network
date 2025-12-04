@@ -1014,7 +1014,8 @@ class MinerStatisticsManager:
                             total_pnl = 0
                             if portfolio_ledger and portfolio_ledger.cps:
                                 for cp in portfolio_ledger.cps:
-                                    total_pnl += cp.pnl_gain + cp.pnl_loss
+                                    total_pnl += cp.realized_pnl
+                                total_pnl += portfolio_ledger.cps[-1].unrealized_pnl
 
                             weights_float = Metrics.weighting_distribution(
                                 ptn_daily_returns
