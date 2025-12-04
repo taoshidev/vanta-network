@@ -38,13 +38,21 @@ if __name__ == "__main__":
 
     # Define the JSON data to be sent in the request
     data = {
-        'trade_pair': TradePair.FTSE,
+        'execution_type': ExecutionType.MARKET,  # Execution types [MARKET, LIMIT, BRACKET, LIMIT_CANCEL]
+        'trade_pair': TradePair.BTCUSD,
         'order_type': OrderType.LONG,
-        'leverage': .05,
-        # 'execution_type': ExecutionType.MARKET,
-        # 'execution_type': ExecutionType.LIMIT_CANCEL,
-        # 'limit_price': 0.1,
-        # 'order_uuid': "order-uuid",
+
+        # Order size
+        'leverage': 0.1,    # leverage
+        # 'value': 10_000,  # USD value
+        # 'quantity': 0.1,  # base asset quantity (lots, shares, coins, etc.)
+
+        # LIMIT/BRACKET Order fields
+        # 'limit_price': 2000,      # Required for LIMIT orders; price at which order should fill
+        # 'stop_loss': 5000,        # Optional for LIMIT orders; creates bracket order on fill
+        # 'take_profit': 6000,      # Optional for LIMIT orders; creates bracket order on fill
+        # 'order_uuid': "",         # Required for LIMIT_CANCEL; UUID of order to cancel
+
         'api_key': 'xxxx'
     }
 

@@ -197,12 +197,12 @@ class LimitOrderManager(CacheController):
                 if order.stop_loss and order.take_profit:
                     if order.order_type == OrderType.LONG and order.stop_loss >= order.take_profit:
                         raise SignalException(
-                            f"LONG BRACKET orders must satisfy: stop_loss < take_profit. "
+                            f"BRACKET orders for LONG positions must satisfy: stop_loss < take_profit. "
                             f"Got stop_loss={order.stop_loss}, take_profit={order.take_profit}"
                         )
                     if order.order_type == OrderType.SHORT and order.stop_loss <= order.take_profit:
                         raise SignalException(
-                            f"SHORT BRACKET orders must satisfy: take_profit < stop_loss. "
+                            f"BRACKET orders for SHORT positions must satisfy: take_profit < stop_loss. "
                             f"Got take_profit={order.take_profit}, stop_loss={order.stop_loss}"
                         )
 
