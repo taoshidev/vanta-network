@@ -1289,6 +1289,312 @@ class TestOrderProcessor(TestBase):
 
         self.assertEqual(order.processed_ms, custom_timestamp)
 
+    # ============================================================================
+    # Test: process_order (Unified Dispatcher)
+    # ============================================================================
+
+    def test_process_order_routes_to_limit_order(self):
+        """Test that process_order correctly routes LIMIT execution type"""
+        signal = {
+            "trade_pair": {"trade_pair_id": "BTCUSD"},
+            "execution_type": "LIMIT",
+            "order_type": "LONG",
+            "leverage": 1.0,
+            "limit_price": 50000.0,
+        }
+
+        mock_limit_order_client = Mock()
+        mock_limit_order_client.process_limit_order = Mock()
+        mock_market_order_manager = Mock()
+
+        result = OrderProcessor.process_order(
+            signal=signal,
+            miner_order_uuid="test_uuid",
+            now_ms=self.DEFAULT_NOW_MS,
+            miner_hotkey=self.DEFAULT_MINER_HOTKEY,
+            miner_repo_version="1.0.0",
+            limit_order_client=mock_limit_order_client,
+            market_order_manager=mock_market_order_manager
+        )
+
+        # Verify result
+        self.assertEqual(result.execution_type, ExecutionType.LIMIT)
+        self.assertIsNotNone(result.order)
+        self.assertTrue(result.should_track_uuid)
+        self.assertTrue(result.success)
+        self.assertIsNone(result.result_dict)
+
+        # Verify limit order client was called
+        mock_limit_order_client.process_limit_order.assert_called_once()
+        # Verify market order manager was NOT called
+        mock_market_order_manager._process_market_order.assert_not_called()
+
+    def test_process_order_routes_to_bracket_order(self):
+        """Test that process_order correctly routes BRACKET execution type"""
+        signal = {
+            "trade_pair": {"trade_pair_id": "BTCUSD"},
+            "execution_type": "BRACKET",
+            "leverage": 1.0,
+            "stop_loss": 49000.0,
+            "take_profit": 52000.0,
+        }
+
+        mock_limit_order_client = Mock()
+        mock_limit_order_client.process_limit_order = Mock()
+        mock_market_order_manager = Mock()
+
+        result = OrderProcessor.process_order(
+            signal=signal,
+            miner_order_uuid="test_uuid",
+            now_ms=self.DEFAULT_NOW_MS,
+            miner_hotkey=self.DEFAULT_MINER_HOTKEY,
+            miner_repo_version="1.0.0",
+            limit_order_client=mock_limit_order_client,
+            market_order_manager=mock_market_order_manager
+        )
+
+        # Verify result
+        self.assertEqual(result.execution_type, ExecutionType.BRACKET)
+        self.assertIsNotNone(result.order)
+        self.assertTrue(result.should_track_uuid)
+        self.assertTrue(result.success)
+
+        # Verify limit order client was called
+        mock_limit_order_client.process_limit_order.assert_called_once()
+
+    def test_process_order_routes_to_limit_cancel(self):
+        """Test that process_order correctly routes LIMIT_CANCEL execution type"""
+        signal = {
+            "trade_pair": {"trade_pair_id": "BTCUSD"},
+            "execution_type": "LIMIT_CANCEL",
+        }
+
+        mock_limit_order_client = Mock()
+        mock_limit_order_client.cancel_limit_order = Mock(
+            return_value={"status": "cancelled", "count": 2}
+        )
+        mock_market_order_manager = Mock()
+
+        result = OrderProcessor.process_order(
+            signal=signal,
+            miner_order_uuid="test_uuid",
+            now_ms=self.DEFAULT_NOW_MS,
+            miner_hotkey=self.DEFAULT_MINER_HOTKEY,
+            miner_repo_version="1.0.0",
+            limit_order_client=mock_limit_order_client,
+            market_order_manager=mock_market_order_manager
+        )
+
+        # Verify result
+        self.assertEqual(result.execution_type, ExecutionType.LIMIT_CANCEL)
+        self.assertIsNone(result.order)
+        self.assertFalse(result.should_track_uuid)  # LIMIT_CANCEL doesn't track UUID
+        self.assertTrue(result.success)
+        self.assertIsNotNone(result.result_dict)
+        self.assertEqual(result.result_dict["status"], "cancelled")
+
+        # Verify cancel was called
+        mock_limit_order_client.cancel_limit_order.assert_called_once()
+
+    def test_process_order_routes_to_market_order(self):
+        """Test that process_order correctly routes MARKET execution type"""
+        signal = {
+            "trade_pair": {"trade_pair_id": "BTCUSD"},
+            "execution_type": "MARKET",
+            "order_type": "LONG",
+            "leverage": 1.0,
+        }
+
+        mock_limit_order_client = Mock()
+        mock_market_order_manager = Mock()
+        mock_position = Mock()
+        mock_order = Mock()
+        mock_market_order_manager._process_market_order = Mock(
+            return_value=("", mock_position, mock_order)
+        )
+
+        result = OrderProcessor.process_order(
+            signal=signal,
+            miner_order_uuid="test_uuid",
+            now_ms=self.DEFAULT_NOW_MS,
+            miner_hotkey=self.DEFAULT_MINER_HOTKEY,
+            miner_repo_version="1.0.0",
+            limit_order_client=mock_limit_order_client,
+            market_order_manager=mock_market_order_manager
+        )
+
+        # Verify result
+        self.assertEqual(result.execution_type, ExecutionType.MARKET)
+        self.assertIsNotNone(result.order)
+        self.assertIsNotNone(result.updated_position)
+        self.assertTrue(result.should_track_uuid)
+        self.assertTrue(result.success)
+
+        # Verify market order manager was called
+        mock_market_order_manager._process_market_order.assert_called_once()
+        # Verify limit order client was NOT called
+        mock_limit_order_client.process_limit_order.assert_not_called()
+
+    def test_process_order_market_raises_exception_on_error(self):
+        """Test that process_order raises SignalException for MARKET order errors"""
+        signal = {
+            "trade_pair": {"trade_pair_id": "BTCUSD"},
+            "execution_type": "MARKET",
+            "order_type": "LONG",
+            "leverage": 1.0,
+        }
+
+        mock_limit_order_client = Mock()
+        mock_market_order_manager = Mock()
+        mock_market_order_manager._process_market_order = Mock(
+            return_value=("Order too soon", None, None)
+        )
+
+        with self.assertRaises(SignalException) as context:
+            OrderProcessor.process_order(
+                signal=signal,
+                miner_order_uuid="test_uuid",
+                now_ms=self.DEFAULT_NOW_MS,
+                miner_hotkey=self.DEFAULT_MINER_HOTKEY,
+                miner_repo_version="1.0.0",
+                limit_order_client=mock_limit_order_client,
+                market_order_manager=mock_market_order_manager
+            )
+
+        self.assertIn("Order too soon", str(context.exception))
+
+    def test_process_order_defaults_to_market_execution(self):
+        """Test that process_order defaults to MARKET when execution_type not specified"""
+        signal = {
+            "trade_pair": {"trade_pair_id": "BTCUSD"},
+            "order_type": "LONG",
+            "leverage": 1.0,
+        }
+
+        mock_limit_order_client = Mock()
+        mock_market_order_manager = Mock()
+        mock_position = Mock()
+        mock_order = Mock()
+        mock_market_order_manager._process_market_order = Mock(
+            return_value=("", mock_position, mock_order)
+        )
+
+        result = OrderProcessor.process_order(
+            signal=signal,
+            miner_order_uuid="test_uuid",
+            now_ms=self.DEFAULT_NOW_MS,
+            miner_hotkey=self.DEFAULT_MINER_HOTKEY,
+            miner_repo_version="1.0.0",
+            limit_order_client=mock_limit_order_client,
+            market_order_manager=mock_market_order_manager
+        )
+
+        # Verify it routed to MARKET
+        self.assertEqual(result.execution_type, ExecutionType.MARKET)
+        mock_market_order_manager._process_market_order.assert_called_once()
+
+    def test_process_order_generates_uuid_when_not_provided(self):
+        """Test that process_order generates UUID when miner_order_uuid is None"""
+        signal = {
+            "trade_pair": {"trade_pair_id": "BTCUSD"},
+            "execution_type": "LIMIT",
+            "order_type": "LONG",
+            "leverage": 1.0,
+            "limit_price": 50000.0,
+        }
+
+        mock_limit_order_client = Mock()
+        mock_limit_order_client.process_limit_order = Mock()
+        mock_market_order_manager = Mock()
+
+        result = OrderProcessor.process_order(
+            signal=signal,
+            miner_order_uuid=None,  # No UUID provided
+            now_ms=self.DEFAULT_NOW_MS,
+            miner_hotkey=self.DEFAULT_MINER_HOTKEY,
+            miner_repo_version="1.0.0",
+            limit_order_client=mock_limit_order_client,
+            market_order_manager=mock_market_order_manager
+        )
+
+        # Verify UUID was generated
+        self.assertIsNotNone(result.order.order_uuid)
+        # Verify it's a valid UUID format
+        uuid.UUID(result.order.order_uuid)
+
+    # ============================================================================
+    # Test: OrderProcessingResult
+    # ============================================================================
+
+    def test_order_processing_result_get_response_json_with_order(self):
+        """Test get_response_json returns order JSON when order is present"""
+        from vali_objects.utils.limit_order.order_processor import OrderProcessingResult
+
+        mock_order = Mock()
+        mock_order.__str__ = Mock(return_value='{"order": "data"}')
+
+        result = OrderProcessingResult(
+            execution_type=ExecutionType.LIMIT,
+            order=mock_order
+        )
+
+        response_json = result.get_response_json()
+        self.assertEqual(response_json, '{"order": "data"}')
+
+    def test_order_processing_result_get_response_json_with_result_dict(self):
+        """Test get_response_json returns JSON dict when result_dict is present"""
+        from vali_objects.utils.limit_order.order_processor import OrderProcessingResult
+
+        result_dict = {"status": "cancelled", "count": 3}
+
+        result = OrderProcessingResult(
+            execution_type=ExecutionType.LIMIT_CANCEL,
+            result_dict=result_dict,
+            should_track_uuid=False
+        )
+
+        response_json = result.get_response_json()
+        import json
+        parsed = json.loads(response_json)
+        self.assertEqual(parsed["status"], "cancelled")
+        self.assertEqual(parsed["count"], 3)
+
+    def test_order_processing_result_get_response_json_empty(self):
+        """Test get_response_json returns empty string when no data"""
+        from vali_objects.utils.limit_order.order_processor import OrderProcessingResult
+
+        result = OrderProcessingResult(
+            execution_type=ExecutionType.LIMIT
+        )
+
+        response_json = result.get_response_json()
+        self.assertEqual(response_json, "")
+
+    def test_order_processing_result_order_for_logging(self):
+        """Test order_for_logging property returns order"""
+        from vali_objects.utils.limit_order.order_processor import OrderProcessingResult
+
+        mock_order = Mock()
+
+        result = OrderProcessingResult(
+            execution_type=ExecutionType.LIMIT,
+            order=mock_order
+        )
+
+        self.assertEqual(result.order_for_logging, mock_order)
+
+    def test_order_processing_result_is_frozen(self):
+        """Test that OrderProcessingResult is immutable (frozen dataclass)"""
+        from vali_objects.utils.limit_order.order_processor import OrderProcessingResult
+
+        result = OrderProcessingResult(
+            execution_type=ExecutionType.LIMIT
+        )
+
+        # Attempting to modify a frozen dataclass should raise an error
+        with self.assertRaises(Exception):  # FrozenInstanceError in Python 3.10+
+            result.success = False
+
 
 if __name__ == '__main__':
     unittest.main()

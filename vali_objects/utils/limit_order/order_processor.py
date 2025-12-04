@@ -6,12 +6,55 @@ ensuring consistent behavior whether orders come from miners via synapses
 or from development/testing via REST API.
 """
 import uuid
+import json
 import bittensor as bt
+from dataclasses import dataclass
+from typing import Optional
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.exceptions.signal_exception import SignalException
 from vali_objects.vali_dataclasses.order import Order
+from vali_objects.vali_dataclasses.position import Position
 from vali_objects.enums.order_source_enum import OrderSource
+
+
+@dataclass(frozen=True)  # Immutable for thread safety
+class OrderProcessingResult:
+    """
+    Standardized result from order processing.
+
+    Attributes:
+        execution_type: Type of execution (MARKET, LIMIT, BRACKET, LIMIT_CANCEL)
+        success: Whether processing succeeded (always True if no exception raised)
+        order: The created/processed Order object (None for LIMIT_CANCEL)
+        result_dict: Result dictionary (used for LIMIT_CANCEL response)
+        updated_position: Updated position (used for MARKET orders)
+        should_track_uuid: Whether to add UUID to tracker (False for LIMIT_CANCEL)
+    """
+    execution_type: ExecutionType
+    success: bool = True
+    order: Optional[Order] = None
+    result_dict: Optional[dict] = None
+    updated_position: Optional[Position] = None
+    should_track_uuid: bool = True
+
+    @property
+    def order_for_logging(self) -> Optional[Order]:
+        """Get order object for logging (used by validator.py)."""
+        return self.order
+
+    def get_response_json(self) -> str:
+        """
+        Get JSON response string for synapse or REST API.
+
+        Returns:
+            JSON string representation of the result
+        """
+        if self.order:
+            return self.order.__str__()
+        elif self.result_dict:
+            return json.dumps(self.result_dict)
+        return ""
 
 
 class OrderProcessor:
@@ -309,3 +352,97 @@ class OrderProcessor:
             now_ms, signal, miner_hotkey, price_sources=None
         )
         return err_msg, updated_position, created_order
+
+    @staticmethod
+    def process_order(
+        signal: dict,
+        miner_order_uuid: str,
+        now_ms: int,
+        miner_hotkey: str,
+        miner_repo_version: str,
+        limit_order_client,
+        market_order_manager
+    ) -> OrderProcessingResult:
+        """
+        Unified order processing dispatcher that routes to the appropriate handler.
+
+        This method centralizes the execution type routing logic that was previously
+        duplicated in validator.py (lines 607-661) and rest_server.py (lines 1475-1549).
+
+        Benefits:
+        - Single source of truth for order processing logic
+        - Consistent behavior across validator and REST API
+        - Easier testing (can test without Flask/Axon)
+        - Reduced code duplication (~113 lines eliminated)
+
+        Args:
+            signal: Signal dictionary containing order details
+            miner_order_uuid: Order UUID (or None to auto-generate)
+            now_ms: Current timestamp in milliseconds
+            miner_hotkey: Miner's hotkey
+            miner_repo_version: Version of miner repo (for MARKET orders)
+            limit_order_client: Client for limit/bracket/cancel operations
+            market_order_manager: Manager for market orders
+
+        Returns:
+            OrderProcessingResult with standardized response data
+
+        Raises:
+            SignalException: If processing fails with validation error
+        """
+        # Parse common fields (may raise SignalException)
+        trade_pair, execution_type, order_uuid = OrderProcessor.parse_signal_data(
+            signal, miner_order_uuid
+        )
+
+        # Route based on execution type
+        if execution_type == ExecutionType.LIMIT:
+            order = OrderProcessor.process_limit_order(
+                signal, trade_pair, order_uuid, now_ms,
+                miner_hotkey, limit_order_client
+            )
+            return OrderProcessingResult(
+                execution_type=ExecutionType.LIMIT,
+                order=order,
+                should_track_uuid=True
+            )
+
+        elif execution_type == ExecutionType.BRACKET:
+            order = OrderProcessor.process_bracket_order(
+                signal, trade_pair, order_uuid, now_ms,
+                miner_hotkey, limit_order_client
+            )
+            return OrderProcessingResult(
+                execution_type=ExecutionType.BRACKET,
+                order=order,
+                should_track_uuid=True
+            )
+
+        elif execution_type == ExecutionType.LIMIT_CANCEL:
+            result = OrderProcessor.process_limit_cancel(
+                signal, trade_pair, order_uuid, now_ms,
+                miner_hotkey, limit_order_client
+            )
+            return OrderProcessingResult(
+                execution_type=ExecutionType.LIMIT_CANCEL,
+                result_dict=result,
+                should_track_uuid=False  # No UUID tracking for cancellations
+            )
+
+        else:  # ExecutionType.MARKET
+            err_msg, updated_position, created_order = OrderProcessor.process_market_order(
+                signal, trade_pair, order_uuid, now_ms,
+                miner_hotkey, miner_repo_version,
+                market_order_manager
+            )
+
+            # Raise exception on error (consistent with validator.py:654)
+            if err_msg:
+                raise SignalException(err_msg)
+
+            return OrderProcessingResult(
+                execution_type=ExecutionType.MARKET,
+                order=created_order,
+                updated_position=updated_position,
+                should_track_uuid=True
+            )

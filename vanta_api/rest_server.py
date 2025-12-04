@@ -1463,94 +1463,27 @@ class VantaRestServer(RPCServerBase, APIKeyMixin):
                 if 'take_profit' in data:
                     signal['take_profit'] = data['take_profit']
 
-                # Use OrderProcessor to parse signal (same logic as validator.py)
-                trade_pair, execution_type, order_uuid = OrderProcessor.parse_signal_data(
-                    signal, data.get('order_uuid')
-                )
-
                 now_ms = TimeUtil.now_in_millis()
                 miner_repo_version = "development"
 
-                # Route based on execution type (same logic as validator.py)
-                if execution_type == ExecutionType.LIMIT:
-                    # Check if limit order client is available
-                    if not self._limit_order_client:
-                        return jsonify({'error': 'Limit order operations not available'}), 503
+                # Use unified OrderProcessor dispatcher (replaces lines 1466-1553)
+                result = OrderProcessor.process_order(
+                    signal=signal,
+                    miner_order_uuid=data.get('order_uuid'),
+                    now_ms=now_ms,
+                    miner_hotkey=DEVELOPMENT_HOTKEY,
+                    miner_repo_version=miner_repo_version,
+                    limit_order_client=self._limit_order_client,
+                    market_order_manager=self.market_order_manager
+                )
 
-                    # Use OrderProcessor to handle LIMIT order
-                    order = OrderProcessor.process_limit_order(
-                        signal, trade_pair, order_uuid, now_ms,
-                        DEVELOPMENT_HOTKEY, self._limit_order_client
-                    )
-
-                    return jsonify({
-                        'status': 'success',
-                        'execution_type': 'LIMIT',
-                        'order_uuid': order_uuid,
-                        'order': str(order)
-                    })
-
-                elif execution_type == ExecutionType.BRACKET:
-                    # Check if limit order client is available
-                    if not self._limit_order_client:
-                        return jsonify({'error': 'Bracket order operations not available'}), 503
-
-                    # Use OrderProcessor to handle BRACKET order
-                    order = OrderProcessor.process_bracket_order(
-                        signal, trade_pair, order_uuid, now_ms,
-                        DEVELOPMENT_HOTKEY, self._limit_order_client
-                    )
-
-                    return jsonify({
-                        'status': 'success',
-                        'execution_type': 'BRACKET',
-                        'order_uuid': order_uuid,
-                        'order': str(order)
-                    })
-
-                elif execution_type == ExecutionType.LIMIT_CANCEL:
-                    # Check if limit order client is available
-                    if not self._limit_order_client:
-                        return jsonify({'error': 'Limit order operations not available'}), 503
-
-                    # Use OrderProcessor to handle LIMIT_CANCEL
-                    result = OrderProcessor.process_limit_cancel(
-                        signal, trade_pair, order_uuid, now_ms,
-                        DEVELOPMENT_HOTKEY, self._limit_order_client
-                    )
-
-                    return jsonify({
-                        'status': 'success',
-                        'execution_type': 'LIMIT_CANCEL',
-                        'result': result
-                    })
-
-                else:  # ExecutionType.MARKET
-                    # Check if market order manager is available
-                    if not self.market_order_manager:
-                        return jsonify({'error': 'Market order operations not available'}), 503
-
-                    # Use OrderProcessor to handle MARKET order (consistent interface)
-                    err_msg, updated_position, created_order = OrderProcessor.process_market_order(
-                        signal, trade_pair, order_uuid, now_ms,
-                        DEVELOPMENT_HOTKEY, miner_repo_version,
-                        self.market_order_manager
-                    )
-
-                    if err_msg:
-                        return jsonify({
-                            'status': 'error',
-                            'execution_type': 'MARKET',
-                            'error': err_msg
-                        }), 400
-                    else:
-                        order_json = created_order.__str__() if created_order else None
-                        return jsonify({
-                            'status': 'success',
-                            'execution_type': 'MARKET',
-                            'order_uuid': order_uuid,
-                            'order': order_json
-                        })
+                # Consistent response format across all order types
+                return jsonify({
+                    'status': 'success',
+                    'execution_type': result.execution_type.value,
+                    'order_uuid': data.get('order_uuid'),
+                    'order': result.get_response_json()
+                })
 
             except SignalException as e:
                 bt.logging.error(f"SignalException in development order: {e}")

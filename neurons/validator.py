@@ -597,68 +597,29 @@ class Validator(ValidatorBase):
             # TIMING: Parse operations
             parse_start = TimeUtil.now_in_millis()
             miner_order_uuid = SendSignal.parse_miner_uuid(synapse)
-
-            # Use OrderProcessor to parse common fields
-            trade_pair, execution_type, _ = OrderProcessor.parse_signal_data(signal, miner_order_uuid)
-
             parse_ms = TimeUtil.now_in_millis() - parse_start
             bt.logging.info(f"[TIMING] Parse operations took {parse_ms}ms")
 
-            if execution_type == ExecutionType.LIMIT:
-                # Use OrderProcessor to handle LIMIT order
-                order = OrderProcessor.process_limit_order(
-                    signal, trade_pair, miner_order_uuid, now_ms,
-                    miner_hotkey, self.limit_order_client
-                )
+            # Use unified OrderProcessor dispatcher (replaces lines 602-661)
+            result = OrderProcessor.process_order(
+                signal=signal,
+                miner_order_uuid=miner_order_uuid,
+                now_ms=now_ms,
+                miner_hotkey=miner_hotkey,
+                miner_repo_version=miner_repo_version,
+                limit_order_client=self.limit_order_client,
+                market_order_manager=self.market_order_manager
+            )
 
-                # Set synapse response (validator's responsibility)
-                synapse.order_json = order.__str__()
+            # Set synapse response (centralized - single line instead of 4)
+            synapse.order_json = result.get_response_json()
 
-                # UUID tracking happens HERE in validator process (limit_order_manager is separate process)
+            # Track UUID if needed (centralized - single line instead of 3)
+            if result.should_track_uuid:
                 self.uuid_tracker.add(miner_order_uuid)
 
-            elif execution_type == ExecutionType.BRACKET:
-                # Use OrderProcessor to handle BRACKET order
-                order = OrderProcessor.process_bracket_order(
-                    signal, trade_pair, miner_order_uuid, now_ms,
-                    miner_hotkey, self.limit_order_client
-                )
-
-                # Set synapse response (validator's responsibility)
-                synapse.order_json = order.__str__()
-
-                # UUID tracking happens HERE in validator process (limit_order_manager is separate process)
-                self.uuid_tracker.add(miner_order_uuid)
-
-            elif execution_type == ExecutionType.LIMIT_CANCEL:
-                # Use OrderProcessor to handle LIMIT_CANCEL
-                result = OrderProcessor.process_limit_cancel(
-                    signal, trade_pair, miner_order_uuid, now_ms,
-                    miner_hotkey, self.limit_order_client
-                )
-
-                # Set synapse response (validator's responsibility)
-                synapse.order_json = json.dumps(result)
-                # No UUID tracking for cancel operations
-
-            else:
-                # Use OrderProcessor to handle MARKET order (consistent interface)
-                err_msg, updated_position, created_order = OrderProcessor.process_market_order(
-                    signal, trade_pair, miner_order_uuid, now_ms,
-                    miner_hotkey, miner_repo_version,
-                    self.market_order_manager
-                )
-
-                # Check for errors and raise SignalException if processing failed
-                if err_msg:
-                    raise SignalException(err_msg)
-
-                # Set synapse response from created order
-                if created_order:
-                    synapse.order_json = created_order.__str__()
-
-                # UUID tracking happens HERE in validator process
-                self.uuid_tracker.add(miner_order_uuid)
+            # For logging (used in line 691)
+            order = result.order_for_logging
 
         except SignalException as e:
             exception_time = TimeUtil.now_in_millis()
