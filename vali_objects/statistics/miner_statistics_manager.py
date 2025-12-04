@@ -33,10 +33,12 @@ import bittensor as bt
 from typing import List, Dict, Any
 from dataclasses import dataclass
 from enum import Enum
+import traceback
 
 from time_util.time_util import TimeUtil
 from vali_objects.utils.asset_segmentation import AssetSegmentation
 from vali_objects.vali_config import ValiConfig, TradePair, RPCConnectionMode
+from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils, CustomEncoder
 from vali_objects.position_management.position_utils import PositionUtils
 from vali_objects.position_management.position_utils.position_penalties import PositionPenalties
@@ -46,6 +48,8 @@ from vali_objects.utils.metrics import Metrics
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import TP_ID_PORTFOLIO, PerfLedger
 from vali_objects.utils.risk_profiling import RiskProfiling
 from vali_objects.vali_dataclasses.position import Position
+from proof_of_portfolio import prove_async
+import asyncio
 
 
 # ---------------------------------------------------------------------------
@@ -956,6 +960,154 @@ class MinerStatisticsManager:
                 ledger_obj = miner_data[hotkey].get("cumulative_ledger")
                 if ledger_obj and hasattr(ledger_obj, "cps"):
                     final_miner_dict["checkpoints"] = ledger_obj.cps
+
+                    bt.logging.info(
+                        f"Hotkey {hotkey}: Adding {len(ledger_obj.cps) if ledger_obj.cps else 0} checkpoints to statistics"
+                    )
+                    if ledger_obj.cps:
+                        bt.logging.info(
+                            f"Hotkey {hotkey}: First checkpoint - gain: {ledger_obj.cps[0].gain if ledger_obj.cps else 'N/A'}, loss: {ledger_obj.cps[0].loss if ledger_obj.cps else 'N/A'}"
+                        )
+                        bt.logging.info(
+                            f"Hotkey {hotkey}: Last checkpoint - gain: {ledger_obj.cps[-1].gain if ledger_obj.cps else 'N/A'}, loss: {ledger_obj.cps[-1].loss if ledger_obj.cps else 'N/A'}"
+                        )
+
+                    bt.logging.info(f"ZK proofs enabled: {ValiConfig.ENABLE_ZK_PROOFS}")
+                    if ValiConfig.ENABLE_ZK_PROOFS:
+                        raw_ledger_dict = filtered_ledger.get(hotkey, {})
+                        raw_positions = filtered_positions.get(hotkey, [])
+                        portfolio_ledger = raw_ledger_dict.get(TP_ID_PORTFOLIO)
+
+                        account_size = ValiConfig.MIN_CAPITAL
+
+                        try:
+                            # Get account size for this miner
+                            if self.contract_manager:
+                                try:
+                                    actual_account_size = (
+                                        self.contract_manager.get_miner_account_size(
+                                            hotkey, time_now, most_recent=True
+                                        )
+                                    )
+                                    if actual_account_size:
+                                        account_size = int(actual_account_size)
+                                        bt.logging.info(
+                                            f"Using real account size for {hotkey[:8]}...: ${account_size:,}"
+                                        )
+                                    else:
+                                        bt.logging.info(
+                                            f"No account size found for {hotkey[:8]}..., using default: ${account_size:,}"
+                                        )
+
+                                        miner_data["account_size"] = account_size
+
+                                except Exception as e:
+                                    bt.logging.warning(
+                                        f"Error getting account size for {hotkey[:8]}...: {e}, using default: ${account_size:,}"
+                                    )
+
+                            ptn_daily_returns = LedgerUtils.daily_return_log(
+                                portfolio_ledger
+                            )
+
+                            daily_pnl = LedgerUtils.daily_pnl(portfolio_ledger)
+                            total_pnl = 0
+                            if portfolio_ledger and portfolio_ledger.cps:
+                                for cp in portfolio_ledger.cps:
+                                    total_pnl += cp.pnl_gain + cp.pnl_loss
+
+                            weights_float = Metrics.weighting_distribution(
+                                ptn_daily_returns
+                            )
+
+                            miner_data = {
+                                "daily_returns": ptn_daily_returns,
+                                "weights": weights_float,
+                                "total_pnl": total_pnl,
+                                "positions": {hotkey: {"positions": raw_positions}},
+                                "perf_ledgers": {hotkey: portfolio_ledger},
+                            }
+                            bt.logging.info(
+                                f"Starting ZK proof generation for {hotkey[:8]}..."
+                            )
+                            bt.logging.info(
+                                f"ZK proof parameters: use_weighting={final_results_weighting}, bypass_confidence={bypass_confidence}, account_size={account_size}"
+                            )
+                            bt.logging.info(
+                                f"Daily PnL length: {len(daily_pnl) if daily_pnl else 0}"
+                            )
+
+                            zk_result = prove_async(
+                                miner_data=miner_data,
+                                daily_pnl=daily_pnl,
+                                hotkey=hotkey,
+                                vali_config=ValiConfig,
+                                use_weighting=final_results_weighting,
+                                bypass_confidence=bypass_confidence,
+                                account_size=account_size,
+                                augmented_scores=augmented_dict.get("overall", {}),
+                                wallet=self.wallet,
+                                verbose=True,
+                            )
+                            status = zk_result.get("status", "unknown")
+                            message = zk_result.get("message", "")
+                            bt.logging.info(
+                                f"ZK proof for {hotkey[:8]}: status={status}, message={message}"
+                            )
+                        except Exception as e:
+
+                            bt.logging.error(
+                                f"Error in ZK proof generation for {hotkey[:8]}: {type(e).__name__}: {str(e)}"
+                            )
+                            bt.logging.error(
+                                f"Full ZK proof generation traceback: {traceback.format_exc()}"
+                            )
+                            zk_result = {
+                                "status": "error",
+                                "verification_success": False,
+                                "message": str(e),
+                                "error_type": type(e).__name__,
+                                "traceback": traceback.format_exc(),
+                            }
+
+                        final_miner_dict["zk_proof"] = zk_result
+
+                        if (
+                                zk_result.get("status") == "success"
+                                and "portfolio_metrics" in zk_result
+                        ):
+                            circuit_metrics = zk_result["portfolio_metrics"]
+                            augmented_scores_dict = final_miner_dict.get(
+                                "augmented_scores", {}
+                            )
+
+                            zk_scores = {}
+                            metric_keys = {
+                                "sharpe": "sharpe_ratio_scaled",
+                                "calmar": "calmar_ratio_scaled",
+                                "sortino": "sortino_ratio_scaled",
+                                "omega": "omega_ratio_scaled",
+                                "pnl": "pnl_score_scaled",
+                            }
+
+                            for metric, circuit_key in metric_keys.items():
+                                if circuit_key in circuit_metrics:
+                                    circuit_value = circuit_metrics[circuit_key]
+                                    zk_scores[metric] = {
+                                        "value": circuit_value,
+                                        "rank": None,
+                                        "percentile": None,
+                                    }
+
+                            final_miner_dict["zk_scores"] = zk_scores
+                    else:
+                        bt.logging.debug(
+                            "ZK proof generation disabled in configuration"
+                        )
+                else:
+                    bt.logging.warning(
+                        f"Hotkey {hotkey}: No cumulative ledger or checkpoints found"
+                    )
 
             results.append(final_miner_dict)
 

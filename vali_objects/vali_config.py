@@ -147,6 +147,9 @@ class ValiConfig:
     DAYS_IN_YEAR_CRYPTO = 365  # annualization factor
     DAYS_IN_YEAR_FOREX = 252
 
+    # Proof of Portfolio
+    ENABLE_ZK_PROOFS = True
+
     # Development hotkey for testing
     DEVELOPMENT_HOTKEY = "DEVELOPMENT"
 
