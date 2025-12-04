@@ -22,11 +22,12 @@ Usage:
 Thread-safe: All RPC methods are atomic (lock-free via atomic tuple assignment).
 """
 import bittensor as bt
-from typing import Set, List
+from typing import Set, List, Optional, Tuple
 
 from shared_objects.rpc.metagraph_client import MetagraphClient
 from shared_objects.rpc.rpc_server_base import RPCServerBase
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
+from entitiy_management.entity_client import EntityClient
 
 
 class MetagraphServer(RPCServerBase):
@@ -91,6 +92,14 @@ class MetagraphServer(RPCServerBase):
         # Cached hotkeys_set for O(1) has_hotkey() lookups
         self._hotkeys_set: Set[str] = set()
 
+        # Entity client for synthetic hotkey validation
+        # Using lazy connection (connect_immediately=False) to avoid circular dependency
+        self._entity_client = EntityClient(
+            connection_mode=connection_mode,
+            running_unit_tests=running_unit_tests,
+            connect_immediately=False
+        )
+
         # Initialize RPCServerBase (NO daemon for MetagraphServer - it's just a data store)
         super().__init__(
             service_name=ValiConfig.RPC_METAGRAPH_SERVICE_NAME,
@@ -130,16 +139,57 @@ class MetagraphServer(RPCServerBase):
         Fast O(1) hotkey existence check using cached set.
         Lock-free - set membership check is atomic in Python.
 
+        Supports synthetic hotkeys (format: {entity_hotkey}_{subaccount_id}):
+        - If hotkey is not in metagraph, checks if it's a synthetic hotkey
+        - Validates entity hotkey exists in metagraph
+        - Validates subaccount is active via EntityClient
+
         Args:
-            hotkey: The hotkey to check
+            hotkey: The hotkey to check (can be regular or synthetic)
 
         Returns:
-            bool: True if hotkey exists or is DEVELOPMENT, False otherwise
+            bool: True if hotkey exists or is DEVELOPMENT or is valid synthetic hotkey, False otherwise
         """
+        # Check for DEVELOPMENT_HOTKEY
         if hotkey == self.DEVELOPMENT_HOTKEY:
             return True
-        # Lock-free! Python's 'in' operator is atomic for reads
-        return hotkey in self._hotkeys_set
+
+        # Check if regular hotkey exists in metagraph (lock-free, atomic)
+        if hotkey in self._hotkeys_set:
+            return True
+
+        # Not in metagraph - check if it's a synthetic hotkey
+        # Synthetic hotkey format: {entity_hotkey}_{subaccount_id}
+        # Use EntityClient to validate (it has the is_synthetic_hotkey logic)
+        try:
+            if self._entity_client.is_synthetic_hotkey(hotkey):
+                # Parse synthetic hotkey
+                entity_hotkey, subaccount_id = self._entity_client.parse_synthetic_hotkey(hotkey)
+
+                if entity_hotkey is None or subaccount_id is None:
+                    # Invalid synthetic hotkey format
+                    return False
+
+                # Verify entity hotkey exists in metagraph
+                if entity_hotkey not in self._hotkeys_set:
+                    bt.logging.debug(f"[METAGRAPH] Synthetic hotkey '{hotkey}' rejected: entity '{entity_hotkey}' not in metagraph")
+                    return False
+
+                # Verify subaccount is active via EntityClient
+                found, status, _ = self._entity_client.get_subaccount_status(hotkey)
+                if found and status == "active":
+                    bt.logging.trace(f"[METAGRAPH] Synthetic hotkey '{hotkey}' validated: entity in metagraph, subaccount active")
+                    return True
+                else:
+                    bt.logging.debug(f"[METAGRAPH] Synthetic hotkey '{hotkey}' rejected: subaccount not found or not active (status={status})")
+                    return False
+        except Exception as e:
+            # If EntityClient fails (server not running, etc.), treat as not found
+            bt.logging.warning(f"[METAGRAPH] Failed to validate synthetic hotkey '{hotkey}': {e}")
+            return False
+
+        # Not in metagraph and not a valid synthetic hotkey
+        return False
 
     def get_hotkeys_rpc(self) -> list:
         """Get list of all hotkeys (lock-free read)"""
@@ -371,6 +421,3 @@ class MetagraphServer(RPCServerBase):
         # Update via RPC method
         self.update_metagraph_rpc(block_at_registration=new_blocks)
 
-
-# Backward compatibility alias
-MetagraphManager = MetagraphClient
