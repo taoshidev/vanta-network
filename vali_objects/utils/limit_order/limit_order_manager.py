@@ -194,6 +194,18 @@ class LimitOrderManager(CacheController):
 
                 order.order_type = position.position_type
 
+                if order.stop_loss and order.take_profit:
+                    if order.order_type == OrderType.LONG and order.stop_loss >= order.take_profit:
+                        raise SignalException(
+                            f"LONG BRACKET orders must satisfy: stop_loss < take_profit. "
+                            f"Got stop_loss={order.stop_loss}, take_profit={order.take_profit}"
+                        )
+                    if order.order_type == OrderType.SHORT and order.stop_loss <= order.take_profit:
+                        raise SignalException(
+                            f"SHORT BRACKET orders must satisfy: take_profit < stop_loss. "
+                            f"Got take_profit={order.take_profit}, stop_loss={order.stop_loss}"
+                        )
+
                 # Use miner-provided leverage if specified, otherwise use position leverage
                 if order.leverage is None and order.value is None and order.quantity is None:
                     order.quantity = position.net_quantity
