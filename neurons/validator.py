@@ -717,7 +717,7 @@ class Validator(ValidatorBase):
         try:
             hotkey = synapse.dendrite.hotkey
             # Return the last n positions using PositionManagerClient
-            positions = self.position_manager_client.get_positions_for_one_hotkey(hotkey, only_open_positions=False)
+            positions = self.position_manager_client.get_positions_for_one_hotkey(hotkey, only_open_positions=True)
             synapse.positions = [position.to_dict() for position in positions]
             n_positions_sent = len(synapse.positions)
         except Exception as e:

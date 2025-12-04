@@ -69,7 +69,6 @@ live_price_fetcher = LivePriceFetcher(secrets, disable_ws=True)
 try:
     contract_manager = ValidatorContractManager(
         config=None,
-        metagraph=None,
         running_unit_tests=False
     )
     print("Contract manager initialized successfully")
@@ -248,7 +247,6 @@ def process_hotkey(args):
 
         contract_manager = ValidatorContractManager(
             config=None,
-            metagraph=None,
             running_unit_tests=False
         )
     except Exception as e:

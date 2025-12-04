@@ -3,6 +3,9 @@ from collections import defaultdict
 import bittensor as bt
 import time
 import asyncio
+import json
+import shutil
+import os
 
 from miner_config import MinerConfig
 from template.protocol import GetPositions
@@ -151,8 +154,29 @@ class PositionInspector:
         bt.logging.info(f"Querying {len(validators_to_query)} possible validators for positions")
         result = await self.get_positions_with_retry(validators_to_query)
 
-        if not result:
+        if result:
+            self.write_positions_to_disk(result)
+        else:
             bt.logging.info("No positions found.")
 
         self.last_update_time = time.time()
         bt.logging.success("PositionInspector successfully completed signal processing.")
+
+    def write_positions_to_disk(self, positions):
+        """
+        Atomically writes positions to disk.
+
+        Args:
+            positions: List of position dictionaries to save, or None/empty list
+        """
+        try:
+            file_path = MinerConfig.get_position_file_location()
+            temp_path = file_path + ".tmp"
+            os.makedirs(os.path.dirname(file_path), exist_ok=True)
+            with open(temp_path, 'w') as f:
+                json.dump(positions if positions else [], f, indent=2)
+            shutil.move(temp_path, file_path)
+            bt.logging.info(f"Successfully saved {len(positions) if positions else 0} positions to {file_path}")
+        except Exception as e:
+            bt.logging.error(f"Failed to save positions to disk: {e}")
+
