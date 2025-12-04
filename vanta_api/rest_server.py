@@ -689,7 +689,7 @@ class VantaRestServer(RPCServerBase, APIKeyMixin):
 
             # Use the API key's tier for access
             api_key_tier = self.get_api_key_tier(api_key)
-            if api_key_tier == 100 and self.position_manager:
+            if self.can_access_tier(api_key, 100) and self.position_manager:
                 existing_positions: list[Position] = self.position_manager.get_positions_for_one_hotkey(minerid,
                                                                                                         sort_positions=True)
                 if not existing_positions:
@@ -974,13 +974,13 @@ class VantaRestServer(RPCServerBase, APIKeyMixin):
                 return jsonify({'error': 'Unauthorized access'}), 401
 
             api_key_tier = self.get_api_key_tier(api_key)
-            if api_key_tier == 100 and self._limit_order_client:
+            if self.can_access_tier(api_key, 100) and self._limit_order_client:
                 orders_data = self._limit_order_client.to_dashboard_dict(minerid)
                 if not orders_data:
                     return jsonify({'error': f'No limit orders found for miner {minerid}'}), 404
             else:
                 try:
-                    orders_data = ValiBkpUtils.get_limit_orders(minerid, running_unit_tests=False)
+                    orders_data = ValiBkpUtils.get_limit_orders(minerid, unfilled_only=True, running_unit_tests=False)
                     if not orders_data:
                         return jsonify({'error': f'No limit orders found for miner {minerid}'}), 404
                 except Exception as e:
