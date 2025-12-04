@@ -625,188 +625,87 @@ class TestLimitOrderIntegration(TestBase):
 
     def test_long_limit_order_invalid_stop_loss_above_fill_price(self):
         """
-        INTEGRATION TEST: LONG limit order with SL >= fill price should NOT create bracket order.
+        INTEGRATION TEST: LONG limit order with SL >= limit price should be rejected by Pydantic validation.
 
-        For LONG positions, stop loss must be BELOW fill price (sell at a loss).
-        Invalid SL should be rejected with warning, but limit order still fills.
+        For LONG positions, stop loss must be BELOW limit price (sell at a loss).
+        Invalid SL should be rejected at order creation time with ValueError.
         """
         # Create initial LONG position
         self.create_test_position(order_type=OrderType.LONG, leverage=0.3)
 
-        # Create LONG limit order with INVALID stop loss (above expected fill price)
-        # Expected fill price ~47000, but SL=48000 is ABOVE (invalid for LONG)
-        limit_order = self.create_limit_order(
-            order_type=OrderType.LONG,
-            limit_price=48000.0,
-            leverage=0.2,
-            stop_loss=48000.0,  # INVALID: SL should be < fill price for LONG
-            take_profit=52000.0
-        )
+        # Attempt to create LONG limit order with INVALID stop loss (equal to limit price)
+        # SL=48000 equals limit_price=48000 (invalid for LONG - must be strictly less)
+        with self.assertRaises(ValueError) as context:
+            limit_order = self.create_limit_order(
+                order_type=OrderType.LONG,
+                limit_price=48000.0,
+                leverage=0.2,
+                stop_loss=48000.0,  # INVALID: SL must be < limit_price for LONG
+                take_profit=52000.0
+            )
 
-        # Inject None to prevent immediate fill
-        self.inject_price_data(self.DEFAULT_TRADE_PAIR, None)
-
-        # Submit order
-        self.limit_order_client.process_limit_order(self.DEFAULT_MINER_HOTKEY, limit_order)
-
-        # Fill limit order at ~47000 (below SL of 48000)
-        trigger_price_source = self.create_price_source(47000.0, bid=47000.0, ask=47000.0)
-        self.inject_price_data(self.DEFAULT_TRADE_PAIR, trigger_price_source)
-        self.set_market_open(is_open=True)
-
-        self.limit_order_client.check_and_fill_limit_orders()
-
-        # Verify NO bracket order created (invalid SL rejected)
-        bracket_orders = self.limit_order_client.get_limit_orders_for_trade_pair(
-            self.DEFAULT_TRADE_PAIR.trade_pair_id
-        ).get(self.DEFAULT_MINER_HOTKEY, [])
-        self.assertEqual(len(bracket_orders), 0, "Invalid SL should prevent bracket creation")
-
-        # Verify limit order still filled successfully
-        position = self.position_client.get_open_position_for_trade_pair(
-            self.DEFAULT_MINER_HOTKEY,
-            self.DEFAULT_TRADE_PAIR.trade_pair_id
-        )
-        self.assertEqual(len(position.orders), 2, "Limit order should still fill")
-        self.assertEqual(position.orders[-1].src, OrderSource.LIMIT_FILLED)
-
-    def test_long_limit_order_invalid_take_profit_below_fill_price(self):
+    def test_long_limit_order_invalid_take_profit_below_limit_price(self):
         """
-        INTEGRATION TEST: LONG limit order with TP <= fill price should NOT create bracket order.
+        INTEGRATION TEST: LONG limit order with TP <= limit price should be rejected by Pydantic validation.
 
-        For LONG positions, take profit must be ABOVE fill price (sell at a gain).
-        Invalid TP should be rejected with warning, but limit order still fills.
+        For LONG positions, take profit must be ABOVE limit price (sell at a gain).
+        Invalid TP should be rejected at order creation time with ValueError.
         """
         # Create initial LONG position
         self.create_test_position(order_type=OrderType.LONG, leverage=0.3)
 
-        # Create LONG limit order with INVALID take profit (below expected fill price)
-        # Expected fill price ~47000, but TP=46000 is BELOW (invalid for LONG)
-        limit_order = self.create_limit_order(
-            order_type=OrderType.LONG,
-            limit_price=48000.0,
-            leverage=0.2,
-            stop_loss=45000.0,
-            take_profit=46000.0  # INVALID: TP should be > fill price for LONG
-        )
+        # Attempt to create LONG limit order with INVALID take profit (equal to limit price)
+        # TP=48000 equals limit_price=48000 (invalid for LONG - must be strictly greater)
+        with self.assertRaises(ValueError) as context:
+            limit_order = self.create_limit_order(
+                order_type=OrderType.LONG,
+                limit_price=48000.0,
+                leverage=0.2,
+                stop_loss=45000.0,
+                take_profit=48000.0  # INVALID: TP must be > limit_price for LONG
+            )
 
-        # Inject None to prevent immediate fill
-        self.inject_price_data(self.DEFAULT_TRADE_PAIR, None)
-
-        # Submit order
-        self.limit_order_client.process_limit_order(self.DEFAULT_MINER_HOTKEY, limit_order)
-
-        # Fill limit order at ~47000 (above TP of 46000)
-        trigger_price_source = self.create_price_source(47000.0, bid=47000.0, ask=47000.0)
-        self.inject_price_data(self.DEFAULT_TRADE_PAIR, trigger_price_source)
-        self.set_market_open(is_open=True)
-
-        self.limit_order_client.check_and_fill_limit_orders()
-
-        # Verify NO bracket order created (invalid TP rejected)
-        bracket_orders = self.limit_order_client.get_limit_orders_for_trade_pair(
-            self.DEFAULT_TRADE_PAIR.trade_pair_id
-        ).get(self.DEFAULT_MINER_HOTKEY, [])
-        self.assertEqual(len(bracket_orders), 0, "Invalid TP should prevent bracket creation")
-
-        # Verify limit order still filled successfully
-        position = self.position_client.get_open_position_for_trade_pair(
-            self.DEFAULT_MINER_HOTKEY,
-            self.DEFAULT_TRADE_PAIR.trade_pair_id
-        )
-        self.assertEqual(len(position.orders), 2, "Limit order should still fill")
-
-    def test_short_limit_order_invalid_stop_loss_below_fill_price(self):
+    def test_short_limit_order_invalid_stop_loss_below_limit_price(self):
         """
-        INTEGRATION TEST: SHORT limit order with SL <= fill price should NOT create bracket order.
+        INTEGRATION TEST: SHORT limit order with SL <= limit price should be rejected by Pydantic validation.
 
-        For SHORT positions, stop loss must be ABOVE fill price (buy back at a loss).
-        Invalid SL should be rejected with warning, but limit order still fills.
+        For SHORT positions, stop loss must be ABOVE limit price (buy back at a loss).
+        Invalid SL should be rejected at order creation time with ValueError.
         """
         # Create initial LONG position
         self.create_test_position(order_type=OrderType.LONG, leverage=0.4)
 
-        # Create SHORT limit order with INVALID stop loss (below expected fill price)
-        # Expected fill price ~52000, but SL=51000 is BELOW (invalid for SHORT)
-        limit_order = self.create_limit_order(
-            order_type=OrderType.SHORT,
-            limit_price=51000.0,
-            leverage=-0.2,
-            stop_loss=51000.0,  # INVALID: SL should be > fill price for SHORT
-            take_profit=48000.0
-        )
+        # Attempt to create SHORT limit order with INVALID stop loss (equal to limit price)
+        # SL=51000 equals limit_price=51000 (invalid for SHORT - must be strictly greater)
+        with self.assertRaises(ValueError) as context:
+            limit_order = self.create_limit_order(
+                order_type=OrderType.SHORT,
+                limit_price=51000.0,
+                leverage=-0.2,
+                stop_loss=51000.0,  # INVALID: SL must be > limit_price for SHORT
+                take_profit=48000.0
+            )
 
-        # Inject None to prevent immediate fill
-        self.inject_price_data(self.DEFAULT_TRADE_PAIR, None)
-
-        # Submit order
-        self.limit_order_client.process_limit_order(self.DEFAULT_MINER_HOTKEY, limit_order)
-
-        # Fill limit order at ~52000 (above SL of 51000)
-        trigger_price_source = self.create_price_source(52000.0, bid=52000.0, ask=52000.0)
-        self.inject_price_data(self.DEFAULT_TRADE_PAIR, trigger_price_source)
-        self.set_market_open(is_open=True)
-
-        self.limit_order_client.check_and_fill_limit_orders()
-
-        # Verify NO bracket order created (invalid SL rejected)
-        bracket_orders = self.limit_order_client.get_limit_orders_for_trade_pair(
-            self.DEFAULT_TRADE_PAIR.trade_pair_id
-        ).get(self.DEFAULT_MINER_HOTKEY, [])
-        self.assertEqual(len(bracket_orders), 0, "Invalid SL should prevent bracket creation")
-
-        # Verify limit order still filled successfully
-        position = self.position_client.get_open_position_for_trade_pair(
-            self.DEFAULT_MINER_HOTKEY,
-            self.DEFAULT_TRADE_PAIR.trade_pair_id
-        )
-        self.assertEqual(len(position.orders), 2, "Limit order should still fill")
-
-    def test_short_limit_order_invalid_take_profit_above_fill_price(self):
+    def test_short_limit_order_invalid_take_profit_above_limit_price(self):
         """
-        INTEGRATION TEST: SHORT limit order with TP >= fill price should NOT create bracket order.
+        INTEGRATION TEST: SHORT limit order with TP >= limit price should be rejected by Pydantic validation.
 
-        For SHORT positions, take profit must be BELOW fill price (buy back at a gain).
-        Invalid TP should be rejected with warning, but limit order still fills.
+        For SHORT positions, take profit must be BELOW limit price (buy back at a gain).
+        Invalid TP should be rejected at order creation time with ValueError.
         """
         # Create initial LONG position
         self.create_test_position(order_type=OrderType.LONG, leverage=0.4)
 
-        # Create SHORT limit order with INVALID take profit (above expected fill price)
-        # Expected fill price ~52000, but TP=53000 is ABOVE (invalid for SHORT)
-        limit_order = self.create_limit_order(
-            order_type=OrderType.SHORT,
-            limit_price=51000.0,
-            leverage=-0.2,
-            stop_loss=54000.0,
-            take_profit=53000.0  # INVALID: TP should be < fill price for SHORT
-        )
-
-        # Inject None to prevent immediate fill
-        self.inject_price_data(self.DEFAULT_TRADE_PAIR, None)
-
-        # Submit order
-        self.limit_order_client.process_limit_order(self.DEFAULT_MINER_HOTKEY, limit_order)
-
-        # Fill limit order at ~52000 (below TP of 53000)
-        trigger_price_source = self.create_price_source(52000.0, bid=52000.0, ask=52000.0)
-        self.inject_price_data(self.DEFAULT_TRADE_PAIR, trigger_price_source)
-        self.set_market_open(is_open=True)
-
-        self.limit_order_client.check_and_fill_limit_orders()
-
-        # Verify NO bracket order created (invalid TP rejected)
-        bracket_orders = self.limit_order_client.get_limit_orders_for_trade_pair(
-            self.DEFAULT_TRADE_PAIR.trade_pair_id
-        ).get(self.DEFAULT_MINER_HOTKEY, [])
-        self.assertEqual(len(bracket_orders), 0, "Invalid TP should prevent bracket creation")
-
-        # Verify limit order still filled successfully
-        position = self.position_client.get_open_position_for_trade_pair(
-            self.DEFAULT_MINER_HOTKEY,
-            self.DEFAULT_TRADE_PAIR.trade_pair_id
-        )
-        self.assertEqual(len(position.orders), 2, "Limit order should still fill")
+        # Attempt to create SHORT limit order with INVALID take profit (equal to limit price)
+        # TP=51000 equals limit_price=51000 (invalid for SHORT - must be strictly less)
+        with self.assertRaises(ValueError) as context:
+            limit_order = self.create_limit_order(
+                order_type=OrderType.SHORT,
+                limit_price=51000.0,
+                leverage=-0.2,
+                stop_loss=54000.0,
+                take_profit=51000.0  # INVALID: TP must be < limit_price for SHORT
+            )
 
     def test_long_limit_order_valid_sl_tp_creates_bracket(self):
         """

@@ -196,8 +196,6 @@ class LimitOrderManager(CacheController):
 
                 # Use miner-provided leverage if specified, otherwise use position leverage
                 if order.leverage is None and order.value is None and order.quantity is None:
-                    order.leverage = position.net_leverage
-                    order.value = position.net_value
                     order.quantity = position.net_quantity
 
             # Validation for LIMIT orders

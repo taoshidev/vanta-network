@@ -91,7 +91,7 @@ class TestLimitOrders(TestBase):
 
     def create_test_limit_order(self, order_type: OrderType = OrderType.LONG, limit_price=49000.0,
                                trade_pair=None, leverage=0.5, order_uuid=None,
-                               stop_loss=None, take_profit=None, quantity=None):
+                               stop_loss=None, take_profit=None, quantity=None, fill_price=0.0):
         """Helper to create test limit orders"""
         if trade_pair is None:
             trade_pair = self.DEFAULT_TRADE_PAIR
@@ -102,7 +102,7 @@ class TestLimitOrders(TestBase):
             trade_pair=trade_pair,
             order_uuid=order_uuid,
             processed_ms=TimeUtil.now_in_millis(),
-            price=0.0,
+            price=fill_price,
             order_type=order_type,
             leverage=leverage,
             quantity=quantity,
@@ -944,7 +944,8 @@ class TestLimitOrders(TestBase):
             stop_loss=49000.0,
             take_profit=51000.0,
             leverage=None,  # Use quantity instead
-            quantity=0.5  # 0.5 BTC
+            quantity=0.5,  # 0.5 BTC
+            fill_price=50000.0
         )
 
         # Manually call _create_sltp_orders as it's called after fill
@@ -970,7 +971,8 @@ class TestLimitOrders(TestBase):
         parent_order = self.create_test_limit_order(
             limit_price=50000.0,
             stop_loss=49000.0,
-            take_profit=None
+            take_profit=None,
+            fill_price=50000.0
         )
 
         self.limit_order_client.create_sltp_orders(self.DEFAULT_MINER_HOTKEY, parent_order)
@@ -1415,7 +1417,8 @@ class TestLimitOrders(TestBase):
             limit_price=50000.0,
             stop_loss=49000.0,
             take_profit=51000.0,
-            leverage=0.1
+            leverage=0.1,
+            fill_price=50000.0
         )
 
         # Manually create bracket order (as would happen after fill)
@@ -1453,7 +1456,8 @@ class TestLimitOrders(TestBase):
         parent_order = self.create_test_limit_order(
             order_uuid="parent456",
             limit_price=50000.0,
-            stop_loss=49000.0
+            stop_loss=49000.0,
+            fill_price=50000.0
         )
 
         self.limit_order_client.create_sltp_orders(self.DEFAULT_MINER_HOTKEY, parent_order)
@@ -1533,7 +1537,8 @@ class TestLimitOrders(TestBase):
                     order_uuid=parent_uuid,
                     limit_price=50000.0,
                     stop_loss=49000.0,
-                    leverage=0.1
+                    leverage=0.1,
+                    fill_price=50000.0
                 )
 
                 # Create bracket order

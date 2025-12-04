@@ -39,17 +39,33 @@ class Signal(BaseModel):
     @model_validator(mode='before')
     def check_price_fields(cls, values):
         execution_type = values.get('execution_type')
+        order_type = values.get('order_type')
 
         if execution_type == ExecutionType.LIMIT:
             limit_price = values.get('limit_price')
             if not limit_price:
                 raise ValueError(f"Limit price must be specified for LIMIT orders")
 
+            sl = values.get('stop_loss')
+            tp = values.get('take_profit')
+            if order_type == OrderType.LONG and ((sl and sl >= limit_price) or (tp and tp <= limit_price)):
+                raise ValueError(
+                    f"LONG LIMIT orders must satisfy: stop_loss < limit_price < take_profit. "
+                    f"Got stop_loss={sl}, limit_price={limit_price}, take_profit={tp}"
+                )
+            elif order_type == OrderType.SHORT and ((sl and sl <= limit_price) or (tp and tp >= limit_price)):
+                raise ValueError(
+                    f"SHORT LIMIT orders must satisfy: take_profit < limit_price < stop_loss. "
+                    f"Got take_profit={tp}, limit_price={limit_price}, stop_loss={sl}"
+                )
+
         elif execution_type == ExecutionType.BRACKET:
             sl = values.get('stop_loss')
             tp = values.get('take_profit')
             if not sl and not tp:
                 raise ValueError(f"Either stop_loss or take_profit must be set for BRACKET orders")
+            if sl and tp and sl == tp:
+                raise ValueError(f"stop_loss and take_profit must be unique")
 
         return values
 
