@@ -226,8 +226,8 @@ class ValiConfig:
     RPC_REST_SERVER_PORT = 50022
     RPC_REST_SERVER_SERVICE_NAME = "VantaRestServer"
 
-    RPC_MINERACCOUNT_PORT = 50023
-    RPC_MINERACCOUNT_SERVICE_NAME = "MinerAccountServer"
+    RPC_ENTITY_PORT = 50023
+    RPC_ENTITY_SERVICE_NAME = "EntityServer"
 
     # Public API Configuration (well-known network endpoints)
     REST_API_HOST = "127.0.0.1"
@@ -429,6 +429,18 @@ class ValiConfig:
     ELIMINATION_CHECK_INTERVAL_MS = 60 * 5 * 1000  # 5 minutes
     ELIMINATION_CACHE_REFRESH_INTERVAL_S = 5  # Elimination cache refresh interval in seconds
     ELIMINATION_FILE_DELETION_DELAY_MS = 7 * 24 * 60 * 60 * 1000  # 7 days
+
+    # Entity Miners Configuration
+    ENTITY_ELIMINATION_CHECK_INTERVAL = 300  # 5 minutes (in seconds) - for challenge period + elimination checks
+    ENTITY_MAX_SUBACCOUNTS = 500  # Default maximum subaccounts per entity (Phase 1)
+    ENTITY_DATA_DIR = "validation/entities/"  # Entity data persistence directory
+    FIXED_SUBACCOUNT_SIZE = 10000.0  # Fixed account size for subaccounts (USD) - placeholder
+    SUBACCOUNT_COLLATERAL_AMOUNT = 1000.0  # Placeholder collateral amount per subaccount
+
+    # Challenge Period Configuration
+    SUBACCOUNT_CHALLENGE_PERIOD_DAYS = 90  # Challenge period duration (90 days)
+    SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD = 0.03  # 3% returns required to pass challenge period
+    SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD = 0.06  # 6% max drawdown allowed during challenge period
 
     # Distributional statistics
     SOFTMAX_TEMPERATURE = 0.15

@@ -274,11 +274,13 @@ class ServerOrchestrator:
             required_in_validator=True,  # Auto-started with other servers
             spawn_kwargs={'start_daemon': False}  # Daemon started later via orchestrator.start_server_daemons()
         ),
-        'miner_account': ServerConfig(
+        'entity': ServerConfig(
             server_class=None,
             client_class=None,
             required_in_testing=True,
-            spawn_kwargs={'start_daemon': False}
+            required_in_miner=False,  # Miners don't need entity management
+            required_in_validator=True,  # Validators need entity management for subaccount tracking
+            spawn_kwargs={'start_daemon': False}  # Daemon started later via orchestrator
         ),
     }
 
@@ -366,8 +368,8 @@ class ServerOrchestrator:
         from vali_objects.utils.mdd_checker.mdd_checker_client import MDDCheckerClient
         from vali_objects.scoring.weight_calculator_server import WeightCalculatorServer
         from vali_objects.scoring.weight_calculator_client import WeightCalculatorClient
-        from vali_objects.miner_account.miner_account_server import MinerAccountServer
-        from vali_objects.miner_account.miner_account_client import MinerAccountClient
+        from entitiy_management.entity_server import EntityServer
+        from entitiy_management.entity_client import EntityClient
 
         # Update registry with classes
         self.SERVERS['common_data'].server_class = CommonDataServer
@@ -421,8 +423,8 @@ class ServerOrchestrator:
         self.SERVERS['weight_calculator'].server_class = WeightCalculatorServer
         self.SERVERS['weight_calculator'].client_class = WeightCalculatorClient
 
-        self.SERVERS['miner_account'].server_class = MinerAccountServer
-        self.SERVERS['miner_account'].client_class = MinerAccountClient
+        self.SERVERS['entity'].server_class = EntityServer
+        self.SERVERS['entity'].client_class = EntityClient
 
         self._classes_loaded = True
 
@@ -585,6 +587,7 @@ class ServerOrchestrator:
         order = [
             'common_data',
             'metagraph',
+            'entity',              # Depends on metagraph (for synthetic hotkey validation)
             'position_lock',
             'perf_ledger',
             'live_price_fetcher',
@@ -879,13 +882,10 @@ class ServerOrchestrator:
                 contract_client.clear_test_collateral_balances()
             safe_clear('contract', clear_contract)
 
-        # Clear miner account data (account sizes)
-        miner_account_client = get_client_safe('miner_account')
-        if miner_account_client:
-            def clear_miner_account():
-                miner_account_client.sync_miner_account_sizes_data({})  # Empty dict = clear all
-                miner_account_client.re_init_account_sizes()  # Reload from disk
-            safe_clear('miner_account', clear_miner_account)
+        # Clear entity data (entities and subaccounts)
+        entity_client = get_client_safe('entity')
+        if entity_client:
+            safe_clear('entity', lambda: entity_client.clear_all_entities())
 
         bt.logging.debug("All test data cleared")
 
@@ -1182,6 +1182,7 @@ class ServerOrchestrator:
         # Start daemons for servers that deferred initialization
         if start_daemons:
             daemon_servers = [
+                'entity',
                 'position_manager',
                 'elimination',
                 'challenge_period',
