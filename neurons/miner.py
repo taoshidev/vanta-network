@@ -46,13 +46,12 @@ class Miner:
         # This ensures servers are fully started before clients try to connect
         bt.logging.info("Initializing miner servers...")
         self.orchestrator = ServerOrchestrator.get_instance()
-        secrets = ValiUtils.get_secrets(running_unit_tests=False)
 
         # Start only the servers miners need (common_data, metagraph)
         # Servers start in dependency order and block until ready - no connection errors!
         self.orchestrator.start_all_servers(
             mode=ServerMode.MINER,
-            secrets=secrets
+            secrets=None
         )
 
         # Get clients from orchestrator (servers guaranteed ready, no connection errors)
