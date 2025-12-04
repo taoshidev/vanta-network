@@ -3,7 +3,7 @@ import math
 
 import bittensor as bt
 
-from vali_objects.vali_dataclasses.perf_ledger import PerfLedger, PerfCheckpoint, TP_ID_PORTFOLIO
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger, PerfCheckpoint, TP_ID_PORTFOLIO
 from vali_objects.vali_config import ValiConfig, TradePair, TradePairCategory
 
 
@@ -98,13 +98,7 @@ class AssetSegmentation:
             ledger_checkpoints = ledger.cps
             for checkpoint in ledger_checkpoints:
                 if checkpoint.last_update_ms not in aggregated_dict_ledger:
-                    checkpoint_copy = copy.deepcopy(checkpoint)
-                    # Ensure realized_pnl and unrealized_pnl exist for old checkpoints
-                    if not hasattr(checkpoint_copy, 'realized_pnl'):
-                        checkpoint_copy.realized_pnl = 0.0
-                    if not hasattr(checkpoint_copy, 'unrealized_pnl'):
-                        checkpoint_copy.unrealized_pnl = 0.0
-                    aggregated_dict_ledger[checkpoint.last_update_ms] = checkpoint_copy
+                    aggregated_dict_ledger[checkpoint.last_update_ms] =  copy.deepcopy(checkpoint)
                 else:
                     existing_checkpoint = aggregated_dict_ledger.get(checkpoint.last_update_ms)
 
@@ -116,8 +110,8 @@ class AssetSegmentation:
                     existing_checkpoint.carry_fee_loss += checkpoint.carry_fee_loss
 
                     # Use getattr() to safely handle old checkpoints without realized_pnl/unrealized_pnl
-                    existing_checkpoint.realized_pnl = getattr(existing_checkpoint, 'realized_pnl', 0.0) + getattr(checkpoint, 'realized_pnl', 0.0)
-                    existing_checkpoint.unrealized_pnl = getattr(existing_checkpoint, 'unrealized_pnl', 0.0) + getattr(checkpoint, 'unrealized_pnl', 0.0)
+                    existing_checkpoint.realized_pnl += checkpoint.realized_pnl
+                    existing_checkpoint.unrealized_pnl += checkpoint.unrealized_pnl
 
                     aggregated_dict_ledger[checkpoint.last_update_ms] = existing_checkpoint
 

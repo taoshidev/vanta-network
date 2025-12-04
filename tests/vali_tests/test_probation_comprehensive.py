@@ -9,21 +9,21 @@ Refactored to use client/server architecture matching test_elimination_core.py p
 """
 import unittest
 
-from shared_objects.server_orchestrator import ServerOrchestrator, ServerMode
+from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.shared_objects.test_utilities import (
     generate_losing_ledger,
     generate_winning_ledger,
 )
 from tests.vali_tests.base_objects.test_base import TestBase
 from vali_objects.enums.order_type_enum import OrderType
-from vali_objects.position import Position
-from vali_objects.utils.challengeperiod_manager import ChallengePeriodManager
-from vali_objects.utils.elimination_manager import EliminationReason
-from vali_objects.utils.miner_bucket_enum import MinerBucket
+from vali_objects.vali_dataclasses.position import Position
+from vali_objects.challenge_period import ChallengePeriodManager
+from vali_objects.utils.elimination.elimination_manager import EliminationReason
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.vali_dataclasses.order import Order
-from vali_objects.vali_dataclasses.perf_ledger import TP_ID_PORTFOLIO
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import TP_ID_PORTFOLIO
 
 
 class TestProbationComprehensive(TestBase):

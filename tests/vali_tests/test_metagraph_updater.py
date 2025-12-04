@@ -10,8 +10,8 @@ import unittest
 from unittest.mock import Mock
 from dataclasses import dataclass
 
-from shared_objects.metagraph_updater import MetagraphUpdater
-from shared_objects.server_orchestrator import ServerOrchestrator, ServerMode
+from shared_objects.metagraph.metagraph_updater import MetagraphUpdater
+from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
 
 from vali_objects.utils.vali_utils import ValiUtils

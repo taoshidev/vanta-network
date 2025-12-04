@@ -29,13 +29,13 @@ import bittensor as bt
 
 from shared_objects.cache_controller import CacheController
 from shared_objects.error_utils import ErrorUtils
-from shared_objects.rpc_server_base import RPCServerBase
+from shared_objects.rpc.rpc_server_base import RPCServerBase
 from time_util.time_util import TimeUtil
 from vali_objects.vali_config import ValiConfig
 from vali_objects.scoring.debt_based_scoring import DebtBasedScoring
-from vali_objects.utils.miner_bucket_enum import MinerBucket
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 from shared_objects.slack_notifier import SlackNotifier
-from shared_objects.shutdown_coordinator import ShutdownCoordinator
+from shared_objects.rpc.shutdown_coordinator import ShutdownCoordinator
 
 
 
@@ -78,7 +78,7 @@ class WeightCalculatorServer(RPCServerBase, CacheController):
         self.subnet_version = 200
 
         # Create own CommonDataClient (forward compatibility - no parameter passing)
-        from shared_objects.common_data_server import CommonDataClient
+        from shared_objects.rpc.common_data_server import CommonDataClient
         self._common_data_client = CommonDataClient(
             running_unit_tests=running_unit_tests
         )
@@ -98,27 +98,27 @@ class WeightCalculatorServer(RPCServerBase, CacheController):
         )
 
         # Create own PositionManagerClient (forward compatibility - no parameter passing)
-        from vali_objects.utils.position_manager_client import PositionManagerClient
+        from vali_objects.position_management.position_manager_client import PositionManagerClient
         self._position_client = PositionManagerClient(
             port=ValiConfig.RPC_POSITIONMANAGER_PORT, running_unit_tests=running_unit_tests
         )
 
         # Create own ChallengePeriodClient (forward compatibility - no parameter passing)
-        from vali_objects.utils.challengeperiod_client import ChallengePeriodClient
+        from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
         self._challengeperiod_client = ChallengePeriodClient(running_unit_tests=running_unit_tests
         )
 
         # Create own ContractClient (forward compatibility - no parameter passing)
-        from vali_objects.utils.contract_server import ContractClient
+        from vali_objects.contract.contract_server import ContractClient
         self._contract_client = ContractClient(running_unit_tests=running_unit_tests)
 
         # Create own DebtLedgerClient (forward compatibility - no parameter passing)
-        from vali_objects.vali_dataclasses.debt_ledger_server import DebtLedgerClient
+        from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_client import DebtLedgerClient
         self._debt_ledger_client = DebtLedgerClient(running_unit_tests=running_unit_tests
         )
 
         # Create MetagraphUpdaterClient for weight setting RPC
-        from shared_objects.metagraph_updater import MetagraphUpdaterClient
+        from shared_objects.metagraph.metagraph_updater import MetagraphUpdaterClient
         self._metagraph_updater_client = MetagraphUpdaterClient(
             running_unit_tests=running_unit_tests
         )

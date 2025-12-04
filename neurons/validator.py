@@ -8,8 +8,9 @@ import sys
 import threading
 import signal
 
+from vali_objects.enums.misc import SynapseMethod
 from vanta_api.api_manager import APIManager
-from shared_objects.server_orchestrator import ServerOrchestrator, ValidatorContext
+from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ValidatorContext
 
 
 import template
@@ -20,35 +21,28 @@ import bittensor as bt
 from typing import Tuple
 from setproctitle import setproctitle
 from neurons.validator_base import ValidatorBase
-from enum import Enum
 from template.protocol import SendSignal
-from vali_objects.utils.asset_selection_manager import ASSET_CLASS_SELECTION_TIME_MS
+from vali_objects.utils.asset_selection.asset_selection_manager import ASSET_CLASS_SELECTION_TIME_MS
 from vali_objects.enums.execution_type_enum import ExecutionType
-from vali_objects.utils.auto_sync import PositionSyncer
-from vali_objects.utils.p2p_syncer import P2PSyncer
-from vali_objects.utils.market_order_manager import MarketOrderManager
+from vali_objects.data_sync.auto_sync import PositionSyncer
+from vali_objects.data_sync.p2p_syncer import P2PSyncer
+from vali_objects.utils.limit_order.market_order_manager import MarketOrderManager
 from shared_objects.rate_limiter import RateLimiter
 from vali_objects.uuid_tracker import UUIDTracker
 from time_util.time_util import TimeUtil, timeme
 from vali_objects.exceptions.signal_exception import SignalException
-from shared_objects.metagraph_updater import MetagraphUpdater
+from shared_objects.metagraph.metagraph_updater import MetagraphUpdater
 from shared_objects.error_utils import ErrorUtils
 from shared_objects.slack_notifier import SlackNotifier
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.utils.vali_utils import ValiUtils
-from vali_objects.utils.order_processor import OrderProcessor
-from shared_objects.shutdown_coordinator import ShutdownCoordinator
+from vali_objects.utils.limit_order.order_processor import OrderProcessor
+from shared_objects.rpc.shutdown_coordinator import ShutdownCoordinator
 
 def is_shutdown() -> bool:
     """Check if shutdown is in progress via ShutdownCoordinator."""
     return ShutdownCoordinator.is_shutdown()
-
-# Enum class that represents the method associated with Synapse
-class SynapseMethod(Enum):
-    POSITION_INSPECTOR = "GetPositions"
-    SIGNAL = "SendSignal"
-    CHECKPOINT = "SendCheckpoint"
 
 def signal_handler(signum, frame):
     # Check if already shutting down
@@ -407,7 +401,7 @@ class Validator(ValidatorBase):
 
         self.check_shutdown()
 
-    def should_fail_early(self, synapse: template.protocol.SendSignal | template.protocol.GetPositions | template.protocol.ValidatorCheckpoint, method:SynapseMethod,
+    def should_fail_early(self, synapse: template.protocol.SendSignal | template.protocol.GetPositions | template.protocol.ValidatorCheckpoint, method: SynapseMethod,
                           signal:dict=None, now_ms=None) -> bool:
         if is_shutdown():
             synapse.successfully_processed = False

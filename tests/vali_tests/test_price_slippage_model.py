@@ -1,4 +1,4 @@
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import patch
 import pandas as pd
 
 from tests.shared_objects.mock_classes import (
@@ -8,9 +8,9 @@ from tests.shared_objects.mock_classes import (
 from tests.vali_tests.base_objects.test_base import TestBase
 from time_util.time_util import TimeUtil
 from vali_objects.enums.order_type_enum import OrderType
-from vali_objects.position import Position
+from vali_objects.vali_dataclasses.position import Position
 
-from shared_objects.server_registry import ServerRegistry
+from shared_objects.rpc.server_registry import ServerRegistry
 from vali_objects.utils.price_slippage_model import PriceSlippageModel
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair

@@ -1,7 +1,5 @@
 import argparse
 import os
-import time
-import traceback
 from typing import Tuple
 
 import bittensor as bt
@@ -9,7 +7,7 @@ bt.logging.enable_info()
 
 import template
 from time_util.time_util import timeme
-from shared_objects.subtensor_lock import get_subtensor_lock
+from shared_objects.locks.subtensor_lock import get_subtensor_lock
 
 
 class ValidatorBase:
@@ -23,7 +21,7 @@ class ValidatorBase:
         self.subtensor = subtensor
 
         # Create own ContractClient (forward compatibility - no parameter passing)
-        from vali_objects.utils.contract_server import ContractClient
+        from vali_objects.contract.contract_server import ContractClient
         self._contract_client = ContractClient(running_unit_tests=False)
 
         self.wire_axon()

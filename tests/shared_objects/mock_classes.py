@@ -4,14 +4,14 @@ import pandas as pd
 
 from data_generator.polygon_data_service import PolygonDataService
 from shared_objects.cache_controller import CacheController
-from vali_objects.utils.challengeperiod_manager import ChallengePeriodManager
-from vali_objects.utils.live_price_server import LivePriceFetcherServer
-from vali_objects.utils.mdd_checker_server import MDDCheckerServer
-from vali_objects.utils.plagiarism_detector import PlagiarismDetector
-from vali_objects.utils.position_manager import PositionManager
+from vali_objects.challenge_period import ChallengePeriodManager
+from vali_objects.price_fetcher import LivePriceFetcherServer
+from vali_objects.utils.mdd_checker.mdd_checker_server import MDDCheckerServer
+from vali_objects.plagiarism.plagiarism_detector import PlagiarismDetector
+from vali_objects.position_management.position_manager import PositionManager
 from vali_objects.utils.price_slippage_model import PriceSlippageModel
 from vali_objects.vali_config import TradePair, RPCConnectionMode
-from vali_objects.vali_dataclasses.perf_ledger import PerfLedgerManager
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_manager import PerfLedgerManager
 from vali_objects.vali_dataclasses.price_source import PriceSource
 
 

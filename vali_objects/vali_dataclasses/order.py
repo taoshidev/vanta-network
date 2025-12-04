@@ -4,57 +4,12 @@
 from time_util.time_util import TimeUtil
 from pydantic import field_validator, model_validator
 
-from vali_objects.enums.order_type_enum import OrderType
+from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.vali_config import TradePair
 from vali_objects.vali_dataclasses.order_signal import Signal
 from vali_objects.vali_dataclasses.price_source import PriceSource
-from enum import Enum, IntEnum, auto
 
-class OrderSource(IntEnum):
-    """Enum representing the source/origin of an order."""
-    ORGANIC = 0                        # order generated from a miner's signal
-    ELIMINATION_FLAT = 1               # order inserted when a miner is eliminated (0 used for price. DEPRECATED)
-    DEPRECATION_FLAT = 2               # order inserted when a trade pair is removed (0 used for price)
-    PRICE_FILLED_ELIMINATION_FLAT = 3  # order inserted when a miner is eliminated but we price fill it accurately.
-    MAX_ORDERS_PER_POSITION_CLOSE = 4  # order inserted when position hits max orders limit and needs to be closed
-    LIMIT_UNFILLED = 5                 # limit order created but not yet filled
-    LIMIT_FILLED = 6                   # limit order that was filled
-    LIMIT_CANCELLED = 7                # limit order that was cancelled
-    BRACKET_UNFILLED = 8               # bracket order (stop loss/take profit) created but not yet filled
-    BRACKET_FILLED = 9                 # bracket order (stop loss/take profit) that was filled
-    BRACKET_CANCELLED = 10             # bracket order (stop loss/take profit) that was cancelled
-
-    @staticmethod
-    def get_fill(order_src):
-        if order_src == OrderSource.LIMIT_UNFILLED:
-            return OrderSource.LIMIT_FILLED
-        elif order_src == OrderSource.BRACKET_UNFILLED:
-            return OrderSource.BRACKET_FILLED
-        else:
-            return None
-
-    @staticmethod
-    def get_cancel(order_src):
-        if order_src in [OrderSource.LIMIT_UNFILLED, OrderSource.LIMIT_FILLED]:
-            return OrderSource.LIMIT_CANCELLED
-        elif order_src in [OrderSource.BRACKET_UNFILLED, OrderSource.BRACKET_FILLED]:
-            return OrderSource.BRACKET_CANCELLED
-        else:
-            return None
-
-# Backward compatibility constants - to be removed after migration
-ORDER_SRC_ORGANIC = OrderSource.ORGANIC
-ORDER_SRC_ELIMINATION_FLAT = OrderSource.ELIMINATION_FLAT
-ORDER_SRC_DEPRECATION_FLAT = OrderSource.DEPRECATION_FLAT
-ORDER_SRC_PRICE_FILLED_ELIMINATION_FLAT = OrderSource.PRICE_FILLED_ELIMINATION_FLAT
-ORDER_SRC_MAX_ORDERS_PER_POSITION_CLOSE = OrderSource.MAX_ORDERS_PER_POSITION_CLOSE
-ORDER_SRC_LIMIT_UNFILLED = OrderSource.LIMIT_UNFILLED
-ORDER_SRC_LIMIT_FILLED = OrderSource.LIMIT_FILLED
-ORDER_SRC_LIMIT_CANCELLED = OrderSource.LIMIT_CANCELLED
-ORDER_SRC_BRACKET_UNFILLED = OrderSource.BRACKET_UNFILLED
-ORDER_SRC_BRACKET_FILLED = OrderSource.BRACKET_FILLED
-ORDER_SRC_BRACKET_CANCELLED = OrderSource.BRACKET_CANCELLED
 
 class Order(Signal):
     price: float                # Quote currency
@@ -208,9 +163,4 @@ class Order(Signal):
         return str(d)
 
 
-
-class OrderStatus(Enum):
-    OPEN = auto()
-    CLOSED = auto()
-    ALL = auto()  # Represents both or neither, depending on your logic
 

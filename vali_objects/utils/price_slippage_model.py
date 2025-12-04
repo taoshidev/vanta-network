@@ -1,6 +1,5 @@
 import math
 import time
-import threading
 from setproctitle import setproctitle
 from shared_objects.error_utils import ErrorUtils
 import traceback
@@ -16,7 +15,7 @@ from time_util.time_util import TimeUtil
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
-from vali_objects.vali_config import TradePair, ValiConfig, ForexSubcategory
+from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.vali_dataclasses.order import Order
 
 SLIPPAGE_V2_TIME_MS = 1759431540000
@@ -47,7 +46,7 @@ class PriceSlippageModel:
             PriceSlippageModel.parameters = self.read_slippage_model_parameters()
 
             # Create own LivePriceFetcherClient (forward compatibility - no parameter passing)
-            from vali_objects.utils.live_price_server import LivePriceFetcherClient
+            from vali_objects.price_fetcher import LivePriceFetcherClient
             PriceSlippageModel.live_price_fetcher = LivePriceFetcherClient(running_unit_tests=running_unit_tests)
 
         PriceSlippageModel.is_backtesting = is_backtesting

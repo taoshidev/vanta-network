@@ -11,21 +11,21 @@ This file contains tests that explicitly validate business rules and constraints
 import unittest
 from unittest.mock import patch, Mock
 
-from shared_objects.server_orchestrator import ServerOrchestrator, ServerMode
+from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
 from time_util.time_util import TimeUtil, MS_IN_24_HOURS
 from vali_objects.enums.order_type_enum import OrderType
-from vali_objects.position import Position
+from vali_objects.vali_dataclasses.position import Position
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair
 from vali_objects.vali_dataclasses.order import Order
-from vali_objects.vali_dataclasses.perf_ledger import (
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import (
     PerfLedger,
-    PerfLedgerManager,
     PerfCheckpoint,
     TP_ID_PORTFOLIO,
     ParallelizationMode,
 )
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_manager import PerfLedgerManager
 
 
 class TestPerfLedgerConstraintsAndValidation(TestBase):
@@ -1815,7 +1815,7 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
 
     def test_mutate_position_returns_for_continuity(self):
         """Test that mutate_position_returns_for_continuity correctly applies price continuity."""
-        from vali_objects.vali_dataclasses.perf_ledger import PerfLedger
+        from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger
         
         plm = PerfLedgerManager(
             running_unit_tests=True,
@@ -1908,7 +1908,7 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
         self.assertGreater(eth_position.return_at_close, 1.06)  # Should be profitable
         self.assertLess(eth_position.return_at_close, 1.07)     # But less than raw calculation due to fees
 
-    @patch('vali_objects.vali_dataclasses.perf_ledger.PerfLedgerManager.mutate_position_returns_for_continuity')
+    @patch('vali_objects.vali_dataclasses.ledger.perf.perf_ledger_manager.PerfLedgerManager.mutate_position_returns_for_continuity')
     def test_continuity_established_flag(self, mock_mutate):
         """Test that mutate_position_returns_for_continuity is called only once per update."""
         # Setup mocks

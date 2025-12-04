@@ -6,18 +6,18 @@ Tests all market order functionality with proper server/client separation.
 """
 from unittest.mock import Mock
 
-from shared_objects.server_orchestrator import ServerOrchestrator, ServerMode
+from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
 from time_util.time_util import TimeUtil
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.exceptions.signal_exception import SignalException
-from vali_objects.position import Position
-from vali_objects.utils.market_order_manager import MarketOrderManager
-from vali_objects.utils.position_manager_client import PositionManagerClient
+from vali_objects.vali_dataclasses.position import Position
+from vali_objects.utils.limit_order.market_order_manager import MarketOrderManager
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair, ValiConfig
-from vali_objects.vali_dataclasses.order import Order, OrderSource
+from vali_objects.vali_dataclasses.order import Order
+from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.vali_dataclasses.price_source import PriceSource
 
 

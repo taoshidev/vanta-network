@@ -6,18 +6,17 @@ from setproctitle import setproctitle
 import bittensor as bt
 
 from shared_objects.slack_notifier import SlackNotifier
-from shared_objects.metagraph_server import MetagraphClient
 from time_util.time_util import TimeUtil
-from shared_objects.shutdown_coordinator import ShutdownCoordinator
-from vali_objects.utils.miner_bucket_enum import MinerBucket
+from shared_objects.rpc.shutdown_coordinator import ShutdownCoordinator
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 from shared_objects.cache_controller import CacheController
 from vali_objects.scoring.debt_based_scoring import DebtBasedScoring
 from shared_objects.error_utils import ErrorUtils
-from vali_objects.utils.position_manager_client import PositionManagerClient
-from vali_objects.utils.challengeperiod_client import ChallengePeriodClient
-from vali_objects.utils.contract_server import ContractClient
-from vali_objects.vali_dataclasses.debt_ledger_server import DebtLedgerClient
+from vali_objects.position_management.position_manager_client import PositionManagerClient
+from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
+from vali_objects.contract.contract_server import ContractClient
+from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_client import DebtLedgerClient
 
 
 class SubtensorWeightSetter(CacheController):

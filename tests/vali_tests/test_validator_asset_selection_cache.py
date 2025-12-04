@@ -5,10 +5,10 @@ This tests the optimization that eliminates 81ms RPC overhead per order by
 maintaining a local cache that syncs every 5 seconds.
 """
 import unittest
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch
 import time
 
-from vali_objects.utils.asset_selection_server import ASSET_CLASS_SELECTION_TIME_MS
+from vali_objects.utils.asset_selection.asset_selection_manager import ASSET_CLASS_SELECTION_TIME_MS
 from vali_objects.vali_config import TradePairCategory, TradePair
 from time_util.time_util import TimeUtil
 

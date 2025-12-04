@@ -8,24 +8,24 @@ from datetime import datetime, timezone
 
 import bittensor as bt
 
-from shared_objects.server_orchestrator import ServerOrchestrator, ServerMode
+from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.shared_objects.test_utilities import (
     generate_losing_ledger,
     generate_winning_ledger,
 )
 from tests.vali_tests.base_objects.test_base import TestBase
-from time_util.time_util import TimeUtil, MS_IN_8_HOURS, MS_IN_24_HOURS
+from time_util.time_util import MS_IN_24_HOURS
 from vali_objects.enums.order_type_enum import OrderType
-from vali_objects.position import Position
+from vali_objects.vali_dataclasses.position import Position
 from vali_objects.utils.asset_segmentation import AssetSegmentation
-from vali_objects.utils.elimination_manager import EliminationReason
-from vali_objects.utils.miner_bucket_enum import MinerBucket
-from vali_objects.utils.position_lock import PositionLocks
+from vali_objects.utils.elimination.elimination_manager import EliminationReason
+from vali_objects.enums.miner_bucket_enum import MinerBucket
+from shared_objects.locks.position_lock import PositionLocks
 from vali_objects.utils.subtensor_weight_setter import SubtensorWeightSetter
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.vali_dataclasses.order import Order
-from vali_objects.vali_dataclasses.perf_ledger import PerfLedger, TP_ID_PORTFOLIO
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger
 from vali_objects.scoring.scoring import Scoring
 
 

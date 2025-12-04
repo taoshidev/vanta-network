@@ -1,15 +1,14 @@
 import hashlib
 import pickle
-import time
 from typing import Union
 
 import numpy as np
 
 from vali_objects.enums.order_type_enum import OrderType
-from vali_objects.position import Position
+from vali_objects.vali_dataclasses.position import Position
 from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.vali_dataclasses.order import Order
-from vali_objects.vali_dataclasses.perf_ledger import (
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import (
     TP_ID_PORTFOLIO,
     PerfCheckpoint,
     PerfLedger,

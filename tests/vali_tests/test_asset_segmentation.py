@@ -5,7 +5,7 @@ from tests.vali_tests.base_objects.test_base import TestBase
 from tests.shared_objects.test_utilities import generate_ledger, checkpoint_generator, ledger_generator
 from vali_objects.utils.asset_segmentation import AssetSegmentation
 from vali_objects.vali_config import TradePair, TradePairCategory, ValiConfig
-from vali_objects.vali_dataclasses.perf_ledger import PerfLedger, TP_ID_PORTFOLIO
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger, TP_ID_PORTFOLIO
 
 # Common patches and mocks for all tests
 MOCK_ASSET_BREAKDOWN = {

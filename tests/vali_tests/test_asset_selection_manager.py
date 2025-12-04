@@ -1,12 +1,9 @@
-import os
-import time
-import threading
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 from tests.vali_tests.base_objects.test_base import TestBase
-from shared_objects.server_orchestrator import ServerOrchestrator, ServerMode
-from vali_objects.utils.asset_selection_server import AssetSelectionServer, ASSET_CLASS_SELECTION_TIME_MS
+from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
+from vali_objects.utils.asset_selection.asset_selection_manager import ASSET_CLASS_SELECTION_TIME_MS
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePairCategory, TradePair
 from time_util.time_util import TimeUtil
@@ -243,7 +240,7 @@ class TestAssetSelectionManager(TestBase):
         self.assertEqual(disk_format[self.test_miner_2], 'forex')
 
         # Test parsing back from disk format (use manager's static method)
-        from vali_objects.utils.asset_selection_manager import AssetSelectionManager
+        from vali_objects.utils.asset_selection.asset_selection_manager import AssetSelectionManager
         test_data = {
             self.test_miner_1: 'crypto',
             self.test_miner_2: 'forex'
@@ -254,7 +251,7 @@ class TestAssetSelectionManager(TestBase):
         
     def test_parse_invalid_disk_data(self):
         """Test parsing invalid data from disk gracefully handles errors"""
-        from vali_objects.utils.asset_selection_manager import AssetSelectionManager
+        from vali_objects.utils.asset_selection.asset_selection_manager import AssetSelectionManager
 
         invalid_data = {
             self.test_miner_1: 'invalid_asset_class',

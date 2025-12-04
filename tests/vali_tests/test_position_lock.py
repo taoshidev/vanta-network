@@ -14,9 +14,9 @@ import threading
 import unittest
 from multiprocessing import Process, Queue, Value
 
-from shared_objects.server_orchestrator import ServerOrchestrator, ServerMode
+from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
-from vali_objects.utils.position_lock_server import PositionLockClient
+from shared_objects.locks.position_lock_server import PositionLockClient
 from vali_objects.utils.vali_utils import ValiUtils
 
 

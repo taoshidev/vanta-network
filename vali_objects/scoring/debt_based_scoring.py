@@ -50,13 +50,12 @@ import bittensor as bt
 from datetime import datetime, timezone
 from typing import List, Tuple
 from calendar import monthrange
-import statistics
 
 from time_util.time_util import TimeUtil
-from vali_objects.utils.contract_server import ContractClient
-from vali_objects.vali_dataclasses.debt_ledger import DebtLedger
-from vali_objects.utils.miner_bucket_enum import MinerBucket
-from vali_objects.vali_config import ValiConfig, RPCConnectionMode
+from vali_objects.contract.contract_server import ContractClient
+from vali_objects.vali_dataclasses.ledger.debt.debt_ledger import DebtLedger
+from vali_objects.enums.miner_bucket_enum import MinerBucket
+from vali_objects.vali_config import ValiConfig
 from vali_objects.scoring.scoring import Scoring
 from collections import defaultdict
 
@@ -550,46 +549,6 @@ class DebtBasedScoring:
         miner_actual_payouts_usd = {}  # Track what's been paid so far this month
         miner_penalty_loss_usd = {}  # Track how much was lost to penalties
 
-        # Pre-fetch source ledgers for diagnostics (create clients once, fetch all ledgers once)
-        all_emissions_ledgers = {}
-        all_penalty_ledgers = {}
-        all_perf_ledgers = {}
-        if verbose:
-            try:
-                from vali_objects.vali_dataclasses.debt_ledger_server import DebtLedgerClient
-                from vali_objects.vali_dataclasses.perf_ledger_server import PerfLedgerClient
-
-                # Create clients once
-                debt_ledger_client = DebtLedgerClient(connection_mode=RPCConnectionMode.RPC, connect_immediately=True)
-                perf_ledger_client = PerfLedgerClient(connection_mode=RPCConnectionMode.RPC, connect_immediately=True)
-
-                # Fetch ALL ledgers at once
-                all_emissions_ledgers = debt_ledger_client.get_all_emissions_ledgers() or {}
-                all_penalty_ledgers = debt_ledger_client.get_all_penalty_ledgers() or {}
-                # Get all perf ledgers (portfolio_only=False returns per-trade-pair bundles)
-                all_perf_ledgers = perf_ledger_client.get_perf_ledgers(portfolio_only=False, from_disk=False) or {}
-
-                bt.logging.debug(
-                    f"Pre-fetched source ledgers for diagnostics: "
-                    f"{len(all_emissions_ledgers)} emissions, "
-                    f"{len(all_penalty_ledgers)} penalty, "
-                    f"{len(all_perf_ledgers)} perf"
-                )
-
-                # Debug: Sample one perf ledger to see its structure
-                if all_perf_ledgers:
-                    sample_hotkey = next(iter(all_perf_ledgers.keys()))
-                    sample_perf_dict = all_perf_ledgers[sample_hotkey]
-                    from vali_objects.vali_dataclasses.perf_ledger import TP_ID_PORTFOLIO
-                    bt.logging.debug(
-                        f"Sample perf ledger for {sample_hotkey[:16]}...{sample_hotkey[-8:]}: "
-                        f"type={type(sample_perf_dict).__name__}, "
-                        f"keys={list(sample_perf_dict.keys()) if isinstance(sample_perf_dict, dict) else 'N/A'}, "
-                        f"has_portfolio={TP_ID_PORTFOLIO in sample_perf_dict if isinstance(sample_perf_dict, dict) else False}"
-                    )
-            except Exception as e:
-                bt.logging.debug(f"Could not pre-fetch source ledgers for diagnostics: {e}")
-
         for hotkey, debt_ledger in ledger_dict.items():
             if not debt_ledger.checkpoints:
                 if verbose:
@@ -603,32 +562,6 @@ class DebtBasedScoring:
                 cp for cp in debt_ledger.checkpoints
                 if prev_month_start_ms <= cp.timestamp_ms <= prev_month_end_ms
             ]
-
-            # Diagnostic: Log checkpoint coverage for miners with data
-            if verbose and all_prev_month_checkpoints:
-                # Show total checkpoints and date range
-                total_cps = len(debt_ledger.checkpoints)
-                if total_cps > 0:
-                    first_cp_date = TimeUtil.millis_to_formatted_date_str(debt_ledger.checkpoints[0].timestamp_ms)
-                    last_cp_date = TimeUtil.millis_to_formatted_date_str(debt_ledger.checkpoints[-1].timestamp_ms)
-
-                    # Show November checkpoint date range
-                    first_nov_cp_date = TimeUtil.millis_to_formatted_date_str(all_prev_month_checkpoints[0].timestamp_ms)
-                    last_nov_cp_date = TimeUtil.millis_to_formatted_date_str(all_prev_month_checkpoints[-1].timestamp_ms)
-
-                    # Calculate days covered in November
-                    nov_start_day = TimeUtil.millis_to_datetime(all_prev_month_checkpoints[0].timestamp_ms).day
-                    nov_end_day = TimeUtil.millis_to_datetime(all_prev_month_checkpoints[-1].timestamp_ms).day
-                    nov_days_covered = nov_end_day - nov_start_day + 1
-                    expected_cps = nov_days_covered * 2  # 2 checkpoints per day
-
-                    bt.logging.debug(
-                        f"{hotkey[:16]}...{hotkey[-8:]}: Total debt checkpoints: {total_cps} "
-                        f"(range: {first_cp_date} to {last_cp_date}). "
-                        f"Nov checkpoints: {len(all_prev_month_checkpoints)}/60 possible, "
-                        f"Nov date range: {first_nov_cp_date} to {last_nov_cp_date} "
-                        f"({nov_days_covered} days, expected ~{expected_cps} checkpoints)"
-                    )
 
             # Extract checkpoints for previous month
             # Only include checkpoints where status is MAINCOMP or PROBATION (earning periods)
@@ -644,31 +577,6 @@ class DebtBasedScoring:
                 if current_month_start_ms <= cp.timestamp_ms <= current_time_ms
                 and cp.challenge_period_status in (MinerBucket.MAINCOMP.value, MinerBucket.PROBATION.value)
             ]
-
-            # Diagnostic logging: Show sample checkpoint data
-            if verbose and prev_month_checkpoints:
-                # Sample first 3 checkpoints from previous month
-                sample_cps = prev_month_checkpoints[:3]
-                sample_info = []
-                for cp in sample_cps:
-                    cp_date = TimeUtil.millis_to_formatted_date_str(cp.timestamp_ms)
-                    sample_info.append(
-                        f"{cp_date}: realized_pnl=${cp.realized_pnl:.2f}, "
-                        f"unrealized_pnl=${cp.unrealized_pnl:.2f}, penalty={cp.total_penalty:.4f}"
-                    )
-
-                bt.logging.debug(
-                    f"{hotkey[:16]}...{hotkey[-8:]}: "
-                    f"{len(prev_month_checkpoints)} prev month checkpoints, "
-                    f"{len(current_month_checkpoints)} current month checkpoints. "
-                    f"Sample Nov checkpoints: {'; '.join(sample_info)}"
-                )
-            elif verbose:
-                bt.logging.debug(
-                    f"{hotkey[:16]}...{hotkey[-8:]}: "
-                    f"{len(prev_month_checkpoints)} prev month checkpoints, "
-                    f"{len(current_month_checkpoints)} current month checkpoints"
-                )
 
             # Step 4: Calculate needed payout from previous month (in USD)
             # "needed payout" = sum of (realized_pnl * total_penalty) across all prev month checkpoints

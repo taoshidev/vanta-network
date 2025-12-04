@@ -3,11 +3,11 @@ Integration tests for debt-based scoring algorithm using server/client architect
 Tests end-to-end debt scoring scenarios with real server infrastructure.
 """
 from datetime import datetime, timezone
-from vali_objects.vali_dataclasses.debt_ledger import DebtLedger, DebtCheckpoint
+from vali_objects.vali_dataclasses.ledger.debt.debt_ledger import DebtLedger, DebtCheckpoint
 from vali_objects.scoring.debt_based_scoring import DebtBasedScoring
-from vali_objects.utils.miner_bucket_enum import MinerBucket
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.vali_config import ValiConfig
-from shared_objects.server_orchestrator import ServerOrchestrator, ServerMode
+from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
 from vali_objects.utils.vali_utils import ValiUtils
 

@@ -4,11 +4,11 @@ import json
 from copy import deepcopy
 
 from data_generator.polygon_data_service import PolygonDataService
-from shared_objects.server_orchestrator import ServerOrchestrator, ServerMode
+from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
 from time_util.time_util import MS_IN_8_HOURS, MS_IN_24_HOURS
 from vali_objects.enums.order_type_enum import OrderType
-from vali_objects.position import (
+from vali_objects.vali_dataclasses.position import (
     CRYPTO_CARRY_FEE_PER_INTERVAL,
     FEE_V6_TIME_MS,
     FOREX_CARRY_FEE_PER_INTERVAL,
@@ -20,13 +20,13 @@ from vali_objects.utils.leverage_utils import (
     LEVERAGE_BOUNDS_V2_START_TIME_MS,
     get_position_leverage_bounds,
 )
-from vali_objects.utils.position_manager_client import PositionManagerClient
+from vali_objects.position_management.position_manager_client import PositionManagerClient
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.vali_dataclasses.order import (
-    OrderSource,
     Order,
 )
+from vali_objects.enums.order_source_enum import OrderSource
 
 
 class TestPositions(TestBase):
@@ -143,7 +143,7 @@ class TestPositions(TestBase):
 
         If we set the actual slippage to 0, these returns calculations should be the same.
         """
-        import vali_objects.position as position_file
+        import vali_objects.vali_dataclasses.position as position_file
         position_file.ALWAYS_USE_SLIPPAGE = False
 
         open_order = Order(
@@ -212,7 +212,7 @@ class TestPositions(TestBase):
 
         If we set the actual slippage to 0, these returns calculations should be the same.
         """
-        import vali_objects.position as position_file
+        import vali_objects.vali_dataclasses.position as position_file
         position_file.ALWAYS_USE_SLIPPAGE = False
 
         open_order = Order(

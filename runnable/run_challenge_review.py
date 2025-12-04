@@ -1,11 +1,11 @@
-from vali_objects.utils.elimination_server import EliminationServer
+from vali_objects.utils.elimination.elimination_server import EliminationServer
 from vali_objects.utils.logger_utils import LoggerUtils
-from vali_objects.utils.plagiarism_detector import PlagiarismDetector
-from vali_objects.utils.position_manager import PositionManager
+from vali_objects.plagiarism.plagiarism_detector import PlagiarismDetector
+from vali_objects.position_management.position_manager import PositionManager
 from vali_objects.utils.subtensor_weight_setter import SubtensorWeightSetter
 from time_util.time_util import TimeUtil
-from vali_objects.utils.challengeperiod_manager import ChallengePeriodManager
-from vali_objects.vali_dataclasses.perf_ledger import PerfLedgerManager
+from vali_objects.challenge_period import ChallengePeriodManager
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_manager import PerfLedgerManager
 
 if __name__ == "__main__":
     logger = LoggerUtils.init_logger("run challenge review")

@@ -5,9 +5,9 @@ import statistics
 import numpy as np
 import copy
 from datetime import datetime, timezone, timedelta, date
-from vali_objects.vali_dataclasses.perf_ledger import TP_ID_PORTFOLIO
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import TP_ID_PORTFOLIO
 from vali_objects.vali_config import ValiConfig, TradePair
-from vali_objects.vali_dataclasses.perf_ledger import PerfLedger
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger
 from vali_objects.utils.asset_segmentation import AssetSegmentation
 from time_util.time_util import ForexHolidayCalendar
 import bittensor as bt

@@ -13,8 +13,8 @@ import bittensor as bt
 from pydantic import BaseModel
 
 from vali_objects.vali_config import ValiConfig
-from vali_objects.position import Position
-from vali_objects.vali_dataclasses.order import OrderStatus
+from vali_objects.vali_dataclasses.position import Position
+from vali_objects.enums.misc import OrderStatus
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.vali_config import TradePair

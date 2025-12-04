@@ -13,13 +13,13 @@ import bittensor as bt
 
 from time_util.time_util import TimeUtil
 from vali_objects.enums.order_type_enum import OrderType
-from vali_objects.position import Position
+from vali_objects.vali_dataclasses.position import Position
 from vali_objects.utils.vali_bkp_utils import CustomEncoder, ValiBkpUtils
 
 # Assuming APIKeyMixin is in api.api_key_refresh
 from vanta_api.api_key_refresh import APIKeyMixin
 from vali_objects.vali_config import TradePair, ValiConfig, RPCConnectionMode
-from shared_objects.rpc_server_base import RPCServerBase
+from shared_objects.rpc.rpc_server_base import RPCServerBase
 
 # Maximum number of websocket connections allowed per API key
 MAX_N_WS_PER_API_KEY = 5
@@ -167,7 +167,7 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
         super()._cleanup_stale_server()
 
         # Now clean up WebSocket port using self.websocket_port (8765)
-        from shared_objects.port_manager import PortManager
+        from shared_objects.rpc.port_manager import PortManager
         if not PortManager.is_port_free(self.websocket_port):
             bt.logging.warning(f"WebSocketServer: WebSocket port {self.websocket_port} in use, forcing cleanup...")
             PortManager.force_kill_port(self.websocket_port)
@@ -963,7 +963,6 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
         Overrides RPCServerBase.entry_point_start_server() because WebSocketServer
         needs to run an async event loop via run(), not just block.
         """
-        from shared_objects.shutdown_coordinator import ShutdownCoordinator
 
         assert cls.service_name, f"{cls.__name__} must set service_name class attribute"
         assert cls.service_port, f"{cls.__name__} must set service_port class attribute"

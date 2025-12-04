@@ -6,24 +6,20 @@ Enhanced mock utilities for comprehensive elimination testing.
 Provides robust mocks that closely mirror production behavior.
 """
 
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 from collections import defaultdict
 from unittest.mock import MagicMock
-import numpy as np
 
-from shared_objects.mock_metagraph import MockMetagraph as BaseMockMetagraph
-from vali_objects.utils.miner_bucket_enum import MinerBucket
+from shared_objects.metagraph.mock_metagraph import MockMetagraph as BaseMockMetagraph
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.vali_config import ValiConfig
-from vali_objects.vali_dataclasses.perf_ledger import PerfLedger, PerfCheckpoint, TP_ID_PORTFOLIO
-from time_util.time_util import TimeUtil, MS_IN_24_HOURS
-from vali_objects.position import Position
-from vali_objects.enums.order_type_enum import OrderType
-from vali_objects.utils.position_manager import PositionManager
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger, PerfCheckpoint, TP_ID_PORTFOLIO
+from time_util.time_util import TimeUtil
+from vali_objects.vali_dataclasses.position import Position
 from tests.shared_objects.mock_classes import (
     MockPositionManager as BaseMockPositionManager,
     MockChallengePeriodManager as BaseMockChallengePeriodManager
 )
-from vali_objects.scoring.scoring import Scoring
 
 
 class EnhancedMockMetagraph(BaseMockMetagraph):
@@ -207,7 +203,7 @@ class EnhancedMockPerfLedgerManager:
     """Enhanced mock perf ledger manager that respects eliminations"""
 
     def __init__(self, metagraph, running_unit_tests=True, perf_ledger_hks_to_invalidate=None):
-        from vali_objects.vali_dataclasses.perf_ledger import PerfLedgerManager
+        from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_manager import PerfLedgerManager
         # PerfLedgerManager manages its own perf_ledger_hks_to_invalidate internally if not provided
         self.base = PerfLedgerManager(
             metagraph,
@@ -483,7 +479,7 @@ class MockSubtensorWeightSetterHelper:
             hotkeys: List of hotkeys to create debt ledgers for. If None, creates empty dict.
             perf_ledger_manager: Optional perf ledger manager to extract checkpoint data from
         """
-        from vali_objects.vali_dataclasses.debt_ledger import DebtLedger, DebtCheckpoint
+        from vali_objects.vali_dataclasses.ledger.debt.debt_ledger import DebtLedger, DebtCheckpoint
 
         mock_manager = MagicMock()
 

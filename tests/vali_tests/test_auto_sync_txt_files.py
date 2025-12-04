@@ -8,12 +8,12 @@ import os
 import random
 import uuid
 from vali_objects.vali_config import TradePair
-from shared_objects.server_orchestrator import ServerOrchestrator, ServerMode
+from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
 from time_util.time_util import TimeUtil
-from vali_objects.position import Position
-from vali_objects.utils.auto_sync import PositionSyncer
-from vali_objects.utils.validator_sync_base import AUTO_SYNC_ORDER_LAG_MS
+from vali_objects.vali_dataclasses.position import Position
+from vali_objects.data_sync.auto_sync import PositionSyncer
+from vali_objects.data_sync.validator_sync_base import AUTO_SYNC_ORDER_LAG_MS
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.utils.vali_utils import ValiUtils

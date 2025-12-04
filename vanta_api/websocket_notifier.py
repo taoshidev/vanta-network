@@ -18,8 +18,8 @@ from typing import Optional
 
 import bittensor as bt
 
-from shared_objects.rpc_client_base import RPCClientBase
-from vali_objects.position import Position
+from shared_objects.rpc.rpc_client_base import RPCClientBase
+from vali_objects.vali_dataclasses.position import Position
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 
 

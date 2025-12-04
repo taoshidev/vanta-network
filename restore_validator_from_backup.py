@@ -8,26 +8,27 @@ import time
 import traceback
 from datetime import datetime
 
-from shared_objects.common_data_server import CommonDataServer
-from shared_objects.metagraph_server import MetagraphServer
-from shared_objects.rpc_client_base import RPCClientBase
-from shared_objects.rpc_server_base import RPCServerBase
+from shared_objects.rpc.common_data_server import CommonDataServer
+from shared_objects.rpc.metagraph_server import MetagraphServer
+from shared_objects.rpc.rpc_client_base import RPCClientBase
+from shared_objects.rpc.rpc_server_base import RPCServerBase
 from time_util.time_util import TimeUtil
-from vali_objects.position import Position
-from vali_objects.utils.challengeperiod_client import ChallengePeriodClient
-from vali_objects.utils.challengeperiod_server import ChallengePeriodServer
-from vali_objects.utils.elimination_client import EliminationClient
-from vali_objects.utils.elimination_server import EliminationServer
-from vali_objects.utils.limit_order_server import LimitOrderClient, LimitOrderServer
-from vali_objects.utils.position_manager_client import PositionManagerClient
-from vali_objects.utils.position_manager_server import PositionManagerServer
-from vali_objects.utils.contract_server import ContractClient, ContractServer
+from vali_objects.vali_dataclasses.position import Position
+from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
+from vali_objects.challenge_period import ChallengePeriodServer
+from vali_objects.utils.elimination.elimination_client import EliminationClient
+from vali_objects.utils.elimination.elimination_server import EliminationServer
+from vali_objects.utils.limit_order.limit_order_server import LimitOrderClient, LimitOrderServer
+from vali_objects.position_management.position_manager_client import PositionManagerClient
+from vali_objects.position_management.position_manager_server import PositionManagerServer
+from vali_objects.contract.contract_server import ContractClient, ContractServer
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
-from vali_objects.utils.asset_selection_client import AssetSelectionClient
-from vali_objects.utils.asset_selection_server import AssetSelectionServer
+from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
+from vali_objects.utils.asset_selection.asset_selection_server import AssetSelectionServer
 import bittensor as bt
 
-from vali_objects.vali_dataclasses.perf_ledger_server import PerfLedgerClient, PerfLedgerServer
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_server import PerfLedgerServer
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
 import time as time_module
 
 DEBUG = 0

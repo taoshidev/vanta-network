@@ -9,7 +9,7 @@ import numpy as np
 from tests.vali_tests.base_objects.test_base import TestBase
 from tests.shared_objects.test_utilities import create_daily_checkpoints_with_pnl
 from vali_objects.utils.metrics import Metrics
-from vali_objects.vali_dataclasses.perf_ledger import PerfLedger, PerfCheckpoint
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger, PerfCheckpoint
 from vali_objects.vali_config import ValiConfig
 
 

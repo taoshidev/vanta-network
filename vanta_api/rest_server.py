@@ -18,20 +18,20 @@ from waitress import serve
 from bittensor_wallet import Keypair
 
 from time_util.time_util import TimeUtil
-from vali_objects.utils.market_order_manager import MarketOrderManager
+from vali_objects.utils.limit_order.market_order_manager import MarketOrderManager
 from vali_objects.utils.vali_bkp_utils import CustomEncoder
-from vali_objects.position import Position
+from vali_objects.vali_dataclasses.position import Position
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 from vali_objects.enums.execution_type_enum import ExecutionType
-from vali_objects.vali_dataclasses.debt_ledger_server import DebtLedgerClient
-from vali_objects.vali_dataclasses.perf_ledger_server import PerfLedgerClient
+from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_client import DebtLedgerClient
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
 from vali_objects.exceptions.signal_exception import SignalException
-from vali_objects.utils.order_processor import OrderProcessor
+from vali_objects.utils.limit_order.order_processor import OrderProcessor
 from multiprocessing import current_process
 from vanta_api.api_key_refresh import APIKeyMixin
 from vanta_api.nonce_manager import NonceManager
-from shared_objects.rpc_server_base import RPCServerBase
+from shared_objects.rpc.rpc_server_base import RPCServerBase
 
 
 class APIMetricsTracker:
@@ -347,7 +347,7 @@ class VantaRestServer(RPCServerBase, APIKeyMixin):
 
         print(f"[REST-INIT] Step 2/9: Creating PositionManagerClient...")
         # Create own PositionManagerClient (forward compatibility - no parameter passing)
-        from vali_objects.utils.position_manager_client import PositionManagerClient
+        from vali_objects.position_management.position_manager_client import PositionManagerClient
         self._position_client = PositionManagerClient(connection_mode=connection_mode)
         self._debt_ledger_client = DebtLedgerClient(connection_mode=connection_mode)
         self._perf_ledger_client = PerfLedgerClient(connection_mode=connection_mode)
@@ -355,31 +355,31 @@ class VantaRestServer(RPCServerBase, APIKeyMixin):
 
         print(f"[REST-INIT] Step 2b/9: Creating AssetSelectionClient...")
         # Create own AssetSelectionClient (forward compatibility - no parameter passing)
-        from vali_objects.utils.asset_selection_client import AssetSelectionClient
+        from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
         self._asset_selection_client = AssetSelectionClient(connection_mode=connection_mode)
         print(f"[REST-INIT] Step 2b/9: AssetSelectionClient created ✓")
 
         print(f"[REST-INIT] Step 2c/9: Creating LimitOrderClient...")
         # Create own LimitOrderClient (forward compatibility - no parameter passing)
-        from vali_objects.utils.limit_order_server import LimitOrderClient
+        from vali_objects.utils.limit_order.limit_order_server import LimitOrderClient
         self._limit_order_client = LimitOrderClient(connection_mode=connection_mode)
         print(f"[REST-INIT] Step 2c/9: LimitOrderClient created ✓")
 
         print(f"[REST-INIT] Step 2d/9: Creating ContractClient...")
         # Create own ContractClient (forward compatibility - no parameter passing)
-        from vali_objects.utils.contract_server import ContractClient
+        from vali_objects.contract.contract_server import ContractClient
         self._contract_client = ContractClient(connection_mode=connection_mode)
         print(f"[REST-INIT] Step 2d/9: ContractClient created ✓")
 
         print(f"[REST-INIT] Step 2e/9: Creating CoreOutputsClient...")
         # Create own CoreOutputsClient (forward compatibility - no parameter passing)
-        from runnable.core_outputs_server import CoreOutputsClient
+        from vali_objects.data_export.core_outputs_server import CoreOutputsClient
         self._core_outputs_client = CoreOutputsClient(connection_mode=connection_mode)
         print(f"[REST-INIT] Step 2e/9: CoreOutputsClient created ✓")
 
         print(f"[REST-INIT] Step 2f/9: Creating StatisticsOutputsClient...")
         # Create own StatisticsOutputsClient (forward compatibility - no parameter passing)
-        from runnable.miner_statistics_server import MinerStatisticsClient
+        from vali_objects.statistics.miner_statistics_server import MinerStatisticsClient
         self._statistics_outputs_client = MinerStatisticsClient(connection_mode=connection_mode)
         print(f"[REST-INIT] Step 2f/9: StatisticsOutputsClient created ✓")
 

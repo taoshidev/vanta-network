@@ -23,7 +23,6 @@ Usage Examples:
     end_time_ms = 1736035200000
     test_single_hotkey = '5HDmzyhrEco9w6Jv8eE3hDMcXSE4AGg1MuezPR4u2covxKwZ'
 """
-import copy
 import logging
 import os
 import time
@@ -38,33 +37,33 @@ os.environ["TAOSHI_TS_DEPLOYMENT"] = "DEVELOPMENT"
 os.environ["TAOSHI_TS_PLATFORM"] = "LOCAL"
 
 from shared_objects.sn8_multiprocessing import get_multiprocessing_pool, get_spark_session  # noqa: E402
-from shared_objects.common_data_server import CommonDataServer  # noqa: E402
-from shared_objects.metagraph_server import MetagraphServer, MetagraphClient  # noqa: E402
-from shared_objects.port_manager import PortManager  # noqa: E402
-from shared_objects.rpc_client_base import RPCClientBase  # noqa: E402
-from shared_objects.rpc_server_base import RPCServerBase  # noqa: E402
-from vali_objects.utils.position_source import PositionSourceManager, PositionSource  # noqa: E402
+from shared_objects.rpc.common_data_server import CommonDataServer  # noqa: E402
+from shared_objects.rpc.metagraph_server import MetagraphServer, MetagraphClient  # noqa: E402
+from shared_objects.rpc.port_manager import PortManager  # noqa: E402
+from shared_objects.rpc.rpc_client_base import RPCClientBase  # noqa: E402
+from shared_objects.rpc.rpc_server_base import RPCServerBase  # noqa: E402
+from vali_objects.position_management.position_utils.position_source import PositionSourceManager, PositionSource  # noqa: E402
 from time_util.time_util import TimeUtil  # noqa: E402
-from vali_objects.utils.asset_selection_server import AssetSelectionServer  # noqa: E402
-from vali_objects.utils.challengeperiod_server import ChallengePeriodServer  # noqa: E402
-from vali_objects.utils.challengeperiod_client import ChallengePeriodClient  # noqa: E402
-from vali_objects.utils.contract_server import ContractServer  # noqa: E402
-from vali_objects.utils.elimination_server import EliminationServer  # noqa: E402
-from vali_objects.utils.elimination_client import EliminationClient  # noqa: E402
-from vali_objects.utils.limit_order_server import LimitOrderServer  # noqa: E402
-from vali_objects.utils.live_price_server import LivePriceFetcherServer, LivePriceFetcherClient  # noqa: E402
-from vali_objects.utils.plagiarism_server import PlagiarismServer, PlagiarismClient  # noqa: E402
-from vali_objects.utils.position_lock import PositionLocks  # noqa: E402
-from vali_objects.utils.position_lock_server import PositionLockServer  # noqa: E402
-from vali_objects.utils.position_manager_server import PositionManagerServer  # noqa: E402
-from vali_objects.utils.position_manager_client import PositionManagerClient  # noqa: E402
+from vali_objects.utils.asset_selection.asset_selection_server import AssetSelectionServer  # noqa: E402
+from vali_objects.challenge_period import ChallengePeriodServer  # noqa: E402
+from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient  # noqa: E402
+from vali_objects.contract.contract_server import ContractServer  # noqa: E402
+from vali_objects.utils.elimination.elimination_server import EliminationServer  # noqa: E402
+from vali_objects.utils.elimination.elimination_client import EliminationClient  # noqa: E402
+from vali_objects.utils.limit_order.limit_order_server import LimitOrderServer  # noqa: E402
+from vali_objects.price_fetcher import LivePriceFetcherServer, LivePriceFetcherClient  # noqa: E402
+from vali_objects.plagiarism.plagiarism_server import PlagiarismServer, PlagiarismClient  # noqa: E402
+from shared_objects.locks.position_lock import PositionLocks  # noqa: E402
+from shared_objects.locks.position_lock_server import PositionLockServer  # noqa: E402
+from vali_objects.position_management.position_manager_server import PositionManagerServer  # noqa: E402
+from vali_objects.position_management.position_manager_client import PositionManagerClient  # noqa: E402
 from vali_objects.utils.price_slippage_model import PriceSlippageModel  # noqa: E402
-from vali_objects.utils.subtensor_weight_setter import SubtensorWeightSetter  # noqa: E402
 from vali_objects.utils.vali_utils import ValiUtils  # noqa: E402
 from vali_objects.vali_config import ValiConfig  # noqa: E402
-from vali_objects.vali_dataclasses.perf_ledger import ParallelizationMode, TP_ID_PORTFOLIO  # noqa: E402
-from vali_objects.vali_dataclasses.perf_ledger_server import PerfLedgerServer, PerfLedgerClient  # noqa: E402
-from runnable.miner_statistics_manager import MinerStatisticsManager  # noqa: E402
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import ParallelizationMode, TP_ID_PORTFOLIO  # noqa: E402
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_server import PerfLedgerServer  # noqa: E402
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
+
 
 def initialize_components(hotkeys, parallel_mode, build_portfolio_ledgers_only, running_unit_tests=False, skip_port_kill=False):
     """

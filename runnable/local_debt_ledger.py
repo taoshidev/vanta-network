@@ -24,15 +24,15 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from time_util.time_util import TimeUtil
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
-from vali_objects.utils.position_source import PositionSourceManager, PositionSource
+from vali_objects.position_management.position_utils.position_source import PositionSourceManager, PositionSource
 from shared_objects.cache_controller import CacheController
-from shared_objects.mock_metagraph import MockMetagraph
-from vali_objects.utils.elimination_server import EliminationServer
-from vali_objects.utils.position_manager import PositionManager
-from vali_objects.vali_dataclasses.perf_ledger import PerfLedgerManager
-from vali_objects.utils.validator_contract_manager import ValidatorContractManager
-from vali_objects.vali_dataclasses.debt_ledger import DebtLedgerManager
-from vali_objects.utils.asset_selection_client import AssetSelectionClient
+from shared_objects.metagraph.mock_metagraph import MockMetagraph
+from vali_objects.utils.elimination.elimination_server import EliminationServer
+from vali_objects.position_management.position_manager import PositionManager
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_manager import PerfLedgerManager
+from vali_objects.contract.validator_contract_manager import ValidatorContractManager
+from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_manager import DebtLedgerManager
+from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
 
 
 # ============================================================================

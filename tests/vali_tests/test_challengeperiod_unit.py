@@ -8,21 +8,20 @@ instead of mock classes, following the pattern from test_elimination_core.py.
 """
 import unittest
 from copy import deepcopy
-from unittest import skipIf
 
-from shared_objects.server_orchestrator import ServerOrchestrator, ServerMode
+from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.shared_objects.test_utilities import generate_ledger
 from tests.vali_tests.base_objects.test_base import TestBase
 from vali_objects.enums.order_type_enum import OrderType
-from vali_objects.position import Position
+from vali_objects.vali_dataclasses.position import Position
 from vali_objects.scoring.scoring import Scoring
-from vali_objects.utils.challengeperiod_manager import ChallengePeriodManager
+from vali_objects.challenge_period import ChallengePeriodManager
 from vali_objects.utils.ledger_utils import LedgerUtils
-from vali_objects.utils.miner_bucket_enum import MinerBucket
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.vali_dataclasses.order import Order
-from vali_objects.vali_dataclasses.perf_ledger import TP_ID_PORTFOLIO
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import TP_ID_PORTFOLIO
 import vali_objects.vali_config as vali_file
 
 

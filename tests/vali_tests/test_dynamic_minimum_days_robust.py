@@ -10,7 +10,7 @@ from tests.vali_tests.base_objects.test_base import TestBase
 from vali_objects.utils.ledger_utils import LedgerUtils
 from vali_objects.utils.asset_segmentation import AssetSegmentation
 from vali_objects.vali_config import ValiConfig, TradePairCategory, TradePair
-from vali_objects.vali_dataclasses.perf_ledger import PerfLedger, PerfCheckpoint, TP_ID_PORTFOLIO
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger, PerfCheckpoint, TP_ID_PORTFOLIO
 
 
 class TestDynamicMinimumDaysRobust(TestBase):

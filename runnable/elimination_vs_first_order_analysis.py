@@ -13,19 +13,19 @@ Usage:
     python daily_portfolio_returns.py [--start-date YYYY-MM-DD] [--end-date YYYY-MM-DD] [--hotkeys HOTKEY1,HOTKEY2,...] [--elimination-source DATABASE]
 """
 
-from datetime import datetime, timezone, timedelta
-from typing import Dict, List, Tuple, Set, Optional, Any, Union
+from datetime import datetime, timezone
+from typing import Dict, List, Any
 from collections import defaultdict
 
 from daily_portfolio_returns import SharedDataManager, get_database_url_from_config, EliminationTracker
 import bittensor as bt
-from sqlalchemy import create_engine, Column, String, Float, Integer, DateTime, text, inspect, tuple_
-from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy import Column, String, Float, Integer, DateTime
+from sqlalchemy.orm import declarative_base
 
 from time_util.time_util import TimeUtil
-from vali_objects.position import Position
-from vali_objects.utils.live_price_server import LivePriceFetcherServer
-from vali_objects.utils.position_source import PositionSourceManager, PositionSource
+from vali_objects.vali_dataclasses.position import Position
+from vali_objects.price_fetcher import LivePriceFetcherServer
+from vali_objects.position_management.position_utils.position_source import PositionSourceManager, PositionSource
 from vali_objects.vali_config import TradePair, TradePairCategory, CryptoSubcategory, ForexSubcategory
 from vali_objects.vali_dataclasses.price_source import PriceSource
 from vali_objects.utils.vali_utils import ValiUtils

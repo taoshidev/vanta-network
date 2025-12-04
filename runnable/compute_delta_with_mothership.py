@@ -4,9 +4,9 @@ import requests
 import json
 
 from time_util.time_util import TimeUtil
-from vali_objects.position import Position
-from vali_objects.utils.elimination_server import EliminationServer
-from vali_objects.utils.position_manager import PositionManager
+from vali_objects.vali_dataclasses.position import Position
+from vali_objects.utils.elimination.elimination_server import EliminationServer
+from vali_objects.position_management.position_manager import PositionManager
 import bittensor as bt
 
 

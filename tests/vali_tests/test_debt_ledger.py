@@ -16,16 +16,16 @@ Architecture:
 import bittensor as bt
 import time
 
-from shared_objects.server_orchestrator import ServerOrchestrator, ServerMode
+from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
 from time_util.time_util import TimeUtil
 from vali_objects.enums.order_type_enum import OrderType
-from vali_objects.position import Position
+from vali_objects.vali_dataclasses.position import Position
 from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.vali_dataclasses.order import Order
-from vali_objects.vali_dataclasses.perf_ledger import TP_ID_PORTFOLIO
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import TP_ID_PORTFOLIO
 from vali_objects.utils.vali_utils import ValiUtils
-from vali_objects.vali_dataclasses.debt_ledger import DebtCheckpoint
+from vali_objects.vali_dataclasses.ledger.debt.debt_ledger import DebtCheckpoint
 
 bt.logging.enable_info()
 
@@ -157,7 +157,7 @@ class TestDebtLedgers(TestBase):
         In unit tests, we can't access the blockchain, so we manually create
         emissions ledgers with dummy data that aligns with the perf ledger checkpoints.
         """
-        from vali_objects.vali_dataclasses.emissions_ledger import EmissionsLedger, EmissionsCheckpoint
+        from vali_objects.vali_dataclasses.ledger.emission.emissions_ledger import EmissionsLedger, EmissionsCheckpoint
 
         # Get perf ledgers to determine which checkpoints we need to create emissions for
         perf_ledgers = self.perf_ledger_client.get_perf_ledgers(portfolio_only=True)
@@ -296,7 +296,7 @@ class TestDebtLedgers(TestBase):
         - Cumulative alpha/TAO/USD are calculated correctly
         - get_cumulative_* methods work as expected
         """
-        from vali_objects.vali_dataclasses.debt_ledger import DebtLedger
+        from vali_objects.vali_dataclasses.ledger.debt.debt_ledger import DebtLedger
 
         ledger = DebtLedger(hotkey=self.DEFAULT_MINER_HOTKEY)
 
@@ -340,7 +340,7 @@ class TestDebtLedgers(TestBase):
         - Checkpoints must be contiguous (no gaps)
         - add_checkpoint validates correctly
         """
-        from vali_objects.vali_dataclasses.debt_ledger import DebtLedger
+        from vali_objects.vali_dataclasses.ledger.debt.debt_ledger import DebtLedger
 
         ledger = DebtLedger(hotkey=self.DEFAULT_MINER_HOTKEY)
         target_cp_duration_ms = ValiConfig.TARGET_CHECKPOINT_DURATION_MS
@@ -377,7 +377,7 @@ class TestDebtLedgers(TestBase):
         - Ledger can be deserialized from dict
         - Round-trip preserves all data
         """
-        from vali_objects.vali_dataclasses.debt_ledger import DebtLedger
+        from vali_objects.vali_dataclasses.ledger.debt.debt_ledger import DebtLedger
 
         ledger = DebtLedger(hotkey=self.DEFAULT_MINER_HOTKEY)
         target_cp_duration_ms = ValiConfig.TARGET_CHECKPOINT_DURATION_MS

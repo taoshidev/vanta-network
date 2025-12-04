@@ -27,14 +27,14 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 
 from time_util.time_util import TimeUtil
 from time_util.time_util import MS_IN_24_HOURS
-from vali_objects.position import Position
-from vali_objects.utils.position_source import PositionSourceManager, PositionSource
-from vali_objects.utils.elimination_source import EliminationSourceManager, EliminationSource
-from vali_objects.utils.live_price_server import LivePriceFetcherServer
+from vali_objects.vali_dataclasses.position import Position
+from vali_objects.position_management.position_utils.position_source import PositionSourceManager, PositionSource
+from vali_objects.utils.elimination.elimination_source import EliminationSourceManager, EliminationSource
+from vali_objects.price_fetcher import LivePriceFetcherServer
 from vali_objects.vali_config import TradePair, TradePairCategory, CryptoSubcategory, ForexSubcategory
 from vali_objects.vali_dataclasses.price_source import PriceSource
 from vali_objects.utils.vali_utils import ValiUtils
-from vali_objects.utils.position_filter import PositionFilter, FilterStats
+from vali_objects.position_management.position_utils.position_filter import PositionFilter, FilterStats
 from collections import defaultdict
 from datetime import datetime, timezone
 

@@ -16,13 +16,11 @@ from miner_objects.dashboard import Dashboard
 from miner_objects.prop_net_order_placer import PropNetOrderPlacer
 from miner_objects.position_inspector import PositionInspector
 from shared_objects.slack_notifier import SlackNotifier
-from shared_objects.metagraph_updater import MetagraphUpdater
-from shared_objects.metagraph_server import MetagraphServer, MetagraphClient
-from shared_objects.server_orchestrator import ServerOrchestrator, ServerMode
+from shared_objects.metagraph.metagraph_updater import MetagraphUpdater
+from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from vali_objects.decoders.generalized_json_decoder import GeneralizedJSONDecoder
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
-from vali_objects.vali_config import RPCConnectionMode
 
 
 class Miner:

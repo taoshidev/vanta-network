@@ -5,17 +5,17 @@ Comprehensive unit tests for OrderProcessor.
 Tests all production code paths to ensure high confidence in production releases.
 """
 import unittest
-from unittest.mock import Mock, MagicMock
+from unittest.mock import Mock
 import uuid
 
 from tests.vali_tests.base_objects.test_base import TestBase
-from time_util.time_util import TimeUtil
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.exceptions.signal_exception import SignalException
-from vali_objects.utils.order_processor import OrderProcessor
+from vali_objects.utils.limit_order.order_processor import OrderProcessor
 from vali_objects.vali_config import TradePair
-from vali_objects.vali_dataclasses.order import Order, OrderSource
+from vali_objects.vali_dataclasses.order import Order
+from vali_objects.enums.order_source_enum import OrderSource
 
 
 class TestOrderProcessor(TestBase):

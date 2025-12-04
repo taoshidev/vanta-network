@@ -2,19 +2,19 @@ import json
 from copy import deepcopy
 from unittest.mock import Mock, patch
 
-from shared_objects.server_orchestrator import ServerOrchestrator, ServerMode
+from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
 from time_util.time_util import TimeUtil
+from vali_objects.data_sync.auto_sync import PositionSyncer
+from vali_objects.data_sync.validator_sync_base import AUTO_SYNC_ORDER_LAG_MS, PositionSyncResultException
 from vali_objects.decoders.generalized_json_decoder import GeneralizedJSONDecoder
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.enums.order_type_enum import OrderType
-from vali_objects.position import Position
-from vali_objects.utils.auto_sync import PositionSyncer
-from vali_objects.utils.market_order_manager import MarketOrderManager
-from vali_objects.utils.miner_bucket_enum import MinerBucket
-from vali_objects.utils.validator_sync_base import AUTO_SYNC_ORDER_LAG_MS, PositionSyncResultException
+from vali_objects.utils.limit_order.market_order_manager import MarketOrderManager
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair
 from vali_objects.vali_dataclasses.order import Order
+from vali_objects.vali_dataclasses.position import Position
 
 
 class TestAutoSync(TestBase):
@@ -1284,7 +1284,7 @@ class TestAutoSync(TestBase):
         assert stats['orders_kept'] == 1, f"Should keep future order: {stats}"
         assert stats['orders_matched'] == 2, f"Should match orders within window: {stats}"
 
-    @patch('vali_objects.utils.auto_sync.requests.get')
+    @patch('vali_objects.data_sync.auto_sync.requests.get')
     def test_perform_sync_with_network_errors(self, mock_get):
         """Test autosync behavior with network failures"""
         # Test HTTP error
@@ -1570,7 +1570,7 @@ class TestAutoSync(TestBase):
         self.position_syncer.last_signal_sync_time_ms = TimeUtil.now_in_millis() - 1000 * 60 * 31
         
         # Test outside time window
-        with patch('vali_objects.utils.auto_sync.TimeUtil.generate_start_timestamp') as mock_time:
+        with patch('vali_objects.data_sync.auto_sync.TimeUtil.generate_start_timestamp') as mock_time:
             mock_dt = Mock()
             mock_dt.hour = 5  # Not 6
             mock_dt.minute = 15
@@ -1581,7 +1581,7 @@ class TestAutoSync(TestBase):
                 mock_sync.assert_not_called()
         
         # Test within time window
-        with patch('vali_objects.utils.auto_sync.TimeUtil.generate_start_timestamp') as mock_time:
+        with patch('vali_objects.data_sync.auto_sync.TimeUtil.generate_start_timestamp') as mock_time:
             mock_dt = Mock()
             mock_dt.hour = 21
             mock_dt.minute = 15  # Between 8 and 20
@@ -1676,7 +1676,7 @@ class TestAutoSync(TestBase):
     def test_mothership_mode(self):
         """Test behavior when running as mothership"""
         # Mock mothership mode
-        with patch('vali_objects.utils.validator_sync_base.ValiUtils.get_secrets') as mock_secrets:
+        with patch('vali_objects.data_sync.validator_sync_base.ValiUtils.get_secrets') as mock_secrets:
             mock_secrets.return_value = {'ms': 'mothership_secret', 'polygon_apikey': "", 'tiingo_apikey': ""}
             
             # Create new syncer in mothership mode

@@ -11,17 +11,15 @@ This test ensures that MinerStatisticsServer can:
 import unittest
 import bittensor as bt
 
-from shared_objects.server_orchestrator import ServerOrchestrator, ServerMode
-from tests.shared_objects.test_utilities import generate_winning_ledger
+from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
 from time_util.time_util import TimeUtil
 from vali_objects.enums.order_type_enum import OrderType
-from vali_objects.position import Position
-from vali_objects.utils.miner_bucket_enum import MinerBucket
+from vali_objects.vali_dataclasses.position import Position
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.utils.vali_utils import ValiUtils
-from vali_objects.vali_config import TradePair, RPCConnectionMode
+from vali_objects.vali_config import TradePair
 from vali_objects.vali_dataclasses.order import Order
-from runnable.miner_statistics_server import MinerStatisticsServer, MinerStatisticsClient
 
 
 class TestMinerStatistics(TestBase):
@@ -126,7 +124,7 @@ class TestMinerStatistics(TestBase):
         # Build ledgers dictionary with VARIED performance data
         # Each miner needs different performance to get non-zero scores from metrics
         from tests.shared_objects.test_utilities import create_daily_checkpoints_with_pnl
-        from vali_objects.vali_dataclasses.perf_ledger import TP_ID_PORTFOLIO, PerfLedger
+        from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import TP_ID_PORTFOLIO
         import numpy as np
 
         ledgers = {}
@@ -187,7 +185,7 @@ class TestMinerStatistics(TestBase):
 
         # Verify ledgers were saved and can be retrieved for scoring
         filtered_ledgers = self.perf_ledger_client.filtered_ledger_for_scoring(hotkeys=self.test_hotkeys)
-        from vali_objects.vali_dataclasses.perf_ledger import TP_ID_PORTFOLIO
+        from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import TP_ID_PORTFOLIO
         from vali_objects.utils.ledger_utils import LedgerUtils
         for hotkey in self.test_hotkeys:
             if hotkey in filtered_ledgers and TP_ID_PORTFOLIO in filtered_ledgers[hotkey]:
@@ -425,7 +423,7 @@ class TestMinerStatistics(TestBase):
 
         # Create varied ledgers for each miner
         from tests.shared_objects.test_utilities import create_daily_checkpoints_with_pnl
-        from vali_objects.vali_dataclasses.perf_ledger import TP_ID_PORTFOLIO
+        from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import TP_ID_PORTFOLIO
         import numpy as np
 
         ledgers = {}
@@ -533,7 +531,7 @@ class TestMinerStatistics(TestBase):
 
         # Create ledgers with different performance to ensure both appear in results
         from tests.shared_objects.test_utilities import create_daily_checkpoints_with_pnl
-        from vali_objects.vali_dataclasses.perf_ledger import TP_ID_PORTFOLIO
+        from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import TP_ID_PORTFOLIO
         import numpy as np
 
         ledgers = {}
@@ -639,7 +637,7 @@ class TestMinerStatistics(TestBase):
 
         # Create ledgers with different volatility/drawdown patterns
         from tests.shared_objects.test_utilities import create_daily_checkpoints_with_pnl
-        from vali_objects.vali_dataclasses.perf_ledger import TP_ID_PORTFOLIO
+        from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import TP_ID_PORTFOLIO
         import numpy as np
 
         ledgers = {}
@@ -755,7 +753,7 @@ class TestMinerStatistics(TestBase):
 
         # Create varied performance
         from tests.shared_objects.test_utilities import create_daily_checkpoints_with_pnl
-        from vali_objects.vali_dataclasses.perf_ledger import TP_ID_PORTFOLIO
+        from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import TP_ID_PORTFOLIO
         import numpy as np
 
         ledgers = {}
@@ -851,7 +849,7 @@ class TestMinerStatistics(TestBase):
         self.asset_selection_client.sync_miner_asset_selection_data({solo_miner: TradePairCategory.CRYPTO.value})
 
         from tests.shared_objects.test_utilities import create_daily_checkpoints_with_pnl
-        from vali_objects.vali_dataclasses.perf_ledger import TP_ID_PORTFOLIO
+        from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import TP_ID_PORTFOLIO
         import numpy as np
 
         np.random.seed(123)

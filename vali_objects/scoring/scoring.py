@@ -1,34 +1,28 @@
 # developer: trdougherty
 
 from dataclasses import dataclass
-from enum import Enum, auto
 import math
 from typing import List, Tuple, Callable
-from vali_objects.position import Position
+
+from vali_objects.enums.misc import PenaltyInputType
+from vali_objects.vali_dataclasses.position import Position
 import copy
 from collections import defaultdict
 
 import numpy as np
 from scipy.stats import percentileofscore
 
-from vali_objects.utils.validator_contract_manager import ValidatorContractManager
+from vali_objects.contract.validator_contract_manager import ValidatorContractManager
 from vali_objects.vali_config import ValiConfig
-from vali_objects.vali_dataclasses.perf_ledger import PerfLedger, TP_ID_PORTFOLIO
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger, TP_ID_PORTFOLIO
 from time_util.time_util import TimeUtil
-from vali_objects.utils.position_filtering import PositionFiltering
+from vali_objects.position_management.position_utils import PositionFiltering
 from vali_objects.utils.ledger_utils import LedgerUtils
 from vali_objects.utils.metrics import Metrics
-from vali_objects.utils.position_penalties import PositionPenalties
+from vali_objects.position_management.position_utils import PositionPenalties
 from vali_objects.utils.asset_segmentation import AssetSegmentation
 from vali_objects.vali_config import TradePairCategory
 import bittensor as bt
-
-
-class PenaltyInputType(Enum):
-    LEDGER = auto()
-    POSITIONS = auto()
-    PSEUDO_POSITIONS = auto()
-    COLLATERAL = auto()
 
 
 @dataclass

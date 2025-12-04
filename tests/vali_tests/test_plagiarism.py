@@ -1,11 +1,10 @@
 # Copyright © 2024 Taoshi Inc
 import unittest
-from unittest.mock import Mock, patch, MagicMock
 
-from shared_objects.server_orchestrator import ServerOrchestrator, ServerMode
+from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
-from vali_objects.utils.elimination_manager import EliminationReason
-from vali_objects.utils.miner_bucket_enum import MinerBucket
+from vali_objects.utils.elimination.elimination_manager import EliminationReason
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import ValiConfig
 from time_util.time_util import TimeUtil

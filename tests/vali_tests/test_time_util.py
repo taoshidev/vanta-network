@@ -7,11 +7,11 @@ Tests TimeUtil functions with proper server/client setup.
 """
 from datetime import datetime, timezone
 
-from shared_objects.server_orchestrator import ServerOrchestrator, ServerMode
+from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
 from time_util.time_util import MS_IN_8_HOURS, MS_IN_24_HOURS, TimeUtil
 from vali_objects.enums.order_type_enum import OrderType
-from vali_objects.position import FEE_V6_TIME_MS, Position
+from vali_objects.vali_dataclasses.position import FEE_V6_TIME_MS, Position
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair
 from vali_objects.vali_dataclasses.order import Order

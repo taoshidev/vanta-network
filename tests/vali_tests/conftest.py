@@ -6,7 +6,7 @@ lifecycle across all tests, ensuring clean shutdown to prevent CI hangs.
 """
 import pytest
 import bittensor as bt
-from shared_objects.server_orchestrator import ServerOrchestrator
+from shared_objects.rpc.server_orchestrator import ServerOrchestrator
 
 
 @pytest.fixture(scope="session", autouse=True)

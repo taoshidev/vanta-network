@@ -7,11 +7,11 @@ ValiRecordsMisalignmentException when multiple open positions exist for the same
 """
 import uuid
 from time_util.time_util import TimeUtil
-from shared_objects.server_orchestrator import ServerOrchestrator, ServerMode
+from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
 from vali_objects.enums.order_type_enum import OrderType
-from vali_objects.position import Position
-from vali_objects.utils.validator_sync_base import ValidatorSyncBase
+from vali_objects.vali_dataclasses.position import Position
+from vali_objects.data_sync.validator_sync_base import ValidatorSyncBase
 from vali_objects.vali_config import TradePair
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.utils.vali_utils import ValiUtils

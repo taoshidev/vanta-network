@@ -10,9 +10,9 @@ calls to the blockchain while maintaining proper multiprocess isolation.
 """
 import time
 
-from shared_objects.server_orchestrator import ServerOrchestrator, ServerMode
+from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
-from vali_objects.utils.validator_contract_manager import CollateralRecord
+from vali_objects.contract.validator_contract_manager import CollateralRecord
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import ValiConfig
 
