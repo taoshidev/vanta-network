@@ -32,6 +32,7 @@ from multiprocessing import current_process
 from vanta_api.api_key_refresh import APIKeyMixin
 from vanta_api.nonce_manager import NonceManager
 from shared_objects.rpc.rpc_server_base import RPCServerBase
+from entitiy_management.entity_client import EntityClient
 
 
 class APIMetricsTracker:
@@ -382,6 +383,11 @@ class VantaRestServer(RPCServerBase, APIKeyMixin):
         from vali_objects.statistics.miner_statistics_client import MinerStatisticsClient
         self._statistics_outputs_client = MinerStatisticsClient(connection_mode=connection_mode)
         print(f"[REST-INIT] Step 2f/9: StatisticsOutputsClient created ✓")
+
+        print(f"[REST-INIT] Step 2g/9: Creating EntityClient...")
+        # Create own EntityClient (forward compatibility - no parameter passing)
+        self._entity_client = EntityClient(connection_mode=connection_mode, running_unit_tests=running_unit_tests)
+        print(f"[REST-INIT] Step 2g/9: EntityClient created ✓")
 
         print(f"[REST-INIT] Step 3/9: Setting REST server configuration...")
         # IMPORTANT: Store Flask HTTP server config separately from RPC port
@@ -1493,6 +1499,260 @@ class VantaRestServer(RPCServerBase, APIKeyMixin):
                 bt.logging.error(f"Error processing development order: {e}")
                 bt.logging.error(traceback.format_exc())
                 return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+
+        # ============================================================================
+        # ENTITY MANAGEMENT ENDPOINTS
+        # ============================================================================
+
+        @self.app.route("/entity/register", methods=["POST"])
+        def register_entity():
+            """
+            Register a new entity.
+
+            Example:
+            curl -X POST http://localhost:48888/entity/register \\
+              -H "Authorization: Bearer YOUR_API_KEY" \\
+              -H "Content-Type: application/json" \\
+              -d '{"entity_hotkey": "5GhDr...", "collateral_amount": 1000.0, "max_subaccounts": 10}'
+            """
+            # Check API key authentication
+            api_key = self._get_api_key_safe()
+            if not self.is_valid_api_key(api_key):
+                return jsonify({'error': 'Unauthorized access'}), 401
+
+            # Check if entity client is available
+            if not self._entity_client:
+                return jsonify({'error': 'Entity management not available'}), 503
+
+            try:
+                # Parse and validate request
+                if not request.is_json:
+                    return jsonify({'error': 'Content-Type must be application/json'}), 400
+
+                data = request.get_json()
+                if not data:
+                    return jsonify({'error': 'Invalid JSON body'}), 400
+
+                # Validate required fields
+                if 'entity_hotkey' not in data:
+                    return jsonify({'error': 'Missing required field: entity_hotkey'}), 400
+
+                entity_hotkey = data['entity_hotkey']
+                collateral_amount = data.get('collateral_amount', 0.0)
+                max_subaccounts = data.get('max_subaccounts', None)
+
+                # Register entity via RPC
+                success, message = self._entity_client.register_entity(
+                    entity_hotkey=entity_hotkey,
+                    collateral_amount=collateral_amount,
+                    max_subaccounts=max_subaccounts
+                )
+
+                if success:
+                    return jsonify({
+                        'status': 'success',
+                        'message': message,
+                        'entity_hotkey': entity_hotkey
+                    }), 200
+                else:
+                    return jsonify({'error': message}), 400
+
+            except Exception as e:
+                bt.logging.error(f"Error registering entity: {e}")
+                return jsonify({'error': 'Internal server error registering entity'}), 500
+
+        @self.app.route("/entity/subaccount", methods=["POST"])
+        def create_subaccount():
+            """
+            Create a new subaccount for an entity.
+
+            Example:
+            curl -X POST http://localhost:48888/entity/subaccount \\
+              -H "Authorization: Bearer YOUR_API_KEY" \\
+              -H "Content-Type: application/json" \\
+              -d '{"entity_hotkey": "5GhDr..."}'
+            """
+            # Check API key authentication
+            api_key = self._get_api_key_safe()
+            if not self.is_valid_api_key(api_key):
+                return jsonify({'error': 'Unauthorized access'}), 401
+
+            # Check if entity client is available
+            if not self._entity_client:
+                return jsonify({'error': 'Entity management not available'}), 503
+
+            try:
+                # Parse and validate request
+                if not request.is_json:
+                    return jsonify({'error': 'Content-Type must be application/json'}), 400
+
+                data = request.get_json()
+                if not data:
+                    return jsonify({'error': 'Invalid JSON body'}), 400
+
+                # Validate required fields
+                if 'entity_hotkey' not in data:
+                    return jsonify({'error': 'Missing required field: entity_hotkey'}), 400
+
+                entity_hotkey = data['entity_hotkey']
+
+                # Create subaccount via RPC
+                success, subaccount_info, message = self._entity_client.create_subaccount(entity_hotkey)
+
+                if success:
+                    # Broadcast subaccount registration to other validators
+                    try:
+                        self._entity_client.broadcast_subaccount_registration(
+                            entity_hotkey=entity_hotkey,
+                            subaccount_id=subaccount_info['subaccount_id'],
+                            subaccount_uuid=subaccount_info['subaccount_uuid'],
+                            synthetic_hotkey=subaccount_info['synthetic_hotkey']
+                        )
+                        bt.logging.info(f"[REST_API] Broadcasted subaccount registration for {subaccount_info['synthetic_hotkey']}")
+                    except Exception as e:
+                        # Don't fail the request if broadcast fails - it's a background operation
+                        bt.logging.warning(f"[REST_API] Failed to broadcast subaccount registration: {e}")
+
+                    return jsonify({
+                        'status': 'success',
+                        'message': message,
+                        'subaccount': subaccount_info
+                    }), 200
+                else:
+                    return jsonify({'error': message}), 400
+
+            except Exception as e:
+                bt.logging.error(f"Error creating subaccount: {e}")
+                return jsonify({'error': 'Internal server error creating subaccount'}), 500
+
+        @self.app.route("/entity/<entity_hotkey>", methods=["GET"])
+        def get_entity(entity_hotkey):
+            """
+            Get entity data for a specific entity.
+
+            Example:
+            curl -H "Authorization: Bearer YOUR_API_KEY" http://localhost:48888/entity/5GhDr...
+            """
+            # Check API key authentication
+            api_key = self._get_api_key_safe()
+            if not self.is_valid_api_key(api_key):
+                return jsonify({'error': 'Unauthorized access'}), 401
+
+            # Check if entity client is available
+            if not self._entity_client:
+                return jsonify({'error': 'Entity management not available'}), 503
+
+            try:
+                # Get entity data via RPC
+                entity_data = self._entity_client.get_entity_data(entity_hotkey)
+
+                if entity_data:
+                    return jsonify({
+                        'status': 'success',
+                        'entity': entity_data
+                    }), 200
+                else:
+                    return jsonify({'error': f'Entity {entity_hotkey} not found'}), 404
+
+            except Exception as e:
+                bt.logging.error(f"Error retrieving entity {entity_hotkey}: {e}")
+                return jsonify({'error': 'Internal server error retrieving entity'}), 500
+
+        @self.app.route("/entities", methods=["GET"])
+        def get_all_entities():
+            """
+            Get all registered entities.
+
+            Example:
+            curl -H "Authorization: Bearer YOUR_API_KEY" http://localhost:48888/entities
+            """
+            # Check API key authentication
+            api_key = self._get_api_key_safe()
+            if not self.is_valid_api_key(api_key):
+                return jsonify({'error': 'Unauthorized access'}), 401
+
+            # Check if entity client is available
+            if not self._entity_client:
+                return jsonify({'error': 'Entity management not available'}), 503
+
+            try:
+                # Get all entities via RPC
+                entities = self._entity_client.get_all_entities()
+
+                return jsonify({
+                    'status': 'success',
+                    'entities': entities,
+                    'entity_count': len(entities),
+                    'timestamp': TimeUtil.now_in_millis()
+                }), 200
+
+            except Exception as e:
+                bt.logging.error(f"Error retrieving all entities: {e}")
+                return jsonify({'error': 'Internal server error retrieving entities'}), 500
+
+        @self.app.route("/entity/subaccount/eliminate", methods=["POST"])
+        def eliminate_subaccount():
+            """
+            Eliminate a subaccount.
+
+            Example:
+            curl -X POST http://localhost:48888/entity/subaccount/eliminate \\
+              -H "Authorization: Bearer YOUR_API_KEY" \\
+              -H "Content-Type: application/json" \\
+              -d '{"entity_hotkey": "5GhDr...", "subaccount_id": 0, "reason": "manual_elimination"}'
+            """
+            # Check API key authentication
+            api_key = self._get_api_key_safe()
+            if not self.is_valid_api_key(api_key):
+                return jsonify({'error': 'Unauthorized access'}), 401
+
+            # Check if entity client is available
+            if not self._entity_client:
+                return jsonify({'error': 'Entity management not available'}), 503
+
+            try:
+                # Parse and validate request
+                if not request.is_json:
+                    return jsonify({'error': 'Content-Type must be application/json'}), 400
+
+                data = request.get_json()
+                if not data:
+                    return jsonify({'error': 'Invalid JSON body'}), 400
+
+                # Validate required fields
+                required_fields = ['entity_hotkey', 'subaccount_id']
+                for field in required_fields:
+                    if field not in data:
+                        return jsonify({'error': f'Missing required field: {field}'}), 400
+
+                entity_hotkey = data['entity_hotkey']
+                subaccount_id = data['subaccount_id']
+                reason = data.get('reason', 'manual_elimination')
+
+                # Validate subaccount_id is an integer
+                try:
+                    subaccount_id = int(subaccount_id)
+                except (ValueError, TypeError):
+                    return jsonify({'error': 'subaccount_id must be an integer'}), 400
+
+                # Eliminate subaccount via RPC
+                success, message = self._entity_client.eliminate_subaccount(
+                    entity_hotkey=entity_hotkey,
+                    subaccount_id=subaccount_id,
+                    reason=reason
+                )
+
+                if success:
+                    return jsonify({
+                        'status': 'success',
+                        'message': message
+                    }), 200
+                else:
+                    return jsonify({'error': message}), 400
+
+            except Exception as e:
+                bt.logging.error(f"Error eliminating subaccount: {e}")
+                return jsonify({'error': 'Internal server error eliminating subaccount'}), 500
 
     def _verify_coldkey_owns_hotkey(self, coldkey_ss58: str, hotkey_ss58: str) -> bool:
         """

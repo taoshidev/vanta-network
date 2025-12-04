@@ -172,6 +172,7 @@ class Validator(ValidatorBase):
         self.asset_selection_client = orchestrator.get_client('asset_selection')
         self.perf_ledger_client = orchestrator.get_client('perf_ledger')
         self.debt_ledger_client = orchestrator.get_client('debt_ledger')
+        self.entity_client = orchestrator.get_client('entity')
 
         # Create MetagraphUpdater with simple parameters
         # This will run in a thread in the main process
@@ -453,6 +454,32 @@ class Validator(ValidatorBase):
             synapse.successfully_processed = False
             synapse.error_message = msg
             return True
+
+        # Entity hotkey validation: Don't allow orders from entity hotkeys (non-synthetic)
+        # Only synthetic hotkeys (subaccounts) can place orders
+        entity_check_start = time.perf_counter()
+        if self.entity_client.is_synthetic_hotkey(sender_hotkey):
+            # This is a synthetic hotkey - verify it's active
+            found, status, _ = self.entity_client.get_subaccount_status(sender_hotkey)
+            if not found or status != 'active':
+                msg = (f"Synthetic hotkey {sender_hotkey} is not active or not found. "
+                       f"Please ensure your subaccount is properly registered.")
+                bt.logging.warning(msg)
+                synapse.successfully_processed = False
+                synapse.error_message = msg
+                return True
+        else:
+            # Not a synthetic hotkey - check if it's an entity hotkey
+            entity_data = self.entity_client.get_entity_data(sender_hotkey)
+            if entity_data:
+                msg = (f"Entity hotkey {sender_hotkey} cannot place orders directly. "
+                       f"Please use a subaccount (synthetic hotkey) to place orders.")
+                bt.logging.warning(msg)
+                synapse.successfully_processed = False
+                synapse.error_message = msg
+                return True
+        entity_check_ms = (time.perf_counter() - entity_check_start) * 1000
+        bt.logging.info(f"[FAIL_EARLY_DEBUG] entity_hotkey_validation took {entity_check_ms:.2f}ms")
 
         order_uuid = synapse.miner_order_uuid
         tp = Order.parse_trade_pair_from_signal(signal)

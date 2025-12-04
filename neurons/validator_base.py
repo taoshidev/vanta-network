@@ -23,6 +23,10 @@ class ValidatorBase:
         from vali_objects.contract.contract_client import ContractClient
         self._contract_client = ContractClient(running_unit_tests=False)
 
+        # Create own EntityClient (forward compatibility - no parameter passing)
+        from entitiy_management.entity_client import EntityClient
+        self._entity_client = EntityClient(running_unit_tests=False)
+
         self.wire_axon()
 
         # Each hotkey gets a unique identity (UID) in the network for differentiation.
@@ -33,6 +37,11 @@ class ValidatorBase:
     def contract_manager(self):
         """Get contract client (forward compatibility - created internally)."""
         return self._contract_client
+
+    @property
+    def entity_client(self):
+        """Get entity client (forward compatibility - created internally)."""
+        return self._entity_client
 
     def receive_signal(self, synapse: template.protocol.SendSignal) -> template.protocol.SendSignal:
         """
@@ -154,6 +163,9 @@ class ValidatorBase:
         def as_blacklist_fn(synapse: template.protocol.AssetSelection) -> Tuple[bool, str]:
             return self.blacklist_fn(synapse, self.metagraph_server)
 
+        def sr_blacklist_fn(synapse: template.protocol.SubaccountRegistration) -> Tuple[bool, str]:
+            return self.blacklist_fn(synapse, self.metagraph_server)
+
         self.axon.attach(
             forward_fn=self.receive_signal,
             blacklist_fn=rs_blacklist_fn
@@ -169,6 +181,10 @@ class ValidatorBase:
         self.axon.attach(
             forward_fn=self.asset_selection_client.receive_asset_selection,
             blacklist_fn=as_blacklist_fn
+        )
+        self.axon.attach(
+            forward_fn=self.entity_client.receive_subaccount_registration,
+            blacklist_fn=sr_blacklist_fn
         )
 
         # Serve passes the axon information to the network + netuid we are hosting on.
