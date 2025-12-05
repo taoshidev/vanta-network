@@ -11,6 +11,7 @@ Follows the same pattern as ChallengePeriodServer.
 import bittensor as bt
 from typing import Optional, Tuple, Dict, List
 
+import template.protocol
 from entitiy_management.entity_manager import EntityManager, SubaccountInfo, EntityData
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 from shared_objects.rpc.rpc_server_base import RPCServerBase
@@ -31,6 +32,7 @@ class EntityServer(RPCServerBase):
     def __init__(
         self,
         *,
+        config=None,
         is_backtesting=False,
         slack_notifier=None,
         start_server=True,
@@ -42,6 +44,7 @@ class EntityServer(RPCServerBase):
         Initialize EntityServer IN-PROCESS (never spawns).
 
         Args:
+            config: Validator config (for netuid, wallet) - required for EntityManager
             is_backtesting: Whether running in backtesting mode
             slack_notifier: Slack notifier for alerts
             start_server: Whether to start RPC server immediately
@@ -60,7 +63,8 @@ class EntityServer(RPCServerBase):
         self._manager = EntityManager(
             is_backtesting=is_backtesting,
             running_unit_tests=running_unit_tests,
-            connection_mode=connection_mode
+            connection_mode=connection_mode,
+            config=config
         )
 
         bt.logging.info("[ENTITY_SERVER] EntityManager initialized")
@@ -269,6 +273,21 @@ class EntityServer(RPCServerBase):
             entity_hotkey, subaccount_id, subaccount_uuid, synthetic_hotkey
         )
 
+    def receive_subaccount_registration_update_rpc(self, subaccount_data: dict, sender_hotkey: str = None) -> bool:
+        """
+        Process an incoming SubaccountRegistration synapse and update entity data (RPC method).
+
+        This is the data-level handler that can be called directly via RPC or by the synapse handler.
+
+        Args:
+            subaccount_data: Dictionary containing entity_hotkey, subaccount_id, subaccount_uuid, synthetic_hotkey
+            sender_hotkey: The hotkey of the validator that sent this broadcast
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        return self._manager.receive_subaccount_registration_update(subaccount_data, sender_hotkey)
+
     def receive_subaccount_registration_rpc(
         self,
         synapse: template.protocol.SubaccountRegistration
@@ -289,7 +308,7 @@ class EntityServer(RPCServerBase):
             bt.logging.info(
                 f"[ENTITY_SERVER] Received SubaccountRegistration synapse from validator hotkey [{sender_hotkey}]"
             )
-            success = self._manager.receive_subaccount_registration(synapse.subaccount_data)
+            success = self.receive_subaccount_registration_update_rpc(synapse.subaccount_data, sender_hotkey)
 
             if success:
                 synapse.successfully_processed = True

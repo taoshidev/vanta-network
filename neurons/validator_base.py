@@ -11,12 +11,12 @@ from shared_objects.locks.subtensor_lock import get_subtensor_lock
 
 
 class ValidatorBase:
-    def __init__(self, wallet, config, metagraph, asset_selection_client, subtensor=None, slack_notifier=None):
+    def __init__(self, wallet, config, metagraph_client, asset_selection_client, subtensor=None, slack_notifier=None):
         self.wallet = wallet
         self.config = config
-        self.metagraph_server = metagraph
+        self.metagraph_client = metagraph_client
         self.slack_notifier = slack_notifier
-        self.asset_selection_client = asset_selection_client
+        self._asset_selection_client = asset_selection_client
         self.subtensor = subtensor
 
         # Create own ContractClient (forward compatibility - no parameter passing)
@@ -30,18 +30,13 @@ class ValidatorBase:
         self.wire_axon()
 
         # Each hotkey gets a unique identity (UID) in the network for differentiation.
-        my_subnet_uid = self.metagraph_server.get_hotkeys().index(self.wallet.hotkey.ss58_address)
+        my_subnet_uid = self.metagraph_client.get_hotkeys().index(self.wallet.hotkey.ss58_address)
         bt.logging.info(f"Running validator on uid: {my_subnet_uid}")
 
     @property
     def contract_manager(self):
         """Get contract client (forward compatibility - created internally)."""
         return self._contract_client
-
-    @property
-    def entity_client(self):
-        """Get entity client (forward compatibility - created internally)."""
-        return self._entity_client
 
     def receive_signal(self, synapse: template.protocol.SendSignal) -> template.protocol.SendSignal:
         """
@@ -152,19 +147,19 @@ class ValidatorBase:
         bt.logging.info("Attaching forward function to axon.")
 
         def rs_blacklist_fn(synapse: template.protocol.SendSignal) -> Tuple[bool, str]:
-            return self.blacklist_fn(synapse, self.metagraph_server)
+            return self.blacklist_fn(synapse, self.metagraph_client)
 
         def gp_blacklist_fn(synapse: template.protocol.GetPositions) -> Tuple[bool, str]:
-            return self.blacklist_fn(synapse, self.metagraph_server)
+            return self.blacklist_fn(synapse, self.metagraph_client)
 
         def cr_blacklist_fn(synapse: template.protocol.CollateralRecord) -> Tuple[bool, str]:
-            return self.blacklist_fn(synapse, self.metagraph_server)
+            return self.blacklist_fn(synapse, self.metagraph_client)
 
         def as_blacklist_fn(synapse: template.protocol.AssetSelection) -> Tuple[bool, str]:
-            return self.blacklist_fn(synapse, self.metagraph_server)
+            return self.blacklist_fn(synapse, self.metagraph_client)
 
         def sr_blacklist_fn(synapse: template.protocol.SubaccountRegistration) -> Tuple[bool, str]:
-            return self.blacklist_fn(synapse, self.metagraph_server)
+            return self.blacklist_fn(synapse, self.metagraph_client)
 
         self.axon.attach(
             forward_fn=self.receive_signal,
@@ -175,15 +170,15 @@ class ValidatorBase:
             blacklist_fn=gp_blacklist_fn
         )
         self.axon.attach(
-            forward_fn=self.contract_manager.receive_collateral_record,
+            forward_fn=self._contract_client.receive_collateral_record,
             blacklist_fn=cr_blacklist_fn
         )
         self.axon.attach(
-            forward_fn=self.asset_selection_client.receive_asset_selection,
+            forward_fn=self._asset_selection_client.receive_asset_selection,
             blacklist_fn=as_blacklist_fn
         )
         self.axon.attach(
-            forward_fn=self.entity_client.receive_subaccount_registration,
+            forward_fn=self._entity_client.receive_subaccount_registration,
             blacklist_fn=sr_blacklist_fn
         )
 

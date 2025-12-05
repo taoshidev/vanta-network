@@ -40,7 +40,7 @@ class MetagraphServer(RPCServerBase):
     Thread-safe: All data access uses atomic tuple assignment (lock-free).
     BaseManager RPC server is multithreaded, so we need atomic operations.
 
-    Note: This server has NO daemon work - it just stores data that MetagraphUpdater pushes to it.
+    Note: This server has NO daemon work - it just stores data that SubtensorOpsManager pushes to it.
     """
     service_name = ValiConfig.RPC_METAGRAPH_SERVICE_NAME
     service_port = ValiConfig.RPC_METAGRAPH_PORT
@@ -106,7 +106,7 @@ class MetagraphServer(RPCServerBase):
             port=ValiConfig.RPC_METAGRAPH_PORT,
             slack_notifier=slack_notifier,
             start_server=start_server,
-            start_daemon=False,  # No daemon work - data is pushed by MetagraphUpdater
+            start_daemon=False,  # No daemon work - data is pushed by SubtensorOpsManager
             connection_mode=connection_mode
         )
 
@@ -121,7 +121,7 @@ class MetagraphServer(RPCServerBase):
         """
         No-op: MetagraphServer has no daemon work.
 
-        Data is pushed to this server by MetagraphUpdater via update_metagraph_rpc().
+        Data is pushed to this server by SubtensorOpsManager via update_metagraph_rpc().
         """
         pass
 
@@ -172,16 +172,13 @@ class MetagraphServer(RPCServerBase):
 
                 # Verify entity hotkey exists in metagraph
                 if entity_hotkey not in self._hotkeys_set:
-                    bt.logging.debug(f"[METAGRAPH] Synthetic hotkey '{hotkey}' rejected: entity '{entity_hotkey}' not in metagraph")
                     return False
 
                 # Verify subaccount is active via EntityClient
                 found, status, _ = self._entity_client.get_subaccount_status(hotkey)
                 if found and status == "active":
-                    bt.logging.trace(f"[METAGRAPH] Synthetic hotkey '{hotkey}' validated: entity in metagraph, subaccount active")
                     return True
                 else:
-                    bt.logging.debug(f"[METAGRAPH] Synthetic hotkey '{hotkey}' rejected: subaccount not found or not active (status={status})")
                     return False
         except Exception as e:
             # If EntityClient fails (server not running, etc.), treat as not found

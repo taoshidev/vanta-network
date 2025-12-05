@@ -97,24 +97,6 @@ class ContractServer(RPCServerBase):
         """Contract server doesn't need a daemon loop."""
         pass
 
-    # ==================== Properties ====================
-
-    @property
-    def vault_wallet(self):
-        """Get vault wallet from manager."""
-        return self._manager.vault_wallet
-
-    @vault_wallet.setter
-    def vault_wallet(self, value):
-        """Set vault wallet on manager."""
-        self._manager.vault_wallet = value
-
-
-    # ==================== Setup Methods ====================
-
-    def load_contract_owner(self):
-        """Load EVM contract owner secrets and vault wallet."""
-        self._manager.load_contract_owner()
 
     # ==================== RPC Methods (exposed to client) ====================
 
@@ -184,6 +166,46 @@ class ContractServer(RPCServerBase):
     def get_slashed_collateral_rpc(self) -> int:
         """Get total slashed collateral in theta."""
         return self._manager.get_slashed_collateral()
+
+    def set_miner_account_size_rpc(self, hotkey: str, timestamp_ms: int = None) -> bool:
+        """Set the account size for a miner."""
+        return self._manager.set_miner_account_size(hotkey, timestamp_ms)
+
+    def get_miner_account_size_rpc(self, hotkey: str, timestamp_ms: int = None, most_recent: bool = False,
+                                   records_dict: dict = None, use_account_floor: bool = False) -> Optional[float]:
+        """Get the account size for a miner at a given timestamp."""
+        return self._manager.get_miner_account_size(hotkey, timestamp_ms, most_recent, records_dict, use_account_floor)
+
+    def get_all_miner_account_sizes_rpc(self, miner_account_sizes: dict = None, timestamp_ms: int = None) -> Dict[str, float]:
+        """Return a dict of all miner account sizes at a timestamp_ms."""
+        return self._manager.get_all_miner_account_sizes(miner_account_sizes, timestamp_ms)
+
+    def receive_collateral_record_rpc(self, synapse: template.protocol.CollateralRecord) -> template.protocol.CollateralRecord:
+        """Receive collateral record update, and update miner account sizes."""
+        try:
+            sender_hotkey = synapse.dendrite.hotkey
+            bt.logging.info(f"Received collateral record update from validator hotkey [{sender_hotkey}].")
+            success = self.receive_collateral_record_update_rpc(synapse.collateral_record, sender_hotkey)
+
+            if success:
+                synapse.successfully_processed = True
+                synapse.error_message = ""
+                bt.logging.info(f"Successfully processed CollateralRecord synapse from {sender_hotkey}")
+            else:
+                synapse.successfully_processed = False
+                synapse.error_message = "Failed to process collateral record update"
+                bt.logging.warning(f"Failed to process CollateralRecord synapse from {sender_hotkey}")
+
+        except Exception as e:
+            synapse.successfully_processed = False
+            synapse.error_message = f"Error processing collateral record: {str(e)}"
+            bt.logging.error(f"Exception in receive_collateral_record: {e}")
+
+        return synapse
+
+    def receive_collateral_record_update_rpc(self, collateral_record_data: dict, sender_hotkey: str = None) -> bool:
+        """Process an incoming CollateralRecord synapse and update miner_account_sizes."""
+        return self._manager.receive_collateral_record_update(collateral_record_data, sender_hotkey)
 
     def verify_coldkey_owns_hotkey_rpc(self, coldkey_ss58: str, hotkey_ss58: str) -> bool:
         """Verify that a coldkey owns a specific hotkey using subtensor."""

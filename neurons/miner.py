@@ -16,7 +16,7 @@ from miner_objects.dashboard import Dashboard
 from miner_objects.prop_net_order_placer import PropNetOrderPlacer
 from miner_objects.position_inspector import PositionInspector
 from shared_objects.slack_notifier import SlackNotifier
-from shared_objects.subtensor_ops.subtensor_ops import MetagraphUpdater
+from shared_objects.subtensor_ops.subtensor_ops import SubtensorOpsManager
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from vali_objects.decoders.generalized_json_decoder import GeneralizedJSONDecoder
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
@@ -60,7 +60,7 @@ class Miner:
         bt.logging.success("Miner servers initialized successfully")
 
         self.position_inspector = PositionInspector(self.wallet, self.metagraph_client, self.config)
-        self.metagraph_updater = MetagraphUpdater(self.config, self.wallet.hotkey.ss58_address,
+        self.subtensor_ops_manager = SubtensorOpsManager(self.config, self.wallet.hotkey.ss58_address,
                                                   True, position_inspector=self.position_inspector,
                                                     slack_notifier=self.slack_notifier)
         self.prop_net_order_placer = PropNetOrderPlacer(
@@ -72,8 +72,8 @@ class Miner:
             slack_notifier=self.slack_notifier
         )
 
-        # Start the metagraph updater and wait for initial population
-        self.metagraph_updater_thread = self.metagraph_updater.start_and_wait_for_initial_update(
+        # Start the subtensor ops manager and wait for initial population
+        self.subtensor_ops_thread = self.subtensor_ops_manager.start_and_wait_for_initial_update(
             max_wait_time=60,
             slack_notifier=self.slack_notifier
         )
@@ -288,7 +288,7 @@ class Miner:
                     self.dashboard_frontend_process.terminate()
                     self.dashboard_frontend_process.wait()
                     bt.logging.info("Dashboard terminated.")
-                self.metagraph_updater_thread.join()
+                self.subtensor_ops_thread.join()
                 self.position_inspector.stop_update_loop()
                 if self.position_inspector_thread:
                     self.position_inspector_thread.join()

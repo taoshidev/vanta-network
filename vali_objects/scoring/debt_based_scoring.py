@@ -634,7 +634,50 @@ class DebtBasedScoring:
             blocks_until_target = days_until_target * DebtBasedScoring.BLOCKS_PER_DAY_FALLBACK
 
             # Calculate total TAO emissions until target
-            total_alpha_until_target = total_alpha_per_block * blocks_until_target
+            total_tao_until_target = total_tao_per_block * blocks_until_target
+
+            if verbose:
+                bt.logging.info(
+                    f"Estimated blocks until day {DebtBasedScoring.PAYOUT_TARGET_DAY}: {blocks_until_target}, "
+                    f"total TAO: {total_tao_until_target:.2f}"
+                )
+
+            # Get substrate reserves from shared metagraph (refreshed by SubtensorOpsManager)
+            # Use safe helper to extract values from manager.Value() objects or plain numerics
+            tao_reserve_obj = getattr(metagraph, 'tao_reserve_rao', None)
+            alpha_reserve_obj = getattr(metagraph, 'alpha_reserve_rao', None)
+
+            tao_reserve_rao = DebtBasedScoring._safe_get_reserve_value(tao_reserve_obj)
+            alpha_reserve_rao = DebtBasedScoring._safe_get_reserve_value(alpha_reserve_obj)
+
+            if tao_reserve_rao == 0 or alpha_reserve_rao == 0:
+                bt.logging.warning(
+                    "Substrate reserve data not available in shared metagraph "
+                    f"(TAO={tao_reserve_rao} RAO, ALPHA={alpha_reserve_rao} RAO). "
+                    "Cannot calculate ALPHA conversion rate."
+                )
+                return 0.0
+
+            # Calculate ALPHA-to-TAO conversion rate from reserve data
+            # alpha_to_tao_rate = tao_reserve / alpha_reserve (both in RAO, ratio is unitless)
+            # (How much TAO per ALPHA)
+            alpha_to_tao_rate = tao_reserve_rao / alpha_reserve_rao
+
+            if verbose:
+                bt.logging.info(
+                    f"Substrate reserves: TAO={tao_reserve_rao / 1e9:.2f} TAO ({tao_reserve_rao:.0f} RAO), "
+                    f"ALPHA={alpha_reserve_rao / 1e9:.2f} ALPHA ({alpha_reserve_rao:.0f} RAO), "
+                    f"rate={alpha_to_tao_rate:.6f} TAO/ALPHA"
+                )
+
+            # Convert TAO to ALPHA
+            # If ALPHA costs X TAO per ALPHA, then Y TAO buys Y/X ALPHA
+            if alpha_to_tao_rate > 0:
+                total_alpha_until_target = total_tao_until_target / alpha_to_tao_rate
+            else:
+                bt.logging.warning("ALPHA-to-TAO rate is zero, cannot convert")
+                return 0.0
+
             if verbose:
                 bt.logging.info(f"Projected ALPHA available until target: {total_alpha_until_target:.2f}")
             return total_alpha_until_target
@@ -752,14 +795,14 @@ class DebtBasedScoring:
         tao_amount = alpha_amount * alpha_to_tao_rate
 
         # Get TAO→USD price from metagraph
-        # This is set by MetagraphUpdater via live_price_fetcher.get_close_at_date(TradePair.TAOUSD)
+        # This is set by SubtensorOpsManager via live_price_fetcher.get_close_at_date(TradePair.TAOUSD)
         tao_to_usd_rate_raw = getattr(metagraph, 'tao_to_usd_rate', None)
 
         # Validate that we have a valid TAO/USD rate
         if tao_to_usd_rate_raw is None:
             raise ValueError(
                 "TAO/USD price not available in metagraph. "
-                "MetagraphUpdater must set metagraph.tao_to_usd_rate via live_price_fetcher."
+                "SubtensorOpsManager must set metagraph.tao_to_usd_rate via live_price_fetcher."
             )
 
         if not isinstance(tao_to_usd_rate_raw, (int, float)) or tao_to_usd_rate_raw <= 0:
