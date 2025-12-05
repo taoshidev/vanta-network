@@ -121,14 +121,15 @@ class ValiBkpUtils:
 
     @staticmethod
     def get_perf_ledgers_path(running_unit_tests=False) -> str:
-        suffix = "/tests" if running_unit_tests else ""
-        return ValiConfig.BASE_DIR + f"{suffix}/validation/perf_ledgers.pkl"
-
-    @staticmethod
-    def get_perf_ledgers_path_compressed_json(running_unit_tests=False) -> str:
-        """Get compressed JSON perf_ledgers path for backward compatibility fallback."""
+        """Get current perf_ledgers path (compressed JSON format)."""
         suffix = "/tests" if running_unit_tests else ""
         return ValiConfig.BASE_DIR + f"{suffix}/validation/perf_ledgers.json.gz"
+
+    @staticmethod
+    def get_perf_ledgers_path_pkl(running_unit_tests=False) -> str:
+        """Get .pkl path (for migration from bug that wrote .json.gz data with .pkl extension)."""
+        suffix = "/tests" if running_unit_tests else ""
+        return ValiConfig.BASE_DIR + f"{suffix}/validation/perf_ledgers.pkl"
 
     @staticmethod
     def get_perf_ledgers_path_legacy(running_unit_tests=False) -> str:
@@ -139,34 +140,60 @@ class ValiBkpUtils:
     @staticmethod
     def migrate_perf_ledgers_to_compressed(running_unit_tests=False) -> bool:
         """
-        Migrate perf_ledgers.json to perf_ledgers.json.gz and delete old file.
+        Migrate perf_ledgers from .pkl or .json to .json.gz and delete old file.
+
+        Handles three migration scenarios:
+        1. .pkl file (created by bug - contains gzip JSON with wrong extension)
+        2. .json file (legacy uncompressed format)
+        3. Already migrated (.json.gz exists) - no action needed
 
         Returns:
             bool: True if migration occurred, False otherwise
         """
-        legacy_path = ValiBkpUtils.get_perf_ledgers_path_legacy(running_unit_tests)
         new_path = ValiBkpUtils.get_perf_ledgers_path(running_unit_tests)
 
-        # Skip if already migrated or no legacy file exists
-        if not os.path.exists(legacy_path):
-            return False
+        # Priority 1: Check for .pkl file (from bug - most recent format issue)
+        pkl_path = ValiBkpUtils.get_perf_ledgers_path_pkl(running_unit_tests)
+        if os.path.exists(pkl_path):
+            try:
+                # The .pkl file contains gzip-compressed JSON (created by write_compressed_json)
+                # despite having the wrong extension, so read it as compressed JSON
+                data = ValiBkpUtils.read_compressed_json(pkl_path)
 
-        try:
-            # Read legacy uncompressed file
-            with open(legacy_path, 'r') as f:
-                data = json.load(f)
+                # Write to correct .json.gz path
+                ValiBkpUtils.write_compressed_json(new_path, data)
 
-            # Write to compressed format
-            ValiBkpUtils.write_compressed_json(new_path, data)
+                # Delete the misnamed .pkl file after successful migration
+                os.remove(pkl_path)
+                bt.logging.info(f"Migrated perf_ledgers from {pkl_path} to {new_path}")
+                return True
 
-            # Delete legacy file after successful migration
-            os.remove(legacy_path)
-            bt.logging.info(f"Migrated perf_ledgers from {legacy_path} to {new_path}")
-            return True
+            except Exception as e:
+                bt.logging.error(f"Failed to migrate perf_ledgers from .pkl: {e}")
+                return False
 
-        except Exception as e:
-            bt.logging.error(f"Failed to migrate perf_ledgers: {e}")
-            return False
+        # Priority 2: Check for legacy .json file (original uncompressed format)
+        legacy_path = ValiBkpUtils.get_perf_ledgers_path_legacy(running_unit_tests)
+        if os.path.exists(legacy_path):
+            try:
+                # Read legacy uncompressed file
+                with open(legacy_path, 'r') as f:
+                    data = json.load(f)
+
+                # Write to compressed format
+                ValiBkpUtils.write_compressed_json(new_path, data)
+
+                # Delete legacy file after successful migration
+                os.remove(legacy_path)
+                bt.logging.info(f"Migrated perf_ledgers from {legacy_path} to {new_path}")
+                return True
+
+            except Exception as e:
+                bt.logging.error(f"Failed to migrate perf_ledgers from .json: {e}")
+                return False
+
+        # No migration needed - already using .json.gz or no file exists
+        return False
 
     @staticmethod
     def get_plagiarism_dir(running_unit_tests=False) -> str:

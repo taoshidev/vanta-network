@@ -244,19 +244,17 @@ class PerfLedgerManager(CacheController):
     def get_perf_ledgers(self, portfolio_only=True, from_disk=False) -> dict[str, dict[str, PerfLedger]] | dict[str, PerfLedger]:
         ret = {}
         if from_disk:
-            compressed_json_path = ValiBkpUtils.get_perf_ledgers_path_compressed_json(self.running_unit_tests)
-            legacy_path = ValiBkpUtils.get_perf_ledgers_path_legacy(self.running_unit_tests)
+            compressed_json_path = ValiBkpUtils.get_perf_ledgers_path(self.running_unit_tests)
 
             # Try compressed JSON first (primary format)
             if os.path.exists(compressed_json_path):
                 data = ValiBkpUtils.read_compressed_json(compressed_json_path)
-            # Fall back to legacy uncompressed file
-            elif os.path.exists(legacy_path):
-                with open(legacy_path, 'r') as file:
-                    data = json.load(file)
-                # Migrate to compressed format after successful read
-                ValiBkpUtils.migrate_perf_ledgers_to_compressed(self.running_unit_tests)
+            # Fall back to migration from .pkl or .json
+            elif ValiBkpUtils.migrate_perf_ledgers_to_compressed(self.running_unit_tests):
+                # Migration succeeded, now read the newly created .json.gz file
+                data = ValiBkpUtils.read_compressed_json(compressed_json_path)
             else:
+                # No file exists to migrate
                 return ret
 
             for hk, possible_bundles in data.items():
@@ -347,15 +345,20 @@ class PerfLedgerManager(CacheController):
         assert self.running_unit_tests, 'this is only valid for unit tests'
         self.hotkey_to_perf_bundle = {}
 
-        # Clear compressed JSON file (new format)
-        json_path = ValiBkpUtils.get_perf_ledgers_path_compressed_json(self.running_unit_tests)
-        if os.path.exists(json_path):
-            ValiBkpUtils.write_compressed_json(json_path, {})
+        # Clear compressed JSON file (current format)
+        json_gz_path = ValiBkpUtils.get_perf_ledgers_path(self.running_unit_tests)
+        if os.path.exists(json_gz_path):
+            ValiBkpUtils.write_compressed_json(json_gz_path, {})
 
-        # Also clear legacy pickle file if it exists
-        pkl_path = ValiBkpUtils.get_perf_ledgers_path(self.running_unit_tests)
+        # Clear .pkl file if it exists (from bug)
+        pkl_path = ValiBkpUtils.get_perf_ledgers_path_pkl(self.running_unit_tests)
         if os.path.exists(pkl_path):
             os.remove(pkl_path)
+
+        # Clear legacy uncompressed JSON file if it exists
+        legacy_json_path = ValiBkpUtils.get_perf_ledgers_path_legacy(self.running_unit_tests)
+        if os.path.exists(legacy_json_path):
+            os.remove(legacy_json_path)
 
         for k in list(self.hotkey_to_perf_bundle.keys()):
             del self.hotkey_to_perf_bundle[k]
@@ -369,21 +372,19 @@ class PerfLedgerManager(CacheController):
 
     @staticmethod
     def clear_perf_ledgers_from_disk_autosync(hotkeys:list):
-        compressed_json_path = ValiBkpUtils.get_perf_ledgers_path_compressed_json()
-        legacy_path = ValiBkpUtils.get_perf_ledgers_path_legacy()
+        compressed_json_path = ValiBkpUtils.get_perf_ledgers_path(running_unit_tests=False)
 
         filtered_data = {}
 
         # Try compressed JSON first (primary format)
         if os.path.exists(compressed_json_path):
             existing_data = ValiBkpUtils.read_compressed_json(compressed_json_path)
-        # Fall back to legacy uncompressed file and migrate
-        elif os.path.exists(legacy_path):
-            with open(legacy_path, 'r') as file:
-                existing_data = json.load(file)
-            # Migration will handle deleting the legacy file
-            ValiBkpUtils.migrate_perf_ledgers_to_compressed(running_unit_tests=False)
+        # Fall back to migration from .pkl or .json
+        elif ValiBkpUtils.migrate_perf_ledgers_to_compressed(running_unit_tests=False):
+            # Migration succeeded, now read the newly created .json.gz file
+            existing_data = ValiBkpUtils.read_compressed_json(compressed_json_path)
         else:
+            # No file exists to migrate
             existing_data = {}
 
         for hk, bundles in existing_data.items():
@@ -1883,7 +1884,7 @@ class PerfLedgerManager(CacheController):
             self.debug_pl_plot(testing_one_hotkey)
 
     def save_perf_ledgers_to_disk(self, perf_ledgers: dict[str, dict[str, PerfLedger]] | dict[str, dict[str, dict]], raw_json=False):
-        file_path = ValiBkpUtils.get_perf_ledgers_path_compressed_json(self.running_unit_tests)
+        file_path = ValiBkpUtils.get_perf_ledgers_path(self.running_unit_tests)
 
         # Convert PerfLedger objects to dictionaries for JSON serialization
         serializable_ledgers = {}
