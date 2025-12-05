@@ -94,6 +94,7 @@ import threading
 import signal
 import atexit
 import sys
+import time
 import bittensor as bt
 from typing import Dict, Optional, Any
 from dataclasses import dataclass
@@ -923,9 +924,12 @@ class ServerOrchestrator:
         bt.logging.info(f"Starting individual server: {server_name}")
         self._start_server(server_name, secrets=None, mode=self._mode, **kwargs)
 
-    def start_server_daemons(self, server_names: list = None) -> None:
+    def start_server_daemons(self, server_names: list = None, warmup_caches: bool = True) -> None:
         """
         Start daemons for servers that defer daemon initialization.
+
+        Optionally warms up client local caches after daemons start,
+        ensuring caches are ready before validator accepts orders.
 
         This is useful for servers that spawn with start_daemon=False
         and need their daemons started after all servers are initialized.
@@ -934,6 +938,9 @@ class ServerOrchestrator:
             server_names: List of server names to start daemons for.
                          If None, automatically starts daemons for all servers
                          with 'start_daemon': False in their spawn_kwargs.
+            warmup_caches: If True, warm up caches after daemon startup (default: True).
+                          This eliminates race conditions where orders arrive before
+                          caches are populated.
 
         Example:
             # Explicit list (recommended for clarity)
@@ -943,7 +950,7 @@ class ServerOrchestrator:
                 'challenge_period',
                 'perf_ledger',
                 'debt_ledger'
-            ])
+            ])  # Cache warmup happens automatically
 
             # Automatic detection (starts all deferred daemons)
             orchestrator.start_server_daemons()
@@ -970,6 +977,11 @@ class ServerOrchestrator:
                 bt.logging.success(f"{server_name} daemon started")
             else:
                 bt.logging.warning(f"{server_name} client has no start_daemon method")
+
+        # Warm up caches now that daemons are running
+        # This ensures caches are populated before validator starts accepting orders
+        if warmup_caches:
+            self.warmup_client_caches()
 
     def stop_all_daemons(self) -> None:
         """
@@ -1036,6 +1048,90 @@ class ServerOrchestrator:
             perform_order_corrections=perform_order_corrections
         )
         bt.logging.success("pre_run_setup completed")
+
+    def warmup_client_caches(self, timeout_per_client_s: float = 10.0) -> None:
+        """
+        Warm up local caches for clients that use background cache refresh.
+
+        This ensures all caches have valid data before the validator starts
+        accepting orders, preventing race conditions where orders arrive before
+        caches are populated (e.g., "Selected asset class: [unknown]" errors).
+
+        Automatically detects which clients need warmup by checking for:
+        1. _local_cache_refresh_period_ms attribute (not None)
+        2. populate_cache() method existence
+
+        Should be called after start_server_daemons() and before ValidatorBase.__init__()
+        since cache population may depend on daemon state being initialized.
+
+        Args:
+            timeout_per_client_s: Max time to wait for each client's cache (default: 10s)
+
+        Raises:
+            RuntimeError: If any client's cache fails to populate within timeout
+
+        Example:
+            orchestrator.start_server_daemons([...])
+            orchestrator.warmup_client_caches()  # Blocks until caches populated
+            # Now safe to start axon (ValidatorBase.__init__)
+        """
+        if not self._started:
+            bt.logging.warning("Servers not started, cannot warm up caches")
+            return
+
+        # Dynamically discover which clients have local cache enabled
+        # by checking if they were configured with local_cache_refresh_period_ms
+        cacheable_clients = []
+        for server_name in self.SERVERS.keys():
+            # Skip if server not running
+            if server_name not in self._servers:
+                continue
+
+            # Get client if already created (don't force creation)
+            if server_name not in self._clients:
+                continue
+
+            client = self._clients[server_name]
+
+            # Check if client has local cache enabled
+            if (hasattr(client, '_local_cache_refresh_period_ms') and
+                client._local_cache_refresh_period_ms is not None and
+                hasattr(client, 'populate_cache')):
+                cacheable_clients.append(server_name)
+
+        if not cacheable_clients:
+            bt.logging.debug("No clients with local cache found - skipping warmup")
+            return
+
+        bt.logging.info(f"Warming up caches for {len(cacheable_clients)} clients: {cacheable_clients}")
+
+        for server_name in cacheable_clients:
+            client = self._clients[server_name]
+
+            # Force immediate synchronous population
+            start_time = time.time()
+            try:
+                bt.logging.debug(f"Populating {server_name} cache...")
+                cache_data = client.populate_cache()
+                elapsed_ms = (time.time() - start_time) * 1000
+
+                # Update the client's cache atomically (same as daemon does)
+                with client._local_cache_lock:
+                    client._local_cache = cache_data
+
+                cache_size = len(cache_data) if isinstance(cache_data, dict) else 'N/A'
+                bt.logging.success(
+                    f"{server_name} cache warmed up in {elapsed_ms:.0f}ms ({cache_size} entries)"
+                )
+
+            except Exception as e:
+                bt.logging.error(f"Failed to warm up {server_name} cache: {e}")
+                raise RuntimeError(
+                    f"Cache warmup failed for {server_name}. "
+                    f"Cannot safely start validator without populated caches."
+                ) from e
+
+        bt.logging.success(f"All {len(cacheable_clients)} client caches warmed up and ready")
 
 
     def start_validator_servers(

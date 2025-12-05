@@ -195,6 +195,7 @@ class Validator(ValidatorBase):
         orchestrator.call_pre_run_setup(perform_order_corrections=True)
 
         # Now start server daemons and run pre-run setup (safe now that metagraph is populated)
+        # Cache warmup happens automatically inside start_server_daemons() to eliminate race conditions
         orchestrator.start_server_daemons([
             'perf_ledger',
             'challenge_period',
@@ -208,7 +209,7 @@ class Validator(ValidatorBase):
             'miner_statistics',
             'weight_calculator'
         ])
-        bt.logging.success("[INIT] Server daemons started and pre-run setup completed")
+        bt.logging.success("[INIT] Server daemons started, caches warmed, and pre-run setup completed")
         # ============================================================================
 
         # Create PositionSyncer (not a server, runs in main process)
