@@ -1,34 +1,28 @@
 # developer: trdougherty
 
 from dataclasses import dataclass
-from enum import Enum, auto
 import math
 from typing import List, Tuple, Callable
-from vali_objects.position import Position
+
+from vali_objects.enums.misc import PenaltyInputType
+from vali_objects.vali_dataclasses.position import Position
 import copy
 from collections import defaultdict
 
 import numpy as np
 from scipy.stats import percentileofscore
 
-from vali_objects.utils.validator_contract_manager import ValidatorContractManager
+from vali_objects.contract.validator_contract_manager import ValidatorContractManager
 from vali_objects.vali_config import ValiConfig
-from vali_objects.vali_dataclasses.perf_ledger import PerfLedger, TP_ID_PORTFOLIO
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger, TP_ID_PORTFOLIO
 from time_util.time_util import TimeUtil
-from vali_objects.utils.position_filtering import PositionFiltering
-from vali_objects.utils.ledger_utils import LedgerUtils
+from vali_objects.position_management.position_utils import PositionFiltering
+from vali_objects.vali_dataclasses.ledger.ledger_utils import LedgerUtils
 from vali_objects.utils.metrics import Metrics
-from vali_objects.utils.position_penalties import PositionPenalties
+from vali_objects.position_management.position_utils import PositionPenalties
 from vali_objects.utils.asset_segmentation import AssetSegmentation
 from vali_objects.vali_config import TradePairCategory
 import bittensor as bt
-
-
-class PenaltyInputType(Enum):
-    LEDGER = auto()
-    POSITIONS = auto()
-    PSEUDO_POSITIONS = auto()
-    COLLATERAL = auto()
 
 
 @dataclass
@@ -93,15 +87,16 @@ class Scoring:
             metrics=None,
             all_miner_account_sizes: dict[str, float]=None
     ) -> List[Tuple[str, float]]:
+        bt.logging.info(f"compute_results_checkpoint called with {len(ledger_dict)} miners")
+
         if len(ledger_dict) == 0:
             bt.logging.debug("No results to compute, returning empty list")
             return []
 
         if len(ledger_dict) == 1:
             miner = list(ledger_dict.keys())[0]
-            if verbose:
-                bt.logging.info(
-                    f"compute_results_checkpoint - Only one miner: {miner}, returning 1.0 for the solo miner weight")
+            bt.logging.info(
+                f"compute_results_checkpoint - Only one miner: {miner}, returning 1.0 for the solo miner weight")
             return [(miner, 1.0)]
 
         if evaluation_time_ms is None:
@@ -130,16 +125,20 @@ class Scoring:
             weighting=weighting,
             all_miner_account_sizes=all_miner_account_sizes
         )
+        bt.logging.info(f"asset_softmaxed_scores has {len(asset_softmaxed_scores)} asset classes")
 
         # Now combine the percentile scores using asset class emission weights
         asset_aggregated_scores = Scoring.asset_class_score_aggregation(asset_softmaxed_scores)
+        bt.logging.info(f"asset_aggregated_scores has {len(asset_aggregated_scores)} miners")
 
         # Force good performance of all error metrics
         combined_weighed = asset_aggregated_scores + full_penalty_miner_scores
+        bt.logging.info(f"combined_weighed has {len(combined_weighed)} entries (aggregated: {len(asset_aggregated_scores)}, penalties: {len(full_penalty_miner_scores)})")
         combined_scores = dict(combined_weighed)
 
         # Normalize the scores
         normalized_scores = Scoring.normalize_scores(combined_scores)
+        bt.logging.info(f"normalized_scores has {len(normalized_scores)} miners, returning results")
         return sorted(normalized_scores.items(), key=lambda x: x[1], reverse=True)
 
     @staticmethod
@@ -156,8 +155,9 @@ class Scoring:
         asset_competitiveness: dictionary with asset classes as keys and their competitiveness as values.
         asset_miner_softmaxed_scores: A dictionary with softmax scores for each miner within each asset class
         """
+        bt.logging.info(f"score_miner_asset_classes called with {len(ledger_dict)} miners")
         if len(ledger_dict) <= 1:
-            bt.logging.debug("No asset class results to compute, returning empty dicts")
+            bt.logging.info("score_miner_asset_classes: <= 1 miner, returning empty dicts (no competition)")
             return {}, {}
 
         if evaluation_time_ms is None:
@@ -253,6 +253,7 @@ class Scoring:
 
                     # Check if the miner has full penalty - if not include them in the scoring competition
                     if miner in full_penalty_miners:
+                        #bt.logging.info(f"Skipping {miner} in {asset_class.value}/{config_name} (full penalty)")
                         continue
 
                     score = config['function'](
@@ -292,6 +293,7 @@ class Scoring:
             for config_name, config in asset_scores["metrics"].items():
 
                 percentile_scores = Scoring.miner_scores_percentiles(config["scores"])
+
                 for miner, percentile_rank in percentile_scores:
                     if miner not in combined_scores:
                         combined_scores[miner] = 0

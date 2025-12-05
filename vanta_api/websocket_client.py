@@ -17,7 +17,7 @@ import requests
 from typing import Callable, List, Optional, Dict, Any
 from datetime import datetime
 
-from vali_objects.position import Position
+from vali_objects.vali_dataclasses.position import Position
 from vali_objects.utils.vali_bkp_utils import CustomEncoder
 from time_util.time_util import TimeUtil
 

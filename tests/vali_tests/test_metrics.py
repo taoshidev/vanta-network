@@ -9,7 +9,7 @@ import numpy as np
 from tests.vali_tests.base_objects.test_base import TestBase
 from tests.shared_objects.test_utilities import create_daily_checkpoints_with_pnl
 from vali_objects.utils.metrics import Metrics
-from vali_objects.vali_dataclasses.perf_ledger import PerfLedger, PerfCheckpoint
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger, PerfCheckpoint
 from vali_objects.vali_config import ValiConfig
 
 
@@ -390,8 +390,6 @@ class TestMetrics(TestBase):
                 last_update_ms=current_time_ms,
                 prev_portfolio_ret=1.0,
                 accum_ms=100,  # Partial accumulation - won't count as complete day
-                pnl_gain=10,
-                pnl_loss=0,
                 gain=0.01,
                 loss=0.0,
                 mdd=0.95

@@ -11,69 +11,95 @@ This file consolidates all edge case, stress test, validation, and error handlin
 """
 
 import unittest
-from unittest.mock import patch, Mock, MagicMock
-import math
-from decimal import Decimal
+from unittest.mock import Mock
 
-from shared_objects.mock_metagraph import MockMetagraph
+from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
-from time_util.time_util import TimeUtil, MS_IN_24_HOURS, MS_IN_8_HOURS
+from time_util.time_util import TimeUtil, MS_IN_24_HOURS
 from vali_objects.enums.order_type_enum import OrderType
-from vali_objects.position import Position
-from vali_objects.utils.elimination_manager import EliminationManager
-from vali_objects.utils.live_price_fetcher import LivePriceFetcher
-from vali_objects.utils.position_manager import PositionManager
-from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
+from vali_objects.vali_dataclasses.position import Position
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair
 from vali_objects.vali_dataclasses.order import Order
-from vali_objects.vali_dataclasses.perf_ledger import (
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import (
     PerfLedger,
-    PerfLedgerManager,
     PerfCheckpoint,
-    TP_ID_PORTFOLIO,
     ParallelizationMode,
-    TradePairReturnStatus,
 )
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_manager import PerfLedgerManager
+from vali_objects.enums.misc import TradePairReturnStatus
 
 
 class TestPerfLedgerEdgeCasesAndValidation(TestBase):
-    """Tests for edge cases, validation, and error handling in performance ledger."""
+    """
+    Tests for edge cases, validation, and error handling using ServerOrchestrator.
+
+    Servers start once (via singleton orchestrator) and are shared across:
+    - All test methods in this class
+    - All test classes that use ServerOrchestrator
+
+    This eliminates redundant server spawning and dramatically reduces test startup time.
+    Per-test isolation is achieved by clearing data state (not restarting servers).
+    """
+
+    DEFAULT_TEST_HOTKEY = "test_miner_edge"
+    DEFAULT_ACCOUNT_SIZE = 100_000
+
+    # Class-level references (set in setUpClass via ServerOrchestrator)
+    orchestrator = None
+    live_price_fetcher_client = None
+    metagraph_client = None
+    position_client = None
+    perf_ledger_client = None
+    elimination_client = None
+
+    @classmethod
+    def setUpClass(cls):
+        """One-time setup: Start all servers using ServerOrchestrator (shared across all test classes)."""
+        # Get the singleton orchestrator and start all required servers
+        cls.orchestrator = ServerOrchestrator.get_instance()
+
+        # Start all servers in TESTING mode (idempotent - safe if already started by another test class)
+        secrets = ValiUtils.get_secrets(running_unit_tests=True)
+        cls.orchestrator.start_all_servers(
+            mode=ServerMode.TESTING,
+            secrets=secrets
+        )
+
+        # Get clients from orchestrator (servers guaranteed ready, no connection delays)
+        cls.live_price_fetcher_client = cls.orchestrator.get_client('live_price_fetcher')
+        cls.metagraph_client = cls.orchestrator.get_client('metagraph')
+        cls.perf_ledger_client = cls.orchestrator.get_client('perf_ledger')
+        cls.elimination_client = cls.orchestrator.get_client('elimination')
+        cls.position_client = cls.orchestrator.get_client('position_manager')
+
+    @classmethod
+    def tearDownClass(cls):
+        """
+        One-time teardown: No action needed.
+
+        Note: Servers and clients are managed by ServerOrchestrator singleton and shared
+        across all test classes. They will be shut down automatically at process exit.
+        """
+        pass
 
     def setUp(self):
-        super().setUp()
-        # Clear ALL test miner positions BEFORE creating PositionManager
-        ValiBkpUtils.clear_directory(
-            ValiBkpUtils.get_miner_dir(running_unit_tests=True)
-        )
+        """Per-test setup: Reset data state (fast - no server restarts)."""
+        # Clear all data for test isolation (both memory and disk)
+        self.orchestrator.clear_all_test_data()
 
-        secrets = ValiUtils.get_secrets(running_unit_tests=True)
-        self.live_price_fetcher = LivePriceFetcher(secrets=secrets, disable_ws=True)
-        self.test_hotkey = "test_miner_edge"
+        self.test_hotkey = self.DEFAULT_TEST_HOTKEY
         self.now_ms = TimeUtil.now_in_millis()
-        self.DEFAULT_ACCOUNT_SIZE = 100_000
-        
-        self.mmg = MockMetagraph(hotkeys=[self.test_hotkey])
-        self.elimination_manager = EliminationManager(self.mmg, None, None, running_unit_tests=True)
-        self.position_manager = PositionManager(
-            metagraph=self.mmg,
-            running_unit_tests=True,
-            elimination_manager=self.elimination_manager,
-        )
-        self.position_manager.clear_all_miner_positions()
+        self.metagraph_client.set_hotkeys([self.test_hotkey])
 
-    @patch('vali_objects.vali_dataclasses.perf_ledger.LivePriceFetcher')
-    def test_empty_position_list(self, mock_lpf):
+    def tearDown(self):
+        """Per-test teardown: Clear data for next test."""
+        self.orchestrator.clear_all_test_data()
+
+    def test_empty_position_list(self):
         """Test behavior with no positions."""
-        mock_pds = Mock()
-        mock_pds.unified_candle_fetcher.return_value = []
-        mock_pds.tp_to_mfs = {}
-        mock_lpf.return_value.polygon_data_service = mock_pds
-        
         plm = PerfLedgerManager(
-            metagraph=self.mmg,
             running_unit_tests=True,
-            position_manager=self.position_manager,
             parallel_mode=ParallelizationMode.SERIAL,
         )
         
@@ -84,18 +110,10 @@ class TestPerfLedgerEdgeCasesAndValidation(TestBase):
         bundles = plm.get_perf_ledgers(portfolio_only=False)
         self.assertEqual(len(bundles), 0, "Should have no bundles with no positions")
 
-    @patch('vali_objects.vali_dataclasses.perf_ledger.LivePriceFetcher')
-    def test_simultaneous_positions(self, mock_lpf):
+    def test_simultaneous_positions(self):
         """Test handling of positions that open and close at the same time."""
-        mock_pds = Mock()
-        mock_pds.unified_candle_fetcher.return_value = []
-        mock_pds.tp_to_mfs = {}
-        mock_lpf.return_value.polygon_data_service = mock_pds
-        
         plm = PerfLedgerManager(
-            metagraph=self.mmg,
             running_unit_tests=True,
-            position_manager=self.position_manager,
             parallel_mode=ParallelizationMode.SERIAL,
         )
         
@@ -130,8 +148,8 @@ class TestPerfLedgerEdgeCasesAndValidation(TestBase):
             position_type=OrderType.FLAT,
             is_closed_position=True,
         )
-        position.rebuild_position_with_updated_orders(self.live_price_fetcher)
-        self.position_manager.save_miner_position(position)
+        position.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
+        self.position_client.save_miner_position(position)
         
         # Should handle gracefully
         plm.update(t_ms=base_time + MS_IN_24_HOURS)
@@ -139,18 +157,10 @@ class TestPerfLedgerEdgeCasesAndValidation(TestBase):
         bundles = plm.get_perf_ledgers(portfolio_only=False)
         self.assertIn(self.test_hotkey, bundles)
 
-    @patch('vali_objects.vali_dataclasses.perf_ledger.LivePriceFetcher')
-    def test_high_volume_positions(self, mock_lpf):
+    def test_high_volume_positions(self):
         """Test with a large number of positions (stress test)."""
-        mock_pds = Mock()
-        mock_pds.unified_candle_fetcher.return_value = []
-        mock_pds.tp_to_mfs = {}
-        mock_lpf.return_value.polygon_data_service = mock_pds
-        
         plm = PerfLedgerManager(
-            metagraph=self.mmg,
             running_unit_tests=True,
-            position_manager=self.position_manager,
             parallel_mode=ParallelizationMode.SERIAL,
         )
         
@@ -169,7 +179,7 @@ class TestPerfLedgerEdgeCasesAndValidation(TestBase):
                 50000.0 + i * 100 + 500,  # Small gains
                 OrderType.LONG
             )
-            self.position_manager.save_miner_position(position)
+            self.position_client.save_miner_position(position)
         
         # Update to a time past all positions
         update_time = base_time + (45 * MS_IN_24_HOURS)
@@ -185,18 +195,10 @@ class TestPerfLedgerEdgeCasesAndValidation(TestBase):
         # Should have many checkpoints (at least 10)
         self.assertGreater(len(btc_ledger.cps), 10, "Should have many checkpoints with high volume")
 
-    @patch('vali_objects.vali_dataclasses.perf_ledger.LivePriceFetcher')
-    def test_extreme_price_movements(self, mock_lpf):
+    def test_extreme_price_movements(self):
         """Test handling of extreme price movements and liquidations."""
-        mock_pds = Mock()
-        mock_pds.unified_candle_fetcher.return_value = []
-        mock_pds.tp_to_mfs = {}
-        mock_lpf.return_value.polygon_data_service = mock_pds
-        
         plm = PerfLedgerManager(
-            metagraph=self.mmg,
             running_unit_tests=True,
-            position_manager=self.position_manager,
             parallel_mode=ParallelizationMode.SERIAL,
         )
         
@@ -216,7 +218,7 @@ class TestPerfLedgerEdgeCasesAndValidation(TestBase):
                 base_time + (i * 2 * MS_IN_24_HOURS) + MS_IN_24_HOURS,
                 open_price, close_price, order_type
             )
-            self.position_manager.save_miner_position(position)
+            self.position_client.save_miner_position(position)
         
         # Update to a time past all positions
         update_time = base_time + (10 * MS_IN_24_HOURS)
@@ -237,23 +239,10 @@ class TestPerfLedgerEdgeCasesAndValidation(TestBase):
             self.assertIsInstance(btc_ledger.cps, list)
             self.assertGreaterEqual(len(btc_ledger.cps), 0)
 
-    @patch('vali_objects.vali_dataclasses.perf_ledger.LivePriceFetcher')
-    def test_bypass_validation_conditions(self, mock_lpf):
+    def test_bypass_validation_conditions(self):
         """Test all conditions that control bypass logic."""
-        mock_pds = Mock()
-        mock_pds.unified_candle_fetcher.return_value = []
-        mock_pds.tp_to_mfs = {}
-        mock_lpf.return_value.polygon_data_service = mock_pds
-        
-        mmg = MockMetagraph(hotkeys=["test"])
         plm = PerfLedgerManager(
-            metagraph=mmg,
             running_unit_tests=True,
-            position_manager=PositionManager(
-                metagraph=mmg,
-                running_unit_tests=True,
-                elimination_manager=EliminationManager(mmg, None, None, running_unit_tests=True),
-            ),
             parallel_mode=ParallelizationMode.SERIAL,
         )
         
@@ -293,18 +282,10 @@ class TestPerfLedgerEdgeCasesAndValidation(TestBase):
             else:
                 self.assertEqual(ret, 1.0, f"Should not bypass for {any_open}, {pos_closed}, {tp_id}, {tp_id_rtp_data}")
 
-    @patch('vali_objects.vali_dataclasses.perf_ledger.LivePriceFetcher')
-    def test_checkpoint_boundary_edge_cases(self, mock_lpf):
+    def test_checkpoint_boundary_edge_cases(self):
         """Test positions that span checkpoint boundaries in various ways."""
-        mock_pds = Mock()
-        mock_pds.unified_candle_fetcher.return_value = []
-        mock_pds.tp_to_mfs = {}
-        mock_lpf.return_value.polygon_data_service = mock_pds
-        
         plm = PerfLedgerManager(
-            metagraph=self.mmg,
             running_unit_tests=True,
-            position_manager=self.position_manager,
             parallel_mode=ParallelizationMode.SERIAL,
         )
         
@@ -331,7 +312,7 @@ class TestPerfLedgerEdgeCasesAndValidation(TestBase):
                 open_ms, close_ms,
                 50000.0, 51000.0, OrderType.LONG
             )
-            self.position_manager.save_miner_position(position)
+            self.position_client.save_miner_position(position)
         
         # Update past all positions - need to ensure we update past the longest position
         # Last position (within_checkpoint) ends at base_time + MS_IN_24_HOURS + (4 * checkpoint_duration) + 200000
@@ -352,72 +333,64 @@ class TestPerfLedgerEdgeCasesAndValidation(TestBase):
             self.assertEqual(cp.last_update_ms % checkpoint_duration, 0,
                            f"Checkpoint at {cp.last_update_ms} not aligned")
 
-    @patch('vali_objects.vali_dataclasses.perf_ledger.LivePriceFetcher')
-    def test_negative_returns_and_mdd(self, mock_lpf):
+    def test_negative_returns_and_mdd(self):
         """Test maximum drawdown calculation with negative returns."""
-        from collections import namedtuple
-        Candle = namedtuple('Candle', ['timestamp', 'close'])
-        
-        mock_pds = Mock()
-        
-        # Mock candle data to provide prices for the positions
-        def mock_unified_candle_fetcher(*args, **kwargs):
-            # Extract parameters
-            if args:
-                trade_pair = args[0]
-                start_ms = args[1] if len(args) > 1 else kwargs.get('start_timestamp_ms')
-                end_ms = args[2] if len(args) > 2 else kwargs.get('end_timestamp_ms')
-            else:
-                trade_pair = kwargs.get('trade_pair')
-                start_ms = kwargs.get('start_timestamp_ms')
-                end_ms = kwargs.get('end_timestamp_ms')
-            
-            # Generate candles with prices matching our position prices
-            candles = []
-            base_time = self.now_ms - (20 * MS_IN_24_HOURS)
-            
-            # Define prices at key timestamps to match position open/close prices
-            price_schedule = [
-                (base_time, 50000.0),  # Start of loss1
-                (base_time + MS_IN_24_HOURS, 49000.0),  # End of loss1, start of loss2
-                (base_time + 2 * MS_IN_24_HOURS, 47000.0),  # End of loss2, start of loss3
-                (base_time + 3 * MS_IN_24_HOURS, 45000.0),  # End of loss3, start of recovery
-                (base_time + 4 * MS_IN_24_HOURS, 46000.0),  # End of recovery
-                (base_time + 10 * MS_IN_24_HOURS, 46000.0),  # Final update time
-            ]
-            
-            # Generate minute candles between start_ms and end_ms
-            for i in range(len(price_schedule) - 1):
-                t1, p1 = price_schedule[i]
-                t2, p2 = price_schedule[i + 1]
-                
-                if t1 <= end_ms and t2 >= start_ms:
-                    # Generate candles for this period
-                    current_ms = max(t1, start_ms)
-                    while current_ms <= min(t2, end_ms):
-                        # Linear interpolation between prices
-                        progress = (current_ms - t1) / (t2 - t1) if t2 > t1 else 0
-                        price = p1 + (p2 - p1) * progress
-                        candles.append(Candle(timestamp=current_ms, close=price))
-                        current_ms += 60000  # 1 minute
-            
-            return candles
-        
-        mock_pds.unified_candle_fetcher.side_effect = mock_unified_candle_fetcher
-        mock_pds.tp_to_mfs = {}
-        mock_lpf.return_value.polygon_data_service = mock_pds
-        
+        from vali_objects.vali_dataclasses.price_source import PriceSource
+
+        base_time = self.now_ms - (20 * MS_IN_24_HOURS)
+
+        # Define prices at key timestamps to match position open/close prices
+        price_schedule = [
+            (base_time, 50000.0),  # Start of loss1
+            (base_time + MS_IN_24_HOURS, 49000.0),  # End of loss1, start of loss2
+            (base_time + 2 * MS_IN_24_HOURS, 47000.0),  # End of loss2, start of loss3
+            (base_time + 3 * MS_IN_24_HOURS, 45000.0),  # End of loss3, start of recovery
+            (base_time + 4 * MS_IN_24_HOURS, 46000.0),  # End of recovery
+            (base_time + 10 * MS_IN_24_HOURS, 46000.0),  # Final update time
+        ]
+
+        # Generate PriceSource candles for the entire time window
+        candles = []
+        for i in range(len(price_schedule) - 1):
+            t1, p1 = price_schedule[i]
+            t2, p2 = price_schedule[i + 1]
+
+            # Generate minute candles for this period
+            current_ms = t1
+            while current_ms <= t2:
+                # Linear interpolation between prices
+                progress = (current_ms - t1) / (t2 - t1) if t2 > t1 else 0
+                price = p1 + (p2 - p1) * progress
+                candles.append(PriceSource(
+                    source='test',
+                    timespan_ms=60000,  # 1 minute
+                    start_ms=current_ms,
+                    close=price,
+                    open=price,  # Simplified: same as close for this test
+                    high=price,
+                    low=price,
+                    vwap=price
+                ))
+                current_ms += 60000  # 1 minute
+
+        # Set test candle data via RPC (cleared automatically by orchestrator.clear_all_test_data() in tearDown())
+        start_ms = base_time
+        end_ms = base_time + (10 * MS_IN_24_HOURS)
+        self.live_price_fetcher_client.set_test_candle_data(
+            TradePair.BTCUSD,
+            start_ms,
+            end_ms,
+            candles
+        )
+
         plm = PerfLedgerManager(
-            metagraph=self.mmg,
             running_unit_tests=True,
-            position_manager=self.position_manager,
             parallel_mode=ParallelizationMode.SERIAL,
-            live_price_fetcher=mock_lpf.return_value,
             is_backtesting=True,  # Ensure we process historical data
         )
-        
+
         base_time = self.now_ms - (20 * MS_IN_24_HOURS)
-        
+
         # Create losing positions to test MDD
         losses = [
             ("loss1", 50000.0, 49000.0),  # -2%
@@ -425,36 +398,36 @@ class TestPerfLedgerEdgeCasesAndValidation(TestBase):
             ("loss3", 47000.0, 45000.0),  # -4.3%
             ("recovery", 45000.0, 46000.0),  # +2.2%
         ]
-        
+
         for i, (name, open_price, close_price) in enumerate(losses):
             # Add small offset to prevent timestamp collisions between positions
             open_time = base_time + (i * MS_IN_24_HOURS) + (i * 1000)  # Add 1 second offset per position
             close_time = base_time + ((i + 1) * MS_IN_24_HOURS) - 1000  # Close 1 second before next position starts
-            
+
             position = self._create_position(
                 name, TradePair.BTCUSD,
                 open_time,
                 close_time,
                 open_price, close_price, OrderType.LONG
             )
-            self.position_manager.save_miner_position(position)
-        
+            self.position_client.save_miner_position(position)
+
         # Update incrementally to build up state properly
         current_time = base_time
         step_size = 12 * 60 * 60 * 1000  # 12 hours
         final_time = base_time + (10 * MS_IN_24_HOURS)
-        
+
         while current_time < final_time:
             next_time = min(current_time + step_size, final_time)
             plm.update(t_ms=next_time)
             current_time = next_time
-        
+
         # Check MDD
         bundles = plm.get_perf_ledgers(portfolio_only=False)
         self.assertIn(self.test_hotkey, bundles, f"Should have bundles for test miner {self.test_hotkey}")
         self.assertIn(TradePair.BTCUSD.trade_pair_id, bundles[self.test_hotkey], "Should have BTC ledger")
         btc_ledger = bundles[self.test_hotkey][TradePair.BTCUSD.trade_pair_id]
-        
+
         # MDD should be less than 1.0 (indicating drawdown)
         # Find a checkpoint with actual updates (n_updates > 0)
         checkpoint_with_data = None
@@ -462,25 +435,17 @@ class TestPerfLedgerEdgeCasesAndValidation(TestBase):
             if cp.n_updates > 0:
                 checkpoint_with_data = cp
                 break
-        
+
         if checkpoint_with_data:
-            self.assertLess(checkpoint_with_data.mdd, 1.0, 
+            self.assertLess(checkpoint_with_data.mdd, 1.0,
                           f"Should have drawdown with losing positions. MDD={checkpoint_with_data.mdd}")
         else:
             self.fail("No checkpoint with updates found")
 
-    @patch('vali_objects.vali_dataclasses.perf_ledger.LivePriceFetcher')
-    def test_fee_edge_cases(self, mock_lpf):
+    def test_fee_edge_cases(self):
         """Test edge cases in fee calculations."""
-        mock_pds = Mock()
-        mock_pds.unified_candle_fetcher.return_value = []
-        mock_pds.tp_to_mfs = {}
-        mock_lpf.return_value.polygon_data_service = mock_pds
-        
         plm = PerfLedgerManager(
-            metagraph=self.mmg,
             running_unit_tests=True,
-            position_manager=self.position_manager,
             parallel_mode=ParallelizationMode.SERIAL,
         )
         plm.clear_all_ledger_data()
@@ -516,8 +481,8 @@ class TestPerfLedgerEdgeCasesAndValidation(TestBase):
             position_type=OrderType.FLAT,
             is_closed_position=True,
         )
-        position.rebuild_position_with_updated_orders(self.live_price_fetcher)
-        self.position_manager.save_miner_position(position)
+        position.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
+        self.position_client.save_miner_position(position)
         
         # Update
         plm.update(t_ms=base_time + (11 * MS_IN_24_HOURS))
@@ -537,8 +502,8 @@ class TestPerfLedgerEdgeCasesAndValidation(TestBase):
                                "10x leverage for 10 days should have measurable carry fees (actual: ~0.999)")
                 break
 
-    def _create_position(self, position_id: str, trade_pair: TradePair, 
-                        open_ms: int, close_ms: int, open_price: float, 
+    def _create_position(self, position_id: str, trade_pair: TradePair,
+                        open_ms: int, close_ms: int, open_price: float,
                         close_price: float, order_type: OrderType,
                         leverage: float = 1.0) -> Position:
         """Helper to create a position."""
@@ -570,7 +535,7 @@ class TestPerfLedgerEdgeCasesAndValidation(TestBase):
             position_type=OrderType.FLAT,
             is_closed_position=True,
         )
-        position.rebuild_position_with_updated_orders(self.live_price_fetcher)
+        position.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
         return position
 
 

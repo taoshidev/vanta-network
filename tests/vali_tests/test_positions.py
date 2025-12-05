@@ -3,12 +3,12 @@ import datetime
 import json
 from copy import deepcopy
 
-from tests.shared_objects.mock_classes import MockLivePriceFetcher
-from shared_objects.mock_metagraph import MockMetagraph
+from data_generator.polygon_data_service import PolygonDataService
+from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
 from time_util.time_util import MS_IN_8_HOURS, MS_IN_24_HOURS
 from vali_objects.enums.order_type_enum import OrderType
-from vali_objects.position import (
+from vali_objects.vali_dataclasses.position import (
     CRYPTO_CARRY_FEE_PER_INTERVAL,
     FEE_V6_TIME_MS,
     FOREX_CARRY_FEE_PER_INTERVAL,
@@ -16,53 +16,108 @@ from vali_objects.position import (
     Position,
 )
 from vali_objects.utils import leverage_utils
-from vali_objects.utils.elimination_manager import EliminationManager
 from vali_objects.utils.leverage_utils import (
     LEVERAGE_BOUNDS_V2_START_TIME_MS,
     get_position_leverage_bounds,
 )
-from vali_objects.utils.position_manager import PositionManager
-from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
+from vali_objects.position_management.position_manager_client import PositionManagerClient
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.vali_dataclasses.order import (
-    OrderSource,
     Order,
 )
-from vali_objects.vali_dataclasses.price_source import PriceSource
+from vali_objects.enums.order_source_enum import OrderSource
 
 
 class TestPositions(TestBase):
+    """
+    Position tests using ServerOrchestrator.
+
+    Servers start once (via singleton orchestrator) and are shared across:
+    - All test methods in this class
+    - All test classes that use ServerOrchestrator
+
+    This eliminates redundant server spawning and dramatically reduces test startup time.
+    Per-test isolation is achieved by clearing data state (not restarting servers).
+    """
+
+    # Class-level references (set in setUpClass via ServerOrchestrator)
+    orchestrator = None
+    live_price_fetcher_client = None
+    metagraph_client = None
+    position_client = None
+    DEFAULT_MINER_HOTKEY = "test_miner"
+    DEFAULT_POSITION_UUID = "test_position"
+    DEFAULT_OPEN_MS = 1000
+    DEFAULT_TRADE_PAIR = TradePair.BTCUSD
+    DEFAULT_ACCOUNT_SIZE = 100_000
+    default_position = Position(
+        miner_hotkey=DEFAULT_MINER_HOTKEY,
+        position_uuid=DEFAULT_POSITION_UUID,
+        open_ms=DEFAULT_OPEN_MS,
+        trade_pair=DEFAULT_TRADE_PAIR,
+        account_size=DEFAULT_ACCOUNT_SIZE,
+    )
+
+    @classmethod
+    def setUpClass(cls):
+        """One-time setup: Start all servers using ServerOrchestrator (shared across all test classes)."""
+        # Get the singleton orchestrator and start all required servers
+        cls.orchestrator = ServerOrchestrator.get_instance()
+
+        # Start all servers in TESTING mode (idempotent - safe if already started by another test class)
+        secrets = ValiUtils.get_secrets(running_unit_tests=True)
+        cls.orchestrator.start_all_servers(
+            mode=ServerMode.TESTING,
+            secrets=secrets
+        )
+
+        # Get clients from orchestrator (servers guaranteed ready, no connection delays)
+        cls.live_price_fetcher_client = cls.orchestrator.get_client('live_price_fetcher')
+        cls.metagraph_client = cls.orchestrator.get_client('metagraph')
+        cls.position_client = cls.orchestrator.get_client('position_manager')
+
+        # Initialize metagraph with test miner
+        cls.metagraph_client.set_hotkeys([cls.DEFAULT_MINER_HOTKEY])
+
+    @classmethod
+    def tearDownClass(cls):
+        """
+        One-time teardown: No action needed.
+
+        Note: Servers and clients are managed by ServerOrchestrator singleton and shared
+        across all test classes. They will be shut down automatically at process exit.
+        """
+        pass
 
     def setUp(self):
-        super().setUp()
+        """Per-test setup: Reset data state (fast - no server restarts)."""
+        # NOTE: Skip super().setUp() to avoid killing ports (servers already running)
 
-        # Clear ALL test miner positions BEFORE creating PositionManager
-        ValiBkpUtils.clear_directory(
-            ValiBkpUtils.get_miner_dir(running_unit_tests=True)
-        )
+        # Clear all data for test isolation (both memory and disk)
+        self.orchestrator.clear_all_test_data()
 
-        secrets = ValiUtils.get_secrets(running_unit_tests=True)
-        self.live_price_fetcher = MockLivePriceFetcher(secrets=secrets, disable_ws=True)
-        self.DEFAULT_MINER_HOTKEY = "test_miner"
-        self.DEFAULT_POSITION_UUID = "test_position"
-        self.DEFAULT_OPEN_MS = 1000
-        self.DEFAULT_TRADE_PAIR = TradePair.BTCUSD
-        self.DEFAULT_ACCOUNT_SIZE = 100_000
-        self.default_position = Position(
-            miner_hotkey=self.DEFAULT_MINER_HOTKEY,
-            position_uuid=self.DEFAULT_POSITION_UUID,
-            open_ms=self.DEFAULT_OPEN_MS,
-            trade_pair=self.DEFAULT_TRADE_PAIR,
-            account_size=self.DEFAULT_ACCOUNT_SIZE,
-        )
-        self.mock_metagraph = MockMetagraph([self.DEFAULT_MINER_HOTKEY])
-        self.elimination_manager = EliminationManager(self.mock_metagraph, None, None, running_unit_tests=True)
-        self.position_manager = PositionManager(metagraph=self.mock_metagraph, running_unit_tests=True,
-                                                elimination_manager=self.elimination_manager, secrets=secrets,
-                                                live_price_fetcher=self.live_price_fetcher)
-        self.elimination_manager.position_manager = self.position_manager
-        self.position_manager.clear_all_miner_positions()
+        # Create fresh test data for this test
+        self._create_test_data()
+
+    def tearDown(self):
+        """Per-test teardown: Clear data for next test."""
+        self.orchestrator.clear_all_test_data()
+
+    def _create_test_data(self):
+        """Helper to create fresh test data."""
+        pass
+
+    # Aliases for backward compatibility with test methods
+    @property
+    def live_price_fetcher(self):
+        """Alias for class-level live_price_fetcher_client."""
+        return self.live_price_fetcher_client
+
+    @property
+    def position_manager(self):
+        """Alias for class-level position_client (provides same interface)."""
+        return self.position_client
 
     def add_order_to_position_and_save(self, position, order):
         position.add_order(order, self.live_price_fetcher, self.position_manager.calculate_net_portfolio_leverage(self.DEFAULT_MINER_HOTKEY))
@@ -76,9 +131,9 @@ class TestPositions(TestBase):
 
     def validate_intermediate_position_state(self, in_memory_position, expected_state):
         disk_position = self._find_disk_position_from_memory_position(in_memory_position)
-        success, reason = PositionManager.positions_are_the_same(in_memory_position, expected_state)
+        success, reason = PositionManagerClient.positions_are_the_same(in_memory_position, expected_state)
         self.assertTrue(success, "In memory position is not as expected. " + reason)
-        success, reason = PositionManager.positions_are_the_same(disk_position, expected_state)
+        success, reason = PositionManagerClient.positions_are_the_same(disk_position, expected_state)
         self.assertTrue(success, "Disc position is not as expected. " + reason)
 
     def test_profit_position_returns_pre_post_slippage(self):
@@ -88,7 +143,7 @@ class TestPositions(TestBase):
 
         If we set the actual slippage to 0, these returns calculations should be the same.
         """
-        import vali_objects.position as position_file
+        import vali_objects.vali_dataclasses.position as position_file
         position_file.ALWAYS_USE_SLIPPAGE = False
 
         open_order = Order(
@@ -157,7 +212,7 @@ class TestPositions(TestBase):
 
         If we set the actual slippage to 0, these returns calculations should be the same.
         """
-        import vali_objects.position as position_file
+        import vali_objects.vali_dataclasses.position as position_file
         position_file.ALWAYS_USE_SLIPPAGE = False
 
         open_order = Order(
@@ -279,11 +334,11 @@ class TestPositions(TestBase):
         open_position.add_order(open_order, self.live_price_fetcher)
         assert open_position.current_return == 1
 
-        open_position.set_returns(90, live_price_fetcher=self.live_price_fetcher)
+        open_position.set_returns(90, price_fetcher_client=self.live_price_fetcher)
         r1 = open_position.current_return
         assert r1 != 1.0
 
-        open_position.set_returns(80, live_price_fetcher=self.live_price_fetcher)
+        open_position.set_returns(80, price_fetcher_client=self.live_price_fetcher)
         r2 = open_position.current_return
         assert r2 != 1.0
         assert r1 < r2
@@ -833,8 +888,11 @@ class TestPositions(TestBase):
         self.add_order_to_position_and_save(position, o2)
         assert len(position.orders) == 3, position.orders
         assert position.orders[2].src == OrderSource.PRICE_FILLED_ELIMINATION_FLAT
-        assert position.orders[2].price_sources == \
-               [PriceSource(source='unknown', timespan_ms=0, open=1.0, close=1.0, vwap=None, high=1.0, low=1.0, start_ms=0, websocket=False, lag_ms=0, bid=1.0, ask=1.0)]
+        self.assertGreater(position.orders[2].price_sources[0].lag_ms,
+                           1761281990000)  # The lag is high. now_ms - DEFAULT_TESTING_FALLBACK_PRICE_SOURCE.start_ms
+        position.orders[2].price_sources[0].lag_ms = PolygonDataService.DEFAULT_TESTING_FALLBACK_PRICE_SOURCE.lag_ms
+        self.assertEqual(position.orders[2].price_sources, [PolygonDataService.DEFAULT_TESTING_FALLBACK_PRICE_SOURCE])
+
         self.validate_intermediate_position_state(position, {
             'orders': [o1, o2, position.orders[2]],
             'position_type': OrderType.FLAT,
@@ -931,9 +989,9 @@ class TestPositions(TestBase):
         self.add_order_to_position_and_save(position, o2)
         assert len(position.orders) == 3, position.orders
         assert position.orders[2].src == OrderSource.PRICE_FILLED_ELIMINATION_FLAT
-        assert position.orders[2].price_sources == \
-               [PriceSource(source='unknown', timespan_ms=0, open=1.0, close=1.0, vwap=None, high=1.0, low=1.0,
-                            start_ms=0, websocket=False, lag_ms=0, bid=1.0, ask=1.0)]
+        self.assertGreater(position.orders[2].price_sources[0].lag_ms, 1761281990000) # The lag is high. now_ms - DEFAULT_TESTING_FALLBACK_PRICE_SOURCE.start_ms
+        position.orders[2].price_sources[0].lag_ms = PolygonDataService.DEFAULT_TESTING_FALLBACK_PRICE_SOURCE.lag_ms
+        self.assertEqual(position.orders[2].price_sources, [PolygonDataService.DEFAULT_TESTING_FALLBACK_PRICE_SOURCE])
 
         self.validate_intermediate_position_state(position, {
             'orders': [o1, o2, position.orders[2]],
@@ -2694,10 +2752,10 @@ class TestPositions(TestBase):
         #print(f"position json: {position_json}")
         dict_repr = position.to_dict()  # Make sure no side effects in the recreated object...
 
-        recreated_object = Position.parse_raw(position_json)  #Position(**json.loads(position_json))
+        recreated_object = Position.model_validate_json(position_json)  #Position(**json.loads(position_json))
         #print(f"recreated object str repr: {recreated_object}")
         #print("recreated object:", recreated_object)
-        self.assertTrue(PositionManager.positions_are_the_same(position, recreated_object))
+        self.assertTrue(PositionManagerClient.positions_are_the_same(position, recreated_object))
         for x in dict_repr['orders']:
             self.assertFalse('trade_pair' in x, dict_repr)
 
@@ -2737,7 +2795,10 @@ class TestPositions(TestBase):
 
     def test_deprecated_tp_position(self):
         """
-        an open position with a deprecated hotkey should be closed
+        An open position with a deprecated trade pair should be closed.
+
+        Tests that close_open_orders_for_suspended_trade_pairs correctly identifies
+        and closes positions for deprecated trade pairs (SPX, DJI, NDX, VIX).
         """
         position = Position(
             miner_hotkey=self.DEFAULT_MINER_HOTKEY,
@@ -2758,6 +2819,7 @@ class TestPositions(TestBase):
 
         assert len(position.orders) == 3
         assert not position.is_closed_position
+        # Server's internal price fetcher client can now connect to real RPC server
         self.position_manager.close_open_orders_for_suspended_trade_pairs()
         position = self._find_disk_position_from_memory_position(position)
         print(position)

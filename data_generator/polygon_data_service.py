@@ -1,6 +1,5 @@
 import threading
 import traceback
-from multiprocessing import Process
 
 import requests
 
@@ -11,6 +10,7 @@ from polygon.websocket import Market, EquityAgg, EquityTrade, CryptoTrade, Forex
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from data_generator.base_data_service import BaseDataService, POLYGON_PROVIDER_NAME
+from shared_objects.error_utils import ErrorUtils
 from time_util.time_util import TimeUtil
 from vali_objects.vali_config import TradePair, TradePairCategory
 import time
@@ -81,7 +81,17 @@ class ExchangeMappingHelper:
             "nasdaq": 12,
             "consolidated tape association": 13,
             "long-term stock exchange": 14,
-            "investors exchange": 15
+            "investors exchange": 15,
+            "cboe stock exchange": 16,
+            "nasdaq philadelphia exchange llc": 17,
+            "cboe byx": 18,
+            "cboe bzx": 19,
+            "miax pearl": 20,
+            "members exchange": 21,
+            "finra nyse trf": 201,
+            "finra nasdaq trf carteret": 202,
+            "finra nasdaq trf chicago": 203,
+            "otc equity security": 62
         }
         self.crypto_mapping = {}
         self.stock_mapping = {}
@@ -89,8 +99,49 @@ class ExchangeMappingHelper:
         self.create_crypto_mapping()
         self.create_stock_mapping()
 
-    def create_crypto_mapping(self):
+    def _validate_mapping_against_fallback(self, live_mapping: dict, fallback_mapping: dict, asset_class: str):
+        """
+        Compare live API mapping against fallback mapping and log errors if they diverge.
+        Only called when fetch_live_mapping=True to respect no network calls in unit tests.
+
+        Args:
+            live_mapping: Mapping fetched from Polygon API
+            fallback_mapping: Hard-coded fallback mapping
+            asset_class: "crypto" or "stocks" for logging purposes
+        """
         if not self.fetch_live_mapping:
+            return  # Skip validation when using fallback (unit tests)
+
+        # Check for exchanges in fallback that have different IDs in live mapping
+        for exchange_name, fallback_id in fallback_mapping.items():
+            if exchange_name in live_mapping:
+                live_id = live_mapping[exchange_name]
+                if live_id != fallback_id:
+                    bt.logging.error(
+                        f"[ExchangeMappingHelper] {asset_class.upper()} mapping divergence detected! "
+                        f"Exchange '{exchange_name}': fallback ID={fallback_id}, live API ID={live_id}. "
+                        f"Please update the fallback mapping in polygon_data_service.py"
+                    )
+
+        # Check for exchanges in fallback that are missing from live mapping
+        missing_in_live = set(fallback_mapping.keys()) - set(live_mapping.keys())
+        if missing_in_live:
+            bt.logging.warning(
+                f"[ExchangeMappingHelper] {asset_class.upper()} exchanges in fallback but missing from live API: "
+                f"{sorted(missing_in_live)}. These exchanges may have been deprecated by Polygon."
+            )
+
+        # Check for new exchanges in live mapping not in fallback (informational)
+        new_in_live = set(live_mapping.keys()) - set(fallback_mapping.keys())
+        if new_in_live:
+            bt.logging.info(
+                f"[ExchangeMappingHelper] New {asset_class} exchanges available in Polygon API (not in fallback): "
+                f"{sorted(new_in_live)}"
+            )
+
+    def create_crypto_mapping(self):
+        # Skip API calls if fetch_live_mapping is False OR if API key is empty (test mode)
+        if not self.fetch_live_mapping or not self.api_key:
             self.crypto_mapping = self.crypto_fallback_mapping
             return
         endpoint = "https://api.polygon.io/v3/reference/exchanges"
@@ -110,17 +161,24 @@ class ExchangeMappingHelper:
                     entry['name'].lower(): entry['id']
                     for entry in data['results']
                 }
-                print("Successfully created crypto mapping from API.")
+                bt.logging.info("Successfully created crypto mapping from API.")
+                # Validate live mapping against fallback to detect divergences
+                self._validate_mapping_against_fallback(
+                    self.crypto_mapping,
+                    self.crypto_fallback_mapping,
+                    "crypto"
+                )
             else:
-                print("Unexpected response structure. Using fallback mapping.")
+                bt.logging.warning("Unexpected response structure. Using fallback mapping.")
                 self.crypto_mapping = self.crypto_fallback_mapping
 
         except Exception as e:
-            print(f"API request failed: {e}. Using fallback mapping.")
+            bt.logging.error(f"Crypto mapping API request failed: {e}. Using fallback mapping.")
             self.crypto_mapping = self.crypto_fallback_mapping
 
     def create_stock_mapping(self):
-        if not self.fetch_live_mapping:
+        # Skip API calls if fetch_live_mapping is False OR if API key is empty (test mode)
+        if not self.fetch_live_mapping or not self.api_key:
             self.stock_mapping = self.stock_fallback_mapping
             return
         endpoint = "https://api.polygon.io/v3/reference/exchanges"
@@ -140,21 +198,39 @@ class ExchangeMappingHelper:
                     entry['name'].lower(): entry['id']
                     for entry in data['results']
                 }
-                print("Successfully created stock mapping from API.")
+                bt.logging.info("Successfully created stock mapping from API.")
+                # Validate live mapping against fallback to detect divergences
+                self._validate_mapping_against_fallback(
+                    self.stock_mapping,
+                    self.stock_fallback_mapping,
+                    "stocks"
+                )
             else:
-                print("Unexpected response structure. Using fallback mapping.")
+                bt.logging.warning("Unexpected response structure. Using fallback mapping.")
                 self.stock_mapping = self.stock_fallback_mapping
 
         except Exception as e:
-            print(f"API request failed: {e}. Using fallback mapping.")
+            bt.logging.error(f"Stock mapping API request failed: {e}. Using fallback mapping.")
             self.stock_mapping = self.stock_fallback_mapping
 
 
 
 class PolygonDataService(BaseDataService):
-
-    def __init__(self, api_key, disable_ws=False, ipc_manager=None, is_backtesting=False):
+    DEFAULT_TESTING_FALLBACK_PRICE_SOURCE = PriceSource(
+            source='test',
+            timespan_ms=1000,
+            open=50000,
+            close=50000,
+            vwap=50000,
+            high=50000,
+            low=50000,
+            start_ms=69,
+            websocket=False,
+            lag_ms=0
+        )
+    def __init__(self, api_key, disable_ws=False, is_backtesting=False, running_unit_tests=False):
         self.init_time = time.time()
+        self.running_unit_tests = running_unit_tests
         self._api_key = api_key
         ehm = ExchangeMappingHelper(api_key, fetch_live_mapping = not disable_ws)
         self.crypto_mapping = ehm.crypto_mapping
@@ -166,7 +242,16 @@ class PolygonDataService(BaseDataService):
         self.stocks_feed_round_robin_map = {0: Feed.RealTime, 1: Feed.Business}
         self.stocks_feed_round_robin_counter = 0
 
-        super().__init__(provider_name=POLYGON_PROVIDER_NAME, ipc_manager=ipc_manager)
+        # Test price source registry (only used when running_unit_tests=True)
+        # Allows tests to inject specific price sources via IPC instead of hardcoded values
+        self._test_price_sources = {}
+
+        # Test candle data registry (only used when running_unit_tests=True)
+        # Allows tests to inject candle data for specific trade pairs and time windows
+        # Key: (trade_pair, start_ms, end_ms) -> Value: List[PriceSource]
+        self._test_candle_data = {}
+
+        super().__init__(provider_name=POLYGON_PROVIDER_NAME, running_unit_tests=running_unit_tests)
 
         self.MARKET_STATUS = None
 
@@ -176,11 +261,178 @@ class PolygonDataService(BaseDataService):
         if disable_ws:
             self.websocket_manager_thread = None
         else:
-            if ipc_manager:
-                self.websocket_manager_thread = Process(target=self.websocket_manager, daemon=True)
-            else:
-                self.websocket_manager_thread = threading.Thread(target=self.websocket_manager, daemon=True)
+            self.websocket_manager_thread = threading.Thread(target=self.websocket_manager, daemon=True)
             self.websocket_manager_thread.start()
+
+    @ErrorUtils.require_test_mode
+    def set_test_price_source(self, trade_pair: TradePair, price_source: PriceSource | None) -> None:
+        """
+        Test-only method to inject price sources for specific trade pairs.
+        Only works when running_unit_tests=True for safety.
+
+        Args:
+            trade_pair: TradePair to set price for
+            price_source: PriceSource to return for this trade pair, or None to explicitly disable fallback
+        """
+        self._test_price_sources[trade_pair] = price_source
+
+        # If price_source is None, we're explicitly saying "no price source for this pair"
+        # Don't inject into RecentEventTracker
+        if price_source is None:
+            return
+
+        # ALSO inject into RecentEventTracker so get_ws_price_sources_in_window() can find it
+        # This ensures test price sources are visible to daemon code paths like check_and_fill_limit_orders()
+        # IMPORTANT: Preserve the original timestamp so mdd_check() can find the price source
+        # when querying for the exact order timestamp
+        from time_util.time_util import TimeUtil
+        updated_price_source = PriceSource(
+            source=price_source.source,
+            timespan_ms=price_source.timespan_ms,
+            open=price_source.open,
+            close=price_source.close,
+            vwap=price_source.vwap,
+            high=price_source.high,
+            low=price_source.low,
+            start_ms=price_source.start_ms,  # Preserve original timestamp for exact matching
+            websocket=price_source.websocket,
+            lag_ms=price_source.lag_ms,
+            bid=price_source.bid,
+            ask=price_source.ask
+        )
+        # Use STRING key (trade_pair.trade_pair) to match how websocket code populates the dict
+        symbol = trade_pair.trade_pair
+        if symbol not in self.trade_pair_to_recent_events:
+            self.trade_pair_to_recent_events[symbol] = RecentEventTracker()
+
+        # CRITICAL FIX: Use atomic clear_and_add_event to prevent race condition
+        # Without atomicity, the median selection in _get_best_price_source() can pick stale prices
+        # from previous test injections instead of the current test price.
+        # Race condition scenario: clear_all_events() -> [another thread adds event] -> add_event()
+        # Results in unintended events remaining in tracker, causing test pollution.
+        self.trade_pair_to_recent_events[symbol].clear_and_add_event(
+            updated_price_source,
+            is_forex_quote=False,
+            tp_debug_str=None,
+            running_unit_tests=True
+        )
+
+    @ErrorUtils.require_test_mode
+    def clear_test_price_sources(self) -> None:
+        """
+        Clear all test price sources (for test isolation).
+        Only works when running_unit_tests=True for safety.
+        """
+        self._test_price_sources.clear()
+
+        # ALSO clear RecentEventTracker to remove injected test events
+        # This ensures clean state between tests
+        for tracker in self.trade_pair_to_recent_events.values():
+            tracker.clear_all_events(running_unit_tests=True)
+
+    @ErrorUtils.require_test_mode
+    def set_test_candle_data(self, trade_pair: TradePair, start_ms: int, end_ms: int, candles: List[PriceSource]) -> None:
+        """
+        Test-only method to inject candle data for a specific trade pair and time window.
+        Only works when running_unit_tests=True for safety.
+
+        Args:
+            trade_pair: TradePair to set candles for
+            start_ms: Start timestamp of the time window
+            end_ms: End timestamp of the time window
+            candles: List of PriceSource objects to return for this window
+        """
+        key = (trade_pair, start_ms, end_ms)
+        self._test_candle_data[key] = candles
+
+    @ErrorUtils.require_test_mode
+    def clear_test_candle_data(self) -> None:
+        """
+        Clear all test candle data (for test isolation).
+        Only works when running_unit_tests=True for safety.
+        """
+        self._test_candle_data.clear()
+
+    def _get_test_candle_data(self, trade_pair: TradePair, start_ms: int, end_ms: int) -> List[PriceSource] | None:
+        """
+        Helper method to get test candle data for a trade pair and time window.
+        Returns candles that overlap with the requested time window.
+
+        Args:
+            trade_pair: TradePair to get candles for
+            start_ms: Start timestamp of the time window
+            end_ms: End timestamp of the time window
+
+        Returns:
+            List of PriceSource if in test mode and data exists, None otherwise
+        """
+        if not self.running_unit_tests:
+            return None
+        # First try exact key match (optimization for common case)
+        exact_key = (trade_pair, start_ms, end_ms)
+        if exact_key in self._test_candle_data:
+            return self._test_candle_data[exact_key]
+
+        # Otherwise, search for overlapping windows and filter candles by timestamp
+        for (tp, registered_start, registered_end), candles in self._test_candle_data.items():
+            if tp != trade_pair:
+                continue
+
+            # Check if windows overlap
+            windows_overlap = (start_ms <= registered_end and end_ms >= registered_start)
+            if not windows_overlap:
+                continue
+
+            # Filter candles to only return those within requested window
+            filtered_candles = [
+                candle for candle in candles
+                if start_ms <= candle.start_ms <= end_ms
+            ]
+
+            if filtered_candles:
+                return filtered_candles
+
+        # No matching test data found
+        return None
+
+    def _get_test_price_source(self, trade_pair: TradePair, timestamp_ms: int) -> PriceSource | None:
+        """
+        Helper method to get test price source for a trade pair.
+        Returns None if not in unit test mode.
+
+        Args:
+            trade_pair: TradePair to get price for
+            timestamp_ms: Timestamp to use in the returned PriceSource
+
+        Returns:
+            PriceSource if in test mode, None otherwise
+        """
+        if not self.running_unit_tests:
+            return None
+        # Check test registry first for specific override (including explicit None)
+        if trade_pair in self._test_price_sources:
+            test_ps = self._test_price_sources[trade_pair]
+            # If explicitly set to None, return None (no price source for this pair)
+            if test_ps is None:
+                return None
+            # Clone and update timestamp to match request
+            return PriceSource(
+                source=test_ps.source,
+                timespan_ms=test_ps.timespan_ms,
+                open=test_ps.open,
+                close=test_ps.close,
+                vwap=test_ps.vwap,
+                high=test_ps.high,
+                low=test_ps.low,
+                start_ms=timestamp_ms,
+                websocket=test_ps.websocket,
+                lag_ms=test_ps.lag_ms,
+                bid=test_ps.bid,
+                ask=test_ps.ask
+            )
+
+        # Default fallback: return test data if no specific override
+        return self.DEFAULT_TESTING_FALLBACK_PRICE_SOURCE
 
     def parse_price_for_forex(self, m, stats=None, is_ws=False) -> (float, float, float):
         t_ms = m.timestamp if is_ws else m.participant_timestamp // 1000000
@@ -227,7 +479,7 @@ class PolygonDataService(BaseDataService):
                 #print(f'Received forex message {symbol} price {new_price} time {TimeUtil.millis_to_formatted_date_str(start_timestamp)}')
                 end_timestamp = start_timestamp + 999
                 if symbol in self.trade_pair_to_recent_events and self.trade_pair_to_recent_events[symbol].timestamp_exists(start_timestamp):
-                    buffer = self.trade_pair_to_recent_events_realtime if self.using_ipc else self.trade_pair_to_recent_events
+                    buffer = self.trade_pair_to_recent_events
                     buffer[symbol].update_prices_for_median(start_timestamp, bid, ask)
                     buffer[symbol].update_prices_for_median(start_timestamp + 999, bid, ask)
                     return None, None
@@ -329,14 +581,8 @@ class PolygonDataService(BaseDataService):
                         continue
                     self.latest_websocket_events[symbol] = ps
                     if symbol not in self.trade_pair_to_recent_events:
-                        if self.using_ipc:
-                            self.trade_pair_to_recent_events[symbol] = RecentEventTracker()
-                        else:
-                            self.trade_pair_to_recent_events_realtime[symbol] = RecentEventTracker()
-                    if self.using_ipc:
-                        self.trade_pair_to_recent_events_realtime[symbol].add_event(ps, tp.is_forex, f"{self.provider_name}:{tp.trade_pair}")
-                    else:
-                        self.trade_pair_to_recent_events[symbol].add_event(ps, tp.is_forex, f"{self.provider_name}:{tp.trade_pair}")
+                        self.trade_pair_to_recent_events_realtime[symbol] = RecentEventTracker()
+                    self.trade_pair_to_recent_events[symbol].add_event(ps, tp.is_forex, f"{self.provider_name}:{tp.trade_pair}")
 
                 if DEBUG:
                     formatted_time = TimeUtil.millis_to_formatted_date_str(TimeUtil.now_in_millis())
@@ -358,11 +604,14 @@ class PolygonDataService(BaseDataService):
 
     def _subscribe_websockets(self, tpc: TradePairCategory = None):
         subbed = []
-        for tp in TradePair:
-            if tp in self.UNSUPPORTED_TRADE_PAIRS:
-                continue
-            if tpc and tp.trade_pair_category != tpc:
-                continue
+
+        # Get tradeable pairs for this category (excluding blocked pairs)
+        pairs_to_subscribe = self.get_tradeable_pairs(
+            category=tpc,
+            include_blocked=False  # Don't subscribe to blocked pairs
+        )
+
+        for tp in pairs_to_subscribe:
             if tp.is_crypto:
                 symbol = "XT." + tp.trade_pair.replace('/', '-')
                 self.WEBSOCKET_OBJECTS[TradePairCategory.CRYPTO].subscribe(symbol)
@@ -392,12 +641,21 @@ class PolygonDataService(BaseDataService):
             raise ValueError(f"Unknown symbol: {symbol}")
         return tp
 
-    def get_closes_rest(self, pairs: List[TradePair]) -> dict:
+    def get_closes_rest(self, trade_pairs: List[TradePair], time_ms, live=True) -> dict:
+        # In unit test mode, return test price sources instead of making network calls
+        if self.running_unit_tests:
+            result = {}
+            for trade_pair in trade_pairs:
+                test_price = self._get_test_price_source(trade_pair, time_ms)
+                if test_price:
+                    result[trade_pair] = test_price
+            return result
+
         all_trade_pair_closes = {}
         # Multi-threaded fetching of REST data over all requested trade pairs. Max parallelism is 5.
         with ThreadPoolExecutor(max_workers=5) as executor:
             # Dictionary to keep track of futures
-            future_to_trade_pair = {executor.submit(self.get_close_rest, p): p for p in pairs}
+            future_to_trade_pair = {executor.submit(self.get_close_rest, p, time_ms): p for p in trade_pairs}
 
             for future in as_completed(future_to_trade_pair):
                 tp = future_to_trade_pair[future]
@@ -461,6 +719,12 @@ class PolygonDataService(BaseDataService):
     ) -> PriceSource | None:
         if not timestamp_ms:
             timestamp_ms = TimeUtil.now_in_millis()
+
+        # Return test data in unit test mode
+        test_price = self._get_test_price_source(trade_pair, timestamp_ms)
+        if test_price:
+            return test_price
+
         if self.is_backtesting:
             # Check that we are within market hours for genuine ptn orders
             if order is not None and order.src == 0:
@@ -507,6 +771,11 @@ class PolygonDataService(BaseDataService):
             raise ValueError(f"Unknown trade pair category: {trade_pair.trade_pair_category}")
 
     def get_event_before_market_close(self, trade_pair: TradePair, target_time_ms:int) -> PriceSource | None:
+        # Return test data in unit test mode
+        test_price = self._get_test_price_source(trade_pair, target_time_ms)
+        if test_price:
+            return test_price
+
         # The caller made sure the market is closed.
         if trade_pair in self.UNSUPPORTED_TRADE_PAIRS:
             return None
@@ -547,6 +816,10 @@ class PolygonDataService(BaseDataService):
 
 
     def get_close_in_past_hour_fallback(self, trade_pair: TradePair, timestamp_ms: int):
+        # Return test data in unit test mode
+        if self.running_unit_tests:
+            return 50000
+
         polygon_ticker = self.trade_pair_to_polygon_ticker(trade_pair)  # noqa: F841
 
         prev_timestamp = None
@@ -583,6 +856,11 @@ class PolygonDataService(BaseDataService):
 
 
     def get_close_at_date_minute_fallback(self, trade_pair: TradePair, target_timestamp_ms: int) -> PriceSource | None:
+        # Return test data in unit test mode
+        test_price = self._get_test_price_source(trade_pair, target_timestamp_ms)
+        if test_price:
+            return test_price
+
         polygon_ticker = self.trade_pair_to_polygon_ticker(trade_pair)  # noqa: F841
 
         prev_timestamp = None
@@ -615,6 +893,11 @@ class PolygonDataService(BaseDataService):
         return corresponding_price_source
 
     def get_close_at_date_second(self, trade_pair: TradePair, target_timestamp_ms: int, order: Order = None) -> PriceSource | None:
+        # Return test data in unit test mode
+        test_price = self._get_test_price_source(trade_pair, target_timestamp_ms)
+        if test_price:
+            return test_price
+
         prev_timestamp = None
         smallest_delta = None
         corresponding_price_source = None
@@ -664,6 +947,27 @@ class PolygonDataService(BaseDataService):
         return ret
 
     def unified_candle_fetcher(self, trade_pair: TradePair, start_timestamp_ms: int, end_timestamp_ms: int, timespan: str=None):
+        # In unit test mode, check for injected test candle data first
+        if self.running_unit_tests:
+            test_data = self._get_test_candle_data(trade_pair, start_timestamp_ms, end_timestamp_ms)
+            if test_data is not None:
+                # Convert PriceSource objects to Agg objects for compatibility with production code
+                return [
+                    Agg(
+                        open=ps.open,
+                        close=ps.close,
+                        high=ps.high,
+                        low=ps.low,
+                        vwap=ps.vwap,
+                        timestamp=ps.start_ms,  # PriceSource uses start_ms, Agg uses timestamp
+                        bid=ps.bid if hasattr(ps, 'bid') else 0,
+                        ask=ps.ask if hasattr(ps, 'ask') else 0,
+                        volume=0  # Test data doesn't have volume
+                    )
+                    for ps in test_data
+                ]
+            # No test data found - return empty list (don't make network calls in test mode)
+            return []
 
         def _fetch_raw_polygon_aggs():
             return self.POLYGON_CLIENT.list_aggs(
@@ -809,12 +1113,12 @@ class PolygonDataService(BaseDataService):
             elif timespan == 'minute':
                 ans = _get_filtered_forex_minute_data()
             elif timespan == 'day':
-                return _fetch_raw_polygon_aggs()
+                return list(_fetch_raw_polygon_aggs())
             else:
                 raise Exception(f'Invalid timespan {timespan}')
             return ans
         else:
-            return _fetch_raw_polygon_aggs()
+            return list(_fetch_raw_polygon_aggs())
 
     def get_candles_for_trade_pair(
         self,
@@ -832,6 +1136,14 @@ class PolygonDataService(BaseDataService):
         agg Agg(open=63010.86, high=63010.86, low=63010.86, close=63010.86, volume=2.158e-05, vwap=63010.86,
          timestamp=1713273888000, transactions=1, otc=None)
         """
+
+        # In unit test mode, check test registry first
+        if self.running_unit_tests:
+            test_candles = self._get_test_candle_data(trade_pair, start_timestamp_ms, end_timestamp_ms)
+            if test_candles is not None:
+                return test_candles
+            # No test data registered, return empty list
+            return []
 
         delta_time_ms = end_timestamp_ms - start_timestamp_ms
         delta_time_seconds = delta_time_ms / 1000
@@ -931,7 +1243,7 @@ if __name__ == "__main__":
         #if tp != TradePair.GBPUSD:
         #    continue
 
-        print('getting close for', tp.trade_pair_id, ':', polygon_data_provider.get_close_rest(tp))
+        print('getting close for', tp.trade_pair_id, ':', polygon_data_provider.get_close_rest(tp, TimeUtil.now_in_millis()))
 
     time.sleep(100000)
 

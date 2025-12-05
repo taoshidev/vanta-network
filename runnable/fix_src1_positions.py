@@ -15,17 +15,14 @@ Usage:
 """
 
 import argparse
-import sys
-import json
 from typing import Dict, List, Tuple, Optional
 from collections import defaultdict
 
 import bittensor as bt
-from vali_objects.position import Position
-from vali_objects.utils.position_source import PositionSourceManager, PositionSource
-from vali_objects.utils.live_price_fetcher import LivePriceFetcher
+from vali_objects.vali_dataclasses.position import Position
+from vali_objects.position_management.position_utils.position_source import PositionSourceManager, PositionSource
+from vali_objects.price_fetcher import LivePriceFetcherServer
 from vali_objects.utils.vali_utils import ValiUtils
-from vali_objects.vali_config import TradePair
 from time_util.time_util import TimeUtil
 
 
@@ -40,7 +37,7 @@ class PositionFixer:
         # Initialize price fetcher
         bt.logging.info("🔧 Initializing price fetcher...")
         secrets = ValiUtils.get_secrets()
-        self.live_price_fetcher = LivePriceFetcher(secrets, disable_ws=True)
+        self.live_price_fetcher = LivePriceFetcherServer(secrets, disable_ws=True)
         
         # Initialize position source manager
         self.position_source_manager = PositionSourceManager(source_type=PositionSource.DATABASE)

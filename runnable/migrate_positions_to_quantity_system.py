@@ -34,14 +34,13 @@ import bittensor as bt
 from collections import defaultdict
 
 from vali_objects.enums.order_type_enum import OrderType
-from vali_objects.position import Position
-from vali_objects.utils.live_price_fetcher import LivePriceFetcher
+from vali_objects.vali_dataclasses.position import Position
+from vali_objects.price_fetcher.live_price_fetcher import LivePriceFetcher
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
-from vali_objects.vali_dataclasses.order import OrderStatus
-from vali_objects.utils.validator_contract_manager import ValidatorContractManager
+from vali_objects.enums.misc import OrderStatus
+from vali_objects.contract.validator_contract_manager import ValidatorContractManager
 from vali_objects.vali_config import ValiConfig, TradePair
-from time_util.time_util import TimeUtil
 
 # Configuration
 DRY_RUN = False
@@ -69,7 +68,6 @@ live_price_fetcher = LivePriceFetcher(secrets, disable_ws=True)
 try:
     contract_manager = ValidatorContractManager(
         config=None,
-        metagraph=None,
         running_unit_tests=False
     )
     print("Contract manager initialized successfully")
@@ -248,7 +246,6 @@ def process_hotkey(args):
 
         contract_manager = ValidatorContractManager(
             config=None,
-            metagraph=None,
             running_unit_tests=False
         )
     except Exception as e:

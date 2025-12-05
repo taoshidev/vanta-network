@@ -1,13 +1,12 @@
 import copy
 import time
-from unittest.mock import Mock, MagicMock, patch
 
 from tests.shared_objects.test_utilities import generate_ledger
 from tests.vali_tests.base_objects.test_base import TestBase
-from vali_objects.utils.ledger_utils import LedgerUtils
-from vali_objects.vali_dataclasses.perf_ledger import TP_ID_PORTFOLIO
-from vali_objects.vali_dataclasses.penalty_ledger import PenaltyLedgerManager, PenaltyLedger, PenaltyCheckpoint
-from vali_objects.utils.miner_bucket_enum import MinerBucket
+from vali_objects.vali_dataclasses.ledger.ledger_utils import LedgerUtils
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import TP_ID_PORTFOLIO
+from vali_objects.vali_dataclasses.ledger.penalty.penalty_ledger import PenaltyLedgerManager, PenaltyLedger, PenaltyCheckpoint
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 
 
 class TestLedgerPenalty(TestBase):
@@ -76,18 +75,8 @@ class TestLedgerPenalty(TestBase):
 
     def test_penalty_ledger_manager_metadata_persistence(self):
         """Test that last_full_rebuild_ms is properly saved and loaded"""
-        # Create mock dependencies
-        mock_position_manager = Mock()
-        mock_perf_ledger_manager = Mock()
-        mock_contract_manager = Mock()
-        mock_asset_selection_manager = Mock()
-
-        # Create manager
+        # Create manager (new API - no mock dependencies needed, creates clients internally)
         manager = PenaltyLedgerManager(
-            position_manager=mock_position_manager,
-            perf_ledger_manager=mock_perf_ledger_manager,
-            contract_manager=mock_contract_manager,
-            asset_selection_manager=mock_asset_selection_manager,
             running_unit_tests=True,
             run_daemon=False
         )
@@ -112,10 +101,6 @@ class TestLedgerPenalty(TestBase):
 
         # Create new manager and verify it loads the timestamp
         manager2 = PenaltyLedgerManager(
-            position_manager=mock_position_manager,
-            perf_ledger_manager=mock_perf_ledger_manager,
-            contract_manager=mock_contract_manager,
-            asset_selection_manager=mock_asset_selection_manager,
             running_unit_tests=True,
             run_daemon=False
         )
@@ -206,18 +191,8 @@ class TestLedgerPenalty(TestBase):
 
     def test_atomic_ledger_replacement_for_full_rebuild(self):
         """Test that full rebuild keeps old and new ledgers in memory until the very end"""
-        # Create mock dependencies
-        mock_position_manager = Mock()
-        mock_perf_ledger_manager = Mock()
-        mock_contract_manager = Mock()
-        mock_asset_selection_manager = Mock()
-
-        # Create manager with an old ledger
+        # Create manager with an old ledger (new API - no mock dependencies needed)
         manager = PenaltyLedgerManager(
-            position_manager=mock_position_manager,
-            perf_ledger_manager=mock_perf_ledger_manager,
-            contract_manager=mock_contract_manager,
-            asset_selection_manager=mock_asset_selection_manager,
             running_unit_tests=True,
             run_daemon=False
         )

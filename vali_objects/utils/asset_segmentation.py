@@ -3,7 +3,7 @@ import math
 
 import bittensor as bt
 
-from vali_objects.vali_dataclasses.perf_ledger import PerfLedger, PerfCheckpoint
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger, PerfCheckpoint, TP_ID_PORTFOLIO
 from vali_objects.vali_config import ValiConfig, TradePair, TradePairCategory
 
 
@@ -37,7 +37,13 @@ class AssetSegmentation:
 
         total_miner_ledgers = {}
         for hotkey, full_ledger in subset.items():
-            portfolio_ledger = self.overall_ledgers.get(hotkey, {}).get("portfolio", PerfLedger())
+            miner_ledger = self.overall_ledgers.get(hotkey, {})
+            # Ensure miner_ledger is a dict before calling .get() on it
+            if isinstance(miner_ledger, dict):
+                portfolio_ledger = miner_ledger.get(TP_ID_PORTFOLIO, PerfLedger())
+            else:
+                bt.logging.warning(f"Miner ledger for {hotkey} has unexpected type {type(miner_ledger).__name__}, expected dict. Using empty portfolio ledger.")
+                portfolio_ledger = PerfLedger()
             total_miner_ledgers[hotkey] = AssetSegmentation.aggregate_miner_subledgers(
                 portfolio_ledger,
                 full_ledger,
@@ -55,10 +61,14 @@ class AssetSegmentation:
         subset_ledger = {}
         for hotkey, full_ledger in self.overall_ledgers.items():
             if full_ledger is None:
+                #bt.logging.warning(f"Ledger for miner {hotkey} is None, skipping")
+                continue
+            if not isinstance(full_ledger, dict):
+                bt.logging.warning(f"Ledger for miner {hotkey} has unexpected type {type(full_ledger).__name__}, expected dict. Skipping.")
                 continue
             miner_subset_ledger = {}
             for asset_name, ledger in full_ledger.items():
-                if asset_name == "portfolio":
+                if asset_name == TP_ID_PORTFOLIO:
                     continue
 
                 trade_pair = TradePair.from_trade_pair_id(asset_name)
@@ -88,7 +98,7 @@ class AssetSegmentation:
             ledger_checkpoints = ledger.cps
             for checkpoint in ledger_checkpoints:
                 if checkpoint.last_update_ms not in aggregated_dict_ledger:
-                    aggregated_dict_ledger[checkpoint.last_update_ms] = copy.deepcopy(checkpoint)
+                    aggregated_dict_ledger[checkpoint.last_update_ms] =  copy.deepcopy(checkpoint)
                 else:
                     existing_checkpoint = aggregated_dict_ledger.get(checkpoint.last_update_ms)
 
@@ -98,6 +108,8 @@ class AssetSegmentation:
                     existing_checkpoint.loss += checkpoint.loss
                     existing_checkpoint.spread_fee_loss += checkpoint.spread_fee_loss
                     existing_checkpoint.carry_fee_loss += checkpoint.carry_fee_loss
+
+                    # Use getattr() to safely handle old checkpoints without realized_pnl/unrealized_pnl
                     existing_checkpoint.realized_pnl += checkpoint.realized_pnl
                     existing_checkpoint.unrealized_pnl += checkpoint.unrealized_pnl
 

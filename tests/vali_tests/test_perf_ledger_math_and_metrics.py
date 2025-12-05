@@ -8,86 +8,106 @@ This file consolidates calculation and metrics tests:
 """
 
 import unittest
-from unittest.mock import patch, Mock
-import math
-from decimal import Decimal
-import random
-import numpy as np
-import time
 
-from shared_objects.mock_metagraph import MockMetagraph
+from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
-from time_util.time_util import TimeUtil, MS_IN_24_HOURS, MS_IN_8_HOURS
+from time_util.time_util import TimeUtil, MS_IN_24_HOURS
 from vali_objects.enums.order_type_enum import OrderType
-from vali_objects.position import Position
-from vali_objects.utils.elimination_manager import EliminationManager
-from vali_objects.utils.live_price_fetcher import LivePriceFetcher
-from vali_objects.utils.position_manager import PositionManager
-from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
+from vali_objects.vali_dataclasses.position import Position
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair
 from vali_objects.vali_dataclasses.order import Order
-from vali_objects.vali_dataclasses.perf_ledger import (
-    PerfLedger,
-    PerfLedgerManager,
-    PerfCheckpoint,
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import (
     TP_ID_PORTFOLIO,
-    ParallelizationMode,
 )
 
 
 class TestPerfLedgerMathAndMetrics(TestBase):
-    """Tests for mathematical calculations and performance metrics."""
+    """
+    Tests for mathematical calculations and performance metrics using ServerOrchestrator.
+
+    Servers start once (via singleton orchestrator) and are shared across:
+    - All test methods in this class
+    - All test classes that use ServerOrchestrator
+
+    This eliminates redundant server spawning and dramatically reduces test startup time.
+    Per-test isolation is achieved by clearing data state (not restarting servers).
+    """
+
+    # Class-level references (set in setUpClass via ServerOrchestrator)
+    orchestrator = None
+    live_price_fetcher_client = None
+    live_price_fetcher_server = None  # Keep server handle for rebuild_position_with_updated_orders
+    metagraph_client = None
+    position_client = None
+    perf_ledger_client = None
+
+    # Test constants
+    test_hotkey = "test_miner_math"
+    now_ms = TimeUtil.now_in_millis()
+    DEFAULT_ACCOUNT_SIZE = 100_000
+
+    @classmethod
+    def setUpClass(cls):
+        """One-time setup: Start all servers using ServerOrchestrator (shared across all test classes)."""
+        # Get the singleton orchestrator and start all required servers
+        cls.orchestrator = ServerOrchestrator.get_instance()
+
+        # Start all servers in TESTING mode (idempotent - safe if already started by another test class)
+        secrets = ValiUtils.get_secrets(running_unit_tests=True)
+        cls.orchestrator.start_all_servers(
+            mode=ServerMode.TESTING,
+            secrets=secrets
+        )
+
+        # Get clients from orchestrator (servers guaranteed ready, no connection delays)
+        cls.live_price_fetcher_client = cls.orchestrator.get_client('live_price_fetcher')
+        cls.metagraph_client = cls.orchestrator.get_client('metagraph')
+        cls.perf_ledger_client = cls.orchestrator.get_client('perf_ledger')
+        cls.position_client = cls.orchestrator.get_client('position_manager')
+
+        # Get server handle for rebuild_position_with_updated_orders calls
+        cls.live_price_fetcher_server = cls.orchestrator._servers.get('live_price_fetcher')
+
+    @classmethod
+    def tearDownClass(cls):
+        """
+        One-time teardown: No action needed.
+
+        Note: Servers and clients are managed by ServerOrchestrator singleton and shared
+        across all test classes. They will be shut down automatically at process exit.
+        """
+        pass
 
     def setUp(self):
-        super().setUp()
-        # Clear ALL test miner positions BEFORE creating PositionManager
-        ValiBkpUtils.clear_directory(
-            ValiBkpUtils.get_miner_dir(running_unit_tests=True)
-        )
+        """Per-test setup: Reset data state (fast - no server restarts)."""
+        # Clear all data for test isolation (both memory and disk)
+        self.orchestrator.clear_all_test_data()
 
-        secrets = ValiUtils.get_secrets(running_unit_tests=True)
-        self.live_price_fetcher = LivePriceFetcher(secrets=secrets, disable_ws=True)
-        self.test_hotkey = "test_miner_math"
         self.now_ms = TimeUtil.now_in_millis()
-        self.DEFAULT_ACCOUNT_SIZE = 100_000
-        
-        self.mmg = MockMetagraph(hotkeys=[self.test_hotkey])
-        self.elimination_manager = EliminationManager(self.mmg, None, None, running_unit_tests=True)
-        self.position_manager = PositionManager(
-            metagraph=self.mmg,
-            running_unit_tests=True,
-            elimination_manager=self.elimination_manager,
-        )
-        self.position_manager.clear_all_miner_positions()
 
-    @patch('vali_objects.vali_dataclasses.perf_ledger.LivePriceFetcher')
-    def test_portfolio_alignment_calculations(self, mock_lpf):
+        # Reset metagraph to test hotkey
+        self.metagraph_client.set_hotkeys([self.test_hotkey])
+
+    def tearDown(self):
+        """Per-test teardown: Clear data for next test."""
+        self.orchestrator.clear_all_test_data()
+
+    def test_portfolio_alignment_calculations(self):
         """Test that portfolio calculations align with individual trade pairs."""
-        mock_pds = Mock()
-        mock_pds.unified_candle_fetcher.return_value = []
-        mock_pds.tp_to_mfs = {}
-        mock_lpf.return_value.polygon_data_service = mock_pds
-        
-        plm = PerfLedgerManager(
-            metagraph=self.mmg,
-            running_unit_tests=True,
-            position_manager=self.position_manager,
-            parallel_mode=ParallelizationMode.SERIAL,
-        )
-        plm.clear_all_ledger_data()
+        # No mocking needed - LivePriceFetcherClient with running_unit_tests=True handles test data
 
         base_time = self.now_ms - (20 * MS_IN_24_HOURS)
-        
+
         # Create positions with known returns
         positions = [
             ("btc", TradePair.BTCUSD, 50000.0, 51000.0, 1.0),   # 2% gain, weight 1.0
             ("eth", TradePair.ETHUSD, 3000.0, 3090.0, 0.5),     # 3% gain, weight 0.5
             ("eur", TradePair.EURUSD, 1.10, 1.10, 0.3),         # 0% gain, weight 0.3
         ]
-        
+
         total_weight = sum(w for _, _, _, _, w in positions)
-        
+
         for name, tp, open_price, close_price, weight in positions:
             position = Position(
                 miner_hotkey=self.test_hotkey,
@@ -117,41 +137,29 @@ class TestPerfLedgerMathAndMetrics(TestBase):
                 position_type=OrderType.FLAT,
                 is_closed_position=True,
             )
-            position.rebuild_position_with_updated_orders(self.live_price_fetcher)
-            self.position_manager.save_miner_position(position)
-        
-        # Update
-        plm.update(t_ms=base_time + (2 * MS_IN_24_HOURS))
-        
-        # Get ledgers
-        bundles = plm.get_perf_ledgers(portfolio_only=False)
+            position.rebuild_position_with_updated_orders(self.live_price_fetcher_server)
+            self.position_client.save_miner_position(position)
+
+        # Update via client
+        self.perf_ledger_client.update(t_ms=base_time + (2 * MS_IN_24_HOURS))
+
+        # Get ledgers via client
+        bundles = self.perf_ledger_client.get_perf_ledgers(portfolio_only=False)
         bundle = bundles[self.test_hotkey]
-        
+
         # Portfolio should exist
         self.assertIn(TP_ID_PORTFOLIO, bundle, "Portfolio ledger should exist")
-        
+
         # All individual TPs should exist
         for _, tp, _, _, _ in positions:
             self.assertIn(tp.trade_pair_id, bundle, f"{tp.trade_pair_id} should exist")
 
-    @patch('vali_objects.vali_dataclasses.perf_ledger.LivePriceFetcher')
-    def test_exact_fee_calculations(self, mock_lpf):
+    def test_exact_fee_calculations(self):
         """Test exact fee calculations match expected values."""
-        mock_pds = Mock()
-        mock_pds.unified_candle_fetcher.return_value = []
-        mock_pds.tp_to_mfs = {}
-        mock_lpf.return_value.polygon_data_service = mock_pds
-        
-        plm = PerfLedgerManager(
-            metagraph=self.mmg,
-            running_unit_tests=True,
-            position_manager=self.position_manager,
-            parallel_mode=ParallelizationMode.SERIAL,
-        )
-        plm.clear_all_ledger_data()
-        
+        # No mocking needed - LivePriceFetcherClient with running_unit_tests=True handles test data
+
         base_time = (self.now_ms // MS_IN_24_HOURS) * MS_IN_24_HOURS - (10 * MS_IN_24_HOURS)
-        
+
         # Create position with exact 1-day duration
         position = Position(
             miner_hotkey=self.test_hotkey,
@@ -181,23 +189,23 @@ class TestPerfLedgerMathAndMetrics(TestBase):
             position_type=OrderType.FLAT,
             is_closed_position=True,
         )
-        position.rebuild_position_with_updated_orders(self.live_price_fetcher)
-        self.position_manager.save_miner_position(position)
-        
-        # Update
-        plm.update(t_ms=base_time + (2 * MS_IN_24_HOURS))
-        
-        # Get checkpoint with position
-        bundles = plm.get_perf_ledgers(portfolio_only=False)
+        position.rebuild_position_with_updated_orders(self.live_price_fetcher_server)
+        self.position_client.save_miner_position(position)
+
+        # Update via client
+        self.perf_ledger_client.update(t_ms=base_time + (2 * MS_IN_24_HOURS))
+
+        # Get checkpoint with position via client
+        bundles = self.perf_ledger_client.get_perf_ledgers(portfolio_only=False)
         btc_ledger = bundles[self.test_hotkey][TradePair.BTCUSD.trade_pair_id]
-        
+
         # Find checkpoint with the position
         for cp in btc_ledger.cps:
             if cp.n_updates > 0 and cp.last_update_ms <= base_time + MS_IN_24_HOURS:
                 # For BTC with 1x leverage for 1 day:
                 # Annual carry fee ~3%, so daily ~3%/365 = 0.0082%
                 # prev_portfolio_carry_fee = 1 - 0.000082 = 0.999918
-                
+
                 # Allow reasonable tolerance for calculation differences
                 # The actual carry fee depends on the exact implementation
                 self.assertLess(
@@ -210,91 +218,27 @@ class TestPerfLedgerMathAndMetrics(TestBase):
                 )
                 break
 
-    @patch('vali_objects.vali_dataclasses.perf_ledger.LivePriceFetcher')
-    def test_return_compounding(self, mock_lpf):
+    def test_return_compounding(self):
         """Test that returns compound correctly over multiple periods."""
-        from collections import namedtuple
-        Candle = namedtuple('Candle', ['timestamp', 'close'])
+        # No mocking needed - LivePriceFetcherClient with running_unit_tests=True handles test data
 
-        mock_pds = Mock()
-
-        # Mock candle data for price fetching
-        def mock_unified_candle_fetcher(*args, **kwargs):
-            # Extract parameters
-            if args:
-                trade_pair = args[0]
-                start_ms = args[1] if len(args) > 1 else kwargs.get('start_timestamp_ms')
-                end_ms = args[2] if len(args) > 2 else kwargs.get('end_timestamp_ms')
-            else:
-                trade_pair = kwargs.get('trade_pair')
-                start_ms = kwargs.get('start_timestamp_ms')
-                end_ms = kwargs.get('end_timestamp_ms')
-
-            candles = []
-            base_time = self.now_ms - (10 * MS_IN_24_HOURS)
-
-            # Define prices at key timestamps for the three positions
-            # Position 1: 10% gain
-            # Position 2: 5% loss
-            # Position 3: 3% gain
-            price_schedule = [
-                (base_time, 50000.0),  # Start of position 1
-                (base_time + MS_IN_24_HOURS, 55000.0),  # End of position 1 (10% gain)
-                (base_time + 2 * MS_IN_24_HOURS, 50000.0),  # Start of position 2
-                (base_time + 3 * MS_IN_24_HOURS, 47500.0),  # End of position 2 (5% loss)
-                (base_time + 4 * MS_IN_24_HOURS, 50000.0),  # Start of position 3
-                (base_time + 5 * MS_IN_24_HOURS, 51500.0),  # End of position 3 (3% gain)
-                (base_time + 8 * MS_IN_24_HOURS, 51500.0),  # Final update time
-            ]
-
-            # Generate minute candles between start_ms and end_ms
-            for i in range(len(price_schedule) - 1):
-                t1, p1 = price_schedule[i]
-                t2, p2 = price_schedule[i + 1]
-
-                if t1 <= end_ms and t2 >= start_ms:
-                    # Generate candles for this period
-                    current_ms = max(t1, start_ms)
-                    while current_ms <= min(t2, end_ms):
-                        # Linear interpolation between prices
-                        progress = (current_ms - t1) / (t2 - t1) if t2 > t1 else 0
-                        price = p1 + (p2 - p1) * progress
-                        candles.append(Candle(timestamp=current_ms, close=price))
-                        current_ms += 60000  # 1 minute
-
-            return candles
-
-        mock_pds.unified_candle_fetcher.side_effect = mock_unified_candle_fetcher
-        mock_pds.tp_to_mfs = {}
-        mock_lpf.return_value.polygon_data_service = mock_pds
-        
-        plm = PerfLedgerManager(
-            metagraph=self.mmg,
-            running_unit_tests=True,
-            position_manager=self.position_manager,
-            parallel_mode=ParallelizationMode.SERIAL,
-            live_price_fetcher=mock_lpf.return_value,
-            is_backtesting=True,  # Ensure we process historical data
-        )
-        plm.clear_all_ledger_data()
-        
         base_time = self.now_ms - (10 * MS_IN_24_HOURS)
-        
+
         # Create sequential positions with known returns
         returns = [0.10, -0.05, 0.03]  # 10% gain, 5% loss, 3% gain
-        
+
         for i, ret in enumerate(returns):
             open_price = 50000.0
             close_price = open_price * (1 + ret)
-            
+
             position = self._create_position(
                 f"compound_{i}", TradePair.BTCUSD,
                 base_time + (i * 2 * MS_IN_24_HOURS),
                 base_time + (i * 2 * MS_IN_24_HOURS) + MS_IN_24_HOURS,
                 open_price, close_price, OrderType.LONG
             )
-            self.position_manager.save_miner_position(position)
-        
+            self.position_client.save_miner_position(position)
+
         # Update incrementally to build up state properly
         current_time = base_time
         step_size = 12 * 60 * 60 * 1000  # 12 hours
@@ -302,22 +246,22 @@ class TestPerfLedgerMathAndMetrics(TestBase):
 
         while current_time < final_time:
             next_time = min(current_time + step_size, final_time)
-            plm.update(t_ms=next_time)
+            self.perf_ledger_client.update(t_ms=next_time)
             current_time = next_time
-        
-        # Get ledger
-        bundles = plm.get_perf_ledgers(portfolio_only=False)
+
+        # Get ledger via client
+        bundles = self.perf_ledger_client.get_perf_ledgers(portfolio_only=False)
         btc_ledger = bundles[self.test_hotkey][TradePair.BTCUSD.trade_pair_id]
-        
+
         # Find final checkpoint with data
         final_cp = None
         for cp in reversed(btc_ledger.cps):
             if cp.n_updates > 0:
                 final_cp = cp
                 break
-        
+
         self.assertIsNotNone(final_cp, "Should find final checkpoint")
-        
+
         # Compounded return should be: 1.10 * 0.95 * 1.03 = 1.07635
         # So portfolio return should be around 1.076
         # (accounting for fees will make it slightly less)
@@ -328,64 +272,9 @@ class TestPerfLedgerMathAndMetrics(TestBase):
         self.assertLess(final_cp.prev_portfolio_ret, 1.08,
                        "Compounded return should account for the loss")
 
-    @patch('vali_objects.vali_dataclasses.perf_ledger.LivePriceFetcher')
-    def test_portfolio_vs_trade_pair_return_consistency(self, mock_lpf):
+    def test_portfolio_vs_trade_pair_return_consistency(self):
         """Test that portfolio returns match the product of per-trade-pair returns."""
-        from collections import namedtuple
-        Candle = namedtuple('Candle', ['timestamp', 'close'])
-
-        mock_pds = Mock()
-
-        # Mock candle data for multiple trade pairs
-        def mock_unified_candle_fetcher(*args, **kwargs):
-            if args:
-                trade_pair = args[0]
-                start_ms = args[1] if len(args) > 1 else kwargs.get('start_timestamp_ms')
-                end_ms = args[2] if len(args) > 2 else kwargs.get('end_timestamp_ms')
-            else:
-                trade_pair = kwargs.get('trade_pair')
-                start_ms = kwargs.get('start_timestamp_ms')
-                end_ms = kwargs.get('end_timestamp_ms')
-
-            candles = []
-            base_time = self.now_ms - (10 * MS_IN_24_HOURS)
-
-            # Simple price progression for all trade pairs
-            price_schedule = [
-                (base_time, 50000.0),
-                (base_time + 2 * MS_IN_24_HOURS, 52000.0),  # 4% gain
-                (base_time + 4 * MS_IN_24_HOURS, 51000.0),  # 2% loss from peak
-                (base_time + 8 * MS_IN_24_HOURS, 53000.0),  # Final gain
-            ]
-
-            # Generate minute candles
-            for i in range(len(price_schedule) - 1):
-                t1, p1 = price_schedule[i]
-                t2, p2 = price_schedule[i + 1]
-
-                if t1 <= end_ms and t2 >= start_ms:
-                    current_ms = max(t1, start_ms)
-                    while current_ms <= min(t2, end_ms):
-                        progress = (current_ms - t1) / (t2 - t1) if t2 > t1 else 0
-                        price = p1 + (p2 - p1) * progress
-                        candles.append(Candle(timestamp=current_ms, close=price))
-                        current_ms += 60000  # 1 minute
-
-            return candles
-
-        mock_pds.unified_candle_fetcher.side_effect = mock_unified_candle_fetcher
-        mock_pds.tp_to_mfs = {}
-        mock_lpf.return_value.polygon_data_service = mock_pds
-
-        plm = PerfLedgerManager(
-            metagraph=self.mmg,
-            running_unit_tests=True,
-            position_manager=self.position_manager,
-            parallel_mode=ParallelizationMode.SERIAL,
-            live_price_fetcher=mock_lpf.return_value,
-            is_backtesting=True,
-        )
-        plm.clear_all_ledger_data()
+        # No mocking needed - LivePriceFetcherClient with running_unit_tests=True handles test data
 
         base_time = self.now_ms - (10 * MS_IN_24_HOURS)
 
@@ -400,7 +289,7 @@ class TestPerfLedgerMathAndMetrics(TestBase):
                 base_time + (i + 2) * MS_IN_24_HOURS,
                 50000.0, 52000.0, OrderType.LONG  # 4% gain
             )
-            self.position_manager.save_miner_position(closed_position)
+            self.position_client.save_miner_position(closed_position)
 
             # Create open position that starts after the closed one ends
             open_position = self._create_position(
@@ -411,20 +300,20 @@ class TestPerfLedgerMathAndMetrics(TestBase):
             )
             open_position.is_closed_position = False
             open_position.orders = open_position.orders[:-1]  # Remove close order
-            self.position_manager.save_miner_position(open_position)
+            self.position_client.save_miner_position(open_position)
 
-        # Update incrementally
+        # Update incrementally via client
         current_time = base_time
         step_size = 12 * 60 * 60 * 1000  # 12 hours
         final_time = base_time + (8 * MS_IN_24_HOURS)
 
         while current_time < final_time:
             next_time = min(current_time + step_size, final_time)
-            plm.update(t_ms=next_time)
+            self.perf_ledger_client.update(t_ms=next_time)
             current_time = next_time
 
-        # Get performance ledgers for all trade pairs
-        bundles = plm.get_perf_ledgers(portfolio_only=False)
+        # Get performance ledgers for all trade pairs via client
+        bundles = self.perf_ledger_client.get_perf_ledgers(portfolio_only=False)
         self.assertIn(self.test_hotkey, bundles, "Should have ledger bundle for test hotkey")
 
         perf_ledger_bundles = {self.test_hotkey: bundles[self.test_hotkey]}
@@ -482,7 +371,7 @@ class TestPerfLedgerMathAndMetrics(TestBase):
                     f"(relative error: {difference})")
 
     def _create_position(self, position_id: str, trade_pair: TradePair,
-                        open_ms: int, close_ms: int, open_price: float, 
+                        open_ms: int, close_ms: int, open_price: float,
                         close_price: float, order_type: OrderType,
                         leverage: float = 1.0) -> Position:
         """Helper to create a position."""
@@ -514,7 +403,7 @@ class TestPerfLedgerMathAndMetrics(TestBase):
             position_type=OrderType.FLAT,
             is_closed_position=True,
         )
-        position.rebuild_position_with_updated_orders(self.live_price_fetcher)
+        position.rebuild_position_with_updated_orders(self.live_price_fetcher_server)
         return position
 
 

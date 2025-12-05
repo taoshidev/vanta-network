@@ -1,7 +1,7 @@
 # The MIT License (MIT)
-# Copyright © 2024 Yuma Rao
+# Copyright (c) 2024 Yuma Rao
 # developer: jbonilla
-# Copyright © 2024 Taoshi Inc
+# Copyright (c) 2024 Taoshi Inc
 import asyncio
 import json
 import os
@@ -95,9 +95,9 @@ class PropNetOrderPlacer:
     MAX_WORKERS = 10
     THREAD_POOL_TIMEOUT = 300  # 5 minutes
 
-    def __init__(self, wallet, metagraph_updater, config, is_testnet, position_inspector=None, slack_notifier=None):
+    def __init__(self, wallet, metagraph_client, config, is_testnet, position_inspector=None, slack_notifier=None):
         self.wallet = wallet
-        self.metagraph_updater = metagraph_updater
+        self.metagraph_client = metagraph_client
         self.config = config
         self.recently_acked_validators = []
         self.is_testnet = is_testnet
@@ -227,7 +227,7 @@ class PropNetOrderPlacer:
         """
         Processes a signal file by attempting to send it to the validators.
         """
-        hotkey_to_v_trust = {neuron.hotkey: neuron.validator_trust for neuron in self.metagraph_updater.get_metagraph().neurons}
+        hotkey_to_v_trust = {neuron.hotkey: neuron.validator_trust for neuron in self.metagraph_client.get_neurons()}
         axons_to_try = self.position_inspector.get_possible_validators()
         axons_to_try.sort(key=lambda validator: hotkey_to_v_trust[validator.hotkey], reverse=True)
 
@@ -255,7 +255,8 @@ class PropNetOrderPlacer:
 
         # Thread-safe UUID check
         with self._lock:
-            if miner_order_uuid in self.used_miner_uuids:
+            is_cancel_order = signal_data.get("execution_type", "MARKET") == "LIMIT_CANCEL"
+            if miner_order_uuid in self.used_miner_uuids and not is_cancel_order:
                 bt.logging.warning(f"Duplicate miner order uuid {miner_order_uuid}, skipping")
                 return None
             self.used_miner_uuids.add(miner_order_uuid)
@@ -323,7 +324,7 @@ class PropNetOrderPlacer:
     async def attempt_to_send_signal(self, send_signal_request: SendSignal, retry_status: dict,
                                high_trust_validators: list, validator_hotkey_to_axon: dict,
                                metrics: SignalMetrics):
-        hotkey_to_v_trust = {neuron.hotkey: neuron.validator_trust for neuron in self.metagraph_updater.get_metagraph().neurons}
+        hotkey_to_v_trust = {neuron.hotkey: neuron.validator_trust for neuron in self.metagraph_client.get_neurons()}
 
         bt.logging.info(
             f"Attempt #{retry_status['retry_attempts']} for {send_signal_request.signal['trade_pair']['trade_pair_id']} "

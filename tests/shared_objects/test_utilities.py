@@ -1,15 +1,14 @@
 import hashlib
 import pickle
-import time
 from typing import Union
 
 import numpy as np
 
 from vali_objects.enums.order_type_enum import OrderType
-from vali_objects.position import Position
+from vali_objects.vali_dataclasses.position import Position
 from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.vali_dataclasses.order import Order
-from vali_objects.vali_dataclasses.perf_ledger import (
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import (
     TP_ID_PORTFOLIO,
     PerfCheckpoint,
     PerfLedger,
@@ -126,7 +125,7 @@ def generate_ledger(
                 loss=loss,
                 prev_portfolio_ret=1.0,
                 open_ms=checkpoint_open_ms,
-                accum_ms=checkpoint_open_ms,
+                accum_ms=ValiConfig.TARGET_CHECKPOINT_DURATION_MS,  # Full checkpoint duration for complete days
                 mdd=mdd,
             ),
         )
@@ -181,7 +180,7 @@ def generate_winning_ledger(start, end):
 
     return {
             TP_ID_PORTFOLIO: portfolio_ledger[TP_ID_PORTFOLIO],
-            "BTCUSD": btc_ledger[TP_ID_PORTFOLIO]
+            TradePair.BTCUSD.trade_pair_id: btc_ledger[TP_ID_PORTFOLIO]
             }
 
 def generate_losing_ledger(start, end):
@@ -191,7 +190,7 @@ def generate_losing_ledger(start, end):
 
     return {
         TP_ID_PORTFOLIO: portfolio_ledger[TP_ID_PORTFOLIO],
-        "BTCUSD": btc_ledger[TP_ID_PORTFOLIO]
+        TradePair.BTCUSD.trade_pair_id: btc_ledger[TP_ID_PORTFOLIO]
     }
 
 def create_daily_checkpoints_with_pnl(realized_pnl_values: list[float], unrealized_pnl_values: list[float]) -> PerfLedger:

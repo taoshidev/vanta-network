@@ -12,8 +12,9 @@ from polygon import WebSocketClient
 from setproctitle import setproctitle
 from tiingo import TiingoWebsocketClient
 
+from shared_objects.error_utils import ErrorUtils
 from time_util.time_util import TimeUtil, UnifiedMarketCalendar
-from vali_objects.vali_config import TradePair, TradePairCategory
+from vali_objects.vali_config import TradePair, TradePairCategory, ValiConfig
 from vali_objects.vali_dataclasses.recent_event_tracker import RecentEventTracker
 from vali_objects.vali_dataclasses.price_source import PriceSource
 
@@ -42,27 +43,25 @@ def exception_handler_decorator():
     return decorator
 
 class BaseDataService():
-    def __init__(self, provider_name, ipc_manager=None):
+    def __init__(self, provider_name, running_unit_tests=False):
         self.DEBUG_LOG_INTERVAL_S = 180
         self.MAX_TIME_NO_EVENTS_S = 120
         self.enabled_websocket_categories = {TradePairCategory.CRYPTO,
                                             TradePairCategory.FOREX}  # Exclude EQUITIES for now
 
         self.provider_name = provider_name
+        self.running_unit_tests = running_unit_tests
         self.tpc_to_n_events = {x: 0 for x in self.enabled_websocket_categories}
         self.n_equity_events_skipped_afterhours = 0
         self.trade_pair_to_price_history = defaultdict(list)
         self.closed_market_prices = {tp: None for tp in TradePair}
         self.closed_market_prices_timestamp_ms = {tp: 0 for tp in TradePair}
         self.latest_websocket_events = {}
-        self.using_ipc = ipc_manager is not None
         self.n_flushes = 0
         self.websocket_manager_thread = None
         self.trade_pair_to_recent_events_realtime = defaultdict(RecentEventTracker)
-        if ipc_manager is None:
-            self.trade_pair_to_recent_events = defaultdict(RecentEventTracker)
-        else:
-            self.trade_pair_to_recent_events = ipc_manager.dict()
+        self.trade_pair_to_recent_events = defaultdict(RecentEventTracker)
+
         self.trade_pair_category_to_longest_allowed_lag_s = {tpc: 30 for tpc in TradePairCategory}
         self.timespan_to_ms = {'second': 1000, 'minute': 1000 * 60, 'hour': 1000 * 60 * 60, 'day': 1000 * 60 * 60 * 24}
 
@@ -77,7 +76,8 @@ class BaseDataService():
         self.last_restart_time = {}
         self.tpc_to_last_event_time = {t: 0 for t in self.enabled_websocket_categories}
 
-        self.UNSUPPORTED_TRADE_PAIRS = (TradePair.SPX, TradePair.DJI, TradePair.NDX, TradePair.VIX, TradePair.FTSE, TradePair.GDAXI, TradePair.TAOUSD)
+        # Reference ValiConfig constant for backward compatibility
+        self.UNSUPPORTED_TRADE_PAIRS = ValiConfig.UNSUPPORTED_TRADE_PAIRS
 
         for trade_pair in TradePair:
             assert trade_pair.trade_pair_category in self.trade_pair_category_to_longest_allowed_lag_s, \
@@ -87,6 +87,9 @@ class BaseDataService():
         self.WEBSOCKET_OBJECTS = {}
         for tpc in self.enabled_websocket_categories:
             self.WEBSOCKET_OBJECTS[tpc] = None
+
+        # Test-only override for market open status
+        self._test_market_open_override = None  # None = use real calendar, True/False = override all markets
 
 
 
@@ -98,9 +101,29 @@ class BaseDataService():
         pass
 
     def is_market_open(self, trade_pair: TradePair, time_ms=None) -> bool:
+        # Check test override first
+        if self._test_market_open_override is not None:
+            return self._test_market_open_override
+
         if time_ms is None:
             time_ms = TimeUtil.now_in_millis()
         return self.market_calendar.is_market_open(trade_pair, time_ms)
+
+    @ErrorUtils.require_test_mode
+    def set_test_market_open(self, is_open: bool) -> None:
+        """
+        Test-only method to override market open status.
+        Only works when running_unit_tests=True for safety.
+        """
+        self._test_market_open_override = is_open
+
+    @ErrorUtils.require_test_mode
+    def clear_test_market_open(self) -> None:
+        """
+        Clear market open override and use real calendar.
+        Only works when running_unit_tests=True for safety.
+        """
+        self._test_market_open_override = None
 
     def get_close(self, trade_pair: TradePair) -> PriceSource | None:
         event = self.get_websocket_event(trade_pair)
@@ -119,6 +142,45 @@ class BaseDataService():
     def get_first_trade_pair_in_category(self, tpc: TradePairCategory) -> TradePair:
         # Use generator expression for efficiency
         return next((x for x in TradePair if x.trade_pair_category == tpc), None)
+
+    def get_tradeable_pairs(
+        self,
+        category: TradePairCategory = None,
+        include_blocked: bool = False,
+        market_open_only: bool = False
+    ) -> List[TradePair]:
+        """
+        Get list of tradeable trade pairs with configurable filtering.
+
+        Args:
+            category: Filter by category (None = all categories)
+            include_blocked: If False, exclude blocked pairs
+            market_open_only: If True, only return pairs with open markets
+
+        Returns:
+            List of TradePair objects that meet the criteria
+        """
+        pairs = []
+        for tp in TradePair:
+            # Skip unsupported pairs (no price data available)
+            if tp in self.UNSUPPORTED_TRADE_PAIRS:
+                continue
+
+            # Filter by category if specified
+            if category and tp.trade_pair_category != category:
+                continue
+
+            # Filter blocked pairs unless explicitly requested
+            if not include_blocked and tp.is_blocked:
+                continue
+
+            # Filter by market hours if requested
+            if market_open_only and not self.is_market_open(tp):
+                continue
+
+            pairs.append(tp)
+
+        return pairs
 
     def check_flush(self):
         t0 = time.time() if self.n_flushes % 500 == 0 else 0
@@ -219,9 +281,6 @@ class BaseDataService():
                     # Check health of each websocket
                     for tpc in self.enabled_websocket_categories:
                         await self._check_websocket_health(tpc, loop)
-                    
-                    if self.using_ipc:
-                        self.check_flush()
 
                     if now - last_debug > self.DEBUG_LOG_INTERVAL_S:
                         try:
@@ -371,7 +430,7 @@ class BaseDataService():
     def instantiate_not_pickleable_objects(self):
         raise NotImplementedError
 
-    def get_closes_websocket(self, trade_pairs: List[TradePair], trade_pair_to_last_order_time_ms) -> dict[str: PriceSource]:
+    def get_closes_websocket(self, trade_pairs: List[TradePair], time_ms) -> dict[str: PriceSource]:
         events = {}
         for trade_pair in trade_pairs:
             symbol = trade_pair.trade_pair
@@ -379,14 +438,13 @@ class BaseDataService():
                 continue
 
             # Get the closest aligned event
-            time_ms = trade_pair_to_last_order_time_ms[trade_pair]
             symbol = trade_pair.trade_pair
             latest_event = self.trade_pair_to_recent_events[symbol].get_closest_event(time_ms)
             events[trade_pair] = latest_event
 
         return events
 
-    def get_closes_rest(self, trade_pairs: List[TradePair]) -> dict[str: float]:
+    def get_closes_rest(self, trade_pairs: List[TradePair], time_ms) -> dict[str: float]:
         pass
 
     def get_websocket_lag_for_trade_pair_s(self, tp: str, now_ms: int) -> float | None:

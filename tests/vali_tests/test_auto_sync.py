@@ -2,44 +2,138 @@ import json
 from copy import deepcopy
 from unittest.mock import Mock, patch
 
-from tests.shared_objects.mock_classes import MockLivePriceFetcher
-
-from shared_objects.mock_metagraph import MockMetagraph
+from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
+from time_util.time_util import TimeUtil
+from vali_objects.data_sync.auto_sync import PositionSyncer
+from vali_objects.data_sync.order_sync_state import OrderSyncState
+from vali_objects.data_sync.validator_sync_base import AUTO_SYNC_ORDER_LAG_MS, PositionSyncResultException
 from vali_objects.decoders.generalized_json_decoder import GeneralizedJSONDecoder
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.enums.order_type_enum import OrderType
-from vali_objects.position import Position
-from vali_objects.utils.auto_sync import PositionSyncer
-from vali_objects.utils.elimination_manager import EliminationManager
-from vali_objects.utils.position_manager import PositionManager
-from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
+from vali_objects.utils.limit_order.market_order_manager import MarketOrderManager
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair
-from vali_objects.utils.validator_sync_base import AUTO_SYNC_ORDER_LAG_MS, PositionSyncResultException
 from vali_objects.vali_dataclasses.order import Order
-from vali_objects.utils.challengeperiod_manager import ChallengePeriodManager
-from vali_objects.utils.miner_bucket_enum import MinerBucket
-from time_util.time_util import TimeUtil
+from vali_objects.vali_dataclasses.position import Position
 
 
-class TestPositions(TestBase):
+class TestAutoSync(TestBase):
+    """
+    Auto-sync position tests using ServerOrchestrator for shared server infrastructure.
 
-    def setUp(self):
-        super().setUp()
+    Servers start once (via singleton orchestrator) and are shared across:
+    - All test methods in this class
+    - All test classes in this file
+    - All test files that use ServerOrchestrator
 
-        # Clear ALL test miner positions BEFORE creating PositionManager
-        ValiBkpUtils.clear_directory(
-            ValiBkpUtils.get_miner_dir(running_unit_tests=True)
+    This eliminates redundant server spawning and dramatically reduces test startup time.
+    Per-test isolation is achieved by clearing data state (not restarting servers).
+    """
+
+    # Class-level references (set in setUpClass via ServerOrchestrator)
+    orchestrator = None
+    live_price_fetcher_client = None
+    metagraph_client = None
+    position_client = None
+    perf_ledger_client = None
+    elimination_client = None
+    challenge_period_client = None
+    plagiarism_client = None
+    market_order_manager = None
+    position_syncer = None
+
+    # Test constants
+    DEFAULT_MINER_HOTKEY = "test_miner"
+    DEFAULT_POSITION_UUID = "test_position"
+    DEFAULT_ORDER_UUID = "test_order"
+    DEFAULT_OPEN_MS = 1718071209000
+    DEFAULT_TRADE_PAIR = TradePair.BTCUSD
+
+    @classmethod
+    def setUpClass(cls):
+        """One-time setup: Start all servers using ServerOrchestrator (shared across all test classes)."""
+        # Get the singleton orchestrator and start all required servers
+        cls.orchestrator = ServerOrchestrator.get_instance()
+
+        # Start all servers in TESTING mode (idempotent - safe if already started by another test class)
+        # This starts servers once and shares them across ALL test classes
+        secrets = ValiUtils.get_secrets(running_unit_tests=True)
+        cls.orchestrator.start_all_servers(
+            mode=ServerMode.TESTING,
+            secrets=secrets
         )
 
+        # Get clients from orchestrator (servers guaranteed ready, no connection delays)
+        cls.live_price_fetcher_client = cls.orchestrator.get_client('live_price_fetcher')
+        cls.metagraph_client = cls.orchestrator.get_client('metagraph')
+        cls.perf_ledger_client = cls.orchestrator.get_client('perf_ledger')
+        cls.challenge_period_client = cls.orchestrator.get_client('challenge_period')
+        cls.elimination_client = cls.orchestrator.get_client('elimination')
+        cls.position_client = cls.orchestrator.get_client('position_manager')
+        cls.plagiarism_client = cls.orchestrator.get_client('plagiarism')
+
+        # Initialize metagraph with test miner
+        cls.metagraph_client.set_hotkeys([cls.DEFAULT_MINER_HOTKEY])
+
+        # Create MarketOrderManager (not a server, just a local instance)
+        cls.market_order_manager = MarketOrderManager(
+            serve=False,
+            running_unit_tests=True
+        )
+
+        # Create OrderSyncState for PositionSyncer
+        cls.order_sync = OrderSyncState()
+        cls.position_syncer = PositionSyncer(
+            order_sync=cls.order_sync,
+            running_unit_tests=True,
+            enable_position_splitting=True
+        )
+
+    @classmethod
+    def tearDownClass(cls):
+        """
+        One-time teardown: No action needed.
+
+        Note: Servers and clients are managed by ServerOrchestrator singleton and shared
+        across all test classes. They will be shut down automatically at process exit.
+        """
+        pass
+
+    def setUp(self):
+        """Per-test setup: Reset data state (fast - no server restarts)."""
+        # NOTE: Skip super().setUp() to avoid killing ports (servers already running)
+
+        # Clear all data for test isolation (both memory and disk)
+        self.orchestrator.clear_all_test_data()
+
+        # Initialize test constants
         self.DEFAULT_MINER_HOTKEY = "test_miner"
         self.DEFAULT_POSITION_UUID = "test_position"
         self.DEFAULT_ORDER_UUID = "test_order"
         self.DEFAULT_OPEN_MS = 1718071209000
         self.DEFAULT_TRADE_PAIR = TradePair.BTCUSD
         self.DEFAULT_ACCOUNT_SIZE = 100_000
-        self.default_order = Order(price=1, processed_ms=self.DEFAULT_OPEN_MS, order_uuid=self.DEFAULT_ORDER_UUID, trade_pair=self.DEFAULT_TRADE_PAIR,
-                                     order_type=OrderType.LONG, leverage=1)
+
+        # Set up test miner in metagraph
+        # Use try/except to handle server crashes gracefully
+        try:
+            self.metagraph_client.set_hotkeys([self.DEFAULT_MINER_HOTKEY])
+        except (BrokenPipeError, ConnectionRefusedError, ConnectionError, EOFError) as e:
+            # Server may have crashed - log and skip (tests that need metagraph will fail anyway)
+            import bittensor as bt
+            bt.logging.warning(f"Failed to set metagraph hotkeys in setUp (server may have crashed): {e}")
+
+        # Create default test data
+        self.default_order = Order(
+            price=1,
+            processed_ms=self.DEFAULT_OPEN_MS,
+            order_uuid=self.DEFAULT_ORDER_UUID,
+            trade_pair=self.DEFAULT_TRADE_PAIR,
+            order_type=OrderType.LONG,
+            leverage=1
+        )
+
         self.default_position = Position(
             miner_hotkey=self.DEFAULT_MINER_HOTKEY,
             position_uuid=self.DEFAULT_POSITION_UUID,
@@ -49,17 +143,6 @@ class TestPositions(TestBase):
             position_type=OrderType.LONG,
             account_size=self.DEFAULT_ACCOUNT_SIZE,
         )
-        self.mock_metagraph = MockMetagraph([self.DEFAULT_MINER_HOTKEY])
-        self.elimination_manager = EliminationManager(self.mock_metagraph, None, None, running_unit_tests=True)
-        secrets = ValiUtils.get_secrets(running_unit_tests=True)
-        self.live_price_fetcher = MockLivePriceFetcher(secrets=secrets, disable_ws=True)
-        self.position_manager = PositionManager(metagraph=self.mock_metagraph, running_unit_tests=True,
-                                                elimination_manager=self.elimination_manager, live_price_fetcher=self.live_price_fetcher)
-        self.elimination_manager.position_manager = self.position_manager
-        self.position_manager.clear_all_miner_positions()
-        
-        # Clear any eliminations that might persist between tests
-        self.elimination_manager.eliminations.clear()
 
         self.default_open_position = Position(
             miner_hotkey=self.DEFAULT_MINER_HOTKEY,
@@ -82,7 +165,10 @@ class TestPositions(TestBase):
         )
         self.default_closed_position.close_out_position(self.DEFAULT_OPEN_MS + 1000 * 60 * 60 * 6)
 
-        self.position_syncer = PositionSyncer(running_unit_tests=True, position_manager=self.position_manager, enable_position_splitting=True, live_price_fetcher=self.live_price_fetcher)
+
+    def tearDown(self):
+        """Per-test teardown: Clear data for next test."""
+        self.orchestrator.clear_all_test_data()
 
     def validate_comprehensive_stats(self, stats, expected_miners=1, expected_eliminated=0, 
                                    expected_pos_updates=0, expected_pos_matches=0, expected_pos_insertions=0, 
@@ -690,7 +776,7 @@ class TestPositions(TestBase):
         orders = [deepcopy(self.default_order) for _ in range(3)]
         for i, o in enumerate(orders):
             # Ensure they are in the future
-            o.order_uuid = i
+            o.order_uuid = str(i)
             o.processed_ms = self.default_order.processed_ms + 2 * AUTO_SYNC_ORDER_LAG_MS
         dp1.orders = orders
         disk_positions = self.positions_to_disk_data([dp1])
@@ -733,7 +819,7 @@ class TestPositions(TestBase):
         orders = [deepcopy(self.default_order) for _ in range(3)]
         for i, o in enumerate(orders):
             # Ensure they are in the future
-            o.order_uuid = o.order_uuid if i == 0 else i
+            o.order_uuid = o.order_uuid if i == 0 else str(i)
             o.processed_ms = self.default_order.processed_ms + 2 * AUTO_SYNC_ORDER_LAG_MS
         dp1.orders = orders
         disk_positions = self.positions_to_disk_data([dp1])
@@ -774,7 +860,7 @@ class TestPositions(TestBase):
         dp1 = deepcopy(self.default_position)
         orders = [deepcopy(self.default_order) for _ in range(3)]
         for i, o in enumerate(orders):
-            o.order_uuid = o.order_uuid if i == 0 else i
+            o.order_uuid = o.order_uuid if i == 0 else str(i)
 
             # Will still allow for a match
             if i == 0:
@@ -982,7 +1068,7 @@ class TestPositions(TestBase):
         dp1 = deepcopy(self.default_position)
         orders = [deepcopy(self.default_order) for _ in range(3)]
         for i, o in enumerate(orders):
-            o.order_uuid = o.order_uuid if i == 0 else i
+            o.order_uuid = o.order_uuid if i == 0 else str(i)
 
             # Will still allow for a match
             if i == 0:
@@ -1205,30 +1291,22 @@ class TestPositions(TestBase):
         assert stats['orders_kept'] == 1, f"Should keep future order: {stats}"
         assert stats['orders_matched'] == 2, f"Should match orders within window: {stats}"
 
-    @patch('vali_objects.utils.auto_sync.requests.get')
+    @patch('vali_objects.data_sync.auto_sync.requests.get')
     def test_perform_sync_with_network_errors(self, mock_get):
         """Test autosync behavior with network failures"""
         # Test HTTP error
         mock_response = Mock()
         mock_response.raise_for_status.side_effect = Exception("Network error")
         mock_get.return_value = mock_response
-        
-        # Should handle error gracefully
-        self.position_syncer.n_orders_being_processed = [0]
-        # Mock lock must support context manager protocol (__enter__ and __exit__)
-        mock_lock = Mock()
-        mock_lock.__enter__ = Mock(return_value=mock_lock)
-        mock_lock.__exit__ = Mock(return_value=None)
-        self.position_syncer.signal_sync_lock = mock_lock
-        self.position_syncer.signal_sync_condition = Mock()
-        
+
+        # Should handle error gracefully (OrderSyncState handles sync state internally)
         # This should not raise an exception
         self.position_syncer.perform_sync()
-        
+
         # Test with successful response but invalid JSON
         mock_response.raise_for_status.side_effect = None
         mock_response.content = b'invalid json'
-        
+
         self.position_syncer.perform_sync()
 
     def test_split_position_on_flat_complex(self):
@@ -1294,17 +1372,10 @@ class TestPositions(TestBase):
 
     def test_challengeperiod_sync_integration(self):
         """Test challengeperiod sync when included in candidate data"""
-        # Setup challengeperiod manager
-        self.position_manager.challengeperiod_manager = ChallengePeriodManager(
-            metagraph=self.mock_metagraph,
-            position_manager=self.position_manager,
-            running_unit_tests=True
-        )
-        
         # Create candidate data with challengeperiod info
         test_hotkey2 = "test_miner_2"
-        self.mock_metagraph.hotkeys.append(test_hotkey2)
-        
+        self.metagraph_client.set_hotkeys([self.DEFAULT_MINER_HOTKEY, test_hotkey2])
+
         candidate_data = self.positions_to_candidate_data([self.default_position])
         candidate_data['challengeperiod'] = {
             self.DEFAULT_MINER_HOTKEY: {
@@ -1320,61 +1391,61 @@ class TestPositions(TestBase):
                 "previous_bucket_start_time": None
             }
         }
-        
+
         # Clear any existing challengeperiod data
-        self.position_manager.challengeperiod_manager.active_miners.clear()
-        
+        self.challenge_period_client.clear_all_miners()
+
         disk_positions = self.positions_to_disk_data([self.default_position])
         self.position_syncer.sync_positions(shadow_mode=False, candidate_data=candidate_data,
                                            disk_positions=disk_positions)
-        
-        # Verify challengeperiod was synced
-        assert self.DEFAULT_MINER_HOTKEY in self.position_manager.challengeperiod_manager.active_miners
-        assert test_hotkey2 in self.position_manager.challengeperiod_manager.active_miners
-        
-        bucket1, _, _, _ = self.position_manager.challengeperiod_manager.active_miners[self.DEFAULT_MINER_HOTKEY]
-        bucket2, _, _, _ = self.position_manager.challengeperiod_manager.active_miners[test_hotkey2]
-        
+
+        # Verify challengeperiod was synced (use client instead of direct manager access)
+        assert self.challenge_period_client.has_miner(self.DEFAULT_MINER_HOTKEY)
+        assert self.challenge_period_client.has_miner(test_hotkey2)
+
+        bucket1 = self.challenge_period_client.get_miner_bucket(self.DEFAULT_MINER_HOTKEY)
+        bucket2 = self.challenge_period_client.get_miner_bucket(test_hotkey2)
+
         assert bucket1 == MinerBucket.CHALLENGE
         assert bucket2 == MinerBucket.MAINCOMP
 
     def test_elimination_sync_and_ledger_invalidation(self):
         """Test elimination sync and perf ledger invalidation"""
         # Ensure clean elimination state for test
-        self.elimination_manager.eliminations.clear()
-        
+        self.elimination_client.clear_eliminations()
+
         # Create eliminations in candidate data
         eliminated_hotkey = "eliminated_miner"
-        self.mock_metagraph.hotkeys.append(eliminated_hotkey)
-        
+        self.metagraph_client.set_hotkeys([self.DEFAULT_MINER_HOTKEY, eliminated_hotkey])
+
         # Position for eliminated miner
         eliminated_position = deepcopy(self.default_position)
         eliminated_position.miner_hotkey = eliminated_hotkey
-        
+
         candidate_data = self.positions_to_candidate_data([self.default_position])
         candidate_data['eliminations'] = [{
             'hotkey': eliminated_hotkey,
             'reason': 'Test elimination',
             'timestamp': self.DEFAULT_OPEN_MS
         }]
-        
+
         # Include the eliminated miner's position in candidate data
         candidate_data['positions'][eliminated_hotkey] = {
             'positions': [json.loads(str(eliminated_position), cls=GeneralizedJSONDecoder)]
         }
-        
+
         disk_positions = {
             self.DEFAULT_MINER_HOTKEY: [self.default_position],
             eliminated_hotkey: [eliminated_position]
         }
-        
+
         self.position_syncer.sync_positions(shadow_mode=False, candidate_data=candidate_data,
                                            disk_positions=disk_positions)
         stats = self.position_syncer.global_stats
-        
+
         # Should skip eliminated miner
         assert stats['n_miners_skipped_eliminated'] == 1, f"Should skip eliminated miner: {stats}"
-        
+
         # Should invalidate perf ledger for eliminated miner
         assert eliminated_hotkey in self.position_syncer.perf_ledger_hks_to_invalidate, f"Expected {eliminated_hotkey} in {self.position_syncer.perf_ledger_hks_to_invalidate}"
         assert self.position_syncer.perf_ledger_hks_to_invalidate[eliminated_hotkey] == 0
@@ -1498,7 +1569,7 @@ class TestPositions(TestBase):
         self.position_syncer.last_signal_sync_time_ms = TimeUtil.now_in_millis() - 1000 * 60 * 31
         
         # Test outside time window
-        with patch('vali_objects.utils.auto_sync.TimeUtil.generate_start_timestamp') as mock_time:
+        with patch('vali_objects.data_sync.auto_sync.TimeUtil.generate_start_timestamp') as mock_time:
             mock_dt = Mock()
             mock_dt.hour = 5  # Not 6
             mock_dt.minute = 15
@@ -1509,7 +1580,7 @@ class TestPositions(TestBase):
                 mock_sync.assert_not_called()
         
         # Test within time window
-        with patch('vali_objects.utils.auto_sync.TimeUtil.generate_start_timestamp') as mock_time:
+        with patch('vali_objects.data_sync.auto_sync.TimeUtil.generate_start_timestamp') as mock_time:
             mock_dt = Mock()
             mock_dt.hour = 21
             mock_dt.minute = 15  # Between 8 and 20
@@ -1604,13 +1675,12 @@ class TestPositions(TestBase):
     def test_mothership_mode(self):
         """Test behavior when running as mothership"""
         # Mock mothership mode
-        with patch('vali_objects.utils.validator_sync_base.ValiUtils.get_secrets') as mock_secrets:
-            mock_secrets.return_value = {'ms': 'mothership_secret'}
+        with patch('vali_objects.data_sync.validator_sync_base.ValiUtils.get_secrets') as mock_secrets:
+            mock_secrets.return_value = {'ms': 'mothership_secret', 'polygon_apikey': "", 'tiingo_apikey': ""}
             
             # Create new syncer in mothership mode
             mothership_syncer = PositionSyncer(
-                running_unit_tests=True,
-                position_manager=self.position_manager
+                running_unit_tests=True
             )
             
             assert mothership_syncer.is_mothership
@@ -1619,9 +1689,9 @@ class TestPositions(TestBase):
             candidate_data = self.positions_to_candidate_data([self.default_position])
             disk_positions = self.positions_to_disk_data([])
             
-            # Mock position manager methods to track calls
-            with patch.object(self.position_manager, 'delete_position') as mock_delete:
-                with patch.object(self.position_manager, 'overwrite_position_on_disk') as mock_overwrite:
+            # Mock position client methods to track calls
+            with patch.object(self.position_client, 'delete_position') as mock_delete:
+                with patch.object(self.position_client, 'save_miner_position') as mock_overwrite:
                     mothership_syncer.sync_positions(shadow_mode=False, candidate_data=candidate_data,
                                                      disk_positions=disk_positions)
                     
@@ -1794,8 +1864,8 @@ class TestPositions(TestBase):
         disk_positions = self.positions_to_disk_data([to_delete])
         
         # Mock write methods
-        with patch.object(self.position_manager, 'delete_position') as mock_delete:
-            with patch.object(self.position_manager, 'overwrite_position_on_disk') as mock_overwrite:
+        with patch.object(self.position_client, 'delete_position') as mock_delete:
+            with patch.object(self.position_client, 'save_miner_position') as mock_overwrite:
                 # Run in shadow mode
                 self.position_syncer.sync_positions(shadow_mode=True, candidate_data=candidate_data,
                                                    disk_positions=disk_positions)
@@ -2226,13 +2296,13 @@ class TestPositions(TestBase):
         disk_positions = self.positions_to_disk_data([deepcopy(position)])
         
         # Clear all positions first to start fresh
-        self.position_manager.clear_all_miner_positions()
-        
+        self.position_client.clear_all_miner_positions_and_disk()
+
         # Add the initial position to disk
-        self.position_manager.overwrite_position_on_disk(deepcopy(position))
-        
-        # Use the actual disk positions from the position manager
-        actual_disk_positions = self.position_manager.get_positions_for_all_miners()
+        self.position_client.save_miner_position(deepcopy(position))
+
+        # Use the actual disk positions from the position client
+        actual_disk_positions = self.position_client.get_positions_for_all_miners()
         self.position_syncer.sync_positions(shadow_mode=False, candidate_data=candidate_data,
                                            disk_positions=actual_disk_positions)
         stats = self.position_syncer.global_stats
@@ -2242,7 +2312,7 @@ class TestPositions(TestBase):
         
         # Check that positions were written to disk after splitting
         # The bug was that split positions weren't being written for NOTHING status
-        all_positions = self.position_manager.get_positions_for_all_miners()
+        all_positions = self.position_client.get_positions_for_all_miners()
         disk_positions_after = all_positions.get(self.DEFAULT_MINER_HOTKEY, [])
         
         assert len(disk_positions_after) >= 2, \
@@ -2330,10 +2400,10 @@ class TestPositions(TestBase):
         """Test the real-world scenario where positions aren't split during sync"""
         # This simulates a validator that has been offline and is syncing
         # The backup contains a position that should have been split but wasn't
-        
+
         # Create a position representing a real trading sequence
         miner_hotkey = "real_miner"
-        self.mock_metagraph.hotkeys.append(miner_hotkey)
+        self.metagraph_client.set_hotkeys([self.DEFAULT_MINER_HOTKEY, miner_hotkey])
         
         position = Position(
             miner_hotkey=miner_hotkey,
@@ -2392,8 +2462,8 @@ class TestPositions(TestBase):
         position.orders = [long_open, long_close, short_open, short_increase]
         
         # Clear all positions first and add the position to disk
-        self.position_manager.clear_all_miner_positions()
-        self.position_manager.overwrite_position_on_disk(deepcopy(position))
+        self.position_client.clear_all_miner_positions_and_disk()
+        self.position_client.save_miner_position(deepcopy(position))
         
         # Validator already has this exact position on disk (synced before)
         disk_positions = {miner_hotkey: [deepcopy(position)]}
@@ -2426,7 +2496,7 @@ class TestPositions(TestBase):
             f"Bug fixed - position split successfully: {stats}"
         
         # Verify the fix worked: positions were written to disk after splitting
-        final_positions = self.position_manager.get_positions_for_all_miners()
+        final_positions = self.position_client.get_positions_for_all_miners()
         miner_positions = final_positions.get(miner_hotkey, [])
         
         assert len(miner_positions) >= 2, \
@@ -3090,32 +3160,70 @@ class TestPositions(TestBase):
 
 class TestOverlapDetection(TestBase):
     """Tests for overlap detection and deletion feature"""
+    DEFAULT_MINER_HOTKEY = "test_miner"
+    DEFAULT_OPEN_MS = 1718071209000
+    DEFAULT_TRADE_PAIR = TradePair.BTCUSD
 
-    def setUp(self):
-        super().setUp()
-        self.DEFAULT_MINER_HOTKEY = "test_miner"
-        self.DEFAULT_OPEN_MS = 1718071209000
-        self.DEFAULT_TRADE_PAIR = TradePair.BTCUSD
+    @classmethod
+    def setUpClass(cls):
+        """
+        One-time setup: Get clients from ServerOrchestrator (servers already running).
 
-        self.mock_metagraph = MockMetagraph([self.DEFAULT_MINER_HOTKEY])
-        self.elimination_manager = EliminationManager(self.mock_metagraph, None, None, running_unit_tests=True)
+        Since ServerOrchestrator is a singleton, if TestAutoSync ran first, servers are
+        already running. Otherwise, this will start them. Either way, setup is fast.
+        """
+        # Get the singleton orchestrator
+        cls.orchestrator = ServerOrchestrator.get_instance()
+
+        # Ensure servers are started (idempotent - does nothing if already running)
         secrets = ValiUtils.get_secrets(running_unit_tests=True)
-        self.live_price_fetcher = MockLivePriceFetcher(secrets=secrets, disable_ws=True)
-        self.position_manager = PositionManager(
-            metagraph=self.mock_metagraph,
-            running_unit_tests=True,
-            elimination_manager=self.elimination_manager,
-            live_price_fetcher=self.live_price_fetcher
+        cls.orchestrator.start_all_servers(
+            mode=ServerMode.TESTING,
+            secrets=secrets
         )
-        self.elimination_manager.position_manager = self.position_manager
-        self.position_manager.clear_all_miner_positions()
-        self.elimination_manager.eliminations.clear()
 
-        self.position_syncer = PositionSyncer(
+        # Get clients from orchestrator (instant if servers already running)
+        cls.live_price_fetcher_client = cls.orchestrator.get_client('live_price_fetcher')
+        cls.metagraph_client = cls.orchestrator.get_client('metagraph')
+        cls.perf_ledger_client = cls.orchestrator.get_client('perf_ledger')
+        cls.elimination_client = cls.orchestrator.get_client('elimination')
+        cls.position_client = cls.orchestrator.get_client('position_manager')
+
+        # Create OrderSyncState for PositionSyncer
+        cls.order_sync = OrderSyncState()
+        cls.position_syncer = PositionSyncer(
+            order_sync=cls.order_sync,
             running_unit_tests=True,
-            position_manager=self.position_manager,
             enable_position_splitting=True
         )
+
+    @classmethod
+    def tearDownClass(cls):
+        """
+        One-time teardown: No action needed.
+
+        Note: Servers and clients are managed by ServerOrchestrator singleton and shared
+        across all test classes. They will be shut down automatically at process exit.
+        """
+        pass
+
+    def setUp(self):
+        """Per-test setup: Reset data state (fast - no server restarts)."""
+        self.orchestrator.clear_all_test_data()
+
+        self.metagraph_client.set_hotkeys([self.DEFAULT_MINER_HOTKEY])
+
+        # Create OrderSyncState for PositionSyncer
+        self.order_sync = OrderSyncState()
+        self.position_syncer = PositionSyncer(
+            order_sync=self.order_sync,
+            running_unit_tests=True,
+            enable_position_splitting=True
+        )
+
+    def tearDown(self):
+        """Per-test teardown: Clear data for next test."""
+        self.orchestrator.clear_all_test_data()
 
     def create_position(self, position_uuid, open_ms, close_ms=None, trade_pair=None, miner_hotkey=None):
         """Helper to create a test position"""
@@ -3268,7 +3376,7 @@ class TestOverlapDetection(TestBase):
 
         # Save positions to disk
         for p in [p1, p2, p3]:
-            self.position_manager.save_miner_position(p)
+            self.position_client.save_miner_position(p)
 
         disk_positions = {self.DEFAULT_MINER_HOTKEY: [p1, p2, p3]}
         current_time_ms = 600
@@ -3282,7 +3390,7 @@ class TestOverlapDetection(TestBase):
         self.assertEqual(len(stats['hotkeys_with_overlaps']), 1, "Should have 1 hotkey with overlaps")
 
         # Verify positions were actually deleted from disk
-        remaining_positions = self.position_manager.get_positions_for_one_hotkey(self.DEFAULT_MINER_HOTKEY)
+        remaining_positions = self.position_client.get_positions_for_one_hotkey(self.DEFAULT_MINER_HOTKEY)
         self.assertEqual(len(remaining_positions), 1, "Should have 1 position remaining")
         self.assertEqual(remaining_positions[0].position_uuid, "p3", "P3 should remain")
 
@@ -3298,7 +3406,7 @@ class TestOverlapDetection(TestBase):
 
         # Save positions
         for p in [p1_btc, p2_btc, p1_eth, p2_eth]:
-            self.position_manager.save_miner_position(p)
+            self.position_client.save_miner_position(p)
 
         disk_positions = {self.DEFAULT_MINER_HOTKEY: [p1_btc, p2_btc, p1_eth, p2_eth]}
         current_time_ms = 500

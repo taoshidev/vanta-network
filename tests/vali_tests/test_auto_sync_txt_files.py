@@ -5,23 +5,18 @@ runs AutoSync, and verifies that the sync completes successfully.
 """
 import json
 import os
-import time
 import random
 import uuid
 from vali_objects.vali_config import TradePair
-from shared_objects.mock_metagraph import MockMetagraph
+from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
 from time_util.time_util import TimeUtil
-from vali_objects.position import Position
-from vali_objects.utils.auto_sync import PositionSyncer
-from vali_objects.utils.elimination_manager import EliminationManager
-from vali_objects.utils.position_manager import PositionManager
-from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
-from vali_objects.utils.validator_sync_base import AUTO_SYNC_ORDER_LAG_MS
+from vali_objects.vali_dataclasses.position import Position
+from vali_objects.data_sync.auto_sync import PositionSyncer
+from vali_objects.data_sync.validator_sync_base import AUTO_SYNC_ORDER_LAG_MS
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.utils.vali_utils import ValiUtils
-from tests.shared_objects.mock_classes import MockLivePriceFetcher
 
 
 class TestAutoSyncTxtFiles(TestBase):
@@ -29,65 +24,88 @@ class TestAutoSyncTxtFiles(TestBase):
     Test AutoSync functionality using the test data files:
     - auto_sync_ck.txt: Existing positions on disk
     - auto_sync_tm.txt: Candidate positions for sync
-    
+
     Note: AutoSync performs complex position splitting and order reconciliation,
     so we verify high-level invariants rather than exact order-by-order matching.
     """
 
-    def setUp(self):
-        super().setUp()
-        # Clear ALL test miner positions BEFORE creating PositionManager
-        ValiBkpUtils.clear_directory(
-            ValiBkpUtils.get_miner_dir(running_unit_tests=True)
-        )
+    # Class-level references (set in setUpClass via ServerOrchestrator)
+    orchestrator = None
+    live_price_fetcher_client = None
+    metagraph_client = None
+    position_client = None
+    elimination_client = None
+    perf_ledger_client = None
+    challenge_period_client = None
+    position_syncer = None
+    DEFAULT_ACCOUNT_SIZE = 100_000
 
-        self.DEFAULT_ACCOUNT_SIZE = 100_000
-        
+    @classmethod
+    def setUpClass(cls):
+        """One-time setup: Start all servers using ServerOrchestrator (shared across all test classes)."""
         # Load test data files
         test_data_dir = os.path.join(os.path.dirname(__file__), '..', 'test_data')
-        
+
         # Load existing positions (ck file)
         with open(os.path.join(test_data_dir, 'auto_sync_ck.txt'), 'r') as f:
-            self.existing_data = json.load(f)
-        
+            cls.existing_data = json.load(f)
+
         # Load candidate positions (tm file)
         with open(os.path.join(test_data_dir, 'auto_sync_tm.txt'), 'r') as f:
-            self.candidate_data = json.load(f)
-        
+            cls.candidate_data = json.load(f)
+
         # Extract unique hotkeys from both datasets
-        self.hotkeys = set()
-        for pos_dict in self.existing_data['positions']:
-            self.hotkeys.add(pos_dict['miner_hotkey'])
-        for pos_dict in self.candidate_data['positions']:
-            self.hotkeys.add(pos_dict['miner_hotkey'])
-        
-        # Set up mock metagraph
-        self.mock_metagraph = MockMetagraph(list(self.hotkeys))
-        
-        # Set up live price fetcher (use mock to avoid API calls during tests)
+        cls.hotkeys = set()
+        for pos_dict in cls.existing_data['positions']:
+            cls.hotkeys.add(pos_dict['miner_hotkey'])
+        for pos_dict in cls.candidate_data['positions']:
+            cls.hotkeys.add(pos_dict['miner_hotkey'])
+
+        # Get the singleton orchestrator and start all required servers
+        cls.orchestrator = ServerOrchestrator.get_instance()
+
+        # Start all servers in TESTING mode (idempotent - safe if already started by another test class)
         secrets = ValiUtils.get_secrets(running_unit_tests=True)
-        self.live_price_fetcher = MockLivePriceFetcher(secrets=secrets, disable_ws=True)
-        
-        # Initialize managers
-        self.elimination_manager = EliminationManager(
-            self.mock_metagraph, None, None, running_unit_tests=True
+        cls.orchestrator.start_all_servers(
+            mode=ServerMode.TESTING,
+            secrets=secrets
         )
-        self.position_manager = PositionManager(
-            metagraph=self.mock_metagraph, 
-            running_unit_tests=True, 
-            elimination_manager=self.elimination_manager
-        )
-        self.elimination_manager.position_manager = self.position_manager
-        
-        # Clear any existing positions
-        self.position_manager.clear_all_miner_positions()
-        
-        # Initialize PositionSyncer
-        self.position_syncer = PositionSyncer(
-            running_unit_tests=True, 
-            position_manager=self.position_manager,
+
+        # Get clients from orchestrator (servers guaranteed ready, no connection delays)
+        cls.live_price_fetcher_client = cls.orchestrator.get_client('live_price_fetcher')
+        cls.metagraph_client = cls.orchestrator.get_client('metagraph')
+        cls.position_client = cls.orchestrator.get_client('position_manager')
+        cls.perf_ledger_client = cls.orchestrator.get_client('perf_ledger')
+        cls.challenge_period_client = cls.orchestrator.get_client('challenge_period')
+        cls.elimination_client = cls.orchestrator.get_client('elimination')
+
+        # Initialize metagraph with test hotkeys
+        cls.metagraph_client.set_hotkeys(list(cls.hotkeys))
+
+        # Create PositionSyncer
+        cls.position_syncer = PositionSyncer(
+            running_unit_tests=True,
             enable_position_splitting=False
         )
+
+    @classmethod
+    def tearDownClass(cls):
+        """
+        One-time teardown: No action needed.
+
+        Note: Servers and clients are managed by ServerOrchestrator singleton and shared
+        across all test classes. They will be shut down automatically at process exit.
+        """
+        pass
+
+    def setUp(self):
+        """Per-test setup: Reset data state (fast - no server restarts)."""
+        # Clear all data for test isolation (both memory and disk)
+        self.orchestrator.clear_all_test_data()
+
+    def tearDown(self):
+        """Per-test teardown: Clear data for next test."""
+        self.orchestrator.clear_all_test_data()
 
     def load_positions_from_dict_list(self, positions_data):
         """Load Position objects from list of dictionaries."""
@@ -109,20 +127,20 @@ class TestAutoSyncTxtFiles(TestBase):
             if miner_hotkey not in positions_by_miner:
                 positions_by_miner[miner_hotkey] = []
             positions_by_miner[miner_hotkey].append(position)
-        
-        # Save each miner's positions
+
+        # Save each miner's positions using the client
         for miner_hotkey, miner_positions in positions_by_miner.items():
             for position in miner_positions:
-                self.position_manager.save_miner_position(position)
-        
+                self.position_client.save_miner_position(position)
+
         return positions_by_miner
 
     def get_all_positions_from_disk(self):
         """Get all positions from disk."""
         all_positions = []
         for miner_hotkey in self.hotkeys:
-            positions = self.position_manager.get_positions_for_one_hotkey(
-                miner_hotkey, only_open_positions=False, from_disk=True
+            positions = self.position_client.get_positions_for_one_hotkey(
+                miner_hotkey, only_open_positions=False
             )
             all_positions.extend(positions)
         return all_positions
@@ -145,7 +163,7 @@ class TestAutoSyncTxtFiles(TestBase):
         # Load all positions from disk to ensure a clean state
         print("Loading all positions from disk to ensure clean state")
         all_positions = self.get_all_positions_from_disk()
-        print(f"Found {len(all_positions)} positions on disk before test")
+        print(f"Found {len(all_positions)} hotkeys+positions on disk before test")
         # Assert no positions exist before starting the test
         self.assertEqual(len(all_positions), 0, "There should be no positions on disk before the test starts")
         
@@ -210,8 +228,8 @@ class TestAutoSyncTxtFiles(TestBase):
         # Get current disk positions in the expected format
         disk_positions_data = {}
         for miner_hotkey in self.hotkeys:
-            positions = self.position_manager.get_positions_for_one_hotkey(
-                miner_hotkey, only_open_positions=False, from_disk=True
+            positions = self.position_client.get_positions_for_one_hotkey(
+                miner_hotkey, only_open_positions=False
             )
             disk_positions_data[miner_hotkey] = positions
         
@@ -420,9 +438,13 @@ class TestAutoSyncTxtFiles(TestBase):
         
         # Step 2: Create modified version of candidate positions
         print("\nStep 2: Creating modified version of candidate positions")
-        # Use deep copy to avoid modifying the original candidate_positions
-        from copy import deepcopy
-        modified_positions = deepcopy(candidate_positions)
+        # Recreate Position objects to get independent copies
+        # This avoids deepcopy/pickle complexities with Pydantic models
+        def recreate_position(position: Position) -> Position:
+            """Recreate a Position from its JSON representation."""
+            return Position(**json.loads(str(position)))
+
+        modified_positions = [recreate_position(pos) for pos in candidate_positions]
         
         # Randomly delete some positions (10-30% of positions)
         num_positions_to_delete = random.randint(
@@ -462,9 +484,10 @@ class TestAutoSyncTxtFiles(TestBase):
                             deleted_order = position.orders.pop(idx)
                             orders_deleted += 1
                             print(f"  Deleted order {deleted_order.order_uuid} from position {position.position_uuid}")
-                        
-                        # Properly rebuild position after order deletion
-                        position.rebuild_position_with_updated_orders(self.live_price_fetcher)
+
+                        # Skip rebuild to avoid changing position state (open<->closed)
+                        # AutoSync will recalculate position state correctly during sync
+                        # position.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
 
         # Insert a bogus position to ensure we have at least one position deleted
         # This position should not exist in the candidate data
@@ -528,8 +551,9 @@ class TestAutoSyncTxtFiles(TestBase):
             is_closed_position=True,
             account_size=self.DEFAULT_ACCOUNT_SIZE
         )
-        bogus_position.rebuild_position_with_updated_orders(self.live_price_fetcher)
-        
+        # Skip rebuild - position is already correctly marked as closed
+        # bogus_position.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
+
         # Add to modified positions
         modified_positions.append(bogus_position)
         print(f"  Added bogus position {bogus_position_uuid} with {len(bogus_orders)} orders")
@@ -612,8 +636,8 @@ class TestAutoSyncTxtFiles(TestBase):
         # Get current disk positions
         disk_positions_data = {}
         for miner_hotkey in self.hotkeys:
-            positions = self.position_manager.get_positions_for_one_hotkey(
-                miner_hotkey, only_open_positions=False, from_disk=True
+            positions = self.position_client.get_positions_for_one_hotkey(
+                miner_hotkey, only_open_positions=False
             )
             disk_positions_data[miner_hotkey] = positions
         

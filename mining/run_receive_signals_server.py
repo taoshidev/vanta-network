@@ -7,6 +7,7 @@ from flask import Flask, request, jsonify
 import waitress
 
 from miner_config import MinerConfig
+from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
@@ -33,6 +34,9 @@ def handle_data():
     # Check if 'Authorization' header is provided
     data = request.json
 
+    if data is None:
+        return jsonify({"error": "Invalid message"}), 400
+
     print("received data:", data)
 
     if "api_key" in data:
@@ -57,15 +61,25 @@ def handle_data():
         else:
             raise Exception("trade_pair must be a string or a dict")
 
-        signal = Signal(trade_pair=TradePair.from_trade_pair_id(signal_trade_pair_str),
-                        leverage=float(data["leverage"]) if data.get("leverage") is not None else None,
-                        value=float(data["value"]) if data.get("value") is not None else None,
-                        quantity=float(data["quantity"]) if data.get("quantity") is not None else None,
-                        order_type=OrderType.from_string(data["order_type"].upper()))
+        trade_pair = TradePair.from_trade_pair_id(signal_trade_pair_str)
+        if trade_pair is None:
+            return jsonify({"error": "Invalid trade pair"}), 401
+
+        signal = Signal(
+            trade_pair=trade_pair,
+            order_type=OrderType.from_string(data["order_type"].upper()),
+            leverage=float(data["leverage"]) if "leverage" in data else None,
+            value=float(data["value"]) if "value" in data else None,
+            quantity=float(data["quantity"]) if "quantity" in data else None,
+            execution_type = ExecutionType.from_string(data.get("execution_type", "MARKET").upper()),
+            limit_price=float(data["limit_price"]) if "limit_price" in data else None,
+            stop_loss=float(data["stop_loss"]) if "stop_loss" in data else None,
+            take_profit=float(data["take_profit"]) if "take_profit" in data else None
+        )
         # make miner received signals dir if doesnt exist
         ValiBkpUtils.make_dir(MinerConfig.get_miner_received_signals_dir())
         # store miner signal
-        signal_file_uuid = str(uuid.uuid4())
+        signal_file_uuid = data["order_uuid"] if "order_uuid" in data else str(uuid.uuid4())
         signal_path = os.path.join(MinerConfig.get_miner_received_signals_dir(), signal_file_uuid)
         ValiBkpUtils.write_file(signal_path, dict(signal))
     except IOError as e:

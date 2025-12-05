@@ -3,18 +3,22 @@ from collections import defaultdict
 import bittensor as bt
 import time
 import asyncio
+import json
+import shutil
+import os
 
 from miner_config import MinerConfig
 from template.protocol import GetPositions
+
 
 class PositionInspector:
     MAX_RETRIES = 1
     INITIAL_RETRY_DELAY = 3  # seconds
     UPDATE_INTERVAL_S = 5 * 60  # 5 minutes
 
-    def __init__(self, wallet, metagraph, config):
+    def __init__(self, wallet, metagraph_client, config):
         self.wallet = wallet
-        self.metagraph = metagraph
+        self._metagraph_client = metagraph_client
         self.config = config
         self.last_update_time = 0
         self.recently_acked_validators = []
@@ -46,9 +50,9 @@ class PositionInspector:
         # Right now bittensor has no functionality to know if a hotkey 100% corresponds to a validator
         # Revisit this in the future.
         if self.is_testnet:
-            return [n.axon_info for n in self.metagraph.neurons if n.axon_info.ip != MinerConfig.AXON_NO_IP]
+            return [n.axon_info for n in self._metagraph_client.get_neurons() if n.axon_info.ip != MinerConfig.AXON_NO_IP]
         else:
-            return [n.axon_info for n in self.metagraph.neurons
+            return [n.axon_info for n in self._metagraph_client.get_neurons()
                     if n.stake > bt.Balance(MinerConfig.STAKE_MIN)
                     and n.axon_info.ip != MinerConfig.AXON_NO_IP]
 
@@ -59,7 +63,7 @@ class PositionInspector:
         async with bt.dendrite(wallet=self.wallet) as dendrite:
             responses = await dendrite.aquery(remaining_validators_to_query, GetPositions(version=1), deserialize=True)
         
-        hotkey_to_v_trust = {neuron.hotkey: neuron.validator_trust for neuron in self.metagraph.neurons}
+        hotkey_to_v_trust = {neuron.hotkey: neuron.validator_trust for neuron in self._metagraph_client.get_neurons()}
         ret = []
         for validator, response in zip(remaining_validators_to_query, responses):
             v_trust = hotkey_to_v_trust.get(validator.hotkey, 0)
@@ -72,7 +76,7 @@ class PositionInspector:
 
     def reconcile_validator_positions(self, hotkey_to_positions, validators):
         hotkey_to_validator = {v.hotkey: v for v in validators}
-        hotkey_to_v_trust = {neuron.hotkey: neuron.validator_trust for neuron in self.metagraph.neurons}
+        hotkey_to_v_trust = {neuron.hotkey: neuron.validator_trust for neuron in self._metagraph_client.get_neurons()}
         orders_count = defaultdict(int)
         max_order_count = 0
         corresponding_positions = []
@@ -150,8 +154,29 @@ class PositionInspector:
         bt.logging.info(f"Querying {len(validators_to_query)} possible validators for positions")
         result = await self.get_positions_with_retry(validators_to_query)
 
-        if not result:
+        if result:
+            self.write_positions_to_disk(result)
+        else:
             bt.logging.info("No positions found.")
 
         self.last_update_time = time.time()
         bt.logging.success("PositionInspector successfully completed signal processing.")
+
+    def write_positions_to_disk(self, positions):
+        """
+        Atomically writes positions to disk.
+
+        Args:
+            positions: List of position dictionaries to save, or None/empty list
+        """
+        try:
+            file_path = MinerConfig.get_position_file_location()
+            temp_path = file_path + ".tmp"
+            os.makedirs(os.path.dirname(file_path), exist_ok=True)
+            with open(temp_path, 'w') as f:
+                json.dump(positions if positions else [], f, indent=2)
+            shutil.move(temp_path, file_path)
+            bt.logging.info(f"Successfully saved {len(positions) if positions else 0} positions to {file_path}")
+        except Exception as e:
+            bt.logging.error(f"Failed to save positions to disk: {e}")
+
