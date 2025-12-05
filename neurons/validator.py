@@ -233,12 +233,12 @@ class Validator(ValidatorBase):
 
         # Start ZK proof manager (self-contained background worker, not an RPC server)
         # Generates proofs daily at midnight UTC and uploads to api.omron.ai
+        # ZKProofManager creates its own ContractClient internally (forward compatibility)
         if ValiConfig.ENABLE_ZK_PROOFS:
             bt.logging.info("[INIT] Starting ZK proof manager...")
             self.zk_proof_manager = ZKProofManager(
                 position_manager=self.position_manager_client,
                 perf_ledger=self.perf_ledger_client,
-                contract_manager=self.contract_client,
                 wallet=self.wallet
             )
             self.zk_proof_manager.start()

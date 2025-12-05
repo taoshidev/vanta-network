@@ -35,20 +35,22 @@ class ZKProofManager:
     Not an RPC server - just a simple background worker for external verification.
     """
 
-    def __init__(self, position_manager, perf_ledger, contract_manager, wallet):
+    def __init__(self, position_manager, perf_ledger, wallet):
         """
         Initialize ZK Proof Manager.
 
         Args:
             position_manager: PositionManagerClient for getting miner positions
             perf_ledger: PerfLedgerClient for getting performance ledgers
-            contract_manager: ContractClient for getting account sizes
             wallet: Bittensor wallet for proof signing
         """
         self.position_manager = position_manager
         self.perf_ledger = perf_ledger
-        self.contract_manager = contract_manager
         self.wallet = wallet
+
+        # Create own ContractClient (forward compatibility - no parameter passing)
+        from vali_objects.contract.contract_server import ContractClient
+        self._contract_client = ContractClient(running_unit_tests=False)
 
         # Thread management
         self._thread = None
@@ -56,10 +58,15 @@ class ZKProofManager:
         self._running = False
 
         # Timing configuration
-        self.proof_generation_hour = 0  # Generate proofs at midnight UTC (00:00)
+        self.proof_generation_hour = 1  # Generate proofs at midnight UTC (00:00)
         self.last_proof_date = None  # Track last generation date to avoid duplicates
 
         bt.logging.info("ZKProofManager initialized")
+
+    @property
+    def contract_manager(self):
+        """Get contract client (forward compatibility - created internally)."""
+        return self._contract_client
 
     def start(self):
         """Start background thread for daily proof generation."""
@@ -190,7 +197,7 @@ class ZKProofManager:
             return
 
         # Get positions
-        positions = self.position_manager.get_all_miner_positions_by_hotkey(hotkey)
+        positions = self.position_manager.get_positions_for_one_hotkey(hotkey)
 
         # Get account size
         account_size = self._get_account_size(hotkey, time_now)

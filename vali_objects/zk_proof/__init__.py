@@ -15,7 +15,6 @@ Usage in validator.py:
     zk_manager = ZKProofManager(
         position_manager=self.position_manager_client,
         perf_ledger=self.perf_ledger_client,
-        contract_manager=self.contract_client,
         wallet=self.wallet
     )
     zk_manager.start()
