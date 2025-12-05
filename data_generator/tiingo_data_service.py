@@ -559,13 +559,18 @@ class TiingoDataService(BaseDataService):
                 start_day_formatted, end_day_formatted = self.target_ms_to_start_end_formatted(target_time_ms)
                 # "https://api.tiingo.com/tiingo/crypto/prices?tickers=btcusd&startDate=2019-01-02&resampleFreq=5min&token=ffb55f7fdd167d4b8047539e6b62d82b92b25f91"
                 return f"https://api.tiingo.com/tiingo/crypto/prices?tickers={','.join(tickers)}&startDate={start_day_formatted}&endDate={end_day_formatted}&resampleFreq=1min&token={self.config['api_key']}&exchanges={TIINGO_COINBASE_EXCHANGE_STR.upper()}"
-            return f"https://api.tiingo.com/tiingo/crypto/prices?tickers={','.join(tickers)}&token={self.config['api_key']}&exchanges={TIINGO_COINBASE_EXCHANGE_STR.upper()}"
+            return f"https://api.tiingo.com/tiingo/crypto/prices?tickers={','.join(tickers)}&resampleFreq=1min&token={self.config['api_key']}&exchanges={TIINGO_COINBASE_EXCHANGE_STR.upper()}"
 
         tp_to_price = {}
         if not trade_pairs:
             return tp_to_price
 
         assert all(tp.trade_pair_category == TradePairCategory.CRYPTO for tp in trade_pairs), trade_pairs
+
+        # Capture poll time for live data to ensure accurate lag calculation
+        # Tiingo returns forming (incomplete) candles that update in real-time,
+        # so the data is fresh as of the poll time, not the candle start time
+        poll_time_ms = TimeUtil.now_in_millis() if live else None
 
         # Batch trade pairs to respect Tiingo's 5 ticker limit
         batches = self._batch_trade_pairs(trade_pairs)
@@ -596,8 +601,17 @@ class TiingoDataService(BaseDataService):
                                         key=lambda x: abs(TimeUtil.parse_iso_to_ms(x['date']) + timespan_ms - target_time_ms))
 
                 candle_start_ms = TimeUtil.parse_iso_to_ms(closest_data["date"])
-                candle_close_ms = candle_start_ms + timespan_ms
-                data_time_ms = candle_close_ms  # Use close time for consistency with close price
+
+                # FIX: Use poll time for live data to accurately reflect data freshness
+                # Tiingo returns forming (incomplete) candles that include trades up to the poll time.
+                # Using candle close time would result in negative lags (future timestamps).
+                # For historical data, continue using candle close time for consistency.
+                if live:
+                    data_time_ms = poll_time_ms  # When we received the data (most accurate)
+                else:
+                    candle_close_ms = candle_start_ms + timespan_ms
+                    data_time_ms = candle_close_ms  # Use close time for historical consistency
+
                 price_close = float(closest_data['close'])
                 bid_price = ask_price = 0  # Bid/ask not provided in historical data
 
@@ -606,6 +620,8 @@ class TiingoDataService(BaseDataService):
                 exchange = TIINGO_COINBASE_EXCHANGE_STR
 
                 # Create PriceSource
+                # For live data: lag_ms will be ~0 since data_time_ms = poll_time_ms
+                # For historical data: lag_ms shows how far target_time_ms is from the candle
                 tp_to_price[tp] = PriceSource(
                     source=source_name,
                     timespan_ms=timespan_ms,
@@ -616,7 +632,7 @@ class TiingoDataService(BaseDataService):
                     low=float(closest_data['low']),
                     start_ms=data_time_ms,
                     websocket=False,
-                    lag_ms=target_time_ms - data_time_ms,
+                    lag_ms=(poll_time_ms if live else target_time_ms) - data_time_ms,
                     bid=bid_price,
                     ask=ask_price,
                 )

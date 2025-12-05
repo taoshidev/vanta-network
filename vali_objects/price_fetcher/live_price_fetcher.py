@@ -228,6 +228,15 @@ class LivePriceFetcher:
         if not unique_data:
             return []
 
+        # Filter out price sources with None close values before processing
+        # This prevents NaN contamination in numpy calculations
+        valid_data = [x for x in unique_data if x.close is not None]
+
+        # If all sources have None close, return empty list
+        if not valid_data:
+            bt.logging.warning("All price sources have None close values, returning empty list")
+            return []
+
         # Function to calculate bounds
         def calculate_bounds(prices):
             median_val = np.median(prices)
@@ -236,18 +245,18 @@ class LivePriceFetcher:
             upper_bound = median_val * 1.05
             return lower_bound, upper_bound
 
-        # Calculate bounds for each price type
-        close_prices = np.array([x.close for x in unique_data])
-        # high_prices = np.array([x.high for x in unique_data])
-        # low_prices = np.array([x.low for x in unique_data])
+        # Calculate bounds for each price type (using only valid data)
+        close_prices = np.array([x.close for x in valid_data])
+        # high_prices = np.array([x.high for x in valid_data])
+        # low_prices = np.array([x.low for x in valid_data])
 
         close_lower_bound, close_upper_bound = calculate_bounds(close_prices)
         # high_lower_bound, high_upper_bound = calculate_bounds(high_prices)
         # low_lower_bound, low_upper_bound = calculate_bounds(low_prices)
 
         # Filter data by checking all price points against their respective bounds
-        filtered_data = [x for x in unique_data if close_lower_bound <= x.close <= close_upper_bound]
-        # filtered_data = [x for x in unique_data if close_lower_bound <= x.close <= close_upper_bound and
+        filtered_data = [x for x in valid_data if close_lower_bound <= x.close <= close_upper_bound]
+        # filtered_data = [x for x in valid_data if close_lower_bound <= x.close <= close_upper_bound and
         #                 high_lower_bound <= x.high <= high_upper_bound and
         #                 low_lower_bound <= x.low <= low_upper_bound]
 
