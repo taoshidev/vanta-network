@@ -31,6 +31,7 @@ from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 from shared_objects.cache_controller import CacheController
+from vali_objects.validator_broadcast_base import ValidatorBroadcastBase
 from time_util.time_util import TimeUtil
 
 
@@ -76,7 +77,7 @@ class EntityData(BaseModel):
         return sa.synthetic_hotkey if sa else None
 
 
-class EntityManager(CacheController):
+class EntityManager(ValidatorBroadcastBase):
     """
     Entity Manager - Contains all business logic for entity miner management.
 
@@ -108,10 +109,22 @@ class EntityManager(CacheController):
             connection_mode: RPCConnectionMode.LOCAL for tests, RPCConnectionMode.RPC for production
             config: Validator config (for netuid, wallet) - optional, used for broadcasting
         """
-        super().__init__(running_unit_tests=running_unit_tests, is_backtesting=is_backtesting, connection_mode=connection_mode)
-
+        self.is_backtesting = is_backtesting
         self.running_unit_tests = running_unit_tests
         self.connection_mode = connection_mode
+
+        # Determine is_testnet before calling ValidatorBroadcastBase.__init__
+        # This prevents wallet creation blocking in ValidatorBroadcastBase
+        is_testnet = (config.netuid == 116) if (config and hasattr(config, 'netuid')) else False
+
+        # ValidatorBroadcastBase derives is_mothership internally
+        # CRITICAL: Pass running_unit_tests AND is_testnet to prevent blocking wallet creation
+        super().__init__(
+            running_unit_tests=running_unit_tests,
+            is_testnet=is_testnet,
+            connection_mode=connection_mode,
+            config=config
+        )
 
         # Local dicts (NOT IPC managerized) - much faster!
         self.entities: Dict[str, EntityData] = {}
@@ -119,22 +132,15 @@ class EntityManager(CacheController):
         # Local lock (NOT shared across processes) - RPC methods are auto-serialized
         self.entities_lock = threading.Lock()
 
-        # Initialize wallet and metagraph for broadcasting (optional)
-        if not running_unit_tests and config is not None:
-            self.is_testnet = config.netuid == 116
-            self._wallet = bt.wallet(config=config)
-            bt.logging.info("[ENTITY_MANAGER] Wallet initialized for broadcasting")
-        else:
-            self.is_testnet = False
-            self._wallet = None
+        # Store testnet flag (redundant with ValidatorBroadcastBase but kept for clarity)
+        self.is_testnet = is_testnet
 
-        # Create own MetagraphClient for broadcasting
-        from shared_objects.rpc.metagraph_server import MetagraphClient
-        self._metagraph_client = MetagraphClient(connection_mode=connection_mode)
-
-        # Create own PerfLedgerClient for challenge period assessment
-        from vali_objects.vali_dataclasses.perf_ledger_server import PerfLedgerClient
-        self._perf_ledger_client = PerfLedgerClient(connection_mode=connection_mode)
+        # Create PerfLedgerClient with connect_immediately=False to defer connection
+        from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
+        self._perf_ledger_client = PerfLedgerClient(
+            connection_mode=connection_mode,
+            connect_immediately=False
+        )
 
         self.ENTITY_FILE = ValiBkpUtils.get_entity_file_location(running_unit_tests=running_unit_tests)
 
@@ -143,25 +149,7 @@ class EntityManager(CacheController):
             disk_data = ValiUtils.get_vali_json_file_dict(self.ENTITY_FILE)
             self.entities = self.parse_checkpoint_dict(disk_data)
 
-        if not self.is_backtesting and len(self.entities) == 0:
-            self._write_entities_from_memory_to_disk()
-
-        bt.logging.info("[ENTITY_MANAGER] EntityManager initialized with local dicts (no IPC)")
-
-    @property
-    def wallet(self):
-        """Get wallet for broadcasting."""
-        return self._wallet
-
-    @property
-    def metagraph(self):
-        """Get metagraph client for broadcasting."""
-        return self._metagraph_client
-
-    @property
-    def perf_ledger(self):
-        """Get perf ledger client for challenge period assessment."""
-        return self._perf_ledger_client
+        bt.logging.info("[ENTITY_MANAGER] EntityManager initialized")
 
     # ==================== Core Business Logic ====================
 
@@ -470,8 +458,8 @@ class EntityManager(CacheController):
                     # Challenge period still active - check if criteria met
                     try:
                         # Get performance metrics from PerfLedgerClient
-                        returns = self.perf_ledger.get_returns_rpc(synthetic_hotkey)
-                        drawdown = self.perf_ledger.get_drawdown_rpc(synthetic_hotkey)
+                        returns = self._perf_ledger_client.get_returns_rpc(synthetic_hotkey)
+                        drawdown = self._perf_ledger_client.get_drawdown_rpc(synthetic_hotkey)
 
                         # Check if both criteria are met:
                         # 1. Returns >= 3%
@@ -555,8 +543,7 @@ class EntityManager(CacheController):
         synthetic_hotkey: str
     ):
         """
-        Broadcast SubaccountRegistration synapse to other validators.
-        Runs in a separate thread to avoid blocking the main process.
+        Broadcast SubaccountRegistration synapse to other validators using shared broadcast base.
 
         Args:
             entity_hotkey: The VANTA_ENTITY_HOTKEY
@@ -564,117 +551,38 @@ class EntityManager(CacheController):
             subaccount_uuid: The subaccount UUID
             synthetic_hotkey: The synthetic hotkey
         """
-        def run_broadcast():
-            try:
-                asyncio.run(self._async_broadcast_subaccount_registration(
-                    entity_hotkey, subaccount_id, subaccount_uuid, synthetic_hotkey
-                ))
-            except Exception as e:
-                bt.logging.error(
-                    f"[ENTITY_MANAGER] Failed to broadcast subaccount registration for {synthetic_hotkey}: {e}"
-                )
-
-        thread = threading.Thread(target=run_broadcast, daemon=True)
-        thread.start()
-
-    async def _async_broadcast_subaccount_registration(
-        self,
-        entity_hotkey: str,
-        subaccount_id: int,
-        subaccount_uuid: str,
-        synthetic_hotkey: str
-    ):
-        """
-        Asynchronously broadcast SubaccountRegistration synapse to other validators.
-
-        Args:
-            entity_hotkey: The VANTA_ENTITY_HOTKEY
-            subaccount_id: The subaccount ID
-            subaccount_uuid: The subaccount UUID
-            synthetic_hotkey: The synthetic hotkey
-        """
-        try:
-            if not self.wallet:
-                bt.logging.debug("[ENTITY_MANAGER] No wallet configured, skipping broadcast")
-                return
-
-            if not self.metagraph:
-                bt.logging.debug("[ENTITY_MANAGER] No metagraph configured, skipping broadcast")
-                return
-
-            # Get other validators to broadcast to
-            if self.is_testnet:
-                validator_axons = [
-                    n.axon_info for n in self.metagraph.get_neurons()
-                    if n.axon_info.ip != ValiConfig.AXON_NO_IP
-                    and n.axon_info.hotkey != self.wallet.hotkey.ss58_address
-                ]
-            else:
-                validator_axons = [
-                    n.axon_info for n in self.metagraph.get_neurons()
-                    if n.stake > bt.Balance(ValiConfig.STAKE_MIN)
-                    and n.axon_info.ip != ValiConfig.AXON_NO_IP
-                    and n.axon_info.hotkey != self.wallet.hotkey.ss58_address
-                ]
-
-            if not validator_axons:
-                bt.logging.debug("[ENTITY_MANAGER] No other validators to broadcast SubaccountRegistration to")
-                return
-
-            # Create SubaccountRegistration synapse with the data
+        def create_synapse():
             subaccount_data = {
                 "entity_hotkey": entity_hotkey,
                 "subaccount_id": subaccount_id,
                 "subaccount_uuid": subaccount_uuid,
                 "synthetic_hotkey": synthetic_hotkey
             }
+            return template.protocol.SubaccountRegistration(subaccount_data=subaccount_data)
 
-            subaccount_synapse = template.protocol.SubaccountRegistration(
-                subaccount_data=subaccount_data
-            )
+        self._broadcast_to_validators(
+            synapse_factory=create_synapse,
+            broadcast_name="SubaccountRegistration",
+            context={"synthetic_hotkey": synthetic_hotkey}
+        )
 
-            bt.logging.info(
-                f"[ENTITY_MANAGER] Broadcasting SubaccountRegistration for {synthetic_hotkey} "
-                f"to {len(validator_axons)} validators"
-            )
-
-            # Send to other validators using dendrite
-            async with bt.dendrite(wallet=self.wallet) as dendrite:
-                responses = await dendrite.aquery(validator_axons, subaccount_synapse)
-
-                # Log results
-                success_count = 0
-                for response in responses:
-                    if response.successfully_processed:
-                        success_count += 1
-                    elif response.error_message:
-                        bt.logging.warning(
-                            f"[ENTITY_MANAGER] Failed to send SubaccountRegistration to "
-                            f"{response.axon.hotkey}: {response.error_message}"
-                        )
-
-                bt.logging.info(
-                    f"[ENTITY_MANAGER] SubaccountRegistration broadcast completed: "
-                    f"{success_count}/{len(responses)} validators updated"
-                )
-
-        except Exception as e:
-            bt.logging.error(f"[ENTITY_MANAGER] Error in async broadcast subaccount registration: {e}")
-            import traceback
-            bt.logging.error(traceback.format_exc())
-
-    def receive_subaccount_registration(self, subaccount_data: dict) -> bool:
+    def receive_subaccount_registration_update(self, subaccount_data: dict, sender_hotkey: str = None) -> bool:
         """
         Process an incoming subaccount registration from another validator.
         Ensures idempotent registration (handles duplicates gracefully).
 
         Args:
             subaccount_data: Dictionary containing entity_hotkey, subaccount_id, subaccount_uuid, synthetic_hotkey
+            sender_hotkey: The hotkey of the validator that sent this broadcast
 
         Returns:
             bool: True if successful, False otherwise
         """
         try:
+            # SECURITY: Verify sender using shared base class method
+            if not self.verify_broadcast_sender(sender_hotkey, "SubaccountRegistration"):
+                return False
+
             with self.entities_lock:
                 # Extract data from the synapse
                 entity_hotkey = subaccount_data.get("entity_hotkey")

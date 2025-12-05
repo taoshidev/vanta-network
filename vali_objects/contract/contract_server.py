@@ -89,24 +89,6 @@ class ContractServer(RPCServerBase):
         """Contract server doesn't need a daemon loop."""
         pass
 
-    # ==================== Properties ====================
-
-    @property
-    def vault_wallet(self):
-        """Get vault wallet from manager."""
-        return self._manager.vault_wallet
-
-    @vault_wallet.setter
-    def vault_wallet(self, value):
-        """Set vault wallet on manager."""
-        self._manager.vault_wallet = value
-
-
-    # ==================== Setup Methods ====================
-
-    def load_contract_owner(self):
-        """Load EVM contract owner secrets and vault wallet."""
-        self._manager.load_contract_owner()
 
     # ==================== RPC Methods (exposed to client) ====================
 
@@ -176,7 +158,7 @@ class ContractServer(RPCServerBase):
         try:
             sender_hotkey = synapse.dendrite.hotkey
             bt.logging.info(f"Received collateral record update from validator hotkey [{sender_hotkey}].")
-            success = self.receive_collateral_record_update_rpc(synapse.collateral_record)
+            success = self.receive_collateral_record_update_rpc(synapse.collateral_record, sender_hotkey)
 
             if success:
                 synapse.successfully_processed = True
@@ -194,9 +176,9 @@ class ContractServer(RPCServerBase):
 
         return synapse
 
-    def receive_collateral_record_update_rpc(self, collateral_record_data: dict) -> bool:
+    def receive_collateral_record_update_rpc(self, collateral_record_data: dict, sender_hotkey: str = None) -> bool:
         """Process an incoming CollateralRecord synapse and update miner_account_sizes."""
-        return self._manager.receive_collateral_record_update(collateral_record_data)
+        return self._manager.receive_collateral_record_update(collateral_record_data, sender_hotkey)
 
     def verify_coldkey_owns_hotkey_rpc(self, coldkey_ss58: str, hotkey_ss58: str) -> bool:
         """Verify that a coldkey owns a specific hotkey using subtensor."""
