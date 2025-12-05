@@ -1,5 +1,5 @@
 # developer: jbonilla
-# Copyright © 2024 Taoshi Inc
+# Copyright (c) 2024 Taoshi Inc
 
 """Position utilities package - collection of position-related utility classes."""
 
