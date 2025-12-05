@@ -6,15 +6,16 @@ The algorithm pays miners based on their previous month's performance (PnL scale
 proportionally distributing emissions to cover remaining debt by day 25 of the current month.
 
 Key Concepts:
-- "Needed payout" = What miners earned in previous month (PnL in USD * penalties)
-- "Actual payout" = What they've been paid so far in current month (emissions in USD)
+- "Needed payout" = Cumulative earnings from Nov 1st through end of previous month (PnL in USD * penalties)
+- "Actual payout" = Cumulative emissions paid from Nov 1st through current time (emissions in USD)
 - "Remaining payout" = needed_payout_usd - actual_payout_usd (in USD)
 - "Projected emissions" = Estimated total ALPHA available, converted to USD for comparison
 - Weights = Proportional to remaining_payout_usd, with warning if insufficient emissions
+- Cumulative tracking allows negative PnL to carry forward and offset future gains
 
 Algorithm Flow:
-1. Calculate needed_payout_usd from previous month's performance (only MAINCOMP/PROBATION checkpoints)
-2. Calculate actual_payout_usd from current month's emissions (only MAINCOMP/PROBATION checkpoints)
+1. Calculate needed_payout_usd from Nov 1st through end of previous month (only MAINCOMP/PROBATION checkpoints)
+2. Calculate actual_payout_usd from Nov 1st through current time (only MAINCOMP/PROBATION checkpoints)
 3. Calculate remaining_payout_usd for each miner (in USD)
 4. Query real-time TAO emission rate from subtensor
 5. Convert to ALPHA, then convert ALPHA to USD using current conversion rates
@@ -62,9 +63,10 @@ from collections import defaultdict
 
 class DebtBasedScoring:
     """
-    Debt-based scoring system that pays miners proportionally to their previous month's
-    performance, targeting payout completion by day 25 of each month.
+    Debt-based scoring system that pays miners proportionally to their cumulative performance
+    from November 1st through the previous month, targeting payout completion by day 25.
 
+    Uses cumulative tracking to allow negative PnL to carry forward and offset future gains.
     Uses real-time subtensor queries to estimate emission rates and project available ALPHA.
     """
 
@@ -411,9 +413,9 @@ class DebtBasedScoring:
 
         The algorithm works as follows:
         1. Check if we're in activation period (>= December 2025)
-        2. For each miner, calculate their "needed payout" from previous month's performance
-        3. Calculate "actual payout" given so far in current month
-        4. Calculate "remaining payout" to be distributed
+        2. For each miner, calculate their "needed payout" from Nov 1st through end of previous month (cumulative)
+        3. Calculate "actual payout" from Nov 1st through current time (cumulative)
+        4. Calculate "remaining payout" to be distributed (allows negative PnL to carry forward)
         5. Query real-time TAO emission rate from metagraph
         6. Convert to ALPHA using reserve data from shared metagraph (TAO/ALPHA ratio)
         7. Project total ALPHA available from now until day 25
@@ -495,12 +497,19 @@ class DebtBasedScoring:
             )
 
         # Step 3: Calculate month boundaries
-        # Previous month: full month
-        prev_month_start_dt = datetime(prev_year, prev_month, 1, 0, 0, 0, tzinfo=timezone.utc)
+        # Needed payout calculation: Sum from November 1st, 2025 through end of previous month
+        # This allows negative PnL to carry across months and offset future gains
+        payout_calc_start_dt = datetime(
+            DebtBasedScoring.ACTIVATION_YEAR,
+            DebtBasedScoring.ACTIVATION_MONTH,
+            1, 0, 0, 0,
+            tzinfo=timezone.utc
+        )
+        payout_calc_start_ms = int(payout_calc_start_dt.timestamp() * 1000)
+
+        # Previous month: end boundary for needed payout calculation
         prev_month_days = monthrange(prev_year, prev_month)[1]  # Number of days in previous month
         prev_month_end_dt = datetime(prev_year, prev_month, prev_month_days, 23, 59, 59, 999999, tzinfo=timezone.utc)
-
-        prev_month_start_ms = int(prev_month_start_dt.timestamp() * 1000)
         prev_month_end_ms = int(prev_month_end_dt.timestamp() * 1000)
 
         # Current month: from start of month to now
@@ -509,8 +518,9 @@ class DebtBasedScoring:
 
         if verbose:
             bt.logging.info(
-                f"Previous month window: {prev_month_start_dt.strftime('%Y-%m-%d')} to "
-                f"{prev_month_end_dt.strftime('%Y-%m-%d')}"
+                f"Needed payout window (cumulative): {payout_calc_start_dt.strftime('%Y-%m-%d')} to "
+                f"{prev_month_end_dt.strftime('%Y-%m-%d')} "
+                f"(allows negative PnL to carry across months)"
             )
             bt.logging.info(
                 f"Current month elapsed: {current_month_start_dt.strftime('%Y-%m-%d')} to "
@@ -557,16 +567,16 @@ class DebtBasedScoring:
                 miner_actual_payouts_usd[hotkey] = 0.0
                 continue
 
-            # Extract ALL checkpoints for previous month (for diagnostic purposes)
-            all_prev_month_checkpoints = [
+            # Extract checkpoints from November 1st through end of previous month (cumulative)
+            # This allows negative PnL to accumulate and offset future gains
+            cumulative_checkpoints = [
                 cp for cp in debt_ledger.checkpoints
-                if prev_month_start_ms <= cp.timestamp_ms <= prev_month_end_ms
+                if payout_calc_start_ms <= cp.timestamp_ms <= prev_month_end_ms
             ]
 
-            # Extract checkpoints for previous month
             # Only include checkpoints where status is MAINCOMP or PROBATION (earning periods)
-            prev_month_checkpoints = [
-                cp for cp in all_prev_month_checkpoints
+            earning_checkpoints = [
+                cp for cp in cumulative_checkpoints
                 if cp.challenge_period_status in (MinerBucket.MAINCOMP.value, MinerBucket.PROBATION.value)
             ]
 
@@ -578,38 +588,35 @@ class DebtBasedScoring:
                 and cp.challenge_period_status in (MinerBucket.MAINCOMP.value, MinerBucket.PROBATION.value)
             ]
 
-            # Step 4: Calculate needed payout from previous month (in USD)
-            # "needed payout" = sum of (realized_pnl * total_penalty) across all prev month checkpoints
+            # Step 4: Calculate needed payout from November 1st through end of previous month (in USD)
+            # "needed payout" = sum of (realized_pnl * total_penalty) across all earning checkpoints
             #                   and (unrealized_pnl * total_penalty) of the last checkpoint
             # NOTE: realized_pnl and unrealized_pnl are in USD, per-checkpoint values (NOT cumulative)
+            # This cumulative approach allows negative PnL to carry forward and offset future gains
             needed_payout_usd = 0.0
             penalty_loss_usd = 0.0
-            if prev_month_checkpoints:
-                # Sum penalty-adjusted PnL across all checkpoints in the month
+            if earning_checkpoints:
+                # Sum penalty-adjusted PnL across all checkpoints from Nov 1st to end of prev month
                 # Each checkpoint has its own PnL (for that 12-hour period) and its own penalty
-                last_checkpoint = prev_month_checkpoints[-1]
-                realized_component = sum(cp.realized_pnl * cp.total_penalty for cp in prev_month_checkpoints)
+                last_checkpoint = earning_checkpoints[-1]
+                realized_component = sum(cp.realized_pnl * cp.total_penalty for cp in earning_checkpoints)
                 unrealized_component = min(0.0, last_checkpoint.unrealized_pnl) * last_checkpoint.total_penalty
                 needed_payout_usd = realized_component + unrealized_component
 
                 # Calculate penalty loss: what would have been earned WITHOUT penalties
-                payout_without_penalties = sum(cp.realized_pnl for cp in prev_month_checkpoints)
+                payout_without_penalties = sum(cp.realized_pnl for cp in earning_checkpoints)
                 payout_without_penalties += min(0.0, last_checkpoint.unrealized_pnl)
                 penalty_loss_usd = payout_without_penalties - needed_payout_usd
 
             # Step 5: Calculate actual payout (in USD)
-            # Special case for December 2025 (first activation month):
-            #   Include both November + December payouts to avoid double-paying
-            #   (miners may have received emissions in November using old scoring)
-            # For all other months: Only include current month payouts
-            if (current_year == DebtBasedScoring.ACTIVATION_YEAR and
-                current_month == DebtBasedScoring.ACTIVATION_MONTH + 1):
-                # December 2025: Count November + December payouts
-                actual_payout_usd = sum(cp.chunk_emissions_usd for cp in prev_month_checkpoints)
-                actual_payout_usd += sum(cp.chunk_emissions_usd for cp in current_month_checkpoints)
-            else:
-                # All other months: Only current month payouts
-                actual_payout_usd = sum(cp.chunk_emissions_usd for cp in current_month_checkpoints)
+            # Use cumulative approach: sum all emissions from November 1st through current time
+            # This matches the cumulative needed payout calculation
+            cumulative_payout_checkpoints = [
+                cp for cp in debt_ledger.checkpoints
+                if payout_calc_start_ms <= cp.timestamp_ms <= current_time_ms
+                and cp.challenge_period_status in (MinerBucket.MAINCOMP.value, MinerBucket.PROBATION.value)
+            ]
+            actual_payout_usd = sum(cp.chunk_emissions_usd for cp in cumulative_payout_checkpoints)
 
             # Step 6: Calculate remaining payout (in USD)
             remaining_payout_usd = needed_payout_usd - actual_payout_usd

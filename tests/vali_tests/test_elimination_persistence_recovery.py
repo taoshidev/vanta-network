@@ -287,8 +287,12 @@ class TestEliminationPersistenceRecovery(TestBase):
             # Should create empty eliminations
             self.assertEqual(len(self.elimination_client.get_eliminations_from_memory()), 0)
         except Exception as e:
-            # Should handle error gracefully
-            pass
+            # If an exception is raised, fail the test with details
+            # The system should handle corrupted JSON gracefully, not raise exceptions
+            self.fail(
+                f"load_eliminations_from_disk() should handle invalid JSON gracefully, "
+                f"but raised {type(e).__name__}: {e}"
+            )
 
         # Test 2: Missing required fields
         corrupted_data = {

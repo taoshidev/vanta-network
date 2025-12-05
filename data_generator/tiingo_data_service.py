@@ -356,8 +356,8 @@ class TiingoDataService(BaseDataService):
         # Use ThreadPoolExecutor for parallelization if there are multiple jobs
         with ThreadPoolExecutor() as executor:
             future_to_category = {
-                executor.submit(func, tp_list, verbose): func.__name__
-                for func, tp_list, verbose in jobs
+                executor.submit(func, tp_list, time_ms, live_flag, verbose_flag): func.__name__
+                for func, tp_list, time_ms, live_flag, verbose_flag in jobs
             }
             for future in as_completed(future_to_category):
                 price_result = future.result()
