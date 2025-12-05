@@ -38,6 +38,8 @@ from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.utils.limit_order.order_processor import OrderProcessor
+from vali_objects.zk_proof import ZKProofManager
+from vali_objects.vali_config import ValiConfig
 from shared_objects.rpc.shutdown_coordinator import ShutdownCoordinator
 
 def is_shutdown() -> bool:
@@ -229,6 +231,22 @@ class Validator(ValidatorBase):
         # Initialize UUID tracker with existing positions
         self.uuid_tracker.add_initial_uuids(self.position_manager_client.get_positions_for_all_miners())
 
+        # Start ZK proof manager (self-contained background worker, not an RPC server)
+        # Generates proofs daily at midnight UTC and uploads to api.omron.ai
+        if ValiConfig.ENABLE_ZK_PROOFS:
+            bt.logging.info("[INIT] Starting ZK proof manager...")
+            self.zk_proof_manager = ZKProofManager(
+                position_manager=self.position_manager_client,
+                perf_ledger=self.perf_ledger_client,
+                contract_manager=self.contract_client,
+                wallet=self.wallet
+            )
+            self.zk_proof_manager.start()
+            bt.logging.success("[INIT] ZK proof manager started - will generate proofs daily at 00:00 UTC")
+        else:
+            self.zk_proof_manager = None
+            bt.logging.info("[INIT] ZK proof generation disabled")
+
         # Verify hotkey is registered
         bt.logging.info(f"Metagraph n_entries: {len(self.metagraph_client.get_hotkeys())}")
         if not self.metagraph_client.has_hotkey(self.wallet.hotkey.ss58_address):
@@ -335,6 +353,10 @@ class Validator(ValidatorBase):
         self.axon.stop()
         bt.logging.warning("Stopping metagraph update...")
         self.metagraph_updater_thread.join()
+        # Stop ZK proof manager
+        if self.zk_proof_manager:
+            bt.logging.warning("Stopping ZK proof manager...")
+            self.zk_proof_manager.stop()
         # All RPC servers shut down automatically via ShutdownCoordinator:
         if self.api_thread:
             bt.logging.warning("Stopping API manager...")
