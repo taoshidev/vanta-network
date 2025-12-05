@@ -687,6 +687,20 @@ class Position(BaseModel):
         if order.order_type == OrderType.FLAT:
             return False
 
+        if order.quantity:
+            proposed_quantity = self.net_quantity + order.quantity
+            if proposed_quantity == 0:
+                order.leverage = -self.net_leverage
+                order.order_type = OrderType.FLAT
+                return True
+
+        if order.value:
+            proposed_value = self.net_value + order.value
+            if proposed_value == 0:
+                order.leverage = -self.net_leverage
+                order.order_type = OrderType.FLAT
+                return True
+
         is_first_order = len(self.orders) == 0
         proposed_leverage = self.net_leverage + order.leverage
         min_position_leverage, max_position_leverage = leverage_utils.get_position_leverage_bounds(self.trade_pair, order.processed_ms)
