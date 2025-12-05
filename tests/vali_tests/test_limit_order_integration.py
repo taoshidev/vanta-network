@@ -6,7 +6,7 @@ from time_util.time_util import TimeUtil
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.vali_dataclasses.position import Position
-from vali_objects.utils.limit_order.limit_order_server import LimitOrderClient
+from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair
 from vali_objects.vali_dataclasses.order import Order

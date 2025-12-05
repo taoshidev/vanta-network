@@ -10,9 +10,8 @@ from setproctitle import setproctitle
 from vali_objects.vali_config import ValiConfig, TradePair
 from shared_objects.cache_controller import CacheController
 from shared_objects.error_utils import ErrorUtils
-from shared_objects.metagraph.metagraph_utils import is_anomalous_hotkey_loss
+from shared_objects.subtensor_ops.metagraph_utils import is_anomalous_hotkey_loss
 from shared_objects.locks.subtensor_lock import get_subtensor_lock
-from shared_objects.rpc.rpc_client_base import RPCClientBase
 from shared_objects.rpc.shutdown_coordinator import ShutdownCoordinator
 from time_util.time_util import TimeUtil
 
@@ -38,40 +37,6 @@ class SimpleNeuron:
 
 
 # ==================== Client for WeightSetter RPC ====================
-
-class MetagraphUpdaterClient(RPCClientBase):
-    """
-    RPC client for calling set_weights_rpc on MetagraphUpdater.
-
-    Used by WeightCalculatorServer to send weight setting requests
-    to MetagraphUpdater running in a separate process.
-
-    Usage:
-        client = MetagraphUpdaterClient()
-        result = client.set_weights_rpc(uids=[1,2,3], weights=[0.3,0.3,0.4], version_key=200)
-    """
-
-    def __init__(self, running_unit_tests=False, connect_immediately=True):
-        super().__init__(
-            service_name=ValiConfig.RPC_WEIGHT_SETTER_SERVICE_NAME,
-            port=ValiConfig.RPC_WEIGHT_SETTER_PORT,
-            connect_immediately=connect_immediately and not running_unit_tests
-        )
-        self.running_unit_tests = running_unit_tests
-
-    def set_weights_rpc(self, uids: list, weights: list, version_key: int) -> dict:
-        """
-        Send weight setting request to MetagraphUpdater.
-
-        Args:
-            uids: List of UIDs to set weights for
-            weights: List of weights corresponding to UIDs
-            version_key: Subnet version key
-
-        Returns:
-            dict: {"success": bool, "error": str or None}
-        """
-        return self.call("set_weights_rpc", uids, weights, version_key)
 
 
 class WeightFailureTracker:
@@ -252,11 +217,6 @@ class MetagraphUpdater(CacheController):
         mode = "miner" if is_miner else "validator"
         bt.logging.info(f"MetagraphUpdater initialized in {mode} mode, weight setting via RPC")
 
-    @property
-    def live_price_fetcher(self):
-        """Get live price fetcher client (validators only)."""
-        return self._live_price_client
-
     def _create_mock_subtensor(self):
         """Create a mock subtensor for unit testing."""
         from unittest.mock import Mock
@@ -347,7 +307,8 @@ class MetagraphUpdater(CacheController):
         self.subtensor.metagraph = Mock(side_effect=mock_metagraph_func)
 
     def _start_weight_setter_rpc_server(self):
-        """Start RPC server for weight setting requests (validators only)."""
+        """Start RPC server for weight setting requests (validators only).
+        Must run locally because the subtensor instance is on the main thread. """
         from multiprocessing.managers import BaseManager
 
         # Define RPC manager
@@ -871,21 +832,9 @@ class MetagraphUpdater(CacheController):
 
         return tao_reserve_rao, alpha_reserve_rao
 
-    def refresh_substrate_reserves(self, metagraph_clone):
-        """
-        Refresh TAO and ALPHA reserve balances from metagraph.pool and store in shared metagraph.
-        DEPRECATED: Use _get_substrate_reserves() and update_metagraph() for atomic updates.
-
-        Args:
-            metagraph_clone: Freshly synced metagraph with pool data
-        """
-        tao_reserve_rao, alpha_reserve_rao = self._get_substrate_reserves(metagraph_clone)
-        self._metagraph_client.set_tao_reserve_rao(tao_reserve_rao)
-        self._metagraph_client.set_alpha_reserve_rao(alpha_reserve_rao)
-
     def _get_tao_usd_rate(self):
         """
-        Get current TAO/USD price using live_price_fetcher.
+        Get current TAO/USD price using _live_price_client.
         Uses current timestamp to get latest available price.
 
         Non-blocking: If price fetch fails, logs error and returns None.
@@ -895,9 +844,9 @@ class MetagraphUpdater(CacheController):
             float: TAO/USD rate, or None if unavailable
         """
         try:
-            if not self.live_price_fetcher:
+            if not self._live_price_client:
                 bt.logging.warning(
-                    "live_price_fetcher not available - cannot query TAO/USD price. "
+                    "_live_price_client not available - cannot query TAO/USD price. "
                     "Using existing price from metagraph (may be stale)."
                 )
                 return None
@@ -906,7 +855,7 @@ class MetagraphUpdater(CacheController):
             current_time_ms = TimeUtil.now_in_millis()
 
             # Query TAO/USD price at current time
-            price_source = self.live_price_fetcher.get_close_at_date(
+            price_source = self._live_price_client.get_close_at_date(
                 TradePair.TAOUSD,
                 current_time_ms
             )
@@ -942,20 +891,6 @@ class MetagraphUpdater(CacheController):
             )
             bt.logging.error(traceback.format_exc())
             return None
-
-    def refresh_tao_usd_price(self):
-        """
-        Refresh TAO/USD price using live_price_fetcher and store in shared metagraph.
-        DEPRECATED: Use _get_tao_usd_rate() and update_metagraph() for atomic updates.
-
-        Returns:
-            bool: True if price was successfully updated, False otherwise
-        """
-        tao_to_usd_rate = self._get_tao_usd_rate()
-        if tao_to_usd_rate:
-            self.metagraph.set_tao_to_usd_rate(tao_to_usd_rate)
-            return True
-        return False
 
     def update_metagraph(self):
         if not self.refresh_allowed(self.interval_wait_time_ms):

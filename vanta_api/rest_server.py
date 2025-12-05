@@ -361,7 +361,7 @@ class VantaRestServer(RPCServerBase, APIKeyMixin):
 
         print(f"[REST-INIT] Step 2c/9: Creating LimitOrderClient...")
         # Create own LimitOrderClient (forward compatibility - no parameter passing)
-        from vali_objects.utils.limit_order.limit_order_server import LimitOrderClient
+        from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
         self._limit_order_client = LimitOrderClient(connection_mode=connection_mode)
         print(f"[REST-INIT] Step 2c/9: LimitOrderClient created ✓")
 

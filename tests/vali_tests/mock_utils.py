@@ -10,7 +10,7 @@ from typing import Dict, List, Optional
 from collections import defaultdict
 from unittest.mock import MagicMock
 
-from shared_objects.metagraph.mock_metagraph import MockMetagraph as BaseMockMetagraph
+from shared_objects.subtensor_ops.mock_metagraph import MockMetagraph as BaseMockMetagraph
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.vali_config import ValiConfig
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger, PerfCheckpoint, TP_ID_PORTFOLIO

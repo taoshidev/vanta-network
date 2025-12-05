@@ -26,7 +26,7 @@ from time_util.time_util import TimeUtil
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.position_management.position_utils.position_source import PositionSourceManager, PositionSource
 from shared_objects.cache_controller import CacheController
-from shared_objects.metagraph.mock_metagraph import MockMetagraph
+from shared_objects.subtensor_ops.mock_metagraph import MockMetagraph
 from vali_objects.utils.elimination.elimination_server import EliminationServer
 from vali_objects.position_management.position_manager import PositionManager
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_manager import PerfLedgerManager

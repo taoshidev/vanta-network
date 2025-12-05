@@ -55,7 +55,7 @@ class ValidatorSyncBase():
         # Create own AssetSelectionClient (forward compatibility - no parameter passing)
         self._asset_selection_client = AssetSelectionClient(running_unit_tests=running_unit_tests)
         # Create own LimitOrderClient (forward compatibility - no parameter passing)
-        from vali_objects.utils.limit_order.limit_order_server import LimitOrderClient
+        from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
         self._limit_order_client = LimitOrderClient(running_unit_tests=running_unit_tests)
         self.init_data()
 

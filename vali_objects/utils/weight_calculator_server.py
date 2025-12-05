@@ -117,10 +117,10 @@ class WeightCalculatorServer(RPCServerBase, CacheController):
         self._debt_ledger_client = DebtLedgerClient(running_unit_tests=running_unit_tests
         )
 
-        # Create MetagraphUpdaterClient for weight setting RPC
-        from shared_objects.metagraph.metagraph_updater import MetagraphUpdaterClient
-        self._metagraph_updater_client = MetagraphUpdaterClient(
-            running_unit_tests=running_unit_tests
+        # Create WeightSetterClient for weight setting RPC
+        from shared_objects.subtensor_ops.metagraph_updater_client import WeightSetterClient
+        self._weight_setter_client = WeightSetterClient(
+            running_unit_tests=running_unit_tests, connect_immediately=False
         )
 
         # Slack notifier (lazy initialization)
@@ -388,7 +388,7 @@ class WeightCalculatorServer(RPCServerBase, CacheController):
             weights = [x[1] for x in transformed_list]
 
             # Send request via RPC (synchronous - get success/failure feedback)
-            result = self._metagraph_updater_client.set_weights_rpc(
+            result = self._weight_setter_client.set_weights_rpc(
                 uids=uids,
                 weights=weights,
                 version_key=self.subnet_version

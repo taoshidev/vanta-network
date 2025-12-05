@@ -276,8 +276,8 @@ class ServerOrchestrator:
             client_class=None,
             required_in_testing=False,  # Only in validator mode
             required_in_miner=False,
-            required_in_validator=False,  # Must be started manually AFTER MetagraphUpdater (depends on WeightSetterServer)
-            spawn_kwargs={'start_daemon': False}  # Daemon started later
+            required_in_validator=True,  # Auto-started with other servers (client uses connect_immediately=False to defer connection until daemon runs)
+            spawn_kwargs={'start_daemon': False}  # Daemon started later via orchestrator.start_server_daemons() (unified with other daemons)
         ),
     }
 
@@ -345,7 +345,8 @@ class ServerOrchestrator:
         from vali_objects.position_management.position_manager_client import PositionManagerClient
         from vali_objects.plagiarism.plagiarism_server import PlagiarismServer, PlagiarismClient
         from vali_objects.plagiarism.plagiarism_detector_server import PlagiarismDetectorServer, PlagiarismDetectorClient
-        from vali_objects.utils.limit_order.limit_order_server import LimitOrderServer, LimitOrderClient
+        from vali_objects.utils.limit_order.limit_order_server import LimitOrderServer
+        from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
         from vali_objects.utils.asset_selection.asset_selection_server import AssetSelectionServer
         from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
         from vali_objects.price_fetcher import LivePriceFetcherServer, LivePriceFetcherClient
@@ -645,7 +646,7 @@ class ServerOrchestrator:
                 if context.validator_hotkey:
                     spawn_kwargs['hotkey'] = context.validator_hotkey
                 spawn_kwargs['is_mainnet'] = context.is_mainnet
-                spawn_kwargs['start_daemon'] = True  # Start daemon in validator mode
+                # Daemon started later via orchestrator.start_server_daemons() (unified with other daemons)
 
             elif server_name == 'debt_ledger':
                 if context.config and hasattr(context.config, 'slack_error_webhook_url'):
@@ -1014,17 +1015,14 @@ class ServerOrchestrator:
             orchestrator.call_pre_run_setup(perform_order_corrections=True)
         """
         if not self._started:
-            bt.logging.warning("Servers not started, cannot run pre_run_setup")
-            return
+            raise Exception("Servers not started, cannot run pre_run_setup")
 
-        if 'position_manager' in self._clients:
-            bt.logging.info("Running pre_run_setup on PositionManagerClient...")
-            self._clients['position_manager'].pre_run_setup(
-                perform_order_corrections=perform_order_corrections
-            )
-            bt.logging.success("pre_run_setup completed")
-        else:
-            bt.logging.warning("PositionManagerClient not available")
+        bt.logging.info("Running pre_run_setup on PositionManagerClient...")
+        self._clients['position_manager'].pre_run_setup(
+            perform_order_corrections=perform_order_corrections
+        )
+        bt.logging.success("pre_run_setup completed")
+
 
     def start_validator_servers(
         self,

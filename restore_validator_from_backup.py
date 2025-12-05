@@ -18,7 +18,8 @@ from vali_objects.challenge_period.challengeperiod_client import ChallengePeriod
 from vali_objects.challenge_period import ChallengePeriodServer
 from vali_objects.utils.elimination.elimination_client import EliminationClient
 from vali_objects.utils.elimination.elimination_server import EliminationServer
-from vali_objects.utils.limit_order.limit_order_server import LimitOrderClient, LimitOrderServer
+from vali_objects.utils.limit_order.limit_order_server import LimitOrderServer
+from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
 from vali_objects.position_management.position_manager_client import PositionManagerClient
 from vali_objects.position_management.position_manager_server import PositionManagerServer
 from vali_objects.contract.contract_server import ContractClient, ContractServer

@@ -3,7 +3,7 @@ from copy import deepcopy
 
 from bittensor import Balance
 
-from shared_objects.metagraph.mock_metagraph import MockNeuron, MockAxonInfo, MockMetagraph
+from shared_objects.subtensor_ops.mock_metagraph import MockNeuron, MockAxonInfo, MockMetagraph
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
 from time_util.time_util import TimeUtil

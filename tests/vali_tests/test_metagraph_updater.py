@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import Mock
 from dataclasses import dataclass
 
-from shared_objects.metagraph.metagraph_updater import MetagraphUpdater
+from shared_objects.subtensor_ops.subtensor_ops import MetagraphUpdater
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
 
@@ -202,7 +202,7 @@ class TestMetagraphUpdater(TestBase):
         # Verify validator-specific initialization
         self.assertFalse(updater.is_miner)
         self.assertTrue(updater.is_validator)
-        self.assertIsNotNone(updater.live_price_fetcher)
+        self.assertIsNotNone(updater._live_price_client)
         self.assertIsNotNone(updater.weight_failure_tracker)
         self.assertEqual(
             updater.interval_wait_time_ms,
@@ -350,7 +350,7 @@ class TestMetagraphUpdater(TestBase):
         # Verify miner-specific initialization
         self.assertTrue(updater.is_miner)
         self.assertFalse(updater.is_validator)
-        self.assertIsNone(updater.live_price_fetcher)
+        self.assertIsNone(updater._live_price_client)
         self.assertIsNone(updater.weight_failure_tracker)
         self.assertEqual(
             updater.interval_wait_time_ms,

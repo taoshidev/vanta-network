@@ -302,7 +302,8 @@ class TestDebtLedgers(TestBase):
 
         # Add multiple checkpoints with emissions data
         target_cp_duration_ms = ValiConfig.TARGET_CHECKPOINT_DURATION_MS
-        base_ts = TimeUtil.now_in_millis() - (TimeUtil.now_in_millis() % target_cp_duration_ms)
+        now_ms = TimeUtil.now_in_millis()
+        base_ts = now_ms - (now_ms % target_cp_duration_ms)
 
         checkpoint1 = DebtCheckpoint(
             timestamp_ms=base_ts,
@@ -346,7 +347,8 @@ class TestDebtLedgers(TestBase):
         target_cp_duration_ms = ValiConfig.TARGET_CHECKPOINT_DURATION_MS
 
         # Create aligned timestamp
-        base_ts = TimeUtil.now_in_millis() - (TimeUtil.now_in_millis() % target_cp_duration_ms)
+        now_ms = TimeUtil.now_in_millis()
+        base_ts = now_ms - (now_ms % target_cp_duration_ms)
 
         # Valid checkpoint (aligned)
         checkpoint1 = DebtCheckpoint(timestamp_ms=base_ts)
@@ -381,7 +383,8 @@ class TestDebtLedgers(TestBase):
 
         ledger = DebtLedger(hotkey=self.DEFAULT_MINER_HOTKEY)
         target_cp_duration_ms = ValiConfig.TARGET_CHECKPOINT_DURATION_MS
-        base_ts = TimeUtil.now_in_millis() - (TimeUtil.now_in_millis() % target_cp_duration_ms)
+        now_ms = TimeUtil.now_in_millis()
+        base_ts = now_ms - (now_ms % target_cp_duration_ms)
 
         # Add checkpoint with comprehensive data
         checkpoint = DebtCheckpoint(

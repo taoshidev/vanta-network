@@ -28,7 +28,7 @@ import bittensor as bt
 
 from vanta_api.websocket_notifier import WebSocketNotifierClient
 from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
-from vali_objects.utils.limit_order.limit_order_server import LimitOrderClient
+from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
 from time_util.time_util import TimeUtil
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.price_fetcher.live_price_client import LivePriceFetcherClient
@@ -37,7 +37,7 @@ from shared_objects.locks.position_lock_server import PositionLockClient
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import ValiConfig, TradePair, RPCConnectionMode
 from shared_objects.cache_controller import CacheController
-from shared_objects.metagraph.metagraph_utils import is_anomalous_hotkey_loss
+from shared_objects.subtensor_ops.metagraph_utils import is_anomalous_hotkey_loss
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.contract.contract_server import ContractClient
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient

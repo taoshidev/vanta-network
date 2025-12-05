@@ -31,7 +31,7 @@ from shared_objects.rate_limiter import RateLimiter
 from vali_objects.uuid_tracker import UUIDTracker
 from time_util.time_util import TimeUtil, timeme
 from vali_objects.exceptions.signal_exception import SignalException
-from shared_objects.metagraph.metagraph_updater import MetagraphUpdater
+from shared_objects.subtensor_ops.subtensor_ops import MetagraphUpdater
 from shared_objects.error_utils import ErrorUtils
 from shared_objects.slack_notifier import SlackNotifier
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
@@ -173,10 +173,9 @@ class Validator(ValidatorBase):
         self.perf_ledger_client = orchestrator.get_client('perf_ledger')
         self.debt_ledger_client = orchestrator.get_client('debt_ledger')
 
-        # Create MetagraphUpdater with simple parameters (no PTNManager)
+        # Create MetagraphUpdater with simple parameters
         # This will run in a thread in the main process
         # MetagraphUpdater now exposes RPC server for weight setting (validators only)
-        # MetagraphUpdater creates its own LivePriceFetcherClient internally (forward compatibility)
         self.metagraph_updater = MetagraphUpdater(
             self.config, self.wallet.hotkey.ss58_address,
             False,
@@ -186,34 +185,29 @@ class Validator(ValidatorBase):
         bt.logging.info(f"Subtensor: {self.subtensor}")
 
         # Start the metagraph updater and wait for initial population.
-        # CRITICAL: This must complete before EliminationManager daemon starts.
+        # CRITICAL: This must complete before daemons start since they depend on metagraph data.
+        # Weight setting also needs metagraph_updater to be running to receive weight set RPCs.
         self.metagraph_updater_thread = self.metagraph_updater.start_and_wait_for_initial_update(
             max_wait_time=60,
             slack_notifier=self.slack_notifier
         )
         bt.logging.success("[INIT] MetagraphUpdater started and populated")
-
-        # Start weight_calculator now that MetagraphUpdater (WeightSetterServer) is running
-        # WeightCalculatorServer.__init__ creates MetagraphUpdaterClient which connects to WeightSetterServer
-        orchestrator.start_individual_server('weight_calculator')
-        bt.logging.success("[INIT] WeightCalculatorServer started")
+        orchestrator.call_pre_run_setup(perform_order_corrections=True)
 
         # Now start server daemons and run pre-run setup (safe now that metagraph is populated)
-        # Order follows dependency graph: perf_ledger → challenge_period → elimination → position_manager → limit_order
-        # Note: weight_calculator server+daemon started at line 197 (depends on MetagraphUpdater's WeightSetterServer RPC)
         orchestrator.start_server_daemons([
-            'perf_ledger',         # No dependencies
-            'challenge_period',    # Depends on common_data, asset_selection (already running)
-            'elimination',         # Depends on perf_ledger, challenge_period
-            'position_manager',    # Depends on challenge_period, elimination
-            'debt_ledger',         # Depends on perf_ledger, position_manager
-            'limit_order',         # Depends on position_manager
-            'plagiarism_detector', # Depends on plagiarism, position_manager
-            'mdd_checker',         # Depends on position_manager, live_price, common_data, position_lock (all started)
-            'core_outputs',        # Depends on position_manager, elimination, challenge_period, contract (all started)
-            'miner_statistics'     # Depends on position_manager, perf_ledger, elimination, challenge_period, plagiarism_detector, contract (all started)
+            'perf_ledger',
+            'challenge_period',
+            'elimination',
+            'position_manager',
+            'debt_ledger',
+            'limit_order',
+            'plagiarism_detector',
+            'mdd_checker',
+            'core_outputs',
+            'miner_statistics',
+            'weight_calculator'
         ])
-        orchestrator.call_pre_run_setup(perform_order_corrections=True)
         bt.logging.success("[INIT] Server daemons started and pre-run setup completed")
         # ============================================================================
 
