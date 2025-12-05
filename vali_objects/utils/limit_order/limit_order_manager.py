@@ -232,9 +232,6 @@ class LimitOrderManager(CacheController):
                     f"{order.order_type.name} @ {order.limit_price}"
                 )
 
-            self._write_to_disk(miner_hotkey, order)
-            self._limit_orders[trade_pair][miner_hotkey].append(order)
-
             # Check if order can be filled immediately
             price_sources = self.live_price_fetcher.get_sorted_price_sources_for_trade_pair(trade_pair, order.processed_ms)
             if price_sources:
@@ -244,12 +241,17 @@ class LimitOrderManager(CacheController):
                     should_fill_immediately = True
 
         # Fill outside the lock to avoid reentrant lock issue
+        # Treat order that fills immediately as market order
         if should_fill_immediately:
+            order.src = OrderSource.ORGANIC
             fill_error = self._fill_limit_order_with_price_source(miner_hotkey, order, price_sources[0], None, enforce_market_cooldown=True)
             if fill_error:
                 raise SignalException(fill_error)
-
             bt.logging.info(f"Filled order {order_uuid} @ market price {price_sources[0].close}")
+
+        else:
+            self._write_to_disk(miner_hotkey, order)
+            self._limit_orders[trade_pair][miner_hotkey].append(order)
 
         return {"status": "success", "order_uuid": order_uuid}
 
@@ -715,7 +717,7 @@ class LimitOrderManager(CacheController):
             self._last_fill_time[trade_pair][miner_hotkey] = fill_time
 
             if order.execution_type == ExecutionType.LIMIT and (order.stop_loss is not None or order.take_profit is not None):
-                self._create_sltp_orders(miner_hotkey, order)
+                self._create_sltp_order(miner_hotkey, order)
 
         except Exception as e:
             error_msg = f"Could not fill limit order [{order.order_uuid}]: {e}. Cancelling order"
@@ -732,6 +734,14 @@ class LimitOrderManager(CacheController):
         order_uuid = order.order_uuid
         trade_pair = order.trade_pair
         trade_pair_id = trade_pair.trade_pair_id
+
+        # Orders that were filled immediately are not stored on disk or in memory
+        if src == OrderSource.ORGANIC:
+            order.src = src
+            order.processed_ms = time_ms
+            bt.logging.info(f"Closed ORGANIC limit order [{order_uuid}] [{trade_pair_id}] for [{miner_hotkey}] - no disk cleanup")
+            return
+
         with self.limit_order_locks.get_lock(miner_hotkey, trade_pair_id):
             unfilled_dir = ValiBkpUtils.get_limit_orders_dir(miner_hotkey, trade_pair_id, "unfilled", self.running_unit_tests)
             closed_filename = unfilled_dir + order_uuid
@@ -756,7 +766,7 @@ class LimitOrderManager(CacheController):
 
             bt.logging.info(f"Successfully closed limit order [{order_uuid}] [{trade_pair_id}] for [{miner_hotkey}]")
 
-    def _create_sltp_orders(self, miner_hotkey, parent_order):
+    def _create_sltp_order(self, miner_hotkey, parent_order):
         """
         Create a single bracket order with both stop loss and take profit.
         Replaces the previous two-order SLTP system.

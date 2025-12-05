@@ -21,6 +21,8 @@ class OrderSource(IntEnum):
             return OrderSource.LIMIT_FILLED
         elif order_src == OrderSource.BRACKET_UNFILLED:
             return OrderSource.BRACKET_FILLED
+        elif order_src == OrderSource.ORGANIC:
+            return OrderSource.ORGANIC
         else:
             return None
 
@@ -30,5 +32,7 @@ class OrderSource(IntEnum):
             return OrderSource.LIMIT_CANCELLED
         elif order_src in [OrderSource.BRACKET_UNFILLED, OrderSource.BRACKET_FILLED]:
             return OrderSource.BRACKET_CANCELLED
+        elif order_src == OrderSource.ORGANIC:
+            return OrderSource.ORGANIC
         else:
             return None

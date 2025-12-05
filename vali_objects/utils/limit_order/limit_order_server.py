@@ -378,7 +378,7 @@ class LimitOrderServer(RPCServerBase):
         if not self.running_unit_tests:
             raise Exception('create_sltp_orders_rpc can only be called in unit test mode')
 
-        return self._manager._create_sltp_orders(miner_hotkey, parent_order)
+        return self._manager._create_sltp_order(miner_hotkey, parent_order)
 
     def evaluate_bracket_trigger_price_rpc(self, order, position, price_source):
         """
