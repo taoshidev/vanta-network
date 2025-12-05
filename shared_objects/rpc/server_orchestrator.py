@@ -915,7 +915,7 @@ class ServerOrchestrator:
         bt.logging.info(f"Starting individual server: {server_name}")
         self._start_server(server_name, secrets=None, mode=self._mode, **kwargs)
 
-    def start_server_daemons(self, server_names: list) -> None:
+    def start_server_daemons(self, server_names: list = None) -> None:
         """
         Start daemons for servers that defer daemon initialization.
 
@@ -923,10 +923,12 @@ class ServerOrchestrator:
         and need their daemons started after all servers are initialized.
 
         Args:
-            server_names: List of server names to start daemons for
+            server_names: List of server names to start daemons for.
+                         If None, automatically starts daemons for all servers
+                         with 'start_daemon': False in their spawn_kwargs.
 
         Example:
-            # Start daemons for servers that deferred startup
+            # Explicit list (recommended for clarity)
             orchestrator.start_server_daemons([
                 'position_manager',
                 'elimination',
@@ -934,10 +936,23 @@ class ServerOrchestrator:
                 'perf_ledger',
                 'debt_ledger'
             ])
+
+            # Automatic detection (starts all deferred daemons)
+            orchestrator.start_server_daemons()
         """
         if not self._started:
             bt.logging.warning("Servers not started, cannot start daemons")
             return
+
+        # If no list provided, auto-detect servers with deferred daemon startup
+        if server_names is None:
+            server_names = []
+            for name, config in self.SERVERS.items():
+                # Check if server has deferred daemon startup
+                if (name in self._servers and  # Server is running
+                    config.spawn_kwargs.get('start_daemon') is False):  # Daemon deferred
+                    server_names.append(name)
+            bt.logging.info(f"Auto-detected {len(server_names)} servers with deferred daemons: {server_names}")
 
         for server_name in server_names:
             client = self.get_client(server_name)
@@ -957,6 +972,8 @@ class ServerOrchestrator:
 
         Handles failures gracefully - if a daemon can't be stopped, logs warning and continues.
 
+        Dynamically determines which servers have daemons by checking for stop_daemon method.
+
         Example usage:
             def tearDown(self):
                 self.orchestrator.stop_all_daemons()
@@ -966,29 +983,18 @@ class ServerOrchestrator:
 
         bt.logging.debug("Stopping all daemons...")
 
-        # List of all servers that might have daemons
-        daemon_servers = [
-            'position_manager',
-            'elimination',
-            'challenge_period',
-            'perf_ledger',
-            'debt_ledger',
-            'limit_order',
-            'plagiarism_detector',
-            'mdd_checker',
-            'core_outputs',
-            'miner_statistics'
-        ]
-
-        for server_name in daemon_servers:
-            if server_name not in self._clients:
-                continue  # Client not created yet, no daemon running
+        # Dynamically find all servers with daemon support by checking clients
+        # This eliminates the need to maintain a hardcoded list
+        stopped_count = 0
+        for server_name, client in list(self._clients.items()):
+            # Check if this client supports daemon operations
+            if not hasattr(client, 'stop_daemon'):
+                continue
 
             try:
-                client = self._clients[server_name]
-                if hasattr(client, 'stop_daemon'):
-                    client.stop_daemon()
-                    bt.logging.debug(f"Stopped daemon for {server_name}")
+                client.stop_daemon()
+                bt.logging.debug(f"Stopped daemon for {server_name}")
+                stopped_count += 1
             except (BrokenPipeError, ConnectionRefusedError, ConnectionError, EOFError) as e:
                 bt.logging.debug(
                     f"Failed to stop {server_name} daemon (server may have crashed): {type(e).__name__}. "
@@ -1000,7 +1006,7 @@ class ServerOrchestrator:
                     f"Continuing..."
                 )
 
-        bt.logging.debug("All daemons stopped")
+        bt.logging.debug(f"All daemons stopped ({stopped_count} servers with daemon support)")
 
     def call_pre_run_setup(self, perform_order_corrections: bool = True) -> None:
         """

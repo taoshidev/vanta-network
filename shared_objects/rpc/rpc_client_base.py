@@ -469,6 +469,18 @@ class RPCClientBase:
         """
         return self._server.start_daemon_rpc()
 
+    def stop_daemon(self) -> bool:
+        """
+        Stop the daemon thread remotely via RPC.
+
+        All RPC servers inherit from RPCServerBase which provides stop_daemon_rpc().
+        This is a standard method available on all servers.
+
+        Returns:
+            bool: True if daemon was stopped, False if not running
+        """
+        return self._server.stop_daemon_rpc()
+
     def disconnect(self):
         """Disconnect from the server."""
         start_time = time.time()

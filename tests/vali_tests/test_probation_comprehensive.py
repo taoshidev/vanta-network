@@ -121,7 +121,12 @@ class TestProbationComprehensive(TestBase):
         self._populate_active_miners()
 
     def tearDown(self):
-        """Per-test teardown: Clear data for next test."""
+        """Per-test teardown: Stop daemons and clear data for next test."""
+        # CRITICAL: Stop all daemons to prevent cross-test contamination
+        # Daemons operate on real wall clock time while tests use mock timestamps
+        # If a daemon from a previous test is still running, it can cache stale data
+        # that bleeds into the next test, causing race conditions in CI
+        self.orchestrator.stop_all_daemons()
         self.orchestrator.clear_all_test_data()
 
     def _setup_default_data(self):

@@ -560,6 +560,7 @@ class ChallengePeriodManager(CacheController):
         if not self.running_unit_tests:
             raise Exception("Clearing challenge period is only allowed during unit tests.")
         self.clear_active_miners()
+        self.clear_elimination_reasons()  # CRITICAL: Also clear elimination reasons for test isolation
         self._write_challengeperiod_from_memory_to_disk()
 
     def update_plagiarism_miners(self, current_time, plagiarism_miners):
