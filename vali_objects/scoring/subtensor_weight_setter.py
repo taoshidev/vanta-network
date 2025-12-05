@@ -179,7 +179,7 @@ class SubtensorWeightSetter(CacheController):
             return [], []
 
         # Use debt-based scoring with shared metagraph
-        # The metagraph contains substrate reserves refreshed by MetagraphUpdater
+        # The metagraph contains substrate reserves refreshed by SubtensorOpsManager
         checkpoint_results = DebtBasedScoring.compute_results(
             ledger_dict=filtered_debt_ledgers,
             metagraph=self.metagraph,  # Shared metagraph with substrate reserves
@@ -210,7 +210,7 @@ class SubtensorWeightSetter(CacheController):
 
     def run_update_loop(self):
         """
-        Weight setter loop that sends RPC requests to MetagraphUpdater.
+        Weight setter loop that sends RPC requests to SubtensorOpsManager.
         """
         setproctitle(f"vali_{self.__class__.__name__}")
         bt.logging.enable_info()
@@ -265,13 +265,13 @@ class SubtensorWeightSetter(CacheController):
         bt.logging.info("Weight setter update loop shutting down")
     
     def _send_weight_request(self, transformed_list):
-        """Send weight setting request to MetagraphUpdater via RPC (synchronous with feedback)"""
+        """Send weight setting request to SubtensorOpsManager via RPC (synchronous with feedback)"""
         try:
             uids = [x[0] for x in transformed_list]
             weights = [x[1] for x in transformed_list]
 
             # Send request via RPC (synchronous - get success/failure feedback)
-            # MetagraphUpdater will use its own config for netuid and wallet
+            # SubtensorOpsManager will use its own config for netuid and wallet
             result = self.metagraph_updater_rpc.set_weights_rpc(
                 uids=uids,
                 weights=weights,
@@ -284,7 +284,7 @@ class SubtensorWeightSetter(CacheController):
                 error = result.get('error', 'Unknown error')
                 bt.logging.error(f"✗ Weight request failed: {error}")
 
-                # NOTE: Don't send Slack alert here - MetagraphUpdater handles alerting
+                # NOTE: Don't send Slack alert here - SubtensorOpsManager handles alerting
                 # with proper benign error filtering (e.g., "too soon to commit weights").
                 # Alerting here would create duplicate spam for normal/expected failures.
 

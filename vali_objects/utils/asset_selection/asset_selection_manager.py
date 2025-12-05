@@ -13,19 +13,19 @@ Asset selections are persisted to disk and loaded on startup.
 import threading
 from typing import Dict
 
-import asyncio
 import bittensor as bt
 
 import template.protocol
 from time_util.time_util import TimeUtil
-from vali_objects.vali_config import TradePairCategory, ValiConfig, RPCConnectionMode
+from vali_objects.vali_config import TradePairCategory, RPCConnectionMode
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
+from vali_objects.validator_broadcast_base import ValidatorBroadcastBase
 
 ASSET_CLASS_SELECTION_TIME_MS = 1758326340000
 
 
-class AssetSelectionManager:
+class AssetSelectionManager(ValidatorBroadcastBase):
     """
     Manages asset class selection for miners (business logic only).
 
@@ -53,24 +53,17 @@ class AssetSelectionManager:
         """
         self.running_unit_tests = running_unit_tests
         self.connection_mode = connection_mode
-        self.is_mothership = 'ms' in ValiUtils.get_secrets(running_unit_tests=running_unit_tests)
 
         # FIX: Create lock immediately in __init__, not lazy!
         # This prevents the race condition where multiple threads could create separate lock instances
         self._asset_selection_lock = threading.RLock()
 
-        # Create own MetagraphClient (forward compatibility - no parameter passing)
-        from shared_objects.rpc.metagraph_client import MetagraphClient
-        self._metagraph_client = MetagraphClient(connection_mode=connection_mode)
+        # Determine is_testnet before calling ValidatorBroadcastBase.__init__
+        # This prevents wallet creation blocking in ValidatorBroadcastBase
+        is_testnet = (config.netuid == 116) if (config and hasattr(config, 'netuid')) else False
+        self.is_testnet = is_testnet
+        bt.logging.info("[ASSET_MGR] Wallet initialized")
 
-        # Initialize wallet directly
-        if not running_unit_tests and config is not None:
-            self.is_testnet = config.netuid == 116
-            self._wallet = bt.wallet(config=config)
-            bt.logging.info("[ASSET_MGR] Wallet initialized")
-        else:
-            self.is_testnet = False
-            self._wallet = None
 
         # SOURCE OF TRUTH: Normal Python dict
         # Structure: miner_hotkey -> TradePairCategory
@@ -81,22 +74,22 @@ class AssetSelectionManager:
         )
         self._load_asset_selections_from_disk()
 
+        # Initialize ValidatorBroadcastBase (derives is_mothership internally)
+        # CRITICAL: Pass running_unit_tests AND is_testnet to prevent blocking wallet creation
+        ValidatorBroadcastBase.__init__(
+            self,
+            running_unit_tests=running_unit_tests,
+            config=config,
+            is_testnet=is_testnet,
+            connection_mode=connection_mode
+        )
+
         bt.logging.info(f"[ASSET_MGR] AssetSelectionManager initialized with {len(self.asset_selections)} selections")
 
     @property
     def asset_selection_lock(self):
         """Thread-safe lock for protecting asset_selections dict access"""
         return self._asset_selection_lock
-
-    @property
-    def wallet(self):
-        """Get wallet."""
-        return self._wallet
-
-    @property
-    def metagraph(self):
-        """Get metagraph client (created internally)"""
-        return self._metagraph_client
 
     # ==================== Persistence Methods ====================
 
@@ -160,92 +153,24 @@ class AssetSelectionManager:
 
     def broadcast_asset_selection_to_validators(self, hotkey: str, asset_selection: TradePairCategory):
         """
-        Broadcast AssetSelection synapse to other validators.
-        Runs in a separate thread to avoid blocking the main process.
+        Broadcast AssetSelection synapse to other validators using shared broadcast base.
 
         Args:
             hotkey: The miner's hotkey
             asset_selection: The TradePairCategory enum value
         """
-        def run_broadcast():
-            try:
-                asyncio.run(self._async_broadcast_asset_selection(hotkey, asset_selection))
-            except Exception as e:
-                bt.logging.error(f"[ASSET_MGR] Failed to broadcast asset selection for {hotkey}: {e}")
-
-        thread = threading.Thread(target=run_broadcast, daemon=True)
-        thread.start()
-
-    async def _async_broadcast_asset_selection(self, hotkey: str, asset_selection: TradePairCategory):
-        """
-        Asynchronously broadcast AssetSelection synapse to other validators.
-
-        Args:
-            hotkey: The miner's hotkey
-            asset_selection: The TradePairCategory enum value
-        """
-        try:
-            if not self.wallet:
-                bt.logging.debug("[ASSET_MGR] No wallet configured, skipping broadcast")
-                return
-
-            if not self.metagraph:
-                bt.logging.debug("[ASSET_MGR] No metagraph configured, skipping broadcast")
-                return
-
-            # Get other validators to broadcast to
-            if self.is_testnet:
-                validator_axons = [
-                    n.axon_info for n in self.metagraph.get_neurons()
-                    if n.axon_info.ip != ValiConfig.AXON_NO_IP
-                    and n.axon_info.hotkey != self.wallet.hotkey.ss58_address
-                ]
-            else:
-                validator_axons = [
-                    n.axon_info for n in self.metagraph.get_neurons()
-                    if n.stake > bt.Balance(ValiConfig.STAKE_MIN)
-                    and n.axon_info.ip != ValiConfig.AXON_NO_IP
-                    and n.axon_info.hotkey != self.wallet.hotkey.ss58_address
-                ]
-
-            if not validator_axons:
-                bt.logging.debug("[ASSET_MGR] No other validators to broadcast AssetSelection to")
-                return
-
-            # Create AssetSelection synapse with the data
+        def create_synapse():
             asset_selection_data = {
                 "hotkey": hotkey,
                 "asset_selection": asset_selection.value if hasattr(asset_selection, 'value') else str(asset_selection)
             }
+            return template.protocol.AssetSelection(asset_selection=asset_selection_data)
 
-            asset_selection_synapse = template.protocol.AssetSelection(
-                asset_selection=asset_selection_data
-            )
-
-            bt.logging.info(f"[ASSET_MGR] Broadcasting AssetSelection for {hotkey} to {len(validator_axons)} validators")
-
-            # Send to other validators using dendrite
-            async with bt.dendrite(wallet=self.wallet) as dendrite:
-                responses = await dendrite.aquery(validator_axons, asset_selection_synapse)
-
-                # Log results
-                success_count = 0
-                for response in responses:
-                    if response.successfully_processed:
-                        success_count += 1
-                    elif response.error_message:
-                        bt.logging.warning(
-                            f"[ASSET_MGR] Failed to send AssetSelection to {response.axon.hotkey}: {response.error_message}"
-                        )
-
-                bt.logging.info(
-                    f"[ASSET_MGR] AssetSelection broadcast completed: {success_count}/{len(responses)} validators updated"
-                )
-
-        except Exception as e:
-            bt.logging.error(f"[ASSET_MGR] Error in async broadcast asset selection: {e}")
-            import traceback
-            bt.logging.error(traceback.format_exc())
+        self._broadcast_to_validators(
+            synapse_factory=create_synapse,
+            broadcast_name="AssetSelection",
+            context={"hotkey": hotkey}
+        )
 
     # ==================== Query Methods ====================
 
@@ -424,24 +349,26 @@ class AssetSelectionManager:
         except Exception as e:
             bt.logging.error(f"[ASSET_MGR] Failed to sync miner asset selection data: {e}")
 
-    def receive_asset_selection_update(self, asset_selection_data: dict) -> bool:
+    def receive_asset_selection_update(self, asset_selection_data: dict, sender_hotkey: str = None) -> bool:
         """
         Process an incoming asset selection update from another validator.
 
         Args:
             asset_selection_data: Dictionary containing hotkey, asset selection
+            sender_hotkey: The hotkey of the validator that sent this broadcast
 
         Returns:
             bool: True if successful, False otherwise
         """
         try:
-            if self.is_mothership:
+            # SECURITY: Verify sender using shared base class method
+            if not self.verify_broadcast_sender(sender_hotkey, "AssetSelection"):
                 return False
 
             with self.asset_selection_lock:
                 # Extract data from the synapse
                 hotkey = asset_selection_data.get("hotkey")
-                asset_selection = asset_selection_data.get("")
+                asset_selection = asset_selection_data.get("asset_selection")
                 bt.logging.info(f"[ASSET_MGR] Processing asset selection for miner {hotkey}")
 
                 if not all([hotkey, asset_selection is not None]):

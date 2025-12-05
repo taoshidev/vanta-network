@@ -746,7 +746,7 @@ class DebtBasedScoring:
                     f"total TAO: {total_tao_until_target:.2f}"
                 )
 
-            # Get substrate reserves from shared metagraph (refreshed by MetagraphUpdater)
+            # Get substrate reserves from shared metagraph (refreshed by SubtensorOpsManager)
             # Use safe helper to extract values from manager.Value() objects or plain numerics
             tao_reserve_obj = getattr(metagraph, 'tao_reserve_rao', None)
             alpha_reserve_obj = getattr(metagraph, 'alpha_reserve_rao', None)
@@ -837,14 +837,14 @@ class DebtBasedScoring:
         tao_amount = alpha_amount * alpha_to_tao_rate
 
         # Get TAO→USD price from metagraph
-        # This is set by MetagraphUpdater via live_price_fetcher.get_close_at_date(TradePair.TAOUSD)
+        # This is set by SubtensorOpsManager via live_price_fetcher.get_close_at_date(TradePair.TAOUSD)
         tao_to_usd_rate_raw = getattr(metagraph, 'tao_to_usd_rate', None)
 
         # Validate that we have a valid TAO/USD rate
         if tao_to_usd_rate_raw is None:
             raise ValueError(
                 "TAO/USD price not available in metagraph. "
-                "MetagraphUpdater must set metagraph.tao_to_usd_rate via live_price_fetcher."
+                "SubtensorOpsManager must set metagraph.tao_to_usd_rate via live_price_fetcher."
             )
 
         if not isinstance(tao_to_usd_rate_raw, (int, float)) or tao_to_usd_rate_raw <= 0:

@@ -215,22 +215,19 @@ class EntityClient(RPCClientBase):
             entity_hotkey, subaccount_id, subaccount_uuid, synthetic_hotkey
         )
 
-    def receive_subaccount_registration_update(self, subaccount_data: dict) -> bool:
+    def receive_subaccount_registration_update(self, subaccount_data: dict, sender_hotkey: str = None) -> bool:
         """
         Process incoming subaccount registration from another validator.
 
         Args:
             subaccount_data: Dict containing entity_hotkey, subaccount_id, subaccount_uuid, synthetic_hotkey
+            sender_hotkey: The hotkey of the validator that sent this broadcast
 
         Returns:
             bool: True if successful, False otherwise
         """
-        # This delegates to EntityManager.receive_subaccount_registration via RPC
-        # Returns True if successful, False otherwise
-        success = self._server.receive_subaccount_registration_rpc(
-            template.protocol.SubaccountRegistration(subaccount_data=subaccount_data)
-        ).successfully_processed
-        return success
+        # Call the data-level RPC method (not the synapse handler)
+        return self._server.receive_subaccount_registration_update_rpc(subaccount_data, sender_hotkey)
 
     def receive_subaccount_registration(
         self,

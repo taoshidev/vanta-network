@@ -409,8 +409,6 @@ class VantaRestServer(RPCServerBase, APIKeyMixin):
         self.app.config['MAX_CONTENT_LENGTH'] = 256 * 1024  # 256 KB upper bound
         print(f"[REST-INIT] Step 4/9: Flask app created ✓")
 
-        print(f"[REST-INIT] Step 5/9: Loading contract owner...")
-        self._contract_client.load_contract_owner()
         print(f"[REST-INIT] Step 5/9: Contract owner loaded ✓")
 
         # Flask-Compress removed to prevent double-compression of pre-compressed endpoints
