@@ -12,7 +12,7 @@ from setproctitle import setproctitle
 
 from data_generator.polygon_data_service import PolygonDataService
 from shared_objects.cache_controller import CacheController
-from shared_objects.rpc.common_data_server import CommonDataClient
+from shared_objects.rpc.common_data_client import CommonDataClient
 from shared_objects.rpc.shutdown_coordinator import ShutdownCoordinator
 from shared_objects.sn8_multiprocessing import ParallelizationMode
 from time_util.time_util import UnifiedMarketCalendar, TimeUtil, timeme
@@ -62,7 +62,7 @@ class PerfLedgerManager(CacheController):
         # Create own ContractClient (forward compatibility - no parameter passing)
         # Lazy import to avoid circular dependency:
         # elimination_server -> contract_server -> ledger_utils -> perf_ledger -> contract_server
-        from vali_objects.contract.contract_server import ContractClient
+        from vali_objects.contract.contract_client import ContractClient
         self._contract_client = ContractClient(
             port=ValiConfig.RPC_CONTRACTMANAGER_PORT,
             connect_immediately=False,
@@ -1912,7 +1912,7 @@ class PerfLedgerManager(CacheController):
         # print all attributes except cps: Note ledger is an object
         print(f'Portfolio ledger attributes: initialization_time_ms {portfolio_ledger.initialization_time_ms},'
               f' max_return {portfolio_ledger.max_return}')
-        from vali_objects.utils.ledger_utils import LedgerUtils
+        from vali_objects.vali_dataclasses.ledger.ledger_utils import LedgerUtils
         daily_returns = LedgerUtils.daily_return_ratio_by_date(portfolio_ledger, return_type='simple')
         datetime_to_daily_return = {datetime.datetime.combine(k, datetime.time.min).timestamp(): v for k, v in
                                     daily_returns.items()}

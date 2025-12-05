@@ -25,7 +25,7 @@ class P2PSyncer(ValidatorSyncBase):
         # P2PSyncer appears to be deprecated/shadow mode only based on TODO at line 680
 
         # Create own clients (forward compatibility - no parameter passing).
-        from shared_objects.rpc.metagraph_server import MetagraphClient
+        from shared_objects.rpc.metagraph_client import MetagraphClient
         from vali_objects.utils.elimination.elimination_client import EliminationClient
         from vali_objects.price_fetcher.live_price_client import LivePriceFetcherClient
 

@@ -29,7 +29,7 @@ from vali_objects.utils.elimination.elimination_manager import EliminationManage
 from typing import Dict, Set, List, Optional
 from vali_objects.vali_config import ValiConfig
 from setproctitle import setproctitle
-from shared_objects.rpc.common_data_server import CommonDataClient
+from shared_objects.rpc.common_data_client import CommonDataClient
 from shared_objects.rpc.rpc_server_base import RPCServerBase
 from vali_objects.vali_config import RPCConnectionMode
 

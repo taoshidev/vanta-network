@@ -42,7 +42,7 @@ class ValidatorSyncBase():
         self._elimination_client = EliminationClient(running_unit_tests=running_unit_tests)
         self._position_manager_client = PositionManagerClient(running_unit_tests=running_unit_tests)
         # Create own ContractClient (forward compatibility - no parameter passing)
-        from vali_objects.contract.contract_server import ContractClient
+        from vali_objects.contract.contract_client import ContractClient
         self._contract_client = ContractClient(running_unit_tests=running_unit_tests)
         self.last_signal_sync_time_ms = 0
         self.order_sync = order_sync

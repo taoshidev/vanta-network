@@ -17,7 +17,7 @@ from tests.vali_tests.base_objects.test_base import TestBase
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.utils.elimination.elimination_manager import EliminationReason
-from vali_objects.utils.ledger_utils import LedgerUtils
+from vali_objects.vali_dataclasses.ledger.ledger_utils import LedgerUtils
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair, ValiConfig

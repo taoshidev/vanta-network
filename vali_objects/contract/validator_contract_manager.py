@@ -20,7 +20,7 @@ from typing import Dict, Any, Optional, List
 import asyncio
 import time
 from time_util.time_util import TimeUtil
-from shared_objects.rpc.metagraph_server import MetagraphClient
+from shared_objects.rpc.metagraph_client import MetagraphClient
 from vali_objects.position_management.position_manager_client import PositionManagerClient
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode

@@ -18,9 +18,9 @@ import os
 import shutil
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
-from vali_objects.contract.contract_server import ContractClient
+from vali_objects.contract.contract_client import ContractClient
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger, TP_ID_PORTFOLIO
-from vali_objects.utils.ledger_utils import LedgerUtils
+from vali_objects.vali_dataclasses.ledger.ledger_utils import LedgerUtils
 from vali_objects.position_management.position_utils import PositionPenalties
 from vali_objects.contract.validator_contract_manager import ValidatorContractManager
 from vali_objects.position_management.position_utils.position_filter import PositionFilter

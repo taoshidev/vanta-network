@@ -30,7 +30,7 @@ class CacheController:
 
         # Create MetagraphClient - in LOCAL mode it won't connect via RPC
         # Tests can call set_direct_metagraph_server() to inject a server reference
-        from shared_objects.rpc.metagraph_server import MetagraphClient
+        from shared_objects.rpc.metagraph_client import MetagraphClient
         self._metagraph_client : MetagraphClient = MetagraphClient(connection_mode=connection_mode, running_unit_tests=running_unit_tests)
 
     def get_last_update_time_ms(self):

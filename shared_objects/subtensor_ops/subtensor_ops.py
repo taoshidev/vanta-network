@@ -1015,7 +1015,7 @@ class MetagraphUpdater(CacheController):
 if __name__ == "__main__":
     from neurons.miner import Miner
     from miner_objects.position_inspector import PositionInspector
-    from shared_objects.rpc.metagraph_server import MetagraphClient
+    from shared_objects.rpc.metagraph_client import MetagraphClient
 
     config = Miner.get_config()  # Must run this via commandline to populate correctly
 

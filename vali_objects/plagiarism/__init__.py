@@ -26,7 +26,7 @@ def __getattr__(name):
         from vali_objects.plagiarism.plagiarism_detector_server import PlagiarismDetectorServer
         return PlagiarismDetectorServer
     elif name == 'PlagiarismDetectorClient':
-        from vali_objects.plagiarism.plagiarism_detector_server import PlagiarismDetectorClient
+        from vali_objects.plagiarism.plagiarism_detector_client import PlagiarismDetectorClient
         return PlagiarismDetectorClient
     elif name == 'PlagiarismPipeline':
         from vali_objects.plagiarism.plagiarism_pipeline import PlagiarismPipeline
@@ -53,7 +53,7 @@ def __getattr__(name):
         from vali_objects.plagiarism.plagiarism_server import PlagiarismServer
         return PlagiarismServer
     elif name == 'PlagiarismClient':
-        from vali_objects.plagiarism.plagiarism_server import PlagiarismClient
+        from vali_objects.plagiarism.plagiarism_client import PlagiarismClient
         return PlagiarismClient
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
 

@@ -6,7 +6,7 @@ from typing import Union
 
 #from vali_objects.utils.contract_manager import CollateralRecord
 from vali_objects.vali_config import ValiConfig
-from vali_objects.utils.ledger_utils import LedgerUtils
+from vali_objects.vali_dataclasses.ledger.ledger_utils import LedgerUtils
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger, TP_ID_PORTFOLIO
 
 class Metrics:

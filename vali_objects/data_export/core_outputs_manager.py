@@ -76,7 +76,7 @@ class CoreOutputsManager:
         from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
         from vali_objects.utils.elimination.elimination_client import EliminationClient
         from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
-        from vali_objects.contract.contract_server import ContractClient
+        from vali_objects.contract.contract_client import ContractClient
         from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
 
         self._position_client = PositionManagerClient(

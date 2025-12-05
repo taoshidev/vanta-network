@@ -29,7 +29,7 @@ class MarketOrderManager():
         ws_connection_mode = RPCConnectionMode.LOCAL if running_unit_tests else connection_mode
         self.websocket_notifier = WebSocketNotifierClient(connection_mode=ws_connection_mode, connect_immediately=False)
         # Create own ContractClient (forward compatibility - no parameter passing)
-        from vali_objects.contract.contract_server import ContractClient
+        from vali_objects.contract.contract_client import ContractClient
         self._contract_client = ContractClient(running_unit_tests=running_unit_tests, connection_mode=connection_mode)
 
         # Create own LivePriceFetcherClient (forward compatibility - no parameter passing)
@@ -45,7 +45,7 @@ class MarketOrderManager():
         )
 
         # Create own PositionLockClient (forward compatibility - no parameter passing)
-        from shared_objects.locks.position_lock_server import PositionLockClient
+        from shared_objects.locks.position_lock_client import PositionLockClient
         self._position_lock_client = PositionLockClient(running_unit_tests=running_unit_tests)
 
         # PriceSlippageModel creates its own LivePriceFetcherClient internally

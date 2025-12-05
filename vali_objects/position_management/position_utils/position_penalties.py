@@ -9,7 +9,7 @@ from vali_objects.vali_dataclasses.position import Position
 from vali_objects.utils.functional_utils import FunctionalUtils
 from vali_objects.utils.risk_profiling import RiskProfiling
 from vali_objects.utils.metrics import Metrics
-from vali_objects.utils.ledger_utils import LedgerUtils
+from vali_objects.vali_dataclasses.ledger.ledger_utils import LedgerUtils
 
 # Import for type hints only - avoids circular import
 if TYPE_CHECKING:

@@ -16,7 +16,7 @@ from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.scoring.scoring import Scoring
 from vali_objects.challenge_period import ChallengePeriodManager
-from vali_objects.utils.ledger_utils import LedgerUtils
+from vali_objects.vali_dataclasses.ledger.ledger_utils import LedgerUtils
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair, ValiConfig

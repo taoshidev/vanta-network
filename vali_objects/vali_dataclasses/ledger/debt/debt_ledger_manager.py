@@ -60,7 +60,7 @@ class DebtLedgerManager():
         )
 
         # Create own ContractClient (forward compatibility - no parameter passing)
-        from vali_objects.contract.contract_server import ContractClient
+        from vali_objects.contract.contract_client import ContractClient
         self._contract_client = ContractClient(running_unit_tests=running_unit_tests)
 
         # IMPORTANT: PenaltyLedgerManager runs WITHOUT its own daemon process (run_daemon=False)

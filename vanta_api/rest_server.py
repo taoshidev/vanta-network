@@ -367,19 +367,19 @@ class VantaRestServer(RPCServerBase, APIKeyMixin):
 
         print(f"[REST-INIT] Step 2d/9: Creating ContractClient...")
         # Create own ContractClient (forward compatibility - no parameter passing)
-        from vali_objects.contract.contract_server import ContractClient
+        from vali_objects.contract.contract_client import ContractClient
         self._contract_client = ContractClient(connection_mode=connection_mode)
         print(f"[REST-INIT] Step 2d/9: ContractClient created ✓")
 
         print(f"[REST-INIT] Step 2e/9: Creating CoreOutputsClient...")
         # Create own CoreOutputsClient (forward compatibility - no parameter passing)
-        from vali_objects.data_export.core_outputs_server import CoreOutputsClient
+        from vali_objects.data_export.core_outputs_client import CoreOutputsClient
         self._core_outputs_client = CoreOutputsClient(connection_mode=connection_mode)
         print(f"[REST-INIT] Step 2e/9: CoreOutputsClient created ✓")
 
         print(f"[REST-INIT] Step 2f/9: Creating StatisticsOutputsClient...")
         # Create own StatisticsOutputsClient (forward compatibility - no parameter passing)
-        from vali_objects.statistics.miner_statistics_server import MinerStatisticsClient
+        from vali_objects.statistics.miner_statistics_client import MinerStatisticsClient
         self._statistics_outputs_client = MinerStatisticsClient(connection_mode=connection_mode)
         print(f"[REST-INIT] Step 2f/9: StatisticsOutputsClient created ✓")
 

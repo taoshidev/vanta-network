@@ -37,7 +37,7 @@ class PositionSyncer(ValidatorSyncBase):
         self.order_sync = order_sync
 
         # Create own CommonDataClient (forward compatibility - no parameter passing)
-        from shared_objects.rpc.common_data_server import CommonDataClient
+        from shared_objects.rpc.common_data_client import CommonDataClient
         self._common_data_client = CommonDataClient(
             connect_immediately=False,
             connection_mode=connection_mode

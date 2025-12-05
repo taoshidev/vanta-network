@@ -38,7 +38,8 @@ os.environ["TAOSHI_TS_PLATFORM"] = "LOCAL"
 
 from shared_objects.sn8_multiprocessing import get_multiprocessing_pool, get_spark_session  # noqa: E402
 from shared_objects.rpc.common_data_server import CommonDataServer  # noqa: E402
-from shared_objects.rpc.metagraph_server import MetagraphServer, MetagraphClient  # noqa: E402
+from shared_objects.rpc.metagraph_server import MetagraphServer  # noqa: E402
+from shared_objects.rpc.metagraph_client import MetagraphClient
 from shared_objects.rpc.port_manager import PortManager  # noqa: E402
 from shared_objects.rpc.rpc_client_base import RPCClientBase  # noqa: E402
 from shared_objects.rpc.rpc_server_base import RPCServerBase  # noqa: E402
@@ -52,7 +53,8 @@ from vali_objects.utils.elimination.elimination_server import EliminationServer 
 from vali_objects.utils.elimination.elimination_client import EliminationClient  # noqa: E402
 from vali_objects.utils.limit_order.limit_order_server import LimitOrderServer  # noqa: E402
 from vali_objects.price_fetcher import LivePriceFetcherServer, LivePriceFetcherClient  # noqa: E402
-from vali_objects.plagiarism.plagiarism_server import PlagiarismServer, PlagiarismClient  # noqa: E402
+from vali_objects.plagiarism.plagiarism_server import PlagiarismServer  # noqa: E402
+from vali_objects.plagiarism.plagiarism_client import PlagiarismClient
 from shared_objects.locks.position_lock import PositionLocks  # noqa: E402
 from shared_objects.locks.position_lock_server import PositionLockServer  # noqa: E402
 from vali_objects.position_management.position_manager_server import PositionManagerServer  # noqa: E402

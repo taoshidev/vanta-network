@@ -76,7 +76,7 @@ class PositionLocks:
 
         elif mode == 'rpc':
             # Import here to avoid circular dependency
-            from shared_objects.locks.position_lock_server import PositionLockClient
+            from shared_objects.locks.position_lock_client import PositionLockClient
 
             self.impl = PositionLockClient(running_unit_tests=running_unit_tests)
             bt.logging.info("PositionLocks: Using RPC mode (dedicated lock server)")

@@ -52,7 +52,7 @@ from typing import List, Tuple
 from calendar import monthrange
 
 from time_util.time_util import TimeUtil
-from vali_objects.contract.contract_server import ContractClient
+from vali_objects.contract.contract_client import ContractClient
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger import DebtLedger
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.vali_config import ValiConfig

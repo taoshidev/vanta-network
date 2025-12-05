@@ -69,7 +69,7 @@ class AssetSelectionServer(RPCServerBase):
         self.running_unit_tests = running_unit_tests
 
         # Create own MetagraphClient (forward compatibility - no parameter passing)
-        from shared_objects.rpc.metagraph_server import MetagraphClient
+        from shared_objects.rpc.metagraph_client import MetagraphClient
         self._metagraph_client = MetagraphClient(connection_mode=connection_mode)
 
         # Determine testnet from config

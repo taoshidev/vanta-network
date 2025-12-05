@@ -2,7 +2,7 @@ from vali_objects.utils.elimination.elimination_server import EliminationServer
 from vali_objects.utils.logger_utils import LoggerUtils
 from vali_objects.plagiarism.plagiarism_detector import PlagiarismDetector
 from vali_objects.position_management.position_manager import PositionManager
-from vali_objects.utils.subtensor_weight_setter import SubtensorWeightSetter
+from vali_objects.scoring.subtensor_weight_setter import SubtensorWeightSetter
 from time_util.time_util import TimeUtil
 from vali_objects.challenge_period import ChallengePeriodManager
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_manager import PerfLedgerManager

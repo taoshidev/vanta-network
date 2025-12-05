@@ -20,7 +20,7 @@ Usage:
 """
 import bittensor as bt
 from typing import List
-from shared_objects.rpc.common_data_server import CommonDataClient
+from shared_objects.rpc.common_data_client import CommonDataClient
 
 from shared_objects.rpc.rpc_server_base import RPCServerBase
 from shared_objects.sn8_multiprocessing import ParallelizationMode

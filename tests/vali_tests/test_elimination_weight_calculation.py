@@ -21,7 +21,7 @@ from vali_objects.utils.asset_segmentation import AssetSegmentation
 from vali_objects.utils.elimination.elimination_manager import EliminationReason
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from shared_objects.locks.position_lock import PositionLocks
-from vali_objects.utils.subtensor_weight_setter import SubtensorWeightSetter
+from vali_objects.scoring.subtensor_weight_setter import SubtensorWeightSetter
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.vali_dataclasses.order import Order

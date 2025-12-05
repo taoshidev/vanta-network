@@ -33,17 +33,17 @@ from time_util.time_util import TimeUtil
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.price_fetcher.live_price_client import LivePriceFetcherClient
 from vali_objects.enums.miner_bucket_enum import MinerBucket
-from shared_objects.locks.position_lock_server import PositionLockClient
+from shared_objects.locks.position_lock_client import PositionLockClient
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import ValiConfig, TradePair, RPCConnectionMode
 from shared_objects.cache_controller import CacheController
 from shared_objects.subtensor_ops.metagraph_utils import is_anomalous_hotkey_loss
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
-from vali_objects.contract.contract_server import ContractClient
+from vali_objects.contract.contract_client import ContractClient
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
 from vali_objects.position_management.position_manager_client import PositionManagerClient
 from vali_objects.vali_dataclasses.price_source import PriceSource
-from shared_objects.rpc.common_data_server import CommonDataClient
+from shared_objects.rpc.common_data_client import CommonDataClient
 
 
 # ==================== Elimination Types ====================
@@ -672,7 +672,7 @@ class EliminationManager(CacheController):
 
     def handle_mdd_eliminations(self, iteration_epoch=None):
         """Check for MDD eliminations."""
-        from vali_objects.utils.ledger_utils import LedgerUtils
+        from vali_objects.vali_dataclasses.ledger.ledger_utils import LedgerUtils
         bt.logging.info("checking main competition for maximum drawdown eliminations.")
 
         # Get MAINCOMP hotkeys from cp_client

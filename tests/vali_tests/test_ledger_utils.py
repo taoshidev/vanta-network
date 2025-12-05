@@ -10,7 +10,7 @@ from tests.shared_objects.test_utilities import (
     ledger_generator,
 )
 from tests.vali_tests.base_objects.test_base import TestBase
-from vali_objects.utils.ledger_utils import LedgerUtils
+from vali_objects.vali_dataclasses.ledger.ledger_utils import LedgerUtils
 from vali_objects.vali_config import ValiConfig
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import (
     TP_ID_PORTFOLIO,

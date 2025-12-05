@@ -186,7 +186,7 @@ class TestMinerStatistics(TestBase):
         # Verify ledgers were saved and can be retrieved for scoring
         filtered_ledgers = self.perf_ledger_client.filtered_ledger_for_scoring(hotkeys=self.test_hotkeys)
         from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import TP_ID_PORTFOLIO
-        from vali_objects.utils.ledger_utils import LedgerUtils
+        from vali_objects.vali_dataclasses.ledger.ledger_utils import LedgerUtils
         for hotkey in self.test_hotkeys:
             if hotkey in filtered_ledgers and TP_ID_PORTFOLIO in filtered_ledgers[hotkey]:
                 ledger = filtered_ledgers[hotkey][TP_ID_PORTFOLIO]

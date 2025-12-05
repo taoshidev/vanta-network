@@ -17,7 +17,7 @@ from vali_objects.vali_config import ValiConfig
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger, TP_ID_PORTFOLIO
 from time_util.time_util import TimeUtil
 from vali_objects.position_management.position_utils import PositionFiltering
-from vali_objects.utils.ledger_utils import LedgerUtils
+from vali_objects.vali_dataclasses.ledger.ledger_utils import LedgerUtils
 from vali_objects.utils.metrics import Metrics
 from vali_objects.position_management.position_utils import PositionPenalties
 from vali_objects.utils.asset_segmentation import AssetSegmentation

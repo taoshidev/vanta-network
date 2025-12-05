@@ -22,7 +22,8 @@ from vali_objects.utils.limit_order.limit_order_server import LimitOrderServer
 from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
 from vali_objects.position_management.position_manager_client import PositionManagerClient
 from vali_objects.position_management.position_manager_server import PositionManagerServer
-from vali_objects.contract.contract_server import ContractClient, ContractServer
+from vali_objects.contract.contract_server import ContractServer
+from vali_objects.contract.contract_client import ContractClient
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
 from vali_objects.utils.asset_selection.asset_selection_server import AssetSelectionServer

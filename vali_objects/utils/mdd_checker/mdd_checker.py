@@ -17,11 +17,11 @@ from typing import List, Dict
 import bittensor as bt
 
 from shared_objects.cache_controller import CacheController
-from shared_objects.rpc.common_data_server import CommonDataClient
+from shared_objects.rpc.common_data_client import CommonDataClient
 from time_util.time_util import TimeUtil
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.price_fetcher.live_price_client import LivePriceFetcherClient
-from shared_objects.locks.position_lock_server import PositionLockClient
+from shared_objects.locks.position_lock_client import PositionLockClient
 from vali_objects.position_management.position_manager_client import PositionManagerClient
 from vali_objects.utils.price_slippage_model import PriceSlippageModel
 from vali_objects.vali_config import ValiConfig, TradePair, RPCConnectionMode
@@ -72,21 +72,6 @@ class MDDChecker(CacheController):
     # ==================== Properties ====================
 
     @property
-    def metagraph(self):
-        """Get metagraph client."""
-        return self._metagraph_client
-
-    @property
-    def live_price_fetcher(self):
-        """Get live price fetcher client."""
-        return self._live_price_client
-
-    @property
-    def position_manager(self):
-        """Get position manager client."""
-        return self._position_client
-
-    @property
     def sync_in_progress(self):
         """Get sync_in_progress flag via CommonDataClient."""
         return self._common_data_client.get_sync_in_progress()
@@ -120,12 +105,12 @@ class MDDChecker(CacheController):
                     if self._position_is_candidate_for_price_correction(position, now_ms):
                         tp = position.trade_pair
                         if tp not in trade_pair_to_market_open:
-                            trade_pair_to_market_open[tp] = self.live_price_fetcher.is_market_open(tp, now_ms)
+                            trade_pair_to_market_open[tp] = self._live_price_client.is_market_open(tp, now_ms)
                         if trade_pair_to_market_open[tp]:
                             required_trade_pairs_for_candles.add(tp)
 
             now = TimeUtil.now_in_millis()
-            trade_pair_to_price_sources = self.live_price_fetcher.get_tp_to_sorted_price_sources(
+            trade_pair_to_price_sources = self._live_price_client.get_tp_to_sorted_price_sources(
                 list(required_trade_pairs_for_candles),
                 now
             )
@@ -161,8 +146,8 @@ class MDDChecker(CacheController):
 
         # Time the RPC read of positions
         rpc_start = time.perf_counter()
-        hotkey_to_positions = self.position_manager.get_positions_for_hotkeys(
-            self.metagraph.get_hotkeys(),
+        hotkey_to_positions = self._position_client.get_positions_for_hotkeys(
+            self._metagraph_client.get_hotkeys(),
             filter_eliminations=True,
             sort_positions=True
         )
@@ -251,7 +236,7 @@ class MDDChecker(CacheController):
 
         # Try to find a bid/ask for it if it is missing (Polygon and Tiingo equities)
         if winning_event and (not winning_event.bid or not winning_event.ask):
-            bid, ask, _ = self.live_price_fetcher.get_quote(trade_pair, order.processed_ms)
+            bid, ask, _ = self._live_price_client.get_quote(trade_pair, order.processed_ms)
             if bid and ask:
                 winning_event.bid = bid
                 winning_event.ask = ask
@@ -288,7 +273,7 @@ class MDDChecker(CacheController):
             self.n_poly_api_requests += 1
 
             fetch_start = time.perf_counter()
-            price_sources = self.live_price_fetcher.get_sorted_price_sources_for_trade_pair(trade_pair, order.processed_ms)
+            price_sources = self._live_price_client.get_sorted_price_sources_for_trade_pair(trade_pair, order.processed_ms)
             fetch_ms = (time.perf_counter() - fetch_start) * 1000
 
             now_ms = TimeUtil.now_in_millis()
@@ -316,7 +301,7 @@ class MDDChecker(CacheController):
 
             # Refresh position inside lock for TOCTOU protection
             refresh_start = time.perf_counter()
-            position_refreshed = self.position_manager.get_miner_position_by_uuid(hotkey, position.position_uuid)
+            position_refreshed = self._position_client.get_miner_position_by_uuid(hotkey, position.position_uuid)
             refresh_ms = (time.perf_counter() - refresh_start) * 1000
 
             if position_refreshed is None:
@@ -357,7 +342,7 @@ class MDDChecker(CacheController):
 
             # Rebuild the position with the newest price
             if n_orders_updated:
-                position.rebuild_position_with_updated_orders(self.live_price_fetcher)
+                position.rebuild_position_with_updated_orders(self._live_price_client)
                 bt.logging.info(
                     f"Retroactively updated {n_orders_updated} order prices for {position.miner_hotkey} "
                     f"{position.trade_pair.trade_pair} return_at_close changed from {orig_return:.8f} to "
@@ -372,7 +357,7 @@ class MDDChecker(CacheController):
 
             if position.is_open_position and realtime_price is not None:
                 orig_return = position.return_at_close
-                position.set_returns(realtime_price, self.live_price_fetcher)
+                position.set_returns(realtime_price, self._live_price_client)
                 ret_changed = orig_return != position.return_at_close
 
             if n_orders_updated or ret_changed:
@@ -388,7 +373,7 @@ class MDDChecker(CacheController):
                         return
 
                 is_liquidated = position.current_return == 0
-                self.position_manager.save_miner_position(position, delete_open_position_if_exists=is_liquidated)
+                self._position_client.save_miner_position(position, delete_open_position_if_exists=is_liquidated)
                 self.n_orders_corrected += n_orders_updated
                 self.miners_corrected.add(hotkey)
 

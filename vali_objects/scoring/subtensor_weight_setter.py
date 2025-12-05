@@ -15,7 +15,7 @@ from vali_objects.scoring.debt_based_scoring import DebtBasedScoring
 from shared_objects.error_utils import ErrorUtils
 from vali_objects.position_management.position_manager_client import PositionManagerClient
 from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
-from vali_objects.contract.contract_server import ContractClient
+from vali_objects.contract.contract_client import ContractClient
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_client import DebtLedgerClient
 
 

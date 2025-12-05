@@ -40,7 +40,7 @@ from vali_objects.vali_config import ValiConfig, TradePair, RPCConnectionMode
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils, CustomEncoder
 from vali_objects.position_management.position_utils import PositionUtils
 from vali_objects.position_management.position_utils.position_penalties import PositionPenalties
-from vali_objects.utils.ledger_utils import LedgerUtils
+from vali_objects.vali_dataclasses.ledger.ledger_utils import LedgerUtils
 from vali_objects.scoring.scoring import Scoring
 from vali_objects.utils.metrics import Metrics
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import TP_ID_PORTFOLIO, PerfLedger
@@ -214,9 +214,9 @@ class MinerStatisticsManager:
         from vali_objects.position_management.position_manager_client import PositionManagerClient
         from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
         from vali_objects.utils.elimination.elimination_client import EliminationClient
-        from vali_objects.contract.contract_server import ContractClient
+        from vali_objects.contract.contract_client import ContractClient
         from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
-        from vali_objects.plagiarism.plagiarism_detector_server import PlagiarismDetectorClient
+        from vali_objects.plagiarism.plagiarism_detector_client import PlagiarismDetectorClient
 
         self._position_client = PositionManagerClient(
             port=ValiConfig.RPC_POSITIONMANAGER_PORT,

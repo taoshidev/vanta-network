@@ -29,13 +29,13 @@ from vali_objects.scoring.scoring import Scoring
 from time_util.time_util import TimeUtil
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger, TP_ID_PORTFOLIO
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
-from vali_objects.utils.ledger_utils import LedgerUtils
+from vali_objects.vali_dataclasses.ledger.ledger_utils import LedgerUtils
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.utils.elimination.elimination_manager import EliminationReason
 from vali_objects.enums.miner_bucket_enum import MinerBucket
-from vali_objects.plagiarism.plagiarism_server import PlagiarismClient
-from vali_objects.contract.contract_server import ContractClient
-from shared_objects.rpc.common_data_server import CommonDataClient
+from vali_objects.plagiarism.plagiarism_client import PlagiarismClient
+from vali_objects.contract.contract_client import ContractClient
+from shared_objects.rpc.common_data_client import CommonDataClient
 
 
 class ChallengePeriodManager(CacheController):

@@ -331,32 +331,42 @@ class ServerOrchestrator:
             return
 
         # Import all server/client classes
-        from shared_objects.rpc.common_data_server import CommonDataServer, CommonDataClient
-        from shared_objects.rpc.metagraph_server import MetagraphServer, MetagraphClient
-        from shared_objects.locks.position_lock_server import PositionLockServer, PositionLockClient
-        from vali_objects.contract.contract_server import ContractServer, ContractClient
+        from shared_objects.rpc.common_data_server import CommonDataServer
+        from shared_objects.rpc.common_data_client import CommonDataClient
+        from shared_objects.rpc.metagraph_server import MetagraphServer
+        from shared_objects.rpc.metagraph_client import MetagraphClient
+        from shared_objects.locks.position_lock_server import PositionLockServer
+        from shared_objects.locks.position_lock_client import PositionLockClient
+        from vali_objects.contract.contract_server import ContractServer
+        from vali_objects.contract.contract_client import ContractClient
         from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_server import PerfLedgerServer
         from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
-        from vali_objects.challenge_period import ChallengePeriodServer
+        from vali_objects.challenge_period.challengeperiod_server import ChallengePeriodServer
         from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
         from vali_objects.utils.elimination.elimination_server import EliminationServer
         from vali_objects.utils.elimination.elimination_client import EliminationClient
         from vali_objects.position_management.position_manager_server import PositionManagerServer
         from vali_objects.position_management.position_manager_client import PositionManagerClient
-        from vali_objects.plagiarism.plagiarism_server import PlagiarismServer, PlagiarismClient
-        from vali_objects.plagiarism.plagiarism_detector_server import PlagiarismDetectorServer, PlagiarismDetectorClient
+        from vali_objects.plagiarism.plagiarism_server import PlagiarismServer
+        from vali_objects.plagiarism.plagiarism_client import PlagiarismClient
+        from vali_objects.plagiarism.plagiarism_detector_server import PlagiarismDetectorServer
+        from vali_objects.plagiarism.plagiarism_detector_client import PlagiarismDetectorClient
         from vali_objects.utils.limit_order.limit_order_server import LimitOrderServer
         from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
         from vali_objects.utils.asset_selection.asset_selection_server import AssetSelectionServer
         from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
-        from vali_objects.price_fetcher import LivePriceFetcherServer, LivePriceFetcherClient
+        from vali_objects.price_fetcher.live_price_server import LivePriceFetcherServer
+        from vali_objects.price_fetcher.live_price_client import LivePriceFetcherClient
         from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_server import DebtLedgerServer
         from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_client import DebtLedgerClient
-        from vali_objects.data_export.core_outputs_server import CoreOutputsServer, CoreOutputsClient
-        from vali_objects.statistics.miner_statistics_server import MinerStatisticsServer, MinerStatisticsClient
+        from vali_objects.data_export.core_outputs_server import CoreOutputsServer
+        from vali_objects.data_export.core_outputs_client import CoreOutputsClient
+        from vali_objects.statistics.miner_statistics_server import MinerStatisticsServer
+        from vali_objects.statistics.miner_statistics_client import MinerStatisticsClient
         from vali_objects.utils.mdd_checker.mdd_checker_server import MDDCheckerServer
         from vali_objects.utils.mdd_checker.mdd_checker_client import MDDCheckerClient
-        from vali_objects.utils.weight_calculator_server import WeightCalculatorServer, WeightCalculatorClient
+        from vali_objects.scoring.weight_calculator_server import WeightCalculatorServer
+        from vali_objects.scoring.weight_calculator_client import WeightCalculatorClient
 
         # Update registry with classes
         self.SERVERS['common_data'].server_class = CommonDataServer
