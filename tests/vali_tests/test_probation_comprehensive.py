@@ -174,6 +174,7 @@ class TestProbationComprehensive(TestBase):
             miners[hotkey] = (MinerBucket.CHALLENGE, self.START_TIME, None, None)
 
         # Initialize metagraph with all test miners (CRITICAL - needed for scoring)
+        # Note: Metagraph is already cleared by orchestrator.clear_all_test_data() in setUp
         self.metagraph_client.set_hotkeys(self.ALL_MINER_NAMES)
 
         # Clear and update miners via client
@@ -329,15 +330,16 @@ class TestProbationComprehensive(TestBase):
         # Setup a poor-performing maincomp miner
         poor_miner = "maincomp_miner1"
 
-        # Give this miner terrible performance
+        # Use the losing ledger defaults (already configured for poor performance)
+        # Don't modify values - generate_losing_ledger already sets loss=-0.2 and mdd near elimination
         poor_ledger = generate_losing_ledger(self.START_TIME, self.END_TIME)
-        for checkpoint in poor_ledger[TP_ID_PORTFOLIO].cps:
-            checkpoint.gain = 0.01
-            checkpoint.loss = -0.15  # 15% loss
-            checkpoint.mdd = 0.92    # high-ish drawdown should reduce their scores
 
         self.LEDGERS.update({poor_miner: poor_ledger})
         self.perf_ledger_client.save_perf_ledgers(self.LEDGERS)
+        # CRITICAL: Force reload from disk to bypass potential RPC serialization/caching issues
+        # In CI environments with different process scheduling, save_perf_ledgers() alone may not
+        # fully propagate changes before the next read due to RPC pickling or caching layers
+        self.perf_ledger_client.re_init_perf_ledger_data()
 
         # First refresh - should demote to probation or eliminate due to drawdown
         self.challenge_period_client.refresh(current_time=self.CURRENT_TIME)
@@ -345,7 +347,9 @@ class TestProbationComprehensive(TestBase):
 
         maincomp_miners = self.challenge_period_client.get_success_miners()
 
-        self.assertNotIn(poor_miner, maincomp_miners)
+        self.assertNotIn(poor_miner, maincomp_miners,
+                        f"Poor miner should be demoted or eliminated. "
+                        f"Maincomp miners: {list(maincomp_miners.keys())[:10]}...")
 
         # Now test probation timeout elimination
         future_time = self.CURRENT_TIME + ValiConfig.PROBATION_MAXIMUM_MS + 1000
