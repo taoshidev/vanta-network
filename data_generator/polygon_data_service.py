@@ -604,11 +604,14 @@ class PolygonDataService(BaseDataService):
 
     def _subscribe_websockets(self, tpc: TradePairCategory = None):
         subbed = []
-        for tp in TradePair:
-            if tp in self.UNSUPPORTED_TRADE_PAIRS:
-                continue
-            if tpc and tp.trade_pair_category != tpc:
-                continue
+
+        # Get tradeable pairs for this category (excluding blocked pairs)
+        pairs_to_subscribe = self.get_tradeable_pairs(
+            category=tpc,
+            include_blocked=False  # Don't subscribe to blocked pairs
+        )
+
+        for tp in pairs_to_subscribe:
             if tp.is_crypto:
                 symbol = "XT." + tp.trade_pair.replace('/', '-')
                 self.WEBSOCKET_OBJECTS[TradePairCategory.CRYPTO].subscribe(symbol)

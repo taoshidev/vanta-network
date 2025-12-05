@@ -50,18 +50,12 @@ class _TiingoPseudoClient:
                 continue
 
             try:
-                # Get trade pairs to query
-                if self._cat == TradePairCategory.EQUITIES:
-                    desired_trade_pairs = [x for x in TradePair if x.is_equities]
-                elif self._cat == TradePairCategory.FOREX:
-                    desired_trade_pairs = [x for x in TradePair if x.is_forex]
-                elif self._cat == TradePairCategory.CRYPTO:
-                    desired_trade_pairs = [x for x in TradePair if x.is_crypto]
-                else:
-                    raise ValueError(f'Unexpected trade pair category {self._cat}')
-
-                trade_pairs_to_query = [pair for pair in desired_trade_pairs
-                                        if self._svc.is_market_open(pair)]
+                # Get tradeable pairs to query (excluding blocked pairs)
+                trade_pairs_to_query = self._svc.get_tradeable_pairs(
+                    category=self._cat,
+                    include_blocked=False,  # Don't subscribe to blocked pairs
+                    market_open_only=True  # Only query pairs with open markets
+                )
 
                 if not trade_pairs_to_query:
                     await asyncio.sleep(1)

@@ -143,6 +143,45 @@ class BaseDataService():
         # Use generator expression for efficiency
         return next((x for x in TradePair if x.trade_pair_category == tpc), None)
 
+    def get_tradeable_pairs(
+        self,
+        category: TradePairCategory = None,
+        include_blocked: bool = False,
+        market_open_only: bool = False
+    ) -> List[TradePair]:
+        """
+        Get list of tradeable trade pairs with configurable filtering.
+
+        Args:
+            category: Filter by category (None = all categories)
+            include_blocked: If False, exclude blocked pairs
+            market_open_only: If True, only return pairs with open markets
+
+        Returns:
+            List of TradePair objects that meet the criteria
+        """
+        pairs = []
+        for tp in TradePair:
+            # Skip unsupported pairs (no price data available)
+            if tp in self.UNSUPPORTED_TRADE_PAIRS:
+                continue
+
+            # Filter by category if specified
+            if category and tp.trade_pair_category != category:
+                continue
+
+            # Filter blocked pairs unless explicitly requested
+            if not include_blocked and tp.is_blocked:
+                continue
+
+            # Filter by market hours if requested
+            if market_open_only and not self.is_market_open(tp):
+                continue
+
+            pairs.append(tp)
+
+        return pairs
+
     def check_flush(self):
         t0 = time.time() if self.n_flushes % 500 == 0 else 0
         # Get a list of keys to avoid dictionary changed size during iteration
