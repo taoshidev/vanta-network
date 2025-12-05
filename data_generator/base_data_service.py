@@ -12,6 +12,7 @@ from polygon import WebSocketClient
 from setproctitle import setproctitle
 from tiingo import TiingoWebsocketClient
 
+from shared_objects.error_utils import ErrorUtils
 from time_util.time_util import TimeUtil, UnifiedMarketCalendar
 from vali_objects.vali_config import TradePair, TradePairCategory, ValiConfig
 from vali_objects.vali_dataclasses.recent_event_tracker import RecentEventTracker
@@ -42,13 +43,14 @@ def exception_handler_decorator():
     return decorator
 
 class BaseDataService():
-    def __init__(self, provider_name):
+    def __init__(self, provider_name, running_unit_tests=False):
         self.DEBUG_LOG_INTERVAL_S = 180
         self.MAX_TIME_NO_EVENTS_S = 120
         self.enabled_websocket_categories = {TradePairCategory.CRYPTO,
                                             TradePairCategory.FOREX}  # Exclude EQUITIES for now
 
         self.provider_name = provider_name
+        self.running_unit_tests = running_unit_tests
         self.tpc_to_n_events = {x: 0 for x in self.enabled_websocket_categories}
         self.n_equity_events_skipped_afterhours = 0
         self.trade_pair_to_price_history = defaultdict(list)
@@ -107,12 +109,20 @@ class BaseDataService():
             time_ms = TimeUtil.now_in_millis()
         return self.market_calendar.is_market_open(trade_pair, time_ms)
 
+    @ErrorUtils.require_test_mode
     def set_test_market_open(self, is_open: bool) -> None:
-        """Test-only method to override market open status."""
+        """
+        Test-only method to override market open status.
+        Only works when running_unit_tests=True for safety.
+        """
         self._test_market_open_override = is_open
 
+    @ErrorUtils.require_test_mode
     def clear_test_market_open(self) -> None:
-        """Clear market open override and use real calendar."""
+        """
+        Clear market open override and use real calendar.
+        Only works when running_unit_tests=True for safety.
+        """
         self._test_market_open_override = None
 
     def get_close(self, trade_pair: TradePair) -> PriceSource | None:

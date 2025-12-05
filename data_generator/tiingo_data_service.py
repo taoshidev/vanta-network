@@ -108,7 +108,7 @@ class TiingoDataService(BaseDataService):
         self.disable_ws = disable_ws
         self.running_unit_tests = running_unit_tests
 
-        super().__init__(provider_name=TIINGO_PROVIDER_NAME)
+        super().__init__(provider_name=TIINGO_PROVIDER_NAME, running_unit_tests=running_unit_tests)
 
         self.MARKET_STATUS = None
 
@@ -546,6 +546,8 @@ class TiingoDataService(BaseDataService):
 
         requestResponse = requests.get(url, headers={'Content-Type': 'application/json'}, timeout=5)
         if requestResponse.status_code != 200:
+            bt.logging.warning(f"Tiingo crypto API request failed with status code {requestResponse.status_code}. "
+                             f"URL: {url[:100]}... Response: {requestResponse.text[:200]}")
             return {}
 
         response_data = requestResponse.json()
@@ -558,11 +560,13 @@ class TiingoDataService(BaseDataService):
                 continue
 
             # Find the closest price data point to target_time_ms
-            # data time is start time, add timespan to match close price time
+            # Note: The date field represents candle start time, we add timespan to get close time
             closest_data = min(price_data,
                                     key=lambda x: abs(TimeUtil.parse_iso_to_ms(x['date']) + timespan_ms - target_time_ms))
 
-            data_time_ms = TimeUtil.parse_iso_to_ms(closest_data["date"]) + timespan_ms
+            candle_start_ms = TimeUtil.parse_iso_to_ms(closest_data["date"])
+            candle_close_ms = candle_start_ms + timespan_ms
+            data_time_ms = candle_close_ms  # Use close time for consistency with close price
             price_close = float(closest_data['close'])
             bid_price = ask_price = 0  # Bid/ask not provided in historical data
 

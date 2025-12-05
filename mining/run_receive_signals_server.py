@@ -35,7 +35,7 @@ def handle_data():
     data = request.json
 
     if data is None:
-        return jsonify({"error": "Invalid message"}), 401
+        return jsonify({"error": "Invalid message"}), 400
 
     print("received data:", data)
 

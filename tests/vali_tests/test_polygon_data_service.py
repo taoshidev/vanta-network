@@ -345,6 +345,79 @@ class TestPolygonDataService(unittest.TestCase):
         self.assertEqual(btc_result.close, 65000.0)
         self.assertEqual(eth_result.close, 3200.0)
 
+    def test_polygon_set_test_price_source_requires_test_mode(self):
+        """Test that set_test_price_source raises error in production mode."""
+        # Create service in production mode (running_unit_tests=False)
+        prod_service = PolygonDataService(
+            api_key="test_key",
+            disable_ws=True,
+            running_unit_tests=False
+        )
+
+        price_source = PriceSource(
+            source='test', timespan_ms=1000, open=65000.0, close=65000.0,
+            vwap=65000.0, high=65000.0, low=65000.0, start_ms=TimeUtil.now_in_millis(),
+            websocket=False, lag_ms=0
+        )
+
+        with self.assertRaises(RuntimeError) as context:
+            prod_service.set_test_price_source(TradePair.BTCUSD, price_source)
+
+        self.assertIn("can only be used in unit test mode", str(context.exception))
+
+    def test_polygon_clear_test_price_sources_requires_test_mode(self):
+        """Test that clear_test_price_sources raises error in production mode."""
+        # Create service in production mode (running_unit_tests=False)
+        prod_service = PolygonDataService(
+            api_key="test_key",
+            disable_ws=True,
+            running_unit_tests=False
+        )
+
+        with self.assertRaises(RuntimeError) as context:
+            prod_service.clear_test_price_sources()
+
+        self.assertIn("can only be used in unit test mode", str(context.exception))
+
+    def test_polygon_set_test_candle_data_requires_test_mode(self):
+        """Test that set_test_candle_data raises error in production mode."""
+        # Create service in production mode (running_unit_tests=False)
+        prod_service = PolygonDataService(
+            api_key="test_key",
+            disable_ws=True,
+            running_unit_tests=False
+        )
+
+        start_ms = TimeUtil.now_in_millis()
+        end_ms = start_ms + 60000
+
+        candles = [
+            PriceSource(
+                source='test', timespan_ms=1000, open=65000.0, close=65100.0,
+                vwap=65050.0, high=65200.0, low=64900.0, start_ms=start_ms,
+                websocket=False, lag_ms=0
+            )
+        ]
+
+        with self.assertRaises(RuntimeError) as context:
+            prod_service.set_test_candle_data(TradePair.BTCUSD, start_ms, end_ms, candles)
+
+        self.assertIn("can only be used in unit test mode", str(context.exception))
+
+    def test_polygon_clear_test_candle_data_requires_test_mode(self):
+        """Test that clear_test_candle_data raises error in production mode."""
+        # Create service in production mode (running_unit_tests=False)
+        prod_service = PolygonDataService(
+            api_key="test_key",
+            disable_ws=True,
+            running_unit_tests=False
+        )
+
+        with self.assertRaises(RuntimeError) as context:
+            prod_service.clear_test_candle_data()
+
+        self.assertIn("can only be used in unit test mode", str(context.exception))
+
 
 if __name__ == '__main__':
     unittest.main()

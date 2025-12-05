@@ -10,6 +10,7 @@ from polygon.websocket import Market, EquityAgg, EquityTrade, CryptoTrade, Forex
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from data_generator.base_data_service import BaseDataService, POLYGON_PROVIDER_NAME
+from shared_objects.error_utils import ErrorUtils
 from time_util.time_util import TimeUtil
 from vali_objects.vali_config import TradePair, TradePairCategory
 import time
@@ -250,7 +251,7 @@ class PolygonDataService(BaseDataService):
         # Key: (trade_pair, start_ms, end_ms) -> Value: List[PriceSource]
         self._test_candle_data = {}
 
-        super().__init__(provider_name=POLYGON_PROVIDER_NAME)
+        super().__init__(provider_name=POLYGON_PROVIDER_NAME, running_unit_tests=running_unit_tests)
 
         self.MARKET_STATUS = None
 
@@ -263,6 +264,7 @@ class PolygonDataService(BaseDataService):
             self.websocket_manager_thread = threading.Thread(target=self.websocket_manager, daemon=True)
             self.websocket_manager_thread.start()
 
+    @ErrorUtils.require_test_mode
     def set_test_price_source(self, trade_pair: TradePair, price_source: PriceSource | None) -> None:
         """
         Test-only method to inject price sources for specific trade pairs.
@@ -272,8 +274,6 @@ class PolygonDataService(BaseDataService):
             trade_pair: TradePair to set price for
             price_source: PriceSource to return for this trade pair, or None to explicitly disable fallback
         """
-        if not self.running_unit_tests:
-            raise RuntimeError("set_test_price_source can only be used in unit test mode")
         self._test_price_sources[trade_pair] = price_source
 
         # If price_source is None, we're explicitly saying "no price source for this pair"
@@ -305,17 +305,24 @@ class PolygonDataService(BaseDataService):
         if symbol not in self.trade_pair_to_recent_events:
             self.trade_pair_to_recent_events[symbol] = RecentEventTracker()
 
-        # CRITICAL FIX: Clear old test prices before adding new one
-        # Without this, the median selection in _get_best_price_source() can pick stale prices
-        # from previous test injections instead of the current test price
-        self.trade_pair_to_recent_events[symbol].clear_all_events(running_unit_tests=True)
+        # CRITICAL FIX: Use atomic clear_and_add_event to prevent race condition
+        # Without atomicity, the median selection in _get_best_price_source() can pick stale prices
+        # from previous test injections instead of the current test price.
+        # Race condition scenario: clear_all_events() -> [another thread adds event] -> add_event()
+        # Results in unintended events remaining in tracker, causing test pollution.
+        self.trade_pair_to_recent_events[symbol].clear_and_add_event(
+            updated_price_source,
+            is_forex_quote=False,
+            tp_debug_str=None,
+            running_unit_tests=True
+        )
 
-        self.trade_pair_to_recent_events[symbol].add_event(updated_price_source)
-
+    @ErrorUtils.require_test_mode
     def clear_test_price_sources(self) -> None:
-        """Clear all test price sources (for test isolation)."""
-        if not self.running_unit_tests:
-            return
+        """
+        Clear all test price sources (for test isolation).
+        Only works when running_unit_tests=True for safety.
+        """
         self._test_price_sources.clear()
 
         # ALSO clear RecentEventTracker to remove injected test events
@@ -323,6 +330,7 @@ class PolygonDataService(BaseDataService):
         for tracker in self.trade_pair_to_recent_events.values():
             tracker.clear_all_events(running_unit_tests=True)
 
+    @ErrorUtils.require_test_mode
     def set_test_candle_data(self, trade_pair: TradePair, start_ms: int, end_ms: int, candles: List[PriceSource]) -> None:
         """
         Test-only method to inject candle data for a specific trade pair and time window.
@@ -334,16 +342,15 @@ class PolygonDataService(BaseDataService):
             end_ms: End timestamp of the time window
             candles: List of PriceSource objects to return for this window
         """
-        if not self.running_unit_tests:
-            raise RuntimeError("set_test_candle_data can only be used in unit test mode")
-
         key = (trade_pair, start_ms, end_ms)
         self._test_candle_data[key] = candles
 
+    @ErrorUtils.require_test_mode
     def clear_test_candle_data(self) -> None:
-        """Clear all test candle data (for test isolation)."""
-        if not self.running_unit_tests:
-            return
+        """
+        Clear all test candle data (for test isolation).
+        Only works when running_unit_tests=True for safety.
+        """
         self._test_candle_data.clear()
 
     def _get_test_candle_data(self, trade_pair: TradePair, start_ms: int, end_ms: int) -> List[PriceSource] | None:
@@ -361,7 +368,6 @@ class PolygonDataService(BaseDataService):
         """
         if not self.running_unit_tests:
             return None
-
         # First try exact key match (optimization for common case)
         exact_key = (trade_pair, start_ms, end_ms)
         if exact_key in self._test_candle_data:
@@ -403,7 +409,6 @@ class PolygonDataService(BaseDataService):
         """
         if not self.running_unit_tests:
             return None
-
         # Check test registry first for specific override (including explicit None)
         if trade_pair in self._test_price_sources:
             test_ps = self._test_price_sources[trade_pair]

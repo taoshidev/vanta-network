@@ -2,12 +2,13 @@
 # Copyright (c) 2024 Taoshi Inc
 
 from time_util.time_util import TimeUtil
+import functools
 import traceback
-from typing import Union, List
+from typing import Union, List, Callable, Any
 
 
 class ErrorUtils:
-    """Shared utilities for error handling and formatting across the codebase."""
+    """Shared utilities for error handling, formatting, and runtime protection across the codebase."""
     
     @staticmethod
     def get_compact_stacktrace(error: Union[str, Exception], 
@@ -126,5 +127,43 @@ class ErrorUtils:
         # Add compact stacktrace
         compact_trace = ErrorUtils.get_compact_stacktrace(traceback_str)
         message_parts.append(f"```{compact_trace}```")
-        
+
         return "\n".join(message_parts)
+
+    @staticmethod
+    def require_test_mode(func: Callable) -> Callable:
+        """
+        Decorator that ensures a method can only be called when running_unit_tests=True.
+        Raises RuntimeError if called in production mode.
+
+        This is a security measure to prevent test-only methods (like market hour overrides
+        or price injection) from being accidentally called in production validators.
+
+        Use this for setter/mutating methods that modify test state. For getter/helper
+        methods, handle the test mode check internally with an early return instead.
+
+        Raises:
+            RuntimeError: If called when self.running_unit_tests is False
+
+        Usage:
+            @ErrorUtils.require_test_mode
+            def set_test_price(self, price: float) -> None:
+                self._test_price = price
+
+            @ErrorUtils.require_test_mode
+            def clear_test_price(self) -> None:
+                self._test_price = None
+
+        Example error message:
+            "set_test_market_open can only be used in unit test mode.
+             Set running_unit_tests=True when instantiating BaseDataService."
+        """
+        @functools.wraps(func)
+        def wrapper(self, *args, **kwargs) -> Any:
+            if not getattr(self, 'running_unit_tests', False):
+                raise RuntimeError(
+                    f"{func.__name__} can only be used in unit test mode. "
+                    f"Set running_unit_tests=True when instantiating {self.__class__.__name__}."
+                )
+            return func(self, *args, **kwargs)
+        return wrapper

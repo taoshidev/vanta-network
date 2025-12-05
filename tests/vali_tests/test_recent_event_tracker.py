@@ -181,6 +181,45 @@ class TestRecentEventTracker(unittest.TestCase):
         self.assertEqual(len(self.tracker.events), 1)
 
     @patch('time_util.time_util.TimeUtil.now_in_millis')
+    def test_clear_and_add_event_atomicity(self, mock_time):
+        """Test that clear_and_add_event atomically clears and adds an event."""
+        mock_time.return_value = 10000000
+
+        # Add some initial events
+        self.tracker.add_event(PriceSource(start_ms=mock_time.return_value, open=100.0, close=105.0))
+        self.tracker.add_event(PriceSource(start_ms=mock_time.return_value + 1000, open=101.0, close=106.0))
+        self.tracker.add_event(PriceSource(start_ms=mock_time.return_value + 2000, open=102.0, close=107.0))
+
+        # Verify we have 3 events
+        self.assertEqual(len(self.tracker.events), 3)
+
+        # Use clear_and_add_event to atomically clear and add a new event
+        new_event = PriceSource(start_ms=mock_time.return_value + 3000, open=103.0, close=108.0, bid=102.5, ask=103.5)
+        self.tracker.clear_and_add_event(new_event, is_forex_quote=True, running_unit_tests=True)
+
+        # Should have exactly 1 event now
+        self.assertEqual(len(self.tracker.events), 1)
+
+        # Verify it's the new event
+        retrieved_event, prices = self.tracker.get_event_by_timestamp(mock_time.return_value + 3000)
+        self.assertEqual(retrieved_event.open, 103.0)
+        self.assertEqual(retrieved_event.close, 108.0)
+
+        # Verify forex quote data was preserved
+        self.assertIsNotNone(prices)
+        self.assertEqual(prices[0], [102.5])  # bid list
+        self.assertEqual(prices[1], [103.5])  # ask list
+
+    def test_clear_and_add_event_requires_test_mode(self):
+        """Test that clear_and_add_event raises error in production mode."""
+        event = PriceSource(start_ms=10000000, open=100.0, close=105.0)
+
+        with self.assertRaises(RuntimeError) as context:
+            self.tracker.clear_and_add_event(event, running_unit_tests=False)
+
+        self.assertIn("can only be called in unit test mode", str(context.exception))
+
+    @patch('time_util.time_util.TimeUtil.now_in_millis')
     def test_efficiency_of_cleanup(self, mock_time):
         mock_time.return_value = 10000000
         for i in range(100):

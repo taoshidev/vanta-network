@@ -194,3 +194,44 @@ class RecentEventTracker:
         with self._lock:
             self.events.clear()
             self.timestamp_to_event.clear()
+
+    def clear_and_add_event(self, event, is_forex_quote=False, tp_debug_str: str = None, running_unit_tests: bool = False):
+        """
+        Atomically clear all events and add a new event.
+
+        This method is critical for test isolation - it ensures that when injecting test prices,
+        stale test prices from previous test runs are cleared before adding the new price.
+        Without this atomicity, there's a race window where:
+        1. clear_all_events() releases lock
+        2. Another thread could add an event
+        3. add_event() acquires lock and adds
+        Result: Unintended events remain in tracker
+
+        This atomic operation prevents _get_best_price_source() from selecting stale
+        test prices when computing median prices across multiple data sources.
+
+        Args:
+            event: The event to add after clearing
+            is_forex_quote: Whether this is a forex quote (for median price tracking)
+            tp_debug_str: Debug string for logging
+            running_unit_tests: Must be True to proceed. Safety check to prevent accidental production use.
+
+        Raises:
+            RuntimeError: If called in production mode (running_unit_tests=False)
+        """
+        if not running_unit_tests:
+            raise RuntimeError("clear_and_add_event() can only be called in unit test mode")
+
+        with self._lock:
+            # Clear all events first
+            self.events.clear()
+            self.timestamp_to_event.clear()
+
+            # Now add the new event (using unsafe internal logic since we already hold lock)
+            event_time_ms = event.start_ms
+
+            # No need to check for duplicates since we just cleared everything
+            self.events.add((event_time_ms, event))
+            self.timestamp_to_event[event_time_ms] = (event, ([event.bid], [event.ask]) if is_forex_quote else None)
+
+            # No cleanup needed since we just cleared everything
