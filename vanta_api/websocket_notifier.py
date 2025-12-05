@@ -1,5 +1,5 @@
 # developer: jbonilla
-# Copyright © 2025 Taoshi Inc
+# Copyright (c) 2025 Taoshi Inc
 """
 WebSocketNotifier - RPC server and client for WebSocket broadcasting.
 
