@@ -2,7 +2,7 @@ from shared_objects.rpc.rpc_client_base import RPCClientBase
 from vali_objects.vali_config import ValiConfig
 
 
-class WightSetterClient(RPCClientBase):
+class WeightSetterClient(RPCClientBase):
     """
     RPC client for calling set_weights_rpc on the local subtensor.
 
