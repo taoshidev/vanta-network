@@ -314,6 +314,190 @@ class TestTiingoDataService(unittest.TestCase):
         except Exception as e:
             self.fail(f"Timestamp handling raised unexpected exception: {e}")
 
+    def test_tiingo_batch_trade_pairs_helper(self):
+        """
+        Test the _batch_trade_pairs helper function that enforces Tiingo's 5 ticker limit.
+
+        Tiingo API has a limit of 5 tickers per request. This test verifies that our
+        batching helper correctly chunks trade pairs into groups of 5 or fewer.
+        """
+        # Test with exactly 5 trade pairs (no batching needed, but should work)
+        trade_pairs_5 = [
+            TradePair.BTCUSD, TradePair.ETHUSD, TradePair.SOLUSD,
+            TradePair.XRPUSD, TradePair.ADAUSD
+        ]
+        batches_5 = self.tiingo_service._batch_trade_pairs(trade_pairs_5)
+        self.assertEqual(len(batches_5), 1, "5 pairs should fit in 1 batch")
+        self.assertEqual(len(batches_5[0]), 5)
+
+        # Test with 6 trade pairs (requires 2 batches)
+        trade_pairs_6 = [
+            TradePair.BTCUSD, TradePair.ETHUSD, TradePair.SOLUSD,
+            TradePair.XRPUSD, TradePair.ADAUSD, TradePair.DOGEUSD
+        ]
+        batches_6 = self.tiingo_service._batch_trade_pairs(trade_pairs_6)
+        self.assertEqual(len(batches_6), 2, "6 pairs should require 2 batches")
+        self.assertEqual(len(batches_6[0]), 5, "First batch should have 5 pairs")
+        self.assertEqual(len(batches_6[1]), 1, "Second batch should have 1 pair")
+
+        # Test with 12 trade pairs (requires 3 batches)
+        trade_pairs_12 = [
+            # Crypto
+            TradePair.BTCUSD, TradePair.ETHUSD, TradePair.SOLUSD,
+            TradePair.XRPUSD, TradePair.ADAUSD, TradePair.DOGEUSD,
+            # Equities
+            TradePair.NVDA, TradePair.MSFT, TradePair.GOOG,
+            TradePair.AAPL, TradePair.TSLA, TradePair.AMZN
+        ]
+        batches_12 = self.tiingo_service._batch_trade_pairs(trade_pairs_12)
+        self.assertEqual(len(batches_12), 3, "12 pairs should require 3 batches")
+        self.assertEqual(len(batches_12[0]), 5, "First batch should have 5 pairs")
+        self.assertEqual(len(batches_12[1]), 5, "Second batch should have 5 pairs")
+        self.assertEqual(len(batches_12[2]), 2, "Third batch should have 2 pairs")
+
+    def test_tiingo_crypto_batching_6_tickers(self):
+        """
+        Test crypto price fetching with 6 tickers to verify batching works correctly.
+
+        Production issue: Tiingo API returned 400 error when requesting more than 5 tickers.
+        This test ensures the batching logic splits requests appropriately.
+
+        Bug: "Error: A limit of 5 tickers may be requested at a time"
+        Fixed in: data_generator/tiingo_data_service.py (batching implementation)
+        """
+        order_time_ms = TimeUtil.now_in_millis()
+
+        # Request 6 crypto pairs - should trigger batching (2 batches: 5 + 1)
+        crypto_pairs = [
+            TradePair.BTCUSD, TradePair.ETHUSD, TradePair.SOLUSD,
+            TradePair.XRPUSD, TradePair.ADAUSD, TradePair.DOGEUSD
+        ]
+
+        result = self.tiingo_service.get_closes_rest(
+            trade_pairs=crypto_pairs,
+            time_ms=order_time_ms,
+            live=True,
+            verbose=False
+        )
+
+        # Verify we got results for all 6 crypto pairs
+        self.assertIsInstance(result, dict)
+        self.assertEqual(
+            len(result), 6,
+            f"Should have price sources for all 6 crypto pairs, got {len(result)}"
+        )
+
+        # Verify each pair has valid price source
+        for tp in crypto_pairs:
+            self.assertIn(tp, result, f"{tp.trade_pair} should be in result")
+            self.assertIsInstance(result[tp], PriceSource)
+            self.assertGreater(result[tp].close, 0)
+
+    def test_tiingo_equity_batching_7_tickers(self):
+        """
+        Test equity price fetching with 7 tickers to verify batching.
+
+        This test ensures equity API calls are also properly batched.
+        """
+        order_time_ms = TimeUtil.now_in_millis()
+
+        # Request 7 equity pairs - should trigger batching (2 batches: 5 + 2)
+        equity_pairs = [
+            TradePair.NVDA, TradePair.MSFT, TradePair.GOOG,
+            TradePair.AAPL, TradePair.TSLA, TradePair.AMZN,
+            TradePair.META
+        ]
+
+        result = self.tiingo_service.get_closes_rest(
+            trade_pairs=equity_pairs,
+            time_ms=order_time_ms,
+            live=True,
+            verbose=False
+        )
+
+        # Verify we got results for all 7 equity pairs
+        self.assertIsInstance(result, dict)
+        self.assertEqual(
+            len(result), 7,
+            f"Should have price sources for all 7 equity pairs, got {len(result)}"
+        )
+
+        for tp in equity_pairs:
+            self.assertIn(tp, result)
+            self.assertIsInstance(result[tp], PriceSource)
+
+    def test_tiingo_forex_batching_6_tickers(self):
+        """
+        Test forex price fetching with 6 tickers to verify batching.
+
+        This test ensures forex API calls are also properly batched.
+        """
+        order_time_ms = TimeUtil.now_in_millis()
+
+        # Request 6 forex pairs - should trigger batching (2 batches: 5 + 1)
+        forex_pairs = [
+            TradePair.EURUSD, TradePair.GBPUSD, TradePair.USDJPY,
+            TradePair.AUDUSD, TradePair.USDCAD, TradePair.NZDUSD
+        ]
+
+        result = self.tiingo_service.get_closes_rest(
+            trade_pairs=forex_pairs,
+            time_ms=order_time_ms,
+            live=True,
+            verbose=False
+        )
+
+        # Verify we got results for all 6 forex pairs
+        self.assertIsInstance(result, dict)
+        self.assertEqual(
+            len(result), 6,
+            f"Should have price sources for all 6 forex pairs, got {len(result)}"
+        )
+
+        for tp in forex_pairs:
+            self.assertIn(tp, result)
+            self.assertIsInstance(result[tp], PriceSource)
+
+    def test_tiingo_mixed_categories_with_batching(self):
+        """
+        Test with large mixed set requiring batching in multiple categories.
+
+        This comprehensive test verifies that batching works correctly when
+        multiple categories each exceed the 5 ticker limit.
+        """
+        order_time_ms = TimeUtil.now_in_millis()
+
+        # Create a large mixed set - each category has 6+ pairs
+        trade_pairs = [
+            # 6 crypto pairs (2 batches)
+            TradePair.BTCUSD, TradePair.ETHUSD, TradePair.SOLUSD,
+            TradePair.XRPUSD, TradePair.ADAUSD, TradePair.DOGEUSD,
+            # 7 equity pairs (2 batches)
+            TradePair.NVDA, TradePair.MSFT, TradePair.GOOG,
+            TradePair.AAPL, TradePair.TSLA, TradePair.AMZN, TradePair.META,
+            # 6 forex pairs (2 batches)
+            TradePair.EURUSD, TradePair.GBPUSD, TradePair.USDJPY,
+            TradePair.AUDUSD, TradePair.USDCAD, TradePair.NZDUSD
+        ]
+
+        result = self.tiingo_service.get_closes_rest(
+            trade_pairs=trade_pairs,
+            time_ms=order_time_ms,
+            live=True,
+            verbose=False
+        )
+
+        # Verify all 19 pairs returned
+        self.assertEqual(
+            len(result), 19,
+            f"Should have price sources for all 19 pairs, got {len(result)}"
+        )
+
+        for tp in trade_pairs:
+            self.assertIn(tp, result, f"{tp.trade_pair} should be in result")
+            self.assertIsInstance(result[tp], PriceSource)
+            self.assertGreater(result[tp].close, 0)
+
 
 if __name__ == '__main__':
     unittest.main()

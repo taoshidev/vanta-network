@@ -25,6 +25,7 @@ from vali_objects.vali_dataclasses.recent_event_tracker import RecentEventTracke
 
 DEBUG = 0
 TIINGO_COINBASE_EXCHANGE_STR = 'gdax'
+TIINGO_MAX_TICKERS_PER_REQUEST = 5
 
 class _TiingoPseudoClient:
     def __init__(self, service, category):
@@ -171,6 +172,23 @@ class TiingoDataService(BaseDataService):
 
     def instantiate_not_pickleable_objects(self):
         self.TIINGO_CLIENT = TiingoClient(self.config)
+
+    @staticmethod
+    def _batch_trade_pairs(trade_pairs: List[TradePair], batch_size: int = TIINGO_MAX_TICKERS_PER_REQUEST) -> List[List[TradePair]]:
+        """
+        Batches trade pairs into groups to respect Tiingo's API limit of 5 tickers per request.
+
+        Args:
+            trade_pairs: List of TradePair objects to batch
+            batch_size: Maximum number of tickers per batch (default: 5)
+
+        Returns:
+            List of batches, where each batch is a list of TradePair objects
+        """
+        batches = []
+        for i in range(0, len(trade_pairs), batch_size):
+            batches.append(trade_pairs[i:i + batch_size])
+        return batches
 
     async def handle_msg(self, msg):
         """
@@ -383,44 +401,52 @@ class TiingoDataService(BaseDataService):
         def tickers_to_tiingo_iex_url(tickers: List[str]) -> str:
             return f"https://api.tiingo.com/iex/?tickers={','.join(tickers)}&token={self.config['api_key']}"
 
-        url = tickers_to_tiingo_iex_url([self.trade_pair_to_tiingo_ticker(x) for x in trade_pairs])
-        if verbose:
-            print('hitting url', url)
-        requestResponse = requests.get(url, headers={'Content-Type': 'application/json'}, timeout=5)
-        if requestResponse.status_code == 200:
-            time_now_ms = TimeUtil.now_in_millis()
-            for x in requestResponse.json():
-                tp = TradePair.get_latest_trade_pair_from_trade_pair_id(x['ticker'].upper())
-                data_time_ms = TimeUtil.parse_iso_to_ms(x['timestamp'])
+        # Batch trade pairs to respect Tiingo's 5 ticker limit
+        batches = self._batch_trade_pairs(trade_pairs)
 
-                price = float(x['tngoLast'])
-                bid_price = x['bidPrice']
-                ask_price = x['askPrice']
-                p_name = f'{TIINGO_PROVIDER_NAME}_rest'
-                attempting_previous_close = not self.is_market_open(tp)
-                if attempting_previous_close:
-                    p_name += '_prev_close'
-                tp_to_price[tp] = PriceSource(
-                                    source=p_name,
-                                    timespan_ms=0,
-                                    open=price,
-                                    close=price,
-                                    vwap=price,
-                                    high=price,
-                                    low=price,
-                                    start_ms=data_time_ms,
-                                    websocket=False,
-                                    lag_ms=time_now_ms - data_time_ms,
-                                    bid=float(bid_price) if bid_price else 0,
-                                    ask=float(ask_price) if ask_price else 0
-                                )
-                if attempting_previous_close and tp_to_price[tp]:
-                    self.closed_market_prices[tp] = tp_to_price[tp]
+        for batch in batches:
+            url = tickers_to_tiingo_iex_url([self.trade_pair_to_tiingo_ticker(x) for x in batch])
+            if verbose:
+                print(f'hitting url for batch of {len(batch)} tickers: {url}')
+            requestResponse = requests.get(url, headers={'Content-Type': 'application/json'}, timeout=5)
+            if requestResponse.status_code == 200:
+                time_now_ms = TimeUtil.now_in_millis()
+                for x in requestResponse.json():
+                    tp = TradePair.get_latest_trade_pair_from_trade_pair_id(x['ticker'].upper())
+                    data_time_ms = TimeUtil.parse_iso_to_ms(x['timestamp'])
 
-                if verbose:
-                    time_delta_s = (time_now_ms - data_time_ms) / 1000
-                    time_delta_formatted_2_decimals = round(time_delta_s, 2)
-                    print((tp.trade_pair_id, tp_to_price[tp], time_delta_formatted_2_decimals, x['timestamp'], x['tngoLast'], x))
+                    price = float(x['tngoLast'])
+                    bid_price = x['bidPrice']
+                    ask_price = x['askPrice']
+                    p_name = f'{TIINGO_PROVIDER_NAME}_rest'
+                    attempting_previous_close = not self.is_market_open(tp)
+                    if attempting_previous_close:
+                        p_name += '_prev_close'
+                    tp_to_price[tp] = PriceSource(
+                                        source=p_name,
+                                        timespan_ms=0,
+                                        open=price,
+                                        close=price,
+                                        vwap=price,
+                                        high=price,
+                                        low=price,
+                                        start_ms=data_time_ms,
+                                        websocket=False,
+                                        lag_ms=time_now_ms - data_time_ms,
+                                        bid=float(bid_price) if bid_price else 0,
+                                        ask=float(ask_price) if ask_price else 0
+                                    )
+                    if attempting_previous_close and tp_to_price[tp]:
+                        self.closed_market_prices[tp] = tp_to_price[tp]
+
+                    if verbose:
+                        time_delta_s = (time_now_ms - data_time_ms) / 1000
+                        time_delta_formatted_2_decimals = round(time_delta_s, 2)
+                        print((tp.trade_pair_id, tp_to_price[tp], time_delta_formatted_2_decimals, x['timestamp'], x['tngoLast'], x))
+            else:
+                bt.logging.warning(f"Tiingo equities API request failed with status code {requestResponse.status_code}. "
+                                 f"URL: {url[:100]}... Response: {requestResponse.text[:200]}")
+                continue  # Skip this batch and continue with others
 
         return tp_to_price
 
@@ -449,77 +475,84 @@ class TiingoDataService(BaseDataService):
         if all(not self.is_market_open(tp) for tp in trade_pairs) and all(self.closed_market_prices.get(tp) for tp in trade_pairs):
             return {tp: self.closed_market_prices[tp] for tp in trade_pairs}
 
-        url = tickers_to_tiingo_forex_url([self.trade_pair_to_tiingo_ticker(x) for x in trade_pairs])
-        if verbose:
-            print('hitting url', url)
+        # Batch trade pairs to respect Tiingo's 5 ticker limit
+        batches = self._batch_trade_pairs(trade_pairs)
         time_now_ms = TimeUtil.now_in_millis()
-        requestResponse = requests.get(url, headers={'Content-Type': 'application/json'}, timeout=5)
-        if requestResponse.status_code == 200:
-            lowest_delta = float('inf')
-            for x in requestResponse.json():
-                tp = TradePair.get_latest_trade_pair_from_trade_pair_id(x['ticker'].upper())
-                if not live:
-                    # Rows look like {'close': 148.636, 'date': '2025-03-21T00:00:00.000Z', 'high': 148.6575, 'low': 148.5975, 'open': 148.6245, 'ticker': 'usdjpy'}
-                    attempting_previous_close = not self.is_market_open(tp, time_ms=target_time_ms)
-                    data_time_ms = TimeUtil.parse_iso_to_ms(x['date'])
-                    delta = abs(data_time_ms - target_time_ms)
-                    if delta < lowest_delta:
-                        bid = ask = 0  # Bid/ask not provided in historical data
-                        p_name = f'{TIINGO_PROVIDER_NAME}_historical'
-                        open = float(x['open'])
-                        close = float(x['close'])
-                        vwap = close
-                        high = float(x['high'])
-                        low = float(x['low'])
-                        lag_ms = target_time_ms - data_time_ms
-                        timespan_ms = self.timespan_to_ms['minute']
-                        lowest_delta = delta
+
+        for batch in batches:
+            url = tickers_to_tiingo_forex_url([self.trade_pair_to_tiingo_ticker(x) for x in batch])
+            if verbose:
+                print(f'hitting url for batch of {len(batch)} tickers: {url}')
+            requestResponse = requests.get(url, headers={'Content-Type': 'application/json'}, timeout=5)
+            if requestResponse.status_code == 200:
+                lowest_delta = float('inf')
+                for x in requestResponse.json():
+                    tp = TradePair.get_latest_trade_pair_from_trade_pair_id(x['ticker'].upper())
+                    if not live:
+                        # Rows look like {'close': 148.636, 'date': '2025-03-21T00:00:00.000Z', 'high': 148.6575, 'low': 148.5975, 'open': 148.6245, 'ticker': 'usdjpy'}
+                        attempting_previous_close = not self.is_market_open(tp, time_ms=target_time_ms)
+                        data_time_ms = TimeUtil.parse_iso_to_ms(x['date'])
+                        delta = abs(data_time_ms - target_time_ms)
+                        if delta < lowest_delta:
+                            bid = ask = 0  # Bid/ask not provided in historical data
+                            p_name = f'{TIINGO_PROVIDER_NAME}_historical'
+                            open = float(x['open'])
+                            close = float(x['close'])
+                            vwap = close
+                            high = float(x['high'])
+                            low = float(x['low'])
+                            lag_ms = target_time_ms - data_time_ms
+                            timespan_ms = self.timespan_to_ms['minute']
+                            lowest_delta = delta
+                        else:
+                            continue
                     else:
-                        continue
-                else:
-                    attempting_previous_close = not self.is_market_open(tp, time_ms=time_now_ms)
-                    bid_raw = x['bidPrice']
-                    ask_raw = x['askPrice']
-                    if not bid_raw:
-                        continue
-                    if not ask_raw:
-                        continue
-                    bid = float(bid_raw) if bid_raw else 0
-                    ask = float(ask_raw) if ask_raw else 0
-                    high = ask
-                    low = bid
-                    mid_price = (bid + ask) / 2.0
-                    open = close = vwap = mid_price
-                    data_time_ms = TimeUtil.parse_iso_to_ms(x['quoteTimestamp'])
-                    timespan_ms = 0
-                    lag_ms = time_now_ms - data_time_ms
-                    p_name = f'{TIINGO_PROVIDER_NAME}_rest'
+                        attempting_previous_close = not self.is_market_open(tp, time_ms=time_now_ms)
+                        bid_raw = x['bidPrice']
+                        ask_raw = x['askPrice']
+                        if not bid_raw:
+                            continue
+                        if not ask_raw:
+                            continue
+                        bid = float(bid_raw) if bid_raw else 0
+                        ask = float(ask_raw) if ask_raw else 0
+                        high = ask
+                        low = bid
+                        mid_price = (bid + ask) / 2.0
+                        open = close = vwap = mid_price
+                        data_time_ms = TimeUtil.parse_iso_to_ms(x['quoteTimestamp'])
+                        timespan_ms = 0
+                        lag_ms = time_now_ms - data_time_ms
+                        p_name = f'{TIINGO_PROVIDER_NAME}_rest'
 
-                if attempting_previous_close:
-                    p_name += '_prev_close'
-                tp_to_price[tp] = PriceSource(
-                    source=p_name,
-                    timespan_ms=timespan_ms,
-                    open=open,
-                    close=close,
-                    vwap=vwap,
-                    high=high,
-                    low=low,
-                    start_ms=data_time_ms,
-                    websocket=False,
-                    lag_ms=lag_ms,
-                    bid=bid,
-                    ask=ask
-                )
+                    if attempting_previous_close:
+                        p_name += '_prev_close'
+                    tp_to_price[tp] = PriceSource(
+                        source=p_name,
+                        timespan_ms=timespan_ms,
+                        open=open,
+                        close=close,
+                        vwap=vwap,
+                        high=high,
+                        low=low,
+                        start_ms=data_time_ms,
+                        websocket=False,
+                        lag_ms=lag_ms,
+                        bid=bid,
+                        ask=ask
+                    )
 
-                if attempting_previous_close and tp_to_price[tp]:
-                    self.closed_market_prices[tp] = tp_to_price[tp]
+                    if attempting_previous_close and tp_to_price[tp]:
+                        self.closed_market_prices[tp] = tp_to_price[tp]
 
-                if verbose:
-                    time_now_ms = TimeUtil.now_in_millis()
-                    time_delta_s = (time_now_ms - data_time_ms) / 1000
-                    time_delta_formatted_2_decimals = round(time_delta_s, 2)
-                    print((tp.trade_pair_id, tp_to_price[tp], time_delta_formatted_2_decimals, x['quoteTimestamp'], x['bidPrice'], x))
+                    if verbose:
+                        time_delta_s = (time_now_ms - data_time_ms) / 1000
+                        time_delta_formatted_2_decimals = round(time_delta_s, 2)
+                        print((tp.trade_pair_id, tp_to_price[tp], time_delta_formatted_2_decimals, x['quoteTimestamp'], x['bidPrice'], x))
+            else:
+                bt.logging.warning(f"Tiingo forex API request failed with status code {requestResponse.status_code}. "
+                                 f"URL: {url[:100]}... Response: {requestResponse.text[:200]}")
+                continue  # Skip this batch and continue with others
 
         return tp_to_price
 
@@ -540,59 +573,63 @@ class TiingoDataService(BaseDataService):
 
         assert all(tp.trade_pair_category == TradePairCategory.CRYPTO for tp in trade_pairs), trade_pairs
 
-        url = tickers_to_crypto_url([self.trade_pair_to_tiingo_ticker(x) for x in trade_pairs])
-        if verbose:
-            print('hitting url', url)
+        # Batch trade pairs to respect Tiingo's 5 ticker limit
+        batches = self._batch_trade_pairs(trade_pairs)
 
-        requestResponse = requests.get(url, headers={'Content-Type': 'application/json'}, timeout=5)
-        if requestResponse.status_code != 200:
-            bt.logging.warning(f"Tiingo crypto API request failed with status code {requestResponse.status_code}. "
-                             f"URL: {url[:100]}... Response: {requestResponse.text[:200]}")
-            return {}
-
-        response_data = requestResponse.json()
-        timespan_ms = self.timespan_to_ms['minute']
-
-        for crypto_data in response_data:
-            ticker = crypto_data['ticker']
-            price_data = crypto_data.get('priceData', None)
-            if not price_data:
-                continue
-
-            # Find the closest price data point to target_time_ms
-            # Note: The date field represents candle start time, we add timespan to get close time
-            closest_data = min(price_data,
-                                    key=lambda x: abs(TimeUtil.parse_iso_to_ms(x['date']) + timespan_ms - target_time_ms))
-
-            candle_start_ms = TimeUtil.parse_iso_to_ms(closest_data["date"])
-            candle_close_ms = candle_start_ms + timespan_ms
-            data_time_ms = candle_close_ms  # Use close time for consistency with close price
-            price_close = float(closest_data['close'])
-            bid_price = ask_price = 0  # Bid/ask not provided in historical data
-
-            tp = TradePair.get_latest_trade_pair_from_trade_pair_id(ticker.upper())
-            source_name = f'{TIINGO_PROVIDER_NAME}_{TIINGO_COINBASE_EXCHANGE_STR}'
-            exchange = TIINGO_COINBASE_EXCHANGE_STR
-
-            # Create PriceSource
-            tp_to_price[tp] = PriceSource(
-                source=source_name,
-                timespan_ms=timespan_ms,
-                open=float(closest_data['open']),
-                close=float(closest_data['close']),
-                vwap=price_close,
-                high=price_close,
-                low=float(closest_data['low']),
-                start_ms=data_time_ms,
-                websocket=False,
-                lag_ms=target_time_ms - data_time_ms,
-                bid=bid_price,
-                ask=ask_price,
-            )
-
+        for batch in batches:
+            url = tickers_to_crypto_url([self.trade_pair_to_tiingo_ticker(x) for x in batch])
             if verbose:
-                self.log_price_info(tp, tp_to_price[tp], target_time_ms, data_time_ms,
-                                    closest_data["date"], price_close, exchange, closest_data)
+                print(f'hitting url for batch of {len(batch)} tickers: {url}')
+
+            requestResponse = requests.get(url, headers={'Content-Type': 'application/json'}, timeout=5)
+            if requestResponse.status_code != 200:
+                bt.logging.warning(f"Tiingo crypto API request failed with status code {requestResponse.status_code}. "
+                                 f"URL: {url[:100]}... Response: {requestResponse.text[:200]}")
+                continue  # Skip this batch and continue with others
+
+            response_data = requestResponse.json()
+            timespan_ms = self.timespan_to_ms['minute']
+
+            for crypto_data in response_data:
+                ticker = crypto_data['ticker']
+                price_data = crypto_data.get('priceData', None)
+                if not price_data:
+                    continue
+
+                # Find the closest price data point to target_time_ms
+                # Note: The date field represents candle start time, we add timespan to get close time
+                closest_data = min(price_data,
+                                        key=lambda x: abs(TimeUtil.parse_iso_to_ms(x['date']) + timespan_ms - target_time_ms))
+
+                candle_start_ms = TimeUtil.parse_iso_to_ms(closest_data["date"])
+                candle_close_ms = candle_start_ms + timespan_ms
+                data_time_ms = candle_close_ms  # Use close time for consistency with close price
+                price_close = float(closest_data['close'])
+                bid_price = ask_price = 0  # Bid/ask not provided in historical data
+
+                tp = TradePair.get_latest_trade_pair_from_trade_pair_id(ticker.upper())
+                source_name = f'{TIINGO_PROVIDER_NAME}_{TIINGO_COINBASE_EXCHANGE_STR}'
+                exchange = TIINGO_COINBASE_EXCHANGE_STR
+
+                # Create PriceSource
+                tp_to_price[tp] = PriceSource(
+                    source=source_name,
+                    timespan_ms=timespan_ms,
+                    open=float(closest_data['open']),
+                    close=float(closest_data['close']),
+                    vwap=price_close,
+                    high=price_close,
+                    low=float(closest_data['low']),
+                    start_ms=data_time_ms,
+                    websocket=False,
+                    lag_ms=target_time_ms - data_time_ms,
+                    bid=bid_price,
+                    ask=ask_price,
+                )
+
+                if verbose:
+                    self.log_price_info(tp, tp_to_price[tp], target_time_ms, data_time_ms,
+                                        closest_data["date"], price_close, exchange, closest_data)
 
         return tp_to_price
 

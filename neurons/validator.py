@@ -299,7 +299,7 @@ class Validator(ValidatorBase):
             if oldest_disk_ms == float("inf"):
                 oldest_disk_ms = 0  # No positions found
             if (n_positions_on_disk > 0):
-                bt.logging.info(f"Found {n_positions_on_disk} positions on disk."
+                bt.logging.info(f"Found {n_positions_on_disk} hotkeys with positions on disk."
                                 f" Found oldest_disk_ms: {TimeUtil.millis_to_datetime(oldest_disk_ms)},"
                                 f" youngest_disk_ms: {TimeUtil.millis_to_datetime(youngest_disk_ms)}")
             one_day_ago = TimeUtil.timestamp_to_millis(TimeUtil.generate_start_timestamp(days=1))
