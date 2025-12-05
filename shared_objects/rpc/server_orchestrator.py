@@ -970,6 +970,12 @@ class ServerOrchestrator:
             bt.logging.info(f"Auto-detected {len(server_names)} servers with deferred daemons: {server_names}")
 
         for server_name in server_names:
+            # Skip servers that don't have a client class (e.g., weight_calculator)
+            config = self.SERVERS.get(server_name)
+            if not config or config.client_class is None:
+                bt.logging.debug(f"Skipping {server_name} daemon start (no client class - server manages its own daemon)")
+                continue
+
             client = self.get_client(server_name)
             if hasattr(client, 'start_daemon'):
                 bt.logging.info(f"Starting daemon for {server_name}...")
