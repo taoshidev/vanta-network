@@ -276,8 +276,8 @@ class ServerOrchestrator:
             client_class=None,
             required_in_testing=False,  # Only in validator mode
             required_in_miner=False,
-            required_in_validator=True,  # Auto-started with other servers (client uses connect_immediately=False to defer connection until daemon runs)
-            spawn_kwargs={'start_daemon': False}  # Daemon started later via orchestrator.start_server_daemons() (unified with other daemons)
+            required_in_validator=True,  # Auto-started with other servers
+            spawn_kwargs={'start_daemon': False}  # Daemon started later via orchestrator.start_server_daemons()
         ),
     }
 
@@ -356,9 +356,7 @@ class ServerOrchestrator:
         from vali_objects.statistics.miner_statistics_server import MinerStatisticsServer, MinerStatisticsClient
         from vali_objects.utils.mdd_checker.mdd_checker_server import MDDCheckerServer
         from vali_objects.utils.mdd_checker.mdd_checker_client import MDDCheckerClient
-        from vali_objects.utils.weight_calculator_server import WeightCalculatorServer
-        # WeightCalculatorClient doesn't exist yet - server manages its own clients internally
-        # from vali_objects.utils.weight_calculator_client import WeightCalculatorClient
+        from vali_objects.utils.weight_calculator_server import WeightCalculatorServer, WeightCalculatorClient
 
         # Update registry with classes
         self.SERVERS['common_data'].server_class = CommonDataServer
@@ -413,7 +411,7 @@ class ServerOrchestrator:
         self.SERVERS['mdd_checker'].client_class = MDDCheckerClient
 
         self.SERVERS['weight_calculator'].server_class = WeightCalculatorServer
-        self.SERVERS['weight_calculator'].client_class = None  # No client - server manages its own clients
+        self.SERVERS['weight_calculator'].client_class = WeightCalculatorClient
 
         self._classes_loaded = True
 
@@ -568,7 +566,7 @@ class ServerOrchestrator:
         - mdd_checker: depends on position_manager, elimination
         - core_outputs: depends on all above (aggregates checkpoint data)
         - miner_statistics: depends on all above (generates miner statistics)
-        - weight_calculator: depends on MetagraphUpdater/WeightSetterServer (NOT orchestrator-managed, started manually in validator.py)
+        - weight_calculator: reads data from perf_ledger, position_manager, sends weights to MetagraphUpdater (daemon controlled via WeightCalculatorClient)
 
         Returns:
             List of server names in start order
@@ -646,7 +644,7 @@ class ServerOrchestrator:
                 if context.validator_hotkey:
                     spawn_kwargs['hotkey'] = context.validator_hotkey
                 spawn_kwargs['is_mainnet'] = context.is_mainnet
-                # Daemon started later via orchestrator.start_server_daemons() (unified with other daemons)
+                # Daemon started later via orchestrator.start_server_daemons()
 
             elif server_name == 'debt_ledger':
                 if context.config and hasattr(context.config, 'slack_error_webhook_url'):
