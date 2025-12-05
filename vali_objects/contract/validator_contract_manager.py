@@ -17,10 +17,9 @@ from datetime import timezone, datetime, timedelta
 import bittensor as bt
 from collateral_sdk import CollateralManager, Network
 from typing import Dict, Any, Optional, List
-import asyncio
 import time
 from time_util.time_util import TimeUtil
-from shared_objects.rpc.metagraph_client import MetagraphClient
+from vali_objects.validator_broadcast_base import ValidatorBroadcastBase
 from vali_objects.position_management.position_manager_client import PositionManagerClient
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
@@ -67,7 +66,7 @@ NOV_1_MS = 1761951599000
 
 # ==================== Manager Implementation ====================
 
-class ValidatorContractManager:
+class ValidatorContractManager(ValidatorBroadcastBase):
     """
     Business logic for contract/collateral management.
 
@@ -79,6 +78,8 @@ class ValidatorContractManager:
 
     NO RPC infrastructure here - pure business logic only.
     ContractServer wraps this manager and exposes methods via RPC.
+
+    Inherits from ValidatorBroadcastBase for shared broadcast functionality.
     """
 
     def __init__(
@@ -107,7 +108,6 @@ class ValidatorContractManager:
         self.is_backtesting = is_backtesting
         self.connection_mode = connection_mode
         self.secrets = ValiUtils.get_secrets(running_unit_tests=running_unit_tests)
-        self.is_mothership = 'ms' in self.secrets
 
         # Create RPC clients (forward compatibility - no parameter passing)
         self._position_client = PositionManagerClient(
@@ -115,7 +115,18 @@ class ValidatorContractManager:
             connection_mode=connection_mode
         )
         self._perf_ledger_client = PerfLedgerClient(connection_mode=connection_mode)
-        self._metagraph_client = MetagraphClient(connection_mode=connection_mode)
+
+        # Store network type for dynamic max_theta property (before initializing base class)
+        self.is_testnet = config.subtensor.network == "test"
+
+        # Initialize ValidatorBroadcastBase with broadcast configuration (derives is_mothership internally)
+        ValidatorBroadcastBase.__init__(
+            self,
+            running_unit_tests=running_unit_tests,
+            is_testnet=self.is_testnet,
+            config=config,
+            connection_mode=connection_mode
+        )
 
         # Locking strategy - EAGER initialization (not lazy!)
         # RLock allows same thread to acquire lock multiple times (needed for nested calls)
@@ -125,13 +136,7 @@ class ValidatorContractManager:
         # Lock for test collateral balances dict (prevents concurrent modifications in tests)
         self._test_balances_lock = threading.Lock()
 
-        # Store network type for dynamic max_theta property
-        if config is not None:
-            self.is_testnet = config.subtensor.network == "test"
-        else:
-            bt.logging.info("Config in contract manager is None")
-            self.is_testnet = False
-
+        # Initialize collateral manager based on network type
         if self.is_testnet:
             bt.logging.info("Using testnet collateral manager")
             self.collateral_manager = CollateralManager(Network.TESTNET)
@@ -141,9 +146,6 @@ class ValidatorContractManager:
 
         # GCP secret manager
         self._gcp_secret_manager_client = None
-
-        # Initialize vault wallet as None for all validators
-        self.vault_wallet = None
 
         # Initialize miner account sizes file location
         self.MINER_ACCOUNT_SIZES_FILE = ValiBkpUtils.get_miner_account_sizes_file_location(
@@ -230,20 +232,6 @@ class ValidatorContractManager:
             except Exception as e:
                 bt.logging.error(f"Failed to update account size for {hotkey}: {e}")
         bt.logging.info(f"COST_PER_THETA update completed for {update_count} miners")
-
-    def load_contract_owner(self):
-        """
-        Load EVM contract owner secrets and vault wallet.
-        This validator must be authorized to execute collateral operations.
-        """
-        if not self.is_mothership:
-            return
-        try:
-            # Load from secrets.json using ValiUtils
-            self.vault_wallet = bt.wallet(config=self.config)
-            bt.logging.info(f"Vault wallet loaded: {self.vault_wallet}")
-        except Exception as e:
-            bt.logging.warning(f"Failed to load vault wallet: {e}")
 
     def _load_miner_account_sizes_from_disk(self):
         """Load miner account sizes from disk during initialization - protected by locks"""
@@ -479,8 +467,8 @@ class ValidatorContractManager:
                     deposited_balance = self.collateral_manager.deposit(
                         extrinsic=extrinsic,
                         source_hotkey=miner_hotkey,
-                        vault_stake=self.vault_wallet.hotkey.ss58_address,
-                        vault_wallet=self.vault_wallet,
+                        vault_stake=self.wallet.hotkey.ss58_address,
+                        vault_wallet=self.wallet,
                         owner_address=owner_address,
                         owner_private_key=owner_private_key,
                         wallet_password=vault_password
@@ -1007,84 +995,43 @@ class ValidatorContractManager:
 
     def _broadcast_collateral_record_update_to_validators(self, hotkey: str, collateral_record: CollateralRecord):
         """
-        Broadcast CollateralRecord synapse to other validators.
-        Runs in a separate thread to avoid blocking the main process.
+        Broadcast CollateralRecord synapse to other validators using shared broadcast base.
         """
-
-        def run_broadcast():
-            try:
-                asyncio.run(self._async_broadcast_collateral_record(hotkey, collateral_record))
-            except Exception as e:
-                bt.logging.error(f"Failed to broadcast collateral record for {hotkey}: {e}")
-
-        thread = threading.Thread(target=run_broadcast, daemon=True)
-        thread.start()
-
-    async def _async_broadcast_collateral_record(self, hotkey: str, collateral_record: CollateralRecord):
-        """
-        Asynchronously broadcast CollateralRecord synapse to other validators.
-        """
-        try:
-            # Get other validators to broadcast to
-            if self.is_testnet:
-                validator_axons = [n.axon_info for n in self._metagraph_client.neurons if
-                                   n.axon_info.ip != ValiConfig.AXON_NO_IP and n.axon_info.hotkey != self.vault_wallet.hotkey.ss58_address]
-            else:
-                validator_axons = [n.axon_info for n in self._metagraph_client.neurons if n.stake > bt.Balance(
-                    ValiConfig.STAKE_MIN) and n.axon_info.ip != ValiConfig.AXON_NO_IP and n.axon_info.hotkey != self.vault_wallet.hotkey.ss58_address]
-
-            if not validator_axons:
-                bt.logging.debug("No other validators to broadcast CollateralRecord to")
-                return
-
-            # Create CollateralRecord synapse with the data
+        def create_collateral_synapse():
+            """Factory function to create the CollateralRecord synapse."""
             collateral_record_data = {
                 "hotkey": hotkey,
                 "account_size": collateral_record.account_size,
                 "account_size_theta": collateral_record.account_size_theta,
                 "update_time_ms": collateral_record.update_time_ms
             }
-
-            collateral_synapse = template.protocol.CollateralRecord(
+            return template.protocol.CollateralRecord(
                 collateral_record=collateral_record_data
             )
 
-            bt.logging.info(f"Broadcasting CollateralRecord for {hotkey} to {len(validator_axons)} validators")
+        # Use shared broadcast method from base class
+        self._broadcast_to_validators(
+            synapse_factory=create_collateral_synapse,
+            broadcast_name="CollateralRecord",
+            context={"hotkey": hotkey}
+        )
 
-            # Send to other validators using dendrite
-            async with bt.dendrite(wallet=self.vault_wallet) as dendrite:
-                responses = await dendrite.aquery(validator_axons, collateral_synapse)
-
-                # Log results
-                success_count = 0
-                for response in responses:
-                    if response.successfully_processed:
-                        success_count += 1
-                    elif response.error_message:
-                        bt.logging.warning(
-                            f"Failed to send CollateralRecord to {response.axon.hotkey}: {response.error_message}")
-
-                bt.logging.info(
-                    f"CollateralRecord broadcast completed: {success_count}/{len(responses)} validators updated")
-
-        except Exception as e:
-            bt.logging.error(f"Error in async broadcast collateral record: {e}")
-            import traceback
-            bt.logging.error(traceback.format_exc())
-
-    def receive_collateral_record_update(self, collateral_record_data: dict) -> bool:
+    def receive_collateral_record_update(self, collateral_record_data: dict, sender_hotkey: str = None) -> bool:
         """
         Process an incoming CollateralRecord synapse and update miner_account_sizes.
 
         Args:
             collateral_record_data: Dictionary containing hotkey, account_size, update_time_ms, valid_date_timestamp
+            sender_hotkey: The hotkey of the validator that sent this broadcast
 
         Returns:
             bool: True if successful, False otherwise
         """
         try:
-            if self.is_mothership:
+            # SECURITY: Verify sender using shared base class method
+            if not self.verify_broadcast_sender(sender_hotkey, "CollateralRecord"):
                 return False
+
             with self._account_sizes_lock:
                 # Extract data from the synapse
                 hotkey = collateral_record_data.get("hotkey")

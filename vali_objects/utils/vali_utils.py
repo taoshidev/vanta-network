@@ -61,3 +61,32 @@ class ValiUtils:
         except FileNotFoundError:
             print(f"no vali json file [{vali_dir}], continuing")
             return {}
+
+    @staticmethod
+    def is_mothership_wallet(wallet) -> bool:
+        """
+        Determine if the given wallet is the mothership validator.
+
+        This is the single source of truth for mothership identification.
+        Compares the wallet's hotkey against the configured MOTHERSHIP_HOTKEY.
+
+        Args:
+            wallet: Bittensor wallet object with hotkey attribute
+
+        Returns:
+            bool: True if wallet's hotkey matches MOTHERSHIP_HOTKEY
+
+        Examples:
+            >>> from vali_objects.utils.vali_utils import ValiUtils
+            >>> wallet = bt.wallet(config=config)
+            >>> if ValiUtils.is_mothership_wallet(wallet):
+            >>>     # This is the mothership validator
+            >>>     bt.logging.info("Running as mothership")
+        """
+        from vali_objects.vali_config import ValiConfig
+
+        if not wallet or not hasattr(wallet, 'hotkey'):
+            return False
+
+        hotkey = wallet.hotkey.ss58_address
+        return hotkey == ValiConfig.MOTHERSHIP_HOTKEY

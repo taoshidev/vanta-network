@@ -446,6 +446,10 @@ class ValiConfig:
     STAKE_MIN = 1000.0
     AXON_NO_IP = "0.0.0.0"
 
+    # Authorized mothership hotkey for state broadcasts
+    # This is the ONLY validator authorized to broadcast CollateralRecord, AssetSelection, and SubaccountRegistration updates
+    # TODO: Replace with actual mothership hotkey SS58 address
+    MOTHERSHIP_HOTKEY = "5FeNwZ5oAqcJMitNqGx71vxGRWJhsdTqxFGVwPRfg8h2UZmo"
     # Require at least this many successful checkpoints before building golden
     MIN_CHECKPOINTS_RECEIVED = 5
 

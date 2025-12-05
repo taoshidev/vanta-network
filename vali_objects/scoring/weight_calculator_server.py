@@ -5,7 +5,7 @@ WeightCalculatorServer - RPC server for weight calculation and setting.
 
 This server runs in its own process and handles:
 - Computing miner weights using debt-based scoring
-- Sending weight setting requests to MetagraphUpdater via RPC
+- Sending weight setting requests to SubtensorOpsManager via RPC
 
 Usage:
     # Validator spawns the server at startup
@@ -52,7 +52,7 @@ class WeightCalculatorServer(RPCServerBase, CacheController):
     - Runs in its own process
     - Creates RPC clients to communicate with other services
     - Computes weights using debt-based scoring
-    - Sends weight setting requests to MetagraphUpdater via RPC
+    - Sends weight setting requests to SubtensorOpsManager via RPC
     """
     service_name = ValiConfig.RPC_WEIGHT_CALCULATOR_SERVICE_NAME
     service_port = ValiConfig.RPC_WEIGHT_CALCULATOR_PORT
@@ -123,9 +123,9 @@ class WeightCalculatorServer(RPCServerBase, CacheController):
         self._debt_ledger_client = DebtLedgerClient(running_unit_tests=running_unit_tests
         )
 
-        # Create WeightSetterClient for weight setting RPC
-        from shared_objects.subtensor_ops.metagraph_updater_client import WeightSetterClient
-        self._weight_setter_client = WeightSetterClient(
+        # Create client for weight setting RPC
+        from shared_objects.subtensor_ops.subtensor_ops_client import SubtensorOpsClient
+        self._subtensor_ops_client = SubtensorOpsClient(
             running_unit_tests=running_unit_tests, connect_immediately=False
         )
 
@@ -148,7 +148,7 @@ class WeightCalculatorServer(RPCServerBase, CacheController):
         """
         Single iteration of daemon work. Called by RPCServerBase daemon loop.
 
-        Computes weights and sends to MetagraphUpdater.
+        Computes weights and sends to SubtensorOpsManager.
         """
         if not self.refresh_allowed(ValiConfig.SET_WEIGHT_REFRESH_TIME_MS):
             return
@@ -384,7 +384,7 @@ class WeightCalculatorServer(RPCServerBase, CacheController):
 
     def _send_weight_request(self, transformed_list: List[Tuple[int, float]]):
         """
-        Send weight setting request to MetagraphUpdater via RPC.
+        Send weight setting request to SubtensorOpsManager via RPC.
 
         Args:
             transformed_list: List of (uid, weight) tuples
@@ -394,7 +394,7 @@ class WeightCalculatorServer(RPCServerBase, CacheController):
             weights = [x[1] for x in transformed_list]
 
             # Send request via RPC (synchronous - get success/failure feedback)
-            result = self._weight_setter_client.set_weights_rpc(
+            result = self._subtensor_ops_client.set_weights_rpc(
                 uids=uids,
                 weights=weights,
                 version_key=self.subnet_version
@@ -406,7 +406,7 @@ class WeightCalculatorServer(RPCServerBase, CacheController):
                 error = result.get('error', 'Unknown error')
                 bt.logging.error(f"Weight request failed: {error}")
 
-                # NOTE: Don't send Slack alert here - MetagraphUpdater handles alerting
+                # NOTE: Don't send Slack alert here - SubtensorOpsManager handles alerting
                 # with proper benign error filtering (e.g., "too soon to commit weights").
 
         except Exception as e:
@@ -442,7 +442,7 @@ def start_weight_calculator_server(
     - ChallengePeriodClient (for miner buckets)
     - ContractClient (for contract state)
     - DebtLedgerClient (for debt-based scoring)
-    - WeightSetterClient (for weight setting RPC to MetagraphUpdater)
+    - WeightSetterClient (for weight setting RPC to SubtensorOpsManager)
 
     Args:
         slack_notifier: Slack notifier for error reporting
