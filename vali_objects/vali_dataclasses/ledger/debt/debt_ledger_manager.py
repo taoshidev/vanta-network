@@ -258,39 +258,6 @@ class DebtLedgerManager():
             bt.logging.error(f"Error updating compressed ledgers cache: {e}", exc_info=True)
             # Keep old cache on error (don't clear it)
 
-    def _write_summaries_to_disk(self):
-        """
-        Write debt ledger summaries to compressed file for backup purposes.
-
-        This is called automatically after build_debt_ledgers() completes.
-        Note: REST server now uses RPC to access summaries directly from memory,
-        but we still write to disk for backup/debugging purposes.
-        """
-        import bittensor as bt
-        from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
-        from vali_objects.vali_config import ValiConfig
-
-        try:
-            # Build summaries dict
-            summaries = {}
-            for hotkey in self.debt_ledgers:
-                summary = self.get_ledger_summary(hotkey)
-                if summary:
-                    summaries[hotkey] = summary
-
-            # Write to compressed file (uses CustomEncoder automatically)
-            # Inline path generation (backup copy for debugging/fallback)
-            suffix = "/tests" if self.running_unit_tests else ""
-            summaries_path = ValiConfig.BASE_DIR + f"{suffix}/validation/debt_ledger_summaries.json.gz"
-            ValiBkpUtils.write_compressed_json(summaries_path, summaries)
-
-            bt.logging.info(
-                f"Wrote {len(summaries)} debt ledger summaries to {summaries_path}"
-            )
-
-        except Exception as e:
-            bt.logging.error(f"Error writing summaries to disk: {e}", exc_info=True)
-
     def _get_ledger_path(self) -> str:
         """Get path for debt ledger file."""
         from vali_objects.vali_config import ValiConfig
@@ -680,10 +647,6 @@ class DebtLedgerManager():
         # Save to disk after atomic swap
         bt.logging.info(f"Saving {len(self.debt_ledgers)} debt ledgers to disk...")
         self.save_to_disk(create_backup=False)
-
-        # Write summaries to compressed file for backup/debugging
-        bt.logging.info("Writing summaries to disk...")
-        self._write_summaries_to_disk()
 
         # Update compressed ledgers cache for instant RPC access (matches MinerStatisticsManager pattern)
         bt.logging.info("Updating compressed ledgers cache...")
