@@ -67,10 +67,10 @@ class TestEntityManagement(TestBase):
         # Clear all data for test isolation (both memory and disk)
         self.orchestrator.clear_all_test_data()
 
-        # Set up test entities
-        self.ENTITY_HOTKEY_1 = "entity_hotkey_1"
-        self.ENTITY_HOTKEY_2 = "entity_hotkey_2"
-        self.ENTITY_HOTKEY_3 = "entity_hotkey_3"
+        # Set up test entities (avoid pattern {text}_{number} to prevent synthetic hotkey collision)
+        self.ENTITY_HOTKEY_1 = "entity_alpha"
+        self.ENTITY_HOTKEY_2 = "entity_beta"
+        self.ENTITY_HOTKEY_3 = "entity_gamma"
 
         # Initialize metagraph with test entities
         self.metagraph_client.set_hotkeys([
@@ -129,7 +129,7 @@ class TestEntityManagement(TestBase):
 
         entity_data = self.entity_client.get_entity_data(self.ENTITY_HOTKEY_1)
         self.assertEqual(entity_data['collateral_amount'], 0.0)
-        self.assertEqual(entity_data['max_subaccounts'], 10)  # ValiConfig default
+        self.assertEqual(entity_data['max_subaccounts'], 500)  # ValiConfig.ENTITY_MAX_SUBACCOUNTS default
 
     # ==================== Subaccount Creation Tests ====================
 
