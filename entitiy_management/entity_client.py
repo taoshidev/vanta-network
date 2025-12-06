@@ -193,6 +193,47 @@ class EntityClient(RPCClientBase):
         """
         return self._server.parse_synthetic_hotkey_rpc(synthetic_hotkey)
 
+    def validate_hotkey_for_orders(self, hotkey: str) -> dict:
+        """
+        Validate a hotkey for order placement in a single RPC call.
+
+        This consolidates multiple checks into one RPC call:
+        - is_synthetic_hotkey() check
+        - get_subaccount_status() check
+        - get_entity_data() check
+
+        Args:
+            hotkey: The hotkey to validate
+
+        Returns:
+            dict with:
+                - is_valid (bool): Whether hotkey can place orders
+                - error_message (str): Error message if not valid, empty if valid
+                - hotkey_type (str): 'synthetic', 'entity', or 'regular'
+                - status (str|None): Status if synthetic hotkey, None otherwise
+        """
+        return self._server.validate_hotkey_for_orders_rpc(hotkey)
+
+    def get_subaccount_dashboard_data(self, synthetic_hotkey: str) -> Optional[dict]:
+        """
+        Get comprehensive dashboard data for a subaccount.
+
+        This method aggregates data from multiple RPC services:
+        - Subaccount info (status, timestamps)
+        - Challenge period status (bucket, start time)
+        - Debt ledger data (DebtLedger instance)
+        - Position data (positions, leverage)
+        - Statistics (cached miner statistics with metrics, scores, rankings)
+        - Elimination status (if eliminated)
+
+        Args:
+            synthetic_hotkey: The synthetic hotkey ({entity_hotkey}_{subaccount_id})
+
+        Returns:
+            Dict with aggregated dashboard data, or None if subaccount not found
+        """
+        return self._server.get_subaccount_dashboard_data_rpc(synthetic_hotkey)
+
     # ==================== Validator Broadcast Methods ====================
 
     def broadcast_subaccount_registration(
