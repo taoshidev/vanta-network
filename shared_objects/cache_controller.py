@@ -25,25 +25,13 @@ class CacheController:
 
         # Create metagraph client with connect_immediately=False to defer connection
         # Client objects are instantiated where needed, not passed around
-        if not running_unit_tests:
-            from shared_objects.rpc.metagraph_client import MetagraphClient
-            self._metagraph_client = MetagraphClient(
-                connection_mode=connection_mode,
-                running_unit_tests=running_unit_tests,
-                connect_immediately=False
-            )
-        else:
-            self._metagraph_client = None
+        from shared_objects.rpc.metagraph_client import MetagraphClient
+        self._metagraph_client = MetagraphClient(
+            connection_mode=connection_mode,
+            running_unit_tests=running_unit_tests,
+            connect_immediately=False
+        )
 
-    @property
-    def metagraph(self):
-        """Get metagraph client."""
-        return self._metagraph_client
-
-    @metagraph.setter
-    def metagraph(self, value):
-        """Set metagraph client (allows dependency injection for tests)."""
-        self._metagraph_client = value
 
     def get_last_update_time_ms(self):
         return self._last_update_time_ms
