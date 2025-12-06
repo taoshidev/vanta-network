@@ -195,21 +195,6 @@ class WeightCalculatorServer(RPCServerBase, CacheController):
     # ==================== Properties ====================
 
     @property
-    def metagraph(self):
-        """Get metagraph client (forward compatibility - created internally)."""
-        return self._metagraph_client
-
-    @property
-    def position_manager(self):
-        """Get position manager client (forward compatibility - created internally)."""
-        return self._position_client
-
-    @property
-    def contract_manager(self):
-        """Get contract manager client (forward compatibility - created internally)."""
-        return self._contract_client
-
-    @property
     def slack_notifier(self):
         """Get slack notifier (lazy initialization)."""
         if self._external_slack_notifier:
@@ -269,7 +254,7 @@ class WeightCalculatorServer(RPCServerBase, CacheController):
             current_time = TimeUtil.now_in_millis()
 
         # Collect metagraph hotkeys to ensure we are only setting weights for miners in the metagraph
-        metagraph_hotkeys = list(self.metagraph.get_hotkeys())
+        metagraph_hotkeys = list(self._metagraph_client.get_hotkeys())
         metagraph_hotkeys_set = set(metagraph_hotkeys)
         hotkey_to_idx = {hotkey: idx for idx, hotkey in enumerate(metagraph_hotkeys)}
 
@@ -360,7 +345,7 @@ class WeightCalculatorServer(RPCServerBase, CacheController):
         # Use debt-based scoring with shared metagraph
         checkpoint_results = DebtBasedScoring.compute_results(
             ledger_dict=filtered_debt_ledgers,
-            metagraph=self.metagraph,
+            metagraph_client=self._metagraph_client,
             challengeperiod_client=self._challengeperiod_client,
             contract_client=self._contract_client,
             current_time_ms=current_time,
