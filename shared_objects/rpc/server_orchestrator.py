@@ -166,7 +166,10 @@ class ServerOrchestrator:
 
     # Server registry - defines all available servers
     # Format: server_name -> ServerConfig
+    # IMPORTANT: Servers are ordered by dependency (servers with no deps first)
+    # This order is used directly for startup sequence - do not reorder without updating dependencies!
     SERVERS = {
+        # Tier 1: No dependencies (foundation servers)
         'common_data': ServerConfig(
             server_class=None,  # Imported lazily to avoid circular imports
             client_class=None,
@@ -187,18 +190,21 @@ class ServerOrchestrator:
             required_in_testing=True,
             spawn_kwargs={}
         ),
-        'contract': ServerConfig(
-            server_class=None,
-            client_class=None,
-            required_in_testing=True,
-            spawn_kwargs={}
-        ),
         'perf_ledger': ServerConfig(
             server_class=None,
             client_class=None,
             required_in_testing=True,
             spawn_kwargs={'start_daemon': False}  # Daemon started later via orchestrator
         ),
+        'live_price_fetcher': ServerConfig(
+            server_class=None,
+            client_class=None,
+            required_in_testing=True,
+            required_in_miner=False,  # Miners generate own signals, don't need price data
+            spawn_kwargs={'disable_ws': True}  # No WebSockets in testing
+        ),
+
+        # Tier 2: Depends on tier 1
         'challenge_period': ServerConfig(
             server_class=None,
             client_class=None,
@@ -211,11 +217,27 @@ class ServerOrchestrator:
             required_in_testing=True,
             spawn_kwargs={'start_daemon': False}  # Daemon started later via orchestrator
         ),
+
+        # Tier 3: Depends on tier 2
         'position_manager': ServerConfig(
             server_class=None,
             client_class=None,
             required_in_testing=True,
             spawn_kwargs={'start_daemon': False}  # Daemon started later via orchestrator
+        ),
+
+        # Tier 4: Depends on tier 3
+        'contract': ServerConfig(
+            server_class=None,
+            client_class=None,
+            required_in_testing=True,
+            spawn_kwargs={}
+        ),
+        'debt_ledger': ServerConfig(
+            server_class=None,
+            client_class=None,
+            required_in_testing=True,
+            spawn_kwargs={'start_daemon': False}  # No daemon in testing
         ),
         'plagiarism': ServerConfig(
             server_class=None,
@@ -235,25 +257,14 @@ class ServerOrchestrator:
             required_in_testing=True,
             spawn_kwargs={'start_daemon': False}  # Daemon started later via orchestrator
         ),
-        'asset_selection': ServerConfig(
-            server_class=None,
-            client_class=None,
-            required_in_testing=True,
-            spawn_kwargs={}
-        ),
-        'live_price_fetcher': ServerConfig(
-            server_class=None,
-            client_class=None,
-            required_in_testing=True,
-            required_in_miner=False,  # Miners generate own signals, don't need price data
-            spawn_kwargs={'disable_ws': True}  # No WebSockets in testing
-        ),
-        'debt_ledger': ServerConfig(
+        'mdd_checker': ServerConfig(
             server_class=None,
             client_class=None,
             required_in_testing=True,
             spawn_kwargs={'start_daemon': False}  # No daemon in testing
         ),
+
+        # Tier 5: Aggregation and statistics (depends on all above)
         'core_outputs': ServerConfig(
             server_class=None,
             client_class=None,
@@ -266,19 +277,11 @@ class ServerOrchestrator:
             required_in_testing=True,
             spawn_kwargs={'start_daemon': False}  # No daemon in testing
         ),
-        'mdd_checker': ServerConfig(
+        'asset_selection': ServerConfig(
             server_class=None,
             client_class=None,
             required_in_testing=True,
-            spawn_kwargs={'start_daemon': False}  # No daemon in testing
-        ),
-        'weight_calculator': ServerConfig(
-            server_class=None,
-            client_class=None,
-            required_in_testing=True,
-            required_in_miner=False,
-            required_in_validator=True,  # Auto-started with other servers
-            spawn_kwargs={'start_daemon': False}  # Daemon started later via orchestrator.start_server_daemons()
+            spawn_kwargs={}
         ),
         'entity': ServerConfig(
             server_class=None,
@@ -287,6 +290,14 @@ class ServerOrchestrator:
             required_in_miner=False,  # Miners don't need entity management
             required_in_validator=True,  # Validators need entity management for subaccount tracking
             spawn_kwargs={'start_daemon': False}  # Daemon started later via orchestrator
+        ),
+        'weight_calculator': ServerConfig(
+            server_class=None,
+            client_class=None,
+            required_in_testing=True,
+            required_in_miner=False,
+            required_in_validator=True,  # Auto-started with other servers
+            spawn_kwargs={'start_daemon': False}  # Daemon started later via orchestrator.start_server_daemons()
         ),
     }
 
@@ -572,56 +583,17 @@ class ServerOrchestrator:
         """
         Get server start order respecting dependencies.
 
-        Dependency graph:
-        - common_data: no dependencies (start first)
-        - metagraph: no dependencies
-        - position_lock: no dependencies
-        - contract: no dependencies
-        - perf_ledger: no dependencies
-        - live_price_fetcher: no dependencies
-        - asset_selection: depends on common_data
-        - challenge_period: depends on common_data, asset_selection
-        - elimination: depends on perf_ledger, challenge_period
-        - position_manager: depends on challenge_period, elimination
-        - debt_ledger: depends on perf_ledger, position_manager (PenaltyLedgerManager uses PositionManagerClient)
-        - websocket_notifier: depends on position_manager (broadcasts position updates)
-        - plagiarism: depends on position_manager
-        - plagiarism_detector: depends on plagiarism, position_manager
-        - limit_order: depends on position_manager
-        - mdd_checker: depends on position_manager, elimination
-        - core_outputs: depends on all above (aggregates checkpoint data)
-        - miner_statistics: depends on all above (generates miner statistics)
-        - weight_calculator: reads data from perf_ledger, position_manager, sends weights to SubtensorOpsManager (daemon controlled via WeightCalculatorClient)
+        The dependency order is defined by the order of servers in the SERVERS dict.
+        See SERVERS definition for detailed dependency documentation.
+
+        Args:
+            server_names: List of server names to start
 
         Returns:
-            List of server names in start order
+            List of server names in start order (filtered from SERVERS dict order)
         """
-        # Define dependency order (servers with no deps first)
-        order = [
-            'common_data',
-            'metagraph',
-            'position_lock',
-            'perf_ledger',
-            'live_price_fetcher',
-            'challenge_period',
-            'elimination',
-            'position_manager',
-            'contract',            # Must come AFTER position_manager, perf_ledger, metagraph (ValidatorContractManager uses these clients)
-            'debt_ledger',         # Must come AFTER position_manager (PenaltyLedgerManager uses PositionManagerClient)
-            'websocket_notifier',
-            'plagiarism',
-            'plagiarism_detector',
-            'limit_order',
-            'mdd_checker',
-            'core_outputs',
-            'miner_statistics',
-            'asset_selection',
-            'entity',
-            'weight_calculator'  # Depends on perf_ledger, position_manager (reads data for weight calculation)
-        ]
-
-        # Filter to only requested servers, preserving order
-        return [s for s in order if s in server_names]
+        # Filter to only requested servers, preserving SERVERS dict order
+        return [s for s in self.SERVERS.keys() if s in server_names]
 
     def _start_server(
         self,
