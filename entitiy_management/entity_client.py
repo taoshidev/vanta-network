@@ -25,6 +25,7 @@ Usage:
 from typing import Optional, Tuple, Dict
 
 import template.protocol
+from template.protocol import SubaccountRegistration
 from shared_objects.rpc.rpc_client_base import RPCClientBase
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 
@@ -272,8 +273,8 @@ class EntityClient(RPCClientBase):
 
     def receive_subaccount_registration(
         self,
-        synapse: 'template.protocol.SubaccountRegistration'
-    ) -> 'template.protocol.SubaccountRegistration':
+        synapse: SubaccountRegistration
+    ) -> SubaccountRegistration:
         """
         Receive subaccount registration synapse (for axon attachment).
 
