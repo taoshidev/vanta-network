@@ -76,11 +76,13 @@ class Validator(ValidatorBase):
     def __init__(self):
         setproctitle(f"vali_{self.__class__.__name__}")
         # Try to read the file meta/meta.json and print it out
+        # Note: Use print() instead of bt.logging before bt.logging is configured
         try:
             with open("meta/meta.json", "r") as f:
-                bt.logging.info(f"Found meta.json file {f.read()}")
+                meta_content = f.read()
+                print(f"Found meta.json file: {meta_content}")
         except Exception as e:
-            bt.logging.error(f"Error reading meta/meta.json: {e}")
+            print(f"Error reading meta/meta.json: {e}")
 
         ValiBkpUtils.clear_tmp_dir()
         self.uuid_tracker = UUIDTracker()
@@ -106,13 +108,6 @@ class Validator(ValidatorBase):
         # Wallet holds cryptographic information, ensuring secure transactions and communication.
         # Activating Bittensor's logging with the set configurations.
         bt.logging(config=self.config, logging_dir=self.config.full_path)
-        bt.logging.info(
-            f"Running validator for subnet: {self.config.netuid} with autosync set to: {self.auto_sync} "
-            f"on network: {self.config.subtensor.chain_endpoint} with config:"
-        )
-
-        # This logs the active configuration to the specified logging directory for review.
-        bt.logging.info(self.config)
 
         # Initialize Bittensor miner objects
         # These classes are vital to interact and function within the Bittensor network.
@@ -131,6 +126,14 @@ class Validator(ValidatorBase):
 
         # Auto-sync disabled for mothership (it's the source of truth)
         self.auto_sync = getattr(self.config, 'autosync', False) and not self.is_mothership
+
+        bt.logging.info(
+            f"Running validator for subnet: {self.config.netuid} with autosync set to: {self.auto_sync} "
+            f"on network: {self.config.subtensor.chain_endpoint} with config:"
+        )
+
+        # This logs the active configuration to the specified logging directory for review.
+        bt.logging.info(self.config)
 
         # Initialize Slack notifier for error reporting
         # Created before LivePriceFetcher so it can be passed for crash notifications
@@ -239,6 +242,9 @@ class Validator(ValidatorBase):
             )
             exit()
 
+        # Get subtensor from subtensor_ops_manager before calling parent init
+        self.subtensor = self.subtensor_ops_manager.get_subtensor()
+
         # Build and link vali functions to the axon.
         # The axon handles request processing, allowing validators to send this process requests.
         # ValidatorBase creates its own clients internally (forward compatibility):
@@ -255,11 +261,11 @@ class Validator(ValidatorBase):
         if self.config.serve:
             # Create API Manager with configuration options
             self.api_manager = APIManager(
-                slack_webhook_url=self.config.slack_webhook_url,
+                slack_webhook_url=getattr(self.config, 'slack_webhook_url', None),
                 validator_hotkey=self.wallet.hotkey.ss58_address,
-                api_host=self.config.api_host,
-                api_rest_port=self.config.api_rest_port,
-                api_ws_port=self.config.api_ws_port
+                api_host=getattr(self.config, 'api_host', '0.0.0.0'),
+                api_rest_port=getattr(self.config, 'api_rest_port', 48888),
+                api_ws_port=getattr(self.config, 'api_ws_port', 8765)
             )
 
             # Start the API Manager in a separate thread. Handle seperately from other RPCServers as Flask was giving issues.
@@ -270,8 +276,8 @@ class Validator(ValidatorBase):
             if not self.api_thread.is_alive():
                 raise RuntimeError("API thread failed to start")
             bt.logging.info(
-                f"API services thread started - REST: {self.config.api_host}:{self.config.api_rest_port}, "
-                f"WebSocket: {self.config.api_host}:{self.config.api_ws_port}")
+                f"API services thread started - REST: {getattr(self.config, 'api_host', '0.0.0.0')}:{getattr(self.config, 'api_rest_port', 48888)}, "
+                f"WebSocket: {getattr(self.config, 'api_host', '0.0.0.0')}:{getattr(self.config, 'api_ws_port', 8765)}")
         else:
             self.api_thread = None
             bt.logging.info("API services not enabled - skipping")
