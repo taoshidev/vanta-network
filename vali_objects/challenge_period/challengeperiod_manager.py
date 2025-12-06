@@ -36,6 +36,7 @@ from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.plagiarism.plagiarism_client import PlagiarismClient
 from vali_objects.contract.contract_client import ContractClient
 from shared_objects.rpc.common_data_client import CommonDataClient
+from entitiy_management.entity_client import EntityClient
 
 
 class ChallengePeriodManager(CacheController):
@@ -108,6 +109,12 @@ class ChallengePeriodManager(CacheController):
         self.asset_selection_client = AssetSelectionClient(
             connect_immediately=False,
             connection_mode=connection_mode
+        )
+
+        # Create EntityClient for synthetic hotkey detection
+        self._entity_client = EntityClient(
+            connection_mode=connection_mode,
+            connect_immediately=False
         )
 
         # Local dicts (NOT IPC managerized) - much faster!
@@ -272,46 +279,139 @@ class ChallengePeriodManager(CacheController):
                    f' initialization time of {TimeUtil.millis_to_formatted_date_str(ledger.initialization_time_ms)}.')
         return ans
 
-    def inspect(
+    def _inspect_synthetic_hotkeys(
         self,
-        positions: dict[str, list[Position]],
-        ledger: dict[str, dict[str, PerfLedger]],
-        success_hotkeys: list[str],
-        probation_hotkeys: list[str],
         inspection_hotkeys: dict[str, int],
-        current_time: int,
-        hk_to_first_order_time: dict[str, int] | None = None,
-        asset_softmaxed_scores: dict[str, dict] | None = None,
-    ) -> tuple[list[str], list[str], dict[str, tuple[str, float]]]:
+        portfolio_only_ledgers: dict[str, PerfLedger],
+        current_time: int
+    ) -> tuple[list[str], dict[str, tuple[str, float]]]:
         """
-        Runs a screening process to eliminate miners who didn't pass the challenge period. Does not modify the challenge period in memory.
+        Evaluate synthetic hotkeys (entity subaccounts) with threshold-based criteria.
+
+        Synthetic hotkeys use simpler pass/fail criteria:
+        1. Returns >= SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD (3%)
+        2. Drawdown <= SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD (6%)
+        3. Time limit: SUBACCOUNT_CHALLENGE_PERIOD_DAYS (90 days)
 
         Args:
-            combined_scores_dict (dict[TradePairCategory, dict] | None) - Optional pre-computed scores dict for testing.
-                If provided, skips score calculation. Useful for unit tests.
+            inspection_hotkeys: Dict {synthetic_hotkey: bucket_start_time}
+            portfolio_only_ledgers: Performance ledgers for portfolio-level metrics
+            current_time: Current time in milliseconds
 
         Returns:
-            hotkeys_to_promote - list of miners that should be promoted from challenge/probation to maincomp
-            hotkeys_to_demote - list of miners whose scores were lower than the threshold rank, to be demoted to probation
-            miners_to_eliminate - dictionary of hotkey to a tuple of the form (reason failed challenge period, maximum drawdown)
+            (hotkeys_to_promote, miners_to_eliminate)
         """
-        if len(inspection_hotkeys) == 0:
-            return [], [], {}  # no hotkeys to inspect
+        hotkeys_to_promote = []
+        miners_to_eliminate = {}
 
-        if not current_time:
-            current_time = TimeUtil.now_in_millis()
+        for hotkey, bucket_start_time in inspection_hotkeys.items():
+            # Check time limit (90 days for subaccounts)
+            challenge_period_ms = ValiConfig.SUBACCOUNT_CHALLENGE_PERIOD_DAYS * 24 * 60 * 60 * 1000
+            if current_time > (bucket_start_time + challenge_period_ms):
+                bt.logging.info(
+                    f"[SYNTHETIC_CP] {hotkey} failed challenge period - time expired "
+                    f"({ValiConfig.SUBACCOUNT_CHALLENGE_PERIOD_DAYS} days)"
+                )
+                miners_to_eliminate[hotkey] = (
+                    EliminationReason.FAILED_CHALLENGE_PERIOD_TIME.value,
+                    -1
+                )
+                continue
 
+            # Check minimum ledger requirement
+            has_minimum_ledger, ledger = ChallengePeriodManager.screen_minimum_ledger(
+                portfolio_only_ledgers,
+                hotkey
+            )
+            if not has_minimum_ledger:
+                continue
+
+            # Check drawdown threshold (6% max)
+            exceeds_max_drawdown, recorded_drawdown_percentage = LedgerUtils.is_beyond_max_drawdown(ledger)
+            if exceeds_max_drawdown:
+                bt.logging.info(
+                    f"[SYNTHETIC_CP] {hotkey} failed challenge period - "
+                    f"drawdown {recorded_drawdown_percentage:.2%} > "
+                    f"{ValiConfig.SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD:.2%}"
+                )
+                miners_to_eliminate[hotkey] = (
+                    EliminationReason.FAILED_CHALLENGE_PERIOD_DRAWDOWN.value,
+                    recorded_drawdown_percentage
+                )
+                continue
+
+            # Get returns from PerfLedger
+            try:
+                returns = self._perf_ledger_client.get_returns_rpc(hotkey)
+
+                if returns is None:
+                    bt.logging.debug(f"[SYNTHETIC_CP] {hotkey} has no returns data yet")
+                    continue
+
+                # Check if returns meet threshold (3%)
+                if returns >= ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD:
+                    bt.logging.info(
+                        f"[SYNTHETIC_CP] {hotkey} PASSED challenge period! "
+                        f"Returns: {returns:.2%}, Drawdown: {recorded_drawdown_percentage:.2%}"
+                    )
+                    hotkeys_to_promote.append(hotkey)
+                else:
+                    bt.logging.debug(
+                        f"[SYNTHETIC_CP] {hotkey} still in challenge period - "
+                        f"returns {returns:.2%} < {ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD:.2%}"
+                    )
+
+            except Exception as e:
+                bt.logging.warning(
+                    f"[SYNTHETIC_CP] Error evaluating {hotkey}: {e}"
+                )
+
+        bt.logging.info(
+            f"[SYNTHETIC_CP] Evaluated {len(inspection_hotkeys)} synthetic hotkeys: "
+            f"{len(hotkeys_to_promote)} passed, {len(miners_to_eliminate)} eliminated"
+        )
+
+        return hotkeys_to_promote, miners_to_eliminate
+
+    def _inspect_regular_hotkeys(
+        self,
+        inspection_hotkeys: dict[str, int],
+        positions: dict[str, list[Position]],
+        ledger: dict[str, dict[str, PerfLedger]],
+        portfolio_only_ledgers: dict[str, PerfLedger],
+        success_hotkeys: list[str],
+        probation_hotkeys: list[str],
+        current_time: int,
+        hk_to_first_order_time: dict[str, int] | None,
+        combined_scores_dict: dict[TradePairCategory, dict] | None
+    ) -> tuple[list[str], list[str], dict[str, tuple[str, float]]]:
+        """
+        Evaluate regular hotkeys with rank-based criteria (existing logic).
+
+        Regular hotkeys use complex promotion/demotion logic based on ranking:
+        - Must meet time criteria (challenge: 61-90 days, probation: 60 days)
+        - Must have minimum ledger, positions, and trading days
+        - Must select asset class
+        - Ranked against other miners in same asset class
+        - Top N miners promoted to MAINCOMP
+        - Bottom MAINCOMP miners demoted to PROBATION
+
+        Args:
+            inspection_hotkeys: Dict {hotkey: bucket_start_time}
+            positions: All miner positions
+            ledger: Full ledger data
+            portfolio_only_ledgers: Portfolio-level ledgers
+            success_hotkeys: MAINCOMP hotkeys
+            probation_hotkeys: PROBATION hotkeys
+            current_time: Current time in milliseconds
+            hk_to_first_order_time: Dict mapping hotkey to first order time
+            combined_scores_dict: Optional pre-computed scores
+
+        Returns:
+            (hotkeys_to_promote, hotkeys_to_demote, miners_to_eliminate)
+        """
         miners_to_eliminate = {}
         miners_not_enough_positions = []
-
-        # Used for checking base cases
-        portfolio_only_ledgers = {}
-        for hotkey, asset_ledgers in ledger.items():
-            if asset_ledgers is not None:
-                if isinstance(asset_ledgers, dict):
-                    portfolio_only_ledgers[hotkey] = asset_ledgers.get(TP_ID_PORTFOLIO)
-                else:
-                    raise TypeError(f"Expected asset_ledgers to be dict, got {type(asset_ledgers)}")
 
         promotion_eligible_hotkeys = []
         rank_eligible_hotkeys = []
@@ -407,6 +507,104 @@ class ChallengePeriodManager(CacheController):
         bt.logging.info(f"Hotkeys to demote: {hotkeys_to_demote}")
         bt.logging.info(f"Hotkeys to eliminate: {list(miners_to_eliminate.keys())}")
         bt.logging.info(f"Miners with no positions (skipped): {len(miners_not_enough_positions)}")
+
+        return hotkeys_to_promote, hotkeys_to_demote, miners_to_eliminate
+
+    def inspect(
+        self,
+        positions: dict[str, list[Position]],
+        ledger: dict[str, dict[str, PerfLedger]],
+        success_hotkeys: list[str],
+        probation_hotkeys: list[str],
+        inspection_hotkeys: dict[str, int],
+        current_time: int,
+        hk_to_first_order_time: dict[str, int] | None = None,
+        combined_scores_dict: dict[TradePairCategory, dict] | None = None,
+    ) -> tuple[list[str], list[str], dict[str, tuple[str, float]]]:
+        """
+        Runs a screening process to eliminate miners who didn't pass the challenge period.
+
+        Routes evaluation based on hotkey type:
+        - Synthetic hotkeys (entity subaccounts): Threshold-based evaluation (returns ≥3%, drawdown ≤6%, 90 days)
+        - Regular hotkeys: Rank-based evaluation with promotion/demotion logic
+
+        Args:
+            positions: All miner positions
+            ledger: Full ledger data
+            success_hotkeys: MAINCOMP hotkeys
+            probation_hotkeys: PROBATION hotkeys
+            inspection_hotkeys: Dict {hotkey: bucket_start_time}
+            current_time: Current time in milliseconds
+            hk_to_first_order_time: Dict mapping hotkey to first order time
+            combined_scores_dict (dict[TradePairCategory, dict] | None) - Optional pre-computed scores dict for testing.
+                If provided, skips score calculation. Useful for unit tests.
+
+        Returns:
+            hotkeys_to_promote - list of miners that should be promoted from challenge/probation to maincomp
+            hotkeys_to_demote - list of miners whose scores were lower than the threshold rank, to be demoted to probation
+            miners_to_eliminate - dictionary of hotkey to a tuple of the form (reason failed challenge period, maximum drawdown)
+        """
+        if len(inspection_hotkeys) == 0:
+            return [], [], {}  # no hotkeys to inspect
+
+        if not current_time:
+            current_time = TimeUtil.now_in_millis()
+
+        # Extract portfolio-only ledgers for base case checking
+        portfolio_only_ledgers = {}
+        for hotkey, asset_ledgers in ledger.items():
+            if asset_ledgers is not None:
+                if isinstance(asset_ledgers, dict):
+                    portfolio_only_ledgers[hotkey] = asset_ledgers.get(TP_ID_PORTFOLIO)
+                else:
+                    raise TypeError(f"Expected asset_ledgers to be dict, got {type(asset_ledgers)}")
+
+        # Separate inspection hotkeys into synthetic and regular
+        synthetic_inspection = {}
+        regular_inspection = {}
+
+        for hotkey, bucket_start_time in inspection_hotkeys.items():
+            if self.is_synthetic_hotkey(hotkey):
+                synthetic_inspection[hotkey] = bucket_start_time
+            else:
+                regular_inspection[hotkey] = bucket_start_time
+
+        bt.logging.info(
+            f"Challenge Period: {len(inspection_hotkeys)} miners to inspect - "
+            f"{len(synthetic_inspection)} synthetic, {len(regular_inspection)} regular"
+        )
+
+        # Process synthetic hotkeys with threshold-based logic
+        synthetic_promotions, synthetic_eliminations = self._inspect_synthetic_hotkeys(
+            synthetic_inspection,
+            portfolio_only_ledgers,
+            current_time
+        )
+
+        # Process regular hotkeys with rank-based logic
+        regular_promotions, regular_demotions, regular_eliminations = self._inspect_regular_hotkeys(
+            regular_inspection,
+            positions,
+            ledger,
+            portfolio_only_ledgers,
+            success_hotkeys,
+            probation_hotkeys,
+            current_time,
+            hk_to_first_order_time,
+            combined_scores_dict
+        )
+
+        # Combine results
+        hotkeys_to_promote = synthetic_promotions + regular_promotions
+        hotkeys_to_demote = regular_demotions  # Synthetic doesn't demote, only eliminate
+        miners_to_eliminate = {**synthetic_eliminations, **regular_eliminations}
+
+        bt.logging.info(
+            f"Challenge Period: Final results - "
+            f"{len(hotkeys_to_promote)} promotions ({len(synthetic_promotions)} synthetic, {len(regular_promotions)} regular), "
+            f"{len(hotkeys_to_demote)} demotions, "
+            f"{len(miners_to_eliminate)} eliminations ({len(synthetic_eliminations)} synthetic, {len(regular_eliminations)} regular)"
+        )
 
         return hotkeys_to_promote, hotkeys_to_demote, miners_to_eliminate
 
@@ -978,3 +1176,17 @@ class ChallengePeriodManager(CacheController):
                 formatted_dict[hotkey] = (bucket, bucket_start_time, previous_bucket, previous_bucket_start_time)
 
         return formatted_dict
+
+    def is_synthetic_hotkey(self, hotkey: str) -> bool:
+        """
+        Check if a hotkey is synthetic (entity subaccount).
+
+        Delegates to EntityClient which checks for underscore pattern with integer suffix.
+
+        Args:
+            hotkey: The hotkey to check
+
+        Returns:
+            True if synthetic (contains underscore with integer suffix), False otherwise
+        """
+        return self._entity_client.is_synthetic_hotkey(hotkey)

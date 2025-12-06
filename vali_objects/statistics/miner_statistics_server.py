@@ -235,6 +235,34 @@ class MinerStatisticsServer(RPCServerBase):
             bypass_confidence=bypass_confidence
         )
 
+    def get_miner_statistics_for_hotkeys_rpc(self, hotkeys: list) -> dict:
+        """
+        Get statistics for a batch of hotkeys from in-memory cache via RPC.
+
+        Delegates to manager for fast O(1) lookup per hotkey.
+
+        Args:
+            hotkeys: List of miner hotkeys to fetch statistics for
+
+        Returns:
+            Dict mapping hotkey -> miner statistics dict
+        """
+        return self._manager.get_miner_statistics_for_hotkeys(hotkeys)
+
+    def get_miner_statistics_for_hotkey_rpc(self, hotkey: str) -> dict | None:
+        """
+        Get statistics for a single hotkey from in-memory cache via RPC.
+
+        Delegates to manager for fast O(1) lookup.
+
+        Args:
+            hotkey: Miner hotkey to fetch statistics for
+
+        Returns:
+            Miner statistics dict or None if not found
+        """
+        return self._manager.get_miner_statistics_for_hotkey(hotkey)
+
     # ==================== Forward-Compatible Aliases (without _rpc suffix) ====================
     # These allow direct use of the server in tests without RPC
 

@@ -116,6 +116,36 @@ class MinerStatisticsClient(RPCClientBase):
             bypass_confidence=bypass_confidence
         )
 
+    def get_miner_statistics_for_hotkeys(self, hotkeys: list) -> dict:
+        """
+        Get statistics for a batch of hotkeys from in-memory cache (fast lookup).
+
+        This is much faster than get_compressed_statistics() + decompression + filtering
+        for querying a small number of miners. Statistics are refreshed every 5 minutes
+        by the daemon.
+
+        Args:
+            hotkeys: List of miner hotkeys to fetch statistics for
+
+        Returns:
+            Dict mapping hotkey -> miner statistics dict
+        """
+        return self._server.get_miner_statistics_for_hotkeys_rpc(hotkeys)
+
+    def get_miner_statistics_for_hotkey(self, hotkey: str) -> dict | None:
+        """
+        Get statistics for a single hotkey from in-memory cache (fast O(1) lookup).
+
+        Statistics are refreshed every 5 minutes by the daemon.
+
+        Args:
+            hotkey: Miner hotkey to fetch statistics for
+
+        Returns:
+            Miner statistics dict or None if not found/cache not built yet
+        """
+        return self._server.get_miner_statistics_for_hotkey_rpc(hotkey)
+
     def health_check(self) -> dict:
         """Check server health."""
         return self._server.health_check_rpc()

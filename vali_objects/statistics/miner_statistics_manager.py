@@ -30,7 +30,7 @@ import gzip
 import copy
 import bittensor as bt
 
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 from enum import Enum
 
@@ -1028,9 +1028,25 @@ class MinerStatisticsManager:
         compressed_with_checkpoints = gzip.compress(json_with_checkpoints.encode('utf-8'))
         compressed_without_checkpoints = gzip.compress(json_without_checkpoints.encode('utf-8'))
 
-        # Only store compressed payloads - saves ~22MB of uncompressed data per validator
+        # Store compressed payloads for API responses (efficient transfer)
         self.miner_statistics['stats_compressed_with_checkpoints'] = compressed_with_checkpoints
         self.miner_statistics['stats_compressed_without_checkpoints'] = compressed_without_checkpoints
+
+        # Store uncompressed dict for fast RPC lookups by hotkey
+        # Build hotkey -> miner_data mapping for O(1) lookups
+        self.miner_statistics['stats_dict'] = {
+            miner['hotkey']: miner
+            for miner in final_dict_no_checkpoints.get('data', [])
+        }
+
+        # Store metadata separately for context
+        self.miner_statistics['stats_metadata'] = {
+            'version': final_dict_no_checkpoints.get('version'),
+            'created_timestamp_ms': final_dict_no_checkpoints.get('created_timestamp_ms'),
+            'created_date': final_dict_no_checkpoints.get('created_date'),
+            'constants': final_dict_no_checkpoints.get('constants'),
+            'network_data': final_dict_no_checkpoints.get('network_data')
+        }
 
     def _create_statistics_without_checkpoints(self, stats_dict: Dict[str, Any]) -> Dict[str, Any]:
         """Create a copy of statistics with checkpoints removed from all miner data."""
@@ -1058,3 +1074,39 @@ class MinerStatisticsManager:
             return self.miner_statistics.get('stats_compressed_with_checkpoints', None)
         else:
             return self.miner_statistics.get('stats_compressed_without_checkpoints', None)
+
+    def get_miner_statistics_for_hotkeys(self, hotkeys: List[str]) -> Dict[str, Dict[str, Any]]:
+        """
+        Get statistics for a batch of hotkeys from in-memory cache (fast O(1) lookup per hotkey).
+
+        This is much faster than get_compressed_statistics() + decompression + filtering
+        for querying a small number of miners.
+
+        Args:
+            hotkeys: List of miner hotkeys to fetch statistics for
+
+        Returns:
+            Dict mapping hotkey -> miner statistics dict
+            Returns empty dict if cache not built yet
+        """
+        stats_dict = self.miner_statistics.get('stats_dict', {})
+
+        # Fast O(1) lookup per hotkey
+        return {
+            hotkey: stats_dict[hotkey]
+            for hotkey in hotkeys
+            if hotkey in stats_dict
+        }
+
+    def get_miner_statistics_for_hotkey(self, hotkey: str) -> Optional[Dict[str, Any]]:
+        """
+        Get statistics for a single hotkey from in-memory cache (fast O(1) lookup).
+
+        Args:
+            hotkey: Miner hotkey to fetch statistics for
+
+        Returns:
+            Miner statistics dict or None if not found/cache not built
+        """
+        stats_dict = self.miner_statistics.get('stats_dict', {})
+        return stats_dict.get(hotkey)

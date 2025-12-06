@@ -1752,6 +1752,49 @@ class VantaRestServer(RPCServerBase, APIKeyMixin):
                 bt.logging.error(f"Error eliminating subaccount: {e}")
                 return jsonify({'error': 'Internal server error eliminating subaccount'}), 500
 
+        @self.app.route("/entity/subaccount/<synthetic_hotkey>/dashboard", methods=["GET"])
+        def get_subaccount_dashboard(synthetic_hotkey):
+            """
+            Get comprehensive dashboard data for a subaccount.
+
+            This endpoint aggregates data from multiple RPC services:
+            - Subaccount info (status, timestamps)
+            - Challenge period status (bucket, start time)
+            - Debt ledger data (DebtLedger instance)
+            - Position data (positions, leverage)
+            - Statistics (cached miner statistics with metrics, scores, rankings)
+            - Elimination status (if eliminated)
+
+            Example:
+            curl -H "Authorization: Bearer YOUR_API_KEY" \
+                 http://localhost:48888/entity/subaccount/entity_alpha_0/dashboard
+            """
+            # Check API key authentication
+            api_key = self._get_api_key_safe()
+            if not self.is_valid_api_key(api_key):
+                return jsonify({'error': 'Unauthorized access'}), 401
+
+            # Check if entity client is available
+            if not self._entity_client:
+                return jsonify({'error': 'Entity management not available'}), 503
+
+            try:
+                # Get dashboard data via RPC
+                dashboard_data = self._entity_client.get_subaccount_dashboard_data(synthetic_hotkey)
+
+                if dashboard_data:
+                    return jsonify({
+                        'status': 'success',
+                        'dashboard': dashboard_data,
+                        'timestamp': TimeUtil.now_in_millis()
+                    }), 200
+                else:
+                    return jsonify({'error': f'Subaccount {synthetic_hotkey} not found'}), 404
+
+            except Exception as e:
+                bt.logging.error(f"Error retrieving dashboard for {synthetic_hotkey}: {e}")
+                return jsonify({'error': 'Internal server error retrieving dashboard'}), 500
+
     def _verify_coldkey_owns_hotkey(self, coldkey_ss58: str, hotkey_ss58: str) -> bool:
         """
         Verify that a coldkey owns the specified hotkey using subtensor.
