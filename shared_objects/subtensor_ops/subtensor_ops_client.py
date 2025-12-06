@@ -20,12 +20,14 @@ class SubtensorOpsClient(RPCClientBase):
     """
 
     def __init__(self, running_unit_tests=False, connect_immediately=True):
+        self.running_unit_tests = running_unit_tests
+        if self.running_unit_tests:
+            return  # Don't want to connect to local subtensor for tests
         super().__init__(
             service_name=ValiConfig.RPC_WEIGHT_SETTER_SERVICE_NAME,
             port=ValiConfig.RPC_WEIGHT_SETTER_PORT,
-            connect_immediately=False
+            connect_immediately=connect_immediately
         )
-        self.running_unit_tests = running_unit_tests
 
     def set_weights_rpc(self, uids: list, weights: list, version_key: int) -> dict:
         """

@@ -54,9 +54,6 @@ class EntityServer(RPCServerBase):
         """
         self.running_unit_tests = running_unit_tests
 
-        # Always create in-process - constructor NEVER spawns
-        bt.logging.info("[ENTITY_SERVER] Creating EntityServer in-process")
-
         # Create the actual EntityManager FIRST, before RPCServerBase.__init__
         # This ensures _manager exists before RPC server starts accepting calls (if start_server=True)
         # CRITICAL: Prevents race condition where RPC calls fail with AttributeError during initialization
@@ -104,7 +101,6 @@ class EntityServer(RPCServerBase):
         """
         # Run challenge period assessment
         assessed_count = self._manager.assess_challenge_periods()
-        bt.logging.debug(f"[ENTITY_SERVER] Challenge period assessment completed: {assessed_count} subaccounts assessed")
 
     # ==================== RPC Methods (exposed to client) ====================
 

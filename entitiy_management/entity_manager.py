@@ -130,7 +130,9 @@ class EntityManager(ValidatorBroadcastBase):
         self.entities: Dict[str, EntityData] = {}
 
         # Local lock (NOT shared across processes) - RPC methods are auto-serialized
-        self.entities_lock = threading.Lock()
+        # Use RLock (reentrant) to allow methods to call each other within locked contexts
+        # (e.g., clear_all_entities -> _write_entities_from_memory_to_disk -> to_checkpoint_dict)
+        self.entities_lock = threading.RLock()
 
         # Store testnet flag (redundant with ValidatorBroadcastBase but kept for clarity)
         self.is_testnet = is_testnet
@@ -292,7 +294,7 @@ class EntityManager(ValidatorBroadcastBase):
                 return False, f"Subaccount {subaccount_id} not found for entity {entity_hotkey}"
 
             if subaccount.status == "eliminated":
-                return False, f"Subaccount {subaccount_id} already eliminated"
+                return True, f"Subaccount {subaccount_id} already eliminated"
 
             subaccount.status = "eliminated"
             subaccount.eliminated_at_ms = TimeUtil.now_in_millis()
@@ -321,11 +323,11 @@ class EntityManager(ValidatorBroadcastBase):
         with self.entities_lock:
             entity_data = self.entities.get(entity_hotkey)
             if not entity_data:
-                return False, "unknown", synthetic_hotkey
+                return False, None, synthetic_hotkey
 
             subaccount = entity_data.subaccounts.get(subaccount_id)
             if not subaccount:
-                return False, "unknown", synthetic_hotkey
+                return False, None, synthetic_hotkey
 
             return True, subaccount.status, synthetic_hotkey
 

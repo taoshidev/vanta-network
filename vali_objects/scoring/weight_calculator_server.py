@@ -77,18 +77,6 @@ class WeightCalculatorServer(RPCServerBase, CacheController):
         self.is_mainnet = is_mainnet
         self.subnet_version = 200
 
-        # Create own CommonDataClient (forward compatibility - no parameter passing)
-        from shared_objects.rpc.common_data_client import CommonDataClient
-        self._common_data_client = CommonDataClient(
-            running_unit_tests=running_unit_tests
-        )
-
-        # Create own MetagraphClient (forward compatibility - no parameter passing)
-        from shared_objects.rpc.metagraph_client import MetagraphClient
-        self._metagraph_client = MetagraphClient(
-            running_unit_tests=running_unit_tests
-        )
-
         # Initialize RPCServerBase (handles RPC server and daemon lifecycle)
         # daemon_interval_s: 5 minutes (weight calculation frequency)
         # hang_timeout_s: 10 minutes (accounts for 5min sleep in retry logic + processing time)
@@ -101,6 +89,12 @@ class WeightCalculatorServer(RPCServerBase, CacheController):
             start_daemon=False,  # We'll start daemon after full initialization
             daemon_interval_s=ValiConfig.SET_WEIGHT_REFRESH_TIME_MS / 1000.0,  # 5 minutes (300s)
             hang_timeout_s=600.0  # 10 minutes (accounts for time.sleep(300) in retry logic + processing)
+        )
+
+        # Create own CommonDataClient (forward compatibility - no parameter passing)
+        from shared_objects.rpc.common_data_client import CommonDataClient
+        self._common_data_client = CommonDataClient(
+            running_unit_tests=running_unit_tests
         )
 
         # Create own PositionManagerClient (forward compatibility - no parameter passing)
