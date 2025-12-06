@@ -269,7 +269,7 @@ class ServerOrchestrator:
         'weight_calculator': ServerConfig(
             server_class=None,
             client_class=None,
-            required_in_testing=True,  # Only in validator mode
+            required_in_testing=True,
             required_in_miner=False,
             required_in_validator=True,  # Auto-started with other servers
             spawn_kwargs={'start_daemon': False}  # Daemon started later via orchestrator.start_server_daemons()
@@ -549,8 +549,9 @@ class ServerOrchestrator:
 
             # Start servers in dependency order
             start_order = self._get_start_order(servers_to_start)
-
-            for server_name in start_order:
+            assert len(start_order) == len(set(start_order)), "Duplicate servers in start order"
+            for i, server_name in enumerate(start_order):
+                print(f"Starting server {i+1}/{len(start_order)}: {server_name}...")
                 self._start_server(server_name, secrets=secrets, mode=mode, **kwargs)
 
             self._started = True
@@ -587,12 +588,9 @@ class ServerOrchestrator:
         order = [
             'common_data',
             'metagraph',
-            'entity',              # Depends on metagraph (for synthetic hotkey validation)
             'position_lock',
             'perf_ledger',
             'live_price_fetcher',
-            'asset_selection',
-            'miner_account',
             'challenge_period',
             'elimination',
             'position_manager',
@@ -604,6 +602,8 @@ class ServerOrchestrator:
             'mdd_checker',
             'core_outputs',
             'miner_statistics',
+            'asset_selection',
+            'entity',
             'weight_calculator'  # Depends on perf_ledger, position_manager (reads data for weight calculation)
         ]
 
@@ -895,9 +895,7 @@ class ServerOrchestrator:
             safe_clear('contract', clear_contract)
 
         # Clear entity data (entities and subaccounts)
-        entity_client = get_client_safe('entity')
-        if entity_client:
-            safe_clear('entity', lambda: entity_client.clear_all_entities())
+        self.get_client('entity').clear_all_entities()
 
         bt.logging.debug("All test data cleared")
 
