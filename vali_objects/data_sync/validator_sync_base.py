@@ -32,11 +32,10 @@ class PositionSyncResultException(Exception):
 
 class ValidatorSyncBase():
     def __init__(self, order_sync=None, running_unit_tests=False,
-                 enable_position_splitting=False, verbose=False):
+                 enable_position_splitting=False, verbose=False, is_mothership=False):
         self.verbose = verbose
         self.running_unit_tests = running_unit_tests
-        secrets = ValiUtils.get_secrets(running_unit_tests=running_unit_tests)
-        self.is_mothership = 'ms' in secrets
+        self.is_mothership = is_mothership
         self.SYNC_LOOK_AROUND_MS = 1000 * 60 * 3
         self.enable_position_splitting = enable_position_splitting
         self._elimination_client = EliminationClient(running_unit_tests=running_unit_tests)
@@ -76,15 +75,6 @@ class ValidatorSyncBase():
         # Clear perf ledger invalidations via RPC
         self._perf_ledger_client.clear_perf_ledger_hks_to_invalidate()
 
-    @property
-    def live_price_fetcher(self):
-        """Get live price fetcher client."""
-        return self._live_price_client
-
-    @property
-    def perf_ledger_client(self):
-        """Get perf ledger client (forward compatibility - created internally)."""
-        return self._perf_ledger_client
 
     @property
     def perf_ledger_hks_to_invalidate(self) -> dict:
@@ -96,10 +86,6 @@ class ValidatorSyncBase():
         """
         return self._perf_ledger_client.get_perf_ledger_hks_to_invalidate()
 
-    @property
-    def contract_manager(self):
-        """Get contract client (forward compatibility - created internally)."""
-        return self._contract_client
 
     def sync_positions(self, shadow_mode, candidate_data=None, disk_positions=None) -> dict[str: list[Position]]:
         t0 = time.time()
@@ -185,10 +171,10 @@ class ValidatorSyncBase():
 
         # Sync miner account sizes if available and contract manager is present
         miner_account_sizes_data = candidate_data.get('miner_account_sizes', {})
-        if miner_account_sizes_data and hasattr(self, 'contract_manager') and self.contract_manager:
+        if miner_account_sizes_data:
             if not shadow_mode:
                 bt.logging.info(f"Syncing {len(miner_account_sizes_data)} miner account size records from auto sync")
-                self.contract_manager.sync_miner_account_sizes_data(miner_account_sizes_data)
+                self._contract_client.sync_miner_account_sizes_data(miner_account_sizes_data)
         elif miner_account_sizes_data:
             bt.logging.warning("Miner account sizes data found but contract manager not available for sync")
 
@@ -431,7 +417,7 @@ class ValidatorSyncBase():
 
             # Add synthetic FLAT order to properly close the position
             close_time_ms = position_to_close.orders[-1].processed_ms + 1
-            flat_order = Position.generate_fake_flat_order(position_to_close, close_time_ms, self.live_price_fetcher)
+            flat_order = Position.generate_fake_flat_order(position_to_close, close_time_ms, self._live_price_client)
             position_to_close.orders.append(flat_order)
             position_to_close.close_out_position(close_time_ms)
             # Save the closed position back to disk
@@ -686,7 +672,7 @@ class ValidatorSyncBase():
                         min_timestamp_of_order_change = e.open_ms
 
                     if min_timestamp_of_order_change != float('inf'):
-                        e.rebuild_position_with_updated_orders(self.live_price_fetcher)
+                        e.rebuild_position_with_updated_orders(self._live_price_client)
                         min_timestamp_of_change = min(min_timestamp_of_change, min_timestamp_of_order_change)
                         position_to_sync_status[e] = PositionSyncResult.UPDATED
                     else:
@@ -726,7 +712,7 @@ class ValidatorSyncBase():
                         min_timestamp_of_order_change = e.open_ms
 
                     if min_timestamp_of_order_change != float('inf'):
-                        e.rebuild_position_with_updated_orders(self.live_price_fetcher)
+                        e.rebuild_position_with_updated_orders(self._live_price_client)
                         min_timestamp_of_change = min(min_timestamp_of_change, min_timestamp_of_order_change)
                         position_to_sync_status[e] = PositionSyncResult.UPDATED
                     else:

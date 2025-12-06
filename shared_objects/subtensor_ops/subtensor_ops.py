@@ -4,8 +4,11 @@
 import time
 import traceback
 import threading
+import asyncio
+
 from dataclasses import dataclass
 from setproctitle import setproctitle
+import template.protocol
 
 from vali_objects.vali_config import ValiConfig, TradePair
 from shared_objects.cache_controller import CacheController
@@ -135,9 +138,14 @@ class WeightFailureTracker:
         return should_send_recovery
 
 
-class MetagraphUpdater(CacheController):
+class SubtensorOpsManager(CacheController):
     """
-    Run locally to interface with the Subtensor object without RPC overhead
+    Run locally to interface with the Subtensor object without RPC overhead.
+
+    Handles all subtensor operations including:
+    - Metagraph updates and caching
+    - Weight setting via RPC
+    - Validator broadcasting via RPC
     """
     def __init__(self, config, hotkey, is_miner, position_inspector=None, position_manager=None,
                  slack_notifier=None, running_unit_tests=False):
@@ -215,7 +223,7 @@ class MetagraphUpdater(CacheController):
 
         # Log mode
         mode = "miner" if is_miner else "validator"
-        bt.logging.info(f"MetagraphUpdater initialized in {mode} mode, weight setting via RPC")
+        bt.logging.info(f"SubtensorOpsManager initialized in {mode} mode, weight setting via RPC")
 
     def _create_mock_subtensor(self):
         """Create a mock subtensor for unit testing."""
@@ -339,7 +347,80 @@ class MetagraphUpdater(CacheController):
         )
         self.rpc_thread.start()
 
-    # ==================== RPC Methods (exposed to SubtensorWeightCalculator) ====================
+    # ==================== RPC Methods (exposed to clients) ====================
+
+    def broadcast_to_validators_rpc(self, synapse, validator_axons_list):
+        """
+        RPC method to broadcast a synapse to validators (called from ValidatorBroadcastBase).
+
+        This method runs the broadcast using the SubtensorOpsManager's wallet and dendrite,
+        allowing processes without direct subtensor/wallet access to send broadcasts.
+
+        Args:
+            synapse: The synapse object to broadcast (already validated as picklable)
+            validator_axons_list: List of axon_info objects to broadcast to
+
+        Returns:
+            dict: {
+                "success": bool,
+                "success_count": int,
+                "total_count": int,
+                "errors": list of error messages
+            }
+        """
+        try:
+            if self.running_unit_tests:
+                bt.logging.debug("[BROADCAST RPC] Running unit tests, skipping broadcast")
+                return {"success": True, "success_count": 0, "total_count": 0, "errors": []}
+
+            if not validator_axons_list:
+                bt.logging.debug("[BROADCAST RPC] No validators to broadcast to")
+                return {"success": True, "success_count": 0, "total_count": 0, "errors": []}
+
+            # Validate synapse object
+            if not synapse or not hasattr(synapse, '__class__'):
+                raise ValueError("Invalid synapse object")
+
+            synapse_class_name = synapse.__class__.__name__
+
+            # Create wallet from config
+            wallet = bt.wallet(config=self.config)
+
+            bt.logging.info(f"[BROADCAST RPC] Broadcasting {synapse_class_name} to {len(validator_axons_list)} validators")
+
+            async def do_broadcast():
+                async with bt.dendrite(wallet=wallet) as dendrite:
+                    responses = await dendrite.aquery(validator_axons_list, synapse)
+
+                    success_count = 0
+                    errors = []
+
+                    for response in responses:
+                        if response.successfully_processed:
+                            success_count += 1
+                        elif response.error_message:
+                            errors.append(f"{response.axon.hotkey}: {response.error_message}")
+
+                    return success_count, errors
+
+            success_count, errors = asyncio.run(do_broadcast())
+
+            bt.logging.info(
+                f"[BROADCAST RPC] Broadcast completed: {success_count}/{len(validator_axons_list)} validators updated"
+            )
+
+            return {
+                "success": True,
+                "success_count": success_count,
+                "total_count": len(validator_axons_list),
+                "errors": errors
+            }
+
+        except Exception as e:
+            error_msg = f"Error in broadcast_to_validators_rpc: {e}"
+            bt.logging.error(error_msg)
+            bt.logging.error(traceback.format_exc())
+            return {"success": False, "success_count": 0, "total_count": 0, "errors": [str(e)]}
 
     def set_weights_rpc(self, uids, weights, version_key):
         """
@@ -1025,8 +1106,8 @@ if __name__ == "__main__":
     # Create PositionInspector with client
     position_inspector = PositionInspector(bt.wallet(config=config), metagraph_client, config)
 
-    # Create MetagraphUpdater
-    mgu = MetagraphUpdater(config, config.wallet.hotkey, is_miner=True, position_inspector=position_inspector)
+    # Create SubtensorOpsManager
+    mgu = SubtensorOpsManager(config, config.wallet.hotkey, is_miner=True, position_inspector=position_inspector)
 
     while True:
         mgu.update_metagraph()

@@ -64,3 +64,10 @@ class AssetSelection(bt.Synapse):
     error_message: str = Field("", title="Error Message", frozen=False, max_length=4096)
     computed_body_hash: str = Field("", title="Computed Body Hash", frozen=False)
 AssetSelection.required_hash_fields = ["asset_selection"]
+
+class SubaccountRegistration(bt.Synapse):
+    subaccount_data: typing.Dict = Field(default_factory=dict, title="Subaccount Registration Data", frozen=False, max_length=4096)
+    successfully_processed: bool = Field(False, title="Successfully Processed", frozen=False)
+    error_message: str = Field("", title="Error Message", frozen=False, max_length=4096)
+    computed_body_hash: str = Field("", title="Computed Body Hash", frozen=False)
+SubaccountRegistration.required_hash_fields = ["subaccount_data"]

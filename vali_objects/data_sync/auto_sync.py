@@ -28,12 +28,13 @@ from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_server import PerfLed
 class PositionSyncer(ValidatorSyncBase):
     def __init__(self, order_sync=None, running_unit_tests=False,
                  auto_sync_enabled=False, enable_position_splitting=False, verbose=False,
-                 connection_mode=RPCConnectionMode.RPC):
+                 connection_mode=RPCConnectionMode.RPC, is_mothership=False):
         # ValidatorSyncBase creates its own LivePriceFetcherClient, PerfLedgerClient, AssetSelectionClient,
         # LimitOrderClient, and ContractClient internally (forward compatibility)
         super().__init__(order_sync=order_sync,
                          running_unit_tests=running_unit_tests,
-                         enable_position_splitting=enable_position_splitting, verbose=verbose)
+                         enable_position_splitting=enable_position_splitting, verbose=verbose,
+                         is_mothership=is_mothership)
         self.order_sync = order_sync
 
         # Create own CommonDataClient (forward compatibility - no parameter passing)

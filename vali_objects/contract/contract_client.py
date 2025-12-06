@@ -149,12 +149,6 @@ class ContractClient(RPCClientBase):
         """Clear all test collateral balances (TEST ONLY)."""
         return self._server.clear_test_collateral_balances_rpc()
 
-    # ==================== Setup Methods ====================
-
-    def load_contract_owner(self):
-        """Load EVM contract owner secrets and vault wallet."""
-        self._server.load_contract_owner()
-
     # ==================== Static Methods ====================
 
     @staticmethod

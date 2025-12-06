@@ -179,7 +179,7 @@ class ServerOrchestrator:
             client_class=None,
             required_in_testing=True,
             required_in_miner=True,  # Miners need metagraph data
-            spawn_kwargs={'start_server': True}  # Miners need RPC server for MetagraphUpdater
+            spawn_kwargs={'start_server': True}  # Miners need RPC server for SubtensorOpsManager
         ),
         'position_lock': ServerConfig(
             server_class=None,
@@ -275,10 +275,18 @@ class ServerOrchestrator:
         'weight_calculator': ServerConfig(
             server_class=None,
             client_class=None,
-            required_in_testing=False,  # Only in validator mode
+            required_in_testing=True,
             required_in_miner=False,
             required_in_validator=True,  # Auto-started with other servers
             spawn_kwargs={'start_daemon': False}  # Daemon started later via orchestrator.start_server_daemons()
+        ),
+        'entity': ServerConfig(
+            server_class=None,
+            client_class=None,
+            required_in_testing=True,
+            required_in_miner=False,  # Miners don't need entity management
+            required_in_validator=True,  # Validators need entity management for subaccount tracking
+            spawn_kwargs={'start_daemon': False}  # Daemon started later via orchestrator
         ),
     }
 
@@ -368,6 +376,8 @@ class ServerOrchestrator:
         from vali_objects.utils.mdd_checker.mdd_checker_client import MDDCheckerClient
         from vali_objects.scoring.weight_calculator_server import WeightCalculatorServer
         from vali_objects.scoring.weight_calculator_client import WeightCalculatorClient
+        from entitiy_management.entity_server import EntityServer
+        from entitiy_management.entity_client import EntityClient
 
         # Update registry with classes
         self.SERVERS['common_data'].server_class = CommonDataServer
@@ -423,6 +433,9 @@ class ServerOrchestrator:
 
         self.SERVERS['weight_calculator'].server_class = WeightCalculatorServer
         self.SERVERS['weight_calculator'].client_class = WeightCalculatorClient
+
+        self.SERVERS['entity'].server_class = EntityServer
+        self.SERVERS['entity'].client_class = EntityClient
 
         self._classes_loaded = True
 
@@ -547,8 +560,9 @@ class ServerOrchestrator:
 
             # Start servers in dependency order
             start_order = self._get_start_order(servers_to_start)
-
-            for server_name in start_order:
+            assert len(start_order) == len(set(start_order)), "Duplicate servers in start order"
+            for i, server_name in enumerate(start_order):
+                print(f"Starting server {i+1}/{len(start_order)}: {server_name}...")
                 self._start_server(server_name, secrets=secrets, mode=mode, **kwargs)
 
             self._started = True
@@ -577,7 +591,7 @@ class ServerOrchestrator:
         - mdd_checker: depends on position_manager, elimination
         - core_outputs: depends on all above (aggregates checkpoint data)
         - miner_statistics: depends on all above (generates miner statistics)
-        - weight_calculator: reads data from perf_ledger, position_manager, sends weights to MetagraphUpdater (daemon controlled via WeightCalculatorClient)
+        - weight_calculator: reads data from perf_ledger, position_manager, sends weights to SubtensorOpsManager (daemon controlled via WeightCalculatorClient)
 
         Returns:
             List of server names in start order
@@ -589,7 +603,6 @@ class ServerOrchestrator:
             'position_lock',
             'perf_ledger',
             'live_price_fetcher',
-            'asset_selection',
             'challenge_period',
             'elimination',
             'position_manager',
@@ -602,6 +615,8 @@ class ServerOrchestrator:
             'mdd_checker',
             'core_outputs',
             'miner_statistics',
+            'asset_selection',
+            'entity',
             'weight_calculator'  # Depends on perf_ledger, position_manager (reads data for weight calculation)
         ]
 
@@ -663,7 +678,7 @@ class ServerOrchestrator:
                 if context.validator_hotkey:
                     spawn_kwargs['validator_hotkey'] = context.validator_hotkey
 
-            elif server_name in ('contract', 'asset_selection'):
+            elif server_name in ('contract', 'asset_selection', 'entity'):
                 if context.config:
                     spawn_kwargs['config'] = context.config
 
@@ -676,6 +691,18 @@ class ServerOrchestrator:
 
             elif server_name == 'metagraph':
                 spawn_kwargs['start_daemon'] = False  # No daemon for metagraph
+
+        # For TESTING mode, create a minimal test config if not provided (for entity, contract, asset_selection)
+        if mode == ServerMode.TESTING and server_name in ('contract', 'asset_selection', 'entity'):
+            if 'config' not in spawn_kwargs or spawn_kwargs['config'] is None:
+                # Create minimal test config with required attributes
+                from types import SimpleNamespace
+                test_config = SimpleNamespace(
+                    netuid=116,
+                    subtensor=SimpleNamespace(network="test")
+                )
+                spawn_kwargs['config'] = test_config
+                bt.logging.debug(f"[{server_name}] Created test config with netuid=116, network=test for TESTING mode")
 
         # Legacy support: Add secrets for servers that need them (if not already added via context)
         if server_name == 'live_price_fetcher' and 'secrets' not in spawn_kwargs:
@@ -889,6 +916,9 @@ class ServerOrchestrator:
                 contract_client.re_init_account_sizes()  # Reload from disk
             safe_clear('contract', clear_contract)
 
+        # Clear entity data (entities and subaccounts)
+        self.get_client('entity').clear_all_entities()
+
         bt.logging.debug("All test data cleared")
 
     def is_running(self) -> bool:
@@ -911,7 +941,7 @@ class ServerOrchestrator:
             **kwargs: Additional kwargs to pass to spawn_process
 
         Example:
-            # Start weight_calculator after MetagraphUpdater is running
+            # Start weight_calculator after SubtensorOpsManager is running
             orchestrator.start_individual_server('weight_calculator')
         """
         if server_name in self._servers:
@@ -1142,9 +1172,7 @@ class ServerOrchestrator:
 
     def start_validator_servers(
         self,
-        context: ValidatorContext,
-        start_daemons: bool = True,
-        run_pre_setup: bool = True
+        context: ValidatorContext
     ) -> None:
         """
         Start all servers for validator with proper initialization sequence.
@@ -1152,13 +1180,9 @@ class ServerOrchestrator:
         This is a high-level method that:
         1. Starts all required servers in dependency order
         2. Creates clients
-        3. Optionally starts daemons for servers that defer initialization
-        4. Optionally runs pre_run_setup on PositionManager
 
         Args:
             context: Validator context (slack_notifier, config, wallet, secrets, etc.)
-            start_daemons: Whether to start daemons for deferred servers (default: True)
-            run_pre_setup: Whether to run PositionManager pre_run_setup (default: True)
 
         Example:
             context = ValidatorContext(
@@ -1180,21 +1204,6 @@ class ServerOrchestrator:
             mode=ServerMode.VALIDATOR,
             context=context
         )
-
-        # Start daemons for servers that deferred initialization
-        if start_daemons:
-            daemon_servers = [
-                'position_manager',
-                'elimination',
-                'challenge_period',
-                'perf_ledger',
-                'debt_ledger'
-            ]
-            self.start_server_daemons(daemon_servers)
-
-        # Run pre-run setup if requested
-        if run_pre_setup:
-            self.call_pre_run_setup(perform_order_corrections=True)
 
         bt.logging.success("All validator servers started and initialized")
 
