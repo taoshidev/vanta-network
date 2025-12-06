@@ -32,6 +32,11 @@ from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 from shared_objects.cache_controller import CacheController
 from vali_objects.validator_broadcast_base import ValidatorBroadcastBase
+from vali_objects.utils.elimination.elimination_client import EliminationClient
+from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
+from vali_objects.statistics.miner_statistics_client import MinerStatisticsClient
+from vali_objects.position_management.position_manager_client import PositionManagerClient
+from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_client import DebtLedgerClient
 from time_util.time_util import TimeUtil
 
 
@@ -44,11 +49,8 @@ class SubaccountInfo(BaseModel):
     created_at_ms: int = Field(description="Timestamp when subaccount was created")
     eliminated_at_ms: Optional[int] = Field(default=None, description="Timestamp when subaccount was eliminated")
 
-    # Challenge period fields
-    challenge_period_active: bool = Field(default=True, description="Whether subaccount is in challenge period")
-    challenge_period_passed: bool = Field(default=False, description="Whether subaccount has passed challenge period")
-    challenge_period_start_ms: int = Field(description="Challenge period start timestamp")
-    challenge_period_end_ms: int = Field(description="Challenge period end timestamp (90 days from start)")
+    # Note: Challenge period tracking has been migrated to ChallengePeriodManager
+    # Synthetic hotkeys are added to challenge period bucket and evaluated via inspect()
 
 
 class EntityData(BaseModel):
@@ -129,19 +131,50 @@ class EntityManager(ValidatorBroadcastBase):
         # Local dicts (NOT IPC managerized) - much faster!
         self.entities: Dict[str, EntityData] = {}
 
-        # Local lock (NOT shared across processes) - RPC methods are auto-serialized
+        # Per-entity locking strategy for better concurrency
+        # Master lock protects the entities dict structure and the entity_locks dict
         # Use RLock (reentrant) to allow methods to call each other within locked contexts
-        # (e.g., clear_all_entities -> _write_entities_from_memory_to_disk -> to_checkpoint_dict)
-        self.entities_lock = threading.RLock()
+        self._entities_lock = threading.RLock()
+
+        # Per-entity locks: only serialize operations on the same entity
+        # Operations on different entities can run concurrently
+        self._entity_locks: Dict[str, threading.RLock] = {}
 
         # Store testnet flag (redundant with ValidatorBroadcastBase but kept for clarity)
         self.is_testnet = is_testnet
 
-        # Create PerfLedgerClient with connect_immediately=False to defer connection
-        from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
-        self._perf_ledger_client = PerfLedgerClient(
+        # Create DebtLedgerClient with connect_immediately=False to defer connection
+        self._debt_ledger_client = DebtLedgerClient(
             connection_mode=connection_mode,
-            connect_immediately=False
+            connect_immediately=False,
+            running_unit_tests=running_unit_tests
+        )
+
+        # Create EliminationClient with connect_immediately=False to defer connection
+        self._elimination_client = EliminationClient(
+            connection_mode=connection_mode,
+            connect_immediately=False,
+            running_unit_tests=running_unit_tests
+        )
+
+        # Create ChallengePeriodClient with connect_immediately=False to defer connection
+        self._challenge_period_client = ChallengePeriodClient(
+            connection_mode=connection_mode,
+            running_unit_tests=running_unit_tests
+        )
+
+        # Create MinerStatisticsClient with connect_immediately=False to defer connection
+        self._statistics_client = MinerStatisticsClient(
+            connection_mode=connection_mode,
+            connect_immediately=False,
+            running_unit_tests=running_unit_tests
+        )
+
+        # Create PositionManagerClient with connect_immediately=False to defer connection
+        self._position_client = PositionManagerClient(
+            connection_mode=connection_mode,
+            connect_immediately=False,
+            running_unit_tests=running_unit_tests
         )
 
         self.ENTITY_FILE = ValiBkpUtils.get_entity_file_location(running_unit_tests=running_unit_tests)
@@ -150,8 +183,32 @@ class EntityManager(ValidatorBroadcastBase):
         if not self.is_backtesting:
             disk_data = ValiUtils.get_vali_json_file_dict(self.ENTITY_FILE)
             self.entities = self.parse_checkpoint_dict(disk_data)
+            # Recreate locks for all loaded entities
+            for entity_hotkey in self.entities.keys():
+                self._entity_locks[entity_hotkey] = threading.RLock()
+            bt.logging.info(f"[ENTITY_MANAGER] Loaded {len(self.entities)} entities from disk with per-entity locks")
 
         bt.logging.info("[ENTITY_MANAGER] EntityManager initialized")
+
+    # ==================== Lock Management ====================
+
+    def _get_entity_lock(self, entity_hotkey: str) -> threading.RLock:
+        """
+        Get or create a lock for a specific entity.
+
+        This method is thread-safe and ensures each entity has its own lock.
+        The master lock protects the entity_locks dict.
+
+        Args:
+            entity_hotkey: The entity hotkey
+
+        Returns:
+            RLock for this entity
+        """
+        with self._entities_lock:
+            if entity_hotkey not in self._entity_locks:
+                self._entity_locks[entity_hotkey] = threading.RLock()
+            return self._entity_locks[entity_hotkey]
 
     # ==================== Core Business Logic ====================
 
@@ -175,7 +232,8 @@ class EntityManager(ValidatorBroadcastBase):
         if max_subaccounts is None:
             max_subaccounts = ValiConfig.ENTITY_MAX_SUBACCOUNTS
 
-        with self.entities_lock:
+        # Use master lock: adding new entity to dict
+        with self._entities_lock:
             if entity_hotkey in self.entities:
                 return False, f"Entity {entity_hotkey} already registered"
 
@@ -194,6 +252,8 @@ class EntityManager(ValidatorBroadcastBase):
             )
 
             self.entities[entity_hotkey] = entity_data
+            # Create lock for this entity
+            self._entity_locks[entity_hotkey] = threading.RLock()
             self._write_entities_from_memory_to_disk()
 
             bt.logging.info(f"[ENTITY_MANAGER] Registered entity {entity_hotkey} with max_subaccounts={max_subaccounts}")
@@ -209,7 +269,9 @@ class EntityManager(ValidatorBroadcastBase):
         Returns:
             (success: bool, subaccount_info: Optional[SubaccountInfo], message: str)
         """
-        with self.entities_lock:
+        # Use per-entity lock: only operates on single entity
+        entity_lock = self._get_entity_lock(entity_hotkey)
+        with entity_lock:
             entity_data = self.entities.get(entity_hotkey)
             if not entity_data:
                 return False, None, f"Entity {entity_hotkey} not registered"
@@ -227,22 +289,14 @@ class EntityManager(ValidatorBroadcastBase):
             subaccount_uuid = str(uuid.uuid4())
             synthetic_hotkey = f"{entity_hotkey}_{subaccount_id}"
 
-            # Initialize challenge period timestamps
+            # Create subaccount info
             now_ms = TimeUtil.now_in_millis()
-            challenge_period_days = ValiConfig.SUBACCOUNT_CHALLENGE_PERIOD_DAYS
-            challenge_period_end_ms = now_ms + (challenge_period_days * 24 * 60 * 60 * 1000)
-
-            # Create subaccount info with challenge period
             subaccount_info = SubaccountInfo(
                 subaccount_id=subaccount_id,
                 subaccount_uuid=subaccount_uuid,
                 synthetic_hotkey=synthetic_hotkey,
                 status="active",
-                created_at_ms=now_ms,
-                challenge_period_active=True,
-                challenge_period_passed=False,
-                challenge_period_start_ms=now_ms,
-                challenge_period_end_ms=challenge_period_end_ms
+                created_at_ms=now_ms
             )
 
             # TODO: Transfer collateral from entity to subaccount
@@ -284,7 +338,9 @@ class EntityManager(ValidatorBroadcastBase):
         Returns:
             (success: bool, message: str)
         """
-        with self.entities_lock:
+        # Use per-entity lock: only operates on single entity
+        entity_lock = self._get_entity_lock(entity_hotkey)
+        with entity_lock:
             entity_data = self.entities.get(entity_hotkey)
             if not entity_data:
                 return False, f"Entity {entity_hotkey} not found"
@@ -320,7 +376,9 @@ class EntityManager(ValidatorBroadcastBase):
 
         entity_hotkey, subaccount_id = self.parse_synthetic_hotkey(synthetic_hotkey)
 
-        with self.entities_lock:
+        # Use per-entity lock: only reads from single entity
+        entity_lock = self._get_entity_lock(entity_hotkey)
+        with entity_lock:
             entity_data = self.entities.get(entity_hotkey)
             if not entity_data:
                 return False, None, synthetic_hotkey
@@ -341,12 +399,185 @@ class EntityManager(ValidatorBroadcastBase):
         Returns:
             EntityData or None
         """
-        with self.entities_lock:
+        # Use per-entity lock: only reads from single entity
+        entity_lock = self._get_entity_lock(entity_hotkey)
+        with entity_lock:
             return self.entities.get(entity_hotkey)
+
+    def validate_hotkey_for_orders(self, hotkey: str) -> dict:
+        """
+        Validate a hotkey for order placement in a single check.
+
+        This consolidates multiple checks into one RPC call:
+        1. Is it a synthetic hotkey (subaccount)?
+        2. If synthetic, is it active?
+        3. If not synthetic, is it an entity hotkey (not allowed to trade)?
+
+        Args:
+            hotkey: The hotkey to validate
+
+        Returns:
+            dict with:
+                - is_valid (bool): Whether hotkey can place orders
+                - error_message (str): Error message if not valid, empty if valid
+                - hotkey_type (str): 'synthetic', 'entity', or 'regular'
+                - status (str|None): Status if synthetic hotkey, None otherwise
+        """
+        # Check if synthetic (no lock needed - just string parsing)
+        if self.is_synthetic_hotkey(hotkey):
+            # Synthetic hotkey - check if active
+            found, status, _ = self.get_subaccount_status(hotkey)
+
+            if not found:
+                return {
+                    'is_valid': False,
+                    'error_message': (f"Synthetic hotkey {hotkey} not found. "
+                                    f"Please ensure your subaccount is properly registered."),
+                    'hotkey_type': 'synthetic',
+                    'status': None
+                }
+
+            if status != 'active':
+                return {
+                    'is_valid': False,
+                    'error_message': (f"Synthetic hotkey {hotkey} is not active (status: {status}). "
+                                    f"Please ensure your subaccount is properly registered."),
+                    'hotkey_type': 'synthetic',
+                    'status': status
+                }
+
+            # Valid synthetic hotkey
+            return {
+                'is_valid': True,
+                'error_message': '',
+                'hotkey_type': 'synthetic',
+                'status': status
+            }
+
+        # Not synthetic - check if it's an entity hotkey
+        # Use per-entity lock: only reads from single entity
+        entity_lock = self._get_entity_lock(hotkey)
+        with entity_lock:
+            entity_data = self.entities.get(hotkey)
+
+        if entity_data:
+            # Entity hotkey cannot place orders directly
+            return {
+                'is_valid': False,
+                'error_message': (f"Entity hotkey {hotkey} cannot place orders directly. "
+                                f"Please use a subaccount (synthetic hotkey) to place orders."),
+                'hotkey_type': 'entity',
+                'status': None
+            }
+
+        # Regular hotkey (not synthetic, not entity)
+        return {
+            'is_valid': True,
+            'error_message': '',
+            'hotkey_type': 'regular',
+            'status': None
+        }
+
+    def get_subaccount_dashboard_data(self, synthetic_hotkey: str) -> Optional[dict]:
+        """
+        Get comprehensive dashboard data for a subaccount by aggregating data from multiple RPC services.
+
+        This method pulls existing data from:
+        - ChallengePeriodClient: Challenge period status and bucket
+        - DebtLedgerClient: Debt ledger data
+        - PositionManagerClient: Open positions and leverage
+        - MinerStatisticsClient: Cached statistics (metrics, scores, rankings, etc.)
+        - EliminationClient: Elimination status
+
+        Args:
+            synthetic_hotkey: The synthetic hotkey ({entity_hotkey}_{subaccount_id})
+
+        Returns:
+            Dict with aggregated dashboard data, or None if subaccount not found
+        """
+        # 1. Validate subaccount exists
+        entity_hotkey, subaccount_id = self.parse_synthetic_hotkey(synthetic_hotkey)
+        if not entity_hotkey:
+            return None
+
+        entity_data = self.get_entity_data(entity_hotkey)
+        if not entity_data:
+            return None
+
+        subaccount = entity_data.subaccounts.get(subaccount_id)
+        if not subaccount:
+            return None
+
+        # 2. Query each client (with graceful degradation on errors)
+        time_now_ms = TimeUtil.now_in_millis()
+
+        # Challenge period data
+        challenge_data = None
+        try:
+            if self._challenge_period_client.has_miner(synthetic_hotkey):
+                bucket = self._challenge_period_client.get_miner_bucket(synthetic_hotkey)
+                start_time = self._challenge_period_client.get_miner_start_time(synthetic_hotkey)
+                challenge_data = {
+                    'bucket': bucket.value if bucket else None,
+                    'start_time_ms': start_time
+                }
+        except Exception as e:
+            bt.logging.debug(f"[ENTITY_MANAGER] Challenge period data unavailable for {synthetic_hotkey}: {e}")
+
+        # Debt ledger data
+        ledger_data = None
+        try:
+            ledger_data = self._debt_ledger_client.get_ledger(synthetic_hotkey)
+        except Exception as e:
+            bt.logging.debug(f"[ENTITY_MANAGER] Ledger data unavailable for {synthetic_hotkey}: {e}")
+
+        # Position data
+        positions_data = None
+        try:
+            positions = self._position_client.get_positions_for_one_hotkey(synthetic_hotkey)
+            if positions:
+                positions_data = PositionManagerClient.positions_to_dashboard_dict(positions, time_now_ms)
+                # Add total leverage
+                leverage = self._position_client.calculate_net_portfolio_leverage(synthetic_hotkey)
+                positions_data['total_leverage'] = leverage
+        except Exception as e:
+            bt.logging.debug(f"[ENTITY_MANAGER] Position data unavailable for {synthetic_hotkey}: {e}")
+
+        # Statistics data (from cached miner statistics - refreshed every 5 minutes)
+        statistics_data = None
+        try:
+            statistics_data = self._statistics_client.get_miner_statistics_for_hotkey(synthetic_hotkey)
+        except Exception as e:
+            bt.logging.debug(f"[ENTITY_MANAGER] Statistics data unavailable for {synthetic_hotkey}: {e}")
+
+        # Elimination data
+        elimination_data = None
+        try:
+            elimination_data = self._elimination_client.get_elimination(synthetic_hotkey)
+        except Exception as e:
+            bt.logging.debug(f"[ENTITY_MANAGER] Elimination data unavailable for {synthetic_hotkey}: {e}")
+
+        # 3. Build aggregated response
+        return {
+            'subaccount_info': {
+                'synthetic_hotkey': synthetic_hotkey,
+                'entity_hotkey': entity_hotkey,
+                'subaccount_id': subaccount_id,
+                'status': subaccount.status,
+                'created_at_ms': subaccount.created_at_ms,
+                'eliminated_at_ms': subaccount.eliminated_at_ms,
+            },
+            'challenge_period': challenge_data,
+            'ledger': ledger_data,
+            'positions': positions_data,
+            'statistics': statistics_data,
+            'elimination': elimination_data,
+        }
 
     def get_all_entities(self) -> Dict[str, EntityData]:
         """Get all entities."""
-        with self.entities_lock:
+        # Use master lock: copying entire dict
+        with self._entities_lock:
             return dict(self.entities)
 
     def is_synthetic_hotkey(self, hotkey: str) -> bool:
@@ -407,7 +638,9 @@ class EntityManager(ValidatorBroadcastBase):
         Returns:
             (success: bool, message: str)
         """
-        with self.entities_lock:
+        # Use per-entity lock: only operates on single entity
+        entity_lock = self._get_entity_lock(entity_hotkey)
+        with entity_lock:
             entity_data = self.entities.get(entity_hotkey)
             if not entity_data:
                 return False, f"Entity {entity_hotkey} not found"
@@ -421,86 +654,59 @@ class EntityManager(ValidatorBroadcastBase):
 
     # ==================== Challenge Period & Elimination Assessment ====================
 
-    def assess_challenge_periods(self) -> int:
+    def assess_eliminations(self) -> int:
         """
-        Assess challenge periods for all active subaccounts.
+        Check all active subaccounts against the elimination registry and mark eliminated ones.
 
-        Runs periodically (every 5 minutes) to check:
-        - If subaccount has passed challenge period criteria (3% returns AND ≤6% drawdown)
-        - If challenge period has expired without passing
+        This runs periodically (every 5 minutes via daemon) to sync subaccount status
+        with the central elimination registry managed by EliminationManager.
 
         Returns:
-            int: Number of subaccounts assessed
+            int: Number of subaccounts newly marked as eliminated
         """
-        assessed_count = 0
+        eliminated_count = 0
         now_ms = TimeUtil.now_in_millis()
 
-        with self.entities_lock:
+        # Get all eliminated hotkeys from the central registry
+        eliminated_hotkeys = self._elimination_client.get_eliminated_hotkeys()
+
+        # Use master lock: iterating over all entities
+        with self._entities_lock:
             for entity_hotkey, entity_data in self.entities.items():
                 for subaccount_id, subaccount in entity_data.subaccounts.items():
-                    # Skip if not active or not in challenge period
-                    if subaccount.status != "active" or not subaccount.challenge_period_active:
+                    # Skip if already eliminated
+                    if subaccount.status == "eliminated":
                         continue
 
-                    assessed_count += 1
                     synthetic_hotkey = subaccount.synthetic_hotkey
 
-                    # Check if challenge period has expired
-                    if now_ms > subaccount.challenge_period_end_ms:
-                        # Period expired without passing - eliminate subaccount
+                    # Check if this synthetic hotkey is in eliminations
+                    if synthetic_hotkey in eliminated_hotkeys:
+                        # Get elimination details for logging
+                        elimination_info = self._elimination_client.get_elimination(synthetic_hotkey)
+                        reason = elimination_info.get('reason', 'unknown') if elimination_info else 'unknown'
+
                         bt.logging.info(
-                            f"[ENTITY_MANAGER] Challenge period expired for {synthetic_hotkey} "
-                            f"({ValiConfig.SUBACCOUNT_CHALLENGE_PERIOD_DAYS} days). Eliminating."
+                            f"[ENTITY_MANAGER] Subaccount {synthetic_hotkey} found in eliminations. "
+                            f"Reason: {reason}. Marking as eliminated."
                         )
+
+                        # Mark subaccount as eliminated
                         subaccount.status = "eliminated"
                         subaccount.eliminated_at_ms = now_ms
-                        subaccount.challenge_period_active = False
-                        continue
+                        eliminated_count += 1
 
-                    # Challenge period still active - check if criteria met
-                    try:
-                        # Get performance metrics from PerfLedgerClient
-                        returns = self._perf_ledger_client.get_returns_rpc(synthetic_hotkey)
-                        drawdown = self._perf_ledger_client.get_drawdown_rpc(synthetic_hotkey)
-
-                        # Check if both criteria are met:
-                        # 1. Returns >= 3%
-                        # 2. Drawdown <= 6% (drawdown is represented as a positive value)
-                        if returns is not None and drawdown is not None:
-                            returns_threshold = ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD
-                            drawdown_threshold = ValiConfig.SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD
-
-                            if returns >= returns_threshold and drawdown <= drawdown_threshold:
-                                # Challenge period passed!
-                                bt.logging.info(
-                                    f"[ENTITY_MANAGER] Challenge period passed for {synthetic_hotkey}: "
-                                    f"returns={returns:.4f}, drawdown={drawdown:.4f}"
-                                )
-                                subaccount.challenge_period_active = False
-                                subaccount.challenge_period_passed = True
-                            else:
-                                bt.logging.debug(
-                                    f"[ENTITY_MANAGER] {synthetic_hotkey} still in challenge period: "
-                                    f"returns={returns:.4f} (need {returns_threshold}), "
-                                    f"drawdown={drawdown:.4f} (max {drawdown_threshold})"
-                                )
-                        else:
-                            # No metrics yet - subaccount hasn't started trading
-                            bt.logging.debug(
-                                f"[ENTITY_MANAGER] {synthetic_hotkey} has no performance metrics yet"
-                            )
-
-                    except Exception as e:
-                        bt.logging.warning(
-                            f"[ENTITY_MANAGER] Error checking challenge period for {synthetic_hotkey}: {e}"
-                        )
-
-            # Persist any changes to disk
-            if assessed_count > 0:
+            # Persist changes if any subaccounts were eliminated
+            if eliminated_count > 0:
                 self._write_entities_from_memory_to_disk()
 
-        bt.logging.info(f"[ENTITY_MANAGER] Challenge period assessment complete: {assessed_count} subaccounts assessed")
-        return assessed_count
+        if eliminated_count > 0:
+            bt.logging.info(
+                f"[ENTITY_MANAGER] Elimination assessment complete: "
+                f"{eliminated_count} subaccounts newly marked as eliminated"
+            )
+
+        return eliminated_count
 
     # ==================== Persistence ====================
 
@@ -514,7 +720,8 @@ class EntityManager(ValidatorBroadcastBase):
 
     def to_checkpoint_dict(self) -> dict:
         """Get entity data as a checkpoint dict for serialization."""
-        with self.entities_lock:
+        # Use master lock: iterating over all entities
+        with self._entities_lock:
             checkpoint = {}
             for entity_hotkey, entity_data in self.entities.items():
                 checkpoint[entity_hotkey] = entity_data.model_dump()
@@ -585,7 +792,8 @@ class EntityManager(ValidatorBroadcastBase):
             if not self.verify_broadcast_sender(sender_hotkey, "SubaccountRegistration"):
                 return False
 
-            with self.entities_lock:
+            # Use master lock: might create new entity, then modify it
+            with self._entities_lock:
                 # Extract data from the synapse
                 entity_hotkey = subaccount_data.get("entity_hotkey")
                 subaccount_id = subaccount_data.get("subaccount_id")
@@ -613,6 +821,8 @@ class EntityManager(ValidatorBroadcastBase):
                         registered_at_ms=TimeUtil.now_in_millis()
                     )
                     self.entities[entity_hotkey] = entity_data
+                    # Create lock for this entity
+                    self._entity_locks[entity_hotkey] = threading.RLock()
                     bt.logging.info(f"[ENTITY_MANAGER] Auto-created entity {entity_hotkey} from broadcast")
 
                 # Check if subaccount already exists (idempotent)
@@ -629,21 +839,14 @@ class EntityManager(ValidatorBroadcastBase):
                         )
                         return False
 
-                # Create new subaccount info with challenge period
+                # Create new subaccount info
                 now_ms = TimeUtil.now_in_millis()
-                challenge_period_days = ValiConfig.SUBACCOUNT_CHALLENGE_PERIOD_DAYS
-                challenge_period_end_ms = now_ms + (challenge_period_days * 24 * 60 * 60 * 1000)
-
                 subaccount_info = SubaccountInfo(
                     subaccount_id=subaccount_id,
                     subaccount_uuid=subaccount_uuid,
                     synthetic_hotkey=synthetic_hotkey,
                     status="active",
-                    created_at_ms=now_ms,
-                    challenge_period_active=True,
-                    challenge_period_passed=False,
-                    challenge_period_start_ms=now_ms,
-                    challenge_period_end_ms=challenge_period_end_ms
+                    created_at_ms=now_ms
                 )
 
                 # Add to entity
@@ -674,8 +877,10 @@ class EntityManager(ValidatorBroadcastBase):
         if not self.running_unit_tests:
             raise Exception("Clearing entities is only allowed during unit tests.")
 
-        with self.entities_lock:
+        # Use master lock: clearing entire dict
+        with self._entities_lock:
             self.entities.clear()
+            self._entity_locks.clear()
             self._write_entities_from_memory_to_disk()
 
         bt.logging.info("[ENTITY_MANAGER] Cleared all entity data")
