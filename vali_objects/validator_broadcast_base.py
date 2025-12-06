@@ -72,15 +72,18 @@ class ValidatorBroadcastBase:
 
         # Get hotkey for filtering out self from broadcasts and derive is_mothership
         if self.running_unit_tests:
+            bt.logging.info(f"[VALIDATOR_BROADCAST_BASE] Test mode - skipping wallet creation (running_unit_tests={running_unit_tests})")
             self._hotkey = None
             self.is_mothership = False
             self.wallet = None
         else:
+            bt.logging.info(f"[VALIDATOR_BROADCAST_BASE] Production mode - creating wallet (running_unit_tests={running_unit_tests}, config={config})")
             self.wallet = bt.wallet(config=config)
             self._hotkey = self.wallet.hotkey.ss58_address
             # Derive is_mothership using centralized utility
             from vali_objects.utils.vali_utils import ValiUtils
             self.is_mothership = ValiUtils.is_mothership_wallet(self.wallet)
+            bt.logging.info(f"[VALIDATOR_BROADCAST_BASE] Wallet created successfully (hotkey={self._hotkey[:8]}...)")
 
         # Create metagraph client with connect_immediately=False to defer connection
         from shared_objects.rpc.metagraph_client import MetagraphClient
