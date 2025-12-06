@@ -95,12 +95,17 @@ class EntityServer(RPCServerBase):
         """
         Single iteration of daemon work. Called by RPCServerBase daemon loop.
 
-        Runs every 5 minutes to assess challenge periods for all active subaccounts:
-        - Check if subaccounts have passed challenge period criteria (3% returns AND ≤6% drawdown)
-        - Eliminate subaccounts that have expired challenge period without passing
+        Runs every 5 minutes to:
+        - Check elimination registry and sync subaccount status
+        - Mark eliminated subaccounts in EntityManager state
         """
-        # Run challenge period assessment
-        assessed_count = self._manager.assess_challenge_periods()
+        # Run elimination assessment - sync with central elimination registry
+        elim_count = self._manager.assess_eliminations()
+
+        bt.logging.info(
+            f"[ENTITY_SERVER] Daemon iteration complete: "
+            f"{elim_count} eliminations synced"
+        )
 
     # ==================== RPC Methods (exposed to client) ====================
 
@@ -246,6 +251,42 @@ class EntityServer(RPCServerBase):
             (entity_hotkey, subaccount_id) or (None, None) if invalid
         """
         return self._manager.parse_synthetic_hotkey(synthetic_hotkey)
+
+    def validate_hotkey_for_orders_rpc(self, hotkey: str) -> dict:
+        """
+        Validate a hotkey for order placement in a single RPC call.
+
+        Consolidates:
+        - is_synthetic_hotkey() check
+        - get_subaccount_status() check
+        - get_entity_data() check
+
+        Args:
+            hotkey: The hotkey to validate
+
+        Returns:
+            dict with is_valid, error_message, hotkey_type, status
+        """
+        return self._manager.validate_hotkey_for_orders(hotkey)
+
+    def get_subaccount_dashboard_data_rpc(self, synthetic_hotkey: str) -> Optional[dict]:
+        """
+        Get comprehensive dashboard data for a subaccount (RPC method).
+
+        Aggregates data from:
+        - ChallengePeriodClient: Challenge period status
+        - DebtLedgerClient: Debt ledger data
+        - PositionManagerClient: Positions and leverage
+        - MinerStatisticsClient: Cached statistics (metrics, scores, rankings)
+        - EliminationClient: Elimination status
+
+        Args:
+            synthetic_hotkey: The synthetic hotkey ({entity_hotkey}_{subaccount_id})
+
+        Returns:
+            Dict with aggregated dashboard data, or None if subaccount not found
+        """
+        return self._manager.get_subaccount_dashboard_data(synthetic_hotkey)
 
     # ==================== Validator Broadcast RPC Methods ====================
 
