@@ -185,7 +185,7 @@ class SubtensorWeightSetter(CacheController):
         # The metagraph contains substrate reserves refreshed by SubtensorOpsManager
         checkpoint_results = DebtBasedScoring.compute_results(
             ledger_dict=filtered_debt_ledgers,
-            metagraph=self.metagraph,  # Shared metagraph with substrate reserves
+            metagraph_client=self.metagraph,  # Shared metagraph with substrate reserves
             challengeperiod_client=self._challenge_period_client,
             miner_account_client=self._miner_account_client,  # For account size queries
             current_time_ms=current_time,
