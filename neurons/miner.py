@@ -22,59 +22,104 @@ from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 
 
 class Miner:
-    def __init__(self):
+    def __init__(self, running_unit_tests=False):
+        self.running_unit_tests = running_unit_tests
         self.config = self.get_config()
         assert self.config.netuid in (8, 116), "Taoshi runs on netuid 8 (mainnet) and 116 (testnet)"
         self.is_testnet = self.config.netuid == 116
 
         self.setup_logging_directory()
-        self.wallet = bt.wallet(config=self.config)
+
+        # In tests, use a mock wallet instead of real bittensor wallet
+        if running_unit_tests:
+            self.wallet = self._create_mock_wallet()
+        else:
+            self.wallet = bt.wallet(config=self.config)
 
         # Initialize Slack notifier
-        self.slack_notifier = SlackNotifier(
-            hotkey=self.wallet.hotkey.ss58_address,
-            webhook_url=self.config.slack_webhook_url,
-            error_webhook_url=self.config.slack_error_webhook_url,
-            is_miner=True,
-            enable_metrics=True,
-            enable_daily_summary=True
-        )
+        if running_unit_tests:
+            # In tests, use a mock slack notifier to avoid network calls
+            from unittest.mock import MagicMock
+            self.slack_notifier = MagicMock()
+            self.slack_notifier.send_message = MagicMock()
+            self.slack_notifier.shutdown = MagicMock()
+        else:
+            self.slack_notifier = SlackNotifier(
+                hotkey=self.wallet.hotkey.ss58_address,
+                webhook_url=self.config.slack_webhook_url,
+                error_webhook_url=self.config.slack_error_webhook_url,
+                is_miner=True,
+                enable_metrics=True,
+                enable_daily_summary=True
+            )
 
         # Start required servers using ServerOrchestrator (fixes connection errors)
         # This ensures servers are fully started before clients try to connect
         bt.logging.info("Initializing miner servers...")
         self.orchestrator = ServerOrchestrator.get_instance()
 
-        # Create context for server initialization
-        is_mainnet = self.config.netuid == 8
-        miner_context = NeuronContext(
-            slack_notifier=self.slack_notifier,
-            config=self.config,
-            wallet=self.wallet,
-            secrets=None,
-            is_mainnet=is_mainnet,
-            is_miner=True
-        )
+        # Get secrets (empty in test mode to prevent network calls)
+        from vali_objects.utils.vali_utils import ValiUtils
+        secrets = ValiUtils.get_secrets(running_unit_tests=running_unit_tests)
 
-        # Start all servers and wait for metagraph population
-        self.orchestrator.start_neuron_servers(context=miner_context)
+        # Start servers if not already started
+        # In test mode: Use ServerMode.TESTING (prevents network calls)
+        # In production: Use start_neuron_servers with miner context
+        if running_unit_tests:
+            # Test mode: Start or reuse servers in TESTING mode
+            # Check if metagraph server is already started (indicates servers are running)
+            if 'metagraph' not in self.orchestrator._servers:
+                self.orchestrator.start_all_servers(mode=ServerMode.TESTING, secrets=secrets)
+        else:
+            # Production mode: Use standard neuron server startup
+            is_mainnet = self.config.netuid == 8
+            miner_context = NeuronContext(
+                slack_notifier=self.slack_notifier,
+                config=self.config,
+                wallet=self.wallet,
+                secrets=secrets,
+                is_mainnet=is_mainnet,
+                is_miner=True
+            )
+            self.orchestrator.start_neuron_servers(context=miner_context)
 
         # Get metagraph client (after metagraph is populated)
         self.metagraph_client = self.orchestrator.get_client('metagraph')
 
-        # Store manager reference for compatibility
+        # Store manager reference for compatibility - must exist or fail fast
         subtensor_ops_server = self.orchestrator.get_server('subtensor_ops')
         self.subtensor_ops_manager = subtensor_ops_server.manager
 
+        # Create position inspector (same in test and production, but pass running_unit_tests to prevent network calls)
+        self.position_inspector = PositionInspector(
+            self.wallet,
+            self.metagraph_client,
+            self.config,
+            running_unit_tests=running_unit_tests
+        )
+
+        # Start position inspector loop in its own thread (when requested)
+        # Thread is safe to run in test mode because running_unit_tests flag prevents network calls
+        if self.config.run_position_inspector:
+            self.position_inspector_thread = threading.Thread(
+                target=self.position_inspector.run_update_loop_sync,
+                daemon=True
+            )
+            self.position_inspector_thread.start()
+        else:
+            self.position_inspector_thread = None
+
+        # Create order placer (same in test and production, but pass running_unit_tests to prevent network calls)
         self.prop_net_order_placer = PropNetOrderPlacer(
             self.wallet,
             self.metagraph_client,
             self.config,
             self.is_testnet,
             position_inspector=self.position_inspector,
-            slack_notifier=self.slack_notifier
+            slack_notifier=self.slack_notifier,
+            running_unit_tests=running_unit_tests
         )
-        
+
         self.check_miner_registration()
         self.my_subnet_uid = self.metagraph_client.hotkeys.index(self.wallet.hotkey.ss58_address)
         bt.logging.info(f"Running miner on netuid {self.config.netuid} with uid: {self.my_subnet_uid}")
@@ -88,34 +133,40 @@ class Miner:
             level="info"
         )
 
-        # Start position inspector loop in its own thread
-        self.position_inspector = PositionInspector(self.wallet, self.metagraph_client, self.config)
-        if self.config.run_position_inspector:
-            # Create position inspector (needs metagraph_client)
-            self.position_inspector_thread = threading.Thread(target=self.position_inspector.run_update_loop_sync,
-                                                              daemon=True)
-            self.position_inspector_thread.start()
-        else:
-            self.position_inspector_thread = None
         # Dashboard
         # Start the miner data api in its own thread
-        try:
-            self.dashboard = Dashboard(self.wallet, self.metagraph_client, self.config, self.is_testnet)
-            self.dashboard_api_thread = threading.Thread(target=self.dashboard.run, daemon=True)
-            self.dashboard_api_thread.start()
-        except OSError as e:
-            bt.logging.info(
-                f"Unable to start miner dashboard with error {e}. Restart miner and specify a new port if desired.")
-            self.slack_notifier.send_message(
-                f"⚠️ Failed to start dashboard: {str(e)}",
-                level="warning"
-            )
+        if not running_unit_tests:
+            try:
+                self.dashboard = Dashboard(self.wallet, self.metagraph_client, self.config, self.is_testnet)
+                self.dashboard_api_thread = threading.Thread(target=self.dashboard.run, daemon=True)
+                self.dashboard_api_thread.start()
+            except OSError as e:
+                bt.logging.info(
+                    f"Unable to start miner dashboard with error {e}. Restart miner and specify a new port if desired.")
+                self.slack_notifier.send_message(
+                    f"⚠️ Failed to start dashboard: {str(e)}",
+                    level="warning"
+                )
+        else:
+            # In tests, skip dashboard initialization
+            self.dashboard = None
+            self.dashboard_api_thread = None
+
         # Initialize the dashboard process variable for the frontend
         self.dashboard_frontend_process = None
 
     def setup_logging_directory(self):
         if not os.path.exists(self.config.full_path):
             os.makedirs(self.config.full_path, exist_ok=True)
+
+    def _create_mock_wallet(self):
+        """Create a mock wallet for unit tests"""
+        from unittest.mock import MagicMock
+        mock_wallet = MagicMock()
+        mock_wallet.hotkey.ss58_address = "test_miner_hotkey"
+        mock_wallet.name = "test_wallet"
+        mock_wallet.hotkey_str = "test_hotkey"
+        return mock_wallet
 
     def check_miner_registration(self):
         if self.wallet.hotkey.ss58_address not in self.metagraph_client.hotkeys:
@@ -151,7 +202,8 @@ class Miner:
                     time_of_signal_file = os.path.getmtime(f_name)
                     if trade_pair_id not in signals_dict or signals_dict[trade_pair_id][2] < time_of_signal_file:
                         signals_dict[trade_pair_id] = (signal, f_name, time_of_signal_file)
-                        files_to_delete.append(f_name)
+                    # Always add to files_to_delete, even if this is a duplicate (older) signal
+                    files_to_delete.append(f_name)
             except json.JSONDecodeError as e:
                 bt.logging.error(f"Error decoding JSON from file {f_name}: {e}")
 
