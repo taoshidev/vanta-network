@@ -712,26 +712,8 @@ class ServerOrchestrator:
             elif server_name == 'metagraph':
                 spawn_kwargs['start_daemon'] = False  # No daemon for metagraph
 
-        # For TESTING mode, create a minimal test config if not provided (for entity, contract, asset_selection, weight_calculator)
-        if mode == ServerMode.TESTING and server_name in ('contract', 'asset_selection', 'entity', 'weight_calculator'):
-            if 'config' not in spawn_kwargs or spawn_kwargs['config'] is None:
-                # Create minimal test config with required attributes
-                from types import SimpleNamespace
-                test_config = SimpleNamespace(
-                    netuid=116,
-                    subtensor=SimpleNamespace(network="test")
-                )
-                spawn_kwargs['config'] = test_config
-                bt.logging.debug(f"[{server_name}] Created test config with netuid=116, network=test for TESTING mode")
-
-            # weight_calculator needs additional parameters in TESTING mode
-            if server_name == 'weight_calculator':
-                if 'hotkey' not in spawn_kwargs or spawn_kwargs['hotkey'] is None:
-                    spawn_kwargs['hotkey'] = "test_validator_hotkey"
-                    bt.logging.debug("[weight_calculator] Created test hotkey for TESTING mode")
-                if 'is_mainnet' not in spawn_kwargs:
-                    spawn_kwargs['is_mainnet'] = False
-                    bt.logging.debug("[weight_calculator] Set is_mainnet=False for TESTING mode")
+        # Servers now create their own mock configs/wallets when running_unit_tests=True
+        # No need for orchestrator to create them here
 
         # Legacy support: Add secrets for servers that need them (if not already added via context)
         if server_name == 'live_price_fetcher' and 'secrets' not in spawn_kwargs:
@@ -791,29 +773,8 @@ class ServerOrchestrator:
                 if context.wallet:
                     spawn_kwargs['wallet'] = context.wallet
 
-            # TESTING MODE: Provide minimal mock config and None wallet if not provided by context
-            # This prevents SubtensorOpsServer from attempting actual network calls
-            if mode == ServerMode.TESTING:
-                if 'config' not in spawn_kwargs or spawn_kwargs['config'] is None:
-                    # Create minimal mock config for testing
-                    from types import SimpleNamespace
-                    spawn_kwargs['config'] = SimpleNamespace(
-                        netuid=116,  # testnet
-                        subtensor=SimpleNamespace(network="test"),
-                        wallet=SimpleNamespace(hotkey="test_hotkey")
-                    )
-                    bt.logging.debug("[subtensor_ops] Created mock config for TESTING mode")
-
-                if 'wallet' not in spawn_kwargs or spawn_kwargs['wallet'] is None:
-                    # Create minimal mock wallet for testing (SubtensorOpsServer checks running_unit_tests flag)
-                    # The actual network operations are bypassed when running_unit_tests=True
-                    from types import SimpleNamespace
-                    spawn_kwargs['wallet'] = SimpleNamespace(
-                        hotkey=SimpleNamespace(ss58_address="test_hotkey_address"),
-                        coldkey=SimpleNamespace(ss58_address="test_coldkey_address"),
-                        name="test_wallet"
-                    )
-                    bt.logging.debug("[subtensor_ops] Created mock wallet for TESTING mode")
+            # SubtensorOpsServer now creates its own mock config/wallet when running_unit_tests=True
+            # No need for orchestrator to create them here
 
             # Determine if miner or validator (will be False here since miners handled above)
             spawn_kwargs['is_miner'] = False

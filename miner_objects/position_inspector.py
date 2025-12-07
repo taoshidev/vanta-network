@@ -16,10 +16,11 @@ class PositionInspector:
     INITIAL_RETRY_DELAY = 3  # seconds
     UPDATE_INTERVAL_S = 5 * 60  # 5 minutes
 
-    def __init__(self, wallet, metagraph_client, config):
+    def __init__(self, wallet, metagraph_client, config, running_unit_tests=False):
         self.wallet = wallet
         self._metagraph_client = metagraph_client
         self.config = config
+        self.running_unit_tests = running_unit_tests
         self.last_update_time = 0
         self.recently_acked_validators = []
         self.stop_requested = False  # Flag to control the loop
@@ -57,12 +58,16 @@ class PositionInspector:
                     and n.axon_info.ip != MinerConfig.AXON_NO_IP]
 
     async def query_positions(self, validators, hotkey_to_positions):
+        # In test mode, skip network calls
+        if self.running_unit_tests:
+            return []
+
         remaining_validators_to_query = [v for v in validators if v.hotkey not in hotkey_to_positions]
-        
+
         # Use async context manager for automatic cleanup
         async with bt.dendrite(wallet=self.wallet) as dendrite:
             responses = await dendrite.aquery(remaining_validators_to_query, GetPositions(version=1), deserialize=True)
-        
+
         hotkey_to_v_trust = {neuron.hotkey: neuron.validator_trust for neuron in self._metagraph_client.get_neurons()}
         ret = []
         for validator, response in zip(remaining_validators_to_query, responses):
@@ -147,6 +152,10 @@ class PositionInspector:
         This method may be used directly in your own logic to attempt to "fix" validator positions.
         Note: The rate limiter on validators will prevent repeated calls from succeeding if they are too frequent.
         """
+        # In test mode, skip network operations
+        if self.running_unit_tests:
+            return
+
         if not self.refresh_allowed():
             return
 

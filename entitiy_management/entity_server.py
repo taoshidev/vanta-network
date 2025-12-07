@@ -54,6 +54,11 @@ class EntityServer(RPCServerBase):
         """
         self.running_unit_tests = running_unit_tests
 
+        # Create mock config if running tests and config not provided
+        if running_unit_tests:
+            from shared_objects.rpc.test_mock_factory import TestMockFactory
+            config = TestMockFactory.create_mock_config_if_needed(config, netuid=116, network="test")
+
         # Create the actual EntityManager FIRST, before RPCServerBase.__init__
         # This ensures _manager exists before RPC server starts accepting calls (if start_server=True)
         # CRITICAL: Prevents race condition where RPC calls fail with AttributeError during initialization

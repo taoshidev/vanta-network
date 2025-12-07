@@ -34,8 +34,8 @@ class SubtensorOpsServer(RPCServerBase):
 
     def __init__(
         self,
-        config,
-        wallet,
+        config=None,
+        wallet=None,
         is_miner=False,
         slack_notifier=None,
         running_unit_tests=False,
@@ -43,6 +43,22 @@ class SubtensorOpsServer(RPCServerBase):
         start_daemon=False,
         **kwargs
     ):
+        # Create mock config/wallet if running tests and not provided
+        if running_unit_tests:
+            from shared_objects.rpc.test_mock_factory import TestMockFactory
+            config = TestMockFactory.create_mock_config_if_needed(
+                config,
+                netuid=116,
+                network="test",
+                wallet=TestMockFactory.create_mock_wallet()  # Add wallet attr to config
+            )
+            wallet = TestMockFactory.create_mock_wallet_if_needed(
+                wallet,
+                hotkey="test_hotkey_address",
+                coldkey="test_coldkey_address",
+                name="test_wallet"
+            )
+
         # Daemon interval based on node type
         daemon_interval_s = (
             ValiConfig.METAGRAPH_UPDATE_REFRESH_TIME_MINER_MS / 1000.0
