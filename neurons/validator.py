@@ -10,7 +10,7 @@ import signal
 
 from vali_objects.enums.misc import SynapseMethod
 from vanta_api.api_manager import APIManager
-from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ValidatorContext
+from shared_objects.rpc.server_orchestrator import ServerOrchestrator, NeuronContext
 
 
 import template
@@ -156,8 +156,7 @@ class Validator(ValidatorBase):
         # ============================================================================
         # SERVER ORCHESTRATOR - Centralized server lifecycle management
         # ============================================================================
-        # Create validator context with all dependencies
-        context = ValidatorContext(
+        context = NeuronContext(
             slack_notifier=self.slack_notifier,
             config=self.config,
             wallet=self.wallet,
@@ -165,12 +164,12 @@ class Validator(ValidatorBase):
             is_mainnet=self.is_mainnet
         )
 
-        # Start all servers (but defer daemon/pre-run setup until after SubtensorOpsManager)
+        # Start all servers AND wait for metagraph (blocks until ready)
         orchestrator = ServerOrchestrator.get_instance()
         orchestrator.start_validator_servers(context)
-        bt.logging.success("[INIT] All servers started via ServerOrchestrator (daemons deferred)")
+        bt.logging.success("[INIT] All servers started, metagraph populated")
 
-        # Get clients from orchestrator (cached, fast)
+        # Get clients from orchestrator
         self.metagraph_client = orchestrator.get_client('metagraph')
         self.price_fetcher_client = orchestrator.get_client('live_price_fetcher')
         self.position_manager_client = orchestrator.get_client('position_manager')
@@ -182,27 +181,15 @@ class Validator(ValidatorBase):
         self.debt_ledger_client = orchestrator.get_client('debt_ledger')
         self.entity_client = orchestrator.get_client('entity')
 
-        # Create SubtensorOpsManager with simple parameters
-        # This will run in a thread in the main process
-        # SubtensorOpsManager now exposes RPC server for weight setting and broadcasting (validators only)
-        self.subtensor_ops_manager = SubtensorOpsManager(
-            self.config, self.wallet.hotkey.ss58_address,
-            False,
-            slack_notifier=self.slack_notifier
-        )
+        # Get subtensor from SubtensorOpsServer
+        subtensor_ops_server = orchestrator.get_server('subtensor_ops')
+        self.subtensor = subtensor_ops_server.get_subtensor()
+        self.subtensor_ops_manager = subtensor_ops_server.manager  # For blacklist_fn
 
-        # Start the subtensor ops manager and wait for initial population.
-        # CRITICAL: This must complete before daemons start since they depend on metagraph data.
-        # Weight setting and broadcasting also need subtensor_ops_manager to be running to receive RPCs.
-        self.subtensor_ops_thread = self.subtensor_ops_manager.start_and_wait_for_initial_update(
-            max_wait_time=60,
-            slack_notifier=self.slack_notifier
-        )
-        bt.logging.success("[INIT] SubtensorOpsManager started and populated")
+        # Run pre-run setup (safe - metagraph already populated)
         orchestrator.call_pre_run_setup(perform_order_corrections=True)
 
-        # Now start server daemons and run pre-run setup (safe now that metagraph is populated)
-        # Cache warmup happens automatically inside start_server_daemons() to eliminate race conditions
+        # Start remaining server daemons
         orchestrator.start_server_daemons([
             'perf_ledger',
             'challenge_period',
@@ -216,7 +203,7 @@ class Validator(ValidatorBase):
             'miner_statistics',
             'weight_calculator'
         ])
-        bt.logging.success("[INIT] Server daemons started, caches warmed, and pre-run setup completed")
+        bt.logging.success("[INIT] All daemons started, caches warmed")
         # ============================================================================
 
         # Create PositionSyncer (not a server, runs in main process)
@@ -339,9 +326,7 @@ class Validator(ValidatorBase):
             )
         bt.logging.warning("Stopping axon...")
         self.axon.stop()
-        bt.logging.warning("Stopping subtensor ops manager...")
-        self.subtensor_ops_thread.join()
-        # All RPC servers shut down automatically via ShutdownCoordinator:
+        # SubtensorOpsServer and all RPC servers shut down automatically via ShutdownCoordinator:
         if self.api_thread:
             bt.logging.warning("Stopping API manager...")
             self.api_thread.join()
