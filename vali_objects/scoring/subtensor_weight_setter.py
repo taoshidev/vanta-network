@@ -29,7 +29,7 @@ class SubtensorWeightSetter(CacheController):
 
         self._position_client = PositionManagerClient(
             port=ValiConfig.RPC_POSITIONMANAGER_PORT,
-            connect_immediately=not running_unit_tests
+            connect_immediately=False
         )
         self._challenge_period_client = ChallengePeriodClient(
             connection_mode=connection_mode
@@ -54,7 +54,7 @@ class SubtensorWeightSetter(CacheController):
         # In backtesting mode, delay connection until first use
         self._debt_ledger_client = DebtLedgerClient(
             connection_mode=connection_mode,
-            connect_immediately=not is_backtesting
+            connect_immediately=False
         )
         self.is_mainnet = is_mainnet
 
@@ -90,7 +90,7 @@ class SubtensorWeightSetter(CacheController):
             current_time = TimeUtil.now_in_millis()
 
         # Collect metagraph hotkeys to ensure we are only setting weights for miners in the metagraph
-        metagraph_hotkeys = list(self.metagraph.get_hotkeys())
+        metagraph_hotkeys = list(self._metagraph_client.get_hotkeys())
         metagraph_hotkeys_set = set(metagraph_hotkeys)
         hotkey_to_idx = {hotkey: idx for idx, hotkey in enumerate(metagraph_hotkeys)}
 
@@ -185,7 +185,7 @@ class SubtensorWeightSetter(CacheController):
         # The metagraph contains substrate reserves refreshed by SubtensorOpsManager
         checkpoint_results = DebtBasedScoring.compute_results(
             ledger_dict=filtered_debt_ledgers,
-            metagraph_client=self.metagraph,  # Shared metagraph with substrate reserves
+            metagraph_client=self._metagraph_client,  # Shared metagraph with substrate reserves
             challengeperiod_client=self._challenge_period_client,
             miner_account_client=self._miner_account_client,  # For account size queries
             current_time_ms=current_time,

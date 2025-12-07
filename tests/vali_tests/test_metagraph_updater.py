@@ -180,11 +180,11 @@ class TestSubtensorOpsManager(TestBase):
         mock_wallet.hotkey.ss58_address = hotkey
         return mock_wallet
 
-    def _create_mock_position_inspector(self):
-        """Create a mock position inspector for miner tests."""
-        mock_inspector = Mock()
-        mock_inspector.get_recently_acked_validators = Mock(return_value=[])
-        return mock_inspector
+    def _create_mock_position_manager(self):
+        """Create a mock position manager for miner tests."""
+        mock_manager = Mock()
+        mock_manager.get_recently_acked_validators = Mock(return_value=[])
+        return mock_manager
 
     # ==================== Validator Mode Tests ====================
 
@@ -336,14 +336,14 @@ class TestSubtensorOpsManager(TestBase):
         """Test SubtensorOpsManager initialization in miner mode."""
         # Setup test data
         config = self._create_mock_config()
-        mock_position_inspector = self._create_mock_position_inspector()
+        mock_position_manager = self._create_mock_position_manager()
 
         # Create miner SubtensorOpsManager (mocking handled internally)
         updater = SubtensorOpsManager(
             config=config,
             hotkey=self.TEST_MINER_HOTKEY,
             is_miner=True,
-            position_inspector=mock_position_inspector,
+            position_manager=mock_position_manager,
             running_unit_tests=True
         )
 
@@ -364,14 +364,14 @@ class TestSubtensorOpsManager(TestBase):
         # Setup test data
         hotkeys = [self.TEST_VALIDATOR_HOTKEY, self.TEST_MINER_HOTKEY]
         config = self._create_mock_config()
-        mock_position_inspector = self._create_mock_position_inspector()
+        mock_position_manager = self._create_mock_position_manager()
 
         # Create miner SubtensorOpsManager (mocking handled internally)
         updater = SubtensorOpsManager(
             config=config,
             hotkey=self.TEST_MINER_HOTKEY,
             is_miner=True,
-            position_inspector=mock_position_inspector,
+            position_manager=mock_position_manager,
             running_unit_tests=True
         )
         updater.set_mock_metagraph_data(hotkeys)
@@ -390,14 +390,14 @@ class TestSubtensorOpsManager(TestBase):
         # Setup test data
         initial_hotkeys = [self.TEST_VALIDATOR_HOTKEY, self.TEST_MINER_HOTKEY]
         config = self._create_mock_config()
-        mock_position_inspector = self._create_mock_position_inspector()
+        mock_position_manager = self._create_mock_position_manager()
 
         # Create miner SubtensorOpsManager (mocking handled internally)
         updater = SubtensorOpsManager(
             config=config,
             hotkey=self.TEST_MINER_HOTKEY,
             is_miner=True,
-            position_inspector=mock_position_inspector,
+            position_manager=mock_position_manager,
             running_unit_tests=True
         )
         updater.set_mock_metagraph_data(initial_hotkeys)
@@ -418,7 +418,7 @@ class TestSubtensorOpsManager(TestBase):
         # Setup test data with different validator_trust values
         hotkeys = [self.TEST_VALIDATOR_HOTKEY, self.TEST_MINER_HOTKEY]
         config = self._create_mock_config()
-        mock_position_inspector = self._create_mock_position_inspector()
+        mock_position_manager = self._create_mock_position_manager()
 
         # Create neurons with different validator_trust values
         validator_neuron = self._create_mock_neuron(0, self.TEST_VALIDATOR_HOTKEY, incentive=0.1, validator_trust=0.8)
@@ -430,7 +430,7 @@ class TestSubtensorOpsManager(TestBase):
             config=config,
             hotkey=self.TEST_MINER_HOTKEY,
             is_miner=True,
-            position_inspector=mock_position_inspector,
+            position_manager=mock_position_manager,
             running_unit_tests=True
         )
         updater.set_mock_metagraph_data(hotkeys, neurons=neurons)
@@ -449,14 +449,14 @@ class TestSubtensorOpsManager(TestBase):
         # Setup test data with many hotkeys
         initial_hotkeys = [f"5Hotkey{i:04d}" for i in range(100)]
         config = self._create_mock_config()
-        mock_position_inspector = self._create_mock_position_inspector()
+        mock_position_manager = self._create_mock_position_manager()
 
         # Create miner SubtensorOpsManager (mocking handled internally)
         updater = SubtensorOpsManager(
             config=config,
             hotkey=self.TEST_MINER_HOTKEY,
             is_miner=True,
-            position_inspector=mock_position_inspector,
+            position_manager=mock_position_manager,
             running_unit_tests=True
         )
         updater.set_mock_metagraph_data(initial_hotkeys)
@@ -482,14 +482,14 @@ class TestSubtensorOpsManager(TestBase):
         # Setup test data
         initial_hotkeys = [self.TEST_VALIDATOR_HOTKEY, self.TEST_MINER_HOTKEY]
         config = self._create_mock_config()
-        mock_position_inspector = self._create_mock_position_inspector()
+        mock_position_manager = self._create_mock_position_manager()
 
         # Create miner SubtensorOpsManager (mocking handled internally)
         updater = SubtensorOpsManager(
             config=config,
             hotkey=self.TEST_MINER_HOTKEY,
             is_miner=True,
-            position_inspector=mock_position_inspector,
+            position_manager=mock_position_manager,
             running_unit_tests=True
         )
         updater.set_mock_metagraph_data(initial_hotkeys)
@@ -515,14 +515,14 @@ class TestSubtensorOpsManager(TestBase):
         # Setup test data with round-robin enabled
         hotkeys = [self.TEST_VALIDATOR_HOTKEY, self.TEST_MINER_HOTKEY]
         config = self._create_mock_config(network="finney")  # Enable round-robin
-        mock_position_inspector = self._create_mock_position_inspector()
+        mock_position_manager = self._create_mock_position_manager()
 
         # Create miner SubtensorOpsManager (mocking handled internally)
         updater = SubtensorOpsManager(
             config=config,
             hotkey=self.TEST_MINER_HOTKEY,
             is_miner=True,
-            position_inspector=mock_position_inspector,
+            position_manager=mock_position_manager,
             running_unit_tests=True
         )
         updater.set_mock_metagraph_data(hotkeys)
