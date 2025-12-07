@@ -94,27 +94,36 @@ class WeightCalculatorServer(RPCServerBase, CacheController):
         # Create own CommonDataClient (forward compatibility - no parameter passing)
         from shared_objects.rpc.common_data_client import CommonDataClient
         self._common_data_client = CommonDataClient(
-            running_unit_tests=running_unit_tests
+            running_unit_tests=running_unit_tests,
+            connect_immediately=False
         )
 
         # Create own PositionManagerClient (forward compatibility - no parameter passing)
         from vali_objects.position_management.position_manager_client import PositionManagerClient
         self._position_client = PositionManagerClient(
-            port=ValiConfig.RPC_POSITIONMANAGER_PORT, running_unit_tests=running_unit_tests
+            port=ValiConfig.RPC_POSITIONMANAGER_PORT,
+            running_unit_tests=running_unit_tests,
+            connect_immediately=False
         )
 
         # Create own ChallengePeriodClient (forward compatibility - no parameter passing)
         from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
-        self._challengeperiod_client = ChallengePeriodClient(running_unit_tests=running_unit_tests
+        self._challengeperiod_client = ChallengePeriodClient(
+            running_unit_tests=running_unit_tests
         )
 
         # Create own ContractClient (forward compatibility - no parameter passing)
         from vali_objects.contract.contract_client import ContractClient
-        self._contract_client = ContractClient(running_unit_tests=running_unit_tests)
+        self._contract_client = ContractClient(
+            running_unit_tests=running_unit_tests,
+            connect_immediately=False
+        )
 
         # Create own DebtLedgerClient (forward compatibility - no parameter passing)
         from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_client import DebtLedgerClient
-        self._debt_ledger_client = DebtLedgerClient(running_unit_tests=running_unit_tests
+        self._debt_ledger_client = DebtLedgerClient(
+            running_unit_tests=running_unit_tests,
+            connect_immediately=False
         )
 
         # Create client for weight setting RPC

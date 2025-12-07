@@ -8,7 +8,6 @@ import asyncio
 
 from dataclasses import dataclass
 from setproctitle import setproctitle
-import template.protocol
 
 from vali_objects.vali_config import ValiConfig, TradePair
 from shared_objects.cache_controller import CacheController
@@ -147,7 +146,7 @@ class SubtensorOpsManager(CacheController):
     - Weight setting via RPC
     - Validator broadcasting via RPC
     """
-    def __init__(self, config, hotkey, is_miner, position_inspector=None, position_manager=None,
+    def __init__(self, config, hotkey, is_miner, position_manager=None,
                  slack_notifier=None, running_unit_tests=False):
         super().__init__()
         self.is_miner = is_miner
@@ -178,7 +177,6 @@ class SubtensorOpsManager(CacheController):
             from vali_objects.price_fetcher import LivePriceFetcherClient
             self._live_price_client = LivePriceFetcherClient(running_unit_tests=running_unit_tests)
         else:
-            assert position_inspector is not None, "Position inspector must be provided for miners"
             self._live_price_client = None
         # Parse out the arg for subtensor.network. If it is "finney" or "subvortex", we will roundrobin on metagraph failure
         self.round_robin_networks = ['finney', 'subvortex']
@@ -196,7 +194,6 @@ class SubtensorOpsManager(CacheController):
         self.is_miner = is_miner
         self.interval_wait_time_ms = ValiConfig.METAGRAPH_UPDATE_REFRESH_TIME_MINER_MS if self.is_miner else \
             ValiConfig.METAGRAPH_UPDATE_REFRESH_TIME_VALIDATOR_MS
-        self.position_inspector = position_inspector
         self.position_manager = position_manager
         self.slack_notifier = slack_notifier  # Add slack notifier for error reporting
 
@@ -800,37 +797,6 @@ class SubtensorOpsManager(CacheController):
         
         self.slack_notifier.send_message(message, level="info")
 
-    def estimate_number_of_miners(self):
-        # Filter out expired miners
-        self.likely_miners = {k: v for k, v in self.likely_miners.items() if not self._is_expired(v)}
-        hotkeys_with_incentive = {self.hotkey} if self.is_miner else set()
-        for neuron in self._metagraph_client.get_neurons():
-            if neuron.incentive > 0:
-                hotkeys_with_incentive.add(neuron.hotkey)
-
-        return len(hotkeys_with_incentive.union(set(self.likely_miners.keys())))
-
-    def update_likely_validators(self, hotkeys):
-        current_time = self._current_timestamp()
-        for h in hotkeys:
-            self.likely_validators[h] = current_time
-
-    def update_likely_miners(self, hotkeys):
-        current_time = self._current_timestamp()
-        for h in hotkeys:
-            self.likely_miners[h] = current_time
-
-    def log_metagraph_state(self):
-        n_validators = self.estimate_number_of_validators()
-        n_miners = self.estimate_number_of_miners()
-        if self.is_miner:
-            n_miners = max(1, n_miners)
-        else:
-            n_validators = max(1, n_validators)
-
-        bt.logging.info(
-            f"metagraph state (approximation): {n_validators} active validators, {n_miners} active miners, hotkeys: "
-            f"{len(self._metagraph_client.get_hotkeys())}")
 
     def sync_lists(self, shared_list, updated_list, brute_force=False):
         if brute_force:
@@ -1012,18 +978,6 @@ class SubtensorOpsManager(CacheController):
         if self.subtensor is None:
             raise RuntimeError("Subtensor connection not available - cannot sync metagraph")
 
-        recently_acked_miners = None
-        recently_acked_validators = None
-        if self.is_miner:
-            recently_acked_validators = self.position_inspector.get_recently_acked_validators()
-        else:
-            # REMOVED: Expensive filesystem scan (127s) for unused log_metagraph_state() feature
-            # if self.position_manager:
-            #     recently_acked_miners = self.position_manager.get_recently_updated_miner_hotkeys()
-            # else:
-            #     recently_acked_miners = []
-            recently_acked_miners = []
-
         hotkeys_before = set(self._metagraph_client.get_hotkeys())
 
         # Synchronize with weight setting operations to prevent WebSocket concurrency errors
@@ -1083,11 +1037,6 @@ class SubtensorOpsManager(CacheController):
         # Update local hotkeys cache atomically (no lock needed - set assignment is atomic)
         self._hotkeys_cache = set(metagraph_clone.hotkeys)
 
-        if recently_acked_miners:
-            self.update_likely_miners(recently_acked_miners)
-        if recently_acked_validators:
-            self.update_likely_validators(recently_acked_validators)
-
         # self.log_metagraph_state()
         self.set_last_update_time()
 
@@ -1095,19 +1044,11 @@ class SubtensorOpsManager(CacheController):
 # len([x for x in self.metagraph.axons if '0.0.0.0' not in x.ip]), len([x for x in self.metagraph.neurons if '0.0.0.0' not in x.axon_info.for ip])
 if __name__ == "__main__":
     from neurons.miner import Miner
-    from miner_objects.position_inspector import PositionInspector
-    from shared_objects.rpc.metagraph_client import MetagraphClient
 
     config = Miner.get_config()  # Must run this via commandline to populate correctly
 
-    # Create MetagraphClient (not raw metagraph)
-    metagraph_client = MetagraphClient()
-
-    # Create PositionInspector with client
-    position_inspector = PositionInspector(bt.wallet(config=config), metagraph_client, config)
-
-    # Create SubtensorOpsManager
-    mgu = SubtensorOpsManager(config, config.wallet.hotkey, is_miner=True, position_inspector=position_inspector)
+    # Create SubtensorOpsManager (no position_inspector needed!)
+    mgu = SubtensorOpsManager(config, config.wallet.hotkey, is_miner=True)
 
     while True:
         mgu.update_metagraph()
