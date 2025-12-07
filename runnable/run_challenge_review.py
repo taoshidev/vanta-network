@@ -2,7 +2,7 @@ from vali_objects.utils.elimination.elimination_server import EliminationServer
 from vali_objects.utils.logger_utils import LoggerUtils
 from vali_objects.plagiarism.plagiarism_detector import PlagiarismDetector
 from vali_objects.position_management.position_manager import PositionManager
-from vali_objects.scoring.subtensor_weight_setter import SubtensorWeightSetter
+from vali_objects.scoring.weight_calculator_manager import WeightCalculatorManager
 from time_util.time_util import TimeUtil
 from vali_objects.challenge_period import ChallengePeriodManager
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_manager import PerfLedgerManager
@@ -25,11 +25,11 @@ if __name__ == "__main__":
     elimination_manager.challengeperiod_manager = challengeperiod_manager
     challengeperiod_manager.position_manager = position_manager
     perf_ledger_manager.position_manager = position_manager
-    subtensor_weight_setter = SubtensorWeightSetter(
-        config=None,
-        metagraph=None,
+    # Note: This script uses legacy API and may need updates for RPC architecture
+    subtensor_weight_setter = WeightCalculatorManager(
         running_unit_tests=False,
-        position_manager=position_manager,
+        is_backtesting=True,
+        is_mainnet=False
     )
     plagiarism_detector = PlagiarismDetector(None, None, position_manager=position_manager)
 

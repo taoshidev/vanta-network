@@ -65,6 +65,11 @@ class AssetSelectionServer(RPCServerBase):
             start_daemon: Whether to start daemon immediately (typically False for asset selection)
             connection_mode: RPCConnectionMode.LOCAL for tests, RPCConnectionMode.RPC for production
         """
+        # Create mock config if running tests and config not provided
+        if running_unit_tests:
+            from shared_objects.rpc.test_mock_factory import TestMockFactory
+            config = TestMockFactory.create_mock_config_if_needed(config, netuid=116, network="test")
+
         self._config = config
         self.running_unit_tests = running_unit_tests
 

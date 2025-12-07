@@ -7,6 +7,8 @@ This server runs in its own process and handles:
 - Computing miner weights using debt-based scoring
 - Sending weight setting requests to SubtensorOpsManager via RPC
 
+All business logic is delegated to WeightCalculatorManager.
+
 Usage:
     # Validator spawns the server at startup
     from vali_objects.scoring.weight_calculator_server import start_weight_calculator_server
@@ -20,7 +22,6 @@ Usage:
 """
 import time
 import traceback
-import threading
 from typing import List, Tuple
 
 from setproctitle import setproctitle
@@ -31,28 +32,23 @@ from shared_objects.cache_controller import CacheController
 from shared_objects.error_utils import ErrorUtils
 from shared_objects.rpc.rpc_server_base import RPCServerBase
 from time_util.time_util import TimeUtil
-from vali_objects.vali_config import ValiConfig
-from vali_objects.scoring.debt_based_scoring import DebtBasedScoring
-from vali_objects.enums.miner_bucket_enum import MinerBucket
-from shared_objects.slack_notifier import SlackNotifier
+from vali_objects.vali_config import ValiConfig, RPCConnectionMode
+from vali_objects.scoring.weight_calculator_manager import WeightCalculatorManager
 from shared_objects.rpc.shutdown_coordinator import ShutdownCoordinator
-
-
 
 
 class WeightCalculatorServer(RPCServerBase, CacheController):
     """
     RPC server for weight calculation and setting.
 
+    Wraps WeightCalculatorManager and exposes its methods via RPC.
+    All public methods ending in _rpc are exposed via RPC to WeightCalculatorClient.
+
+    This follows the same pattern as ChallengePeriodServer.
+
     Inherits from:
     - RPCServerBase: Provides RPC server lifecycle, daemon management, watchdog
     - CacheController: Provides cache file management utilities
-
-    Architecture:
-    - Runs in its own process
-    - Creates RPC clients to communicate with other services
-    - Computes weights using debt-based scoring
-    - Sends weight setting requests to SubtensorOpsManager via RPC
     """
     service_name = ValiConfig.RPC_WEIGHT_CALCULATOR_SERVICE_NAME
     service_port = ValiConfig.RPC_WEIGHT_CALCULATOR_PORT
@@ -66,20 +62,67 @@ class WeightCalculatorServer(RPCServerBase, CacheController):
         hotkey=None,
         is_mainnet=True,
         start_server=True,
-        start_daemon=True
+        start_daemon=True,
+        connection_mode: RPCConnectionMode = RPCConnectionMode.RPC
     ):
+        """
+        Initialize WeightCalculatorServer.
+
+        Args:
+            running_unit_tests: Whether running in test mode
+            is_backtesting: Whether running in backtesting mode
+            slack_notifier: Slack notifier for error reporting
+            config: Validator config (for slack webhook URLs)
+            hotkey: Validator hotkey
+            is_mainnet: Whether running on mainnet
+            start_server: Whether to start RPC server immediately
+            start_daemon: Whether to start daemon immediately
+            connection_mode: RPCConnectionMode.LOCAL for tests, RPCConnectionMode.RPC for production
+        """
+        self.running_unit_tests = running_unit_tests
+        self.connection_mode = connection_mode
+
+        # Create mock config/hotkey if running tests and not provided
+        if running_unit_tests:
+            from shared_objects.rpc.test_mock_factory import TestMockFactory
+            config = TestMockFactory.create_mock_config_if_needed(config, netuid=116, network="test")
+            hotkey = TestMockFactory.create_mock_hotkey_if_needed(hotkey, default_hotkey="test_validator_hotkey")
+            if is_mainnet is None:
+                is_mainnet = False
+
+        # Always create in-process - constructor NEVER spawns
+        bt.logging.info("[WC_SERVER] Creating WeightCalculatorServer in-process")
+
         # Initialize CacheController first (for cache file setup)
-        CacheController.__init__(self, running_unit_tests=running_unit_tests, is_backtesting=is_backtesting)
+        CacheController.__init__(
+            self,
+            running_unit_tests=running_unit_tests,
+            is_backtesting=is_backtesting,
+            connection_mode=connection_mode
+        )
 
-        # Store config for slack notifier creation
-        self.config = config
-        self.hotkey = hotkey
-        self.is_mainnet = is_mainnet
-        self.subnet_version = 200
+        # Create the actual WeightCalculatorManager FIRST, before RPCServerBase.__init__
+        # This ensures _manager exists before RPC server starts accepting calls (if start_server=True)
+        # CRITICAL: Prevents race condition where RPC calls fail with AttributeError during initialization
+        self._manager = WeightCalculatorManager(
+            is_backtesting=is_backtesting,
+            running_unit_tests=running_unit_tests,
+            connection_mode=connection_mode,
+            config=config,
+            hotkey=hotkey,
+            is_mainnet=is_mainnet,
+            slack_notifier=slack_notifier
+        )
 
-        # Initialize RPCServerBase (handles RPC server and daemon lifecycle)
+        bt.logging.info("[WC_SERVER] WeightCalculatorManager initialized")
+
+        # Initialize RPCServerBase (may start RPC server immediately if start_server=True)
+        # At this point, self._manager exists, so RPC calls won't fail
         # daemon_interval_s: 5 minutes (weight calculation frequency)
         # hang_timeout_s: 10 minutes (accounts for 5min sleep in retry logic + processing time)
+        daemon_interval_s = ValiConfig.SET_WEIGHT_REFRESH_TIME_MS / 1000.0  # 5 minutes (300s)
+        hang_timeout_s = 600.0  # 10 minutes (accounts for time.sleep(300) in retry logic + processing)
+
         RPCServerBase.__init__(
             self,
             service_name=ValiConfig.RPC_WEIGHT_CALCULATOR_SERVICE_NAME,
@@ -87,59 +130,10 @@ class WeightCalculatorServer(RPCServerBase, CacheController):
             slack_notifier=slack_notifier,
             start_server=start_server,
             start_daemon=False,  # We'll start daemon after full initialization
-            daemon_interval_s=ValiConfig.SET_WEIGHT_REFRESH_TIME_MS / 1000.0,  # 5 minutes (300s)
-            hang_timeout_s=600.0  # 10 minutes (accounts for time.sleep(300) in retry logic + processing)
+            daemon_interval_s=daemon_interval_s,
+            hang_timeout_s=hang_timeout_s,
+            connection_mode=connection_mode
         )
-
-        # Create own CommonDataClient (forward compatibility - no parameter passing)
-        from shared_objects.rpc.common_data_client import CommonDataClient
-        self._common_data_client = CommonDataClient(
-            running_unit_tests=running_unit_tests,
-            connect_immediately=False
-        )
-
-        # Create own PositionManagerClient (forward compatibility - no parameter passing)
-        from vali_objects.position_management.position_manager_client import PositionManagerClient
-        self._position_client = PositionManagerClient(
-            port=ValiConfig.RPC_POSITIONMANAGER_PORT,
-            running_unit_tests=running_unit_tests,
-            connect_immediately=False
-        )
-
-        # Create own ChallengePeriodClient (forward compatibility - no parameter passing)
-        from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
-        self._challengeperiod_client = ChallengePeriodClient(
-            running_unit_tests=running_unit_tests
-        )
-
-        # Create own ContractClient (forward compatibility - no parameter passing)
-        from vali_objects.contract.contract_client import ContractClient
-        self._contract_client = ContractClient(
-            running_unit_tests=running_unit_tests,
-            connect_immediately=False
-        )
-
-        # Create own DebtLedgerClient (forward compatibility - no parameter passing)
-        from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_client import DebtLedgerClient
-        self._debt_ledger_client = DebtLedgerClient(
-            running_unit_tests=running_unit_tests,
-            connect_immediately=False
-        )
-
-        # Create client for weight setting RPC
-        from shared_objects.subtensor_ops.subtensor_ops_client import SubtensorOpsClient
-        self._subtensor_ops_client = SubtensorOpsClient(
-            running_unit_tests=running_unit_tests, connect_immediately=False
-        )
-
-        # Slack notifier (lazy initialization)
-        self._external_slack_notifier = slack_notifier
-        self._slack_notifier = None
-
-        # Store results for external access
-        self.checkpoint_results: List[Tuple[str, float]] = []
-        self.transformed_list: List[Tuple[int, float]] = []
-        self._results_lock = threading.Lock()
 
         # Start daemon if requested (deferred until all initialization complete)
         if start_daemon:
@@ -156,21 +150,14 @@ class WeightCalculatorServer(RPCServerBase, CacheController):
         if not self.refresh_allowed(ValiConfig.SET_WEIGHT_REFRESH_TIME_MS):
             return
 
-        bt.logging.info("Computing weights for RPC request")
+        bt.logging.info("Running weight calculator daemon iteration")
         current_time = TimeUtil.now_in_millis()
 
         try:
-            # Compute weights
-            checkpoint_results, transformed_list = self.compute_weights_default(current_time)
-
-            # Store results (thread-safe)
-            with self._results_lock:
-                self.checkpoint_results = checkpoint_results
-                self.transformed_list = transformed_list
+            # Delegate to manager - it handles everything
+            checkpoint_results, transformed_list = self._manager.compute_weights(current_time)
 
             if transformed_list:
-                # Send weight setting request via RPC
-                self._send_weight_request(transformed_list)
                 self.set_last_update_time()
             else:
                 # No weights computed - likely debt ledgers not ready yet
@@ -184,11 +171,11 @@ class WeightCalculatorServer(RPCServerBase, CacheController):
             bt.logging.error(f"Error in weight calculator daemon: {e}")
             bt.logging.error(traceback.format_exc())
 
-            # Send error notification
-            if self.slack_notifier:
+            # Send error notification (manager also sends errors, but daemon errors are critical)
+            if self._manager.slack_notifier:
                 compact_trace = ErrorUtils.get_compact_stacktrace(e)
-                self.slack_notifier.send_message(
-                    f"Weight calculator error!\n"
+                self._manager.slack_notifier.send_message(
+                    f"Weight calculator daemon error!\n"
                     f"Error: {str(e)}\n"
                     f"Trace: {compact_trace}",
                     level="error"
@@ -199,216 +186,44 @@ class WeightCalculatorServer(RPCServerBase, CacheController):
 
     @property
     def slack_notifier(self):
-        """Get slack notifier (lazy initialization)."""
-        if self._external_slack_notifier:
-            return self._external_slack_notifier
-
-        if self._slack_notifier is None and self.config and self.hotkey:
-            self._slack_notifier = SlackNotifier(
-                hotkey=self.hotkey,
-                webhook_url=getattr(self.config, 'slack_webhook_url', None),
-                error_webhook_url=getattr(self.config, 'slack_error_webhook_url', None),
-                is_miner=False
-            )
-        return self._slack_notifier
+        """Get slack notifier from manager."""
+        return self._manager.slack_notifier
 
     @slack_notifier.setter
     def slack_notifier(self, value):
         """Set slack notifier (used by RPCServerBase during initialization)."""
-        self._external_slack_notifier = value
+        self._manager._external_slack_notifier = value
 
     # ==================== RPC Methods (exposed to client) ====================
 
     def get_health_check_details(self) -> dict:
         """Add service-specific health check details."""
-        with self._results_lock:
-            n_results = len(self.checkpoint_results)
-            n_weights = len(self.transformed_list)
+        n_results = len(self._manager.checkpoint_results)
+        n_weights = len(self._manager.transformed_list)
         return {
             "num_checkpoint_results": n_results,
             "num_weights": n_weights
         }
 
-    def get_checkpoint_results_rpc(self) -> list:
+    def get_checkpoint_results_rpc(self) -> List[Tuple[str, float]]:
         """Get latest checkpoint results."""
-        with self._results_lock:
-            return list(self.checkpoint_results)
+        return self._manager.get_checkpoint_results()
 
-    def get_transformed_list_rpc(self) -> list:
+    def get_transformed_list_rpc(self) -> List[Tuple[int, float]]:
         """Get latest transformed weight list."""
-        with self._results_lock:
-            return list(self.transformed_list)
+        return self._manager.get_transformed_list()
 
-    # ==================== Weight Calculation Logic ====================
-
-    def compute_weights_default(self, current_time: int) -> Tuple[List[Tuple[str, float]], List[Tuple[int, float]]]:
+    def compute_weights_rpc(self, current_time: int = None) -> Tuple[List[Tuple[str, float]], List[Tuple[int, float]]]:
         """
-        Compute weights for all miners using debt-based scoring.
+        Compute weights for all miners (exposed for testing/manual triggering).
 
         Args:
-            current_time: Current time in milliseconds
+            current_time: Current time in milliseconds. If None, uses TimeUtil.now_in_millis().
 
         Returns:
             Tuple of (checkpoint_results, transformed_list)
-            - checkpoint_results: List of (hotkey, score) tuples
-            - transformed_list: List of (uid, weight) tuples
         """
-        if current_time is None:
-            current_time = TimeUtil.now_in_millis()
-
-        # Collect metagraph hotkeys to ensure we are only setting weights for miners in the metagraph
-        metagraph_hotkeys = list(self._metagraph_client.get_hotkeys())
-        metagraph_hotkeys_set = set(metagraph_hotkeys)
-        hotkey_to_idx = {hotkey: idx for idx, hotkey in enumerate(metagraph_hotkeys)}
-
-        # Get all miners from all buckets
-        challenge_hotkeys = list(self._challengeperiod_client.get_hotkeys_by_bucket(MinerBucket.CHALLENGE))
-        probation_hotkeys = list(self._challengeperiod_client.get_hotkeys_by_bucket(MinerBucket.PROBATION))
-        plagiarism_hotkeys = list(self._challengeperiod_client.get_hotkeys_by_bucket(MinerBucket.PLAGIARISM))
-        success_hotkeys = list(self._challengeperiod_client.get_hotkeys_by_bucket(MinerBucket.MAINCOMP))
-
-        all_hotkeys = challenge_hotkeys + probation_hotkeys + plagiarism_hotkeys + success_hotkeys
-
-        # Filter out zombie miners (miners in buckets but not in metagraph)
-        all_hotkeys_before_filter = len(all_hotkeys)
-        all_hotkeys = [hk for hk in all_hotkeys if hk in metagraph_hotkeys_set]
-        zombies_filtered = all_hotkeys_before_filter - len(all_hotkeys)
-
-        if zombies_filtered > 0:
-            bt.logging.info(f"Filtered out {zombies_filtered} zombie miners (not in metagraph)")
-
-        bt.logging.info(
-            f"Computing weights for {len(all_hotkeys)} miners: "
-            f"{len(success_hotkeys)} MAINCOMP, {len(probation_hotkeys)} PROBATION, "
-            f"{len(challenge_hotkeys)} CHALLENGE, {len(plagiarism_hotkeys)} PLAGIARISM "
-            f"({zombies_filtered} zombies filtered)"
-        )
-
-        # Compute weights for all miners using debt-based scoring
-        checkpoint_netuid_weights, checkpoint_results = self._compute_miner_weights(
-            all_hotkeys, hotkey_to_idx, current_time
-        )
-
-        if checkpoint_netuid_weights is None or len(checkpoint_netuid_weights) == 0:
-            bt.logging.info("No weights computed. Do nothing for now.")
-            return [], []
-
-        transformed_list = checkpoint_netuid_weights
-        bt.logging.info(f"transformed list: {transformed_list}")
-
-        return checkpoint_results, transformed_list
-
-    def _compute_miner_weights(
-        self,
-        hotkeys_to_compute_weights_for: List[str],
-        hotkey_to_idx: dict,
-        current_time: int
-    ) -> Tuple[List[Tuple[int, float]], List[Tuple[str, float]]]:
-        """
-        Compute weights for specified miners using debt-based scoring.
-
-        Args:
-            hotkeys_to_compute_weights_for: List of miner hotkeys
-            hotkey_to_idx: Mapping of hotkey to metagraph index
-            current_time: Current time in milliseconds
-
-        Returns:
-            Tuple of (netuid_weights, checkpoint_results)
-        """
-        if len(hotkeys_to_compute_weights_for) == 0:
-            return [], []
-
-        bt.logging.info("Calculating new subtensor weights using debt-based scoring...")
-
-        # Get debt ledgers for the specified miners via RPC
-        all_debt_ledgers = self._debt_ledger_client.get_all_debt_ledgers()
-        filtered_debt_ledgers = {
-            hotkey: ledger
-            for hotkey, ledger in all_debt_ledgers.items()
-            if hotkey in hotkeys_to_compute_weights_for
-        }
-
-        if len(filtered_debt_ledgers) == 0:
-            total_ledgers = len(all_debt_ledgers)
-            if total_ledgers == 0:
-                bt.logging.info(
-                    f"No debt ledgers loaded yet. "
-                    f"Requested {len(hotkeys_to_compute_weights_for)} hotkeys. "
-                    f"Debt ledger daemon likely still building initial data (120s delay + build time). "
-                    f"Will retry in 5 minutes."
-                )
-            else:
-                bt.logging.warning(
-                    f"No debt ledgers found. "
-                    f"Requested {len(hotkeys_to_compute_weights_for)} hotkeys, "
-                    f"debt_ledger_client has {total_ledgers} ledgers loaded."
-                )
-            return [], []
-
-        # Use debt-based scoring with shared metagraph
-        checkpoint_results = DebtBasedScoring.compute_results(
-            ledger_dict=filtered_debt_ledgers,
-            metagraph_client=self._metagraph_client,
-            challengeperiod_client=self._challengeperiod_client,
-            contract_client=self._contract_client,
-            current_time_ms=current_time,
-            verbose=True,
-            is_testnet=not self.is_mainnet
-        )
-
-        bt.logging.info(f"Debt-based scoring results: [{checkpoint_results}]")
-
-        checkpoint_netuid_weights = []
-        for miner, score in checkpoint_results:
-            if miner in hotkey_to_idx:
-                checkpoint_netuid_weights.append((
-                    hotkey_to_idx[miner],
-                    score
-                ))
-            else:
-                bt.logging.error(f"Miner {miner} not found in the metagraph.")
-
-        return checkpoint_netuid_weights, checkpoint_results
-
-    def _send_weight_request(self, transformed_list: List[Tuple[int, float]]):
-        """
-        Send weight setting request to SubtensorOpsManager via RPC.
-
-        Args:
-            transformed_list: List of (uid, weight) tuples
-        """
-        try:
-            uids = [x[0] for x in transformed_list]
-            weights = [x[1] for x in transformed_list]
-
-            # Send request via RPC (synchronous - get success/failure feedback)
-            result = self._subtensor_ops_client.set_weights_rpc(
-                uids=uids,
-                weights=weights,
-                version_key=self.subnet_version
-            )
-
-            if result.get('success'):
-                bt.logging.info(f"Weight request succeeded: {len(uids)} UIDs via RPC")
-            else:
-                error = result.get('error', 'Unknown error')
-                bt.logging.error(f"Weight request failed: {error}")
-
-                # NOTE: Don't send Slack alert here - SubtensorOpsManager handles alerting
-                # with proper benign error filtering (e.g., "too soon to commit weights").
-
-        except Exception as e:
-            bt.logging.error(f"Error sending weight request via RPC: {e}")
-            bt.logging.error(traceback.format_exc())
-
-            if self.slack_notifier:
-                compact_trace = ErrorUtils.get_compact_stacktrace(e)
-                self.slack_notifier.send_message(
-                    f"Weight request RPC error!\n"
-                    f"Error: {str(e)}\n"
-                    f"Trace: {compact_trace}",
-                    level="error"
-                )
+        return self._manager.compute_weights(current_time)
 
 
 # ==================== Server Entry Point ====================
@@ -423,14 +238,14 @@ def start_weight_calculator_server(
     """
     Entry point for server process.
 
-    The server creates its own clients internally (forward compatibility pattern):
+    The server creates its own manager which creates its own clients internally:
     - CommonDataClient (for shutdown coordination)
     - MetagraphClient (for hotkey/UID mapping)
     - PositionManagerClient (for position data)
     - ChallengePeriodClient (for miner buckets)
     - ContractClient (for contract state)
     - DebtLedgerClient (for debt-based scoring)
-    - WeightSetterClient (for weight setting RPC to SubtensorOpsManager)
+    - SubtensorOpsClient (for weight setting RPC to SubtensorOpsManager)
 
     Args:
         slack_notifier: Slack notifier for error reporting
@@ -450,7 +265,8 @@ def start_weight_calculator_server(
         hotkey=hotkey,
         is_mainnet=is_mainnet,
         start_server=True,
-        start_daemon=True
+        start_daemon=True,
+        connection_mode=RPCConnectionMode.RPC
     )
 
     bt.logging.success(f"WeightCalculatorServer ready on port {ValiConfig.RPC_WEIGHT_CALCULATOR_PORT}")
