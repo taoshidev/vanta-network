@@ -1518,6 +1518,10 @@ class VantaRestServer(RPCServerBase, APIKeyMixin):
             if not self.is_valid_api_key(api_key):
                 return jsonify({'error': 'Unauthorized access'}), 401
 
+            # Check if API key has tier 200 access
+            if not self.can_access_tier(api_key, 200):
+                return jsonify({'error': 'Your API key does not have access to tier 200 data'}), 403
+
             # Check if entity client is available
             if not self._entity_client:
                 return jsonify({'error': 'Entity management not available'}), 503
@@ -1574,6 +1578,10 @@ class VantaRestServer(RPCServerBase, APIKeyMixin):
             api_key = self._get_api_key_safe()
             if not self.is_valid_api_key(api_key):
                 return jsonify({'error': 'Unauthorized access'}), 401
+
+            # Check if API key has tier 200 access
+            if not self.can_access_tier(api_key, 200):
+                return jsonify({'error': 'Your API key does not have access to tier 200 data'}), 403
 
             # Check if entity client is available
             if not self._entity_client:
@@ -1636,6 +1644,10 @@ class VantaRestServer(RPCServerBase, APIKeyMixin):
             if not self.is_valid_api_key(api_key):
                 return jsonify({'error': 'Unauthorized access'}), 401
 
+            # Check if API key has tier 200 access
+            if not self.can_access_tier(api_key, 200):
+                return jsonify({'error': 'Your API key does not have access to tier 200 data'}), 403
+
             # Check if entity client is available
             if not self._entity_client:
                 return jsonify({'error': 'Entity management not available'}), 503
@@ -1668,6 +1680,10 @@ class VantaRestServer(RPCServerBase, APIKeyMixin):
             api_key = self._get_api_key_safe()
             if not self.is_valid_api_key(api_key):
                 return jsonify({'error': 'Unauthorized access'}), 401
+
+            # Check if API key has tier 200 access
+            if not self.can_access_tier(api_key, 200):
+                return jsonify({'error': 'Your API key does not have access to tier 200 data'}), 403
 
             # Check if entity client is available
             if not self._entity_client:
@@ -1703,6 +1719,10 @@ class VantaRestServer(RPCServerBase, APIKeyMixin):
             api_key = self._get_api_key_safe()
             if not self.is_valid_api_key(api_key):
                 return jsonify({'error': 'Unauthorized access'}), 401
+
+            # Check if API key has tier 200 access
+            if not self.can_access_tier(api_key, 200):
+                return jsonify({'error': 'Your API key does not have access to tier 200 data'}), 403
 
             # Check if entity client is available
             if not self._entity_client:
@@ -1773,6 +1793,10 @@ class VantaRestServer(RPCServerBase, APIKeyMixin):
             api_key = self._get_api_key_safe()
             if not self.is_valid_api_key(api_key):
                 return jsonify({'error': 'Unauthorized access'}), 401
+
+            # Check if API key has tier 200 access
+            if not self.can_access_tier(api_key, 200):
+                return jsonify({'error': 'Your API key does not have access to tier 200 data'}), 403
 
             # Check if entity client is available
             if not self._entity_client:
