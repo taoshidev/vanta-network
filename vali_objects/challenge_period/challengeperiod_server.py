@@ -367,15 +367,3 @@ class ChallengePeriodServer(RPCServerBase):
     def set_last_update_time_rpc(self, timestamp_ms: int = 0) -> None:
         """Set the last update time (for testing - to force-allow refresh)."""
         self._manager._last_update_time_ms = timestamp_ms
-
-    def is_synthetic_hotkey_rpc(self, hotkey: str) -> bool:
-        """
-        Check if a hotkey is synthetic (entity subaccount).
-
-        Args:
-            hotkey: The hotkey to check
-
-        Returns:
-            True if synthetic (contains underscore with integer suffix), False otherwise
-        """
-        return self._manager.is_synthetic_hotkey(hotkey)

@@ -121,6 +121,10 @@ class ContractClient(RPCClientBase):
         """Process a collateral withdrawal request."""
         return self._server.process_withdrawal_request_rpc(amount, miner_coldkey, miner_hotkey)
 
+    def query_withdrawal_request(self, amount: float, miner_hotkey: str) -> Dict[str, Any]:
+        """Query withdrawal request (preview only - no execution)."""
+        return self._server.query_withdrawal_request_rpc(amount, miner_hotkey)
+
     # ==================== CollateralRecord Methods ====================
 
     def receive_collateral_record(self, synapse: template.protocol.CollateralRecord) -> template.protocol.CollateralRecord:

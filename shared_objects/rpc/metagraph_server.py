@@ -27,6 +27,7 @@ from typing import Set, List, Optional, Tuple
 from shared_objects.rpc.rpc_server_base import RPCServerBase
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 from entitiy_management.entity_client import EntityClient
+from entitiy_management.entity_utils import is_synthetic_hotkey, parse_synthetic_hotkey
 
 
 class MetagraphServer(RPCServerBase):
@@ -159,11 +160,11 @@ class MetagraphServer(RPCServerBase):
 
         # Not in metagraph - check if it's a synthetic hotkey
         # Synthetic hotkey format: {entity_hotkey}_{subaccount_id}
-        # Use EntityClient to validate (it has the is_synthetic_hotkey logic)
+        # Use entity_utils directly for validation (no RPC overhead)
         try:
-            if self._entity_client.is_synthetic_hotkey(hotkey):
+            if is_synthetic_hotkey(hotkey):
                 # Parse synthetic hotkey
-                entity_hotkey, subaccount_id = self._entity_client.parse_synthetic_hotkey(hotkey)
+                entity_hotkey, subaccount_id = parse_synthetic_hotkey(hotkey)
 
                 if entity_hotkey is None or subaccount_id is None:
                     # Invalid synthetic hotkey format

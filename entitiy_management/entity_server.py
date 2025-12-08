@@ -233,30 +233,6 @@ class EntityServer(RPCServerBase):
         all_entities = self._manager.get_all_entities()
         return {hotkey: entity.model_dump() for hotkey, entity in all_entities.items()}
 
-    def is_synthetic_hotkey_rpc(self, hotkey: str) -> bool:
-        """
-        Check if a hotkey is synthetic (contains underscore with integer suffix).
-
-        Args:
-            hotkey: The hotkey to check
-
-        Returns:
-            True if synthetic, False otherwise
-        """
-        return self._manager.is_synthetic_hotkey(hotkey)
-
-    def parse_synthetic_hotkey_rpc(self, synthetic_hotkey: str) -> Tuple[Optional[str], Optional[int]]:
-        """
-        Parse a synthetic hotkey into entity_hotkey and subaccount_id.
-
-        Args:
-            synthetic_hotkey: The synthetic hotkey ({entity_hotkey}_{subaccount_id})
-
-        Returns:
-            (entity_hotkey, subaccount_id) or (None, None) if invalid
-        """
-        return self._manager.parse_synthetic_hotkey(synthetic_hotkey)
-
     def validate_hotkey_for_orders_rpc(self, hotkey: str) -> dict:
         """
         Validate a hotkey for order placement in a single RPC call.
@@ -383,3 +359,15 @@ class EntityServer(RPCServerBase):
     def to_checkpoint_dict_rpc(self) -> dict:
         """Get entity data as a checkpoint dict for serialization."""
         return self._manager.to_checkpoint_dict()
+
+    def sync_entity_data_rpc(self, entities_checkpoint_dict: dict) -> dict:
+        """
+        Sync entity data from checkpoint (RPC method).
+
+        Args:
+            entities_checkpoint_dict: Dict from checkpoint (entity_hotkey -> EntityData dict)
+
+        Returns:
+            dict: Sync statistics (entities_added, subaccounts_added, subaccounts_updated)
+        """
+        return self._manager.sync_entity_data(entities_checkpoint_dict)

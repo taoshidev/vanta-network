@@ -21,6 +21,7 @@ from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
 from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
+from entitiy_management.entity_client import EntityClient
 
 AUTO_SYNC_ORDER_LAG_MS = 1000 * 60 * 60 * 24
 
@@ -56,6 +57,8 @@ class ValidatorSyncBase():
         # Create own LimitOrderClient (forward compatibility - no parameter passing)
         from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
         self._limit_order_client = LimitOrderClient(running_unit_tests=running_unit_tests)
+        # Create own EntityClient (forward compatibility - no parameter passing)
+        self._entity_client = EntityClient(running_unit_tests=running_unit_tests)
         self.init_data()
 
     def init_data(self):
@@ -226,6 +229,14 @@ class ValidatorSyncBase():
             if not shadow_mode:
                 bt.logging.info(f"Syncing {len(asset_selections_data)} miner asset selection records from auto sync")
                 self._asset_selection_client.sync_miner_asset_selection_data(asset_selections_data)
+
+        # Sync entity data if available
+        entities_data = candidate_data.get('entities', {})
+        if entities_data and not shadow_mode:
+            bt.logging.info(f"Syncing {len(entities_data)} entity records from auto sync")
+            self._entity_client.sync_entity_data(entities_data)
+        elif entities_data and shadow_mode:
+            bt.logging.info(f"Shadow mode: Would sync {len(entities_data)} entity records (skipped)")
 
         # Reorganized stats with clear, grouped naming
         # Overview

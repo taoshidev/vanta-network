@@ -11,6 +11,7 @@ import signal
 from vali_objects.enums.misc import SynapseMethod
 from vanta_api.api_manager import APIManager
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, NeuronContext
+from entitiy_management.entity_utils import is_synthetic_hotkey
 
 
 import template
@@ -453,7 +454,8 @@ class Validator(ValidatorBase):
         # Entity hotkey validation: Don't allow orders from entity hotkeys (non-synthetic)
         # Only synthetic hotkeys (subaccounts) can place orders
         entity_check_start = time.perf_counter()
-        if self.entity_client.is_synthetic_hotkey(sender_hotkey):
+        # Fast static function call (no RPC overhead!) - saves ~5-10ms per order
+        if is_synthetic_hotkey(sender_hotkey):
             # This is a synthetic hotkey - verify it's active
             found, status, _ = self.entity_client.get_subaccount_status(sender_hotkey)
             if not found or status != 'active':

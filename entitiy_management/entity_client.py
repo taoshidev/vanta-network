@@ -8,6 +8,7 @@ Can be created in ANY process - just needs the server to be running.
 
 Usage:
     from entitiy_management.entity_client import EntityClient
+    from entitiy_management.entity_utils import is_synthetic_hotkey, parse_synthetic_hotkey
 
     # Connect to server (uses ValiConfig.RPC_ENTITY_PORT by default)
     client = EntityClient()
@@ -18,9 +19,9 @@ Usage:
     # Create a subaccount
     success, subaccount_info, message = client.create_subaccount("my_entity_hotkey")
 
-    # Check if hotkey is synthetic
-    if client.is_synthetic_hotkey(hotkey):
-        entity_hotkey, subaccount_id = client.parse_synthetic_hotkey(hotkey)
+    # Check if hotkey is synthetic (use entity_utils directly - no RPC overhead)
+    if is_synthetic_hotkey(hotkey):
+        entity_hotkey, subaccount_id = parse_synthetic_hotkey(hotkey)
 """
 from typing import Optional, Tuple, Dict
 
@@ -170,38 +171,14 @@ class EntityClient(RPCClientBase):
         """
         return self._server.get_all_entities_rpc()
 
-    def is_synthetic_hotkey(self, hotkey: str) -> bool:
-        """
-        Check if a hotkey is synthetic (contains underscore with integer suffix).
-
-        Args:
-            hotkey: The hotkey to check
-
-        Returns:
-            True if synthetic, False otherwise
-        """
-        return self._server.is_synthetic_hotkey_rpc(hotkey)
-
-    def parse_synthetic_hotkey(self, synthetic_hotkey: str) -> Tuple[Optional[str], Optional[int]]:
-        """
-        Parse a synthetic hotkey into entity_hotkey and subaccount_id.
-
-        Args:
-            synthetic_hotkey: The synthetic hotkey ({entity_hotkey}_{subaccount_id})
-
-        Returns:
-            (entity_hotkey, subaccount_id) or (None, None) if invalid
-        """
-        return self._server.parse_synthetic_hotkey_rpc(synthetic_hotkey)
-
     def validate_hotkey_for_orders(self, hotkey: str) -> dict:
         """
         Validate a hotkey for order placement in a single RPC call.
 
         This consolidates multiple checks into one RPC call:
-        - is_synthetic_hotkey() check
-        - get_subaccount_status() check
-        - get_entity_data() check
+        - Synthetic hotkey detection (via entity_utils.is_synthetic_hotkey)
+        - Subaccount status check
+        - Entity data check
 
         Args:
             hotkey: The hotkey to validate
@@ -308,6 +285,18 @@ class EntityClient(RPCClientBase):
     def to_checkpoint_dict(self) -> dict:
         """Get entity data as a checkpoint dict for serialization."""
         return self._server.to_checkpoint_dict_rpc()
+
+    def sync_entity_data(self, entities_checkpoint_dict: dict) -> dict:
+        """
+        Sync entity data from checkpoint.
+
+        Args:
+            entities_checkpoint_dict: Dict from checkpoint (entity_hotkey -> EntityData dict)
+
+        Returns:
+            dict: Sync statistics (entities_added, subaccounts_added, subaccounts_updated)
+        """
+        return self._server.sync_entity_data_rpc(entities_checkpoint_dict)
 
     # ==================== Daemon Control Methods ====================
 

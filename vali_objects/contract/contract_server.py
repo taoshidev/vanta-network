@@ -121,6 +121,10 @@ class ContractServer(RPCServerBase):
         """Process a collateral withdrawal request."""
         return self._manager.process_withdrawal_request(amount, miner_coldkey, miner_hotkey)
 
+    def query_withdrawal_request_rpc(self, amount: float, miner_hotkey: str) -> Dict[str, Any]:
+        """Query withdrawal request (preview only - no execution)."""
+        return self._manager.query_withdrawal_request(amount, miner_hotkey)
+
     def slash_miner_collateral_proportion_rpc(self, miner_hotkey: str, slash_proportion: float=None) -> bool:
         """Slash miner's collateral by a proportion."""
         return self._manager.slash_miner_collateral_proportion(miner_hotkey, slash_proportion)
@@ -231,6 +235,9 @@ class ContractServer(RPCServerBase):
 
     def process_withdrawal_request(self, amount: float, miner_coldkey: str, miner_hotkey: str) -> Dict[str, Any]:
         return self._manager.process_withdrawal_request(amount, miner_coldkey, miner_hotkey)
+
+    def query_withdrawal_request(self, amount: float, miner_hotkey: str) -> Dict[str, Any]:
+        return self._manager.query_withdrawal_request(amount, miner_hotkey)
 
     def slash_miner_collateral(self, miner_hotkey: str, slash_amount: float = None) -> bool:
         return self._manager.slash_miner_collateral(miner_hotkey, slash_amount)

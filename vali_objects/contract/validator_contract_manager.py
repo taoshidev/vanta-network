@@ -542,10 +542,16 @@ class ValidatorContractManager(ValidatorBroadcastBase):
         """
         try:
             bt.logging.info("Received withdrawal query")
-            # Check current collateral balance
+            # Check current collateral balance (uses test balance injection in test mode)
             try:
-                current_balance = self.collateral_manager.balance_of(miner_hotkey)
-                theta_current_balance = self.to_theta(current_balance)
+                theta_current_balance = self.get_miner_collateral_balance(miner_hotkey)
+                if theta_current_balance is None:
+                    error_msg = f"Failed to retrieve collateral balance for {miner_hotkey}"
+                    bt.logging.error(error_msg)
+                    return {
+                        "successfully_processed": False,
+                        "error_message": error_msg
+                    }
                 if amount > theta_current_balance:
                     error_msg = f"Insufficient collateral balance. Available: {theta_current_balance}, Requested: {amount}"
                     bt.logging.error(error_msg)
