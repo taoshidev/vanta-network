@@ -15,6 +15,7 @@ from vali_objects.contract.contract_server import ContractServer
 from vali_objects.utils.elimination.elimination_server import EliminationServer
 from vali_objects.position_management.position_manager_server import PositionManagerServer
 from vali_objects.data_sync.validator_sync_base import ValidatorSyncBase
+from entitiy_management.entity_server import EntityServer
 import bittensor as bt
 
 from vali_objects.vali_config import RPCConnectionMode
@@ -155,6 +156,7 @@ if __name__ == "__main__":
     pls = PerfLedgerServer()
     vs = ContractServer()
     ass = AssetSelectionServer()
+    ent_server = EntityServer()
     # ValidatorSyncBase creates its own ContractClient and LimitOrderClient internally (forward compatibility)
     position_syncer = PositionSyncer()
     candidate_data = position_syncer.read_validator_checkpoint_from_gcloud_zip()

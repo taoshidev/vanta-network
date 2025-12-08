@@ -16,6 +16,7 @@ from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMod
 from tests.vali_tests.base_objects.test_base import TestBase
 from vali_objects.utils.vali_utils import ValiUtils
 from time_util.time_util import TimeUtil
+from entitiy_management.entity_utils import is_synthetic_hotkey, parse_synthetic_hotkey
 
 
 class TestEntityManagement(TestBase):
@@ -207,35 +208,35 @@ class TestEntityManagement(TestBase):
     # ==================== Synthetic Hotkey Tests ====================
 
     def test_is_synthetic_hotkey_valid(self):
-        """Test synthetic hotkey detection."""
+        """Test synthetic hotkey detection using entity_utils directly."""
         # Valid synthetic hotkeys
-        self.assertTrue(self.entity_client.is_synthetic_hotkey("entity_123"))
-        self.assertTrue(self.entity_client.is_synthetic_hotkey("my_entity_0"))
-        self.assertTrue(self.entity_client.is_synthetic_hotkey("foo_bar_99"))
+        self.assertTrue(is_synthetic_hotkey("entity_123"))
+        self.assertTrue(is_synthetic_hotkey("my_entity_0"))
+        self.assertTrue(is_synthetic_hotkey("foo_bar_99"))
 
         # Invalid synthetic hotkeys (no underscore + integer)
-        self.assertFalse(self.entity_client.is_synthetic_hotkey("regular_hotkey"))
-        self.assertFalse(self.entity_client.is_synthetic_hotkey("no_number_"))
-        self.assertFalse(self.entity_client.is_synthetic_hotkey("just_text"))
+        self.assertFalse(is_synthetic_hotkey("regular_hotkey"))
+        self.assertFalse(is_synthetic_hotkey("no_number_"))
+        self.assertFalse(is_synthetic_hotkey("just_text"))
 
     def test_parse_synthetic_hotkey_valid(self):
-        """Test parsing valid synthetic hotkeys."""
-        entity_hotkey, subaccount_id = self.entity_client.parse_synthetic_hotkey(
+        """Test parsing valid synthetic hotkeys using entity_utils directly."""
+        entity_hotkey, subaccount_id = parse_synthetic_hotkey(
             "my_entity_5"
         )
         self.assertEqual(entity_hotkey, "my_entity")
         self.assertEqual(subaccount_id, 5)
 
         # Test with entity hotkey containing underscores
-        entity_hotkey, subaccount_id = self.entity_client.parse_synthetic_hotkey(
+        entity_hotkey, subaccount_id = parse_synthetic_hotkey(
             "entity_with_underscores_123"
         )
         self.assertEqual(entity_hotkey, "entity_with_underscores")
         self.assertEqual(subaccount_id, 123)
 
     def test_parse_synthetic_hotkey_invalid(self):
-        """Test parsing invalid synthetic hotkeys."""
-        entity_hotkey, subaccount_id = self.entity_client.parse_synthetic_hotkey(
+        """Test parsing invalid synthetic hotkeys using entity_utils directly."""
+        entity_hotkey, subaccount_id = parse_synthetic_hotkey(
             "invalid_hotkey"
         )
         self.assertIsNone(entity_hotkey)
@@ -457,8 +458,8 @@ class TestEntityManagement(TestBase):
         self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
 
         # Verify entity hotkey is NOT synthetic (should be rejected for orders)
-        is_synthetic = self.entity_client.is_synthetic_hotkey(self.ENTITY_HOTKEY_1)
-        self.assertFalse(is_synthetic, "Entity hotkey should not be synthetic")
+        hotkey_is_synthetic = is_synthetic_hotkey(self.ENTITY_HOTKEY_1)
+        self.assertFalse(hotkey_is_synthetic, "Entity hotkey should not be synthetic")
 
         # Verify entity data exists (allows validator to detect and reject)
         entity_data = self.entity_client.get_entity_data(self.ENTITY_HOTKEY_1)
@@ -477,8 +478,8 @@ class TestEntityManagement(TestBase):
         synthetic_hotkey = subaccount_info['synthetic_hotkey']
 
         # Verify hotkey is synthetic
-        is_synthetic = self.entity_client.is_synthetic_hotkey(synthetic_hotkey)
-        self.assertTrue(is_synthetic, "Subaccount hotkey should be synthetic")
+        hotkey_is_synthetic = is_synthetic_hotkey(synthetic_hotkey)
+        self.assertTrue(hotkey_is_synthetic, "Subaccount hotkey should be synthetic")
 
         # Verify status is active (should be accepted for orders)
         found, status, _ = self.entity_client.get_subaccount_status(synthetic_hotkey)
@@ -505,8 +506,8 @@ class TestEntityManagement(TestBase):
         )
 
         # Verify hotkey is synthetic
-        is_synthetic = self.entity_client.is_synthetic_hotkey(synthetic_hotkey)
-        self.assertTrue(is_synthetic, "Subaccount hotkey should be synthetic")
+        hotkey_is_synthetic = is_synthetic_hotkey(synthetic_hotkey)
+        self.assertTrue(hotkey_is_synthetic, "Subaccount hotkey should be synthetic")
 
         # Verify status is eliminated (should be rejected for orders)
         found, status, _ = self.entity_client.get_subaccount_status(synthetic_hotkey)
@@ -523,12 +524,267 @@ class TestEntityManagement(TestBase):
         regular_hotkey = "regular_miner_hotkey"
 
         # Verify it's not synthetic
-        is_synthetic = self.entity_client.is_synthetic_hotkey(regular_hotkey)
-        self.assertFalse(is_synthetic, "Regular hotkey should not be synthetic")
+        hotkey_is_synthetic = is_synthetic_hotkey(regular_hotkey)
+        self.assertFalse(hotkey_is_synthetic, "Regular hotkey should not be synthetic")
 
         # Verify it's not an entity
         entity_data = self.entity_client.get_entity_data(regular_hotkey)
         self.assertIsNone(entity_data, "Regular hotkey should not be an entity")
+
+    # ==================== Entity Sync Tests (Auto-Sync Integration) ====================
+
+    def test_sync_entity_data_new_entity(self):
+        """Test syncing a new entity from checkpoint."""
+        # Create checkpoint dict with new entity
+        checkpoint_dict = {
+            self.ENTITY_HOTKEY_1: {
+                'entity_hotkey': self.ENTITY_HOTKEY_1,
+                'subaccounts': {
+                    '0': {
+                        'subaccount_id': 0,
+                        'subaccount_uuid': 'test-uuid-0',
+                        'synthetic_hotkey': f'{self.ENTITY_HOTKEY_1}_0',
+                        'status': 'active',
+                        'created_at_ms': TimeUtil.now_in_millis(),
+                        'eliminated_at_ms': None
+                    }
+                },
+                'next_subaccount_id': 1,
+                'collateral_amount': 1000.0,
+                'max_subaccounts': 10,
+                'registered_at_ms': TimeUtil.now_in_millis()
+            }
+        }
+
+        # Sync entity data
+        stats = self.entity_client.sync_entity_data(checkpoint_dict)
+
+        # Verify stats
+        self.assertEqual(stats['entities_added'], 1)
+        self.assertEqual(stats['subaccounts_added'], 1)
+        self.assertEqual(stats['subaccounts_updated'], 0)
+
+        # Verify entity exists
+        entity_data = self.entity_client.get_entity_data(self.ENTITY_HOTKEY_1)
+        self.assertIsNotNone(entity_data)
+        self.assertEqual(len(entity_data['subaccounts']), 1)
+        self.assertEqual(entity_data['next_subaccount_id'], 1)
+
+    def test_sync_entity_data_new_subaccount(self):
+        """Test syncing new subaccounts to existing entity."""
+        # Register entity locally with 1 subaccount
+        self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
+        self.entity_client.create_subaccount(self.ENTITY_HOTKEY_1)
+
+        # Create checkpoint dict with additional subaccounts (0, 1, 2)
+        checkpoint_dict = {
+            self.ENTITY_HOTKEY_1: {
+                'entity_hotkey': self.ENTITY_HOTKEY_1,
+                'subaccounts': {
+                    '0': {
+                        'subaccount_id': 0,
+                        'subaccount_uuid': 'uuid-0',
+                        'synthetic_hotkey': f'{self.ENTITY_HOTKEY_1}_0',
+                        'status': 'active',
+                        'created_at_ms': TimeUtil.now_in_millis(),
+                        'eliminated_at_ms': None
+                    },
+                    '1': {
+                        'subaccount_id': 1,
+                        'subaccount_uuid': 'uuid-1',
+                        'synthetic_hotkey': f'{self.ENTITY_HOTKEY_1}_1',
+                        'status': 'active',
+                        'created_at_ms': TimeUtil.now_in_millis(),
+                        'eliminated_at_ms': None
+                    },
+                    '2': {
+                        'subaccount_id': 2,
+                        'subaccount_uuid': 'uuid-2',
+                        'synthetic_hotkey': f'{self.ENTITY_HOTKEY_1}_2',
+                        'status': 'active',
+                        'created_at_ms': TimeUtil.now_in_millis(),
+                        'eliminated_at_ms': None
+                    }
+                },
+                'next_subaccount_id': 3,
+                'collateral_amount': 0.0,
+                'max_subaccounts': 500,
+                'registered_at_ms': TimeUtil.now_in_millis()
+            }
+        }
+
+        # Sync entity data
+        stats = self.entity_client.sync_entity_data(checkpoint_dict)
+
+        # Verify stats (entity exists, so 2 new subaccounts added)
+        self.assertEqual(stats['entities_added'], 0)
+        self.assertEqual(stats['subaccounts_added'], 2)
+
+        # Verify all 3 subaccounts exist
+        entity_data = self.entity_client.get_entity_data(self.ENTITY_HOTKEY_1)
+        self.assertEqual(len(entity_data['subaccounts']), 3)
+        self.assertEqual(entity_data['next_subaccount_id'], 3)
+
+    def test_sync_entity_data_status_update(self):
+        """Test syncing subaccount status changes (active -> eliminated)."""
+        # Register entity and create active subaccount
+        self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
+        self.entity_client.create_subaccount(self.ENTITY_HOTKEY_1)
+
+        # Verify initially active
+        found, status, _ = self.entity_client.get_subaccount_status(f'{self.ENTITY_HOTKEY_1}_0')
+        self.assertTrue(found)
+        self.assertEqual(status, 'active')
+
+        # Create checkpoint dict with eliminated subaccount
+        checkpoint_dict = {
+            self.ENTITY_HOTKEY_1: {
+                'entity_hotkey': self.ENTITY_HOTKEY_1,
+                'subaccounts': {
+                    '0': {
+                        'subaccount_id': 0,
+                        'subaccount_uuid': 'uuid-0',
+                        'synthetic_hotkey': f'{self.ENTITY_HOTKEY_1}_0',
+                        'status': 'eliminated',
+                        'created_at_ms': TimeUtil.now_in_millis(),
+                        'eliminated_at_ms': TimeUtil.now_in_millis()
+                    }
+                },
+                'next_subaccount_id': 1,
+                'collateral_amount': 0.0,
+                'max_subaccounts': 500,
+                'registered_at_ms': TimeUtil.now_in_millis()
+            }
+        }
+
+        # Sync entity data
+        stats = self.entity_client.sync_entity_data(checkpoint_dict)
+
+        # Verify stats (1 subaccount updated)
+        self.assertEqual(stats['subaccounts_updated'], 1)
+
+        # Verify status changed to eliminated
+        found, status, _ = self.entity_client.get_subaccount_status(f'{self.ENTITY_HOTKEY_1}_0')
+        self.assertTrue(found)
+        self.assertEqual(status, 'eliminated')
+
+    def test_sync_entity_data_collision_prevention(self):
+        """Test that next_subaccount_id is updated to prevent ID collisions."""
+        # Register entity locally with next_subaccount_id = 1
+        self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
+        self.entity_client.create_subaccount(self.ENTITY_HOTKEY_1)
+
+        # Get current next_subaccount_id (should be 1)
+        entity_data = self.entity_client.get_entity_data(self.ENTITY_HOTKEY_1)
+        self.assertEqual(entity_data['next_subaccount_id'], 1)
+
+        # Create checkpoint dict with higher next_subaccount_id (5)
+        checkpoint_dict = {
+            self.ENTITY_HOTKEY_1: {
+                'entity_hotkey': self.ENTITY_HOTKEY_1,
+                'subaccounts': {
+                    '0': {
+                        'subaccount_id': 0,
+                        'subaccount_uuid': 'uuid-0',
+                        'synthetic_hotkey': f'{self.ENTITY_HOTKEY_1}_0',
+                        'status': 'active',
+                        'created_at_ms': TimeUtil.now_in_millis(),
+                        'eliminated_at_ms': None
+                    }
+                },
+                'next_subaccount_id': 5,
+                'collateral_amount': 0.0,
+                'max_subaccounts': 500,
+                'registered_at_ms': TimeUtil.now_in_millis()
+            }
+        }
+
+        # Sync entity data
+        self.entity_client.sync_entity_data(checkpoint_dict)
+
+        # Verify next_subaccount_id updated to prevent collisions
+        entity_data = self.entity_client.get_entity_data(self.ENTITY_HOTKEY_1)
+        self.assertEqual(entity_data['next_subaccount_id'], 5)
+
+    def test_sync_entity_data_invalid_input(self):
+        """Test that sync handles invalid input gracefully."""
+        # Test with None
+        stats = self.entity_client.sync_entity_data(None)
+        self.assertEqual(stats['entities_added'], 0)
+        self.assertEqual(stats['subaccounts_added'], 0)
+
+        # Test with empty dict
+        stats = self.entity_client.sync_entity_data({})
+        self.assertEqual(stats['entities_added'], 0)
+        self.assertEqual(stats['subaccounts_added'], 0)
+
+        # Test with non-dict type (should return empty stats)
+        stats = self.entity_client.sync_entity_data("invalid_string")
+        self.assertEqual(stats['entities_added'], 0)
+        self.assertEqual(stats['subaccounts_added'], 0)
+
+    def test_sync_entity_data_multiple_entities(self):
+        """Test syncing multiple entities in one operation."""
+        # Create checkpoint dict with 3 entities
+        now_ms = TimeUtil.now_in_millis()
+        checkpoint_dict = {
+            self.ENTITY_HOTKEY_1: {
+                'entity_hotkey': self.ENTITY_HOTKEY_1,
+                'subaccounts': {
+                    '0': {
+                        'subaccount_id': 0,
+                        'subaccount_uuid': 'uuid-1-0',
+                        'synthetic_hotkey': f'{self.ENTITY_HOTKEY_1}_0',
+                        'status': 'active',
+                        'created_at_ms': now_ms,
+                        'eliminated_at_ms': None
+                    }
+                },
+                'next_subaccount_id': 1,
+                'collateral_amount': 1000.0,
+                'max_subaccounts': 10,
+                'registered_at_ms': now_ms
+            },
+            self.ENTITY_HOTKEY_2: {
+                'entity_hotkey': self.ENTITY_HOTKEY_2,
+                'subaccounts': {
+                    '0': {
+                        'subaccount_id': 0,
+                        'subaccount_uuid': 'uuid-2-0',
+                        'synthetic_hotkey': f'{self.ENTITY_HOTKEY_2}_0',
+                        'status': 'active',
+                        'created_at_ms': now_ms,
+                        'eliminated_at_ms': None
+                    }
+                },
+                'next_subaccount_id': 1,
+                'collateral_amount': 2000.0,
+                'max_subaccounts': 20,
+                'registered_at_ms': now_ms
+            },
+            self.ENTITY_HOTKEY_3: {
+                'entity_hotkey': self.ENTITY_HOTKEY_3,
+                'subaccounts': {},
+                'next_subaccount_id': 0,
+                'collateral_amount': 500.0,
+                'max_subaccounts': 5,
+                'registered_at_ms': now_ms
+            }
+        }
+
+        # Sync all entities
+        stats = self.entity_client.sync_entity_data(checkpoint_dict)
+
+        # Verify stats
+        self.assertEqual(stats['entities_added'], 3)
+        self.assertEqual(stats['subaccounts_added'], 2)
+
+        # Verify all entities exist
+        all_entities = self.entity_client.get_all_entities()
+        self.assertEqual(len(all_entities), 3)
+        self.assertIn(self.ENTITY_HOTKEY_1, all_entities)
+        self.assertIn(self.ENTITY_HOTKEY_2, all_entities)
+        self.assertIn(self.ENTITY_HOTKEY_3, all_entities)
 
 
 if __name__ == '__main__':

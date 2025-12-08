@@ -27,6 +27,7 @@ from collections import defaultdict
 from pydantic import BaseModel, Field
 
 import template.protocol
+from entitiy_management.entity_utils import is_synthetic_hotkey, parse_synthetic_hotkey
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
@@ -371,10 +372,10 @@ class EntityManager(ValidatorBroadcastBase):
         Returns:
             (found: bool, status: Optional[str], synthetic_hotkey: str)
         """
-        if not self.is_synthetic_hotkey(synthetic_hotkey):
+        if not is_synthetic_hotkey(synthetic_hotkey):
             return False, None, synthetic_hotkey
 
-        entity_hotkey, subaccount_id = self.parse_synthetic_hotkey(synthetic_hotkey)
+        entity_hotkey, subaccount_id = parse_synthetic_hotkey(synthetic_hotkey)
 
         # Use per-entity lock: only reads from single entity
         entity_lock = self._get_entity_lock(entity_hotkey)
@@ -424,7 +425,7 @@ class EntityManager(ValidatorBroadcastBase):
                 - status (str|None): Status if synthetic hotkey, None otherwise
         """
         # Check if synthetic (no lock needed - just string parsing)
-        if self.is_synthetic_hotkey(hotkey):
+        if is_synthetic_hotkey(hotkey):
             # Synthetic hotkey - check if active
             found, status, _ = self.get_subaccount_status(hotkey)
 
@@ -496,7 +497,7 @@ class EntityManager(ValidatorBroadcastBase):
             Dict with aggregated dashboard data, or None if subaccount not found
         """
         # 1. Validate subaccount exists
-        entity_hotkey, subaccount_id = self.parse_synthetic_hotkey(synthetic_hotkey)
+        entity_hotkey, subaccount_id = parse_synthetic_hotkey(synthetic_hotkey)
         if not entity_hotkey:
             return None
 
@@ -580,53 +581,6 @@ class EntityManager(ValidatorBroadcastBase):
         with self._entities_lock:
             return dict(self.entities)
 
-    def is_synthetic_hotkey(self, hotkey: str) -> bool:
-        """
-        Check if a hotkey is synthetic (contains underscore).
-
-        Args:
-            hotkey: The hotkey to check
-
-        Returns:
-            True if synthetic, False otherwise
-        """
-        # Edge case: What if an entity hotkey itself contains an underscore?
-        # We handle this by checking if the part after the last underscore is a valid integer
-        if "_" not in hotkey:
-            return False
-
-        # Try to parse as synthetic hotkey
-        parts = hotkey.rsplit("_", 1)
-        if len(parts) != 2:
-            return False
-
-        try:
-            int(parts[1])  # Check if last part is a valid integer
-            return True
-        except ValueError:
-            return False
-
-    def parse_synthetic_hotkey(self, synthetic_hotkey: str) -> Tuple[Optional[str], Optional[int]]:
-        """
-        Parse a synthetic hotkey into entity_hotkey and subaccount_id.
-
-        Args:
-            synthetic_hotkey: The synthetic hotkey ({entity_hotkey}_{subaccount_id})
-
-        Returns:
-            (entity_hotkey, subaccount_id) or (None, None) if invalid
-        """
-        if not self.is_synthetic_hotkey(synthetic_hotkey):
-            return None, None
-
-        parts = synthetic_hotkey.rsplit("_", 1)
-        entity_hotkey = parts[0]
-        try:
-            subaccount_id = int(parts[1])
-            return entity_hotkey, subaccount_id
-        except ValueError:
-            return None, None
-
     def update_collateral(self, entity_hotkey: str, collateral_amount: float) -> Tuple[bool, str]:
         """
         Update collateral for an entity (placeholder).
@@ -707,6 +661,93 @@ class EntityManager(ValidatorBroadcastBase):
             )
 
         return eliminated_count
+
+    def sync_entity_data(self, entities_checkpoint_dict: dict) -> dict:
+        """
+        Sync entity data from a checkpoint dict (from auto-sync or mothership).
+
+        This merges incoming entity data with existing data:
+        - Creates new entities if they don't exist
+        - Adds new subaccounts to existing entities
+        - Updates subaccount status (active/eliminated)
+        - Preserves local-only data (e.g., newer subaccounts)
+
+        Args:
+            entities_checkpoint_dict: Dict from checkpoint (entity_hotkey -> EntityData dict)
+
+        Returns:
+            dict: Sync statistics (entities_added, subaccounts_added, subaccounts_updated)
+        """
+        stats = {
+            'entities_added': 0,
+            'subaccounts_added': 0,
+            'subaccounts_updated': 0,
+            'entities_skipped': 0
+        }
+
+        # Validate input
+        if not isinstance(entities_checkpoint_dict, dict):
+            bt.logging.warning(f"[ENTITY_MANAGER] Invalid entities_checkpoint_dict type: {type(entities_checkpoint_dict)}. Expected dict.")
+            return stats
+
+        if not entities_checkpoint_dict:
+            bt.logging.debug("[ENTITY_MANAGER] Empty entities_checkpoint_dict provided, nothing to sync")
+            return stats
+
+        # Parse checkpoint dict to EntityData objects (with error handling)
+        try:
+            incoming_entities = EntityManager.parse_checkpoint_dict(entities_checkpoint_dict)
+        except Exception as e:
+            bt.logging.error(f"[ENTITY_MANAGER] Failed to parse entity checkpoint dict: {e}")
+            import traceback
+            bt.logging.error(traceback.format_exc())
+            return stats
+
+        # Use master lock: modifying entities dict
+        with self._entities_lock:
+            for entity_hotkey, incoming_entity in incoming_entities.items():
+                # Check if entity exists locally
+                local_entity = self.entities.get(entity_hotkey)
+
+                if not local_entity:
+                    # New entity - add it
+                    self.entities[entity_hotkey] = incoming_entity
+                    # Create lock for new entity
+                    self._entity_locks[entity_hotkey] = threading.RLock()
+                    stats['entities_added'] += 1
+                    stats['subaccounts_added'] += len(incoming_entity.subaccounts)
+                    bt.logging.info(f"[ENTITY_MANAGER] Added new entity {entity_hotkey} with {len(incoming_entity.subaccounts)} subaccounts from sync")
+                else:
+                    # Entity exists - merge subaccounts
+                    # Use per-entity lock for updates
+                    entity_lock = self._get_entity_lock(entity_hotkey)
+                    with entity_lock:
+                        for sub_id, incoming_sub in incoming_entity.subaccounts.items():
+                            local_sub = local_entity.subaccounts.get(sub_id)
+
+                            if not local_sub:
+                                # New subaccount - add it
+                                local_entity.subaccounts[sub_id] = incoming_sub
+                                stats['subaccounts_added'] += 1
+                                bt.logging.info(f"[ENTITY_MANAGER] Added subaccount {incoming_sub.synthetic_hotkey} from sync")
+                            else:
+                                # Subaccount exists - update status if changed
+                                if local_sub.status != incoming_sub.status:
+                                    old_status = local_sub.status
+                                    local_sub.status = incoming_sub.status
+                                    local_sub.eliminated_at_ms = incoming_sub.eliminated_at_ms
+                                    stats['subaccounts_updated'] += 1
+                                    bt.logging.info(f"[ENTITY_MANAGER] Updated subaccount {incoming_sub.synthetic_hotkey} status: {old_status} -> {incoming_sub.status}")
+
+                        # Update next_subaccount_id to prevent ID collisions
+                        if incoming_entity.next_subaccount_id > local_entity.next_subaccount_id:
+                            local_entity.next_subaccount_id = incoming_entity.next_subaccount_id
+
+            # Persist changes to disk
+            self._write_entities_from_memory_to_disk()
+
+        bt.logging.info(f"[ENTITY_MANAGER] Entity sync complete: {stats}")
+        return stats
 
     # ==================== Persistence ====================
 
