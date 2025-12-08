@@ -78,6 +78,7 @@ class CoreOutputsManager:
         from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
         from vali_objects.contract.contract_client import ContractClient
         from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
+        from entitiy_management.entity_client import EntityClient
 
         self._position_client = PositionManagerClient(
             port=ValiConfig.RPC_POSITIONMANAGER_PORT,
@@ -93,6 +94,8 @@ class CoreOutputsManager:
         self._contract_client = ContractClient(connection_mode=connection_mode)
         # AssetSelectionClient for asset selection operations (forward compatibility)
         self._asset_selection_client = AssetSelectionClient(connection_mode=connection_mode)
+        # EntityClient for entity operations (forward compatibility)
+        self._entity_client = EntityClient(connection_mode=connection_mode, running_unit_tests=running_unit_tests)
 
         # Manager uses regular dict (no IPC needed - managed by server)
         self.validator_checkpoint_cache = {}
@@ -310,6 +313,13 @@ class CoreOutputsManager:
         except Exception as e:
             bt.logging.warning(f"Could not fetch asset selections: {e}")
 
+        # Get entity data via RPC client (forward compatibility)
+        entities_dict = {}
+        try:
+            entities_dict = self._entity_client.to_checkpoint_dict()
+        except Exception as e:
+            bt.logging.warning(f"Could not fetch entity data: {e}")
+
         final_dict = {
             'version': ValiConfig.VERSION,
             'created_timestamp_ms': time_now,
@@ -317,6 +327,7 @@ class CoreOutputsManager:
             'challengeperiod': challengeperiod_dict,
             'miner_account_sizes': miner_account_sizes_dict,
             'eliminations': eliminations,
+            'entities': entities_dict,
             'youngest_order_processed_ms': youngest_order_processed_ms,
             'oldest_order_processed_ms': oldest_order_processed_ms,
             'positions': ord_dict_hotkey_position_map,

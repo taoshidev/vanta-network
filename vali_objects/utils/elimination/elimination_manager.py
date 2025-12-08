@@ -531,7 +531,7 @@ class EliminationManager(CacheController):
                 return
             self.first_refresh_ran = True
             # Get snapshot of eliminated hotkeys while holding lock
-            eliminated_hotkeys = set(self.eliminations.keys())
+            eliminated_hotkeys = list(self.eliminations.keys())
 
         # Process outside lock (I/O operations don't need lock)
         hotkey_to_positions = self._position_client.get_positions_for_hotkeys(eliminated_hotkeys,
