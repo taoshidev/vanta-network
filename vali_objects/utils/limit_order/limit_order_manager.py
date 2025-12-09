@@ -73,9 +73,9 @@ class LimitOrderManager(CacheController):
         # Regular Python dict - NO IPC!
         self._limit_orders = {}
         self._last_fill_time = {}
+        self._last_print_time_ms = 0
 
         self._read_limit_orders_from_disk()
-        self._reset_counters()
 
         # Create dedicated locks for protecting self._limit_orders dictionary
         # Convert limit orders structure to format expected by PositionLocks
@@ -467,7 +467,9 @@ class LimitOrderManager(CacheController):
         if self.running_unit_tests:
             print(f"[CHECK_AND_FILL_CALLED] check_and_fill_limit_orders(call_id={call_id}) called, {len(self._limit_orders)} trade pairs")
 
-        bt.logging.info(f"Checking limit orders across {len(self._limit_orders)} trade pairs")
+        if now_ms - self._last_print_time_ms > 60 * 1000:
+            bt.logging.info(f"Checking limit orders across {len(self._limit_orders)} trade pairs")
+            self._last_print_time_ms = now_ms
 
         for trade_pair, hotkey_dict in self._limit_orders.items():
             # Check if market is open
@@ -520,7 +522,8 @@ class LimitOrderManager(CacheController):
                         # This prevents rapid sequential fills and enforces rate limiting.
                         break
 
-        bt.logging.info(f"Limit order check complete: checked={total_checked}, filled={total_filled}")
+        if total_filled > 0:
+            bt.logging.info(f"Limit order check complete: checked={total_checked}, filled={total_filled}")
 
         return {
             'checked': total_checked,
@@ -1026,11 +1029,6 @@ class LimitOrderManager(CacheController):
 
         except Exception as e:
             bt.logging.error(f"Error deleting limit order from disk: {e}")
-
-    def _reset_counters(self):
-        """Reset evaluation counters."""
-        self._limit_orders_evaluated = 0
-        self._limit_orders_filled = 0
 
     def sync_limit_orders(self, sync_data):
         """Sync limit orders from external source."""
