@@ -114,6 +114,10 @@ class ChallengePeriodManager(CacheController):
         self.eliminations_with_reasons: Dict[str, Tuple[str, float]] = {}
         self.active_miners: Dict[str, Tuple[MinerBucket, int, Optional[MinerBucket], Optional[int]]] = {}
 
+        # Cached scores for MinerStatisticsManager
+        self._cached_asset_softmaxed_scores: Dict[str, Dict[str, float]] = {}
+        self._cached_asset_competitiveness: Dict[str, float] = {}
+
         # Local lock (NOT shared across processes) - RPC methods are auto-serialized
         self.eliminations_lock = threading.Lock()
 
@@ -277,7 +281,7 @@ class ChallengePeriodManager(CacheController):
         inspection_hotkeys: dict[str, int],
         current_time: int,
         hk_to_first_order_time: dict[str, int] | None = None,
-        combined_scores_dict: dict[TradePairCategory, dict] | None = None,
+        asset_softmaxed_scores: dict[str, dict] | None = None,
     ) -> tuple[list[str], list[str], dict[str, tuple[str, float]]]:
         """
         Runs a screening process to eliminate miners who didn't pass the challenge period. Does not modify the challenge period in memory.
@@ -342,10 +346,10 @@ class ChallengePeriodManager(CacheController):
                 continue
 
             # Get hotkey to positions dict that only includes the inspection miner
-            has_minimum_positions, inspection_positions = ChallengePeriodManager.screen_minimum_positions(positions, hotkey)
-            if not has_minimum_positions:
-                miners_not_enough_positions.append(hotkey)
-                continue
+            # has_minimum_positions, inspection_positions = ChallengePeriodManager.screen_minimum_positions(positions, hotkey)
+            # if not has_minimum_positions:
+            #     miners_not_enough_positions.append(hotkey)
+            #     continue
 
             # Check if miner has selected an asset class (only enforce after selection time)
             if current_time >= ASSET_CLASS_SELECTION_TIME_MS and not self.asset_selection_client.get_asset_selection(hotkey):
@@ -370,25 +374,30 @@ class ChallengePeriodManager(CacheController):
         all_miner_account_sizes = self._contract_client.get_all_miner_account_sizes(timestamp_ms=current_time)
 
         # Use provided scores dict if available (for testing), otherwise compute scores
-        if combined_scores_dict is None:
+        if asset_softmaxed_scores is None:
             # Score all rank-eligible miners (including those without minimum days) for accurate threshold
             scoring_hotkeys = success_hotkeys + rank_eligible_hotkeys
             scoring_ledgers = {hotkey: ledger for hotkey, ledger in ledger.items() if hotkey in scoring_hotkeys}
             scoring_positions = {hotkey: pos_list for hotkey, pos_list in positions.items() if hotkey in scoring_hotkeys}
 
-            combined_scores_dict = Scoring.score_miners(
-                ledger_dict=scoring_ledgers,
-                positions=scoring_positions,
-                asset_class_min_days=asset_class_min_days,
-                evaluation_time_ms=current_time,
-                weighting=True,
-                all_miner_account_sizes=all_miner_account_sizes
+            asset_competitiveness, asset_softmaxed_scores = Scoring.score_miner_asset_classes(
+                    ledger_dict=scoring_ledgers,
+                    positions=scoring_positions,
+                    asset_class_min_days=asset_class_min_days,
+                    evaluation_time_ms=current_time,
+                    weighting=True,
+                    all_miner_account_sizes=all_miner_account_sizes
             )
+
+            # Cache scores for MinerStatisticsManager
+            self._cached_asset_softmaxed_scores = asset_softmaxed_scores
+            self._cached_asset_competitiveness = asset_competitiveness
+
 
         hotkeys_to_promote, hotkeys_to_demote = self.evaluate_promotions(
             success_hotkeys,
             promotion_eligible_hotkeys,
-            combined_scores_dict
+            asset_softmaxed_scores
         )
 
         bt.logging.info(f"Challenge Period: evaluated {len(promotion_eligible_hotkeys)}/{len(inspection_hotkeys)} miners eligible for promotion")
@@ -404,13 +413,8 @@ class ChallengePeriodManager(CacheController):
             self,
             success_hotkeys,
             promotion_eligible_hotkeys,
-            combined_scores_dict
+            asset_softmaxed_scores
             ) -> tuple[list[str], list[str]]:
-
-        # score them based on asset class
-        asset_combined_scores = Scoring.combine_scores(combined_scores_dict)
-        asset_softmaxed_scores = Scoring.softmax_by_asset(asset_combined_scores)
-
         # Get asset class selections for filtering during threshold calculation
         miner_asset_selections = {}
         all_selections = self.asset_selection_client.get_all_miner_selections()
@@ -455,6 +459,17 @@ class ChallengePeriodManager(CacheController):
         demote_hotkeys = set(success_hotkeys) - maincomp_hotkeys
 
         return list(promote_hotkeys), list(demote_hotkeys)
+
+    def get_miner_scores(self) -> tuple[Dict[str, Dict[str, float]], Dict[str, float]]:
+        """
+        Get cached miner scores for MinerStatisticsManager.
+
+        Returns:
+            tuple containing:
+            - asset_softmaxed_scores: dict[asset_class, dict[hotkey, score]]
+            - asset_competitiveness: dict[asset_class, competitiveness_score]
+        """
+        return self._cached_asset_softmaxed_scores, self._cached_asset_competitiveness
 
     @staticmethod
     def screen_minimum_interaction(ledger_element) -> bool:

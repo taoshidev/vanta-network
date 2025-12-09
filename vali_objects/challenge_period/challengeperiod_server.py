@@ -191,6 +191,10 @@ class ChallengePeriodServer(RPCServerBase):
         """Get all PLAGIARISM bucket miners as dict {hotkey: start_time}."""
         return self._manager.get_plagiarism_miners()
 
+    def get_miner_scores_rpc(self) -> tuple:
+        """Get cached miner scores for MinerStatisticsManager."""
+        return self._manager.get_miner_scores()
+
     # ==================== Elimination Reasons RPC Methods ====================
 
     def get_all_elimination_reasons_rpc(self) -> dict:
@@ -342,7 +346,7 @@ class ChallengePeriodServer(RPCServerBase):
         inspection_hotkeys: dict,
         current_time: int,
         hk_to_first_order_time: dict = None,
-        combined_scores_dict: dict = None
+        asset_softmaxed_scores: dict = None
     ) -> tuple:
         """Run challenge period inspection (exposed for testing)."""
         return self._manager.inspect(
@@ -353,7 +357,7 @@ class ChallengePeriodServer(RPCServerBase):
             inspection_hotkeys,
             current_time,
             hk_to_first_order_time,
-            combined_scores_dict
+            asset_softmaxed_scores
         )
 
     def to_checkpoint_dict_rpc(self) -> dict:

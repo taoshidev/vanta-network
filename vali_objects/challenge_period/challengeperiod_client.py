@@ -202,6 +202,17 @@ class ChallengePeriodClient(RPCClientBase):
         """Get all PLAGIARISM bucket miners as dict {hotkey: start_time}."""
         return self._server.get_plagiarism_miners_rpc()
 
+    def get_miner_scores(self) -> tuple:
+        """
+        Get cached miner scores for MinerStatisticsManager.
+
+        Returns:
+            tuple containing:
+            - asset_softmaxed_scores: dict[asset_class, dict[hotkey, score]]
+            - asset_competitiveness: dict[asset_class, competitiveness_score]
+        """
+        return self._server.get_miner_scores_rpc()
+
     # ==================== Daemon Methods ====================
 
     def get_daemon_info(self) -> dict:
@@ -309,7 +320,7 @@ class ChallengePeriodClient(RPCClientBase):
         inspection_hotkeys,
         current_time,
         hk_to_first_order_time=None,
-        combined_scores_dict=None
+        asset_softmaxed_scores=None
     ):
         """Run challenge period inspection (exposed for testing)."""
         return self._server.inspect_rpc(
@@ -320,7 +331,7 @@ class ChallengePeriodClient(RPCClientBase):
             inspection_hotkeys=inspection_hotkeys,
             current_time=current_time,
             hk_to_first_order_time=hk_to_first_order_time,
-            combined_scores_dict=combined_scores_dict
+            asset_softmaxed_scores=asset_softmaxed_scores
         )
 
     def to_checkpoint_dict(self) -> dict:

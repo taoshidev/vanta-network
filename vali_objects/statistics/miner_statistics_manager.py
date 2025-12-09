@@ -727,14 +727,9 @@ class MinerStatisticsManager:
         )
         bt.logging.info(f"generate_minerstats asset_class_min_days: {asset_class_min_days}")
         all_miner_account_sizes = self.contract_manager.get_all_miner_account_sizes(timestamp_ms=time_now)
-        success_competitiveness, asset_softmaxed_scores = Scoring.score_miner_asset_classes(
-            ledger_dict=filtered_ledger,
-            positions=filtered_positions,
-            asset_class_min_days=asset_class_min_days,
-            evaluation_time_ms=time_now,
-            weighting=final_results_weighting,
-            all_miner_account_sizes=all_miner_account_sizes
-        ) # returns asset competitiveness dict, asset softmaxed scores
+
+        # Get cached scores from ChallengePeriodManager (computed in evaluate_promotions)
+        asset_softmaxed_scores, success_competitiveness = self.challengeperiod_manager.get_miner_scores()
 
         miner_asset_selections = self.asset_selection_manager.get_all_miner_selections()
 
