@@ -102,8 +102,10 @@ class DebtLedgerTester:
                     if 'performance' in checkpoint:
                         if 'portfolio_return' not in checkpoint['performance']:
                             issues.append(f"Checkpoint {i} performance missing portfolio_return")
-                        if 'net_pnl' not in checkpoint['performance']:
-                            issues.append(f"Checkpoint {i} performance missing net_pnl")
+                        if 'realized_pnl' not in checkpoint['performance']:
+                            issues.append(f"Checkpoint {i} performance missing realized_pnl")
+                        if 'unrealized_pnl' not in checkpoint['performance']:
+                            issues.append(f"Checkpoint {i} performance missing unrealized_pnl")
 
                 # Validate summary if present
                 if 'summary' in data:
@@ -111,7 +113,8 @@ class DebtLedgerTester:
                     print(f"Cumulative emissions (TAO): {summary.get('cumulative_emissions_tao', 0):.4f}")
                     print(f"Cumulative emissions (USD): ${summary.get('cumulative_emissions_usd', 0):,.2f}")
                     print(f"Portfolio return: {summary.get('portfolio_return', 0):.6f}")
-                    print(f"Net PnL: {summary.get('net_pnl', 0):.2f}")
+                    print(f"Realized PnL: {summary.get('realized_pnl', 0):.2f}")
+                    print(f"Unrealized PnL: {summary.get('unrealized_pnl', 0):.2f}")
 
         if issues:
             print("\n⚠️  Validation Issues:")
@@ -141,7 +144,8 @@ class DebtLedgerTester:
             print(f"  USD: ${summary.get('cumulative_emissions_usd', 0):,.2f}")
             print(f"Portfolio Return: {summary.get('portfolio_return', 0):.6f} ({summary.get('portfolio_return', 0)*100:.4f}%)")
             print(f"Weighted Score: {summary.get('weighted_score', 0):.6f}")
-            print(f"Net PnL: ${summary.get('net_pnl', 0):.2f}")
+            print(f"Realized PnL: ${summary.get('realized_pnl', 0):.2f}")
+            print(f"Unrealized PnL: ${summary.get('unrealized_pnl', 0):.2f}")
 
         if not checkpoints:
             print("\nNo checkpoints to summarize")
@@ -157,7 +161,8 @@ class DebtLedgerTester:
                 'chunk_usd': cp['emissions']['chunk_usd'],
                 'alpha_balance_snapshot': cp['emissions']['alpha_balance_snapshot'],
                 'portfolio_return': cp['performance']['portfolio_return'],
-                'net_pnl': cp['performance']['net_pnl'],
+                'realized_pnl': cp['performance']['realized_pnl'],
+                'unrealized_pnl': cp['performance']['unrealized_pnl'],
                 'weighted_score': cp['derived']['weighted_score']
             })
 
@@ -198,7 +203,8 @@ class DebtLedgerTester:
         print(f"Emissions (TAO): {latest_cp['emissions']['chunk_tao']:.4f}")
         print(f"Emissions (USD): ${latest_cp['emissions']['chunk_usd']:,.2f}")
         print(f"Portfolio Return: {latest_cp['performance']['portfolio_return']:.6f} ({latest_cp['performance']['portfolio_return']*100:.4f}%)")
-        print(f"Net PnL: ${latest_cp['performance']['net_pnl']:.2f}")
+        print(f"Realized PnL: ${latest_cp['performance']['realized_pnl']:.2f}")
+        print(f"Unrealized PnL: ${latest_cp['performance']['unrealized_pnl']:.2f}")
         print(f"Weighted Score: {latest_cp['derived']['weighted_score']:.6f}")
 
         # Statistics over all checkpoints
@@ -243,7 +249,8 @@ class DebtLedgerTester:
                 'alpha_balance_snapshot': cp['emissions']['alpha_balance_snapshot'],
                 'tao_balance_snapshot': cp['emissions']['tao_balance_snapshot'],
                 'portfolio_return': cp['performance']['portfolio_return'],
-                'net_pnl': cp['performance']['net_pnl'],
+                'realized_pnl': cp['performance']['realized_pnl'],
+                'unrealized_pnl': cp['performance']['unrealized_pnl'],
                 'weighted_score': cp['derived']['weighted_score'],
                 'max_drawdown': cp['performance']['max_drawdown']
             })

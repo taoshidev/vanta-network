@@ -90,7 +90,6 @@ class DebtCheckpoint:
 
         # Derived/Computed Fields
         total_fees: Total fees paid (spread + carry)
-        net_pnl: Net PnL (realized + unrealized)
         return_after_fees: Portfolio return after all fees
         weighted_score: Final score after applying all penalties
     """
@@ -133,7 +132,6 @@ class DebtCheckpoint:
             self.challenge_period_status = MinerBucket.UNKNOWN.value
         # Calculate derived financial fields
         self.total_fees = self.spread_fee_loss + self.carry_fee_loss
-        self.net_pnl = self.realized_pnl + self.unrealized_pnl
         self.return_after_fees = self.portfolio_return
         self.weighted_score = self.portfolio_return * self.total_penalty
 
@@ -168,7 +166,6 @@ class DebtCheckpoint:
                 'portfolio_return': self.portfolio_return,
                 'realized_pnl': self.realized_pnl,
                 'unrealized_pnl': self.unrealized_pnl,
-                'net_pnl': self.net_pnl,
                 'spread_fee_loss': self.spread_fee_loss,
                 'carry_fee_loss': self.carry_fee_loss,
                 'total_fees': self.total_fees,

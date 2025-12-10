@@ -157,7 +157,8 @@ class DebtLedgerManager():
             'portfolio_return': ledger.get_current_portfolio_return(),
             'weighted_score': ledger.get_current_weighted_score(),
             'latest_checkpoint_ms': latest.timestamp_ms,
-            'net_pnl': latest.net_pnl,
+            'realized_pnl': latest.realized_pnl,
+            'unrealized_pnl': latest.unrealized_pnl,
             'total_fees': latest.total_fees,
         }
 
