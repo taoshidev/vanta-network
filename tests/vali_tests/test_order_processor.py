@@ -1596,5 +1596,221 @@ class TestOrderProcessor(TestBase):
             result.success = False
 
 
+    # ============================================================================
+    # Test: Market Order with SLTP Fields (Integration with create_sltp_order)
+    # ============================================================================
+
+    def test_process_order_market_with_sltp_creates_bracket(self):
+        """
+        Test that market order with stop_loss/take_profit creates a bracket order.
+
+        This is the primary integration test for market orders with SLTP fields.
+        Verifies that after a successful market order fill, create_sltp_order is called.
+        """
+        signal = {
+            "trade_pair": {"trade_pair_id": "BTCUSD"},
+            "execution_type": "MARKET",
+            "order_type": "LONG",
+            "leverage": 1.0,
+            "stop_loss": 49000.0,
+            "take_profit": 52000.0,
+        }
+
+        mock_limit_order_client = Mock()
+        mock_limit_order_client.create_sltp_order = Mock()
+
+        mock_market_order_manager = Mock()
+        mock_position = Mock()
+        mock_position.is_closed_position = False
+
+        mock_order = Mock()
+        mock_order.stop_loss = 49000.0
+        mock_order.take_profit = 52000.0
+        mock_order.order_type = OrderType.LONG
+        mock_order.quantity = 0.1
+        mock_order.price = 50000.0
+
+        mock_market_order_manager._process_market_order = Mock(
+            return_value=("", mock_position, mock_order)
+        )
+
+        result = OrderProcessor.process_order(
+            signal=signal,
+            miner_order_uuid="test_uuid",
+            now_ms=self.DEFAULT_NOW_MS,
+            miner_hotkey=self.DEFAULT_MINER_HOTKEY,
+            miner_repo_version="1.0.0",
+            limit_order_client=mock_limit_order_client,
+            market_order_manager=mock_market_order_manager
+        )
+
+        # Verify market order was processed
+        self.assertEqual(result.execution_type, ExecutionType.MARKET)
+        mock_market_order_manager._process_market_order.assert_called_once()
+
+        # Verify create_sltp_order was called with correct arguments
+        mock_limit_order_client.create_sltp_order.assert_called_once_with(
+            self.DEFAULT_MINER_HOTKEY, mock_order
+        )
+
+    def test_process_order_market_with_sltp_closed_position_no_bracket(self):
+        """
+        Test that bracket order is NOT created if position is already closed.
+
+        This tests the race condition protection: if market order closes the position
+        (e.g., FLAT order), we should not create a bracket order.
+        """
+        signal = {
+            "trade_pair": {"trade_pair_id": "BTCUSD"},
+            "execution_type": "MARKET",
+            "order_type": "FLAT",
+            "leverage": 1.0,
+            "stop_loss": 49000.0,
+        }
+
+        mock_limit_order_client = Mock()
+        mock_limit_order_client.create_sltp_order = Mock()
+
+        mock_market_order_manager = Mock()
+        mock_position = Mock()
+        mock_position.is_closed_position = True  # Position is closed
+
+        mock_order = Mock()
+        mock_order.stop_loss = 49000.0
+        mock_order.take_profit = None
+
+        mock_market_order_manager._process_market_order = Mock(
+            return_value=("", mock_position, mock_order)
+        )
+
+        OrderProcessor.process_order(
+            signal=signal,
+            miner_order_uuid="test_uuid",
+            now_ms=self.DEFAULT_NOW_MS,
+            miner_hotkey=self.DEFAULT_MINER_HOTKEY,
+            miner_repo_version="1.0.0",
+            limit_order_client=mock_limit_order_client,
+            market_order_manager=mock_market_order_manager
+        )
+
+        # Verify create_sltp_order was NOT called (position is closed)
+        mock_limit_order_client.create_sltp_order.assert_not_called()
+
+    def test_process_order_market_with_sltp_no_position_no_bracket(self):
+        """
+        Test that bracket order is NOT created if no position is returned.
+
+        This handles the edge case where a FLAT order is sent with no existing position.
+        """
+        signal = {
+            "trade_pair": {"trade_pair_id": "BTCUSD"},
+            "execution_type": "MARKET",
+            "order_type": "FLAT",
+            "leverage": 1.0,
+            "stop_loss": 49000.0,
+        }
+
+        mock_limit_order_client = Mock()
+        mock_limit_order_client.create_sltp_order = Mock()
+
+        mock_market_order_manager = Mock()
+        mock_order = Mock()
+        mock_order.stop_loss = 49000.0
+        mock_order.take_profit = None
+
+        # No position returned (e.g., FLAT with no existing position)
+        mock_market_order_manager._process_market_order = Mock(
+            return_value=("", None, mock_order)
+        )
+
+        OrderProcessor.process_order(
+            signal=signal,
+            miner_order_uuid="test_uuid",
+            now_ms=self.DEFAULT_NOW_MS,
+            miner_hotkey=self.DEFAULT_MINER_HOTKEY,
+            miner_repo_version="1.0.0",
+            limit_order_client=mock_limit_order_client,
+            market_order_manager=mock_market_order_manager
+        )
+
+        # Verify create_sltp_order was NOT called
+        mock_limit_order_client.create_sltp_order.assert_not_called()
+
+    def test_process_order_market_with_sltp_no_created_order_no_bracket(self):
+        """
+        Test that bracket order is NOT created if no order is returned.
+
+        Handles edge case where market order processing returns no created order.
+        """
+        signal = {
+            "trade_pair": {"trade_pair_id": "BTCUSD"},
+            "execution_type": "MARKET",
+            "order_type": "LONG",
+            "leverage": 1.0,
+            "stop_loss": 49000.0,
+        }
+
+        mock_limit_order_client = Mock()
+        mock_limit_order_client.create_sltp_order = Mock()
+
+        mock_market_order_manager = Mock()
+        mock_position = Mock()
+        mock_position.is_closed_position = False
+
+        # No order returned
+        mock_market_order_manager._process_market_order = Mock(
+            return_value=("", mock_position, None)
+        )
+
+        OrderProcessor.process_order(
+            signal=signal,
+            miner_order_uuid="test_uuid",
+            now_ms=self.DEFAULT_NOW_MS,
+            miner_hotkey=self.DEFAULT_MINER_HOTKEY,
+            miner_repo_version="1.0.0",
+            limit_order_client=mock_limit_order_client,
+            market_order_manager=mock_market_order_manager
+        )
+
+        # Verify create_sltp_order was NOT called
+        mock_limit_order_client.create_sltp_order.assert_not_called()
+
+    def test_process_order_market_with_sltp_error_no_bracket(self):
+        """
+        Test that bracket order is NOT created if market order fails.
+
+        Verifies that SLTP bracket creation only happens on successful market orders.
+        """
+        signal = {
+            "trade_pair": {"trade_pair_id": "BTCUSD"},
+            "execution_type": "MARKET",
+            "order_type": "LONG",
+            "leverage": 1.0,
+            "stop_loss": 49000.0,
+        }
+
+        mock_limit_order_client = Mock()
+        mock_limit_order_client.create_sltp_order = Mock()
+
+        mock_market_order_manager = Mock()
+        mock_market_order_manager._process_market_order = Mock(
+            return_value=("Order too soon", None, None)
+        )
+
+        with self.assertRaises(SignalException):
+            OrderProcessor.process_order(
+                signal=signal,
+                miner_order_uuid="test_uuid",
+                now_ms=self.DEFAULT_NOW_MS,
+                miner_hotkey=self.DEFAULT_MINER_HOTKEY,
+                miner_repo_version="1.0.0",
+                limit_order_client=mock_limit_order_client,
+                market_order_manager=mock_market_order_manager
+            )
+
+        # Verify create_sltp_order was NOT called
+        mock_limit_order_client.create_sltp_order.assert_not_called()
+
+
 if __name__ == '__main__':
     unittest.main()

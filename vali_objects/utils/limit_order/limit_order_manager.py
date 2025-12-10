@@ -720,7 +720,7 @@ class LimitOrderManager(CacheController):
             self._last_fill_time[trade_pair][miner_hotkey] = fill_time
 
             if order.execution_type == ExecutionType.LIMIT and (order.stop_loss is not None or order.take_profit is not None):
-                self._create_sltp_order(miner_hotkey, order)
+                self.create_sltp_order(miner_hotkey, order)
 
         except Exception as e:
             error_msg = f"Could not fill limit order [{order.order_uuid}]: {e}. Cancelling order"
@@ -769,7 +769,7 @@ class LimitOrderManager(CacheController):
 
             bt.logging.info(f"Successfully closed limit order [{order_uuid}] [{trade_pair_id}] for [{miner_hotkey}]")
 
-    def _create_sltp_order(self, miner_hotkey, parent_order):
+    def create_sltp_order(self, miner_hotkey, parent_order):
         """
         Create a single bracket order with both stop loss and take profit.
         Replaces the previous two-order SLTP system.
@@ -783,12 +783,16 @@ class LimitOrderManager(CacheController):
 
         # Require at least one of SL or TP to be set
         if parent_order.stop_loss is None and parent_order.take_profit is None:
-            bt.logging.debug(f"No SL/TP specified for order [{parent_order.order_uuid}], skipping bracket creation")
+            bt.logging.warning(f"No SL/TP specified for order [{parent_order.order_uuid}], skipping bracket creation")
             return
 
         # Validate SL/TP against fill price before creating bracket order
         fill_price = parent_order.price
         order_type = parent_order.order_type
+
+        if not fill_price:
+            bt.logging.warning(f"Unexpected: no fill price from order [{parent_order.order_uuid}], skipping bracket creation")
+            return
 
         # Validate stop loss and take profit based on order type
         if order_type == OrderType.LONG:
@@ -896,14 +900,9 @@ class LimitOrderManager(CacheController):
         bid_price = ps.bid if ps.bid > 0 else ps.open
         ask_price = ps.ask if ps.ask > 0 else ps.open
 
-        position_type = position.position_type if position else None
-
-        buy_type = order_type == OrderType.LONG or (order_type == OrderType.FLAT and position_type == OrderType.SHORT)
-        sell_type = order_type == OrderType.SHORT or (order_type == OrderType.FLAT and position_type == OrderType.LONG)
-
-        if buy_type:
+        if order_type == OrderType.LONG:
             return limit_price if ask_price <= limit_price else None
-        elif sell_type:
+        elif order_type == OrderType.SHORT:
             return limit_price if bid_price >= limit_price else None
         else:
             return None

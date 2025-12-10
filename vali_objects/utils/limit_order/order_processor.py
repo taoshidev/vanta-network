@@ -440,6 +440,12 @@ class OrderProcessor:
             if err_msg:
                 raise SignalException(err_msg)
 
+            # Create bracket order for SL/TP if market order succeeded and position is open
+            # The created_order already contains stop_loss/take_profit from the signal
+            if created_order and (created_order.stop_loss or created_order.take_profit):
+                if updated_position and not updated_position.is_closed_position:
+                    limit_order_client.create_sltp_order(miner_hotkey, created_order)
+
             return OrderProcessingResult(
                 execution_type=ExecutionType.MARKET,
                 order=created_order,
