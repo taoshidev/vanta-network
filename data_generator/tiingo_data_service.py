@@ -37,7 +37,7 @@ class _TiingoPseudoClient:
         """
         Asynchronous connect method for the Tiingo websocket client
         """
-        POLLING_INTERVAL_S = 5
+        POLLING_INTERVAL_S = 8.6
         last_poll_time = 0
 
         while not self._should_close:
