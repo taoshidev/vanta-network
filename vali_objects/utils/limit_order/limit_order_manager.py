@@ -468,7 +468,8 @@ class LimitOrderManager(CacheController):
             print(f"[CHECK_AND_FILL_CALLED] check_and_fill_limit_orders(call_id={call_id}) called, {len(self._limit_orders)} trade pairs")
 
         if now_ms - self._last_print_time_ms > 60 * 1000:
-            bt.logging.info(f"Checking limit orders across {len(self._limit_orders)} trade pairs")
+            total_orders = sum(len(orders) for hotkey_dict in self._limit_orders.values() for orders in hotkey_dict.values())
+            bt.logging.info(f"Checking {total_orders} limit orders across {len(self._limit_orders)} trade pairs")
             self._last_print_time_ms = now_ms
 
         for trade_pair, hotkey_dict in self._limit_orders.items():
