@@ -387,6 +387,438 @@ Process an asset class selection.
 - `miner_hotkey` (string): Miner's hotkey SS58 address
 - `signature` (string): Request signature
 
+## Entity Management
+
+The entity management endpoints enable entity miners to register, create subaccounts, and manage trading under a hierarchical account structure. Entity miners can operate multiple subaccounts (each with its own synthetic hotkey) for diversified trading strategies.
+
+### Key Concepts
+
+**Entity Miner:** A parent account that can create and manage multiple subaccounts. Entity miners register with a unique hotkey (VANTA_ENTITY_HOTKEY).
+
+**Subaccount:** A trading account under an entity with its own synthetic hotkey. Each subaccount can place orders independently and has separate performance tracking.
+
+**Synthetic Hotkey:** A generated identifier for subaccounts following the format `{entity_hotkey}_{subaccount_id}` (e.g., `5GhDr3xy...abc_0`). Synthetic hotkeys are used for all trading operations.
+
+### Register Entity
+
+`POST /entity/register`
+
+Register a new entity miner that can create and manage subaccounts.
+
+**Request Body:**
+```json
+{
+  "entity_hotkey": "5GhDr3xy...abc",
+  "collateral_amount": 5000.0,
+  "max_subaccounts": 10
+}
+```
+
+**Response:**
+```json
+{
+  "status": "success",
+  "message": "Entity 5GhDr3xy...abc registered successfully",
+  "entity_hotkey": "5GhDr3xy...abc"
+}
+```
+
+**Parameters:**
+- `entity_hotkey` (string, required): The entity's hotkey SS58 address
+- `collateral_amount` (float, optional): Collateral amount in alpha tokens (default: 0.0)
+- `max_subaccounts` (int, optional): Maximum allowed subaccounts (default: 500)
+
+**Example:**
+```bash
+curl -X POST http://localhost:48888/entity/register \
+  -H "Authorization: Bearer YOUR_TIER_200_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "entity_hotkey": "5GhDr3xy...abc",
+    "collateral_amount": 5000.0,
+    "max_subaccounts": 10
+  }'
+```
+
+### Create Subaccount
+
+`POST /entity/create-subaccount`
+
+Create a new trading subaccount under an entity. The subaccount receives a unique synthetic hotkey that can be used for order placement.
+
+**Request Body:**
+```json
+{
+  "entity_hotkey": "5GhDr3xy...abc"
+}
+```
+
+**Response:**
+```json
+{
+  "status": "success",
+  "message": "Subaccount 0 created successfully",
+  "subaccount": {
+    "subaccount_id": 0,
+    "subaccount_uuid": "550e8400-e29b-41d4-a716-446655440000",
+    "synthetic_hotkey": "5GhDr3xy...abc_0",
+    "status": "active",
+    "created_at_ms": 1702345678901,
+    "eliminated_at_ms": null
+  }
+}
+```
+
+**Response Fields:**
+- `subaccount_id`: Monotonically increasing ID (0, 1, 2, ...)
+- `subaccount_uuid`: Unique identifier for the subaccount
+- `synthetic_hotkey`: Generated hotkey for trading operations ({entity_hotkey}_{id})
+- `status`: Current status ("active", "eliminated", or "unknown")
+- `created_at_ms`: Timestamp when subaccount was created
+- `eliminated_at_ms`: Timestamp when eliminated (null if active)
+
+**Example:**
+```bash
+curl -X POST http://localhost:48888/entity/create-subaccount \
+  -H "Authorization: Bearer YOUR_TIER_200_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "entity_hotkey": "5GhDr3xy...abc"
+  }'
+```
+
+**Important Notes:**
+- Subaccount IDs are monotonically increasing and never reused
+- The synthetic hotkey must be used for all trading operations
+- Entity hotkeys cannot place orders directly (only subaccounts can trade)
+- New subaccounts are automatically broadcasted to all validators in the network
+
+### Get Entity Data
+
+`GET /entity/<entity_hotkey>`
+
+Retrieve comprehensive data for a specific entity, including all subaccounts and their status.
+
+**Response:**
+```json
+{
+  "status": "success",
+  "entity": {
+    "entity_hotkey": "5GhDr3xy...abc",
+    "subaccounts": {
+      "0": {
+        "subaccount_id": 0,
+        "subaccount_uuid": "550e8400-e29b-41d4-a716-446655440000",
+        "synthetic_hotkey": "5GhDr3xy...abc_0",
+        "status": "active",
+        "created_at_ms": 1702345678901,
+        "eliminated_at_ms": null
+      },
+      "1": {
+        "subaccount_id": 1,
+        "subaccount_uuid": "550e8400-e29b-41d4-a716-446655440001",
+        "synthetic_hotkey": "5GhDr3xy...abc_1",
+        "status": "active",
+        "created_at_ms": 1702345688902,
+        "eliminated_at_ms": null
+      }
+    },
+    "next_subaccount_id": 2,
+    "collateral_amount": 5000.0,
+    "max_subaccounts": 10,
+    "registered_at_ms": 1702345670000
+  }
+}
+```
+
+**Example:**
+```bash
+curl -H "Authorization: Bearer YOUR_TIER_200_API_KEY" \
+     http://localhost:48888/entity/5GhDr3xy...abc
+```
+
+### Get All Entities
+
+`GET /entities`
+
+Retrieve all registered entities in the system.
+
+**Response:**
+```json
+{
+  "status": "success",
+  "entities": {
+    "5GhDr3xy...abc": {
+      "entity_hotkey": "5GhDr3xy...abc",
+      "subaccounts": { /* ... */ },
+      "next_subaccount_id": 2,
+      "collateral_amount": 5000.0,
+      "max_subaccounts": 10,
+      "registered_at_ms": 1702345670000
+    },
+    "5FghJk...xyz": {
+      /* ... another entity ... */
+    }
+  },
+  "entity_count": 2,
+  "timestamp": 1702345690000
+}
+```
+
+**Example:**
+```bash
+curl -H "Authorization: Bearer YOUR_TIER_200_API_KEY" \
+     http://localhost:48888/entities
+```
+
+### Get Subaccount Dashboard
+
+`GET /entity/subaccount/<synthetic_hotkey>`
+
+Retrieve comprehensive dashboard data for a specific subaccount by aggregating information from multiple systems.
+
+**Aggregated Data Includes:**
+- Subaccount info (status, timestamps, entity parent)
+- Challenge period status (bucket, start time, progress)
+- Debt ledger data (performance metrics, returns)
+- Position data (open positions, leverage, PnL)
+- Statistics (cached metrics, scores, rankings)
+- Elimination status (if eliminated)
+
+**Response:**
+```json
+{
+  "status": "success",
+  "dashboard": {
+    "subaccount_info": {
+      "synthetic_hotkey": "5GhDr3xy...abc_0",
+      "entity_hotkey": "5GhDr3xy...abc",
+      "subaccount_id": 0,
+      "status": "active",
+      "created_at_ms": 1702345678901,
+      "eliminated_at_ms": null
+    },
+    "challenge_period": {
+      "bucket": "CHALLENGE",
+      "start_time_ms": 1702345678901
+    },
+    "ledger": {
+      /* DebtLedger object with performance data */
+    },
+    "positions": {
+      "positions": [ /* array of open positions */ ],
+      "total_leverage": 0.5
+    },
+    "statistics": {
+      /* cached miner statistics */
+    },
+    "elimination": {
+      /* elimination data if eliminated, null otherwise */
+    }
+  },
+  "timestamp": 1702345690000
+}
+```
+
+**Example:**
+```bash
+curl -H "Authorization: Bearer YOUR_TIER_200_API_KEY" \
+     http://localhost:48888/entity/subaccount/5GhDr3xy...abc_0
+```
+
+**Use Cases:**
+- Frontend dashboards for displaying subaccount performance
+- Real-time monitoring of subaccount trading activity
+- Challenge period progress tracking
+- Position and risk management
+
+### Eliminate Subaccount
+
+`POST /entity/subaccount/eliminate`
+
+Manually eliminate a subaccount. This permanently disables trading for the subaccount.
+
+**Request Body:**
+```json
+{
+  "entity_hotkey": "5GhDr3xy...abc",
+  "subaccount_id": 0,
+  "reason": "manual_elimination"
+}
+```
+
+**Response:**
+```json
+{
+  "status": "success",
+  "message": "Subaccount 0 eliminated successfully"
+}
+```
+
+**Parameters:**
+- `entity_hotkey` (string, required): The entity's hotkey SS58 address
+- `subaccount_id` (int, required): The subaccount ID to eliminate
+- `reason` (string, optional): Reason for elimination (default: "manual_elimination")
+
+**Example:**
+```bash
+curl -X POST http://localhost:48888/entity/subaccount/eliminate \
+  -H "Authorization: Bearer YOUR_TIER_200_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "entity_hotkey": "5GhDr3xy...abc",
+    "subaccount_id": 0,
+    "reason": "manual_elimination"
+  }'
+```
+
+**Important Notes:**
+- Eliminated subaccounts cannot be reactivated
+- The subaccount ID will never be reused for this entity
+- All open positions for the subaccount are automatically closed (FLAT order)
+- Elimination is permanent and cannot be undone
+
+### Entity Trading Workflow
+
+**1. Register as an entity miner:**
+```bash
+curl -X POST http://localhost:48888/entity/register \
+  -H "Authorization: Bearer YOUR_TIER_200_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"entity_hotkey": "5GhDr..."}'
+```
+
+**2. Create subaccounts:**
+```bash
+curl -X POST http://localhost:48888/entity/create-subaccount \
+  -H "Authorization: Bearer YOUR_TIER_200_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"entity_hotkey": "5GhDr..."}'
+```
+
+**3. Place orders using synthetic hotkeys:**
+- Use the `synthetic_hotkey` (e.g., `5GhDr..._0`) returned from subaccount creation
+- Submit orders via the standard Vanta order placement mechanism
+- Each subaccount trades independently with its own positions and performance tracking
+
+**4. Monitor performance:**
+```bash
+# Get dashboard data for a subaccount
+curl -H "Authorization: Bearer YOUR_TIER_200_API_KEY" \
+     http://localhost:48888/entity/subaccount/5GhDr..._0
+
+# Get all entity data
+curl -H "Authorization: Bearer YOUR_TIER_200_API_KEY" \
+     http://localhost:48888/entity/5GhDr...
+```
+
+### Entity Management with Python
+
+```python
+import requests
+
+API_KEY = "YOUR_TIER_200_API_KEY"
+BASE_URL = "http://localhost:48888"
+HEADERS = {
+    "Authorization": f"Bearer {API_KEY}",
+    "Content-Type": "application/json"
+}
+
+# Register entity
+response = requests.post(
+    f"{BASE_URL}/entity/register",
+    headers=HEADERS,
+    json={
+        "entity_hotkey": "5GhDr3xy...abc",
+        "collateral_amount": 5000.0,
+        "max_subaccounts": 10
+    }
+)
+print(f"Entity registered: {response.json()}")
+
+# Create subaccount
+response = requests.post(
+    f"{BASE_URL}/entity/create-subaccount",
+    headers=HEADERS,
+    json={"entity_hotkey": "5GhDr3xy...abc"}
+)
+subaccount = response.json()["subaccount"]
+synthetic_hotkey = subaccount["synthetic_hotkey"]
+print(f"Created subaccount with synthetic hotkey: {synthetic_hotkey}")
+
+# Get entity data
+response = requests.get(
+    f"{BASE_URL}/entity/5GhDr3xy...abc",
+    headers=HEADERS
+)
+entity_data = response.json()["entity"]
+print(f"Entity has {len(entity_data['subaccounts'])} subaccounts")
+
+# Get subaccount dashboard
+response = requests.get(
+    f"{BASE_URL}/entity/subaccount/{synthetic_hotkey}",
+    headers=HEADERS
+)
+dashboard = response.json()["dashboard"]
+print(f"Subaccount status: {dashboard['subaccount_info']['status']}")
+
+# Eliminate subaccount (if needed)
+response = requests.post(
+    f"{BASE_URL}/entity/subaccount/eliminate",
+    headers=HEADERS,
+    json={
+        "entity_hotkey": "5GhDr3xy...abc",
+        "subaccount_id": 0,
+        "reason": "poor_performance"
+    }
+)
+print(f"Elimination result: {response.json()}")
+```
+
+### Error Responses
+
+All entity endpoints may return the following error responses:
+
+**401 Unauthorized:**
+```json
+{
+  "error": "Unauthorized access"
+}
+```
+Missing or invalid API key.
+
+**403 Forbidden:**
+```json
+{
+  "error": "Your API key does not have access to tier 200 data"
+}
+```
+API key does not have tier 200 access required for entity management.
+
+**404 Not Found:**
+```json
+{
+  "error": "Entity 5GhDr... not found"
+}
+```
+Requested entity or subaccount does not exist.
+
+**400 Bad Request:**
+```json
+{
+  "error": "Missing required field: entity_hotkey"
+}
+```
+Invalid request format or missing required parameters.
+
+**503 Service Unavailable:**
+```json
+{
+  "error": "Entity management not available"
+}
+```
+Entity management service is not running or unavailable.
+
 ## Compression Support
 
 The API server supports automatic gzip compression for REST responses, which can significantly reduce payload sizes and improve performance. Compression is particularly beneficial for large responses like miner positions and statistics.

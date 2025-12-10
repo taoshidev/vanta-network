@@ -1563,13 +1563,13 @@ class VantaRestServer(RPCServerBase, APIKeyMixin):
                 bt.logging.error(f"Error registering entity: {e}")
                 return jsonify({'error': 'Internal server error registering entity'}), 500
 
-        @self.app.route("/entity/subaccount", methods=["POST"])
+        @self.app.route("/entity/create-subaccount", methods=["POST"])
         def create_subaccount():
             """
             Create a new subaccount for an entity.
 
             Example:
-            curl -X POST http://localhost:48888/entity/subaccount \\
+            curl -X POST http://localhost:48888/entity/create-subaccount \\
               -H "Authorization: Bearer YOUR_API_KEY" \\
               -H "Content-Type: application/json" \\
               -d '{"entity_hotkey": "5GhDr..."}'
@@ -1772,7 +1772,7 @@ class VantaRestServer(RPCServerBase, APIKeyMixin):
                 bt.logging.error(f"Error eliminating subaccount: {e}")
                 return jsonify({'error': 'Internal server error eliminating subaccount'}), 500
 
-        @self.app.route("/entity/subaccount/<synthetic_hotkey>/dashboard", methods=["GET"])
+        @self.app.route("/entity/subaccount/<synthetic_hotkey>", methods=["GET"])
         def get_subaccount_dashboard(synthetic_hotkey):
             """
             Get comprehensive dashboard data for a subaccount.
@@ -1787,7 +1787,7 @@ class VantaRestServer(RPCServerBase, APIKeyMixin):
 
             Example:
             curl -H "Authorization: Bearer YOUR_API_KEY" \
-                 http://localhost:48888/entity/subaccount/entity_alpha_0/dashboard
+                 http://localhost:48888/entity/subaccount/entity_alpha_0
             """
             # Check API key authentication
             api_key = self._get_api_key_safe()
