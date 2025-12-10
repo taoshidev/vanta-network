@@ -603,18 +603,173 @@ Retrieve comprehensive dashboard data for a specific subaccount by aggregating i
       "start_time_ms": 1702345678901
     },
     "ledger": {
-      /* DebtLedger object with performance data */
+      "hotkey": "5GhDr3xy...abc_0",
+      "total_checkpoints": 1,
+      "summary": {
+        "cumulative_emissions_alpha": 10.5,
+        "cumulative_emissions_tao": 0.05,
+        "cumulative_emissions_usd": 25.0,
+        "portfolio_return": 1.035,
+        "weighted_score": 1.0143,
+        "total_fees": -25.0
+      },
+      "checkpoints": [
+        {
+          "timestamp_ms": 1702345678901,
+          "chunk_emissions_alpha": 10.5,
+          "chunk_emissions_tao": 0.05,
+          "chunk_emissions_usd": 25.0,
+          "portfolio_return": 1.035,
+          "realized_pnl": 350.0,
+          "unrealized_pnl": 50.0,
+          "spread_fee_loss": -15.0,
+          "carry_fee_loss": -10.0,
+          "max_drawdown": 0.985,
+          "max_portfolio_value": 1.065,
+          "open_ms": 21500000,
+          "accum_ms": 21600000,
+          "n_updates": 1250,
+          "drawdown_penalty": 1.0,
+          "risk_profile_penalty": 0.98,
+          "total_penalty": 0.98,
+          "challenge_period_status": "CHALLENGE",
+          "total_fees": -25.0,
+          "return_after_fees": 1.015,
+          "weighted_score": 0.9947
+        }
+      ]
     },
     "positions": {
-      "positions": [ /* array of open positions */ ],
-      "total_leverage": 0.5
+      "positions": [
+        {
+          "position_uuid": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+          "miner_hotkey": "5GhDr3xy...abc_0",
+          "position_type": "LONG",
+          "is_closed_position": false,
+          "trade_pair": ["BTCUSD", "BTC/USD", 0.0001, 0.01, 1],
+          "open_ms": 1702340000000,
+          "close_ms": 0,
+          "net_leverage": 0.3,
+          "average_entry_price": 42500.0,
+          "initial_entry_price": 42450.0,
+          "current_return": 1.0235,
+          "return_at_close": 1.0,
+          "orders": [
+            {
+              "order_uuid": "order-uuid-1",
+              "order_type": "LONG",
+              "leverage": 0.3,
+              "price": 42450.0,
+              "bid": 42445.0,
+              "ask": 42455.0,
+              "processed_ms": 1702340000000,
+              "price_sources": [
+                {
+                  "source": "Polygon_rest",
+                  "close": 42450.0,
+                  "start_ms": 1702339999000
+                }
+              ],
+              "src": 0
+            }
+          ]
+        },
+        {
+          "position_uuid": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+          "miner_hotkey": "5GhDr3xy...abc_0",
+          "position_type": "SHORT",
+          "is_closed_position": false,
+          "trade_pair": ["ETHUSD", "ETH/USD", 0.0001, 0.01, 1],
+          "open_ms": 1702342000000,
+          "close_ms": 0,
+          "net_leverage": -0.2,
+          "average_entry_price": 2280.5,
+          "initial_entry_price": 2280.5,
+          "current_return": 1.0105,
+          "return_at_close": 1.0,
+          "orders": [
+            {
+              "order_uuid": "order-uuid-2",
+              "order_type": "SHORT",
+              "leverage": -0.2,
+              "price": 2280.5,
+              "bid": 2280.0,
+              "ask": 2281.0,
+              "processed_ms": 1702342000000,
+              "price_sources": [
+                {
+                  "source": "Polygon_rest",
+                  "close": 2280.5,
+                  "start_ms": 1702341999000
+                }
+              ],
+              "src": 0
+            }
+          ]
+        }
+      ],
+      "thirty_day_returns": 1.028,
+      "all_time_returns": 1.035,
+      "n_positions": 2,
+      "percentage_profitable": 0.65,
+      "total_leverage": 0.1
     },
     "statistics": {
-      /* cached miner statistics */
+      "hotkey": "5GhDr3xy...abc_0",
+      "scores": {
+        "omega_score": {
+          "value": 0.8542,
+          "rank": 12,
+          "percentile": 92.5,
+          "overall_contribution": 0.0
+        },
+        "sharpe_score": {
+          "value": 1.456,
+          "rank": 15,
+          "percentile": 89.2,
+          "overall_contribution": 0.0
+        },
+        "sortino_score": {
+          "value": 2.134,
+          "rank": 10,
+          "percentile": 94.1,
+          "overall_contribution": 0.0
+        },
+        "calmar_score": {
+          "value": 3.245,
+          "rank": 8,
+          "percentile": 95.8,
+          "overall_contribution": 0.0
+        },
+        "return_score": {
+          "value": 0.0350,
+          "rank": 11,
+          "percentile": 93.2,
+          "overall_contribution": 1.0
+        }
+      },
+      "metrics": {
+        "total_return": 0.035,
+        "total_drawdown": 0.015,
+        "sharpe_ratio": 1.456,
+        "sortino_ratio": 2.134,
+        "calmar_ratio": 3.245,
+        "omega_ratio": 0.8542
+      },
+      "combined_score": 0.035,
+      "overall_rank": 11,
+      "overall_percentile": 93.2,
+      "challenge_period": {
+        "bucket": "CHALLENGE",
+        "start_time_ms": 1702345678901,
+        "returns": 0.035,
+        "drawdown": 0.015,
+        "days_elapsed": 15,
+        "pass_threshold_returns": 0.03,
+        "pass_threshold_drawdown": 0.06
+      }
     },
-    "elimination": {
-      /* elimination data if eliminated, null otherwise */
-    }
+    "elimination": null
   },
   "timestamp": 1702345690000
 }
@@ -625,6 +780,99 @@ Retrieve comprehensive dashboard data for a specific subaccount by aggregating i
 curl -H "Authorization: Bearer YOUR_TIER_200_API_KEY" \
      http://localhost:48888/entity/subaccount/5GhDr3xy...abc_0
 ```
+
+**Response Field Descriptions:**
+
+**Ledger (DebtLedger):**
+- `hotkey`: The synthetic hotkey for the subaccount
+- `total_checkpoints`: Total number of checkpoints in the ledger
+- `summary`: Aggregated summary statistics
+  - `cumulative_emissions_alpha/tao/usd`: Total emissions across all checkpoints
+  - `portfolio_return`: Current portfolio return multiplier
+  - `weighted_score`: Current weighted score (return × penalties)
+  - `total_fees`: Total fees from latest checkpoint
+- `checkpoints`: Array of performance snapshots over time
+  - `timestamp_ms`: Checkpoint timestamp in milliseconds
+  - `chunk_emissions_alpha/tao/usd`: Earnings in this time period
+  - `portfolio_return`: Current portfolio return multiplier (1.0 = break-even, 1.035 = 3.5% gain)
+  - `realized_pnl`: Net realized profit/loss during this checkpoint
+  - `unrealized_pnl`: Net unrealized profit/loss during this checkpoint
+  - `spread_fee_loss/carry_fee_loss`: Trading fees incurred
+  - `max_drawdown`: Worst loss from peak (0.985 = 1.5% drawdown)
+  - `max_portfolio_value`: Best portfolio value achieved
+  - `open_ms`: Time with open positions (milliseconds)
+  - `accum_ms`: Duration of this checkpoint period (milliseconds)
+  - `n_updates`: Number of performance updates in this period
+  - `drawdown_penalty/risk_profile_penalty`: Penalty multipliers applied
+  - `total_penalty`: Combined penalty multiplier (product of all penalties)
+  - `challenge_period_status`: Current status (CHALLENGE/MAINCOMP/PROBATION)
+  - `total_fees`: Sum of all fees paid
+  - `return_after_fees`: Portfolio return after deducting all fees
+  - `weighted_score`: Final score after applying all penalties
+
+**Positions:**
+- `positions`: Array of current trading positions
+  - `position_uuid`: Unique identifier for this position
+  - `miner_hotkey`: Subaccount's synthetic hotkey
+  - `position_type`: LONG, SHORT, or FLAT
+  - `is_closed_position`: Whether position is closed (false = still open)
+  - `trade_pair`: [symbol, display_name, min_leverage, max_leverage, trade_pair_id]
+  - `open_ms`: When position was opened (timestamp)
+  - `close_ms`: When position was closed (0 if still open)
+  - `net_leverage`: Current leverage (positive = LONG, negative = SHORT, 0 = FLAT)
+  - `average_entry_price`: Average price across all entries
+  - `initial_entry_price`: Price of first entry order
+  - `current_return`: Current return multiplier (1.0235 = 2.35% gain)
+  - `return_at_close`: Final return when position closes
+  - `orders`: Array of orders within this position
+    - `order_uuid`: Unique identifier for this order
+    - `order_type`: LONG, SHORT, or FLAT
+    - `leverage`: Leverage applied to this order
+    - `price`: Execution price
+    - `bid/ask`: Bid/ask spread at execution time
+    - `processed_ms`: When order was processed
+    - `price_sources`: Price data sources used for execution
+    - `src`: 0 = miner order, 1 = auto-flatten (elimination), 2 = auto-flatten (pair deprecation)
+- `thirty_day_returns`: Return multiplier over the last 30 days
+- `all_time_returns`: Return multiplier across all positions
+- `n_positions`: Total number of positions (open + closed in last 30 days)
+- `percentage_profitable`: Percentage of closed positions that were profitable (0-1)
+- `total_leverage`: Sum of net leverage across all open positions
+
+**Statistics:**
+- `hotkey`: The synthetic hotkey
+- `scores`: Individual metric scores with rankings
+  - `omega_score/sharpe_score/sortino_score/calmar_score/return_score`: Performance metrics
+    - `value`: Calculated metric value
+    - `rank`: Rank among all miners (lower is better, 1 = best)
+    - `percentile`: Percentile ranking (higher is better, 100 = best)
+    - `overall_contribution`: Weight in combined score (0-1, sum = 1.0)
+- `metrics`: Raw performance metrics
+  - `total_return`: Overall return (0.035 = 3.5% gain)
+  - `total_drawdown`: Maximum drawdown experienced (0.015 = 1.5% loss)
+  - `sharpe_ratio`: Risk-adjusted return (higher is better)
+  - `sortino_ratio`: Downside risk-adjusted return (higher is better)
+  - `calmar_ratio`: Return vs maximum drawdown (higher is better)
+  - `omega_ratio`: Probability of gains vs losses (higher is better)
+- `combined_score`: Weighted average of all scores
+- `overall_rank`: Overall rank among all miners
+- `overall_percentile`: Overall percentile ranking
+- `challenge_period`: Detailed challenge period progress (if applicable, null if not in challenge)
+  - Note: This is from the statistics object and includes full progress tracking:
+    - `bucket`: Current bucket (CHALLENGE/MAINCOMP/PROBATION/PLAGIARISM/UNKNOWN)
+    - `start_time_ms`: Timestamp when miner entered challenge period
+    - `returns`: Current returns during challenge period (e.g., 0.035 = 3.5%)
+    - `drawdown`: Current drawdown during challenge period (e.g., 0.015 = 1.5%)
+    - `days_elapsed`: Days spent in challenge period
+    - `pass_threshold_returns`: Required returns to pass (e.g., 0.03 = 3%)
+    - `pass_threshold_drawdown`: Maximum allowed drawdown (e.g., 0.06 = 6%)
+
+**Elimination:**
+- `null` if subaccount is active
+- Object with elimination details if eliminated:
+  - `reason`: Elimination reason (LIQUIDATED, PLAGIARISM, etc.)
+  - `elimination_initiated_time_ms`: When elimination occurred
+  - `dd`: Drawdown at elimination (if applicable)
 
 **Use Cases:**
 - Frontend dashboards for displaying subaccount performance
