@@ -568,7 +568,7 @@ class TestLimitOrders(TestBase):
             price_source,
             50000.0
         )
-        self.assertEqual(trigger, 50000.0)
+        self.assertIsNone(trigger)
 
     def test_evaluate_trigger_price_flat_short_position(self):
         """Test FLAT order trigger for SHORT position (buys at ask)"""
@@ -594,7 +594,7 @@ class TestLimitOrders(TestBase):
             price_source,
             50000.0
         )
-        self.assertEqual(trigger, 50000.0)
+        self.assertIsNone(trigger)
 
     def test_evaluate_trigger_price_fallback_to_open(self):
         """Test fallback to open price when bid/ask is 0"""
@@ -1020,7 +1020,8 @@ class TestLimitOrders(TestBase):
         parent_order = self.create_test_limit_order(
             limit_price=50000.0,
             stop_loss=None,
-            take_profit=51000.0
+            take_profit=51000.0,
+            fill_price=50000.0
         )
 
         self.limit_order_client.create_sltp_order(self.DEFAULT_MINER_HOTKEY, parent_order)
