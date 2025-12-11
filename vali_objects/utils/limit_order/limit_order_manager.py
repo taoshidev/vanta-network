@@ -723,6 +723,10 @@ class LimitOrderManager(CacheController):
             if order.execution_type == ExecutionType.LIMIT and (order.stop_loss is not None or order.take_profit is not None):
                 self.create_sltp_order(miner_hotkey, order)
 
+        except SignalException as e:
+            error_msg = f"Limit order [{order.order_uuid}] filled successfully, but bracket order creation failed: {e}"
+            bt.logging.warning(error_msg)
+
         except Exception as e:
             error_msg = f"Could not fill limit order [{order.order_uuid}]: {e}. Cancelling order"
             bt.logging.info(error_msg)
@@ -784,16 +788,14 @@ class LimitOrderManager(CacheController):
 
         # Require at least one of SL or TP to be set
         if parent_order.stop_loss is None and parent_order.take_profit is None:
-            bt.logging.warning(f"No SL/TP specified for order [{parent_order.order_uuid}], skipping bracket creation")
-            return
+            raise SignalException(f"No SL/TP specified for order [{parent_order.order_uuid}]")
 
         # Validate SL/TP against fill price before creating bracket order
         fill_price = parent_order.price
         order_type = parent_order.order_type
 
         if not fill_price:
-            bt.logging.warning(f"Unexpected: no fill price from order [{parent_order.order_uuid}], skipping bracket creation")
-            return
+            raise SignalException(f"Unexpected: no fill price from order [{parent_order.order_uuid}]")
 
         # Validate stop loss and take profit based on order type
         if order_type == OrderType.LONG:
@@ -801,46 +803,37 @@ class LimitOrderManager(CacheController):
             # - Stop loss must be BELOW fill price (selling at a loss)
             # - Take profit must be ABOVE fill price (selling at a gain)
             if parent_order.stop_loss is not None and parent_order.stop_loss >= fill_price:
-                bt.logging.warning(
+                raise SignalException(
                     f"Invalid LONG bracket order [{parent_order.order_uuid}]: "
-                    f"stop_loss ({parent_order.stop_loss}) must be < fill_price ({fill_price}). "
-                    f"Skipping bracket creation"
+                    f"stop_loss ({parent_order.stop_loss}) must be < fill_price ({fill_price})"
                 )
-                return
 
             if parent_order.take_profit is not None and parent_order.take_profit <= fill_price:
-                bt.logging.warning(
+                raise SignalException(
                     f"Invalid LONG bracket order [{parent_order.order_uuid}]: "
-                    f"take_profit ({parent_order.take_profit}) must be > fill_price ({fill_price}). "
-                    f"Skipping bracket creation"
+                    f"take_profit ({parent_order.take_profit}) must be > fill_price ({fill_price})"
                 )
-                return
 
         elif order_type == OrderType.SHORT:
             # For SHORT positions:
             # - Stop loss must be ABOVE fill price (buying back at a loss)
             # - Take profit must be BELOW fill price (buying back at a gain)
             if parent_order.stop_loss is not None and parent_order.stop_loss <= fill_price:
-                bt.logging.warning(
+                raise SignalException(
                     f"Invalid SHORT bracket order [{parent_order.order_uuid}]: "
-                    f"stop_loss ({parent_order.stop_loss}) must be > fill_price ({fill_price}). "
-                    f"Skipping bracket creation"
+                    f"stop_loss ({parent_order.stop_loss}) must be > fill_price ({fill_price})"
                 )
-                return
 
             if parent_order.take_profit is not None and parent_order.take_profit >= fill_price:
-                bt.logging.warning(
+                raise SignalException(
                     f"Invalid SHORT bracket order [{parent_order.order_uuid}]: "
-                    f"take_profit ({parent_order.take_profit}) must be < fill_price ({fill_price}). "
-                    f"Skipping bracket creation"
+                    f"take_profit ({parent_order.take_profit}) must be < fill_price ({fill_price})"
                 )
-                return
         else:
-            bt.logging.error(
+            raise SignalException(
                 f"Invalid order type for bracket order [{parent_order.order_uuid}]: {order_type}. "
                 f"Must be LONG or SHORT"
             )
-            return
 
         try:
             # Create single bracket order with both SL and TP
@@ -880,6 +873,7 @@ class LimitOrderManager(CacheController):
         except Exception as e:
             bt.logging.error(f"Error creating bracket order: {e}")
             bt.logging.error(traceback.format_exc())
+            raise SignalException(f"Error creating bracket order: {e}")
 
     def _get_position_for(self, hotkey, order):
         """Get open position for hotkey and trade pair."""

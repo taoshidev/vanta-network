@@ -444,7 +444,12 @@ class OrderProcessor:
             # The created_order already contains stop_loss/take_profit from the signal
             if created_order and (created_order.stop_loss or created_order.take_profit):
                 if updated_position and not updated_position.is_closed_position:
-                    limit_order_client.create_sltp_order(miner_hotkey, created_order)
+                    try:
+                        limit_order_client.create_sltp_order(miner_hotkey, created_order)
+                    except SignalException as e:
+                        raise SignalException(
+                            f"Market order filled successfully, but bracket order creation failed: {e}"
+                        )
 
             return OrderProcessingResult(
                 execution_type=ExecutionType.MARKET,

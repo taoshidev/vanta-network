@@ -345,6 +345,7 @@ class ChallengePeriodManager(CacheController):
                 miners_to_eliminate[hotkey] = (EliminationReason.FAILED_CHALLENGE_PERIOD_DRAWDOWN.value, recorded_drawdown_percentage)
                 continue
 
+            # Minimum positions check not necessary if they have ledger. If they have a ledger, they can be scored.
             # Get hotkey to positions dict that only includes the inspection miner
             # has_minimum_positions, inspection_positions = ChallengePeriodManager.screen_minimum_positions(positions, hotkey)
             # if not has_minimum_positions:
