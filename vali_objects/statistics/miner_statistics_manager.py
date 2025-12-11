@@ -217,6 +217,7 @@ class MinerStatisticsManager:
         from vali_objects.contract.contract_client import ContractClient
         from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
         from vali_objects.plagiarism.plagiarism_detector_client import PlagiarismDetectorClient
+        from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
 
         self._position_client = PositionManagerClient(
             port=ValiConfig.RPC_POSITIONMANAGER_PORT,
@@ -228,6 +229,7 @@ class MinerStatisticsManager:
         self._perf_ledger_client = PerfLedgerClient(connection_mode=connection_mode)
         self._plagiarism_detector_client = PlagiarismDetectorClient(connection_mode=connection_mode)
         self._contract_client = ContractClient(connection_mode=connection_mode)
+        self._asset_selection_client = AssetSelectionClient(connection_mode=connection_mode)
 
         self.metrics_calculator = MetricsCalculator(metrics=metrics)
 
@@ -265,6 +267,11 @@ class MinerStatisticsManager:
     def plagiarism_detector(self):
         """Get plagiarism detector client."""
         return self._plagiarism_detector_client
+
+    @property
+    def asset_selection_manager(self):
+        """Get asset selection client."""
+        return self._asset_selection_client
 
     # ==================== Ranking / Percentile Helpers ====================
 
@@ -603,7 +610,7 @@ class MinerStatisticsManager:
             self,
             hotkey: str,
             asset_softmaxed_scores: dict[str, dict[str, float]],
-            asset_class_weights: dict[str, float] = None
+            miner_asset_selections: dict[str, str]
     ) -> dict[str, dict[str, float]]:
         """
         Extract individual miner's scores and rankings for each asset class.
@@ -612,6 +619,7 @@ class MinerStatisticsManager:
             hotkey: The miner's hotkey
             asset_softmaxed_scores: A dictionary with softmax scores for each miner within each asset class
             asset_class_weights: A dictionary with emission weights for each asset class
+            miner_asset_selections: A dictionary mapping hotkeys to their selected asset class
 
         Returns:
             asset_class_data: dict with asset class as key and score/rank/percentile info as value
@@ -620,16 +628,19 @@ class MinerStatisticsManager:
 
         for asset_class, miner_scores in asset_softmaxed_scores.items():
             if hotkey in miner_scores:
-                asset_class_percentiles = self.percentile_rank_dictionary(miner_scores.items())
-                asset_class_ranks = self.rank_dictionary(miner_scores.items())
+                filtered_scores = [
+                    (hk, score) for hk, score in miner_scores.items()
+                    if miner_asset_selections.get(hk) == asset_class
+                ]
+
+                asset_class_percentiles = self.percentile_rank_dictionary(filtered_scores)
+                asset_class_ranks = self.rank_dictionary(filtered_scores)
 
                 # Score is the only one directly impacted by the asset class weighting, each score element should show the overall scoring contribution
                 miner_score = miner_scores.get(hotkey)
-                asset_emission = asset_class_weights.get(asset_class, 0.0)
-                aggregated_score = miner_score * asset_emission
 
                 asset_class_data[asset_class] = {
-                    "score": aggregated_score,
+                    "score": miner_score,
                     "rank": asset_class_ranks.get(hotkey, 0),
                     "percentile": asset_class_percentiles.get(hotkey, 0.0) * 100
                 }
@@ -647,9 +658,8 @@ class MinerStatisticsManager:
                and key not in ['BASE_DIR', 'base_directory']
         }
 
-        # Add asset class breakdown with subcategory weights
+        # Add asset class breakdown
         printable_config['asset_class_breakdown'] = ValiConfig.ASSET_CLASS_BREAKDOWN
-        printable_config['trade_pairs_by_subcategory'] = TradePair.subcategories()
 
         return printable_config
 
@@ -657,7 +667,7 @@ class MinerStatisticsManager:
 
     def generate_miner_statistics_data(
         self,
-        time_now: int = None,
+        time_now: int,
         checkpoints: bool = True,
         risk_report: bool = False,
         selected_miner_hotkeys: List[str] = None,
@@ -717,23 +727,11 @@ class MinerStatisticsManager:
         )
         bt.logging.info(f"generate_minerstats asset_class_min_days: {asset_class_min_days}")
         all_miner_account_sizes = self.contract_manager.get_all_miner_account_sizes(timestamp_ms=time_now)
-        success_competitiveness, asset_softmaxed_scores = Scoring.score_miner_asset_classes(
-            ledger_dict=filtered_ledger,
-            positions=filtered_positions,
-            asset_class_min_days=asset_class_min_days,
-            evaluation_time_ms=time_now,
-            weighting=final_results_weighting,
-            all_miner_account_sizes=all_miner_account_sizes
-        ) # returns asset competitiveness dict, asset softmaxed scores
 
-        # Get asset class weights from config
-        asset_class_weights = {
-            asset_class: config.get('emission', 0.0)
-            for asset_class, config in ValiConfig.ASSET_CLASS_BREAKDOWN.items()
-        }
-        asset_aggregated_scores = Scoring.asset_class_score_aggregation(
-            asset_softmaxed_scores
-        )
+        # Get cached scores from ChallengePeriodManager (computed in evaluate_promotions)
+        asset_softmaxed_scores, success_competitiveness = self.challengeperiod_manager.get_miner_scores()
+
+        miner_asset_selections = self.asset_selection_manager.get_all_miner_selections()
 
         # For weighting logic: gather "successful" checkpoint-based results
         successful_ledger = self._perf_ledger_client.filtered_ledger_for_scoring(hotkeys=challengeperiod_success_hotkeys)
@@ -856,14 +854,14 @@ class MinerStatisticsManager:
             # Build a small function to extract ScoreResult -> dict for each metric
             def build_scores_dict(metric_set: Dict[str, Dict[str, ScoreResult]]) -> Dict[str, Dict[str, float]]:
                 out = {}
-                for subcategory, metric_scores in metric_set.items():
-                    out[subcategory] = {}
+                for asset_class, metric_scores in metric_set.items():
+                    out[asset_class] = {}
                     for metric_name, hotkey_map in metric_scores.items():
                         sr = hotkey_map.get(hotkey)
                         if sr is not None:
-                            out[subcategory][metric_name] = sr.to_dict()
+                            out[asset_class][metric_name] = sr.to_dict()
                         else:
-                            out[subcategory][metric_name] = {}
+                            out[asset_class][metric_name] = {}
                 return out
 
             base_dict = build_scores_dict(base_scores)
@@ -919,7 +917,7 @@ class MinerStatisticsManager:
             asset_class_performance = self.miner_asset_class_scores(
                 hotkey,
                 asset_softmaxed_scores,
-                asset_class_weights
+                miner_asset_selections
             )
 
             final_miner_dict = {

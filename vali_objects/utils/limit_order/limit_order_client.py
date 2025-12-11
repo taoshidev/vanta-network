@@ -283,18 +283,22 @@ class LimitOrderClient(RPCClientBase):
         """
         return self._server.get_position_for_rpc(hotkey, order)
 
-    def create_sltp_orders(self, miner_hotkey: str, parent_order):
+    def create_sltp_order(self, miner_hotkey: str, parent_order):
         """
-        Create SL/TP bracket orders for testing via RPC.
+        Create SL/TP bracket order from a filled market order via RPC.
+
+        Called by OrderProcessor after a market order with stop_loss/take_profit
+        fields is successfully filled. Creates a bracket order that will trigger
+        when price hits SL or TP levels.
 
         Args:
             miner_hotkey: Miner's hotkey
-            parent_order: Parent order object
+            parent_order: Parent order object - the filled market order with SL/TP fields
 
         Returns:
             None
         """
-        return self._server.create_sltp_orders_rpc(miner_hotkey, parent_order)
+        return self._server.create_sltp_order_rpc(miner_hotkey, parent_order)
 
     def evaluate_bracket_trigger_price(self, order, position, price_source):
         """

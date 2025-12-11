@@ -364,21 +364,17 @@ class LimitOrderServer(RPCServerBase):
 
         return self._manager._get_position_for(hotkey, order)
 
-    def create_sltp_orders_rpc(self, miner_hotkey, parent_order):
+    def create_sltp_order_rpc(self, miner_hotkey, parent_order):
         """
-        RPC method to create SL/TP bracket orders for testing.
-
+        RPC method to create SL/TP bracket order from a filled order.
         Args:
             miner_hotkey: Miner's hotkey
-            parent_order: Parent order object (auto-pickled)
+            parent_order: Parent order object (auto-pickled) - the filled order
 
         Returns:
             None
         """
-        if not self.running_unit_tests:
-            raise Exception('create_sltp_orders_rpc can only be called in unit test mode')
-
-        return self._manager._create_sltp_order(miner_hotkey, parent_order)
+        return self._manager.create_sltp_order(miner_hotkey, parent_order)
 
     def evaluate_bracket_trigger_price_rpc(self, order, position, price_source):
         """

@@ -110,12 +110,12 @@ $$
 
 | Metric                 | Scoring Weight |
 |------------------------|----------------|
-| Average Daily PnL      | 90%            |
-| Calmar Ratio           | 2%             |
-| Sharpe Ratio           | 2%             |
-| Omega Ratio            | 2%             |
-| Sortino Ratio          | 2%             |
-| Statistical Confidence | 2%             |
+| Average Daily PnL      | 100%           |
+| Calmar Ratio           | 0%             |
+| Sharpe Ratio           | 0%             |
+| Omega Ratio            | 0%             |
+| Sortino Ratio          | 0%             |
+| Statistical Confidence | 0%             |
 
 ### Scoring Penalties
 

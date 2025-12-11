@@ -14,7 +14,6 @@ from tests.shared_objects.test_utilities import generate_ledger
 from tests.vali_tests.base_objects.test_base import TestBase
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.vali_dataclasses.position import Position
-from vali_objects.scoring.scoring import Scoring
 from vali_objects.challenge_period import ChallengePeriodManager
 from vali_objects.vali_dataclasses.ledger.ledger_utils import LedgerUtils
 from vali_objects.enums.miner_bucket_enum import MinerBucket
@@ -197,35 +196,23 @@ class TestChallengePeriodUnit(TestBase):
             # Re-raise to preserve original test failure behavior
             raise
 
-    def get_combined_scores_dict(self, miner_scores: dict[str, float], asset_class=None):
+    def get_asset_softmaxed_scores(self, miner_scores: dict[str, float], asset_class=None):
         """
-        Create a combined scores dict for testing.
+        Create asset_softmaxed_scores dict for testing.
 
         Args:
             miner_scores: dict mapping hotkey to score (0.0 to 1.0)
             asset_class: TradePairCategory, defaults to CRYPTO
 
         Returns:
-            combined_scores_dict in the format expected by inspect()
+            asset_softmaxed_scores in the format expected by inspect()
+            Format: {TradePairCategory: {hotkey: score, ...}}
         """
         if asset_class is None:
             asset_class = vali_file.TradePairCategory.CRYPTO
 
-        combined_scores_dict = {asset_class: {"metrics": {}, "penalties": {}}}
-        asset_class_dict = combined_scores_dict[asset_class]
-
-        # Create scores for each metric
-        for config_name, config in Scoring.scoring_config.items():
-            scores_list = [(hotkey, score) for hotkey, score in miner_scores.items()]
-            asset_class_dict["metrics"][config_name] = {
-                'scores': scores_list,
-                'weight': config['weight']
-            }
-
-        # All miners get penalty multiplier of 1 (no penalty)
-        asset_class_dict["penalties"] = {hotkey: 1.0 for hotkey in miner_scores.keys()}
-
-        return combined_scores_dict
+        # asset_softmaxed_scores format: {asset_class: {hotkey: score}}
+        return {asset_class: miner_scores}
 
     def _populate_active_miners(self, *, maincomp=[], challenge=[], probation=[]):
         """Populate active miners using RPC client methods with error handling."""
@@ -309,7 +296,7 @@ class TestChallengePeriodUnit(TestBase):
                 # Top 25 success miners get scores from 1.0 down to 0.76 (25 miners)
                 miner_scores[self.SUCCESS_MINER_NAMES[i]] = 1.0 - (i * 0.01)
 
-        combined_scores_dict = self.get_combined_scores_dict(miner_scores)
+        asset_softmaxed_scores = self.get_asset_softmaxed_scores(miner_scores)
 
         # Check that the miner continues in challenge (time remaining, so not eliminated)
         passing, demoted, failing = self.challenge_period_client.inspect(
@@ -320,7 +307,7 @@ class TestChallengePeriodUnit(TestBase):
             inspection_hotkeys={"miner": current_time},
             current_time=current_time,
             hk_to_first_order_time=hk_to_first_order_time,
-            combined_scores_dict=combined_scores_dict,
+            asset_softmaxed_scores=asset_softmaxed_scores,
         )
         self.assertNotIn("miner", passing)
         self.assertNotIn("miner", list(failing.keys()))
@@ -367,6 +354,10 @@ class TestChallengePeriodUnit(TestBase):
         inspection_hotkeys = {"miner": self.START_TIME}
         current_time = self.CURRENTLY_IN_CHALLENGE
 
+        # Create scores where miner is in top 25 (passing)
+        miner_scores = {"miner": 1.0}
+        asset_softmaxed_scores = self.get_asset_softmaxed_scores(miner_scores)
+
         # Check that the miner is screened as passing
         passing, demoted, failing = self.challenge_period_client.inspect(
             positions=inspection_positions,
@@ -376,6 +367,7 @@ class TestChallengePeriodUnit(TestBase):
             inspection_hotkeys=inspection_hotkeys,
             current_time=current_time,
             hk_to_first_order_time=hk_to_first_order_time,
+            asset_softmaxed_scores=asset_softmaxed_scores,
         )
 
         self.assertIn("miner", passing)
@@ -395,6 +387,10 @@ class TestChallengePeriodUnit(TestBase):
         inspection_hotkeys = {"miner": self.START_TIME}
         current_time = self.CURRENTLY_IN_CHALLENGE
 
+        # Create scores where miner is in top 25 (passing)
+        miner_scores = {"miner": 1.0}
+        asset_softmaxed_scores = self.get_asset_softmaxed_scores(miner_scores)
+
         # Check that the miner is screened as passing
         passing, demoted, failing = self.challenge_period_client.inspect(
             positions=inspection_positions,
@@ -404,6 +400,7 @@ class TestChallengePeriodUnit(TestBase):
             inspection_hotkeys=inspection_hotkeys,
             current_time=current_time,
             hk_to_first_order_time=hk_to_first_order_time,
+            asset_softmaxed_scores=asset_softmaxed_scores,
         )
 
         self.assertIn("miner", passing)
@@ -499,7 +496,7 @@ class TestChallengePeriodUnit(TestBase):
         miner_scores[self.SUCCESS_MINER_NAMES[23]] = 0.76
         miner_scores[self.SUCCESS_MINER_NAMES[24]] = 0.75
 
-        combined_scores_dict = self.get_combined_scores_dict(miner_scores)
+        asset_softmaxed_scores = self.get_asset_softmaxed_scores(miner_scores)
 
         # Check that the miner is promoted (in top 25)
         passing, demoted, failing = self.challenge_period_client.inspect(
@@ -510,7 +507,7 @@ class TestChallengePeriodUnit(TestBase):
             inspection_hotkeys={"miner": current_time},
             current_time=current_time,
             hk_to_first_order_time=hk_to_first_order_time,
-            combined_scores_dict=combined_scores_dict,
+            asset_softmaxed_scores=asset_softmaxed_scores,
         )
         self.assertIn("miner", passing)
         self.assertNotIn("miner", list(failing.keys()))
@@ -539,7 +536,7 @@ class TestChallengePeriodUnit(TestBase):
 
         miner_scores["miner"] = 0.74  # Rank 26 (just below rank 25's score of 0.76)
 
-        combined_scores_dict = self.get_combined_scores_dict(miner_scores)
+        asset_softmaxed_scores = self.get_asset_softmaxed_scores(miner_scores)
 
         # Check that the miner continues in challenge (not promoted, not eliminated)
         passing, demoted, failing = self.challenge_period_client.inspect(
@@ -550,7 +547,7 @@ class TestChallengePeriodUnit(TestBase):
             inspection_hotkeys={"miner": current_time},
             current_time=current_time,
             hk_to_first_order_time=hk_to_first_order_time,
-            combined_scores_dict=combined_scores_dict,
+            asset_softmaxed_scores=asset_softmaxed_scores,
         )
         self.assertNotIn("miner", passing)
         self.assertNotIn("miner", list(failing.keys()))
@@ -578,7 +575,7 @@ class TestChallengePeriodUnit(TestBase):
         miner_scores["miner"] = 0.76  # Ties for rank 25
         miner_scores[self.SUCCESS_MINER_NAMES[24]] = 0.75  # Rank 26, will be demoted
 
-        combined_scores_dict = self.get_combined_scores_dict(miner_scores)
+        asset_softmaxed_scores = self.get_asset_softmaxed_scores(miner_scores)
 
         # Check that the miner is promoted (at threshold rank 25)
         passing, demoted, failing = self.challenge_period_client.inspect(
@@ -589,7 +586,7 @@ class TestChallengePeriodUnit(TestBase):
             inspection_hotkeys={"miner": current_time},
             current_time=current_time,
             hk_to_first_order_time=hk_to_first_order_time,
-            combined_scores_dict=combined_scores_dict,
+            asset_softmaxed_scores=asset_softmaxed_scores,
         )
 
         self.assertIn("miner", passing)
@@ -621,6 +618,10 @@ class TestChallengePeriodUnit(TestBase):
         portfolio_cps = [cp for cp in base_ledger_portfolio.cps if cp.last_update_ms < current_time]
         base_ledger_portfolio.cps = portfolio_cps
 
+        # Create scores where miner is in top 25 (passing)
+        miner_scores = {"miner": 1.0}
+        asset_softmaxed_scores = self.get_asset_softmaxed_scores(miner_scores)
+
         # Check that miner with a passing score passes when they have enough trading days
         passing, demoted, failing = self.challenge_period_client.inspect(
             positions=inspection_positions,
@@ -630,6 +631,7 @@ class TestChallengePeriodUnit(TestBase):
             inspection_hotkeys={"miner": current_time},
             current_time=current_time,
             hk_to_first_order_time=hk_to_first_order_time,
+            asset_softmaxed_scores=asset_softmaxed_scores,
         )
 
         self.assertIn("miner", passing)
