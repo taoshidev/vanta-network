@@ -1590,7 +1590,7 @@ class TestLimitOrders(TestBase):
 
     def test_create_sltp_order_long_rejects_sl_above_fill_price(self):
         """
-        LONG order with stop_loss >= fill_price is rejected.
+        LONG order with stop_loss >= fill_price is rejected with SignalException.
 
         A miner cannot create a LONG position and set SL above fill price
         because that would guarantee the SL triggers immediately for a "free" exit.
@@ -1603,17 +1603,13 @@ class TestLimitOrders(TestBase):
             take_profit=None
         )
 
-        # Call create_sltp_order - should silently reject (no bracket created)
-        self.limit_order_client.create_sltp_order(self.DEFAULT_MINER_HOTKEY, parent_order)
-
-        # Verify NO bracket order was created
-        orders = self.get_orders_from_server(self.DEFAULT_MINER_HOTKEY, self.DEFAULT_TRADE_PAIR)
-        bracket_orders = [o for o in orders if o.execution_type == ExecutionType.BRACKET]
-        self.assertEqual(len(bracket_orders), 0, "Bracket order should not be created for invalid SL")
+        # Call create_sltp_order - should raise SignalException
+        with self.assertRaises(SignalException) as context:
+            self.limit_order_client.create_sltp_order(self.DEFAULT_MINER_HOTKEY, parent_order)
 
     def test_create_sltp_order_long_rejects_sl_equal_to_fill_price(self):
         """
-        LONG order with stop_loss == fill_price is rejected.
+        LONG order with stop_loss == fill_price is rejected with SignalException.
 
         Edge case: SL exactly at fill price is also invalid.
         """
@@ -1624,15 +1620,12 @@ class TestLimitOrders(TestBase):
             take_profit=None
         )
 
-        self.limit_order_client.create_sltp_order(self.DEFAULT_MINER_HOTKEY, parent_order)
-
-        orders = self.get_orders_from_server(self.DEFAULT_MINER_HOTKEY, self.DEFAULT_TRADE_PAIR)
-        bracket_orders = [o for o in orders if o.execution_type == ExecutionType.BRACKET]
-        self.assertEqual(len(bracket_orders), 0, "Bracket order should not be created for SL == fill_price")
+        with self.assertRaises(SignalException) as context:
+            self.limit_order_client.create_sltp_order(self.DEFAULT_MINER_HOTKEY, parent_order)
 
     def test_create_sltp_order_long_rejects_tp_below_fill_price(self):
         """
-        LONG order with take_profit <= fill_price is rejected.
+        LONG order with take_profit <= fill_price is rejected with SignalException.
 
         A miner cannot create a LONG position and set TP below fill price
         because that would guarantee instant profit trigger.
@@ -1644,15 +1637,12 @@ class TestLimitOrders(TestBase):
             take_profit=49000.0  # INVALID: Below fill price
         )
 
-        self.limit_order_client.create_sltp_order(self.DEFAULT_MINER_HOTKEY, parent_order)
-
-        orders = self.get_orders_from_server(self.DEFAULT_MINER_HOTKEY, self.DEFAULT_TRADE_PAIR)
-        bracket_orders = [o for o in orders if o.execution_type == ExecutionType.BRACKET]
-        self.assertEqual(len(bracket_orders), 0, "Bracket order should not be created for invalid TP")
+        with self.assertRaises(SignalException) as context:
+            self.limit_order_client.create_sltp_order(self.DEFAULT_MINER_HOTKEY, parent_order)
 
     def test_create_sltp_order_long_rejects_tp_equal_to_fill_price(self):
         """
-        LONG order with take_profit == fill_price is rejected.
+        LONG order with take_profit == fill_price is rejected with SignalException.
         """
         parent_order = self.create_filled_market_order(
             order_type=OrderType.LONG,
@@ -1661,15 +1651,12 @@ class TestLimitOrders(TestBase):
             take_profit=50000.0  # INVALID: Equal to fill price
         )
 
-        self.limit_order_client.create_sltp_order(self.DEFAULT_MINER_HOTKEY, parent_order)
-
-        orders = self.get_orders_from_server(self.DEFAULT_MINER_HOTKEY, self.DEFAULT_TRADE_PAIR)
-        bracket_orders = [o for o in orders if o.execution_type == ExecutionType.BRACKET]
-        self.assertEqual(len(bracket_orders), 0, "Bracket order should not be created for TP == fill_price")
+        with self.assertRaises(SignalException) as context:
+            self.limit_order_client.create_sltp_order(self.DEFAULT_MINER_HOTKEY, parent_order)
 
     def test_create_sltp_order_short_rejects_sl_below_fill_price(self):
         """
-        SHORT order with stop_loss <= fill_price is rejected.
+        SHORT order with stop_loss <= fill_price is rejected with SignalException.
 
         A miner cannot create a SHORT position and set SL below fill price
         because that would be an invalid stop loss (SHORT SL triggers when price goes UP).
@@ -1681,15 +1668,12 @@ class TestLimitOrders(TestBase):
             take_profit=None
         )
 
-        self.limit_order_client.create_sltp_order(self.DEFAULT_MINER_HOTKEY, parent_order)
-
-        orders = self.get_orders_from_server(self.DEFAULT_MINER_HOTKEY, self.DEFAULT_TRADE_PAIR)
-        bracket_orders = [o for o in orders if o.execution_type == ExecutionType.BRACKET]
-        self.assertEqual(len(bracket_orders), 0, "Bracket order should not be created for invalid SHORT SL")
+        with self.assertRaises(SignalException) as context:
+            self.limit_order_client.create_sltp_order(self.DEFAULT_MINER_HOTKEY, parent_order)
 
     def test_create_sltp_order_short_rejects_sl_equal_to_fill_price(self):
         """
-        SHORT order with stop_loss == fill_price is rejected.
+        SHORT order with stop_loss == fill_price is rejected with SignalException.
         """
         parent_order = self.create_filled_market_order(
             order_type=OrderType.SHORT,
@@ -1698,15 +1682,12 @@ class TestLimitOrders(TestBase):
             take_profit=None
         )
 
-        self.limit_order_client.create_sltp_order(self.DEFAULT_MINER_HOTKEY, parent_order)
-
-        orders = self.get_orders_from_server(self.DEFAULT_MINER_HOTKEY, self.DEFAULT_TRADE_PAIR)
-        bracket_orders = [o for o in orders if o.execution_type == ExecutionType.BRACKET]
-        self.assertEqual(len(bracket_orders), 0, "Bracket order should not be created for SHORT SL == fill_price")
+        with self.assertRaises(SignalException) as context:
+            self.limit_order_client.create_sltp_order(self.DEFAULT_MINER_HOTKEY, parent_order)
 
     def test_create_sltp_order_short_rejects_tp_above_fill_price(self):
         """
-        SHORT order with take_profit >= fill_price is rejected.
+        SHORT order with take_profit >= fill_price is rejected with SignalException.
 
         A miner cannot create a SHORT position and set TP above fill price
         because SHORT profits when price goes DOWN, not up.
@@ -1718,15 +1699,12 @@ class TestLimitOrders(TestBase):
             take_profit=51000.0  # INVALID: Above fill price for SHORT
         )
 
-        self.limit_order_client.create_sltp_order(self.DEFAULT_MINER_HOTKEY, parent_order)
-
-        orders = self.get_orders_from_server(self.DEFAULT_MINER_HOTKEY, self.DEFAULT_TRADE_PAIR)
-        bracket_orders = [o for o in orders if o.execution_type == ExecutionType.BRACKET]
-        self.assertEqual(len(bracket_orders), 0, "Bracket order should not be created for invalid SHORT TP")
+        with self.assertRaises(SignalException) as context:
+            self.limit_order_client.create_sltp_order(self.DEFAULT_MINER_HOTKEY, parent_order)
 
     def test_create_sltp_order_short_rejects_tp_equal_to_fill_price(self):
         """
-        SHORT order with take_profit == fill_price is rejected.
+        SHORT order with take_profit == fill_price is rejected with SignalException.
         """
         parent_order = self.create_filled_market_order(
             order_type=OrderType.SHORT,
@@ -1735,11 +1713,8 @@ class TestLimitOrders(TestBase):
             take_profit=50000.0  # INVALID: Equal to fill price
         )
 
-        self.limit_order_client.create_sltp_order(self.DEFAULT_MINER_HOTKEY, parent_order)
-
-        orders = self.get_orders_from_server(self.DEFAULT_MINER_HOTKEY, self.DEFAULT_TRADE_PAIR)
-        bracket_orders = [o for o in orders if o.execution_type == ExecutionType.BRACKET]
-        self.assertEqual(len(bracket_orders), 0, "Bracket order should not be created for SHORT TP == fill_price")
+        with self.assertRaises(SignalException) as context:
+            self.limit_order_client.create_sltp_order(self.DEFAULT_MINER_HOTKEY, parent_order)
 
     def test_create_sltp_order_long_valid_sl_and_tp_succeeds(self):
         """
@@ -1781,9 +1756,9 @@ class TestLimitOrders(TestBase):
         self.assertEqual(bracket_orders[0].stop_loss, 51000.0)
         self.assertEqual(bracket_orders[0].take_profit, 48000.0)
 
-    def test_create_sltp_order_no_sltp_silently_skips(self):
+    def test_create_sltp_order_no_sltp_raises_exception(self):
         """
-        Test that create_sltp_order with no SL or TP silently skips bracket creation.
+        Test that create_sltp_order with no SL or TP raises SignalException.
         """
         parent_order = self.create_filled_market_order(
             order_type=OrderType.LONG,
@@ -1792,15 +1767,12 @@ class TestLimitOrders(TestBase):
             take_profit=None
         )
 
-        self.limit_order_client.create_sltp_order(self.DEFAULT_MINER_HOTKEY, parent_order)
-
-        orders = self.get_orders_from_server(self.DEFAULT_MINER_HOTKEY, self.DEFAULT_TRADE_PAIR)
-        bracket_orders = [o for o in orders if o.execution_type == ExecutionType.BRACKET]
-        self.assertEqual(len(bracket_orders), 0, "No bracket should be created without SL/TP")
+        with self.assertRaises(SignalException) as context:
+            self.limit_order_client.create_sltp_order(self.DEFAULT_MINER_HOTKEY, parent_order)
 
     def test_create_sltp_order_flat_order_rejected(self):
         """
-        Test that FLAT orders cannot have SLTP brackets.
+        Test that FLAT orders cannot have SLTP brackets and raise SignalException.
         """
         parent_order = self.create_filled_market_order(
             order_type=OrderType.FLAT,
@@ -1809,11 +1781,8 @@ class TestLimitOrders(TestBase):
             take_profit=51000.0
         )
 
-        self.limit_order_client.create_sltp_order(self.DEFAULT_MINER_HOTKEY, parent_order)
-
-        orders = self.get_orders_from_server(self.DEFAULT_MINER_HOTKEY, self.DEFAULT_TRADE_PAIR)
-        bracket_orders = [o for o in orders if o.execution_type == ExecutionType.BRACKET]
-        self.assertEqual(len(bracket_orders), 0, "FLAT orders should not create brackets")
+        with self.assertRaises(SignalException) as context:
+            self.limit_order_client.create_sltp_order(self.DEFAULT_MINER_HOTKEY, parent_order)
 
     def test_create_sltp_order_uses_quantity_from_parent(self):
         """
