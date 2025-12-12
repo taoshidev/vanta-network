@@ -28,7 +28,8 @@ class DebtLedgerManager():
     DEFAULT_CHECK_INTERVAL_SECONDS = 3600 * 12  # 12 hours
 
     def __init__(self, slack_webhook_url=None, running_unit_tests=False,
-                 validator_hotkey=None, connection_mode: RPCConnectionMode = RPCConnectionMode.RPC):
+                 validator_hotkey=None, connection_mode: RPCConnectionMode = RPCConnectionMode.RPC,
+                 netuid: int = 8):
         """
         Initialize the manager with a normal Python dict for debt ledgers.
 
@@ -40,12 +41,14 @@ class DebtLedgerManager():
             running_unit_tests: Whether running in unit test mode
             validator_hotkey: Validator hotkey for notifications
             connection_mode: RPC connection mode (for creating clients)
+            netuid: Subnet UID (default: 8 for mainnet, 116 for testnet)
         """
         from shared_objects.slack_notifier import SlackNotifier
         from vali_objects.vali_dataclasses.ledger.emission.emissions_ledger import EmissionsLedgerManager
         from vali_objects.vali_dataclasses.ledger.penalty.penalty_ledger import PenaltyLedgerManager
 
         self.running_unit_tests = running_unit_tests
+        self.netuid = netuid
 
         # SOURCE OF TRUTH: Normal Python dict (NOT IPC dict!)
         # Structure: hotkey -> DebtLedger
@@ -87,7 +90,8 @@ class DebtLedgerManager():
             slack_webhook_url=slack_webhook_url,
             start_daemon=False,
             running_unit_tests=running_unit_tests,
-            validator_hotkey=validator_hotkey
+            validator_hotkey=validator_hotkey,
+            netuid=netuid
         )
 
         self.slack_notifier = SlackNotifier(webhook_url=slack_webhook_url, hotkey=validator_hotkey)

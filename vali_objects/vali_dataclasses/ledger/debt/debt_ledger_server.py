@@ -35,7 +35,8 @@ class DebtLedgerServer(RPCServerBase):
 
     def __init__(self, slack_webhook_url=None, running_unit_tests=False,
                  validator_hotkey=None, start_server=True, start_daemon=True,
-                 is_backtesting=False, connection_mode=RPCConnectionMode.RPC):
+                 is_backtesting=False, connection_mode=RPCConnectionMode.RPC,
+                 netuid: int = 8):
         """
         Initialize the server with RPC infrastructure.
 
@@ -47,6 +48,7 @@ class DebtLedgerServer(RPCServerBase):
             start_daemon: Whether to start daemon thread
             is_backtesting: Whether running in backtesting mode (unused, for compatibility)
             connection_mode: RPC connection mode
+            netuid: Subnet UID (default: 8 for mainnet, 116 for testnet)
         """
         self.is_backtesting = is_backtesting
         # Create the manager first (needed before RPCServerBase init for daemon)
@@ -55,7 +57,8 @@ class DebtLedgerServer(RPCServerBase):
             slack_webhook_url=slack_webhook_url,
             running_unit_tests=running_unit_tests,
             validator_hotkey=validator_hotkey,
-            connection_mode=connection_mode
+            connection_mode=connection_mode,
+            netuid=netuid
         )
 
         # Initialize RPCServerBase with standard daemon pattern
