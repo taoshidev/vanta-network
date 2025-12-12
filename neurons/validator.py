@@ -574,9 +574,26 @@ class Validator(ValidatorBase):
         now_ms = TimeUtil.now_in_millis()
         order = None
         miner_hotkey = synapse.dendrite.hotkey
+        subaccount_id = synapse.subaccount_id
         synapse.validator_hotkey = self.wallet.hotkey.ss58_address
         miner_repo_version = synapse.repo_version
         signal = synapse.signal
+
+        # For entity miners: construct synthetic hotkey if subaccount_id provided
+        if subaccount_id is not None:
+            synthetic_hotkey = f"{miner_hotkey}_{subaccount_id}"
+
+            # Validate using existing method (checks registration, active status, etc.)
+            validation = self.entity_client.validate_hotkey_for_orders(synthetic_hotkey)
+            if not validation['is_valid']:
+                synapse.successfully_processed = False
+                synapse.error_message = validation['error_message']
+                bt.logging.info(
+                    f"received invalid subaccount_id signal [{signal}] from miner_hotkey [{synthetic_hotkey}] using repo version [{miner_repo_version}].")
+                return synapse
+
+            miner_hotkey = synthetic_hotkey  # Use synthetic hotkey for all downstream ops
+
         bt.logging.info( f"received signal [{signal}] from miner_hotkey [{miner_hotkey}] using repo version [{miner_repo_version}].")
 
         # TIMING: Check should_fail_early timing

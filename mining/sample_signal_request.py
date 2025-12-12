@@ -37,12 +37,14 @@ if __name__ == "__main__":
     url = f'{base_url}/api/receive-signal'
 
     # Define the JSON data to be sent in the request
+    # Required fields: 'api_key', 'execution_type', 'trade_pair', 'order_type', and exactly ONE of 'leverage'/'value'/'quantity'
     data = {
+        'api_key': 'xxxx',
         'execution_type': ExecutionType.MARKET,  # Execution types [MARKET, LIMIT, BRACKET, LIMIT_CANCEL]
         'trade_pair': TradePair.BTCUSD,
         'order_type': OrderType.LONG,
 
-        # Order size
+        # Order size [NOTE: it is important that only ONE of 'leverage', 'value', or 'quantity' is provided, otherwise order will fail]
         'leverage': 0.1,    # leverage
         # 'value': 10_000,  # USD value
         # 'quantity': 0.1,  # base asset quantity (lots, shares, coins, etc.)
@@ -53,7 +55,6 @@ if __name__ == "__main__":
         # 'take_profit': 6000,      # Optional for LIMIT orders; creates bracket order on fill
         # 'order_uuid': "",         # Required for LIMIT_CANCEL; UUID of order to cancel
 
-        'api_key': 'xxxx'
     }
 
     # Convert the Python dictionary to JSON format
