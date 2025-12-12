@@ -81,7 +81,13 @@ def handle_data():
         # store miner signal
         signal_file_uuid = data["order_uuid"] if "order_uuid" in data else str(uuid.uuid4())
         signal_path = os.path.join(MinerConfig.get_miner_received_signals_dir(), signal_file_uuid)
-        ValiBkpUtils.write_file(signal_path, dict(signal))
+
+        # Add subaccount_id to signal data if provided
+        signal_dict = dict(signal)
+        if "subaccount_id" in data and data["subaccount_id"] is not None:
+            signal_dict["subaccount_id"] = data["subaccount_id"]
+
+        ValiBkpUtils.write_file(signal_path, signal_dict)
     except IOError as e:
         print(traceback.format_exc())
         return jsonify({"error": f"Error writing signal to file: {e}"}), 500

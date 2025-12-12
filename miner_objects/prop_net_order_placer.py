@@ -262,8 +262,12 @@ class PropNetOrderPlacer:
                 return None
             self.used_miner_uuids.add(miner_order_uuid)
 
-        send_signal_request = SendSignal(signal=signal_data, miner_order_uuid=miner_order_uuid,
-                                         repo_version=REPO_VERSION)
+        send_signal_request = SendSignal(
+            signal=signal_data,
+            miner_order_uuid=miner_order_uuid,
+            repo_version=REPO_VERSION,
+            subaccount_id=signal_data.get('subaccount_id')
+        )
 
         # Continue retrying until max retries reached
         while retry_status['retry_attempts'] < self.MAX_RETRIES and retry_status['validators_needing_retry']:
