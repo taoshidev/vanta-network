@@ -37,9 +37,11 @@ class TestAssetSelectionManager(TestBase):
             mode=ServerMode.TESTING,
             secrets=secrets
         )
+        print('All servers started for TestAssetSelectionManager.')
 
         # Get clients from orchestrator (servers guaranteed ready, no connection delays)
         cls.asset_selection_client = cls.orchestrator.get_client('asset_selection')
+        print('AssetSelectionClient obtained for TestAssetSelectionManager.')
 
     @classmethod
     def tearDownClass(cls):
@@ -56,6 +58,7 @@ class TestAssetSelectionManager(TestBase):
         # NOTE: Skip super().setUp() to avoid killing ports (servers already running)
 
         # Clear all data for test isolation (both memory and disk)
+        print('Clearing all test data before test:', self._testMethodName)
         self.orchestrator.clear_all_test_data()
 
         # Test miners - use deterministic unique names per test to avoid conflicts

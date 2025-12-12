@@ -10,7 +10,8 @@ import signal
 
 from vali_objects.enums.misc import SynapseMethod
 from vanta_api.api_manager import APIManager
-from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ValidatorContext
+from shared_objects.rpc.server_orchestrator import ServerOrchestrator, NeuronContext
+from entitiy_management.entity_utils import is_synthetic_hotkey
 
 
 import template
@@ -31,7 +32,7 @@ from shared_objects.rate_limiter import RateLimiter
 from vali_objects.uuid_tracker import UUIDTracker
 from time_util.time_util import TimeUtil, timeme
 from vali_objects.exceptions.signal_exception import SignalException
-from shared_objects.subtensor_ops.subtensor_ops import MetagraphUpdater
+from shared_objects.subtensor_ops.subtensor_ops import SubtensorOpsManager
 from shared_objects.error_utils import ErrorUtils
 from shared_objects.slack_notifier import SlackNotifier
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
@@ -76,11 +77,13 @@ class Validator(ValidatorBase):
     def __init__(self):
         setproctitle(f"vali_{self.__class__.__name__}")
         # Try to read the file meta/meta.json and print it out
+        # Note: Use print() instead of bt.logging before bt.logging is configured
         try:
             with open("meta/meta.json", "r") as f:
-                bt.logging.info(f"Found meta.json file {f.read()}")
+                meta_content = f.read()
+                print(f"Found meta.json file: {meta_content}")
         except Exception as e:
-            bt.logging.error(f"Error reading meta/meta.json: {e}")
+            print(f"Error reading meta/meta.json: {e}")
 
         ValiBkpUtils.clear_tmp_dir()
         self.uuid_tracker = UUIDTracker()
@@ -90,8 +93,6 @@ class Validator(ValidatorBase):
         self.order_sync = OrderSyncState()
 
         self.config = self.get_config()
-        # Use the getattr function to safely get the autosync attribute with a default of False if not found.
-        self.auto_sync = getattr(self.config, 'autosync', False) and 'ms' not in ValiUtils.get_secrets()
         self.is_mainnet = self.config.netuid == 8
         # Ensure the directory for logging exists, else create one.
         if not os.path.exists(self.config.full_path):
@@ -108,13 +109,6 @@ class Validator(ValidatorBase):
         # Wallet holds cryptographic information, ensuring secure transactions and communication.
         # Activating Bittensor's logging with the set configurations.
         bt.logging(config=self.config, logging_dir=self.config.full_path)
-        bt.logging.info(
-            f"Running validator for subnet: {self.config.netuid} with autosync set to: {self.auto_sync} "
-            f"on network: {self.config.subtensor.chain_endpoint} with config:"
-        )
-
-        # This logs the active configuration to the specified logging directory for review.
-        bt.logging.info(self.config)
 
         # Initialize Bittensor miner objects
         # These classes are vital to interact and function within the Bittensor network.
@@ -126,6 +120,21 @@ class Validator(ValidatorBase):
         self.wallet = bt.wallet(config=self.config)
         wallet_elapsed_s = time.time() - wallet_start_time
         bt.logging.success(f"Validator wallet initialized in {wallet_elapsed_s:.2f}s")
+
+        # Determine if this validator is the mothership using centralized utility
+        self.is_mothership = ValiUtils.is_mothership_wallet(self.wallet)
+        bt.logging.info(f"Is mothership validator: {self.is_mothership}")
+
+        # Auto-sync disabled for mothership (it's the source of truth)
+        self.auto_sync = getattr(self.config, 'autosync', False) and not self.is_mothership
+
+        bt.logging.info(
+            f"Running validator for subnet: {self.config.netuid} with autosync set to: {self.auto_sync} "
+            f"on network: {self.config.subtensor.chain_endpoint} with config:"
+        )
+
+        # This logs the active configuration to the specified logging directory for review.
+        bt.logging.info(self.config)
 
         # Initialize Slack notifier for error reporting
         # Created before LivePriceFetcher so it can be passed for crash notifications
@@ -148,8 +157,7 @@ class Validator(ValidatorBase):
         # ============================================================================
         # SERVER ORCHESTRATOR - Centralized server lifecycle management
         # ============================================================================
-        # Create validator context with all dependencies
-        context = ValidatorContext(
+        context = NeuronContext(
             slack_notifier=self.slack_notifier,
             config=self.config,
             wallet=self.wallet,
@@ -157,12 +165,12 @@ class Validator(ValidatorBase):
             is_mainnet=self.is_mainnet
         )
 
-        # Start all servers (but defer daemon/pre-run setup until after MetagraphUpdater)
+        # Start all servers AND wait for metagraph (blocks until ready)
         orchestrator = ServerOrchestrator.get_instance()
-        orchestrator.start_validator_servers(context, start_daemons=False, run_pre_setup=False)
-        bt.logging.success("[INIT] All servers started via ServerOrchestrator (daemons deferred)")
+        orchestrator.start_validator_servers(context)
+        bt.logging.success("[INIT] All servers started, metagraph populated")
 
-        # Get clients from orchestrator (cached, fast)
+        # Get clients from orchestrator
         self.metagraph_client = orchestrator.get_client('metagraph')
         self.price_fetcher_client = orchestrator.get_client('live_price_fetcher')
         self.position_manager_client = orchestrator.get_client('position_manager')
@@ -172,30 +180,17 @@ class Validator(ValidatorBase):
         self.asset_selection_client = orchestrator.get_client('asset_selection')
         self.perf_ledger_client = orchestrator.get_client('perf_ledger')
         self.debt_ledger_client = orchestrator.get_client('debt_ledger')
+        self.entity_client = orchestrator.get_client('entity')
 
-        # Create MetagraphUpdater with simple parameters
-        # This will run in a thread in the main process
-        # MetagraphUpdater now exposes RPC server for weight setting (validators only)
-        self.metagraph_updater = MetagraphUpdater(
-            self.config, self.wallet.hotkey.ss58_address,
-            False,
-            slack_notifier=self.slack_notifier
-        )
-        self.subtensor = self.metagraph_updater.subtensor
-        bt.logging.info(f"Subtensor: {self.subtensor}")
+        # Get subtensor from SubtensorOpsServer
+        subtensor_ops_server = orchestrator.get_server('subtensor_ops')
+        self.subtensor = subtensor_ops_server.get_subtensor()
+        self.subtensor_ops_manager = subtensor_ops_server.manager  # For blacklist_fn
 
-        # Start the metagraph updater and wait for initial population.
-        # CRITICAL: This must complete before daemons start since they depend on metagraph data.
-        # Weight setting also needs metagraph_updater to be running to receive weight set RPCs.
-        self.metagraph_updater_thread = self.metagraph_updater.start_and_wait_for_initial_update(
-            max_wait_time=60,
-            slack_notifier=self.slack_notifier
-        )
-        bt.logging.success("[INIT] MetagraphUpdater started and populated")
+        # Run pre-run setup (safe - metagraph already populated)
         orchestrator.call_pre_run_setup(perform_order_corrections=True)
 
-        # Now start server daemons and run pre-run setup (safe now that metagraph is populated)
-        # Cache warmup happens automatically inside start_server_daemons() to eliminate race conditions
+        # Start remaining server daemons
         orchestrator.start_server_daemons([
             'perf_ledger',
             'challenge_period',
@@ -209,13 +204,14 @@ class Validator(ValidatorBase):
             'miner_statistics',
             'weight_calculator'
         ])
-        bt.logging.success("[INIT] Server daemons started, caches warmed, and pre-run setup completed")
+        bt.logging.success("[INIT] All daemons started, caches warmed")
         # ============================================================================
 
         # Create PositionSyncer (not a server, runs in main process)
         self.position_syncer = PositionSyncer(
             order_sync=self.order_sync,
-            auto_sync_enabled=self.auto_sync
+            auto_sync_enabled=self.auto_sync,
+            is_mothership=self.is_mothership
         )
 
         # MarketOrderManager creates its own ContractClient internally (forward compatibility)
@@ -229,17 +225,20 @@ class Validator(ValidatorBase):
         if not self.metagraph_client.has_hotkey(self.wallet.hotkey.ss58_address):
             bt.logging.error(
                 f"\nYour validator hotkey: {self.wallet.hotkey.ss58_address} (wallet: {self.wallet.name}, hotkey: {self.wallet.hotkey_str}) "
-                f"is not registered to chain connection: {self.metagraph_updater.get_subtensor()} \n"
+                f"is not registered to chain connection: {self.subtensor_ops_manager.get_subtensor()} \n"
                 f"Run btcli register and try again. "
             )
             exit()
+
+        # Get subtensor from subtensor_ops_manager before calling parent init
+        self.subtensor = self.subtensor_ops_manager.get_subtensor()
 
         # Build and link vali functions to the axon.
         # The axon handles request processing, allowing validators to send this process requests.
         # ValidatorBase creates its own clients internally (forward compatibility):
         # - AssetSelectionClient, ContractClient
         super().__init__(wallet=self.wallet, slack_notifier=self.slack_notifier, config=self.config,
-                         metagraph=self.metagraph_client,
+                         metagraph_client=self.metagraph_client,
                          asset_selection_client=self.asset_selection_client, subtensor=self.subtensor)
 
         # Rate limiters for incoming requests
@@ -250,14 +249,14 @@ class Validator(ValidatorBase):
         if self.config.serve:
             # Create API Manager with configuration options
             self.api_manager = APIManager(
-                slack_webhook_url=self.config.slack_webhook_url,
+                slack_webhook_url=getattr(self.config, 'slack_webhook_url', None),
                 validator_hotkey=self.wallet.hotkey.ss58_address,
-                api_host=self.config.api_host,
-                api_rest_port=self.config.api_rest_port,
-                api_ws_port=self.config.api_ws_port
+                api_host=getattr(self.config, 'api_host', '0.0.0.0'),
+                api_rest_port=getattr(self.config, 'api_rest_port', 48888),
+                api_ws_port=getattr(self.config, 'api_ws_port', 8765)
             )
 
-            # Start the API Manager in a separate thread
+            # Start the API Manager in a separate thread. Handle seperately from other RPCServers as Flask was giving issues.
             self.api_thread = threading.Thread(target=self.api_manager.run, daemon=True)
             self.api_thread.start()
             # Verify thread started
@@ -265,8 +264,8 @@ class Validator(ValidatorBase):
             if not self.api_thread.is_alive():
                 raise RuntimeError("API thread failed to start")
             bt.logging.info(
-                f"API services thread started - REST: {self.config.api_host}:{self.config.api_rest_port}, "
-                f"WebSocket: {self.config.api_host}:{self.config.api_ws_port}")
+                f"API services thread started - REST: {getattr(self.config, 'api_host', '0.0.0.0')}:{getattr(self.config, 'api_rest_port', 48888)}, "
+                f"WebSocket: {getattr(self.config, 'api_host', '0.0.0.0')}:{getattr(self.config, 'api_ws_port', 8765)}")
         else:
             self.api_thread = None
             bt.logging.info("API services not enabled - skipping")
@@ -328,9 +327,7 @@ class Validator(ValidatorBase):
             )
         bt.logging.warning("Stopping axon...")
         self.axon.stop()
-        bt.logging.warning("Stopping metagraph update...")
-        self.metagraph_updater_thread.join()
-        # All RPC servers shut down automatically via ShutdownCoordinator:
+        # SubtensorOpsServer and all RPC servers shut down automatically via ShutdownCoordinator:
         if self.api_thread:
             bt.logging.warning("Stopping API manager...")
             self.api_thread.join()
@@ -454,6 +451,33 @@ class Validator(ValidatorBase):
             synapse.error_message = msg
             return True
 
+        # Entity hotkey validation: Don't allow orders from entity hotkeys (non-synthetic)
+        # Only synthetic hotkeys (subaccounts) can place orders
+        entity_check_start = time.perf_counter()
+        # Fast static function call (no RPC overhead!) - saves ~5-10ms per order
+        if is_synthetic_hotkey(sender_hotkey):
+            # This is a synthetic hotkey - verify it's active
+            found, status, _ = self.entity_client.get_subaccount_status(sender_hotkey)
+            if not found or status != 'active':
+                msg = (f"Synthetic hotkey {sender_hotkey} is not active or not found. "
+                       f"Please ensure your subaccount is properly registered.")
+                bt.logging.warning(msg)
+                synapse.successfully_processed = False
+                synapse.error_message = msg
+                return True
+        else:
+            # Not a synthetic hotkey - check if it's an entity hotkey
+            entity_data = self.entity_client.get_entity_data(sender_hotkey)
+            if entity_data:
+                msg = (f"Entity hotkey {sender_hotkey} cannot place orders directly. "
+                       f"Please use a subaccount (synthetic hotkey) to place orders.")
+                bt.logging.warning(msg)
+                synapse.successfully_processed = False
+                synapse.error_message = msg
+                return True
+        entity_check_ms = (time.perf_counter() - entity_check_start) * 1000
+        bt.logging.info(f"[FAIL_EARLY_DEBUG] entity_hotkey_validation took {entity_check_ms:.2f}ms")
+
         order_uuid = synapse.miner_order_uuid
         tp = Order.parse_trade_pair_from_signal(signal)
         if order_uuid and self.uuid_tracker.exists(order_uuid):
@@ -520,16 +544,16 @@ class Validator(ValidatorBase):
     @timeme
     def blacklist_fn(self, synapse, metagraph) -> Tuple[bool, str]:
         """
-        Override blacklist_fn to use metagraph_updater's cached hotkeys.
+        Override blacklist_fn to use subtensor_ops_manager's cached hotkeys.
 
         Performance impact:
         - metagraph.has_hotkey() RPC call: ~5-10ms → <0.01ms (set lookup)
 
-        Cache is atomically refreshed by metagraph_updater during metagraph updates.
+        Cache is atomically refreshed by subtensor_ops_manager during metagraph updates.
         """
-        # Fast local set lookup via metagraph_updater (no RPC call!)
+        # Fast local set lookup via subtensor_ops_manager (no RPC call!)
         miner_hotkey = synapse.dendrite.hotkey
-        is_registered = self.metagraph_updater.is_hotkey_registered_cached(miner_hotkey)
+        is_registered = self.subtensor_ops_manager.is_hotkey_registered_cached(miner_hotkey)
 
         if not is_registered:
             bt.logging.trace(
@@ -550,9 +574,26 @@ class Validator(ValidatorBase):
         now_ms = TimeUtil.now_in_millis()
         order = None
         miner_hotkey = synapse.dendrite.hotkey
+        subaccount_id = synapse.subaccount_id
         synapse.validator_hotkey = self.wallet.hotkey.ss58_address
         miner_repo_version = synapse.repo_version
         signal = synapse.signal
+
+        # For entity miners: construct synthetic hotkey if subaccount_id provided
+        if subaccount_id is not None:
+            synthetic_hotkey = f"{miner_hotkey}_{subaccount_id}"
+
+            # Validate using existing method (checks registration, active status, etc.)
+            validation = self.entity_client.validate_hotkey_for_orders(synthetic_hotkey)
+            if not validation['is_valid']:
+                synapse.successfully_processed = False
+                synapse.error_message = validation['error_message']
+                bt.logging.info(
+                    f"received invalid subaccount_id signal [{signal}] from miner_hotkey [{synthetic_hotkey}] using repo version [{miner_repo_version}].")
+                return synapse
+
+            miner_hotkey = synthetic_hotkey  # Use synthetic hotkey for all downstream ops
+
         bt.logging.info( f"received signal [{signal}] from miner_hotkey [{miner_hotkey}] using repo version [{miner_repo_version}].")
 
         # TIMING: Check should_fail_early timing
@@ -663,7 +704,6 @@ class Validator(ValidatorBase):
             msg += f" Error: {synapse.error_message}"
         bt.logging.info(msg)
         return synapse
-
 
 # This is the main function, which runs the miner.
 if __name__ == "__main__":

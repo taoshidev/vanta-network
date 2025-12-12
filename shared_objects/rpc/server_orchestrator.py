@@ -28,11 +28,11 @@ Usage in tests:
 
 Usage in validator.py:
 
-    from shared_objects.server_orchestrator import ServerOrchestrator, ServerMode, ValidatorContext
+    from shared_objects.server_orchestrator import ServerOrchestrator, ServerMode, NeuronContext
 
     # Start all servers once at validator startup (recommended pattern with context)
     orchestrator = ServerOrchestrator.get_instance()
-    context = ValidatorContext(
+    context = NeuronContext(
         slack_notifier=self.slack_notifier,
         config=self.config,
         wallet=self.wallet,
@@ -95,14 +95,17 @@ import signal
 import atexit
 import sys
 import time
+import inspect
 import bittensor as bt
 from typing import Dict, Optional, Any
 from dataclasses import dataclass
 from enum import Enum
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from shared_objects.rpc.port_manager import PortManager
 from shared_objects.rpc.rpc_client_base import RPCClientBase
 from shared_objects.rpc.rpc_server_base import RPCServerBase
+from vali_objects.vali_config import RPCConnectionMode
 
 
 class ServerMode(Enum):
@@ -115,13 +118,14 @@ class ServerMode(Enum):
 
 
 @dataclass
-class ValidatorContext:
-    """Context object for validator-specific server configuration."""
+class NeuronContext:
+    """Context object for neuron-specific server configuration (validators and miners)."""
     slack_notifier: Any = None
     config: Any = None
     wallet: Any = None
-    secrets: Dict = None
+    secrets: Dict | None = None
     is_mainnet: bool = False
+    is_miner: bool = False  # True for miners, False for validators
 
     @property
     def validator_hotkey(self) -> str:
@@ -166,7 +170,10 @@ class ServerOrchestrator:
 
     # Server registry - defines all available servers
     # Format: server_name -> ServerConfig
+    # IMPORTANT: Servers are ordered by dependency (servers with no deps first)
+    # This order is used directly for startup sequence - do not reorder without updating dependencies!
     SERVERS = {
+        # Tier 1: No dependencies (foundation servers)
         'common_data': ServerConfig(
             server_class=None,  # Imported lazily to avoid circular imports
             client_class=None,
@@ -179,15 +186,17 @@ class ServerOrchestrator:
             client_class=None,
             required_in_testing=True,
             required_in_miner=True,  # Miners need metagraph data
-            spawn_kwargs={'start_server': True}  # Miners need RPC server for MetagraphUpdater
+            spawn_kwargs={'start_server': True}  # Miners need RPC server for SubtensorOpsManager
+        ),
+        'subtensor_ops': ServerConfig(
+            server_class=None,  # SubtensorOpsServer
+            client_class=None,  # SubtensorOpsClient
+            required_in_testing=True,
+            required_in_miner=True,
+            required_in_validator=True,
+            spawn_kwargs={'start_daemon': False}  # Daemon started later via orchestrator
         ),
         'position_lock': ServerConfig(
-            server_class=None,
-            client_class=None,
-            required_in_testing=True,
-            spawn_kwargs={}
-        ),
-        'contract': ServerConfig(
             server_class=None,
             client_class=None,
             required_in_testing=True,
@@ -199,6 +208,15 @@ class ServerOrchestrator:
             required_in_testing=True,
             spawn_kwargs={'start_daemon': False}  # Daemon started later via orchestrator
         ),
+        'live_price_fetcher': ServerConfig(
+            server_class=None,
+            client_class=None,
+            required_in_testing=True,
+            required_in_miner=False,  # Miners generate own signals, don't need price data
+            spawn_kwargs={'disable_ws': True}  # No WebSockets in testing
+        ),
+
+        # Tier 2: Depends on tier 1
         'challenge_period': ServerConfig(
             server_class=None,
             client_class=None,
@@ -211,11 +229,27 @@ class ServerOrchestrator:
             required_in_testing=True,
             spawn_kwargs={'start_daemon': False}  # Daemon started later via orchestrator
         ),
+
+        # Tier 3: Depends on tier 2
         'position_manager': ServerConfig(
             server_class=None,
             client_class=None,
             required_in_testing=True,
             spawn_kwargs={'start_daemon': False}  # Daemon started later via orchestrator
+        ),
+
+        # Tier 4: Depends on tier 3
+        'contract': ServerConfig(
+            server_class=None,
+            client_class=None,
+            required_in_testing=True,
+            spawn_kwargs={}
+        ),
+        'debt_ledger': ServerConfig(
+            server_class=None,
+            client_class=None,
+            required_in_testing=True,
+            spawn_kwargs={'start_daemon': False}  # No daemon in testing
         ),
         'plagiarism': ServerConfig(
             server_class=None,
@@ -235,25 +269,14 @@ class ServerOrchestrator:
             required_in_testing=True,
             spawn_kwargs={'start_daemon': False}  # Daemon started later via orchestrator
         ),
-        'asset_selection': ServerConfig(
-            server_class=None,
-            client_class=None,
-            required_in_testing=True,
-            spawn_kwargs={}
-        ),
-        'live_price_fetcher': ServerConfig(
-            server_class=None,
-            client_class=None,
-            required_in_testing=True,
-            required_in_miner=False,  # Miners generate own signals, don't need price data
-            spawn_kwargs={'disable_ws': True}  # No WebSockets in testing
-        ),
-        'debt_ledger': ServerConfig(
+        'mdd_checker': ServerConfig(
             server_class=None,
             client_class=None,
             required_in_testing=True,
             spawn_kwargs={'start_daemon': False}  # No daemon in testing
         ),
+
+        # Tier 5: Aggregation and statistics (depends on all above)
         'core_outputs': ServerConfig(
             server_class=None,
             client_class=None,
@@ -266,16 +289,24 @@ class ServerOrchestrator:
             required_in_testing=True,
             spawn_kwargs={'start_daemon': False}  # No daemon in testing
         ),
-        'mdd_checker': ServerConfig(
+        'asset_selection': ServerConfig(
             server_class=None,
             client_class=None,
             required_in_testing=True,
-            spawn_kwargs={'start_daemon': False}  # No daemon in testing
+            spawn_kwargs={}
+        ),
+        'entity': ServerConfig(
+            server_class=None,
+            client_class=None,
+            required_in_testing=True,
+            required_in_miner=False,  # Miners don't need entity management
+            required_in_validator=True,  # Validators need entity management for subaccount tracking
+            spawn_kwargs={'start_daemon': False}  # Daemon started later via orchestrator
         ),
         'weight_calculator': ServerConfig(
             server_class=None,
             client_class=None,
-            required_in_testing=False,  # Only in validator mode
+            required_in_testing=True,
             required_in_miner=False,
             required_in_validator=True,  # Auto-started with other servers
             spawn_kwargs={'start_daemon': False}  # Daemon started later via orchestrator.start_server_daemons()
@@ -319,6 +350,7 @@ class ServerOrchestrator:
         self._mode: Optional[ServerMode] = None
         self._started = False
         self._init_lock = threading.Lock()
+        self._servers_lock = threading.Lock()  # Protect dict writes during parallel startup
 
         # Lazy-load server/client classes to avoid circular imports
         self._classes_loaded = False
@@ -336,6 +368,8 @@ class ServerOrchestrator:
         from shared_objects.rpc.common_data_client import CommonDataClient
         from shared_objects.rpc.metagraph_server import MetagraphServer
         from shared_objects.rpc.metagraph_client import MetagraphClient
+        from shared_objects.subtensor_ops.subtensor_ops_server import SubtensorOpsServer
+        from shared_objects.subtensor_ops.subtensor_ops_client import SubtensorOpsClient
         from shared_objects.locks.position_lock_server import PositionLockServer
         from shared_objects.locks.position_lock_client import PositionLockClient
         from vali_objects.contract.contract_server import ContractServer
@@ -368,6 +402,8 @@ class ServerOrchestrator:
         from vali_objects.utils.mdd_checker.mdd_checker_client import MDDCheckerClient
         from vali_objects.scoring.weight_calculator_server import WeightCalculatorServer
         from vali_objects.scoring.weight_calculator_client import WeightCalculatorClient
+        from entitiy_management.entity_server import EntityServer
+        from entitiy_management.entity_client import EntityClient
 
         # Update registry with classes
         self.SERVERS['common_data'].server_class = CommonDataServer
@@ -375,6 +411,9 @@ class ServerOrchestrator:
 
         self.SERVERS['metagraph'].server_class = MetagraphServer
         self.SERVERS['metagraph'].client_class = MetagraphClient
+
+        self.SERVERS['subtensor_ops'].server_class = SubtensorOpsServer
+        self.SERVERS['subtensor_ops'].client_class = SubtensorOpsClient
 
         self.SERVERS['position_lock'].server_class = PositionLockServer
         self.SERVERS['position_lock'].client_class = PositionLockClient
@@ -423,6 +462,9 @@ class ServerOrchestrator:
 
         self.SERVERS['weight_calculator'].server_class = WeightCalculatorServer
         self.SERVERS['weight_calculator'].client_class = WeightCalculatorClient
+
+        self.SERVERS['entity'].server_class = EntityServer
+        self.SERVERS['entity'].client_class = EntityClient
 
         self._classes_loaded = True
 
@@ -480,7 +522,7 @@ class ServerOrchestrator:
         self,
         mode: ServerMode = ServerMode.TESTING,
         secrets: Optional[Dict] = None,
-        context: Optional[ValidatorContext] = None,
+        context: Optional[NeuronContext] = None,
         **kwargs
     ) -> None:
         """
@@ -492,7 +534,7 @@ class ServerOrchestrator:
         Args:
             mode: ServerMode enum (TESTING, BACKTESTING, PRODUCTION, VALIDATOR)
             secrets: API secrets dictionary (required for live_price_fetcher in legacy mode)
-            context: ValidatorContext for VALIDATOR mode (contains config, wallet, slack_notifier, secrets, etc.)
+            context: NeuronContext for VALIDATOR/MINER mode (contains config, wallet, slack_notifier, secrets, etc.)
             **kwargs: Additional server-specific kwargs
 
         Example:
@@ -503,7 +545,7 @@ class ServerOrchestrator:
             orchestrator.start_all_servers(mode=ServerMode.MINER, secrets=secrets)
 
             # In validator (recommended pattern with context)
-            context = ValidatorContext(
+            context = NeuronContext(
                 slack_notifier=self.slack_notifier,
                 config=self.config,
                 wallet=self.wallet,
@@ -545,68 +587,61 @@ class ServerOrchestrator:
                     continue
                 servers_to_start.append(server_name)
 
-            # Start servers in dependency order
+            # Start servers in parallel using ThreadPoolExecutor
             start_order = self._get_start_order(servers_to_start)
+            assert len(start_order) == len(set(start_order)), "Duplicate servers in start order"
 
-            for server_name in start_order:
-                self._start_server(server_name, secrets=secrets, mode=mode, **kwargs)
+            total_servers = len(start_order)
+            bt.logging.info(f"Starting {total_servers} servers in parallel...")
+
+            # Track progress and errors
+            completed_count = 0
+            errors = []
+
+            # Start all servers in parallel
+            with ThreadPoolExecutor(max_workers=total_servers) as executor:
+                # Submit all server startup tasks
+                future_to_server = {
+                    executor.submit(self._start_server, server_name, secrets, mode, **kwargs): server_name
+                    for server_name in start_order
+                }
+
+                # Wait for all to complete and track progress
+                for future in as_completed(future_to_server):
+                    server_name = future_to_server[future]
+                    try:
+                        future.result()  # Raises exception if startup failed
+                        completed_count += 1
+                        bt.logging.debug(f"[{completed_count}/{total_servers}] {server_name} started successfully")
+                    except Exception as e:
+                        errors.append((server_name, e))
+                        bt.logging.error(f"Failed to start {server_name}: {e}")
+
+            # Check for errors
+            if errors:
+                error_summary = "\n".join([f"  - {name}: {str(e)}" for name, e in errors])
+                raise RuntimeError(
+                    f"Failed to start {len(errors)}/{total_servers} servers:\n{error_summary}"
+                )
 
             self._started = True
-            bt.logging.success(f"All servers started in {mode.value} mode")
+            bt.logging.success(f"All {total_servers} servers started in {mode.value} mode (parallel startup)")
 
     def _get_start_order(self, server_names: list) -> list:
         """
         Get server start order respecting dependencies.
 
-        Dependency graph:
-        - common_data: no dependencies (start first)
-        - metagraph: no dependencies
-        - position_lock: no dependencies
-        - contract: no dependencies
-        - perf_ledger: no dependencies
-        - live_price_fetcher: no dependencies
-        - asset_selection: depends on common_data
-        - challenge_period: depends on common_data, asset_selection
-        - elimination: depends on perf_ledger, challenge_period
-        - position_manager: depends on challenge_period, elimination
-        - debt_ledger: depends on perf_ledger, position_manager (PenaltyLedgerManager uses PositionManagerClient)
-        - websocket_notifier: depends on position_manager (broadcasts position updates)
-        - plagiarism: depends on position_manager
-        - plagiarism_detector: depends on plagiarism, position_manager
-        - limit_order: depends on position_manager
-        - mdd_checker: depends on position_manager, elimination
-        - core_outputs: depends on all above (aggregates checkpoint data)
-        - miner_statistics: depends on all above (generates miner statistics)
-        - weight_calculator: reads data from perf_ledger, position_manager, sends weights to MetagraphUpdater (daemon controlled via WeightCalculatorClient)
+        The dependency order is defined by the order of servers in the SERVERS dict.
+        See SERVERS definition for detailed dependency documentation.
+
+        Args:
+            server_names: List of server names to start
 
         Returns:
-            List of server names in start order
+            List of server names in start order (filtered from SERVERS dict order)
         """
-        # Define dependency order (servers with no deps first)
-        order = [
-            'common_data',
-            'metagraph',
-            'position_lock',
-            'perf_ledger',
-            'live_price_fetcher',
-            'asset_selection',
-            'challenge_period',
-            'elimination',
-            'position_manager',
-            'contract',            # Must come AFTER position_manager, perf_ledger, metagraph (ValidatorContractManager uses these clients)
-            'debt_ledger',         # Must come AFTER position_manager (PenaltyLedgerManager uses PositionManagerClient)
-            'websocket_notifier',
-            'plagiarism',
-            'plagiarism_detector',
-            'limit_order',
-            'mdd_checker',
-            'core_outputs',
-            'miner_statistics',
-            'weight_calculator'  # Depends on perf_ledger, position_manager (reads data for weight calculation)
-        ]
-
-        # Filter to only requested servers, preserving order
-        return [s for s in order if s in server_names]
+        # Filter to only requested servers, preserving SERVERS dict order
+        return [s for s in self.SERVERS.keys() if s in server_names]
 
     def _start_server(
         self,
@@ -663,7 +698,7 @@ class ServerOrchestrator:
                 if context.validator_hotkey:
                     spawn_kwargs['validator_hotkey'] = context.validator_hotkey
 
-            elif server_name in ('contract', 'asset_selection'):
+            elif server_name in ('contract', 'asset_selection', 'entity'):
                 if context.config:
                     spawn_kwargs['config'] = context.config
 
@@ -676,6 +711,9 @@ class ServerOrchestrator:
 
             elif server_name == 'metagraph':
                 spawn_kwargs['start_daemon'] = False  # No daemon for metagraph
+
+        # Servers now create their own mock configs/wallets when running_unit_tests=True
+        # No need for orchestrator to create them here
 
         # Legacy support: Add secrets for servers that need them (if not already added via context)
         if server_name == 'live_price_fetcher' and 'secrets' not in spawn_kwargs:
@@ -695,11 +733,86 @@ class ServerOrchestrator:
             if server_name == 'live_price_fetcher' and 'disable_ws' not in spawn_kwargs:
                 spawn_kwargs['disable_ws'] = True
 
-        # Spawn server process (blocks until ready)
-        handle = server_class.spawn_process(**spawn_kwargs)
-        self._servers[server_name] = handle
+        # MINER MODE: All servers run in-process (LOCAL mode) to avoid port conflicts
+        # This allows multiple miners to run on the same machine without port conflicts
+        if mode == ServerMode.MINER:
+            # Force connection_mode to LOCAL for all miner servers
+            spawn_kwargs['connection_mode'] = RPCConnectionMode.LOCAL
+            spawn_kwargs['start_server'] = False  # Don't start RPC server in LOCAL mode
 
-        bt.logging.success(f"{server_name} server started")
+            # Inject context parameters for all miner servers
+            if context:
+                if context.config and 'config' not in spawn_kwargs:
+                    spawn_kwargs['config'] = context.config
+                if context.wallet and 'wallet' not in spawn_kwargs:
+                    spawn_kwargs['wallet'] = context.wallet
+                if context.slack_notifier and 'slack_notifier' not in spawn_kwargs:
+                    spawn_kwargs['slack_notifier'] = context.slack_notifier
+
+            # Special handling for subtensor_ops: set is_miner flag
+            if server_name == 'subtensor_ops':
+                spawn_kwargs['is_miner'] = True
+
+            bt.logging.info(f"Starting {server_name} (LOCAL mode - in-process for miner)...")
+            instance = server_class(**spawn_kwargs)
+
+            # THREAD-SAFE: Store server instance with lock
+            with self._servers_lock:
+                self._servers[server_name] = instance
+
+            bt.logging.success(f"{server_name} started (LOCAL mode)")
+            return
+
+        # VALIDATOR/TESTING/BACKTESTING: Normal RPC mode (separate processes)
+        # SubtensorOpsServer also runs in LOCAL mode for validators (in main validator process)
+        if server_name == 'subtensor_ops':
+            # Inject wallet and config from context
+            if context:
+                if context.config:
+                    spawn_kwargs['config'] = context.config
+                if context.wallet:
+                    spawn_kwargs['wallet'] = context.wallet
+
+            # SubtensorOpsServer now creates its own mock config/wallet when running_unit_tests=True
+            # No need for orchestrator to create them here
+
+            # Determine if miner or validator (will be False here since miners handled above)
+            spawn_kwargs['is_miner'] = False
+
+            # SubtensorOpsServer runs in LOCAL mode and has specific parameter requirements
+            # Dynamically filter spawn_kwargs to only include parameters accepted by SubtensorOpsServer
+            # This uses introspection to automatically adapt to signature changes
+            sig = inspect.signature(server_class.__init__)
+            accepted_params = set(sig.parameters.keys()) - {'self'}  # Exclude 'self'
+
+            # Filter spawn_kwargs to only accepted parameters
+            filtered_kwargs = {k: v for k, v in spawn_kwargs.items() if k in accepted_params}
+
+            # Debug: Log filtered out parameters if any were removed
+            removed_params = set(spawn_kwargs.keys()) - set(filtered_kwargs.keys())
+            if removed_params:
+                bt.logging.trace(
+                    f"[subtensor_ops] Filtered out unsupported parameters: {removed_params}"
+                )
+
+            bt.logging.info(f"Starting {server_name} (LOCAL mode - in main validator process)...")
+            instance = server_class(**filtered_kwargs)
+
+            # THREAD-SAFE: Store server instance with lock
+            with self._servers_lock:
+                self._servers[server_name] = instance
+
+            bt.logging.success(f"{server_name} started (LOCAL mode)")
+            return
+
+        # All other servers: spawn as separate process with RPC
+        handle = server_class.spawn_process(**spawn_kwargs)
+
+        # THREAD-SAFE: Store server handle with lock
+        with self._servers_lock:
+            self._servers[server_name] = handle
+
+        bt.logging.success(f"{server_name} server started (RPC mode)")
 
     def get_client(self, server_name: str) -> Any:
         """
@@ -759,9 +872,48 @@ class ServerOrchestrator:
         else:
             client = client_class(running_unit_tests=(self._mode == ServerMode.TESTING))
 
+        # MINER MODE: Connect client directly to in-process server (LOCAL mode bypass RPC)
+        if self._mode == ServerMode.MINER:
+            server_instance = self._servers[server_name]
+            client.set_direct_server(server_instance)
+            bt.logging.debug(f"Client for {server_name} using LOCAL mode (direct server connection)")
+
         self._clients[server_name] = client
 
         return client
+
+    def get_server(self, server_name: str) -> Any:
+        """
+        Get server instance directly (for LOCAL mode servers).
+
+        Use this for servers that run in-process like subtensor_ops.
+        For RPC servers, use get_client() instead.
+
+        Args:
+            server_name: Name of server (e.g., 'subtensor_ops')
+
+        Returns:
+            Server instance
+
+        Raises:
+            RuntimeError: If servers not started or server not found
+
+        Example:
+            subtensor_ops_server = orchestrator.get_server('subtensor_ops')
+            subtensor = subtensor_ops_server.get_subtensor()
+        """
+        if not self._started:
+            raise RuntimeError(
+                "Servers not started. Call start_all_servers() first."
+            )
+
+        if server_name not in self.SERVERS:
+            raise ValueError(f"Unknown server: {server_name}")
+
+        if server_name not in self._servers:
+            raise RuntimeError(f"Server {server_name} not started")
+
+        return self._servers[server_name]
 
     def clear_all_test_data(self) -> None:
         """
@@ -889,6 +1041,9 @@ class ServerOrchestrator:
                 contract_client.re_init_account_sizes()  # Reload from disk
             safe_clear('contract', clear_contract)
 
+        # Clear entity data (entities and subaccounts)
+        self.get_client('entity').clear_all_entities()
+
         bt.logging.debug("All test data cleared")
 
     def is_running(self) -> bool:
@@ -911,7 +1066,7 @@ class ServerOrchestrator:
             **kwargs: Additional kwargs to pass to spawn_process
 
         Example:
-            # Start weight_calculator after MetagraphUpdater is running
+            # Start weight_calculator after SubtensorOpsManager is running
             orchestrator.start_individual_server('weight_calculator')
         """
         if server_name in self._servers:
@@ -1140,63 +1295,94 @@ class ServerOrchestrator:
         bt.logging.success(f"All {len(cacheable_clients)} client caches warmed up and ready")
 
 
-    def start_validator_servers(
+    def start_neuron_servers(
         self,
-        context: ValidatorContext,
-        start_daemons: bool = True,
-        run_pre_setup: bool = True
+        context: NeuronContext,
+        metagraph_timeout: float = 60.0
     ) -> None:
         """
-        Start all servers for validator with proper initialization sequence.
+        Start all servers for a neuron (miner or validator) with proper initialization sequence.
 
-        This is a high-level method that:
-        1. Starts all required servers in dependency order
-        2. Creates clients
-        3. Optionally starts daemons for servers that defer initialization
-        4. Optionally runs pre_run_setup on PositionManager
+        Automatically detects neuron type from context.is_miner and starts appropriate servers.
+
+        CRITICAL: Handles metagraph synchronization - subtensor_ops daemon starts
+        and blocks until metagraph populates before other daemons can start.
 
         Args:
-            context: Validator context (slack_notifier, config, wallet, secrets, etc.)
-            start_daemons: Whether to start daemons for deferred servers (default: True)
-            run_pre_setup: Whether to run PositionManager pre_run_setup (default: True)
+            context: Neuron context (slack_notifier, config, wallet, secrets, etc.)
+                    Must have is_miner=True for miners, is_miner=False for validators
+            metagraph_timeout: Max time to wait for metagraph (default: 60s)
 
-        Example:
-            context = ValidatorContext(
+        Example (Validator):
+            context = NeuronContext(
                 slack_notifier=self.slack_notifier,
                 config=self.config,
                 wallet=self.wallet,
                 secrets=self.secrets,
-                is_mainnet=self.is_mainnet
+                is_mainnet=self.is_mainnet,
+                is_miner=False
             )
+            orchestrator.start_neuron_servers(context)
 
-            orchestrator.start_validator_servers(context)
-
-            # Get clients for use in validator
-            self.position_manager_client = orchestrator.get_client('position_manager')
-            self.perf_ledger_client = orchestrator.get_client('perf_ledger')
+        Example (Miner):
+            context = NeuronContext(
+                slack_notifier=self.slack_notifier,
+                config=self.config,
+                wallet=self.wallet,
+                secrets=None,
+                is_mainnet=is_mainnet,
+                is_miner=True
+            )
+            orchestrator.start_neuron_servers(context)
         """
-        # Start all servers with context injection
-        self.start_all_servers(
-            mode=ServerMode.VALIDATOR,
-            context=context
-        )
+        # Determine mode from context
+        mode = ServerMode.MINER if context.is_miner else ServerMode.VALIDATOR
+        neuron_type = "miner" if context.is_miner else "validator"
 
-        # Start daemons for servers that deferred initialization
-        if start_daemons:
-            daemon_servers = [
-                'position_manager',
-                'elimination',
-                'challenge_period',
-                'perf_ledger',
-                'debt_ledger'
-            ]
-            self.start_server_daemons(daemon_servers)
+        # Start all servers with context injection (daemons deferred)
+        self.start_all_servers(mode=mode, context=context)
 
-        # Run pre-run setup if requested
-        if run_pre_setup:
-            self.call_pre_run_setup(perform_order_corrections=True)
+        # Critical synchronization: Wait for metagraph population
+        bt.logging.info(f"[INIT] Starting SubtensorOps daemon for {neuron_type}, waiting for metagraph...")
 
-        bt.logging.success("All validator servers started and initialized")
+        subtensor_ops = self.get_server('subtensor_ops')
+
+        # Start subtensor_ops daemon
+        subtensor_ops.start_daemon()
+
+        # Block until metagraph populated (critical for dependent operations)
+        subtensor_ops.wait_for_initial_update(max_wait_time=metagraph_timeout)
+
+        bt.logging.success(f"[INIT] Metagraph populated, ready for other daemons")
+        bt.logging.success(f"All {neuron_type} servers started and initialized")
+
+    def start_validator_servers(
+        self,
+        context: NeuronContext,
+        metagraph_timeout: float = 60.0
+    ) -> None:
+        """
+        DEPRECATED: Use start_neuron_servers() instead.
+
+        Backwards compatibility wrapper for validators.
+        """
+        # Ensure is_miner is False for validators
+        context.is_miner = False
+        self.start_neuron_servers(context=context, metagraph_timeout=metagraph_timeout)
+
+    def start_miner_servers(
+        self,
+        context: NeuronContext,
+        metagraph_timeout: float = 60.0
+    ) -> None:
+        """
+        DEPRECATED: Use start_neuron_servers() instead.
+
+        Backwards compatibility wrapper for miners.
+        """
+        # Ensure is_miner is True for miners
+        context.is_miner = True
+        self.start_neuron_servers(context=context, metagraph_timeout=metagraph_timeout)
 
     def shutdown_all_servers(self) -> None:
         """

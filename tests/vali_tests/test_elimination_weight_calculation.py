@@ -21,7 +21,7 @@ from vali_objects.utils.asset_segmentation import AssetSegmentation
 from vali_objects.utils.elimination.elimination_manager import EliminationReason
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from shared_objects.locks.position_lock import PositionLocks
-from vali_objects.scoring.subtensor_weight_setter import SubtensorWeightSetter
+from vali_objects.scoring.weight_calculator_manager import WeightCalculatorManager
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.vali_dataclasses.order import Order
@@ -150,7 +150,7 @@ class TestEliminationWeightCalculation(TestBase):
 
         # Initialize weight setter (now that debt ledgers are ready)
         from vali_objects.vali_config import RPCConnectionMode
-        self.weight_setter = SubtensorWeightSetter(
+        self.weight_setter = WeightCalculatorManager(
             connection_mode=RPCConnectionMode.RPC,
             is_backtesting=True,  # For test mode
             is_mainnet=False  # testnet mode
@@ -367,7 +367,7 @@ class TestEliminationWeightCalculation(TestBase):
         if non_zero_weights:
             total_weight = sum(non_zero_weights)
             self.assertGreater(total_weight, 0)
-            # The SubtensorWeightSetter handles normalization internally when calling subtensor.set_weights
+            # The WeightCalculatorManager handles normalization internally when calling subtensor.set_weights
 
     def test_challenge_period_miners_weights(self):
         """Test weight calculation for challenge period miners"""

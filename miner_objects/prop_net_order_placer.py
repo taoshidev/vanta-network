@@ -95,10 +95,11 @@ class PropNetOrderPlacer:
     MAX_WORKERS = 10
     THREAD_POOL_TIMEOUT = 300  # 5 minutes
 
-    def __init__(self, wallet, metagraph_client, config, is_testnet, position_inspector=None, slack_notifier=None):
+    def __init__(self, wallet, metagraph_client, config, is_testnet, position_inspector=None, slack_notifier=None, running_unit_tests=False):
         self.wallet = wallet
         self.metagraph_client = metagraph_client
         self.config = config
+        self.running_unit_tests = running_unit_tests
         self.recently_acked_validators = []
         self.is_testnet = is_testnet
         self.trade_pair_id_to_last_order_send = {tp.trade_pair_id: 0 for tp in TradePair}
@@ -261,8 +262,12 @@ class PropNetOrderPlacer:
                 return None
             self.used_miner_uuids.add(miner_order_uuid)
 
-        send_signal_request = SendSignal(signal=signal_data, miner_order_uuid=miner_order_uuid,
-                                         repo_version=REPO_VERSION)
+        send_signal_request = SendSignal(
+            signal=signal_data,
+            miner_order_uuid=miner_order_uuid,
+            repo_version=REPO_VERSION,
+            subaccount_id=signal_data.get('subaccount_id')
+        )
 
         # Continue retrying until max retries reached
         while retry_status['retry_attempts'] < self.MAX_RETRIES and retry_status['validators_needing_retry']:
@@ -335,11 +340,31 @@ class PropNetOrderPlacer:
             await asyncio.sleep(retry_status['retry_delay_seconds'])
             retry_status['retry_delay_seconds'] *= 2
 
-        # Use async context manager for automatic cleanup
-        async with bt.dendrite(wallet=self.wallet) as dendrite:
+        # In test mode, skip network calls and create mock successful responses
+        if self.running_unit_tests:
+            from bittensor.core.synapse import TerminalInfo
+
             metrics.mark_network_start()
-            validator_responses: list[Synapse] = await dendrite.aquery(retry_status['validators_needing_retry'], send_signal_request)
+            # Create mock successful responses for all validators in test mode
+            validator_responses = []
+            for axon in retry_status['validators_needing_retry']:
+                mock_response = SendSignal(signal=send_signal_request.signal, miner_order_uuid=send_signal_request.miner_order_uuid)
+                mock_response.successfully_processed = True
+                mock_response.validator_hotkey = axon.hotkey
+                mock_response.order_json = json.dumps({"test": "order"})  # Must be JSON string, not dict
+                mock_response.error_message = ""  # Empty string, not None
+                # Mock process times with proper TerminalInfo instances
+                mock_response.axon = TerminalInfo(process_time=0.001)
+                mock_response.dendrite = TerminalInfo(process_time=0.001)
+                validator_responses.append(mock_response)
             metrics.mark_network_end()
+        else:
+            # Production mode: make actual network calls
+            # Use async context manager for automatic cleanup
+            async with bt.dendrite(wallet=self.wallet) as dendrite:
+                metrics.mark_network_start()
+                validator_responses: list[Synapse] = await dendrite.aquery(retry_status['validators_needing_retry'], send_signal_request)
+                metrics.mark_network_end()
 
         all_high_trust_validators_succeeded = True
         success_validators = set()

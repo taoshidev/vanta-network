@@ -60,6 +60,11 @@ class ContractServer(RPCServerBase):
             start_server: Whether to start RPC server immediately
             connection_mode: RPC or LOCAL mode
         """
+        # Create mock config if running tests and config not provided
+        if running_unit_tests:
+            from shared_objects.rpc.test_mock_factory import TestMockFactory
+            config = TestMockFactory.create_mock_config_if_needed(config, netuid=116, network="test")
+
         # Create the manager FIRST, before RPCServerBase.__init__
         # This ensures _manager exists before RPC server starts accepting calls (if start_server=True)
         # CRITICAL: Prevents race condition where RPC calls fail with AttributeError during initialization
@@ -89,24 +94,6 @@ class ContractServer(RPCServerBase):
         """Contract server doesn't need a daemon loop."""
         pass
 
-    # ==================== Properties ====================
-
-    @property
-    def vault_wallet(self):
-        """Get vault wallet from manager."""
-        return self._manager.vault_wallet
-
-    @vault_wallet.setter
-    def vault_wallet(self, value):
-        """Set vault wallet on manager."""
-        self._manager.vault_wallet = value
-
-
-    # ==================== Setup Methods ====================
-
-    def load_contract_owner(self):
-        """Load EVM contract owner secrets and vault wallet."""
-        self._manager.load_contract_owner()
 
     # ==================== RPC Methods (exposed to client) ====================
 
@@ -133,6 +120,10 @@ class ContractServer(RPCServerBase):
     def process_withdrawal_request_rpc(self, amount: float, miner_coldkey: str, miner_hotkey: str) -> Dict[str, Any]:
         """Process a collateral withdrawal request."""
         return self._manager.process_withdrawal_request(amount, miner_coldkey, miner_hotkey)
+
+    def query_withdrawal_request_rpc(self, amount: float, miner_hotkey: str) -> Dict[str, Any]:
+        """Query withdrawal request (preview only - no execution)."""
+        return self._manager.query_withdrawal_request(amount, miner_hotkey)
 
     def slash_miner_collateral_proportion_rpc(self, miner_hotkey: str, slash_proportion: float=None) -> bool:
         """Slash miner's collateral by a proportion."""
@@ -176,7 +167,7 @@ class ContractServer(RPCServerBase):
         try:
             sender_hotkey = synapse.dendrite.hotkey
             bt.logging.info(f"Received collateral record update from validator hotkey [{sender_hotkey}].")
-            success = self.receive_collateral_record_update_rpc(synapse.collateral_record)
+            success = self.receive_collateral_record_update_rpc(synapse.collateral_record, sender_hotkey)
 
             if success:
                 synapse.successfully_processed = True
@@ -194,9 +185,9 @@ class ContractServer(RPCServerBase):
 
         return synapse
 
-    def receive_collateral_record_update_rpc(self, collateral_record_data: dict) -> bool:
+    def receive_collateral_record_update_rpc(self, collateral_record_data: dict, sender_hotkey: str = None) -> bool:
         """Process an incoming CollateralRecord synapse and update miner_account_sizes."""
-        return self._manager.receive_collateral_record_update(collateral_record_data)
+        return self._manager.receive_collateral_record_update(collateral_record_data, sender_hotkey)
 
     def verify_coldkey_owns_hotkey_rpc(self, coldkey_ss58: str, hotkey_ss58: str) -> bool:
         """Verify that a coldkey owns a specific hotkey using subtensor."""
@@ -244,6 +235,9 @@ class ContractServer(RPCServerBase):
 
     def process_withdrawal_request(self, amount: float, miner_coldkey: str, miner_hotkey: str) -> Dict[str, Any]:
         return self._manager.process_withdrawal_request(amount, miner_coldkey, miner_hotkey)
+
+    def query_withdrawal_request(self, amount: float, miner_hotkey: str) -> Dict[str, Any]:
+        return self._manager.query_withdrawal_request(amount, miner_hotkey)
 
     def slash_miner_collateral(self, miner_hotkey: str, slash_amount: float = None) -> bool:
         return self._manager.slash_miner_collateral(miner_hotkey, slash_amount)

@@ -27,6 +27,8 @@ from vali_objects.contract.contract_client import ContractClient
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
 from vali_objects.utils.asset_selection.asset_selection_server import AssetSelectionServer
+from entitiy_management.entity_server import EntityServer
+from entitiy_management.entity_client import EntityClient
 import bittensor as bt
 
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_server import PerfLedgerServer
@@ -88,6 +90,11 @@ def start_servers_for_restore():
     )
 
     servers['asset_selection'] = AssetSelectionServer(
+        start_server=True,
+        running_unit_tests=True
+    )
+
+    servers['entity'] = EntityServer(
         start_server=True,
         running_unit_tests=True
     )
@@ -213,6 +220,7 @@ def regenerate_miner_positions(perform_backup=True, backup_from_data_dir=False, 
         challengeperiod_client = ChallengePeriodClient(running_unit_tests=True)
         limit_order_client = LimitOrderClient(running_unit_tests=True)
         asset_selection_client = AssetSelectionClient(running_unit_tests=True)
+        entity_client = EntityClient(running_unit_tests=True)
 
         if DEBUG:
             position_client.pre_run_setup()
@@ -426,6 +434,15 @@ def regenerate_miner_positions(perform_backup=True, backup_from_data_dir=False, 
             asset_selection_client.sync_miner_asset_selection_data(asset_selections_data)
         else:
             bt.logging.info("No asset selections found in backup data")
+
+        ## Restore entity data
+        entities_data = data.get('entities', {})
+        if entities_data:
+            bt.logging.info(f"syncing {len(entities_data)} entity records")
+            entity_client.sync_entity_data(entities_data)
+            bt.logging.success(f"✓ Restored {len(entities_data)} entities")
+        else:
+            bt.logging.info("No entity data found in backup data")
 
         bt.logging.success("✓ RESTORE COMPLETED SUCCESSFULLY - All data validated and saved")
 

@@ -15,6 +15,7 @@ from vali_objects.contract.contract_server import ContractServer
 from vali_objects.utils.elimination.elimination_server import EliminationServer
 from vali_objects.position_management.position_manager_server import PositionManagerServer
 from vali_objects.data_sync.validator_sync_base import ValidatorSyncBase
+from entitiy_management.entity_server import EntityServer
 import bittensor as bt
 
 from vali_objects.vali_config import RPCConnectionMode
@@ -28,12 +29,13 @@ from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_server import PerfLed
 class PositionSyncer(ValidatorSyncBase):
     def __init__(self, order_sync=None, running_unit_tests=False,
                  auto_sync_enabled=False, enable_position_splitting=False, verbose=False,
-                 connection_mode=RPCConnectionMode.RPC):
+                 connection_mode=RPCConnectionMode.RPC, is_mothership=False):
         # ValidatorSyncBase creates its own LivePriceFetcherClient, PerfLedgerClient, AssetSelectionClient,
         # LimitOrderClient, and ContractClient internally (forward compatibility)
         super().__init__(order_sync=order_sync,
                          running_unit_tests=running_unit_tests,
-                         enable_position_splitting=enable_position_splitting, verbose=verbose)
+                         enable_position_splitting=enable_position_splitting, verbose=verbose,
+                         is_mothership=is_mothership)
         self.order_sync = order_sync
 
         # Create own CommonDataClient (forward compatibility - no parameter passing)
@@ -154,6 +156,7 @@ if __name__ == "__main__":
     pls = PerfLedgerServer()
     vs = ContractServer()
     ass = AssetSelectionServer()
+    ent_server = EntityServer()
     # ValidatorSyncBase creates its own ContractClient and LimitOrderClient internally (forward compatibility)
     position_syncer = PositionSyncer()
     candidate_data = position_syncer.read_validator_checkpoint_from_gcloud_zip()
