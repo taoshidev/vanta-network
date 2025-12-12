@@ -19,7 +19,7 @@ class LivePriceFetcher:
         self.running_unit_tests = running_unit_tests
         self.last_health_check_ms = 0
         if "tiingo_apikey" in secrets:
-            self.tiingo_data_service = TiingoDataService(api_key=secrets["tiingo_apikey"], disable_ws=disable_ws,
+            self.tiingo_data_service = TiingoDataService(api_key=secrets["tiingo_apikey"], disable_ws=True, # TODO Enable
                                                          running_unit_tests=running_unit_tests)
         else:
             raise Exception("Tiingo API key not found in secrets.json")
