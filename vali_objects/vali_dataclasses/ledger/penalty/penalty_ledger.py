@@ -898,27 +898,14 @@ class PenaltyLedgerManager:
 
                         elif penalty_config.input_type == PenaltyInputType.ASSET_LEDGER:
                             segmentation_machine = AssetSegmentation({miner_hotkey: ledger_dict})
-                            accumulated_penalty = 1
-
-                            asset_class = self._asset_selection_client.get_asset_selections().get(miner_hotkey)
+                            asset_class = self._asset_selection_client.get_asset_selection(miner_hotkey)
                             if not asset_class:
-                                accumulated_penalty = 0
+                                penalty_value = 0
                             else:
-                                subcategories = ValiConfig.ASSET_CLASS_BREAKDOWN[asset_class].get("subcategory_weights", {}).keys()
-
-                                subcategory_penalties = []
-                                for subcategory in subcategories:
-                                    asset_ledger = segmentation_machine.segmentation(subcategory).get(miner_hotkey)
-                                    if not asset_ledger or not asset_ledger.cps:
-                                        continue
-                                    subcategory_penalty = penalty_config.function(asset_ledger, asset_class)
-                                    subcategory_penalties.append(subcategory_penalty)
-
-                                if subcategory_penalties:
-                                    category_penalty = sum(subcategory_penalties) / len(subcategory_penalties)
-                                    accumulated_penalty *= category_penalty
-
-                            penalty_value = accumulated_penalty
+                                asset_ledger = segmentation_machine.segmentation(asset_class).get(miner_hotkey)
+                                if not asset_ledger or not asset_ledger.cps:
+                                    continue
+                                penalty_value = penalty_config.function(asset_ledger, asset_class)
 
                     except Exception as e:
                         if verbose:
