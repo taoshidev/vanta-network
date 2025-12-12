@@ -5,7 +5,9 @@ Local Debt Ledger Builder & Visualizer
 Builds debt ledgers for miners based on their performance ledgers, penalties, and emissions.
 Provides comprehensive visualization of debt-based scoring metrics.
 
-This script loads positions from the database and builds complete debt checkpoints.
+This script uses the DebtLedgerServer in LOCAL mode to build debt ledgers without
+connecting to any RPC servers. All managers create their own internal clients.
+
 In single hotkey mode, it generates matplotlib plots showing:
 - Penalties over time (drawdown, risk profile, min collateral, total)
 - PnL performance (gain, loss, net PnL)
@@ -18,21 +20,16 @@ Usage:
     3. Run: python runnable/local_debt_ledger.py
 """
 
+import atexit
+import signal
+import sys
 import bittensor as bt
 from datetime import datetime, timezone
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
-from time_util.time_util import TimeUtil
-from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
-from vali_objects.position_management.position_utils.position_source import PositionSourceManager, PositionSource
-from shared_objects.cache_controller import CacheController
-from shared_objects.subtensor_ops.mock_metagraph import MockMetagraph
-from vali_objects.utils.elimination.elimination_server import EliminationServer
-from vali_objects.position_management.position_manager import PositionManager
-from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_manager import PerfLedgerManager
-from vali_objects.contract.validator_contract_manager import ValidatorContractManager
-from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_manager import DebtLedgerManager
-from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
+
+from vali_objects.vali_config import RPCConnectionMode
+from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_server import DebtLedgerServer
 
 
 # ============================================================================
@@ -42,17 +39,14 @@ from vali_objects.utils.asset_selection.asset_selection_client import AssetSelec
 # Set to a specific hotkey to process single miner, or None for all miners
 TEST_SINGLE_HOTKEY = '5DUi8ZCaNabsR6bnHfs471y52cUN1h9DcugjRbEBo341aKhY'
 
-# End time in milliseconds for position loading (None = all positions)
-END_TIME_MS = None  # Example: 1736035200000
-
 # Whether to generate matplotlib plots (only works in single hotkey mode)
 SHOULD_PLOT = True
 
 # Enable verbose/debug logging
 VERBOSE = False
 
-# Whether to use database for positions (True recommended)
-USE_DATABASE_POSITIONS = True
+# Global server reference for cleanup
+_debt_ledger_server = None
 
 # ============================================================================
 # PLOTTING FUNCTIONS
@@ -293,10 +287,39 @@ def plot_portfolio_metrics(debt_checkpoints, hotkey):
 
 
 # ============================================================================
+# CLEANUP FUNCTIONS
+# ============================================================================
+
+def cleanup():
+    """Cleanup function to properly shutdown servers on exit."""
+    global _debt_ledger_server
+    if _debt_ledger_server is not None:
+        bt.logging.info("Shutting down DebtLedgerServer...")
+        try:
+            _debt_ledger_server.shutdown()
+        except Exception as e:
+            bt.logging.warning(f"Error during shutdown: {e}")
+        _debt_ledger_server = None
+        bt.logging.info("Shutdown complete.")
+
+
+def signal_handler(signum, frame):
+    """Handle interrupt signals gracefully."""
+    bt.logging.info(f"\nReceived signal {signum}, cleaning up...")
+    cleanup()
+    sys.exit(0)
+
+
+# ============================================================================
 # MAIN SCRIPT
 # ============================================================================
 
 if __name__ == "__main__":
+    # Register cleanup handlers
+    atexit.register(cleanup)
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
     # Enable logging
     if VERBOSE:
         bt.logging.enable_debug()
@@ -308,132 +331,52 @@ if __name__ == "__main__":
         bt.logging.error("SHOULD_PLOT requires TEST_SINGLE_HOTKEY to be specified")
         exit(1)
 
-    # Initialize components
-    all_miners_dir = ValiBkpUtils.get_miner_dir(running_unit_tests=False)
-    all_hotkeys_on_disk = CacheController.get_directory_names(all_miners_dir)
-
-    # Determine which hotkeys to process
-    if TEST_SINGLE_HOTKEY:
-        hotkeys_to_process = [TEST_SINGLE_HOTKEY]
-        bt.logging.info(f"Processing single hotkey: {TEST_SINGLE_HOTKEY}")
-    else:
-        hotkeys_to_process = all_hotkeys_on_disk
-        bt.logging.info(f"Processing all {len(hotkeys_to_process)} hotkeys")
-
-    # Load positions from database
-    hk_to_positions = {}
-    if USE_DATABASE_POSITIONS:
-        source_type = PositionSource.DATABASE
-        bt.logging.info("Using database as position source")
-
-        position_source_manager = PositionSourceManager(source_type)
-        hk_to_positions = position_source_manager.load_positions(
-            end_time_ms=END_TIME_MS,
-            hotkeys=hotkeys_to_process
+    try:
+        # Create DebtLedgerServer in LOCAL mode (no RPC connections, no daemon)
+        # The server creates all required managers internally (forward compatibility pattern)
+        bt.logging.info("Creating DebtLedgerServer in LOCAL mode...")
+        _debt_ledger_server = DebtLedgerServer(
+            slack_webhook_url=None,
+            running_unit_tests=True,  # Bypass RPC connections
+            validator_hotkey=None,
+            start_server=False,  # No RPC server needed
+            start_daemon=False,  # No daemon - we'll call build manually
+            connection_mode=RPCConnectionMode.LOCAL  # Direct mode
         )
 
-        if hk_to_positions:
-            hotkeys_to_process = list(hk_to_positions.keys())
-            bt.logging.info(f"Loaded positions for {len(hotkeys_to_process)} miners from database")
+        # Build debt ledgers manually (this calls penalty + emissions + debt builds internally)
+        bt.logging.info("Building debt ledgers...")
+        bt.logging.info("This will build: penalty ledgers -> emissions ledgers -> debt ledgers")
+        _debt_ledger_server.run_daemon_iteration()
 
-    # Initialize metagraph and managers
-    mmg = MockMetagraph(hotkeys=hotkeys_to_process)
-    # EliminationServer creates its own RPC clients internally (forward compatibility pattern)
-    elimination_manager = EliminationServer(running_unit_tests=True)
-    position_manager = PositionManager(
-        metagraph=mmg,
-        running_unit_tests=False,
-        elimination_manager=elimination_manager,
-        is_backtesting=True
-    )
+        # Print summary
+        bt.logging.info("\n" + "="*60)
+        bt.logging.info("Debt Ledger Summary")
+        bt.logging.info("="*60)
+        for hotkey, ledger in _debt_ledger_server.debt_ledgers.items():
+            num_checkpoints = len(ledger.checkpoints) if ledger.checkpoints else 0
+            bt.logging.info(f"Miner {hotkey[:12]}...: {num_checkpoints} debt checkpoints")
 
-    # Save loaded positions to position manager
-    if hk_to_positions:
-        position_count = 0
-        for hk, positions in hk_to_positions.items():
-            for pos in positions:
-                position_manager.save_miner_position(pos)
-                position_count += 1
-        bt.logging.info(f"Saved {position_count} positions to position manager")
+        # Generate plots if requested and in single hotkey mode
+        if SHOULD_PLOT and TEST_SINGLE_HOTKEY:
+            ledger = _debt_ledger_server.debt_ledgers.get(TEST_SINGLE_HOTKEY)
 
-    # Create PerfLedgerManager
-    bt.logging.info("Creating PerfLedgerManager...")
-    perf_ledger_manager = PerfLedgerManager(
-        mmg,
-        position_manager=position_manager,
-        running_unit_tests=False,
-        enable_rss=False,
-        build_portfolio_ledgers_only=True
-    )
+            if not ledger or not ledger.checkpoints:
+                bt.logging.warning(f"No debt ledger found for {TEST_SINGLE_HOTKEY}")
+            else:
+                bt.logging.info(f"\nGenerating visualizations for {TEST_SINGLE_HOTKEY}")
+                bt.logging.info(f"Total checkpoints: {len(ledger.checkpoints)}")
 
-    # Build performance ledgers
-    bt.logging.info("Building performance ledgers...")
-    if TEST_SINGLE_HOTKEY:
-        bt.logging.info(f"Building perf ledger for: {TEST_SINGLE_HOTKEY}")
-        perf_ledger_manager.update(testing_one_hotkey=TEST_SINGLE_HOTKEY, t_ms=TimeUtil.now_in_millis())
-    else:
-        bt.logging.info("Building perf ledgers for all hotkeys")
-        perf_ledger_manager.update()
+                # Generate all plots
+                plot_penalties(ledger.checkpoints, TEST_SINGLE_HOTKEY)
+                plot_pnl_performance(ledger.checkpoints, TEST_SINGLE_HOTKEY)
+                plot_emissions(ledger.checkpoints, TEST_SINGLE_HOTKEY)
+                plot_portfolio_metrics(ledger.checkpoints, TEST_SINGLE_HOTKEY)
 
-    # Create ValidatorContractManager (with mock data for standalone mode)
-    bt.logging.info("Creating ValidatorContractManager...")
-    contract_manager = ValidatorContractManager(
-        config=None,
-        position_manager=position_manager,
-        ipc_manager=None,
-        metagraph=mmg,
-        running_unit_tests=False
-    )
+                bt.logging.info("\nAll plots generated successfully!")
 
-    # Create AssetSelectionClient
-    bt.logging.info("Creating AssetSelectionClient...")
-    asset_selection_manager = AssetSelectionClient(
-        running_unit_tests=True
-    )
+        bt.logging.info("\nDebtLedger processing complete!")
 
-    # Create DebtLedgerManager in direct mode (no RPC overhead for local debugging)
-    bt.logging.info("Creating DebtLedgerManager...")
-    debt_ledger_manager = DebtLedgerManager(
-        perf_ledger_manager=perf_ledger_manager,
-        position_manager=position_manager,
-        contract_manager=contract_manager,
-        asset_selection_manager=asset_selection_manager,
-        challengeperiod_manager=position_manager.challengeperiod_manager,
-        slack_webhook_url=None,
-        start_server=True,  # Start server in direct mode
-        ipc_manager=None,
-        running_unit_tests=True,  # Use direct mode (no RPC overhead)
-        validator_hotkey=None
-    )
-
-    # Build debt ledgers manually via direct server access
-    bt.logging.info("Building debt ledgers...")
-    debt_ledger_manager._server_proxy.build_debt_ledgers(verbose=VERBOSE)
-
-    # Print summary
-    bt.logging.info("\n" + "="*60)
-    bt.logging.info("Debt Ledger Summary")
-    bt.logging.info("="*60)
-    for hotkey, ledger in debt_ledger_manager._server_proxy.debt_ledgers.items():
-        num_checkpoints = len(ledger.checkpoints) if ledger.checkpoints else 0
-        bt.logging.info(f"Miner {hotkey[:12]}...: {num_checkpoints} debt checkpoints")
-
-    # Generate plots if requested and in single hotkey mode
-    if SHOULD_PLOT and TEST_SINGLE_HOTKEY:
-        ledger = debt_ledger_manager._server_proxy.debt_ledgers.get(TEST_SINGLE_HOTKEY)
-
-        if not ledger or not ledger.checkpoints:
-            bt.logging.warning(f"No debt ledger found for {TEST_SINGLE_HOTKEY}")
-        else:
-            bt.logging.info(f"\nGenerating visualizations for {TEST_SINGLE_HOTKEY}")
-            bt.logging.info(f"Total checkpoints: {len(ledger.checkpoints)}")
-
-            # Generate all plots
-            plot_penalties(ledger.checkpoints, TEST_SINGLE_HOTKEY)
-            plot_pnl_performance(ledger.checkpoints, TEST_SINGLE_HOTKEY)
-            plot_emissions(ledger.checkpoints, TEST_SINGLE_HOTKEY)
-            plot_portfolio_metrics(ledger.checkpoints, TEST_SINGLE_HOTKEY)
-
-            bt.logging.info("\nAll plots generated successfully!")
-
-    bt.logging.info("\nDebtLedger processing complete!")
+    finally:
+        # Ensure cleanup runs even on exceptions
+        cleanup()
