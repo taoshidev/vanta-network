@@ -466,7 +466,7 @@ class ChallengePeriodManager(CacheController):
         probation_hotkeys: list[str],
         current_time: int,
         hk_to_first_order_time: dict[str, int] | None,
-        combined_scores_dict: dict[TradePairCategory, dict] | None
+        asset_softmaxed_scores: dict[TradePairCategory, dict] | None
     ) -> tuple[list[str], list[str], dict[str, tuple[str, float]]]:
         """
         Evaluate hotkeys using rank-based criteria.
@@ -529,11 +529,8 @@ class ChallengePeriodManager(CacheController):
                     bt.logging.warning(f'Re-registered hotkey detected: {hotkey}')
                     continue
 
-                # Minimum positions check
-                has_minimum_positions, _ = self._check_minimum_positions(positions, hotkey)
-                if not has_minimum_positions:
-                    miners_not_enough_positions.append(hotkey)
-                    continue
+                # Note: Minimum positions check not necessary if they have ledger.
+                # If they have a ledger, they can be scored.
 
                 # Asset class selection check
                 if (current_time >= ASSET_CLASS_SELECTION_TIME_MS and
@@ -604,7 +601,7 @@ class ChallengePeriodManager(CacheController):
         success_hotkeys: list[str],
         probation_hotkeys: list[str],
         hk_to_first_order_time: dict[str, int] | None = None,
-        combined_scores_dict: dict[TradePairCategory, dict] | None = None
+        asset_softmaxed_scores: dict[TradePairCategory, dict] | None = None
     ) -> tuple[list[str], list[str], dict[str, tuple[str, float]]]:
         """
         Unified inspection logic for all hotkeys.
@@ -656,7 +653,7 @@ class ChallengePeriodManager(CacheController):
                 probation_hotkeys,
                 current_time,
                 hk_to_first_order_time,
-                combined_scores_dict
+                asset_softmaxed_scores
             )
             hotkeys_to_promote.extend(rank_promotions)
             hotkeys_to_demote.extend(rank_demotions)
@@ -673,7 +670,7 @@ class ChallengePeriodManager(CacheController):
         inspection_hotkeys: dict[str, int],
         current_time: int,
         hk_to_first_order_time: dict[str, int] | None = None,
-        combined_scores_dict: dict[TradePairCategory, dict] | None = None,
+        asset_softmaxed_scores: dict[TradePairCategory, dict] | None = None,
     ) -> tuple[list[str], list[str], dict[str, tuple[str, float]]]:
         """
         Runs a screening process to eliminate miners who didn't pass the challenge period.
@@ -690,7 +687,7 @@ class ChallengePeriodManager(CacheController):
             inspection_hotkeys: Dict {hotkey: bucket_start_time}
             current_time: Current time in milliseconds
             hk_to_first_order_time: Dict mapping hotkey to first order time
-            combined_scores_dict (dict[TradePairCategory, dict] | None) - Optional pre-computed scores dict for testing.
+            asset_softmaxed_scores (dict[TradePairCategory, dict[str, float]) - Optional pre-computed scores dict for testing.
                 If provided, skips score calculation. Useful for unit tests.
 
         Returns:
@@ -723,7 +720,7 @@ class ChallengePeriodManager(CacheController):
             success_hotkeys=success_hotkeys,
             probation_hotkeys=probation_hotkeys,
             hk_to_first_order_time=hk_to_first_order_time,
-            combined_scores_dict=combined_scores_dict
+            asset_softmaxed_scores=asset_softmaxed_scores
         )
 
         bt.logging.info(
