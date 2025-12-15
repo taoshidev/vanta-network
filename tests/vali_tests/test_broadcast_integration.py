@@ -134,14 +134,6 @@ class TestBroadcastIntegration(TestBase):
         # (In production, this is derived from ValiUtils.is_mothership_wallet)
         mothership_manager.is_mothership = True
 
-        # # Set collateral balance for test entity
-        # # Needs: 1 theta (registration fee on testnet) + 20 theta (for 100K subaccount) = 21 theta
-        # # Set to 30 theta for safety margin
-        self.contract_client.set_test_collateral_balance(
-            self.TEST_ENTITY_HOTKEY,
-            30_000_000_000  # 30 theta in rao (30 * 1e9)
-        )
-
         # 1. Mothership registers an entity
         success, msg = mothership_manager.register_entity(
             entity_hotkey=self.TEST_ENTITY_HOTKEY,
@@ -588,14 +580,6 @@ class TestBroadcastIntegration(TestBase):
                 netuid=116,
                 wallet=SimpleNamespace(hotkey=self.NON_MOTHERSHIP_HOTKEY),
                 subtensor=SimpleNamespace(network="test")
-            )
-
-            # # Set collateral balance for test entity
-            # # Needs: 1 theta (registration fee on testnet) + 20 theta (for 100K subaccount) = 21 theta
-            # # Set to 30 theta for safety margin
-            self.contract_client.set_test_collateral_balance(
-                self.TEST_ENTITY_HOTKEY,
-                30_000_000_000  # 30 theta in rao (30 * 1e9)
             )
 
             # 1. EntityManager broadcast
