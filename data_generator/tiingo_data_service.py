@@ -478,6 +478,9 @@ class TiingoDataService(BaseDataService):
             if verbose:
                 print(f'hitting url for batch of {len(batch)} tickers: {url}')
             requestResponse = requests.get(url, headers={'Content-Type': 'application/json'}, timeout=5)
+            # TODO re-enable after tiingo badwidth
+            if requestResponse.status_code == 429:
+                continue
             if requestResponse.status_code == 200:
                 lowest_delta = float('inf')
                 for x in requestResponse.json():
@@ -581,6 +584,9 @@ class TiingoDataService(BaseDataService):
                 print(f'hitting url for batch of {len(batch)} tickers: {url}')
 
             requestResponse = requests.get(url, headers={'Content-Type': 'application/json'}, timeout=5)
+            # TODO re-enable after tiingo badwidth
+            if requestResponse.status_code == 429:
+                continue
             if requestResponse.status_code != 200:
                 bt.logging.warning(f"Tiingo crypto API request failed with status code {requestResponse.status_code}. "
                                  f"URL: {url[:100]}... Response: {requestResponse.text[:200]}")
