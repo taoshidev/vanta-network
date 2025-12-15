@@ -211,7 +211,9 @@ class EntityClient(RPCClientBase):
         entity_hotkey: str,
         subaccount_id: int,
         subaccount_uuid: str,
-        synthetic_hotkey: str
+        synthetic_hotkey: str,
+        account_size: float,
+        asset_class: str
     ) -> None:
         """
         Broadcast subaccount registration to other validators.
@@ -221,9 +223,12 @@ class EntityClient(RPCClientBase):
             subaccount_id: The subaccount ID
             subaccount_uuid: The subaccount UUID
             synthetic_hotkey: The synthetic hotkey
+            account_size: Account size in USD
+            asset_class: Asset class selection
         """
         return self._server.broadcast_subaccount_registration_rpc(
-            entity_hotkey, subaccount_id, subaccount_uuid, synthetic_hotkey
+            entity_hotkey, subaccount_id, subaccount_uuid, synthetic_hotkey,
+            account_size, asset_class
         )
 
     def receive_subaccount_registration_update(self, subaccount_data: dict, sender_hotkey: str = None) -> bool:

@@ -1633,7 +1633,9 @@ class VantaRestServer(RPCServerBase, APIKeyMixin):
                             entity_hotkey=entity_hotkey,
                             subaccount_id=subaccount_info['subaccount_id'],
                             subaccount_uuid=subaccount_info['subaccount_uuid'],
-                            synthetic_hotkey=subaccount_info['synthetic_hotkey']
+                            synthetic_hotkey=subaccount_info['synthetic_hotkey'],
+                            account_size=subaccount_info['account_size'],
+                            asset_class=subaccount_info['asset_class']
                         )
                         bt.logging.info(f"[REST_API] Broadcasted subaccount registration for {subaccount_info['synthetic_hotkey']}")
                     except Exception as e:

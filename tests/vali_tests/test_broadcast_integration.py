@@ -134,6 +134,14 @@ class TestBroadcastIntegration(TestBase):
         # (In production, this is derived from ValiUtils.is_mothership_wallet)
         mothership_manager.is_mothership = True
 
+        # # Set collateral balance for test entity
+        # # Needs: 1 theta (registration fee on testnet) + 20 theta (for 100K subaccount) = 21 theta
+        # # Set to 30 theta for safety margin
+        self.contract_client.set_test_collateral_balance(
+            self.TEST_ENTITY_HOTKEY,
+            30_000_000_000  # 30 theta in rao (30 * 1e9)
+        )
+
         # 1. Mothership registers an entity
         success, msg = mothership_manager.register_entity(
             entity_hotkey=self.TEST_ENTITY_HOTKEY,
@@ -143,7 +151,9 @@ class TestBroadcastIntegration(TestBase):
 
         # 2. Mothership creates a subaccount
         success, subaccount_info, msg = mothership_manager.create_subaccount(
-            entity_hotkey=self.TEST_ENTITY_HOTKEY
+            entity_hotkey=self.TEST_ENTITY_HOTKEY,
+            account_size=50000.0,
+            asset_class="crypto"
         )
         self.assertTrue(success, f"Subaccount creation failed: {msg}")
         self.assertIsNotNone(subaccount_info)
@@ -170,7 +180,9 @@ class TestBroadcastIntegration(TestBase):
             "entity_hotkey": self.TEST_ENTITY_HOTKEY,
             "subaccount_id": subaccount_info.subaccount_id,
             "subaccount_uuid": subaccount_info.subaccount_uuid,
-            "synthetic_hotkey": subaccount_info.synthetic_hotkey
+            "synthetic_hotkey": subaccount_info.synthetic_hotkey,
+            "account_size": subaccount_info.account_size,
+            "asset_class": subaccount_info.asset_class
         }
 
         # IMPORTANT: Must temporarily set MOTHERSHIP_HOTKEY in ValiConfig for sender verification
@@ -197,11 +209,19 @@ class TestBroadcastIntegration(TestBase):
             self.assertEqual(received_subaccount.synthetic_hotkey, subaccount_info.synthetic_hotkey)
             self.assertEqual(received_subaccount.status, "active")
 
+            # Verify account_size and asset_class were broadcasted correctly
+            self.assertEqual(received_subaccount.account_size, 50000.0,
+                           "Account size should match broadcasted value")
+            self.assertEqual(received_subaccount.asset_class, "crypto",
+                           "Asset class should match broadcasted value")
+
             bt.logging.success(
                 f"✓ SubaccountRegistration broadcast test passed:\n"
                 f"  - Mothership created subaccount: {subaccount_info.synthetic_hotkey}\n"
                 f"  - Non-mothership received and persisted subaccount\n"
-                f"  - Subaccount status: {received_subaccount.status}"
+                f"  - Subaccount status: {received_subaccount.status}\n"
+                f"  - Account size: ${received_subaccount.account_size}\n"
+                f"  - Asset class: {received_subaccount.asset_class}"
             )
         finally:
             # Restore original MOTHERSHIP_HOTKEY
@@ -570,6 +590,14 @@ class TestBroadcastIntegration(TestBase):
                 subtensor=SimpleNamespace(network="test")
             )
 
+            # # Set collateral balance for test entity
+            # # Needs: 1 theta (registration fee on testnet) + 20 theta (for 100K subaccount) = 21 theta
+            # # Set to 30 theta for safety margin
+            self.contract_client.set_test_collateral_balance(
+                self.TEST_ENTITY_HOTKEY,
+                30_000_000_000  # 30 theta in rao (30 * 1e9)
+            )
+
             # 1. EntityManager broadcast
             entity_mothership = EntityManager(
                 running_unit_tests=True,
@@ -578,7 +606,7 @@ class TestBroadcastIntegration(TestBase):
             )
             entity_mothership.is_mothership = True
             entity_mothership.register_entity(self.TEST_ENTITY_HOTKEY, max_subaccounts=5)
-            success, subaccount_info, msg = entity_mothership.create_subaccount(self.TEST_ENTITY_HOTKEY)
+            success, subaccount_info, msg = entity_mothership.create_subaccount(self.TEST_ENTITY_HOTKEY, account_size=100_000, asset_class="crypto")
             self.assertTrue(success)
 
             entity_receiver = EntityManager(
@@ -592,7 +620,9 @@ class TestBroadcastIntegration(TestBase):
                     "entity_hotkey": self.TEST_ENTITY_HOTKEY,
                     "subaccount_id": 0,
                     "subaccount_uuid": subaccount_info.subaccount_uuid,
-                    "synthetic_hotkey": subaccount_info.synthetic_hotkey
+                    "synthetic_hotkey": subaccount_info.synthetic_hotkey,
+                    "account_size": 100_000,
+                    "asset_class": "crypto"
                 },
                 sender_hotkey=self.MOTHERSHIP_HOTKEY
             )
