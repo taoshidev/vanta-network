@@ -78,7 +78,7 @@ class CoreOutputsManager:
         from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
         from vali_objects.contract.contract_client import ContractClient
         from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
-        from entitiy_management.entity_client import EntityClient
+        from entity_management.entity_client import EntityClient
 
         self._position_client = PositionManagerClient(
             port=ValiConfig.RPC_POSITIONMANAGER_PORT,

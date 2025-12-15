@@ -36,8 +36,8 @@ from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.plagiarism.plagiarism_client import PlagiarismClient
 from vali_objects.contract.contract_client import ContractClient
 from shared_objects.rpc.common_data_client import CommonDataClient
-from entitiy_management.entity_client import EntityClient
-from entitiy_management.entity_utils import is_synthetic_hotkey
+from entity_management.entity_client import EntityClient
+from entity_management.entity_utils import is_synthetic_hotkey
 
 
 class ChallengePeriodManager(CacheController):

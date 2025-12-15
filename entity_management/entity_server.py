@@ -12,7 +12,7 @@ import bittensor as bt
 from typing import Optional, Tuple, Dict, List
 
 import template.protocol
-from entitiy_management.entity_manager import EntityManager, SubaccountInfo, EntityData
+from entity_management.entity_manager import EntityManager, SubaccountInfo, EntityData
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 from shared_objects.rpc.rpc_server_base import RPCServerBase
 

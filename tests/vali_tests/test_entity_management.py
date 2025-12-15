@@ -16,7 +16,7 @@ from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMod
 from tests.vali_tests.base_objects.test_base import TestBase
 from vali_objects.utils.vali_utils import ValiUtils
 from time_util.time_util import TimeUtil
-from entitiy_management.entity_utils import is_synthetic_hotkey, parse_synthetic_hotkey
+from entity_management.entity_utils import is_synthetic_hotkey, parse_synthetic_hotkey
 
 
 class TestEntityManagement(TestBase):
