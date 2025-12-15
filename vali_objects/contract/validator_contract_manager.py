@@ -801,29 +801,38 @@ class ValidatorContractManager(ValidatorBroadcastBase):
             bt.logging.error(f"Failed to get slashed collateral: {e}")
             return 0
 
-    def _set_miner_account_size(self, hotkey: str, timestamp_ms: int = None) -> bool:
+    def set_miner_account_size(self, hotkey: str, timestamp_ms: int = None, account_size: float = None) -> bool:
         """
         Set the account size for a miner by fetching collateral balance and updating via MinerAccountClient.
 
         Args:
             hotkey: Miner's hotkey (SS58 address)
             timestamp_ms: Timestamp for the record (defaults to now)
-
-        Returns:
-            bool: True if successful, False otherwise
+            account_size: Optional explicit account size in USD. If not provided, calculated from collateral balance.
         """
-        # Get collateral balance
-        collateral_balance = self.get_miner_collateral_balance(hotkey)
-        if collateral_balance is None:
-            bt.logging.warning(f"Could not retrieve collateral balance for {hotkey}")
-            return False
+        if account_size is None:
+            # Get collateral balance outside lock (external RPC call)
+            collateral_balance = self.get_miner_collateral_balance(hotkey)
+            if collateral_balance is None:
+                bt.logging.warning(f"Could not retrieve collateral balance for {hotkey}")
+                return False
+        else:
+            # Subaccount miner
+            collateral_balance = account_size / ValiConfig.ENTITY_COST_PER_THETA
 
         # Update account size via MinerAccountClient - returns CollateralRecord dict if successful
         collateral_record_dict = self._miner_account_client.set_miner_account_size(hotkey, collateral_balance, timestamp_ms)
 
-        # Broadcast to other validators if mothership
-        if collateral_record_dict and self.is_mothership:
-            self._broadcast_collateral_record_update_to_validators(hotkey, collateral_record_dict)
+            if account_size is None:
+                account_size = min(ValiConfig.MAX_COLLATERAL_BALANCE_THETA, collateral_balance) * ValiConfig.COST_PER_THETA
+            collateral_record = CollateralRecord(account_size, collateral_balance, timestamp_ms)
+            # Skip if the new record matches the last existing record
+            if hotkey in self.miner_account_sizes and self.miner_account_sizes[hotkey]:
+                last_record = self.miner_account_sizes[hotkey][-1]
+                if (last_record.account_size == collateral_record.account_size and
+                        last_record.account_size_theta == collateral_record.account_size_theta):
+                    bt.logging.info(f"Skipping save for {hotkey} - new record matches last record")
+                    return True
 
         return collateral_record_dict is not None
 

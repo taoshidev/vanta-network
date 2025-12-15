@@ -391,6 +391,10 @@ Process an asset class selection.
 
 The entity management endpoints enable entity miners to register, create subaccounts, and manage trading under a hierarchical account structure. Entity miners can operate multiple subaccounts (each with its own synthetic hotkey) for diversified trading strategies.
 
+**Access Requirements:**
+- All entity management endpoints require **tier 200 API access**
+- Standard API keys (tier 0-100) will receive a 403 Forbidden response
+
 ### Key Concepts
 
 **Entity Miner:** A parent account that can create and manage multiple subaccounts. Entity miners register with a unique hotkey (VANTA_ENTITY_HOTKEY).
@@ -409,8 +413,7 @@ Register a new entity miner that can create and manage subaccounts.
 ```json
 {
   "entity_hotkey": "5GhDr3xy...abc",
-  "collateral_amount": 5000.0,
-  "max_subaccounts": 10
+  "max_subaccounts": 500
 }
 ```
 
@@ -435,8 +438,7 @@ curl -X POST http://localhost:48888/entity/register \
   -H "Content-Type: application/json" \
   -d '{
     "entity_hotkey": "5GhDr3xy...abc",
-    "collateral_amount": 5000.0,
-    "max_subaccounts": 10
+    "max_subaccounts": 500
   }'
 ```
 
@@ -449,7 +451,9 @@ Create a new trading subaccount under an entity. The subaccount receives a uniqu
 **Request Body:**
 ```json
 {
-  "entity_hotkey": "5GhDr3xy...abc"
+  "entity_hotkey": "5GhDr3xy...abc",
+  "account_size": 50000,
+  "asset_class": "crypto"
 }
 ```
 
@@ -484,6 +488,8 @@ curl -X POST http://localhost:48888/entity/create-subaccount \
   -H "Content-Type: application/json" \
   -d '{
     "entity_hotkey": "5GhDr3xy...abc"
+    "account_size": 50000,
+    "asset_class": "crypto"
   }'
 ```
 

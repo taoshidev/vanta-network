@@ -1517,7 +1517,7 @@ class VantaRestServer(RPCServerBase, APIKeyMixin):
             curl -X POST http://localhost:48888/entity/register \\
               -H "Authorization: Bearer YOUR_API_KEY" \\
               -H "Content-Type: application/json" \\
-              -d '{"entity_hotkey": "5GhDr...", "collateral_amount": 1000.0, "max_subaccounts": 10}'
+              -d '{"entity_hotkey": "5GhDr...", "max_subaccounts": 10}'
             """
             # Check API key authentication
             api_key = self._get_api_key_safe()
@@ -1546,13 +1546,11 @@ class VantaRestServer(RPCServerBase, APIKeyMixin):
                     return jsonify({'error': 'Missing required field: entity_hotkey'}), 400
 
                 entity_hotkey = data['entity_hotkey']
-                collateral_amount = data.get('collateral_amount', 0.0)
                 max_subaccounts = data.get('max_subaccounts', None)
 
                 # Register entity via RPC
                 success, message = self._entity_client.register_entity(
                     entity_hotkey=entity_hotkey,
-                    collateral_amount=collateral_amount,
                     max_subaccounts=max_subaccounts
                 )
 
@@ -1574,11 +1572,14 @@ class VantaRestServer(RPCServerBase, APIKeyMixin):
             """
             Create a new subaccount for an entity.
 
+            Requires account_size (USD) and asset_class in request payload.
+            These values are immutable once the subaccount is created.
+
             Example:
             curl -X POST http://localhost:48888/entity/create-subaccount \\
               -H "Authorization: Bearer YOUR_API_KEY" \\
               -H "Content-Type: application/json" \\
-              -d '{"entity_hotkey": "5GhDr..."}'
+              -d '{"entity_hotkey": "5GhDr...", "account_size": 25000, "asset_class": "crypto"}'
             """
             # Check API key authentication
             api_key = self._get_api_key_safe()
@@ -1603,13 +1604,33 @@ class VantaRestServer(RPCServerBase, APIKeyMixin):
                     return jsonify({'error': 'Invalid JSON body'}), 400
 
                 # Validate required fields
-                if 'entity_hotkey' not in data:
-                    return jsonify({'error': 'Missing required field: entity_hotkey'}), 400
+                required_fields = ['entity_hotkey', 'account_size', 'asset_class']
+                missing_fields = [field for field in required_fields if field not in data]
+                if missing_fields:
+                    return jsonify({'error': f'Missing required fields: {", ".join(missing_fields)}'}), 400
 
                 entity_hotkey = data['entity_hotkey']
+                account_size = data['account_size']
+                asset_class = data['asset_class']
+
+                # Validate account_size is a positive number
+                try:
+                    account_size = float(account_size)
+                    if account_size <= 0:
+                        return jsonify({'error': 'account_size must be a positive number'}), 400
+                except (TypeError, ValueError):
+                    return jsonify({'error': 'account_size must be a valid number'}), 400
+
+                # Validate asset_class is a non-empty string
+                if not isinstance(asset_class, str) or not asset_class.strip():
+                    return jsonify({'error': 'asset_class must be a non-empty string'}), 400
+
+                asset_class = asset_class.strip()
 
                 # Create subaccount via RPC
-                success, subaccount_info, message = self._entity_client.create_subaccount(entity_hotkey)
+                success, subaccount_info, message = self._entity_client.create_subaccount(
+                    entity_hotkey, account_size, asset_class
+                )
 
                 if success:
                     # Broadcast subaccount registration to other validators

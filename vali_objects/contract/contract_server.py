@@ -172,9 +172,9 @@ class ContractServer(RPCServerBase):
         """Get total slashed collateral in theta."""
         return self._manager.get_slashed_collateral()
 
-    def set_miner_account_size_rpc(self, hotkey: str, timestamp_ms: int = None) -> bool:
+    def set_miner_account_size_rpc(self, hotkey: str, timestamp_ms: int = None, account_size: float = None) -> bool:
         """Set the account size for a miner."""
-        return self._manager.set_miner_account_size(hotkey, timestamp_ms)
+        return self._manager.set_miner_account_size(hotkey, timestamp_ms, account_size)
 
     def get_miner_account_size_rpc(self, hotkey: str, timestamp_ms: int = None, most_recent: bool = False,
                                    records_dict: dict = None, use_account_floor: bool = False) -> Optional[float]:

@@ -216,6 +216,18 @@ class AssetSelectionServer(RPCServerBase):
 
         return result
 
+    def delete_asset_selection_rpc(self, hotkey: str) -> Dict[str, str]:
+        """
+        Delete an asset selection for a miner (RPC method).
+
+        Args:
+            hotkey: The miner's hotkey to delete
+
+        Returns:
+            Dict containing success status and message
+        """
+        return self._manager.delete_asset_selection(hotkey)
+
     def sync_miner_asset_selection_data_rpc(self, asset_selection_data: Dict[str, str]) -> None:
         """
         Sync miner asset selection data from external source (RPC method).
@@ -326,6 +338,10 @@ class AssetSelectionServer(RPCServerBase):
     def process_asset_selection_request(self, asset_selection: str, miner: str) -> Dict[str, str]:
         """Process asset selection request (forward-compatible alias)."""
         return self.process_asset_selection_request_rpc(asset_selection, miner)
+
+    def delete_asset_selection(self, hotkey: str) -> Dict[str, str]:
+        """Delete asset selection (forward-compatible alias)."""
+        return self.delete_asset_selection_rpc(hotkey)
 
     def sync_miner_asset_selection_data(self, asset_selection_data: Dict[str, str]) -> None:
         """Sync asset selection data (forward-compatible alias)."""
