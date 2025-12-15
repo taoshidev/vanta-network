@@ -68,9 +68,9 @@ class ContractClient(RPCClientBase):
             hotkey, timestamp_ms, most_recent, records_dict, use_account_floor
         )
 
-    def set_miner_account_size(self, hotkey: str, timestamp_ms: int = None) -> bool:
+    def set_miner_account_size(self, hotkey: str, timestamp_ms: int = None, account_size: float = None) -> bool:
         """Set the account size for a miner."""
-        return self._server.set_miner_account_size_rpc(hotkey, timestamp_ms)
+        return self._server.set_miner_account_size_rpc(hotkey, timestamp_ms, account_size)
 
     def get_all_miner_account_sizes(
         self,

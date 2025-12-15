@@ -462,6 +462,12 @@ class ValiConfig:
     MIN_COLLATERAL_BALANCE_TESTNET = 100
     MAX_COLLATERAL_BALANCE_TESTNET = 10000.0
 
+    # Entity Miner Collateral
+    ENTITY_REGISTRATION_FEE_MAINNET = 5000  # Theta required to register an entity on mainnet
+    ENTITY_REGISTRATION_FEE_TESTNET = 1  # Theta required to register an entity on testnet
+    ENTITY_COST_PER_THETA = 5000  # USD account size per theta of collateral for entity subaccounts
+    MAX_SUBACCOUNT_ACCOUNT_SIZE = 100_000  # Maximum account size in USD for entity subaccounts
+
     # Account Size
     COST_PER_THETA = 500  # Account size USD value per theta of collateral
     MIN_COLLATERAL_VALUE = MIN_COLLATERAL_BALANCE_THETA * COST_PER_THETA   # Approx $150k

@@ -838,7 +838,7 @@ class ValidatorContractManager(ValidatorBroadcastBase):
             bt.logging.error(f"Failed to get slashed collateral: {e}")
             return 0
 
-    def set_miner_account_size(self, hotkey: str, timestamp_ms: int = None) -> bool:
+    def set_miner_account_size(self, hotkey: str, timestamp_ms: int = None, account_size: float = None) -> bool:
         """
         Set the account size for a miner. Saves to memory and disk.
         Records are kept in chronological order.
@@ -846,12 +846,17 @@ class ValidatorContractManager(ValidatorBroadcastBase):
         Args:
             hotkey: Miner's hotkey (SS58 address)
             timestamp_ms: Timestamp for the record (defaults to now)
+            account_size: Optional explicit account size in USD. If not provided, calculated from collateral balance.
         """
-        # Get collateral balance outside lock (external RPC call)
-        collateral_balance = self.get_miner_collateral_balance(hotkey)
-        if collateral_balance is None:
-            bt.logging.warning(f"Could not retrieve collateral balance for {hotkey}")
-            return False
+        if account_size is None:
+            # Get collateral balance outside lock (external RPC call)
+            collateral_balance = self.get_miner_collateral_balance(hotkey)
+            if collateral_balance is None:
+                bt.logging.warning(f"Could not retrieve collateral balance for {hotkey}")
+                return False
+        else:
+            # Subaccount miner
+            collateral_balance = account_size / ValiConfig.ENTITY_COST_PER_THETA
 
         # CRITICAL SECTION: Acquire lock for timestamp + record creation + append + save
         # Timestamp MUST be generated inside lock to ensure chronological ordering
@@ -861,7 +866,8 @@ class ValidatorContractManager(ValidatorBroadcastBase):
             if timestamp_ms is None:
                 timestamp_ms = TimeUtil.now_in_millis()
 
-            account_size = min(ValiConfig.MAX_COLLATERAL_BALANCE_THETA, collateral_balance) * ValiConfig.COST_PER_THETA
+            if account_size is None:
+                account_size = min(ValiConfig.MAX_COLLATERAL_BALANCE_THETA, collateral_balance) * ValiConfig.COST_PER_THETA
             collateral_record = CollateralRecord(account_size, collateral_balance, timestamp_ms)
             # Skip if the new record matches the last existing record
             if hotkey in self.miner_account_sizes and self.miner_account_sizes[hotkey]:

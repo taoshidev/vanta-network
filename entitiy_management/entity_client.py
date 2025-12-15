@@ -76,7 +76,6 @@ class EntityClient(RPCClientBase):
     def register_entity(
         self,
         entity_hotkey: str,
-        collateral_amount: float = 0.0,
         max_subaccounts: int = None
     ) -> Tuple[bool, str]:
         """
@@ -84,25 +83,31 @@ class EntityClient(RPCClientBase):
 
         Args:
             entity_hotkey: The VANTA_ENTITY_HOTKEY
-            collateral_amount: Collateral amount (placeholder)
             max_subaccounts: Maximum allowed subaccounts
 
         Returns:
             (success: bool, message: str)
         """
-        return self._server.register_entity_rpc(entity_hotkey, collateral_amount, max_subaccounts)
+        return self._server.register_entity_rpc(entity_hotkey, max_subaccounts)
 
-    def create_subaccount(self, entity_hotkey: str) -> Tuple[bool, Optional[dict], str]:
+    def create_subaccount(
+        self,
+        entity_hotkey: str,
+        account_size: float,
+        asset_class: str
+    ) -> Tuple[bool, Optional[dict], str]:
         """
         Create a new subaccount for an entity.
 
         Args:
             entity_hotkey: The VANTA_ENTITY_HOTKEY
+            account_size: Account size in USD
+            asset_class: Asset class selection
 
         Returns:
             (success: bool, subaccount_info_dict: Optional[dict], message: str)
         """
-        return self._server.create_subaccount_rpc(entity_hotkey)
+        return self._server.create_subaccount_rpc(entity_hotkey, account_size, asset_class)
 
     def eliminate_subaccount(
         self,
@@ -122,19 +127,6 @@ class EntityClient(RPCClientBase):
             (success: bool, message: str)
         """
         return self._server.eliminate_subaccount_rpc(entity_hotkey, subaccount_id, reason)
-
-    def update_collateral(self, entity_hotkey: str, collateral_amount: float) -> Tuple[bool, str]:
-        """
-        Update collateral for an entity.
-
-        Args:
-            entity_hotkey: The VANTA_ENTITY_HOTKEY
-            collateral_amount: New collateral amount
-
-        Returns:
-            (success: bool, message: str)
-        """
-        return self._server.update_collateral_rpc(entity_hotkey, collateral_amount)
 
     # ==================== Query Methods ====================
 

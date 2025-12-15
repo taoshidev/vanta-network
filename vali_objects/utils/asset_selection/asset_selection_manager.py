@@ -318,6 +318,51 @@ class AssetSelectionManager(ValidatorBroadcastBase):
                 'error_message': 'Internal server error processing asset selection request'
             }
 
+    def delete_asset_selection(self, hotkey: str) -> Dict[str, str]:
+        """
+        Delete an asset selection for a miner.
+
+        This allows the hotkey to select a new asset class, useful for
+        rollback scenarios when subaccount creation fails.
+
+        Args:
+            hotkey: The miner's hotkey to delete
+
+        Returns:
+            Dict containing success status and message:
+            - successfully_processed: bool
+            - success_message or error_message: str
+        """
+        try:
+            # Atomic check+delete inside lock
+            with self._asset_selection_lock:
+                # Check if hotkey exists
+                if hotkey not in self.asset_selections:
+                    return {
+                        'successfully_processed': True,
+                        'error_message': f'No asset selection found for miner {hotkey}'
+                    }
+
+                # Remove from dict
+                del self.asset_selections[hotkey]
+
+                # Save to disk (MUST happen inside lock)
+                self._save_asset_selections_to_disk()
+
+            bt.logging.info(f"[ASSET_MGR] Deleted asset selection for miner {hotkey}")
+
+            return {
+                'successfully_processed': True,
+                'success_message': f'Successfully deleted asset selection for miner {hotkey}'
+            }
+
+        except Exception as e:
+            bt.logging.error(f"[ASSET_MGR] Error deleting asset selection for miner {hotkey}: {e}")
+            return {
+                'successfully_processed': False,
+                'error_message': 'Internal server error deleting asset selection'
+            }
+
     def sync_miner_asset_selection_data(self, asset_selection_data: Dict[str, str]) -> None:
         """
         Sync miner asset selection data from external source (backup/sync).

@@ -38,6 +38,8 @@ from vali_objects.challenge_period.challengeperiod_client import ChallengePeriod
 from vali_objects.statistics.miner_statistics_client import MinerStatisticsClient
 from vali_objects.position_management.position_manager_client import PositionManagerClient
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_client import DebtLedgerClient
+from vali_objects.contract.contract_client import ContractClient
+from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
 from time_util.time_util import TimeUtil
 
 
@@ -49,6 +51,8 @@ class SubaccountInfo(BaseModel):
     status: str = Field(default="active", description="Status: active, eliminated, or unknown")
     created_at_ms: int = Field(description="Timestamp when subaccount was created")
     eliminated_at_ms: Optional[int] = Field(default=None, description="Timestamp when subaccount was eliminated")
+    account_size: float = Field(description="Account size in USD (immutable once set)")
+    asset_class: str = Field(description="Asset class selection (immutable once set)")
 
     # Note: Challenge period tracking has been migrated to ChallengePeriodManager
     # Synthetic hotkeys are added to challenge period bucket and evaluated via inspect()
@@ -59,7 +63,6 @@ class EntityData(BaseModel):
     entity_hotkey: str = Field(description="The VANTA_ENTITY_HOTKEY")
     subaccounts: Dict[int, SubaccountInfo] = Field(default_factory=dict, description="Map subaccount_id -> SubaccountInfo")
     next_subaccount_id: int = Field(default=0, description="Next subaccount ID to assign (monotonic)")
-    collateral_amount: float = Field(default=0.0, description="Collateral amount (placeholder)")
     max_subaccounts: int = Field(default=10, description="Maximum allowed subaccounts")
     registered_at_ms: int = Field(description="Timestamp when entity was registered")
 
@@ -178,6 +181,20 @@ class EntityManager(ValidatorBroadcastBase):
             running_unit_tests=running_unit_tests
         )
 
+        # Create ContractClient for collateral verification and slashing
+        self._contract_client = ContractClient(
+            connection_mode=connection_mode,
+            connect_immediately=False,
+            running_unit_tests=running_unit_tests
+        )
+
+        # Create AssetSelectionClient for asset class selection
+        self._asset_selection_client = AssetSelectionClient(
+            connection_mode=connection_mode,
+            connect_immediately=False,
+            running_unit_tests=running_unit_tests
+        )
+
         self.ENTITY_FILE = ValiBkpUtils.get_entity_file_location(running_unit_tests=running_unit_tests)
 
         # Load initial entities from disk
@@ -216,15 +233,16 @@ class EntityManager(ValidatorBroadcastBase):
     def register_entity(
         self,
         entity_hotkey: str,
-        collateral_amount: float = 0.0,
         max_subaccounts: int = None
     ) -> Tuple[bool, str]:
         """
         Register a new entity.
 
+        Verifies entity has sufficient collateral balance (ENTITY_REGISTRATION_FEE)
+        and slashes this amount as a registration fee.
+
         Args:
             entity_hotkey: The VANTA_ENTITY_HOTKEY
-            collateral_amount: Collateral amount (placeholder)
             max_subaccounts: Maximum allowed subaccounts (default from ValiConfig)
 
         Returns:
@@ -238,16 +256,43 @@ class EntityManager(ValidatorBroadcastBase):
             if entity_hotkey in self.entities:
                 return False, f"Entity {entity_hotkey} already registered"
 
-            # TODO: Add collateral verification here
-            # collateral_verified = self._verify_collateral(entity_hotkey, collateral_amount)
-            # if not collateral_verified:
-            #     return False, "Insufficient collateral"
+            # Determine registration fee based on testnet/mainnet
+            registration_fee = (ValiConfig.ENTITY_REGISTRATION_FEE_TESTNET if self.is_testnet
+                               else ValiConfig.ENTITY_REGISTRATION_FEE_MAINNET)
 
+            # Verify collateral balance
+            try:
+                current_balance = self._contract_client.get_miner_collateral_balance(entity_hotkey)
+                if current_balance is None:
+                    bt.logging.warning(f"[ENTITY_MANAGER] Unable to verify collateral for {entity_hotkey} - balance check returned None")
+                    return False, "Unable to verify collateral balance"
+
+                if current_balance < registration_fee:
+                    bt.logging.warning(
+                        f"[ENTITY_MANAGER] Insufficient collateral for entity {entity_hotkey}: "
+                        f"has {current_balance} theta, needs {registration_fee} theta"
+                    )
+                    return False, f"Insufficient collateral: has {current_balance} theta, needs {registration_fee} theta"
+
+                # Slash registration fee
+                slash_success = self._contract_client.slash_miner_collateral(entity_hotkey, registration_fee)
+                if not slash_success:
+                    bt.logging.error(f"[ENTITY_MANAGER] Failed to slash registration fee for {entity_hotkey}")
+                    return False, "Failed to slash registration fee"
+
+                bt.logging.info(
+                    f"[ENTITY_MANAGER] Slashed {registration_fee} theta registration fee for entity {entity_hotkey}"
+                )
+
+            except Exception as e:
+                bt.logging.error(f"[ENTITY_MANAGER] Error verifying/slashing collateral for {entity_hotkey}: {e}")
+                return False, f"Error verifying collateral: {str(e)}"
+
+            # Registration fee slashed - proceed with registration
             entity_data = EntityData(
                 entity_hotkey=entity_hotkey,
                 subaccounts={},
                 next_subaccount_id=0,
-                collateral_amount=collateral_amount,
                 max_subaccounts=max_subaccounts,
                 registered_at_ms=TimeUtil.now_in_millis()
             )
@@ -257,19 +302,39 @@ class EntityManager(ValidatorBroadcastBase):
             self._entity_locks[entity_hotkey] = threading.RLock()
             self._write_entities_from_memory_to_disk()
 
-            bt.logging.info(f"[ENTITY_MANAGER] Registered entity {entity_hotkey} with max_subaccounts={max_subaccounts}")
-            return True, f"Entity {entity_hotkey} registered successfully"
+            bt.logging.info(
+                f"[ENTITY_MANAGER] Registered entity {entity_hotkey} with max_subaccounts={max_subaccounts}, "
+                f"slashed {registration_fee} theta"
+            )
+            return True, f"Entity registered successfully - {registration_fee} theta registration fee slashed"
 
-    def create_subaccount(self, entity_hotkey: str) -> Tuple[bool, Optional[SubaccountInfo], str]:
+    def create_subaccount(
+        self,
+        entity_hotkey: str,
+        account_size: float,
+        asset_class: str
+    ) -> Tuple[bool, Optional[SubaccountInfo], str]:
         """
         Create a new subaccount for an entity.
 
+        Verifies entity has sufficient collateral for the requested account size
+        and slashes the required amount as a subaccount registration fee.
+
         Args:
             entity_hotkey: The VANTA_ENTITY_HOTKEY
+            account_size: Account size in USD (immutable once set, max 100k)
+            asset_class: Asset class selection (immutable once set)
 
         Returns:
             (success: bool, subaccount_info: Optional[SubaccountInfo], message: str)
         """
+        # Validate account size (must be <= MAX_SUBACCOUNT_ACCOUNT_SIZE)
+        if account_size > ValiConfig.MAX_SUBACCOUNT_ACCOUNT_SIZE:
+            return False, None, (
+                f"Account size ${account_size} exceeds maximum allowed "
+                f"${ValiConfig.MAX_SUBACCOUNT_ACCOUNT_SIZE}"
+            )
+
         # Use per-entity lock: only operates on single entity
         entity_lock = self._get_entity_lock(entity_hotkey)
         with entity_lock:
@@ -282,13 +347,86 @@ class EntityManager(ValidatorBroadcastBase):
             if active_count >= entity_data.max_subaccounts:
                 return False, None, f"Entity {entity_hotkey} has reached maximum subaccounts ({entity_data.max_subaccounts})"
 
-            # Generate monotonic ID
-            subaccount_id = entity_data.next_subaccount_id
-            entity_data.next_subaccount_id += 1
+            # Calculate required collateral: account_size / ENTITY_COST_PER_THETA
+            required_theta = account_size / ValiConfig.ENTITY_COST_PER_THETA
 
-            # Generate UUID and synthetic hotkey
-            subaccount_uuid = str(uuid.uuid4())
-            synthetic_hotkey = f"{entity_hotkey}_{subaccount_id}"
+            # Verify collateral balance
+            try:
+                current_balance = self._contract_client.get_miner_collateral_balance(entity_hotkey)
+                if current_balance is None:
+                    bt.logging.warning(f"[ENTITY_MANAGER] Unable to verify collateral for {entity_hotkey} - balance check returned None")
+                    return False, None, "Unable to verify collateral balance"
+
+                if current_balance < required_theta:
+                    bt.logging.warning(
+                        f"[ENTITY_MANAGER] Insufficient collateral for subaccount creation: "
+                        f"entity {entity_hotkey} has {current_balance} theta, needs {required_theta} theta "
+                        f"to create new subaccount with ${account_size} account size"
+                    )
+                    return False, None, (
+                        f"Insufficient collateral: has {current_balance} theta, needs {required_theta} theta "
+                        f"to create new subaccount with ${account_size} account size"
+                    )
+
+                # Generate monotonic ID
+                subaccount_id = entity_data.next_subaccount_id
+                entity_data.next_subaccount_id += 1
+
+                # Generate UUID and synthetic hotkey
+                subaccount_uuid = str(uuid.uuid4())
+                synthetic_hotkey = f"{entity_hotkey}_{subaccount_id}"
+
+                # Process asset selection for synthetic hotkey
+                asset_selection_result = self._asset_selection_client.process_asset_selection_request(
+                    asset_selection=asset_class,
+                    miner=synthetic_hotkey
+                )
+                if not asset_selection_result.get('success', False):
+                    bt.logging.warning(
+                        f"[ENTITY_MANAGER] Failed to process asset selection for {synthetic_hotkey}: "
+                        f"{asset_selection_result.get('message', 'Unknown error')}"
+                    )
+                    entity_data.next_subaccount_id -= 1
+                    return False, None, f"Failed to set asset selection {asset_class}"
+                bt.logging.info(
+                    f"[ENTITY_MANAGER] Asset selection '{asset_class}' set for {synthetic_hotkey}"
+                )
+
+                # Set account size for synthetic hotkey with explicit account_size parameter
+                # This records the account size in the contract manager's miner_account_sizes
+                set_size_success = self._contract_client.set_miner_account_size(
+                    synthetic_hotkey,
+                    timestamp_ms=TimeUtil.now_in_millis(),
+                    account_size=account_size
+                )
+                if not set_size_success:
+                    bt.logging.warning(
+                        f"[ENTITY_MANAGER] Failed to set account size for {synthetic_hotkey}, "
+                        f"but collateral was slashed - continuing with subaccount creation"
+                    )
+                    entity_data.next_subaccount_id -= 1
+                    self._asset_selection_client.delete_asset_selection(synthetic_hotkey)
+                    return False, None, "Failed to set account size for subaccount creation"
+                bt.logging.info(
+                    f"[ENTITY_MANAGER] Set account size {account_size} for {synthetic_hotkey}"
+                )
+
+                # Slash required collateral
+                slash_success = self._contract_client.slash_miner_collateral(entity_hotkey, required_theta)
+                if not slash_success:
+                    bt.logging.error(f"[ENTITY_MANAGER] Failed to slash subaccount collateral for {entity_hotkey}")
+                    # Rollback subaccount ID increment
+                    entity_data.next_subaccount_id -= 1
+                    self._asset_selection_client.delete_asset_selection(synthetic_hotkey)
+                    return False, None, "Failed to slash subaccount collateral"
+                bt.logging.info(
+                    f"[ENTITY_MANAGER] Slashed {required_theta} theta for subaccount {synthetic_hotkey} "
+                    f"(${account_size} account size)"
+                )
+
+            except Exception as e:
+                bt.logging.error(f"[ENTITY_MANAGER] Error verifying/slashing collateral for subaccount: {e}")
+                return False, None, f"Error verifying collateral: {str(e)}"
 
             # Create subaccount info
             now_ms = TimeUtil.now_in_millis()
@@ -297,30 +435,24 @@ class EntityManager(ValidatorBroadcastBase):
                 subaccount_uuid=subaccount_uuid,
                 synthetic_hotkey=synthetic_hotkey,
                 status="active",
-                created_at_ms=now_ms
+                created_at_ms=now_ms,
+                account_size=account_size,
+                asset_class=asset_class
             )
-
-            # TODO: Transfer collateral from entity to subaccount
-            # This should use the collateral SDK to transfer collateral from entity_hotkey to synthetic_hotkey
-            # collateral_transfer_amount = calculate_subaccount_collateral(entity_data.collateral_amount, entity_data.max_subaccounts)
-            # collateral_sdk.transfer_collateral(from_hotkey=entity_hotkey, to_hotkey=synthetic_hotkey, amount=collateral_transfer_amount)
-            bt.logging.info(f"[ENTITY_MANAGER] TODO: Transfer collateral from {entity_hotkey} to {synthetic_hotkey}")
-
-            # TODO: Set account size for the subaccount using ContractClient
-            # This should set a fixed account size for the synthetic hotkey
-            # from vali_objects.utils.vali_utils import ValiUtils
-            # contract_client = ValiUtils.get_contract_client()
-            # FIXED_ACCOUNT_SIZE = 1000.0  # Define this constant in ValiConfig
-            # contract_client.set_account_size(synthetic_hotkey, FIXED_ACCOUNT_SIZE)
-            bt.logging.info(f"[ENTITY_MANAGER] TODO: Set account size for {synthetic_hotkey} using ContractClient.set_account_size()")
 
             entity_data.subaccounts[subaccount_id] = subaccount_info
             self._write_entities_from_memory_to_disk()
 
             bt.logging.info(
-                f"[ENTITY_MANAGER] Created subaccount {subaccount_id} for entity {entity_hotkey}: {synthetic_hotkey}"
+                f"[ENTITY_MANAGER] Created subaccount {subaccount_id} for entity {entity_hotkey}: "
+                f"{synthetic_hotkey}, account_size=${account_size}, asset_class={asset_class}, "
+                f"slashed {required_theta} theta"
             )
-            return True, subaccount_info, f"Subaccount {subaccount_id} created successfully"
+            return True, subaccount_info, (
+                f"Subaccount {subaccount_id} created successfully - "
+                f"${account_size} account size, {asset_class} asset class, "
+                f"{required_theta} theta slashed"
+            )
 
     def eliminate_subaccount(
         self,
@@ -580,31 +712,6 @@ class EntityManager(ValidatorBroadcastBase):
         # Use master lock: copying entire dict
         with self._entities_lock:
             return dict(self.entities)
-
-    def update_collateral(self, entity_hotkey: str, collateral_amount: float) -> Tuple[bool, str]:
-        """
-        Update collateral for an entity (placeholder).
-
-        Args:
-            entity_hotkey: The VANTA_ENTITY_HOTKEY
-            collateral_amount: New collateral amount
-
-        Returns:
-            (success: bool, message: str)
-        """
-        # Use per-entity lock: only operates on single entity
-        entity_lock = self._get_entity_lock(entity_hotkey)
-        with entity_lock:
-            entity_data = self.entities.get(entity_hotkey)
-            if not entity_data:
-                return False, f"Entity {entity_hotkey} not found"
-
-            # TODO: Verify collateral with collateral SDK
-            entity_data.collateral_amount = collateral_amount
-            self._write_entities_from_memory_to_disk()
-
-            bt.logging.info(f"[ENTITY_MANAGER] Updated collateral for {entity_hotkey}: {collateral_amount}")
-            return True, f"Collateral updated successfully"
 
     # ==================== Challenge Period & Elimination Assessment ====================
 

@@ -90,7 +90,6 @@ class TestEntityManagement(TestBase):
         """Test successful entity registration."""
         success, message = self.entity_client.register_entity(
             entity_hotkey=self.ENTITY_HOTKEY_1,
-            collateral_amount=1000.0,
             max_subaccounts=5
         )
 
@@ -100,7 +99,6 @@ class TestEntityManagement(TestBase):
         entity_data = self.entity_client.get_entity_data(self.ENTITY_HOTKEY_1)
         self.assertIsNotNone(entity_data)
         self.assertEqual(entity_data['entity_hotkey'], self.ENTITY_HOTKEY_1)
-        self.assertEqual(entity_data['collateral_amount'], 1000.0)
         self.assertEqual(entity_data['max_subaccounts'], 5)
         self.assertEqual(len(entity_data['subaccounts']), 0)
 
@@ -108,15 +106,13 @@ class TestEntityManagement(TestBase):
         """Test that registering the same entity twice fails."""
         # Register first time
         success, _ = self.entity_client.register_entity(
-            entity_hotkey=self.ENTITY_HOTKEY_1,
-            collateral_amount=1000.0
+            entity_hotkey=self.ENTITY_HOTKEY_1
         )
         self.assertTrue(success)
 
         # Try to register again
         success, message = self.entity_client.register_entity(
-            entity_hotkey=self.ENTITY_HOTKEY_1,
-            collateral_amount=2000.0
+            entity_hotkey=self.ENTITY_HOTKEY_1
         )
         self.assertFalse(success)
         self.assertIn("already registered", message.lower())
@@ -129,7 +125,6 @@ class TestEntityManagement(TestBase):
         self.assertTrue(success)
 
         entity_data = self.entity_client.get_entity_data(self.ENTITY_HOTKEY_1)
-        self.assertEqual(entity_data['collateral_amount'], 0.0)
         self.assertEqual(entity_data['max_subaccounts'], 500)  # ValiConfig.ENTITY_MAX_SUBACCOUNTS default
 
     # ==================== Subaccount Creation Tests ====================
@@ -421,26 +416,6 @@ class TestEntityManagement(TestBase):
         """Test getting data for non-existent entity."""
         entity_data = self.entity_client.get_entity_data("nonexistent_entity")
         self.assertIsNone(entity_data)
-
-    def test_update_collateral(self):
-        """Test updating collateral for an entity."""
-        # Register entity with initial collateral
-        self.entity_client.register_entity(
-            entity_hotkey=self.ENTITY_HOTKEY_1,
-            collateral_amount=1000.0
-        )
-
-        # Update collateral
-        success, message = self.entity_client.update_collateral(
-            entity_hotkey=self.ENTITY_HOTKEY_1,
-            collateral_amount=2000.0
-        )
-
-        self.assertTrue(success, f"Collateral update failed: {message}")
-
-        # Verify updated collateral
-        entity_data = self.entity_client.get_entity_data(self.ENTITY_HOTKEY_1)
-        self.assertEqual(entity_data['collateral_amount'], 2000.0)
 
     # ==================== Validator Order Placement Logic Tests ====================
     # These tests verify the behavior expected by validator.py's should_fail_early()
