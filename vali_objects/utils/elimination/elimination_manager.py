@@ -238,7 +238,10 @@ class EliminationManager(CacheController):
         self._position_lock_client = PositionLockClient()
 
         # Create own LimitOrderClient (forward compatibility - no parameter passing)
-        self._limit_order_client = LimitOrderClient(connect_immediately=False)
+        self._limit_order_client = LimitOrderClient(
+            connect_immediately=False,
+            connection_mode=connection_mode
+        )
 
         # Local dicts (no IPC) - much faster!
         self.eliminations: Dict[str, dict] = {}
