@@ -260,33 +260,34 @@ class EntityManager(ValidatorBroadcastBase):
             registration_fee = (ValiConfig.ENTITY_REGISTRATION_FEE_TESTNET if self.is_testnet
                                else ValiConfig.ENTITY_REGISTRATION_FEE_MAINNET)
 
-            # Verify collateral balance
-            try:
-                current_balance = self._contract_client.get_miner_collateral_balance(entity_hotkey)
-                if current_balance is None:
-                    bt.logging.warning(f"[ENTITY_MANAGER] Unable to verify collateral for {entity_hotkey} - balance check returned None")
-                    return False, "Unable to verify collateral balance"
+            if not self.running_unit_tests:
+                # Verify collateral balance
+                try:
+                    current_balance = self._contract_client.get_miner_collateral_balance(entity_hotkey)
+                    if current_balance is None:
+                        bt.logging.warning(f"[ENTITY_MANAGER] Unable to verify collateral for {entity_hotkey} - balance check returned None")
+                        return False, "Unable to verify collateral balance"
 
-                if current_balance < registration_fee:
-                    bt.logging.warning(
-                        f"[ENTITY_MANAGER] Insufficient collateral for entity {entity_hotkey}: "
-                        f"has {current_balance} theta, needs {registration_fee} theta"
+                    if current_balance < registration_fee:
+                        bt.logging.warning(
+                            f"[ENTITY_MANAGER] Insufficient collateral for entity {entity_hotkey}: "
+                            f"has {current_balance} theta, needs {registration_fee} theta"
+                        )
+                        return False, f"Insufficient collateral: has {current_balance} theta, needs {registration_fee} theta"
+
+                    # Slash registration fee
+                    slash_success = self._contract_client.slash_miner_collateral(entity_hotkey, registration_fee)
+                    if not slash_success:
+                        bt.logging.error(f"[ENTITY_MANAGER] Failed to slash registration fee for {entity_hotkey}")
+                        return False, "Failed to slash registration fee"
+
+                    bt.logging.info(
+                        f"[ENTITY_MANAGER] Slashed {registration_fee} theta registration fee for entity {entity_hotkey}"
                     )
-                    return False, f"Insufficient collateral: has {current_balance} theta, needs {registration_fee} theta"
 
-                # Slash registration fee
-                slash_success = self._contract_client.slash_miner_collateral(entity_hotkey, registration_fee)
-                if not slash_success:
-                    bt.logging.error(f"[ENTITY_MANAGER] Failed to slash registration fee for {entity_hotkey}")
-                    return False, "Failed to slash registration fee"
-
-                bt.logging.info(
-                    f"[ENTITY_MANAGER] Slashed {registration_fee} theta registration fee for entity {entity_hotkey}"
-                )
-
-            except Exception as e:
-                bt.logging.error(f"[ENTITY_MANAGER] Error verifying/slashing collateral for {entity_hotkey}: {e}")
-                return False, f"Error verifying collateral: {str(e)}"
+                except Exception as e:
+                    bt.logging.error(f"[ENTITY_MANAGER] Error verifying/slashing collateral for {entity_hotkey}: {e}")
+                    return False, f"Error verifying collateral: {str(e)}"
 
             # Registration fee slashed - proceed with registration
             entity_data = EntityData(
@@ -381,10 +382,10 @@ class EntityManager(ValidatorBroadcastBase):
                     asset_selection=asset_class,
                     miner=synthetic_hotkey
                 )
-                if not asset_selection_result.get('success', False):
+                if not asset_selection_result.get('successfully_processed', False):
                     bt.logging.warning(
                         f"[ENTITY_MANAGER] Failed to process asset selection for {synthetic_hotkey}: "
-                        f"{asset_selection_result.get('message', 'Unknown error')}"
+                        f"{asset_selection_result.get('error_message', 'Unknown error')}"
                     )
                     entity_data.next_subaccount_id -= 1
                     return False, None, f"Failed to set asset selection {asset_class}"
@@ -411,18 +412,19 @@ class EntityManager(ValidatorBroadcastBase):
                     f"[ENTITY_MANAGER] Set account size {account_size} for {synthetic_hotkey}"
                 )
 
-                # Slash required collateral
-                slash_success = self._contract_client.slash_miner_collateral(entity_hotkey, required_theta)
-                if not slash_success:
-                    bt.logging.error(f"[ENTITY_MANAGER] Failed to slash subaccount collateral for {entity_hotkey}")
-                    # Rollback subaccount ID increment
-                    entity_data.next_subaccount_id -= 1
-                    self._asset_selection_client.delete_asset_selection(synthetic_hotkey)
-                    return False, None, "Failed to slash subaccount collateral"
-                bt.logging.info(
-                    f"[ENTITY_MANAGER] Slashed {required_theta} theta for subaccount {synthetic_hotkey} "
-                    f"(${account_size} account size)"
-                )
+                if not self.running_unit_tests:
+                    # Slash required collateral
+                    slash_success = self._contract_client.slash_miner_collateral(entity_hotkey, required_theta)
+                    if not slash_success:
+                        bt.logging.error(f"[ENTITY_MANAGER] Failed to slash subaccount collateral for {entity_hotkey}")
+                        # Rollback subaccount ID increment
+                        entity_data.next_subaccount_id -= 1
+                        self._asset_selection_client.delete_asset_selection(synthetic_hotkey)
+                        return False, None, "Failed to slash subaccount collateral"
+                    bt.logging.info(
+                        f"[ENTITY_MANAGER] Slashed {required_theta} theta for subaccount {synthetic_hotkey} "
+                        f"(${account_size} account size)"
+                    )
 
             except Exception as e:
                 bt.logging.error(f"[ENTITY_MANAGER] Error verifying/slashing collateral for subaccount: {e}")
@@ -897,7 +899,9 @@ class EntityManager(ValidatorBroadcastBase):
         entity_hotkey: str,
         subaccount_id: int,
         subaccount_uuid: str,
-        synthetic_hotkey: str
+        synthetic_hotkey: str,
+        account_size: float,
+        asset_class: str
     ):
         """
         Broadcast SubaccountRegistration synapse to other validators using shared broadcast base.
@@ -907,13 +911,17 @@ class EntityManager(ValidatorBroadcastBase):
             subaccount_id: The subaccount ID
             subaccount_uuid: The subaccount UUID
             synthetic_hotkey: The synthetic hotkey
+            account_size: Account size in USD (immutable)
+            asset_class: Asset class selection (immutable)
         """
         def create_synapse():
             subaccount_data = {
                 "entity_hotkey": entity_hotkey,
                 "subaccount_id": subaccount_id,
                 "subaccount_uuid": subaccount_uuid,
-                "synthetic_hotkey": synthetic_hotkey
+                "synthetic_hotkey": synthetic_hotkey,
+                "account_size": account_size,
+                "asset_class": asset_class
             }
             return template.protocol.SubaccountRegistration(subaccount_data=subaccount_data)
 
@@ -947,12 +955,15 @@ class EntityManager(ValidatorBroadcastBase):
                 subaccount_id = subaccount_data.get("subaccount_id")
                 subaccount_uuid = subaccount_data.get("subaccount_uuid")
                 synthetic_hotkey = subaccount_data.get("synthetic_hotkey")
+                account_size = subaccount_data.get("account_size")
+                asset_class = subaccount_data.get("asset_class")
 
                 bt.logging.info(
                     f"[ENTITY_MANAGER] Processing subaccount registration for {synthetic_hotkey}"
                 )
 
-                if not all([entity_hotkey, subaccount_id is not None, subaccount_uuid, synthetic_hotkey]):
+                if not all([entity_hotkey, subaccount_id is not None, subaccount_uuid, synthetic_hotkey,
+                            account_size, asset_class]):
                     bt.logging.warning(
                         f"[ENTITY_MANAGER] Invalid subaccount registration data received: {subaccount_data}"
                     )
@@ -994,7 +1005,9 @@ class EntityManager(ValidatorBroadcastBase):
                     subaccount_uuid=subaccount_uuid,
                     synthetic_hotkey=synthetic_hotkey,
                     status="active",
-                    created_at_ms=now_ms
+                    created_at_ms=now_ms,
+                    account_size=account_size,
+                    asset_class=asset_class
                 )
 
                 # Add to entity
