@@ -217,7 +217,7 @@ class PositionPenalties:
             score = metric_function(
                 log_returns=log_returns,
                 ledger=ledger,
-                # weighting=True, # discuss scoring weighting
+                weighting=True, # discuss scoring weighting
                 days_in_year=days_in_year
             )
             score = min(score, max_metric_value)
