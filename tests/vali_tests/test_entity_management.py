@@ -136,7 +136,9 @@ class TestEntityManagement(TestBase):
 
         # Create subaccount
         success, subaccount_info, message = self.entity_client.create_subaccount(
-            entity_hotkey=self.ENTITY_HOTKEY_1
+            entity_hotkey=self.ENTITY_HOTKEY_1,
+            account_size=100_000,
+            asset_class="crypto"
         )
 
         self.assertTrue(success, f"Subaccount creation failed: {message}")
@@ -157,7 +159,9 @@ class TestEntityManagement(TestBase):
         subaccount_ids = []
         for i in range(3):
             success, subaccount_info, _ = self.entity_client.create_subaccount(
-                entity_hotkey=self.ENTITY_HOTKEY_1
+                entity_hotkey=self.ENTITY_HOTKEY_1,
+                account_size=100_000,
+                asset_class="crypto"
             )
             self.assertTrue(success)
             subaccount_ids.append(subaccount_info['subaccount_id'])
@@ -179,12 +183,14 @@ class TestEntityManagement(TestBase):
 
         # Create 2 subaccounts (should succeed)
         for i in range(2):
-            success, _, _ = self.entity_client.create_subaccount(self.ENTITY_HOTKEY_1)
+            success, _, _ = self.entity_client.create_subaccount(self.ENTITY_HOTKEY_1, account_size=100_000, asset_class="crypto")
             self.assertTrue(success)
 
         # Try to create 3rd subaccount (should fail)
         success, subaccount_info, message = self.entity_client.create_subaccount(
-            self.ENTITY_HOTKEY_1
+            self.ENTITY_HOTKEY_1,
+            account_size=100_000,
+            asset_class="crypto"
         )
         self.assertFalse(success)
         self.assertIsNone(subaccount_info)
@@ -193,7 +199,9 @@ class TestEntityManagement(TestBase):
     def test_create_subaccount_unregistered_entity(self):
         """Test that subaccount creation fails for unregistered entity."""
         success, subaccount_info, message = self.entity_client.create_subaccount(
-            entity_hotkey="unregistered_entity"
+            entity_hotkey="unregistered_entity",
+            account_size=100_000,
+            asset_class="crypto"
         )
 
         self.assertFalse(success)
@@ -243,7 +251,7 @@ class TestEntityManagement(TestBase):
         """Test getting status of an active subaccount."""
         # Register entity and create subaccount
         self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
-        _, subaccount_info, _ = self.entity_client.create_subaccount(self.ENTITY_HOTKEY_1)
+        _, subaccount_info, _ = self.entity_client.create_subaccount(self.ENTITY_HOTKEY_1, account_size=100_000, asset_class="crypto")
         synthetic_hotkey = subaccount_info['synthetic_hotkey']
 
         # Get status
@@ -259,7 +267,7 @@ class TestEntityManagement(TestBase):
         """Test getting status of an eliminated subaccount."""
         # Register entity and create subaccount
         self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
-        _, subaccount_info, _ = self.entity_client.create_subaccount(self.ENTITY_HOTKEY_1)
+        _, subaccount_info, _ = self.entity_client.create_subaccount(self.ENTITY_HOTKEY_1, account_size=100_000, asset_class="crypto")
         synthetic_hotkey = subaccount_info['synthetic_hotkey']
 
         # Eliminate subaccount
@@ -293,7 +301,7 @@ class TestEntityManagement(TestBase):
         """Test successful subaccount elimination."""
         # Register entity and create subaccount
         self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
-        self.entity_client.create_subaccount(self.ENTITY_HOTKEY_1)
+        self.entity_client.create_subaccount(self.ENTITY_HOTKEY_1, account_size=100_000, asset_class="crypto")
 
         # Eliminate subaccount
         success, message = self.entity_client.eliminate_subaccount(
@@ -330,7 +338,7 @@ class TestEntityManagement(TestBase):
         """Test eliminating an already eliminated subaccount."""
         # Register entity and create subaccount
         self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
-        self.entity_client.create_subaccount(self.ENTITY_HOTKEY_1)
+        self.entity_client.create_subaccount(self.ENTITY_HOTKEY_1, account_size=100_000, asset_class="crypto")
 
         # Eliminate subaccount first time
         success, _ = self.entity_client.eliminate_subaccount(
@@ -361,7 +369,7 @@ class TestEntityManagement(TestBase):
         """Test that active synthetic hotkeys are recognized by metagraph."""
         # Register entity and create subaccount
         self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
-        _, subaccount_info, _ = self.entity_client.create_subaccount(self.ENTITY_HOTKEY_1)
+        _, subaccount_info, _ = self.entity_client.create_subaccount(self.ENTITY_HOTKEY_1, account_size=100_000, asset_class="crypto")
         synthetic_hotkey = subaccount_info['synthetic_hotkey']
 
         # Synthetic hotkey should be recognized (entity in metagraph + subaccount active)
@@ -371,7 +379,7 @@ class TestEntityManagement(TestBase):
         """Test that eliminated synthetic hotkeys are NOT recognized by metagraph."""
         # Register entity and create subaccount
         self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
-        _, subaccount_info, _ = self.entity_client.create_subaccount(self.ENTITY_HOTKEY_1)
+        _, subaccount_info, _ = self.entity_client.create_subaccount(self.ENTITY_HOTKEY_1, account_size=100_000, asset_class="crypto")
         synthetic_hotkey = subaccount_info['synthetic_hotkey']
 
         # Eliminate subaccount
@@ -389,7 +397,7 @@ class TestEntityManagement(TestBase):
         # Register entity that's NOT in metagraph
         unregistered_entity = "entity_not_in_metagraph"
         self.entity_client.register_entity(entity_hotkey=unregistered_entity)
-        _, subaccount_info, _ = self.entity_client.create_subaccount(unregistered_entity)
+        _, subaccount_info, _ = self.entity_client.create_subaccount(unregistered_entity, account_size=100_000, asset_class="crypto")
         synthetic_hotkey = subaccount_info['synthetic_hotkey']
 
         # Synthetic hotkey should NOT be recognized (entity not in metagraph)
@@ -449,7 +457,7 @@ class TestEntityManagement(TestBase):
         """
         # Register entity and create active subaccount
         self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
-        _, subaccount_info, _ = self.entity_client.create_subaccount(self.ENTITY_HOTKEY_1)
+        _, subaccount_info, _ = self.entity_client.create_subaccount(self.ENTITY_HOTKEY_1, account_size=100_000, asset_class="crypto")
         synthetic_hotkey = subaccount_info['synthetic_hotkey']
 
         # Verify hotkey is synthetic
@@ -470,7 +478,7 @@ class TestEntityManagement(TestBase):
         """
         # Register entity and create subaccount
         self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
-        _, subaccount_info, _ = self.entity_client.create_subaccount(self.ENTITY_HOTKEY_1)
+        _, subaccount_info, _ = self.entity_client.create_subaccount(self.ENTITY_HOTKEY_1, account_size=100_000, asset_class="crypto")
         synthetic_hotkey = subaccount_info['synthetic_hotkey']
 
         # Eliminate the subaccount
@@ -521,11 +529,12 @@ class TestEntityManagement(TestBase):
                         'synthetic_hotkey': f'{self.ENTITY_HOTKEY_1}_0',
                         'status': 'active',
                         'created_at_ms': TimeUtil.now_in_millis(),
-                        'eliminated_at_ms': None
+                        'eliminated_at_ms': None,
+                        'account_size': 100_000,
+                        'asset_class': 'crypto'
                     }
                 },
                 'next_subaccount_id': 1,
-                'collateral_amount': 1000.0,
                 'max_subaccounts': 10,
                 'registered_at_ms': TimeUtil.now_in_millis()
             }
@@ -549,7 +558,7 @@ class TestEntityManagement(TestBase):
         """Test syncing new subaccounts to existing entity."""
         # Register entity locally with 1 subaccount
         self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
-        self.entity_client.create_subaccount(self.ENTITY_HOTKEY_1)
+        self.entity_client.create_subaccount(self.ENTITY_HOTKEY_1, account_size=100_000, asset_class="crypto")
 
         # Create checkpoint dict with additional subaccounts (0, 1, 2)
         checkpoint_dict = {
@@ -562,7 +571,9 @@ class TestEntityManagement(TestBase):
                         'synthetic_hotkey': f'{self.ENTITY_HOTKEY_1}_0',
                         'status': 'active',
                         'created_at_ms': TimeUtil.now_in_millis(),
-                        'eliminated_at_ms': None
+                        'eliminated_at_ms': None,
+                        'account_size': 100_000,
+                        'asset_class': 'crypto'
                     },
                     '1': {
                         'subaccount_id': 1,
@@ -570,7 +581,9 @@ class TestEntityManagement(TestBase):
                         'synthetic_hotkey': f'{self.ENTITY_HOTKEY_1}_1',
                         'status': 'active',
                         'created_at_ms': TimeUtil.now_in_millis(),
-                        'eliminated_at_ms': None
+                        'eliminated_at_ms': None,
+                        'account_size': 100_000,
+                        'asset_class': 'crypto'
                     },
                     '2': {
                         'subaccount_id': 2,
@@ -578,11 +591,12 @@ class TestEntityManagement(TestBase):
                         'synthetic_hotkey': f'{self.ENTITY_HOTKEY_1}_2',
                         'status': 'active',
                         'created_at_ms': TimeUtil.now_in_millis(),
-                        'eliminated_at_ms': None
+                        'eliminated_at_ms': None,
+                        'account_size': 100_000,
+                        'asset_class': 'crypto'
                     }
                 },
                 'next_subaccount_id': 3,
-                'collateral_amount': 0.0,
                 'max_subaccounts': 500,
                 'registered_at_ms': TimeUtil.now_in_millis()
             }
@@ -604,7 +618,7 @@ class TestEntityManagement(TestBase):
         """Test syncing subaccount status changes (active -> eliminated)."""
         # Register entity and create active subaccount
         self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
-        self.entity_client.create_subaccount(self.ENTITY_HOTKEY_1)
+        self.entity_client.create_subaccount(self.ENTITY_HOTKEY_1, account_size=100_000, asset_class="crypto")
 
         # Verify initially active
         found, status, _ = self.entity_client.get_subaccount_status(f'{self.ENTITY_HOTKEY_1}_0')
@@ -622,11 +636,12 @@ class TestEntityManagement(TestBase):
                         'synthetic_hotkey': f'{self.ENTITY_HOTKEY_1}_0',
                         'status': 'eliminated',
                         'created_at_ms': TimeUtil.now_in_millis(),
-                        'eliminated_at_ms': TimeUtil.now_in_millis()
+                        'eliminated_at_ms': TimeUtil.now_in_millis(),
+                        'account_size': 100_000,
+                        'asset_class': 'crypto'
                     }
                 },
                 'next_subaccount_id': 1,
-                'collateral_amount': 0.0,
                 'max_subaccounts': 500,
                 'registered_at_ms': TimeUtil.now_in_millis()
             }
@@ -647,7 +662,7 @@ class TestEntityManagement(TestBase):
         """Test that next_subaccount_id is updated to prevent ID collisions."""
         # Register entity locally with next_subaccount_id = 1
         self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
-        self.entity_client.create_subaccount(self.ENTITY_HOTKEY_1)
+        self.entity_client.create_subaccount(self.ENTITY_HOTKEY_1, account_size=100_000, asset_class="crypto")
 
         # Get current next_subaccount_id (should be 1)
         entity_data = self.entity_client.get_entity_data(self.ENTITY_HOTKEY_1)
@@ -664,11 +679,12 @@ class TestEntityManagement(TestBase):
                         'synthetic_hotkey': f'{self.ENTITY_HOTKEY_1}_0',
                         'status': 'active',
                         'created_at_ms': TimeUtil.now_in_millis(),
-                        'eliminated_at_ms': None
+                        'eliminated_at_ms': None,
+                        'account_size': 100_000,
+                        'asset_class': 'crypto'
                     }
                 },
                 'next_subaccount_id': 5,
-                'collateral_amount': 0.0,
                 'max_subaccounts': 500,
                 'registered_at_ms': TimeUtil.now_in_millis()
             }
@@ -712,11 +728,12 @@ class TestEntityManagement(TestBase):
                         'synthetic_hotkey': f'{self.ENTITY_HOTKEY_1}_0',
                         'status': 'active',
                         'created_at_ms': now_ms,
-                        'eliminated_at_ms': None
+                        'eliminated_at_ms': None,
+                        'account_size': 100_000,
+                        'asset_class': 'crypto'
                     }
                 },
                 'next_subaccount_id': 1,
-                'collateral_amount': 1000.0,
                 'max_subaccounts': 10,
                 'registered_at_ms': now_ms
             },
@@ -729,11 +746,12 @@ class TestEntityManagement(TestBase):
                         'synthetic_hotkey': f'{self.ENTITY_HOTKEY_2}_0',
                         'status': 'active',
                         'created_at_ms': now_ms,
-                        'eliminated_at_ms': None
+                        'eliminated_at_ms': None,
+                        'account_size': 100_000,
+                        'asset_class': 'crypto'
                     }
                 },
                 'next_subaccount_id': 1,
-                'collateral_amount': 2000.0,
                 'max_subaccounts': 20,
                 'registered_at_ms': now_ms
             },
@@ -741,7 +759,6 @@ class TestEntityManagement(TestBase):
                 'entity_hotkey': self.ENTITY_HOTKEY_3,
                 'subaccounts': {},
                 'next_subaccount_id': 0,
-                'collateral_amount': 500.0,
                 'max_subaccounts': 5,
                 'registered_at_ms': now_ms
             }

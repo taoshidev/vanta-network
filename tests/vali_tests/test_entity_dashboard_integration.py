@@ -86,12 +86,11 @@ class TestEntityDashboardIntegration(TestBase):
         # Register entity
         self.entity_client.register_entity(
             entity_hotkey=self.ENTITY_HOTKEY,
-            collateral_amount=1000.0,
             max_subaccounts=10
         )
 
         # Create test subaccount
-        success, subaccount_info, _ = self.entity_client.create_subaccount(self.ENTITY_HOTKEY)
+        success, subaccount_info, _ = self.entity_client.create_subaccount(self.ENTITY_HOTKEY, account_size=100_000, asset_class="crypto")
         self.assertTrue(success)
         self.synthetic_hotkey = subaccount_info['synthetic_hotkey']
 
@@ -440,7 +439,7 @@ class TestEntityDashboardIntegration(TestBase):
     def test_dashboard_data_multiple_subaccounts(self):
         """Test dashboard data for multiple subaccounts of same entity."""
         # Create second subaccount
-        success, subaccount_info2, _ = self.entity_client.create_subaccount(self.ENTITY_HOTKEY)
+        success, subaccount_info2, _ = self.entity_client.create_subaccount(self.ENTITY_HOTKEY, account_size=100_000, asset_class="crypto")
         self.assertTrue(success)
         synthetic_hotkey2 = subaccount_info2['synthetic_hotkey']
 
