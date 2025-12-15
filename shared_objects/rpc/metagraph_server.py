@@ -26,8 +26,8 @@ from typing import Set, List, Optional, Tuple
 
 from shared_objects.rpc.rpc_server_base import RPCServerBase
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
-from entitiy_management.entity_client import EntityClient
-from entitiy_management.entity_utils import is_synthetic_hotkey, parse_synthetic_hotkey
+from entity_management.entity_client import EntityClient
+from entity_management.entity_utils import is_synthetic_hotkey, parse_synthetic_hotkey
 
 
 class MetagraphServer(RPCServerBase):

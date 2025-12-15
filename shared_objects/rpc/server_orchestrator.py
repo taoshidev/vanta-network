@@ -394,8 +394,8 @@ class ServerOrchestrator:
         from vali_objects.utils.mdd_checker.mdd_checker_client import MDDCheckerClient
         from vali_objects.scoring.weight_calculator_server import WeightCalculatorServer
         from vali_objects.scoring.weight_calculator_client import WeightCalculatorClient
-        from entitiy_management.entity_server import EntityServer
-        from entitiy_management.entity_client import EntityClient
+        from entity_management.entity_server import EntityServer
+        from entity_management.entity_client import EntityClient
 
         # Update registry with classes
         self.SERVERS['common_data'].server_class = CommonDataServer

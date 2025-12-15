@@ -22,7 +22,7 @@ from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
 from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
-from entitiy_management.entity_client import EntityClient
+from entity_management.entity_client import EntityClient
 
 AUTO_SYNC_ORDER_LAG_MS = 1000 * 60 * 60 * 24
 

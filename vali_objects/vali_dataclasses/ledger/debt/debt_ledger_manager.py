@@ -64,7 +64,7 @@ class DebtLedgerManager():
         self._contract_client = ContractClient(running_unit_tests=running_unit_tests)
 
         # Create EntityClient for entity miner aggregation
-        from entitiy_management.entity_client import EntityClient
+        from entity_management.entity_client import EntityClient
         self._entity_client = EntityClient(
             connection_mode=connection_mode,
             running_unit_tests=running_unit_tests,

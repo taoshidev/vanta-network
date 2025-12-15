@@ -20,7 +20,7 @@ from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMod
 from tests.vali_tests.base_objects.test_base import TestBase
 from vali_objects.vali_config import ValiConfig, TradePairCategory
 from vali_objects.utils.vali_utils import ValiUtils
-from entitiy_management.entity_manager import EntityManager, EntityData, SubaccountInfo
+from entity_management.entity_manager import EntityManager, EntityData, SubaccountInfo
 from vali_objects.utils.asset_selection.asset_selection_manager import AssetSelectionManager
 from vali_objects.contract.validator_contract_manager import ValidatorContractManager, CollateralRecord
 

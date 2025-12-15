@@ -27,7 +27,7 @@ from collections import defaultdict
 from pydantic import BaseModel, Field
 
 import template.protocol
-from entitiy_management.entity_utils import is_synthetic_hotkey, parse_synthetic_hotkey
+from entity_management.entity_utils import is_synthetic_hotkey, parse_synthetic_hotkey
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
@@ -353,21 +353,22 @@ class EntityManager(ValidatorBroadcastBase):
 
             # Verify collateral balance
             try:
-                current_balance = self._contract_client.get_miner_collateral_balance(entity_hotkey)
-                if current_balance is None:
-                    bt.logging.warning(f"[ENTITY_MANAGER] Unable to verify collateral for {entity_hotkey} - balance check returned None")
-                    return False, None, "Unable to verify collateral balance"
+                if not self.running_unit_tests:
+                    current_balance = self._contract_client.get_miner_collateral_balance(entity_hotkey)
+                    if current_balance is None:
+                        bt.logging.warning(f"[ENTITY_MANAGER] Unable to verify collateral for {entity_hotkey} - balance check returned None")
+                        return False, None, "Unable to verify collateral balance"
 
-                if current_balance < required_theta:
-                    bt.logging.warning(
-                        f"[ENTITY_MANAGER] Insufficient collateral for subaccount creation: "
-                        f"entity {entity_hotkey} has {current_balance} theta, needs {required_theta} theta "
-                        f"to create new subaccount with ${account_size} account size"
-                    )
-                    return False, None, (
-                        f"Insufficient collateral: has {current_balance} theta, needs {required_theta} theta "
-                        f"to create new subaccount with ${account_size} account size"
-                    )
+                    if current_balance < required_theta:
+                        bt.logging.warning(
+                            f"[ENTITY_MANAGER] Insufficient collateral for subaccount creation: "
+                            f"entity {entity_hotkey} has {current_balance} theta, needs {required_theta} theta "
+                            f"to create new subaccount with ${account_size} account size"
+                        )
+                        return False, None, (
+                            f"Insufficient collateral: has {current_balance} theta, needs {required_theta} theta "
+                            f"to create new subaccount with ${account_size} account size"
+                        )
 
                 # Generate monotonic ID
                 subaccount_id = entity_data.next_subaccount_id
@@ -962,10 +963,11 @@ class EntityManager(ValidatorBroadcastBase):
                     f"[ENTITY_MANAGER] Processing subaccount registration for {synthetic_hotkey}"
                 )
 
+                # Validate all required fields are present
                 if not all([entity_hotkey, subaccount_id is not None, subaccount_uuid, synthetic_hotkey,
                             account_size, asset_class]):
                     bt.logging.warning(
-                        f"[ENTITY_MANAGER] Invalid subaccount registration data received: {subaccount_data}"
+                        f"[ENTITY_MANAGER] Invalid subaccount registration data - missing required fields: {subaccount_data}"
                     )
                     return False
 

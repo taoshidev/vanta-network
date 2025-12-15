@@ -28,8 +28,8 @@ from vali_objects.miner_account.miner_account_client import MinerAccountClient
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
 from vali_objects.utils.asset_selection.asset_selection_server import AssetSelectionServer
-from entitiy_management.entity_server import EntityServer
-from entitiy_management.entity_client import EntityClient
+from entity_management.entity_server import EntityServer
+from entity_management.entity_client import EntityClient
 import bittensor as bt
 
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_server import PerfLedgerServer

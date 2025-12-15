@@ -32,7 +32,7 @@ from multiprocessing import current_process
 from vanta_api.api_key_refresh import APIKeyMixin
 from vanta_api.nonce_manager import NonceManager
 from shared_objects.rpc.rpc_server_base import RPCServerBase
-from entitiy_management.entity_client import EntityClient
+from entity_management.entity_client import EntityClient
 
 
 class APIMetricsTracker:

@@ -11,7 +11,7 @@ import signal
 from vali_objects.enums.misc import SynapseMethod
 from vanta_api.api_manager import APIManager
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, NeuronContext
-from entitiy_management.entity_utils import is_synthetic_hotkey
+from entity_management.entity_utils import is_synthetic_hotkey
 
 
 import template

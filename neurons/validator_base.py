@@ -24,7 +24,7 @@ class ValidatorBase:
         self._contract_client = ContractClient(running_unit_tests=False)
 
         # Create own EntityClient (forward compatibility - no parameter passing)
-        from entitiy_management.entity_client import EntityClient
+        from entity_management.entity_client import EntityClient
         self._entity_client = EntityClient(running_unit_tests=False)
 
         self.wire_axon()
