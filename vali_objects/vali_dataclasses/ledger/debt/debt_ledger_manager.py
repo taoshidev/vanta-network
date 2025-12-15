@@ -12,6 +12,7 @@ from time_util.time_util import TimeUtil
 from vali_objects.utils.vali_bkp_utils import CustomEncoder
 from vali_objects.vali_config import RPCConnectionMode
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger import DebtLedger, DebtCheckpoint
+from entity_management import entity_utils
 
 
 class DebtLedgerManager():
@@ -548,8 +549,17 @@ class DebtLedgerManager():
                 if emissions_ledger:
                     emissions_checkpoint = emissions_ledger.get_checkpoint_at_time(miner_perf_checkpoint.last_update_ms, target_cp_duration_ms)
 
-                # Skip if we don't have both penalty and emissions data
-                if not penalty_checkpoint or not emissions_checkpoint:
+                # Check if this is a synthetic hotkey (subaccount)
+                is_subaccount = entity_utils.is_synthetic_hotkey(hotkey)
+
+                # Skip if we don't have penalty data
+                if not penalty_checkpoint:
+                    hotkeys_missing_data.append(hotkey)
+                    continue
+
+                # For non-synthetic hotkeys (regular miners, entity hotkeys), emissions are required
+                # For synthetic hotkeys (subaccounts), emissions are optional (they don't receive on-chain emissions)
+                if not emissions_checkpoint and not is_subaccount:
                     hotkeys_missing_data.append(hotkey)
                     continue
 
@@ -570,7 +580,8 @@ class DebtLedgerManager():
                         )
                     continue
 
-                if emissions_checkpoint.chunk_end_ms != miner_perf_checkpoint.last_update_ms:
+                # Only validate emissions timestamp if we have an emissions checkpoint
+                if emissions_checkpoint and emissions_checkpoint.chunk_end_ms != miner_perf_checkpoint.last_update_ms:
                     if verbose:
                         bt.logging.warning(
                             f"Emissions checkpoint end time mismatch for {hotkey}: "
@@ -597,16 +608,37 @@ class DebtLedgerManager():
 
                 # Create unified debt checkpoint combining all three sources
                 # CRITICAL: Use miner_perf_checkpoint (this miner's data), not perf_checkpoint (reference miner's data)
+
+                # Handle emissions data - use zero values for synthetic hotkeys (subaccounts)
+                if emissions_checkpoint:
+                    chunk_emissions_alpha = emissions_checkpoint.chunk_emissions
+                    chunk_emissions_tao = emissions_checkpoint.chunk_emissions_tao
+                    chunk_emissions_usd = emissions_checkpoint.chunk_emissions_usd
+                    avg_alpha_to_tao_rate = emissions_checkpoint.avg_alpha_to_tao_rate
+                    avg_tao_to_usd_rate = emissions_checkpoint.avg_tao_to_usd_rate
+                    tao_balance_snapshot = emissions_checkpoint.tao_balance_snapshot
+                    alpha_balance_snapshot = emissions_checkpoint.alpha_balance_snapshot
+                else:
+                    # Synthetic hotkeys (subaccounts) have zero emissions and zero rates
+                    # Entity's real emissions will replace these during aggregation
+                    chunk_emissions_alpha = 0.0
+                    chunk_emissions_tao = 0.0
+                    chunk_emissions_usd = 0.0
+                    avg_alpha_to_tao_rate = 0.0
+                    avg_tao_to_usd_rate = 0.0
+                    tao_balance_snapshot = 0.0
+                    alpha_balance_snapshot = 0.0
+
                 debt_checkpoint = DebtCheckpoint(
                     timestamp_ms=miner_perf_checkpoint.last_update_ms,
                     # Emissions data (chunk only - cumulative calculated by summing)
-                    chunk_emissions_alpha=emissions_checkpoint.chunk_emissions,
-                    chunk_emissions_tao=emissions_checkpoint.chunk_emissions_tao,
-                    chunk_emissions_usd=emissions_checkpoint.chunk_emissions_usd,
-                    avg_alpha_to_tao_rate=emissions_checkpoint.avg_alpha_to_tao_rate,
-                    avg_tao_to_usd_rate=emissions_checkpoint.avg_tao_to_usd_rate,
-                    tao_balance_snapshot=emissions_checkpoint.tao_balance_snapshot,
-                    alpha_balance_snapshot=emissions_checkpoint.alpha_balance_snapshot,
+                    chunk_emissions_alpha=chunk_emissions_alpha,
+                    chunk_emissions_tao=chunk_emissions_tao,
+                    chunk_emissions_usd=chunk_emissions_usd,
+                    avg_alpha_to_tao_rate=avg_alpha_to_tao_rate,
+                    avg_tao_to_usd_rate=avg_tao_to_usd_rate,
+                    tao_balance_snapshot=tao_balance_snapshot,
+                    alpha_balance_snapshot=alpha_balance_snapshot,
                     # Performance data - access attributes directly from THIS MINER'S PerfCheckpoint
                     portfolio_return=miner_perf_checkpoint.gain,  # Current portfolio multiplier
                     realized_pnl=miner_perf_checkpoint.realized_pnl,  # Realized PnL during this checkpoint period
@@ -746,6 +778,8 @@ class DebtLedgerManager():
                 # Sort timestamps chronologically
                 sorted_timestamps = sorted(all_timestamps)
 
+                entity_emissions_ledger = self.emissions_ledger_manager.get_ledger(entity_hotkey)
+
                 # Create aggregated checkpoints for each timestamp
                 aggregated_checkpoints = []
                 for timestamp_ms in sorted_timestamps:
@@ -759,13 +793,19 @@ class DebtLedgerManager():
                     if not checkpoints_at_time:
                         continue
 
+                    # Get entity emissions checkpoint for this timestamp
+                    entity_emissions_cp = entity_emissions_ledger.get_checkpoint_at_time(timestamp_ms, target_cp_duration_ms) if entity_emissions_ledger else None
+
                     # Aggregate fields across all subaccounts at this timestamp
                     # Sum additive fields
-                    agg_chunk_emissions_alpha = sum(cp.chunk_emissions_alpha for cp in checkpoints_at_time)
-                    agg_chunk_emissions_tao = sum(cp.chunk_emissions_tao for cp in checkpoints_at_time)
-                    agg_chunk_emissions_usd = sum(cp.chunk_emissions_usd for cp in checkpoints_at_time)
-                    agg_tao_balance = sum(cp.tao_balance_snapshot for cp in checkpoints_at_time)
-                    agg_alpha_balance = sum(cp.alpha_balance_snapshot for cp in checkpoints_at_time)
+                    # Use entity emissions if available, otherwise zero (for newly registered entities)
+                    chunk_emissions_alpha = getattr(entity_emissions_cp, "chunk_emissions", 0.0)
+                    chunk_emissions_tao = getattr(entity_emissions_cp, "chunk_emissions_tao", 0.0)
+                    chunk_emissions_usd = getattr(entity_emissions_cp, "chunk_emissions_usd", 0.0)
+                    alpha_to_tao_rate = getattr(entity_emissions_cp, "avg_alpha_to_tao_rate", 0.0)
+                    tao_to_usd_rate = getattr(entity_emissions_cp, "avg_tao_to_usd_rate", 0.0)
+                    tao_balance = getattr(entity_emissions_cp, "tao_balance_snapshot", 0.0)
+                    alpha_balance = getattr(entity_emissions_cp, "alpha_balance_snapshot", 0.0)
                     agg_realized_pnl = sum(cp.realized_pnl for cp in checkpoints_at_time)
                     agg_unrealized_pnl = sum(cp.unrealized_pnl for cp in checkpoints_at_time)
                     agg_spread_fee = sum(cp.spread_fee_loss for cp in checkpoints_at_time)
@@ -795,10 +835,6 @@ class DebtLedgerManager():
                     agg_risk_adjusted_perf_penalty = min(cp.risk_adjusted_performance_penalty for cp in checkpoints_at_time)
                     agg_total_penalty = min(cp.total_penalty for cp in checkpoints_at_time)
 
-                    # Average conversion rates (simple average)
-                    agg_alpha_to_tao_rate = sum(cp.avg_alpha_to_tao_rate for cp in checkpoints_at_time) / len(checkpoints_at_time)
-                    agg_tao_to_usd_rate = sum(cp.avg_tao_to_usd_rate for cp in checkpoints_at_time) / len(checkpoints_at_time)
-
                     # Take the most restrictive challenge period status
                     # Priority: PLAGIARISM > CHALLENGE > PROBATION > MAINCOMP > UNKNOWN
                     status_priority = {
@@ -820,13 +856,13 @@ class DebtLedgerManager():
                     aggregated_checkpoint = DebtCheckpoint(
                         timestamp_ms=timestamp_ms,
                         # Emissions
-                        chunk_emissions_alpha=agg_chunk_emissions_alpha,
-                        chunk_emissions_tao=agg_chunk_emissions_tao,
-                        chunk_emissions_usd=agg_chunk_emissions_usd,
-                        avg_alpha_to_tao_rate=agg_alpha_to_tao_rate,
-                        avg_tao_to_usd_rate=agg_tao_to_usd_rate,
-                        tao_balance_snapshot=agg_tao_balance,
-                        alpha_balance_snapshot=agg_alpha_balance,
+                        chunk_emissions_alpha=chunk_emissions_alpha,
+                        chunk_emissions_tao=chunk_emissions_tao,
+                        chunk_emissions_usd=chunk_emissions_usd,
+                        avg_alpha_to_tao_rate=alpha_to_tao_rate,
+                        avg_tao_to_usd_rate=tao_to_usd_rate,
+                        tao_balance_snapshot=tao_balance,
+                        alpha_balance_snapshot=alpha_balance,
                         # Performance
                         portfolio_return=agg_portfolio_return,
                         realized_pnl=agg_realized_pnl,
