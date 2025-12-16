@@ -256,6 +256,10 @@ class EntityManager(ValidatorBroadcastBase):
             if entity_hotkey in self.entities:
                 return False, f"Entity {entity_hotkey} already registered"
 
+            positions = self._position_client.get_positions_for_one_hotkey(entity_hotkey)
+            if positions and len(positions) > 0:
+                return False, f"Entity {entity_hotkey} is already used as a miner. Choose a new hotkey."
+
             if not self.running_unit_tests:
                 # Verify collateral balance
                 try:
