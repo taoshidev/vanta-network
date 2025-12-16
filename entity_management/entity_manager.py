@@ -256,10 +256,6 @@ class EntityManager(ValidatorBroadcastBase):
             if entity_hotkey in self.entities:
                 return False, f"Entity {entity_hotkey} already registered"
 
-            # Determine registration fee based on testnet/mainnet
-            registration_fee = (ValiConfig.ENTITY_REGISTRATION_FEE_TESTNET if self.is_testnet
-                               else ValiConfig.ENTITY_REGISTRATION_FEE_MAINNET)
-
             if not self.running_unit_tests:
                 # Verify collateral balance
                 try:
@@ -268,21 +264,21 @@ class EntityManager(ValidatorBroadcastBase):
                         bt.logging.warning(f"[ENTITY_MANAGER] Unable to verify collateral for {entity_hotkey} - balance check returned None")
                         return False, "Unable to verify collateral balance"
 
-                    if current_balance < registration_fee:
+                    if current_balance < ValiConfig.ENTITY_REGISTRATION_FEE:
                         bt.logging.warning(
                             f"[ENTITY_MANAGER] Insufficient collateral for entity {entity_hotkey}: "
-                            f"has {current_balance} theta, needs {registration_fee} theta"
+                            f"has {current_balance} theta, needs {ValiConfig.ENTITY_REGISTRATION_FEE} theta"
                         )
-                        return False, f"Insufficient collateral: has {current_balance} theta, needs {registration_fee} theta"
+                        return False, f"Insufficient collateral: has {current_balance} theta, needs {ValiConfig.ENTITY_REGISTRATION_FEE} theta"
 
                     # Slash registration fee
-                    slash_success = self._contract_client.slash_miner_collateral(entity_hotkey, registration_fee)
+                    slash_success = self._contract_client.slash_miner_collateral(entity_hotkey, ValiConfig.ENTITY_REGISTRATION_FEE)
                     if not slash_success:
                         bt.logging.error(f"[ENTITY_MANAGER] Failed to slash registration fee for {entity_hotkey}")
                         return False, "Failed to slash registration fee"
 
                     bt.logging.info(
-                        f"[ENTITY_MANAGER] Slashed {registration_fee} theta registration fee for entity {entity_hotkey}"
+                        f"[ENTITY_MANAGER] Slashed {ValiConfig.ENTITY_REGISTRATION_FEE} theta registration fee for entity {entity_hotkey}"
                     )
 
                 except Exception as e:
@@ -305,9 +301,9 @@ class EntityManager(ValidatorBroadcastBase):
 
             bt.logging.info(
                 f"[ENTITY_MANAGER] Registered entity {entity_hotkey} with max_subaccounts={max_subaccounts}, "
-                f"slashed {registration_fee} theta"
+                f"slashed {ValiConfig.ENTITY_REGISTRATION_FEE} theta"
             )
-            return True, f"Entity registered successfully - {registration_fee} theta registration fee slashed"
+            return True, f"Entity registered successfully - {ValiConfig.ENTITY_REGISTRATION_FEE} theta registration fee slashed"
 
     def create_subaccount(
         self,
