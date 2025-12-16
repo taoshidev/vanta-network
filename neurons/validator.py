@@ -122,7 +122,7 @@ class Validator(ValidatorBase):
         bt.logging.success(f"Validator wallet initialized in {wallet_elapsed_s:.2f}s")
 
         # Determine if this validator is the mothership using centralized utility
-        self.is_mothership = ValiUtils.is_mothership_wallet(self.wallet)
+        self.is_mothership = ValiUtils.is_mothership_wallet(self.wallet, not self.is_mainnet)
         bt.logging.info(f"Is mothership validator: {self.is_mothership}")
 
         # Auto-sync disabled for mothership (it's the source of truth)

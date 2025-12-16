@@ -63,7 +63,7 @@ class ValiUtils:
             return {}
 
     @staticmethod
-    def is_mothership_wallet(wallet) -> bool:
+    def is_mothership_wallet(wallet, is_testnet=False) -> bool:
         """
         Determine if the given wallet is the mothership validator.
 
@@ -89,4 +89,7 @@ class ValiUtils:
             return False
 
         hotkey = wallet.hotkey.ss58_address
-        return hotkey == ValiConfig.MOTHERSHIP_HOTKEY
+        if is_testnet:
+            return hotkey == ValiConfig.MOTHERSHIP_HOTKEY_TESTNET
+        else:
+            return hotkey == ValiConfig.MOTHERSHIP_HOTKEY
