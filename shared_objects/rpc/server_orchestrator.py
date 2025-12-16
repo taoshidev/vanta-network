@@ -754,8 +754,23 @@ class ServerOrchestrator:
             if server_name == 'subtensor_ops':
                 spawn_kwargs['is_miner'] = True
 
+            # Filter spawn_kwargs to only include parameters accepted by the server class
+            # This prevents errors when servers don't accept all common parameters (e.g., is_backtesting)
+            sig = inspect.signature(server_class.__init__)
+            accepted_params = set(sig.parameters.keys()) - {'self'}  # Exclude 'self'
+
+            # Filter spawn_kwargs to only accepted parameters
+            filtered_kwargs = {k: v for k, v in spawn_kwargs.items() if k in accepted_params}
+
+            # Debug: Log filtered out parameters if any were removed
+            removed_params = set(spawn_kwargs.keys()) - set(filtered_kwargs.keys())
+            if removed_params:
+                bt.logging.trace(
+                    f"[{server_name}] Filtered out unsupported parameters: {removed_params}"
+                )
+
             bt.logging.info(f"Starting {server_name} (LOCAL mode - in-process for miner)...")
-            instance = server_class(**spawn_kwargs)
+            instance = server_class(**filtered_kwargs)
 
             # THREAD-SAFE: Store server instance with lock
             with self._servers_lock:
