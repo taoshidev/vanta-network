@@ -3,7 +3,7 @@ ZK Proof Manager - Self-contained background worker for daily ZK proof generatio
 
 This manager runs as a simple background thread (no RPC) and generates ZK proofs
 for all active miners once per day at midnight UTC. Proofs are saved to ~/.pop/
-and uploaded to api.omron.ai for external verification.
+and uploaded to sn2-api.inferencelabs.com for external verification.
 
 Architecture: Follows the APIManager pattern - self-contained with built-in scheduling.
 """
@@ -29,7 +29,7 @@ class ZKProofManager:
     Self-contained background thread that:
     - Generates ZK proofs daily at midnight UTC
     - Saves results to ~/.pop/
-    - Uploads proofs to api.omron.ai
+    - Uploads proofs to sn2-api.inferencelabs.com
     - Handles errors gracefully without crashing
 
     Not an RPC server - just a simple background worker for external verification.

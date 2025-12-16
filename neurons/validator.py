@@ -232,7 +232,7 @@ class Validator(ValidatorBase):
         self.uuid_tracker.add_initial_uuids(self.position_manager_client.get_positions_for_all_miners())
 
         # Start ZK proof manager (self-contained background worker, not an RPC server)
-        # Generates proofs daily at midnight UTC and uploads to api.omron.ai
+        # Generates proofs daily at midnight UTC and uploads to sn2-api.inferencelabs.com
         # ZKProofManager creates its own ContractClient internally (forward compatibility)
         if ValiConfig.ENABLE_ZK_PROOFS:
             bt.logging.info("[INIT] Starting ZK proof manager...")
