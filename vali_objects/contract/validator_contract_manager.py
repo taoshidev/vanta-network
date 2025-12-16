@@ -430,27 +430,27 @@ class ValidatorContractManager(ValidatorBroadcastBase):
                     arg["value"] for arg in extrinsic.value["call"]["call_args"] if arg["name"] == "alpha_amount")
                 deposit_amount_theta = self.to_theta(deposit_amount)
 
-                # Check collateral balance limit before processing
-                try:
-                    current_balance_theta = self.to_theta(self.collateral_manager.balance_of(miner_hotkey))
-
-                    if current_balance_theta + deposit_amount_theta > self.max_theta:
-                        error_msg = (f"Deposit would exceed maximum balance limit. "
-                                     f"Current: {current_balance_theta:.2f} Theta, "
-                                     f"Deposit: {deposit_amount_theta:.2f} Theta, "
-                                     f"Limit: {self.max_theta} Theta")
-                        bt.logging.warning(error_msg)
-                        return {
-                            "successfully_processed": False,
-                            "error_message": error_msg
-                        }
-
-                except Exception as e:
-                    bt.logging.error(f"Failed to check balance limit: {e}")
-                    return {
-                        "successfully_processed": False,
-                        "error_message": e
-                    }
+                # # Check collateral balance limit before processing
+                # try:
+                #     current_balance_theta = self.to_theta(self.collateral_manager.balance_of(miner_hotkey))
+                #
+                #     if current_balance_theta + deposit_amount_theta > self.max_theta:
+                #         error_msg = (f"Deposit would exceed maximum balance limit. "
+                #                      f"Current: {current_balance_theta:.2f} Theta, "
+                #                      f"Deposit: {deposit_amount_theta:.2f} Theta, "
+                #                      f"Limit: {self.max_theta} Theta")
+                #         bt.logging.warning(error_msg)
+                #         return {
+                #             "successfully_processed": False,
+                #             "error_message": error_msg
+                #         }
+                #
+                # except Exception as e:
+                #     bt.logging.error(f"Failed to check balance limit: {e}")
+                #     return {
+                #         "successfully_processed": False,
+                #         "error_message": e
+                #     }
 
                 # # All positions must be closed before a miner can deposit or withdraw
                 # if len(self.position_manager.get_positions_for_one_hotkey(miner_hotkey, only_open_positions=True)) > 0:
