@@ -82,7 +82,7 @@ class ValidatorBroadcastBase:
             self._hotkey = self.wallet.hotkey.ss58_address
             # Derive is_mothership using centralized utility
             from vali_objects.utils.vali_utils import ValiUtils
-            self.is_mothership = ValiUtils.is_mothership_wallet(self.wallet)
+            self.is_mothership = ValiUtils.is_mothership_wallet(self.wallet, self.is_testnet)
             bt.logging.info(f"[VALIDATOR_BROADCAST_BASE] Wallet created successfully (hotkey={self._hotkey[:8]}...)")
 
         # Create metagraph client with connect_immediately=False to defer connection
