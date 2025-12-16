@@ -58,10 +58,6 @@ class Miner:
         bt.logging.info("Initializing miner servers...")
         self.orchestrator = ServerOrchestrator.get_instance()
 
-        # Get secrets (empty in test mode to prevent network calls)
-        from vali_objects.utils.vali_utils import ValiUtils
-        secrets = ValiUtils.get_secrets(running_unit_tests=running_unit_tests)
-
         # Start servers if not already started
         # In test mode: Use ServerMode.TESTING (prevents network calls)
         # In production: Use start_neuron_servers with miner context
@@ -69,7 +65,7 @@ class Miner:
             # Test mode: Start or reuse servers in TESTING mode
             # Check if metagraph server is already started (indicates servers are running)
             if 'metagraph' not in self.orchestrator._servers:
-                self.orchestrator.start_all_servers(mode=ServerMode.TESTING, secrets=secrets)
+                self.orchestrator.start_all_servers(mode=ServerMode.TESTING, secrets=None)
         else:
             # Production mode: Use standard neuron server startup
             is_mainnet = self.config.netuid == 8
@@ -77,7 +73,7 @@ class Miner:
                 slack_notifier=self.slack_notifier,
                 config=self.config,
                 wallet=self.wallet,
-                secrets=secrets,
+                secrets=None,
                 is_mainnet=is_mainnet,
                 is_miner=True
             )
