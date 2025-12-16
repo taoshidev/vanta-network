@@ -6,7 +6,7 @@ import bittensor as bt
 from vali_objects.vali_config import ValiConfig
 from time_util.time_util import TimeUtil
 
-from vali_objects.position import Position, Order
+from vali_objects.vali_dataclasses.position import Position, Order
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.vali_config import TradePair
 from vali_objects.utils.functional_utils import FunctionalUtils

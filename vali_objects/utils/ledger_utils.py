@@ -5,9 +5,9 @@ import statistics
 import numpy as np
 import copy
 from datetime import datetime, timezone, timedelta, date
-from vali_objects.vali_dataclasses.perf_ledger import TP_ID_PORTFOLIO
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import TP_ID_PORTFOLIO
 from vali_objects.vali_config import ValiConfig, TradePair
-from vali_objects.vali_dataclasses.perf_ledger import PerfLedger
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger
 from vali_objects.utils.asset_segmentation import AssetSegmentation
 from time_util.time_util import ForexHolidayCalendar
 import bittensor as bt
@@ -193,19 +193,21 @@ class LedgerUtils:
     def raw_pnl(ledger: PerfLedger) -> float:
         """
         Calculate total pnl from tracked PnL values in perf ledgers.
+        Uses the formula: realized_pnl + min(0, last_unrealized_pnl)
 
         Args:
             ledger: PerfLedger - the ledger of the miner
 
         Returns:
-            float - total pnl of the ledger
+            float - total payout pnl of the ledger (penalizes unrealized losses, ignores unrealized gains)
         """
 
         if ledger is None or not ledger.cps:
             return 0
-        total_pnl = 0
-        for cp in ledger.cps:
-            total_pnl += cp.pnl_gain + cp.pnl_loss
+
+        total_realized = sum(cp.realized_pnl for cp in ledger.cps)
+        latest_unrealized = min(0.0, ledger.cps[-1].unrealized_pnl)
+        total_pnl = total_realized + latest_unrealized
 
         return total_pnl
 
@@ -214,19 +216,30 @@ class LedgerUtils:
         """
         Calculate daily PnL from performance checkpoints, only including full days
         with complete data and correct total accumulated time.
-        
+
+        Daily PnL = Realized PnL for each day + Unrealized PnL for the last day
+
         Args:
             ledger: PerfLedger - the ledger of the miner
-            
+
         Returns:
-            dict[datetime.date, float] - dictionary mapping dates to total PnL
+            dict[datetime.date, float] - dictionary mapping dates to payout PnL
         """
         complete_days = LedgerUtils._group_checkpoints_by_complete_days(ledger)
-        
+
         date_pnl_map = {}
+        last_day = None
+        last_checkpoints = None
         for running_date, day_checkpoints in sorted(complete_days.items()):
-            total_pnl = sum(cp.pnl_gain + cp.pnl_loss for cp in day_checkpoints)
-            date_pnl_map[running_date] = total_pnl
+            total_realized_pnl = sum(cp.realized_pnl for cp in day_checkpoints)
+            date_pnl_map[running_date] = total_realized_pnl
+
+            last_day = running_date
+            last_checkpoints = day_checkpoints
+
+        if last_day is not None:
+            latest_unrealized_pnl = min(0.0, last_checkpoints[-1].unrealized_pnl)
+            date_pnl_map[last_day] += latest_unrealized_pnl
 
         return date_pnl_map
 
@@ -602,9 +615,17 @@ class LedgerUtils:
 
         Returns:
             dict: Dictionary mapping asset class to min days requirement (between 7-60 days)
+
+        Note on return values:
+            - Empty ledger_dict → CEIL (60 days): No data source at all, use maximum safety requirement
+            - Invalid entries filtered out → FLOOR (7 days): Entries exist but aren't valid participants
+              (semantically equivalent to having no participants in that asset class)
         """
+        # Default to CEIL (60 days) for all asset classes as a conservative starting point
         asset_class_min_days = {asset_class: ValiConfig.STATISTICAL_CONFIDENCE_MINIMUM_N_CEIL for asset_class in asset_classes}
 
+        # Empty ledger dict means no data source at all → return CEIL (maximum safety requirement)
+        # This is different from having entries that get filtered out (which means no valid participants → FLOOR)
         if not ledger_dict:
             return asset_class_min_days
 
@@ -626,8 +647,13 @@ class LedgerUtils:
                 # Sort in descending order (longest participation first)
                 miner_participation_days.sort(reverse=True)
 
+                # If fewer than DYNAMIC_MIN_DAYS_NUM_MINERS (20) valid participants exist, return FLOOR (7 days)
+                # This includes cases where:
+                #   - Invalid/malformed entries were filtered out by AssetSegmentation (logs warnings)
+                #   - No miners participate in this asset class (e.g., all miners trade forex, none trade crypto)
+                # Both scenarios mean: "insufficient competition data for this asset class" → use minimum requirement
                 if len(miner_participation_days) < ValiConfig.DYNAMIC_MIN_DAYS_NUM_MINERS:
-                    minimum_days = ValiConfig.STATISTICAL_CONFIDENCE_MINIMUM_N_FLOOR  # Not enough participating miners, return floor
+                    minimum_days = ValiConfig.STATISTICAL_CONFIDENCE_MINIMUM_N_FLOOR
                 else:
                     # Use the shorter of Nth longest participating miner (index N-1), or median of all participating miners
                     minimum_days = min(miner_participation_days[ValiConfig.DYNAMIC_MIN_DAYS_NUM_MINERS - 1], int(statistics.median(miner_participation_days)))

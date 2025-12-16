@@ -1,15 +1,15 @@
 # developer: trdougherty
 import copy
 from vali_objects.utils.asset_segmentation import AssetSegmentation
-from vali_objects.vali_config import ForexSubcategory, CryptoSubcategory, TradePairCategory
+from vali_objects.vali_config import TradePairCategory
 
 from tests.shared_objects.test_utilities import generate_ledger
 from tests.vali_tests.base_objects.test_base import TestBase
 from vali_objects.enums.order_type_enum import OrderType
-from vali_objects.position import Position
+from vali_objects.vali_dataclasses.position import Position
 from vali_objects.scoring.scoring import Scoring
 from vali_objects.vali_config import TradePair, ValiConfig
-from vali_objects.vali_dataclasses.perf_ledger import TP_ID_PORTFOLIO, TradePairReturnStatus
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import TP_ID_PORTFOLIO
 
 
 class TestWeights(TestBase):

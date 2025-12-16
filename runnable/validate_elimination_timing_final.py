@@ -25,10 +25,10 @@ from collections import defaultdict
 import bittensor as bt
 from sqlalchemy import create_engine, text
 
+from vali_objects.position_management.position_utils.position_source import PositionSourceManager, PositionSource
+
 # Add project root to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-from vali_objects.utils.position_source import PositionSourceManager, PositionSource
 from time_util.time_util import TimeUtil
 
 

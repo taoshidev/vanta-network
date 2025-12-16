@@ -28,7 +28,7 @@ The steps detailed below regenerate the `validation/*` directory by fetching the
    - **If you receive a compressed file**: Name it `validator_checkpoint.json.gz`
    - **If you receive an uncompressed file**: Name it `validator_checkpoint.json`
    - **Auto-detection**: The script will automatically detect which format you have
-3. **Stop Validator**: Temporarily halt your validator with PM2 using `pm2 stop sn8 ptn`
+3. **Stop Validator**: Temporarily halt your validator with PM2 using `pm2 stop sn8 vanta`
 4. **Run Restoration Script**: Within the `proprietary-trading-network` directory, execute:
 
     ```bash
@@ -74,7 +74,7 @@ ERROR | No checkpoint file found at validator_checkpoint.json or validator_check
 ```
 **Solution**: Ensure your checkpoint file is in the root directory with the correct name.
 
-5. **Restart Validator**: Resume your PM2 processes with `pm2 start sn8` (will launch ptn automatically).
+5. **Restart Validator**: Resume your PM2 processes with `pm2 start sn8` (will launch `vanta` automatically).
 
 
 ## Verify Backups (optional)

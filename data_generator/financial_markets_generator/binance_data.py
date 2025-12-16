@@ -1,5 +1,5 @@
 # developer: Taoshidev
-# Copyright © 2024 Taoshi Inc
+# Copyright (c) 2024 Taoshi Inc
 
 from datetime import datetime
 from typing import List, Tuple

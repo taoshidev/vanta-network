@@ -34,6 +34,14 @@ class OrderType(Enum):
             raise ValueError(f"No matching order type found for value '{order_type_value}'. Please check the input "
                              f"and try again.")
 
+    @staticmethod
+    def opposite_order_type(order_type):
+        if order_type == OrderType.LONG:
+            return OrderType.SHORT
+        elif order_type == OrderType.SHORT:
+            return OrderType.LONG
+        else:
+            return None
 
     def __json__(self):
         # Provide a dictionary representation for JSON serialization

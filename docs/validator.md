@@ -1,6 +1,6 @@
-# Proprietary Trading Network (PTN) Validator
+# Vanta Network Validator
 
-This guide details how to set up and run a Proprietary Trading Network (PTN) validator on Bittensor's Subnet 8.
+This guide details how to set up and run a Vanta Network validator on Bittensor's Subnet 8.
 
 ## Overview
 
@@ -65,8 +65,8 @@ python3.10 --version
 ### 2. Clone Repository and Install Dependencies
 
 ```bash
-git clone https://github.com/taoshidev/proprietary-trading-network.git
-cd proprietary-trading-network
+git clone https://github.com/taoshidev/vanta-network.git
+cd vanta-network
 python3.10 -m venv venv
 . venv/bin/activate
 export PIP_NO_CACHE_DIR=1
@@ -172,18 +172,18 @@ pm2 start run.sh --name sn8 -- --wallet.name validator --wallet.hotkey default -
 ```
 
 These commands initialize two PM2 processes:
-- Validator process (named `ptn`)
+- Validator process (named `vanta`)
 - Auto-update process (named `sn8`) that checks for and applies updates every 30 minutes
 
 ### Manual Synchronization
 
 If you prefer not to use `--autosync` but need to synchronize your validator:
-1. Follow the [manual restore mechanism](https://github.com/taoshidev/proprietary-trading-network/blob/main/docs/regenerating_validator_state.md)
+1. Follow the [manual restore mechanism](https://github.com/taoshidev/vanta-network/blob/main/docs/regenerating_validator_state.md)
 2. This performs a "nuke and force rebuild" to synchronize with trusted validator data
 
 ### Alternative Testing Method
 
-You can also test PTN on the testnet with a direct run command:
+You can also test Vanta on the testnet with a direct run command:
 
 ```bash
 python neurons/validator.py --netuid 116 --subtensor.network test --wallet.name validator --wallet.hotkey default
@@ -195,16 +195,16 @@ Note this won't launch the autoupdater. To launch with the autoupdater, use the 
 
 Press CTRL+C in the terminal or use:
 ```bash
-pm2 stop sn8 ptn
+pm2 stop sn8 vanta
 ```
 
 ### Relaunching with Different Configuration
 You will need to do this if you want to change any runtime configuration to run.sh such as adding or removing the `--start-generate`/ `--autosync` flags. Prepare your new `pm2 start run.sh ...` command before proceeding to minimize downtime.
 ```bash
-cd proprietary-trading-network/
+cd vanta-network/
 . venv/bin/activate
-pm2 stop sn8 ptn
-pm2 delete sn8 ptn
+pm2 stop sn8 vanta
+pm2 delete sn8 vanta
 pm2 start run.sh --name sn8 -- [YOUR NEW OPTIONS]
 pm2 save
 ```
@@ -263,4 +263,4 @@ Subnet 8 uses a commit-reveal mechanism in mainnet for weight setting:
 ## Additional Resources
 
 - [Bittensor Documentation](https://github.com/opentensor/bittensor)
-- [Manual Validator Synchronization Guide](https://github.com/taoshidev/proprietary-trading-network/blob/main/docs/regenerating_validator_state.md)
+- [Manual Validator Synchronization Guide](https://github.com/taoshidev/vanta-network/blob/main/docs/regenerating_validator_state.md)

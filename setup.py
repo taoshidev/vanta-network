@@ -1,7 +1,7 @@
 # The MIT License (MIT)
-# Copyright © 2024 Yuma Rao
+# Copyright (c) 2024 Yuma Rao
 # developer: taoshi-mbrown
-# Copyright © 2024 Taoshi Inc
+# Copyright (c) 2024 Taoshi Inc
 
 # Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
 # documentation files (the “Software”), to deal in the Software without restriction, including without limitation

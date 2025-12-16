@@ -4,9 +4,9 @@ import requests
 import json
 
 from time_util.time_util import TimeUtil
-from vali_objects.position import Position
-from vali_objects.utils.elimination_manager import EliminationManager
-from vali_objects.utils.position_manager import PositionManager
+from vali_objects.vali_dataclasses.position import Position
+from vali_objects.utils.elimination.elimination_server import EliminationServer
+from vali_objects.position_management.position_manager import PositionManager
 import bittensor as bt
 
 
@@ -23,7 +23,8 @@ def compute_delta(mothership_json, min_time_ms):
             bt.logging.info(f"    {key}: {value}")
     backup_creation_time_ms = mothership_json['created_timestamp_ms']
 
-    elimination_manager = EliminationManager(None, None, None)
+    # EliminationServer creates its own RPC clients internally (forward compatibility pattern)
+    elimination_manager = EliminationServer(running_unit_tests=True)
     position_manager = PositionManager(perform_order_corrections=True,
                                        challengeperiod_manager=None,
                                        elimination_manager=elimination_manager)

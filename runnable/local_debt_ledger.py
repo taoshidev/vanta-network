@@ -24,15 +24,15 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from time_util.time_util import TimeUtil
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
-from vali_objects.utils.position_source import PositionSourceManager, PositionSource
+from vali_objects.position_management.position_utils.position_source import PositionSourceManager, PositionSource
 from shared_objects.cache_controller import CacheController
-from shared_objects.mock_metagraph import MockMetagraph
-from vali_objects.utils.elimination_manager import EliminationManager
-from vali_objects.utils.position_manager import PositionManager
-from vali_objects.vali_dataclasses.perf_ledger import PerfLedgerManager
-from vali_objects.utils.validator_contract_manager import ValidatorContractManager
-from vali_objects.vali_dataclasses.debt_ledger import DebtLedgerManager
-from vali_objects.utils.asset_selection_manager import AssetSelectionManager
+from shared_objects.metagraph.mock_metagraph import MockMetagraph
+from vali_objects.utils.elimination.elimination_server import EliminationServer
+from vali_objects.position_management.position_manager import PositionManager
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_manager import PerfLedgerManager
+from vali_objects.contract.validator_contract_manager import ValidatorContractManager
+from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_manager import DebtLedgerManager
+from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
 
 
 # ============================================================================
@@ -135,9 +135,8 @@ def plot_pnl_performance(debt_checkpoints, hotkey):
     # Extract data
     timestamps = [datetime.fromtimestamp(cp.timestamp_ms / 1000, tz=timezone.utc)
                  for cp in debt_checkpoints]
-    pnl_gains = [cp.pnl_gain for cp in debt_checkpoints]
-    pnl_losses = [cp.pnl_loss for cp in debt_checkpoints]
-    net_pnls = [cp.net_pnl for cp in debt_checkpoints]
+    realized_pnls = [cp.realized_pnl for cp in debt_checkpoints]
+    unrealized_pnls = [cp.unrealized_pnl for cp in debt_checkpoints]
 
     # Get time range
     start_date = timestamps[0].strftime('%Y-%m-%d')
@@ -147,9 +146,8 @@ def plot_pnl_performance(debt_checkpoints, hotkey):
     fig, ax = plt.subplots(figsize=(16, 8))
 
     # Plot PnL components
-    ax.plot(timestamps, pnl_gains, 'g-', linewidth=2, label=f'PnL Gain (total: {sum(pnl_gains):.2f})')
-    ax.plot(timestamps, pnl_losses, 'r-', linewidth=2, label=f'PnL Loss (total: {sum(pnl_losses):.2f})')
-    ax.plot(timestamps, net_pnls, 'b-', linewidth=2.5, label=f'Net PnL (total: {sum(net_pnls):.2f})')
+    ax.plot(timestamps, realized_pnls, 'g-', linewidth=2, label=f'Realized PnL (total: {sum(realized_pnls):.2f})')
+    ax.plot(timestamps, unrealized_pnls, 'orange', linewidth=2, label=f'Unrealized PnL (total: {sum(unrealized_pnls):.2f})')
 
     # Add zero line
     ax.axhline(y=0, color='black', linestyle='--', linewidth=1, alpha=0.3)
@@ -340,7 +338,8 @@ if __name__ == "__main__":
 
     # Initialize metagraph and managers
     mmg = MockMetagraph(hotkeys=hotkeys_to_process)
-    elimination_manager = EliminationManager(mmg, None, None)
+    # EliminationServer creates its own RPC clients internally (forward compatibility pattern)
+    elimination_manager = EliminationServer(running_unit_tests=True)
     position_manager = PositionManager(
         metagraph=mmg,
         running_unit_tests=False,
@@ -386,15 +385,13 @@ if __name__ == "__main__":
         running_unit_tests=False
     )
 
-    # Create AssetSelectionManager
-    bt.logging.info("Creating AssetSelectionManager...")
-    asset_selection_manager = AssetSelectionManager(
-        config=None,
-        metagraph=mmg,
-        ipc_manager=None
+    # Create AssetSelectionClient
+    bt.logging.info("Creating AssetSelectionClient...")
+    asset_selection_manager = AssetSelectionClient(
+        running_unit_tests=True
     )
 
-    # Create DebtLedgerManager
+    # Create DebtLedgerManager in direct mode (no RPC overhead for local debugging)
     bt.logging.info("Creating DebtLedgerManager...")
     debt_ledger_manager = DebtLedgerManager(
         perf_ledger_manager=perf_ledger_manager,
@@ -403,27 +400,27 @@ if __name__ == "__main__":
         asset_selection_manager=asset_selection_manager,
         challengeperiod_manager=position_manager.challengeperiod_manager,
         slack_webhook_url=None,
-        start_daemon=False,  # Don't start daemon for local debugging
+        start_server=True,  # Start server in direct mode
         ipc_manager=None,
-        running_unit_tests=False,
+        running_unit_tests=True,  # Use direct mode (no RPC overhead)
         validator_hotkey=None
     )
 
-    # Build debt ledgers manually (since daemon is not running)
+    # Build debt ledgers manually via direct server access
     bt.logging.info("Building debt ledgers...")
-    debt_ledger_manager.build_debt_ledgers(verbose=VERBOSE)
+    debt_ledger_manager._server_proxy.build_debt_ledgers(verbose=VERBOSE)
 
     # Print summary
     bt.logging.info("\n" + "="*60)
     bt.logging.info("Debt Ledger Summary")
     bt.logging.info("="*60)
-    for hotkey, ledger in debt_ledger_manager.debt_ledgers.items():
+    for hotkey, ledger in debt_ledger_manager._server_proxy.debt_ledgers.items():
         num_checkpoints = len(ledger.checkpoints) if ledger.checkpoints else 0
         bt.logging.info(f"Miner {hotkey[:12]}...: {num_checkpoints} debt checkpoints")
 
     # Generate plots if requested and in single hotkey mode
     if SHOULD_PLOT and TEST_SINGLE_HOTKEY:
-        ledger = debt_ledger_manager.debt_ledgers.get(TEST_SINGLE_HOTKEY)
+        ledger = debt_ledger_manager._server_proxy.debt_ledgers.get(TEST_SINGLE_HOTKEY)
 
         if not ledger or not ledger.checkpoints:
             bt.logging.warning(f"No debt ledger found for {TEST_SINGLE_HOTKEY}")

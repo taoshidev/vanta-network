@@ -17,6 +17,27 @@ if meta_dict is None:
 else:
     meta_version = meta_dict.get("subnet_version", "x.x.x")
 
+class RPCConnectionMode(int, Enum):
+    """
+    Connection mode for RPC clients/servers.
+
+    LOCAL: Direct mode - bypass RPC, use set_direct_server() for in-process communication.
+           Use this for tests that need to verify logic without RPC overhead.
+    RPC: Normal RPC mode - connect via network.
+           Use this for production and integration tests that need full RPC behavior.
+
+    Usage:
+        # Test without RPC (fastest, no network)
+        client = MyClient(connection_mode=RPCConnectionMode.LOCAL)
+        client.set_direct_server(server_instance)
+
+        # Test with real RPC (like production)
+        server = MyServer(connection_mode=RPCConnectionMode.RPC)  # Starts RPC server
+        client = MyClient(connection_mode=RPCConnectionMode.RPC)  # Connects via RPC
+    """
+    LOCAL = 0   # Direct mode - bypass RPC, use set_direct_server()
+    RPC = 1     # Normal RPC mode - connect via network
+
 
 class TradePairCategory(str, Enum):
     CRYPTO = "crypto"
@@ -98,6 +119,9 @@ def _TradePair_Lookup() -> dict[str, TradePairCategory]:
     return mapping
 
 class InterpolatedValueFromDate():
+    """
+    Dynamic value based on dates. Used for setting configs in the future.
+    """
     def __init__(self, start_date: str, *, low: int=None, high:int=None, interval: int, increment: int, target: int):
         self.start_date = datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
         self.low = low
@@ -121,11 +145,115 @@ class InterpolatedValueFromDate():
 class ValiConfig:
     # versioning
     VERSION = meta_version
+
+    # minimum required vanta-cli version
+    VANTA_CLI_MINIMUM_VERSION = "1.0.5"
+
     DAYS_IN_YEAR_CRYPTO = 365  # annualization factor
     DAYS_IN_YEAR_FOREX = 252
 
     # Proof of Portfolio
     ENABLE_ZK_PROOFS = True
+
+    # Development hotkey for testing
+    DEVELOPMENT_HOTKEY = "DEVELOPMENT"
+
+    # RPC Service Configuration
+    # Centralized port and service name definitions to avoid conflicts and inconsistencies
+    # All RPC services are defined here to prevent port conflicts and ensure consistent authkey generation
+
+    # Core Manager Services
+    RPC_LIVEPRICEFETCHER_PORT = 50000
+    RPC_LIVEPRICEFETCHER_SERVICE_NAME = "LivePriceFetcherServer"
+
+    RPC_LIMITORDERMANAGER_PORT = 50001
+    RPC_LIMITORDERMANAGER_SERVICE_NAME = "LimitOrderServer"
+
+    RPC_POSITIONMANAGER_PORT = 50002
+    RPC_POSITIONMANAGER_SERVICE_NAME = "PositionManagerServer"
+
+    RPC_CHALLENGEPERIOD_PORT = 50003
+    RPC_CHALLENGEPERIOD_SERVICE_NAME = "ChallengePeriodServer"
+
+    RPC_ELIMINATION_PORT = 50004
+    RPC_ELIMINATION_SERVICE_NAME = "EliminationServer"
+
+    RPC_METAGRAPH_PORT = 50005
+    RPC_METAGRAPH_SERVICE_NAME = "MetagraphServer"
+
+    RPC_MINERSTATS_PORT = 50006
+    RPC_MINERSTATS_SERVICE_NAME = "MinerStatsServer"
+
+    RPC_COREOUTPUTS_PORT = 50007
+    RPC_COREOUTPUTS_SERVICE_NAME = "CoreOutputsServer"
+
+    # Utility Services
+    RPC_POSITIONLOCK_PORT = 50008
+    RPC_POSITIONLOCK_SERVICE_NAME = "PositionLockServer"
+
+    RPC_DEBTLEDGER_PORT = 50009
+    RPC_DEBTLEDGER_SERVICE_NAME = "DebtLedgerServer"
+
+    RPC_ASSETSELECTION_PORT = 50010
+    RPC_ASSETSELECTION_SERVICE_NAME = "AssetSelectionServer"
+
+    RPC_CONTRACTMANAGER_PORT = 50011
+    RPC_CONTRACTMANAGER_SERVICE_NAME = "ValidatorContractServer"
+
+    RPC_MINERSTATISTICS_PORT = 50012
+    RPC_MINERSTATISTICS_SERVICE_NAME = "MinerStatisticsServer"
+
+    RPC_REQUESTCORE_PORT = 50013
+    RPC_REQUESTCORE_SERVICE_NAME = "RequestCoreServer"
+
+    RPC_WEBSOCKET_NOTIFIER_PORT = 50014
+    RPC_WEBSOCKET_NOTIFIER_SERVICE_NAME = "WebSocketNotifierServer"
+
+    RPC_WEIGHT_SETTER_PORT = 50015
+    RPC_WEIGHT_SETTER_SERVICE_NAME = "WeightSetterServer"
+
+    RPC_PERFLEDGER_PORT = 50016
+    RPC_PERFLEDGER_SERVICE_NAME = "PerfLedgerServer"
+
+    RPC_PLAGIARISM_PORT = 50017
+    RPC_PLAGIARISM_SERVICE_NAME = "PlagiarismServer"
+
+    RPC_PLAGIARISM_DETECTOR_PORT = 50018
+    RPC_PLAGIARISM_DETECTOR_SERVICE_NAME = "PlagiarismDetectorServer"
+
+    RPC_COMMONDATA_PORT = 50019
+    RPC_COMMONDATA_SERVICE_NAME = "CommonDataServer"
+
+    RPC_MDDCHECKER_PORT = 50020
+    RPC_MDDCHECKER_SERVICE_NAME = "MDDCheckerServer"
+
+    RPC_WEIGHT_CALCULATOR_PORT = 50021
+    RPC_WEIGHT_CALCULATOR_SERVICE_NAME = "WeightCalculatorServer"
+
+    RPC_REST_SERVER_PORT = 50022
+    RPC_REST_SERVER_SERVICE_NAME = "VantaRestServer"
+
+    # Public API Configuration (well-known network endpoints)
+    REST_API_HOST = "127.0.0.1"
+    REST_API_PORT = 48888
+
+    VANTA_WEBSOCKET_HOST = "localhost"
+    VANTA_WEBSOCKET_PORT = 8765
+
+    @staticmethod
+    def get_rpc_authkey(service_name: str, port: int) -> bytes:
+        """
+        Generate RPC authkey for a service.
+
+        Args:
+            service_name: Service name (e.g., "ChallengePeriodManagerServer")
+            port: Port number (e.g., 50003)
+
+        Returns:
+            bytes: 32-byte authkey for RPC authentication
+        """
+        import hashlib
+        return hashlib.sha256(f"{service_name}_{port}".encode()).digest()[:32]
 
     # Min number of trading days required for scoring
     STATISTICAL_CONFIDENCE_MINIMUM_N_CEIL = 60
@@ -186,7 +314,7 @@ class ValiConfig:
 
     # Fees take into account exiting and entering a position, liquidity, and futures fees
     PERF_LEDGER_REFRESH_TIME_MS = 1000 * 60 * 5  # minutes
-    CHALLENGE_PERIOD_REFRESH_TIME_MS = 1000 * 60 * 1  # minutes
+    CHALLENGE_PERIOD_REFRESH_TIME_MS = 1000 * 60 * 5  # minutes
     MDD_CHECK_REFRESH_TIME_MS = 60 * 1000  # 60 seconds
     PRICE_SOURCE_COMPACTING_SLEEP_INTERVAL_SECONDS = 60 * 60 * 12  # 12 hours
 
@@ -228,7 +356,7 @@ class ValiConfig:
     # RISK_PROFILING_TIME_DECAY = 5
     # RISK_PROFILING_TIME_CYCLE = POSITIONAL_EQUIVALENCE_WINDOW_MS
     RISK_PROFILING_TIME_CRITERIA = (
-        0.185  # threshold for the normalized error of a position’s order time intervals
+        0.185  # threshold for the normalized error of a position's order time intervals
     )
 
     PLAGIARISM_MATCHING_TIME_RESOLUTION_MS = 60 * 1000 * 2  # 2 minutes
@@ -254,13 +382,13 @@ class ValiConfig:
     SHORT_LOOKBACK_WINDOW = 7 * DAILY_CHECKPOINTS
 
     # Scoring weights
-    SCORING_OMEGA_WEIGHT = 0.02
-    SCORING_SHARPE_WEIGHT = 0.02
-    SCORING_SORTINO_WEIGHT = 0.02
-    SCORING_STATISTICAL_CONFIDENCE_WEIGHT = 0.02
-    SCORING_CALMAR_WEIGHT = 0.02
+    SCORING_OMEGA_WEIGHT = 0.0
+    SCORING_SHARPE_WEIGHT = 0.0
+    SCORING_SORTINO_WEIGHT = 0.0
+    SCORING_STATISTICAL_CONFIDENCE_WEIGHT = 0.0
+    SCORING_CALMAR_WEIGHT = 0.0
     SCORING_RETURN_WEIGHT = 0.0
-    SCORING_PNL_WEIGHT = 0.9
+    SCORING_PNL_WEIGHT = 1.0
 
     # Scoring hyperparameters
     OMEGA_LOSS_MINIMUM = 0.01  # Equivalent to 1% loss
@@ -301,7 +429,6 @@ class ValiConfig:
 
     PROBATION_MAXIMUM_DAYS = 60
     PROBATION_MAXIMUM_MS = PROBATION_MAXIMUM_DAYS * DAILY_MS
-    ASSET_SPLIT_GRACE_DATE = "2025-10-02"
 
     PROMOTION_THRESHOLD_RANK = 25 # Number of MAINCOMP miners per asset class
 
@@ -318,6 +445,7 @@ class ValiConfig:
     METAGRAPH_UPDATE_REFRESH_TIME_VALIDATOR_MS = 60 * 1000  # 1 minute
     METAGRAPH_UPDATE_REFRESH_TIME_MINER_MS = 60 * 1000 * 15  # 15 minutes
     ELIMINATION_CHECK_INTERVAL_MS = 60 * 5 * 1000  # 5 minutes
+    ELIMINATION_CACHE_REFRESH_INTERVAL_S = 5  # Elimination cache refresh interval in seconds
     ELIMINATION_FILE_DELETION_DELAY_MS = 2 * 24 * 60 * 60 * 1000  # 2 days
 
     # Distributional statistics
@@ -347,18 +475,28 @@ class ValiConfig:
     MIN_CAPITAL = 5_000   # USD minimum capital account size
     DEFAULT_CAPITAL = 100_000  # conversion of 1x leverage to $100K in capital
 
-    # Miner will get a base of 50% collateral returned upon elimination
-    BASE_COLLATERAL_RETURNED = 0.5
-    # 50% of drawdown proportion is slashed
-    SLASH_PROPORTION = 0.5
-    CHALLENGEPERIOD_SLASH_PROPORTION = 0.1  # 10% slashed upon challenge period elimination
+    # 100% percent of collateral deposit is at risk of slashing based on drawdown
+    DRAWDOWN_SLASH_PROPORTION = 1.0
 
     BLOCKED_TRADE_PAIR_IDS = {
         'SPX', 'DJI', 'NDX', 'VIX', 'FTSE', 'GDAXI',  # Indices
         'XAUUSD', 'XAGUSD',  # Commodities
         'NVDA', 'AAPL', 'TSLA', 'AMZN', 'MSFT', 'GOOG', 'META',  # Equities
-        'AUDJPY', 'CADJPY', 'CHFJPY', 'EURJPY', 'NZDJPY', 'GBPJPY', 'USDJPY'  # Forex JPY pairs
+        'AUDJPY', 'CADJPY', 'CHFJPY', 'EURJPY', 'NZDJPY', 'GBPJPY', 'USDJPY',  # Forex JPY pairs
+        'USDMXN'
     }
+
+    # Trade pairs that are permanently unsupported (no price data available)
+    # This constant is referenced by TradePair enum values after class definition
+    UNSUPPORTED_TRADE_PAIRS = None  # Will be set after TradePair definition
+
+    MAX_UNFILLED_LIMIT_ORDERS = 100
+    LIMIT_ORDER_CHECK_REFRESH_MS = 10 * 1000 # 10 seconds
+    LIMIT_ORDER_FILL_INTERVAL_MS = 30 * 1000 # 30 seconds
+
+    LIMIT_ORDER_PRICE_BUFFER_TOLERANCE = 0.001 # +-0.1% tolerance
+    LIMIT_ORDER_PRICE_BUFFER_MS = 30 * 1000
+    MIN_UNIQUE_PRICES_FOR_LIMIT_FILL = 5
 
 assert ValiConfig.CRYPTO_MIN_LEVERAGE >= ValiConfig.ORDER_MIN_LEVERAGE
 assert ValiConfig.CRYPTO_MAX_LEVERAGE <= ValiConfig.ORDER_MAX_LEVERAGE
@@ -653,6 +791,7 @@ class TradePair(Enum):
         ForexSubcategory.G5,
     ]
 
+
     # "Commodities" (Bundle with Forex for now) (temporariliy paused for trading)
     XAUUSD = [
         "XAUUSD",
@@ -831,6 +970,14 @@ class TradePair(Enum):
         return self.trade_pair_id in ValiConfig.BLOCKED_TRADE_PAIR_IDS
 
     @property
+    def lot_size(self):
+        trade_pair_lot_size = {TradePairCategory.CRYPTO: 1,
+                               TradePairCategory.FOREX: 100_000,
+                               TradePairCategory.INDICES: 1,
+                               TradePairCategory.EQUITIES: 1}
+        return trade_pair_lot_size[self.trade_pair_category]
+
+    @property
     def leverage_multiplier(self) -> int:
         trade_pair_leverage_multiplier = {
             TradePairCategory.CRYPTO: 10,
@@ -839,6 +986,17 @@ class TradePair(Enum):
             TradePairCategory.EQUITIES: 2,
         }
         return trade_pair_leverage_multiplier[self.trade_pair_category]
+
+    @property
+    def base(self):
+        return self.trade_pair.split("/")[0]
+
+    @property
+    def quote(self):
+        if self.is_forex:
+            return self.trade_pair.split("/")[1]
+        else:
+            return "USD"
 
     @classmethod
     def categories(cls):
@@ -930,3 +1088,8 @@ class TradePair(Enum):
 
 TRADE_PAIR_ID_TO_TRADE_PAIR = {x.trade_pair_id: x for x in TradePair}
 TRADE_PAIR_STR_TO_TRADE_PAIR = {x.trade_pair: x for x in TradePair}
+
+# Set UNSUPPORTED_TRADE_PAIRS now that TradePair enum is defined
+# These are trade pairs that have no price data available (not just temporarily halted)
+ValiConfig.UNSUPPORTED_TRADE_PAIRS = (TradePair.SPX, TradePair.DJI, TradePair.NDX, TradePair.VIX,
+                                      TradePair.FTSE, TradePair.GDAXI, TradePair.TAOUSD)

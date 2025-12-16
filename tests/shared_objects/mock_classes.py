@@ -4,21 +4,20 @@ import pandas as pd
 
 from data_generator.polygon_data_service import PolygonDataService
 from shared_objects.cache_controller import CacheController
-from vali_objects.utils.challengeperiod_manager import ChallengePeriodManager
-from vali_objects.utils.live_price_fetcher import LivePriceFetcher
-from vali_objects.utils.mdd_checker import MDDChecker
-from vali_objects.utils.plagiarism_detector import PlagiarismDetector
-from vali_objects.utils.position_manager import PositionManager
+from vali_objects.challenge_period import ChallengePeriodManager
+from vali_objects.price_fetcher import LivePriceFetcherServer
+from vali_objects.utils.mdd_checker.mdd_checker_server import MDDCheckerServer
+from vali_objects.plagiarism.plagiarism_detector import PlagiarismDetector
+from vali_objects.position_management.position_manager import PositionManager
 from vali_objects.utils.price_slippage_model import PriceSlippageModel
-from vali_objects.vali_config import TradePair
-from vali_objects.vali_dataclasses.perf_ledger import PerfLedgerManager
+from vali_objects.vali_config import TradePair, RPCConnectionMode
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_manager import PerfLedgerManager
 from vali_objects.vali_dataclasses.price_source import PriceSource
 
 
-class MockMDDChecker(MDDChecker):
+class MockMDDChecker(MDDCheckerServer):
     def __init__(self, metagraph, position_manager, live_price_fetcher):
-        super().__init__(metagraph, position_manager, running_unit_tests=True,
-                         live_price_fetcher=live_price_fetcher)
+        super().__init__(running_unit_tests=True, slack_notifier=None, start_server=False, start_daemon=False)
 
     # Lets us bypass the wait period in MDDChecker
     def get_last_update_time_ms(self):
@@ -31,20 +30,26 @@ class MockCacheController(CacheController):
 
 
 class MockPositionManager(PositionManager):
-    def __init__(self, metagraph, perf_ledger_manager, elimination_manager, live_price_fetcher=None):
-        super().__init__(metagraph=metagraph, running_unit_tests=True,
-                         perf_ledger_manager=perf_ledger_manager, elimination_manager=elimination_manager,
-                         live_price_fetcher=live_price_fetcher)
+    def __init__(self, metagraph, perf_ledger_manager, live_price_fetcher=None):
+        super().__init__(running_unit_tests=True)
+
+    def _start_server_process(self, address, authkey, server_ready):
+        """Mock implementation - tests don't start actual server process."""
+        return None
 
 
 class MockPerfLedgerManager(PerfLedgerManager):
     def __init__(self, metagraph):
-        super().__init__(metagraph, running_unit_tests=True)
+        super().__init__(connection_mode=RPCConnectionMode.LOCAL)
 
 
 class MockPlagiarismDetector(PlagiarismDetector):
-    def __init__(self, metagraph, position_manager):
-        super().__init__(metagraph, running_unit_tests=True, position_manager=position_manager)
+    def __init__(self):
+        # Use RPC mode so clients connect to orchestrator servers
+        # (LOCAL mode would create disconnected clients expecting set_direct_server())
+        super().__init__(connection_mode=RPCConnectionMode.RPC)
+        # Override to get test-specific behaviors (fixed time, test directories)
+        self.running_unit_tests = True
 
     # Lets us bypass the wait period in PlagiarismDetector
     def get_last_update_time_ms(self):
@@ -52,19 +57,26 @@ class MockPlagiarismDetector(PlagiarismDetector):
 
 
 class MockChallengePeriodManager(ChallengePeriodManager):
-    def __init__(self, metagraph, position_manager, contract_manager, plagiarism_manager):
-        super().__init__(metagraph, running_unit_tests=True, position_manager=position_manager, contract_manager=contract_manager, plagiarism_manager=plagiarism_manager)
+    def __init__(self, metagraph):
+        super().__init__(metagraph, running_unit_tests=True)
 
-class MockLivePriceFetcher(LivePriceFetcher):
+class MockLivePriceFetcherServer(LivePriceFetcherServer):
     def __init__(self, secrets, disable_ws):
-        super().__init__(secrets=secrets, disable_ws=disable_ws)
+        super().__init__(
+            secrets=secrets,
+            disable_ws=disable_ws,
+            connection_mode=RPCConnectionMode.LOCAL,
+            start_server=False,
+            start_daemon=False
+        )
         self.polygon_data_service = MockPolygonDataService(api_key=secrets["polygon_apikey"], disable_ws=disable_ws)
-
-    def get_sorted_price_sources_for_trade_pair(self, trade_pair, processed_ms):
-        return [PriceSource(open=1, high=1, close=1, low=1, bid=1, ask=1)]
 
     def get_close_at_date(self, trade_pair, timestamp_ms, order=None, verbose=True):
         return PriceSource(open=1, high=1, close=1, low=1, bid=1, ask=1)
+
+    def get_sorted_price_sources_for_trade_pair(self, trade_pair, time_ms=None, live=True):
+        return [PriceSource(open=1, high=1, close=1, low=1, bid=1, ask=1)]
+
 
 class MockPolygonDataService(PolygonDataService):
     def __init__(self, api_key, disable_ws=True):
