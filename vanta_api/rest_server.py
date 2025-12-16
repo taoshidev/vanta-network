@@ -1509,19 +1509,14 @@ class VantaRestServer(RPCServerBase, APIKeyMixin):
 
             Example:
             curl -X POST http://localhost:48888/entity/register \\
-              -H "Authorization: Bearer YOUR_API_KEY" \\
               -H "Content-Type: application/json" \\
-              -d '{"entity_hotkey": "5GhDr...", "max_subaccounts": 10}'
+              -d '{
+                "entity_hotkey": "5GhDr...",
+                "entity_coldkey": "5FxY...",
+                "max_subaccounts": 500,
+                "signature": "0x..."
+              }'
             """
-            # Check API key authentication
-            api_key = self._get_api_key_safe()
-            if not self.is_valid_api_key(api_key):
-                return jsonify({'error': 'Unauthorized access'}), 401
-
-            # Check if API key has tier 200 access
-            if not self.can_access_tier(api_key, 200):
-                return jsonify({'error': 'Your API key does not have access to tier 200 data'}), 403
-
             # Check if entity client is available
             if not self._entity_client:
                 return jsonify({'error': 'Entity management not available'}), 503
@@ -1535,12 +1530,42 @@ class VantaRestServer(RPCServerBase, APIKeyMixin):
                 if not data:
                     return jsonify({'error': 'Invalid JSON body'}), 400
 
-                # Validate required fields
-                if 'entity_hotkey' not in data:
-                    return jsonify({'error': 'Missing required field: entity_hotkey'}), 400
+                # Check vanta-cli version FIRST - reject outdated versions
+                vanta_cli_version = (
+                    data.get('version')
+                    or data.get('ptncli_version')
+                    or '0.0.0'
+                )
+                vanta_cli_error = self.check_vanta_cli_version(vanta_cli_version)
+                if vanta_cli_error:
+                    return jsonify({'error': vanta_cli_error}), 400
 
+                # Validate required fields
+                required_fields = ['entity_coldkey', 'entity_hotkey', 'signature']
+                for field in required_fields:
+                    if field not in data:
+                        return jsonify({'error': f'Missing required field: {field}'}), 400
+
+                entity_coldkey = data['entity_coldkey']
                 entity_hotkey = data['entity_hotkey']
-                max_subaccounts = data.get('max_subaccounts', None)
+                max_subaccounts = data.get('max_subaccounts', ValiConfig.ENTITY_MAX_SUBACCOUNTS)
+
+                # Verify signature
+                keypair = Keypair(ss58_address=entity_coldkey)
+                message = json.dumps({
+                    "entity_coldkey": entity_coldkey,
+                    "entity_hotkey": entity_hotkey,
+                    "max_subaccounts": max_subaccounts
+                }, sort_keys=True).encode('utf-8')
+
+                is_valid = keypair.verify(message, bytes.fromhex(data['signature']))
+                if not is_valid:
+                    return jsonify({'error': 'Invalid signature. Entity registration unauthorized'}), 401
+
+                # Verify coldkey-hotkey ownership using subtensor
+                owns_hotkey = self._verify_coldkey_owns_hotkey(entity_coldkey, entity_hotkey)
+                if not owns_hotkey:
+                    return jsonify({'error': 'Coldkey does not own the specified hotkey'}), 403
 
                 # Register entity via RPC
                 success, message = self._entity_client.register_entity(
@@ -1552,7 +1577,8 @@ class VantaRestServer(RPCServerBase, APIKeyMixin):
                     return jsonify({
                         'status': 'success',
                         'message': message,
-                        'entity_hotkey': entity_hotkey
+                        'entity_hotkey': entity_hotkey,
+                        'max_subaccounts': max_subaccounts
                     }), 200
                 else:
                     return jsonify({'error': message}), 400
@@ -1571,19 +1597,15 @@ class VantaRestServer(RPCServerBase, APIKeyMixin):
 
             Example:
             curl -X POST http://localhost:48888/entity/create-subaccount \\
-              -H "Authorization: Bearer YOUR_API_KEY" \\
               -H "Content-Type: application/json" \\
-              -d '{"entity_hotkey": "5GhDr...", "account_size": 25000, "asset_class": "crypto"}'
+              -d '{
+                "entity_hotkey": "5GhDr...",
+                "entity_coldkey": "5FxY...",
+                "account_size": 25000,
+                "asset_class": "crypto",
+                "signature": "0x..."
+              }'
             """
-            # Check API key authentication
-            api_key = self._get_api_key_safe()
-            if not self.is_valid_api_key(api_key):
-                return jsonify({'error': 'Unauthorized access'}), 401
-
-            # Check if API key has tier 200 access
-            if not self.can_access_tier(api_key, 200):
-                return jsonify({'error': 'Your API key does not have access to tier 200 data'}), 403
-
             # Check if entity client is available
             if not self._entity_client:
                 return jsonify({'error': 'Entity management not available'}), 503
@@ -1597,12 +1619,23 @@ class VantaRestServer(RPCServerBase, APIKeyMixin):
                 if not data:
                     return jsonify({'error': 'Invalid JSON body'}), 400
 
+                # Check vanta-cli version FIRST - reject outdated versions
+                vanta_cli_version = (
+                    data.get('version')
+                    or data.get('ptncli_version')
+                    or '0.0.0'
+                )
+                vanta_cli_error = self.check_vanta_cli_version(vanta_cli_version)
+                if vanta_cli_error:
+                    return jsonify({'error': vanta_cli_error}), 400
+
                 # Validate required fields
-                required_fields = ['entity_hotkey', 'account_size', 'asset_class']
+                required_fields = ['entity_coldkey', 'entity_hotkey', 'account_size', 'asset_class', 'signature']
                 missing_fields = [field for field in required_fields if field not in data]
                 if missing_fields:
                     return jsonify({'error': f'Missing required fields: {", ".join(missing_fields)}'}), 400
 
+                entity_coldkey = data['entity_coldkey']
                 entity_hotkey = data['entity_hotkey']
                 account_size = data['account_size']
                 asset_class = data['asset_class']
@@ -1620,6 +1653,24 @@ class VantaRestServer(RPCServerBase, APIKeyMixin):
                     return jsonify({'error': 'asset_class must be a non-empty string'}), 400
 
                 asset_class = asset_class.strip()
+
+                # Verify signature
+                keypair = Keypair(ss58_address=entity_coldkey)
+                message = json.dumps({
+                    "entity_coldkey": entity_coldkey,
+                    "entity_hotkey": entity_hotkey,
+                    "account_size": account_size,
+                    "asset_class": asset_class
+                }, sort_keys=True).encode('utf-8')
+
+                is_valid = keypair.verify(message, bytes.fromhex(data['signature']))
+                if not is_valid:
+                    return jsonify({'error': 'Invalid signature. Subaccount creation unauthorized'}), 401
+
+                # Verify coldkey-hotkey ownership using subtensor
+                owns_hotkey = self._verify_coldkey_owns_hotkey(entity_coldkey, entity_hotkey)
+                if not owns_hotkey:
+                    return jsonify({'error': 'Coldkey does not own the specified hotkey'}), 403
 
                 # Create subaccount via RPC
                 success, subaccount_info, message = self._entity_client.create_subaccount(
