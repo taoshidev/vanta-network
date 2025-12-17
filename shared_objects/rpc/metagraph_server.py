@@ -111,7 +111,7 @@ class MetagraphServer(RPCServerBase):
         )
 
         bt.logging.info(
-            f"MetagraphServer initialized on port {ValiConfig.RPC_METAGRAPH_PORT} - "
+            f"MetagraphServer initialized on port {ValiConfig.RPC_METAGRAPH_PORT if connection_mode == RPCConnectionMode.RPC else 'LOCAL'} - "
             f"'{self.DEVELOPMENT_HOTKEY}' hotkey will be available for development orders"
         )
 
