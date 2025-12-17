@@ -562,6 +562,10 @@ class ServerOrchestrator:
             # Store context for use in _start_server
             self._context = context
 
+            # Clean up any stale shared memory from previous runs (before initializing)
+            from shared_objects.rpc.shutdown_coordinator import ShutdownCoordinator
+            ShutdownCoordinator.cleanup_stale_memory()
+
             # Kill any stale servers from previous runs
             PortManager.force_kill_all_rpc_ports()
 
@@ -1419,6 +1423,10 @@ class ServerOrchestrator:
         # Shutdown all servers
         RPCServerBase.shutdown_all(force_kill_ports=True)
         self._servers.clear()
+
+        # Cleanup shared memory
+        from shared_objects.rpc.shutdown_coordinator import ShutdownCoordinator
+        ShutdownCoordinator.cleanup()
 
         self._started = False
         self._mode = None
