@@ -697,6 +697,7 @@ class ServerOrchestrator:
                     spawn_kwargs['slack_webhook_url'] = context.config.slack_error_webhook_url
                 if context.validator_hotkey:
                     spawn_kwargs['validator_hotkey'] = context.validator_hotkey
+                spawn_kwargs['is_mainnet'] = context.is_mainnet
 
             elif server_name in ('contract', 'asset_selection', 'entity'):
                 if context.config:
