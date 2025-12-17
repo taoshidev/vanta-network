@@ -396,6 +396,36 @@ class RPCClientBase:
             f"Failed to connect to {self.service_name} at {self._address}: {last_error}"
         )
 
+    def set_direct_server(self, server_instance):
+        """
+        Set direct server reference for LOCAL mode operation.
+
+        In LOCAL mode, the client bypasses RPC and calls methods directly
+        on the provided server instance. This eliminates RPC overhead and
+        port conflicts, allowing multiple processes (e.g., miners) to run
+        on the same machine.
+
+        Args:
+            server_instance: The server instance to call methods on directly
+
+        Example:
+            # Create client in LOCAL mode
+            client = MyClient(connection_mode=RPCConnectionMode.LOCAL)
+
+            # Set direct server reference
+            client.set_direct_server(server_instance)
+
+            # Now all RPC calls go directly to server_instance
+            result = client.some_method()  # calls server_instance.some_method_rpc()
+        """
+        if self.connection_mode != RPCConnectionMode.LOCAL:
+            bt.logging.warning(
+                f"{self.service_name}Client.set_direct_server() called but connection_mode is {self.connection_mode}, "
+                f"not LOCAL. This may cause unexpected behavior."
+            )
+        self._direct_server = server_instance
+        bt.logging.trace(f"{self.service_name}Client: Direct server reference set (LOCAL mode)")
+
     def call(self, method_name: str, *args, **kwargs) -> Any:
         """
         Generic method to call any RPC method by name.
