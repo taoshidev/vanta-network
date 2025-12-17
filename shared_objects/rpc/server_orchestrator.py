@@ -627,6 +627,13 @@ class ServerOrchestrator:
             self._started = True
             bt.logging.success(f"All {total_servers} servers started in {mode.value} mode (parallel startup)")
 
+            # Wire metagraph_client for subtensor_ops now that all servers are ready
+            if 'subtensor_ops' in self._servers and 'metagraph' in self._servers:
+                subtensor_ops = self._servers['subtensor_ops']
+                metagraph_client = self.get_client('metagraph')
+                subtensor_ops.manager._metagraph_client = metagraph_client
+                bt.logging.info(f"Wired metagraph_client to subtensor_ops")
+
     def _get_start_order(self, server_names: list) -> list:
         """
         Get server start order respecting dependencies.

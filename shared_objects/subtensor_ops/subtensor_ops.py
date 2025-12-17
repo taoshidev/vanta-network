@@ -154,6 +154,8 @@ class SubtensorOpsManager(CacheController):
         self.config = config
         self.running_unit_tests = running_unit_tests
 
+        self._metagraph_client = None
+
         # Initialize failure tracking BEFORE subtensor creation (needed if creation fails)
         self.consecutive_failures = 0
 
@@ -191,7 +193,6 @@ class SubtensorOpsManager(CacheController):
         self.likely_validators = {}
         self.likely_miners = {}
         self.hotkey = hotkey
-        self.is_miner = is_miner
         self.interval_wait_time_ms = ValiConfig.METAGRAPH_UPDATE_REFRESH_TIME_MINER_MS if self.is_miner else \
             ValiConfig.METAGRAPH_UPDATE_REFRESH_TIME_VALIDATOR_MS
         self.position_manager = position_manager
