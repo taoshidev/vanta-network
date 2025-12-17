@@ -116,6 +116,16 @@ class SubtensorOpsServer(RPCServerBase):
         Block until metagraph populates (critical for dependent servers).
         Must be called after daemon starts.
         """
+        # Wait for metagraph_client to be wired (happens after all servers start)
+        bt.logging.info("Waiting for metagraph_client to be wired...")
+        start_time = time.time()
+        while self.manager._metagraph_client is None:
+            if time.time() - start_time > max_wait_time:
+                raise RuntimeError(f"Timeout waiting for metagraph_client to be wired after {max_wait_time}s")
+            if self._is_shutdown():
+                raise RuntimeError("Shutdown during metagraph_client wait")
+            time.sleep(0.1)
+
         bt.logging.info("Waiting for initial metagraph population...")
         start_time = time.time()
 
