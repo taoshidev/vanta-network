@@ -29,7 +29,7 @@ class DebtLedgerManager():
     DEFAULT_CHECK_INTERVAL_SECONDS = 3600 * 12  # 12 hours
 
     def __init__(self, slack_webhook_url=None, running_unit_tests=False,
-                 validator_hotkey=None, connection_mode: RPCConnectionMode = RPCConnectionMode.RPC):
+                 validator_hotkey=None, is_mainnet=True, connection_mode: RPCConnectionMode = RPCConnectionMode.RPC):
         """
         Initialize the manager with a normal Python dict for debt ledgers.
 
@@ -93,6 +93,7 @@ class DebtLedgerManager():
 
         self.slack_notifier = SlackNotifier(webhook_url=slack_webhook_url, hotkey=validator_hotkey)
         self.running_unit_tests = running_unit_tests
+        self.is_mainnet = is_mainnet
 
         # Cache for pre-compressed debt ledgers (updated on each build)
         # Stores gzip-compressed JSON bytes for instant RPC access
@@ -557,9 +558,9 @@ class DebtLedgerManager():
                     hotkeys_missing_data.append(hotkey)
                     continue
 
-                # For non-synthetic hotkeys (regular miners, entity hotkeys), emissions are required
+                # For non-synthetic hotkeys (regular miners, entity hotkeys), mainnet emissions are required
                 # For synthetic hotkeys (subaccounts), emissions are optional (they don't receive on-chain emissions)
-                if not emissions_checkpoint and not is_subaccount:
+                if self.is_mainnet and not emissions_checkpoint and not is_subaccount:
                     hotkeys_missing_data.append(hotkey)
                     continue
 
@@ -610,7 +611,7 @@ class DebtLedgerManager():
                 # CRITICAL: Use miner_perf_checkpoint (this miner's data), not perf_checkpoint (reference miner's data)
 
                 # Handle emissions data - use zero values for synthetic hotkeys (subaccounts)
-                if emissions_checkpoint:
+                if emissions_checkpoint and self.is_mainnet:
                     chunk_emissions_alpha = emissions_checkpoint.chunk_emissions
                     chunk_emissions_tao = emissions_checkpoint.chunk_emissions_tao
                     chunk_emissions_usd = emissions_checkpoint.chunk_emissions_usd
@@ -619,7 +620,7 @@ class DebtLedgerManager():
                     tao_balance_snapshot = emissions_checkpoint.tao_balance_snapshot
                     alpha_balance_snapshot = emissions_checkpoint.alpha_balance_snapshot
                 else:
-                    # Synthetic hotkeys (subaccounts) have zero emissions and zero rates
+                    # Synthetic hotkeys (subaccounts) and testnet have zero emissions and zero rates
                     # Entity's real emissions will replace these during aggregation
                     chunk_emissions_alpha = 0.0
                     chunk_emissions_tao = 0.0
