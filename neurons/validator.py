@@ -378,7 +378,7 @@ class Validator(ValidatorBase):
 
         self.check_shutdown()
 
-    def should_fail_early(self, synapse: template.protocol.SendSignal | template.protocol.GetPositions, method: SynapseMethod,
+    def should_fail_early(self, sender_hotkey, synapse: template.protocol.SendSignal | template.protocol.GetPositions, method: SynapseMethod,
                           signal:dict=None, now_ms=None) -> bool:
         if is_shutdown():
             synapse.successfully_processed = False
@@ -386,7 +386,6 @@ class Validator(ValidatorBase):
             bt.logging.trace(synapse.error_message)
             return True
 
-        sender_hotkey = synapse.dendrite.hotkey
         # Don't allow miners to send too many signals in a short period of time
         if method == SynapseMethod.POSITION_INSPECTOR:
             allowed, wait_time = self.position_inspector_rate_limiter.is_allowed(sender_hotkey)
@@ -501,7 +500,7 @@ class Validator(ValidatorBase):
             # Check timestamp and validate locally using cached data
             if now_ms >= ASSET_CLASS_SELECTION_TIME_MS:
                 # Fast local lookup from AssetSelectionClient cache
-                selected_asset = self.asset_selection_client.get_selection_local_cache(synapse.dendrite.hotkey)
+                selected_asset = self.asset_selection_client.get_selection_local_cache(sender_hotkey)
                 is_valid_asset = selected_asset == tp.trade_pair_category if selected_asset is not None else False
             else:
                 is_valid_asset = True  # Pre-cutoff, all assets allowed
@@ -512,7 +511,7 @@ class Validator(ValidatorBase):
 
             if not is_valid_asset:
                 msg = (
-                    f"miner [{synapse.dendrite.hotkey}] cannot trade asset class [{tp.trade_pair_category.value}]. "
+                    f"miner [{sender_hotkey}] cannot trade asset class [{tp.trade_pair_category.value}]. "
                     f"Selected asset class: [{selected_asset or 'unknown'}]. Only trade pairs from your selected asset class are allowed. "
                     f"See https://docs.taoshi.io/ptn/ptncli#miner-operations for more information."
                 )
@@ -598,7 +597,7 @@ class Validator(ValidatorBase):
 
         # TIMING: Check should_fail_early timing
         fail_early_start = TimeUtil.now_in_millis()
-        if self.should_fail_early(synapse, SynapseMethod.SIGNAL, signal=signal, now_ms=now_ms):
+        if self.should_fail_early(miner_hotkey, synapse, SynapseMethod.SIGNAL, signal=signal, now_ms=now_ms):
             fail_early_ms = TimeUtil.now_in_millis() - fail_early_start
             bt.logging.info(f"[TIMING] should_fail_early took {fail_early_ms}ms (rejected)")
             return synapse
@@ -676,10 +675,10 @@ class Validator(ValidatorBase):
 
     def get_positions(self, synapse: template.protocol.GetPositions,
                       ) -> template.protocol.GetPositions:
-        if self.should_fail_early(synapse, SynapseMethod.POSITION_INSPECTOR):
+        miner_hotkey = synapse.dendrite.hotkey
+        if self.should_fail_early(miner_hotkey, synapse, SynapseMethod.POSITION_INSPECTOR):
             return synapse
         t0 = time.time()
-        miner_hotkey = synapse.dendrite.hotkey
         error_message = ""
         n_positions_sent = 0
         hotkey = None
