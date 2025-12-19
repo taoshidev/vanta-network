@@ -176,12 +176,12 @@ class ChallengePeriodManager(CacheController):
         self.remove_eliminated(eliminations=eliminations)
 
         hk_to_positions, hk_to_first_order_time = self._position_client.filtered_positions_for_scoring(
-            hotkeys=self._metagraph_client.get_hotkeys()
+            hotkeys=self._position_client.get_all_hotkeys()
         )
 
         # Add to testing if not in eliminated, already in the challenge period, or in the new eliminations list
         self._add_challengeperiod_testing_in_memory_and_disk(
-            new_hotkeys=self._metagraph_client.get_hotkeys(),
+            new_hotkeys=self._position_client.get_all_hotkeys(),
             eliminations=eliminations,
             hk_to_first_order_time=hk_to_first_order_time,
             default_time=current_time
@@ -244,9 +244,18 @@ class ChallengePeriodManager(CacheController):
         )
 
     def _prune_deregistered_metagraph(self, hotkeys=None) -> bool:
-        """Prune the challenge period of all miners who are no longer in the metagraph."""
+        """
+        Prune the challenge period of miners who are no longer valid.
+
+        Uses position_client.get_all_hotkeys() to determine valid hotkeys,
+        which includes regular miners, entity hotkeys, and synthetic hotkeys with positions.
+        Elimination system handles removing truly invalid miners.
+        """
         if not hotkeys:
-            hotkeys = self._metagraph_client.get_hotkeys()
+            # Get all hotkeys with positions (includes synthetic hotkeys)
+            hotkeys = set(self._position_client.get_all_hotkeys())
+        else:
+            hotkeys = set(hotkeys)
 
         any_changes = False
         for hotkey in self.get_all_miner_hotkeys():
@@ -1117,10 +1126,10 @@ class ChallengePeriodManager(CacheController):
             self.remove_eliminated(eliminations=eliminations)
 
         challenge_hk_to_positions, challenge_hk_to_first_order_time = self._position_client.filtered_positions_for_scoring(
-            hotkeys=self._metagraph_client.get_hotkeys())
+            hotkeys=self._position_client.get_all_hotkeys())
 
         self._add_challengeperiod_testing_in_memory_and_disk(
-            new_hotkeys=self._metagraph_client.get_hotkeys(),
+            new_hotkeys=self._position_client.get_all_hotkeys(),
             eliminations=eliminations,
             hk_to_first_order_time=challenge_hk_to_first_order_time,
             default_time=current_time_ms
