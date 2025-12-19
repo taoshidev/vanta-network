@@ -44,6 +44,7 @@ from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLed
 from vali_objects.position_management.position_manager_client import PositionManagerClient
 from vali_objects.vali_dataclasses.price_source import PriceSource
 from shared_objects.rpc.common_data_client import CommonDataClient
+from entity_management.entity_utils import is_synthetic_hotkey
 
 
 # ==================== Elimination Types ====================
@@ -594,7 +595,7 @@ class EliminationManager(CacheController):
 
     def is_zombie_hotkey(self, hotkey, all_hotkeys_set):
         """Check if hotkey is a zombie"""
-        if hotkey == ValiConfig.DEVELOPMENT_HOTKEY:
+        if hotkey == ValiConfig.DEVELOPMENT_HOTKEY or is_synthetic_hotkey(hotkey):
             return False
         return hotkey not in all_hotkeys_set
 
