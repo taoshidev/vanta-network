@@ -663,7 +663,9 @@ class EntityManager(ValidatorBroadcastBase):
         # Debt ledger data
         ledger_data = None
         try:
-            ledger_data = self._debt_ledger_client.get_ledger(synthetic_hotkey)
+            ledger = self._debt_ledger_client.get_ledger(synthetic_hotkey)
+            if ledger:
+                ledger_data = ledger.to_dict()  # Convert DebtLedger to dict for JSON serialization
         except Exception as e:
             bt.logging.debug(f"[ENTITY_MANAGER] Ledger data unavailable for {synthetic_hotkey}: {e}")
 
