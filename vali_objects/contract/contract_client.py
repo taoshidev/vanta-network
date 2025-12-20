@@ -1,4 +1,4 @@
-from typing import Optional, Dict, List, Any
+from typing import Optional, Dict, Any
 
 import template.protocol
 from shared_objects.rpc.rpc_client_base import RPCClientBase
@@ -53,45 +53,6 @@ class ContractClient(RPCClientBase):
         """Compute the slash amount based on drawdown."""
         return self._server.compute_slash_amount_rpc(miner_hotkey, drawdown)
 
-    # ==================== Account Size Methods ====================
-
-    def get_miner_account_size(
-        self,
-        hotkey: str,
-        timestamp_ms: int = None,
-        most_recent: bool = False,
-        records_dict: dict = None,
-        use_account_floor: bool = False
-    ) -> Optional[float]:
-        """Get the account size for a miner at a given timestamp."""
-        return self._server.get_miner_account_size_rpc(
-            hotkey, timestamp_ms, most_recent, records_dict, use_account_floor
-        )
-
-    def set_miner_account_size(self, hotkey: str, timestamp_ms: int = None) -> bool:
-        """Set the account size for a miner."""
-        return self._server.set_miner_account_size_rpc(hotkey, timestamp_ms)
-
-    def get_all_miner_account_sizes(
-        self,
-        miner_account_sizes: dict = None,
-        timestamp_ms: int = None
-    ) -> Dict[str, float]:
-        """Get all miner account sizes at a timestamp."""
-        return self._server.get_all_miner_account_sizes_rpc(miner_account_sizes, timestamp_ms)
-
-    def miner_account_sizes_dict(self, most_recent_only: bool = False) -> Dict[str, List[Dict[str, Any]]]:
-        """Get miner account sizes dict for backup/sync."""
-        return self._server.miner_account_sizes_dict_rpc(most_recent_only)
-
-    def sync_miner_account_sizes_data(self, account_sizes_data: Dict[str, List[Dict[str, Any]]]) -> None:
-        """Sync miner account sizes data from external source."""
-        return self._server.sync_miner_account_sizes_data_rpc(account_sizes_data)
-
-    def re_init_account_sizes(self) -> None:
-        """Reload account sizes from disk (useful for tests)."""
-        return self._server.re_init_account_sizes_rpc()
-
     # ==================== Collateral Balance Methods ====================
 
     def get_miner_collateral_balance(self, miner_address: str, max_retries: int = 4) -> Optional[float]:
@@ -130,10 +91,6 @@ class ContractClient(RPCClientBase):
     def receive_collateral_record(self, synapse: template.protocol.CollateralRecord) -> template.protocol.CollateralRecord:
         """Receive collateral record update synapse (for axon attachment)."""
         return self._server.receive_collateral_record_rpc(synapse)
-
-    def receive_collateral_record_update(self, collateral_record_data: dict) -> bool:
-        """Process an incoming CollateralRecord and update miner_account_sizes."""
-        return self._server.receive_collateral_record_update_rpc(collateral_record_data)
 
     def verify_coldkey_owns_hotkey(self, coldkey_ss58: str, hotkey_ss58: str) -> bool:
         """Verify that a coldkey owns a specific hotkey using subtensor."""

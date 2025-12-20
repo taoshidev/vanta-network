@@ -229,6 +229,10 @@ class MinerStatisticsManager:
         self._contract_client = ContractClient(connection_mode=connection_mode)
         self._asset_selection_client = AssetSelectionClient(connection_mode=connection_mode)
 
+        # MinerAccountClient - source of truth for account sizes
+        from vali_objects.miner_account.miner_account_client import MinerAccountClient
+        self._miner_account_client = MinerAccountClient(connection_mode=connection_mode)
+
         self.metrics_calculator = MetricsCalculator(metrics=metrics)
 
         # Statistics cache (regular dict - no IPC needed)
@@ -538,7 +542,7 @@ class MinerStatisticsManager:
         for hotkey, _ in filtered_ledger.items():
 
             # Fetch most recent account size even if it isn't valid yet for scoring
-            account_size = self.contract_manager.get_miner_account_size(hotkey, now_ms, most_recent=True)
+            account_size = self._miner_account_client.get_miner_account_size(hotkey, now_ms, most_recent=True)
             if account_size is None:
                 account_size = ValiConfig.MIN_CAPITAL
             else:

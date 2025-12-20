@@ -36,6 +36,9 @@ class SubtensorWeightSetter(CacheController):
         )
         # Create own ContractClient (forward compatibility - no parameter passing)
         self._contract_client = ContractClient(running_unit_tests=running_unit_tests)
+        # Create own MinerAccountClient (source of truth for account sizes)
+        from vali_objects.miner_account.miner_account_client import MinerAccountClient
+        self._miner_account_client = MinerAccountClient()
         # Note: perf_ledger_manager removed - no longer used (debt-based scoring uses debt_ledger_manager)
         self.subnet_version = 200
         # Store weights for use in backtesting
@@ -184,7 +187,7 @@ class SubtensorWeightSetter(CacheController):
             ledger_dict=filtered_debt_ledgers,
             metagraph=self.metagraph,  # Shared metagraph with substrate reserves
             challengeperiod_client=self._challenge_period_client,
-            contract_client=self._contract_client,  # For collateral-aware weight assignment
+            miner_account_client=self._miner_account_client,  # For account size queries
             current_time_ms=current_time,
             verbose=True,
             is_testnet=not self.is_mainnet

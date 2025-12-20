@@ -39,7 +39,7 @@ from vali_objects.price_fetcher.live_price_fetcher import LivePriceFetcher
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.enums.misc import OrderStatus
-from vali_objects.contract.validator_contract_manager import ValidatorContractManager
+from vali_objects.miner_account.miner_account_client import MinerAccountClient
 from vali_objects.vali_config import ValiConfig, TradePair
 
 # Configuration
@@ -64,18 +64,15 @@ print("Initializing services...")
 secrets = ValiUtils.get_secrets()
 live_price_fetcher = LivePriceFetcher(secrets, disable_ws=True)
 
-# Initialize contract manager for account size lookups
+# Initialize miner account client for account size lookups
 try:
-    contract_manager = ValidatorContractManager(
-        config=None,
-        running_unit_tests=False
-    )
-    print("Contract manager initialized successfully")
+    miner_account_client = MinerAccountClient()
+    print("Miner account client initialized successfully")
 except Exception as e:
-    print(f"Could not initialize contract manager: {e}.")
+    print(f"Could not initialize miner account client: {e}.")
     sys.exit()
 
-def get_account_size_for_order(hotkey, time_ms, miner_account_sizes_cache, contract_mgr):
+def get_account_size_for_order(hotkey, time_ms, miner_account_sizes_cache, account_client):
     """
     Get the miner's account size for an order based on collateral history.
     """
@@ -83,10 +80,9 @@ def get_account_size_for_order(hotkey, time_ms, miner_account_sizes_cache, contr
         return ValiConfig.DEFAULT_CAPITAL
 
     try:
-        account_size = contract_mgr.get_miner_account_size(
+        account_size = account_client.get_miner_account_size(
             hotkey,
             time_ms,
-            records_dict=miner_account_sizes_cache
         )
         return account_size if account_size is not None else ValiConfig.MIN_CAPITAL
     except Exception as e:
@@ -244,10 +240,7 @@ def process_hotkey(args):
         secrets = ValiUtils.get_secrets()
         live_price_fetcher = LivePriceFetcher(secrets, disable_ws=True)
 
-        contract_manager = ValidatorContractManager(
-            config=None,
-            running_unit_tests=False
-        )
+        miner_account_client = MinerAccountClient()
     except Exception as e:
         return {
             'hotkey': hotkey,
@@ -298,7 +291,7 @@ def process_hotkey(args):
             if needs_account_size:
                 old_account_size = position.account_size
                 position.account_size = get_account_size_for_order(
-                    hotkey, position.orders[0].processed_ms, miner_account_sizes_cache, contract_manager
+                    hotkey, position.orders[0].processed_ms, miner_account_sizes_cache, miner_account_client
                 )
                 stats['account_size_migrations'] += 1
                 bt.logging.debug(
@@ -370,10 +363,8 @@ print("=" * 80)
 # Start timer
 migration_start_time = time.time()
 
-# Cache for miner account sizes
+# Cache for miner account sizes (unused but kept for API compatibility)
 miner_account_sizes_cache = {}
-if contract_manager:
-    miner_account_sizes_cache = contract_manager.miner_account_sizes.copy()
 
 # Prepare arguments for parallel processing
 print(f"Preparing {len(all_positions)} hotkeys for parallel processing with {NUM_PROCESSES} processes...")

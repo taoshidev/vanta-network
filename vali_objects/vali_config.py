@@ -225,6 +225,9 @@ class ValiConfig:
     RPC_REST_SERVER_PORT = 50022
     RPC_REST_SERVER_SERVICE_NAME = "VantaRestServer"
 
+    RPC_MINERACCOUNT_PORT = 50023
+    RPC_MINERACCOUNT_SERVICE_NAME = "MinerAccountServer"
+
     # Public API Configuration (well-known network endpoints)
     REST_API_HOST = "127.0.0.1"
     REST_API_PORT = 48888

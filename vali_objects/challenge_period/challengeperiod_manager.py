@@ -34,7 +34,7 @@ from vali_objects.vali_dataclasses.position import Position
 from vali_objects.utils.elimination.elimination_manager import EliminationReason
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.plagiarism.plagiarism_client import PlagiarismClient
-from vali_objects.contract.contract_client import ContractClient
+from vali_objects.miner_account.miner_account_client import MinerAccountClient
 from shared_objects.rpc.common_data_client import CommonDataClient
 
 
@@ -93,7 +93,7 @@ class ChallengePeriodManager(CacheController):
             connect_immediately=False
         )
 
-        self._contract_client = ContractClient(
+        self._miner_account_client = MinerAccountClient(
             connection_mode=connection_mode,
             connect_immediately=False
         )
@@ -372,7 +372,7 @@ class ChallengePeriodManager(CacheController):
         )
         bt.logging.info(f"challengeperiod_manager asset class minimum days: {asset_class_min_days}")
 
-        all_miner_account_sizes = self._contract_client.get_all_miner_account_sizes(timestamp_ms=current_time)
+        all_miner_account_sizes = self._miner_account_client.get_all_miner_account_sizes(timestamp_ms=current_time)
 
         # Use provided scores dict if available (for testing), otherwise compute scores
         if asset_softmaxed_scores is None:

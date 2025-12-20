@@ -32,6 +32,10 @@ class MarketOrderManager():
         from vali_objects.contract.contract_client import ContractClient
         self._contract_client = ContractClient(running_unit_tests=running_unit_tests, connection_mode=connection_mode)
 
+        # Create own MinerAccountClient (source of truth for account sizes)
+        from vali_objects.miner_account.miner_account_client import MinerAccountClient
+        self._miner_account_client = MinerAccountClient(connection_mode=connection_mode)
+
         # Create own LivePriceFetcherClient (forward compatibility - no parameter passing)
         from vali_objects.price_fetcher import LivePriceFetcherClient
         self._live_price_client = LivePriceFetcherClient(running_unit_tests=running_unit_tests, connection_mode=connection_mode)
@@ -363,7 +367,7 @@ class MarketOrderManager():
 
             # TIMING: Get account size
             account_size_start = TimeUtil.now_in_millis()
-            account_size = self.contract_manager.get_miner_account_size(miner_hotkey, now_ms, use_account_floor=True)
+            account_size = self._miner_account_client.get_miner_account_size(miner_hotkey, now_ms, use_account_floor=True)
             account_size_ms = TimeUtil.now_in_millis() - account_size_start
             bt.logging.info(f"[LOCK_WORK] Get account size took {account_size_ms}ms")
 

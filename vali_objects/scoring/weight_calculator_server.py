@@ -118,6 +118,10 @@ class WeightCalculatorServer(RPCServerBase, CacheController):
         from vali_objects.contract.contract_client import ContractClient
         self._contract_client = ContractClient(running_unit_tests=running_unit_tests)
 
+        # Create own MinerAccountClient (source of truth for account sizes)
+        from vali_objects.miner_account.miner_account_client import MinerAccountClient
+        self._miner_account_client = MinerAccountClient()
+
         # Create own DebtLedgerClient (forward compatibility - no parameter passing)
         from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_client import DebtLedgerClient
         self._debt_ledger_client = DebtLedgerClient(running_unit_tests=running_unit_tests
@@ -362,7 +366,7 @@ class WeightCalculatorServer(RPCServerBase, CacheController):
             ledger_dict=filtered_debt_ledgers,
             metagraph=self.metagraph,
             challengeperiod_client=self._challengeperiod_client,
-            contract_client=self._contract_client,
+            miner_account_client=self._miner_account_client,
             current_time_ms=current_time,
             verbose=True,
             is_testnet=not self.is_mainnet

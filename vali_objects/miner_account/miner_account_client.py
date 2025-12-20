@@ -1,0 +1,188 @@
+# developer: Taoshi
+# Copyright (c) 2024 Taoshi Inc
+"""
+MinerAccountClient - RPC client for MinerAccountServer.
+
+Lightweight client that connects to MinerAccountServer via RPC.
+Can be created in ANY process. No server ownership.
+
+Usage:
+    from vali_objects.miner_account.miner_account_client import MinerAccountClient
+
+    # In RPC mode (normal usage)
+    client = MinerAccountClient()
+    account_size = client.get_miner_account_size(hotkey)
+
+    # In LOCAL mode (for testing)
+    client = MinerAccountClient(connection_mode=RPCConnectionMode.LOCAL)
+    client.set_direct_server(server_instance)
+"""
+from typing import Optional, Dict, List, Any
+
+from shared_objects.rpc.rpc_client_base import RPCClientBase
+from vali_objects.miner_account.miner_account_server import MinerAccountServer
+from vali_objects.vali_config import RPCConnectionMode, ValiConfig
+
+
+class MinerAccountClient(RPCClientBase):
+    """
+    Lightweight RPC client for MinerAccountServer.
+
+    Can be created in ANY process. No server ownership.
+    Port is obtained from ValiConfig.RPC_MINERACCOUNT_PORT.
+
+    In test mode (LOCAL connection_mode), use set_direct_server() to provide
+    a direct MinerAccountServer instance instead of RPC connection.
+    """
+
+    @property
+    def _server(self) -> MinerAccountServer:
+        """Typed override of base class _server property."""
+        return super()._server
+
+    def __init__(
+        self,
+        port: Optional[int] = None,
+        connect_immediately: bool = False,
+        connection_mode: RPCConnectionMode = RPCConnectionMode.RPC
+    ):
+        """
+        Initialize MinerAccountClient.
+
+        Args:
+            port: Port number of the server (default: ValiConfig.RPC_MINERACCOUNT_PORT)
+            connect_immediately: If True, connect in __init__. If False, connect lazily.
+            connection_mode: RPC or LOCAL mode
+        """
+        super().__init__(
+            service_name=ValiConfig.RPC_MINERACCOUNT_SERVICE_NAME,
+            port=port or ValiConfig.RPC_MINERACCOUNT_PORT,
+            max_retries=5,
+            retry_delay_s=1.0,
+            connection_mode=connection_mode,
+            connect_immediately=connect_immediately
+        )
+
+    # ==================== Account Size Methods ====================
+
+    def set_miner_account_size(
+        self,
+        hotkey: str,
+        collateral_balance_theta: float,
+        timestamp_ms: Optional[int] = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Set the account size for a miner.
+
+        Args:
+            hotkey: Miner's hotkey (SS58 address)
+            collateral_balance_theta: Collateral balance in theta tokens
+            timestamp_ms: Timestamp for the record (defaults to now)
+
+        Returns:
+            CollateralRecord as dict if successful, None otherwise.
+            Dict contains: account_size, account_size_theta, update_time_ms, valid_date_timestamp
+        """
+        return self._server.set_miner_account_size(hotkey, collateral_balance_theta, timestamp_ms)
+
+    def get_miner_account_size(
+        self,
+        hotkey: str,
+        timestamp_ms: Optional[int] = None,
+        most_recent: bool = False,
+        use_account_floor: bool = False
+    ) -> Optional[float]:
+        """
+        Get the account size for a miner at a given timestamp.
+
+        Args:
+            hotkey: Miner's hotkey (SS58 address)
+            timestamp_ms: Timestamp to query for (defaults to now)
+            most_recent: If True, return most recent record regardless of timestamp
+            use_account_floor: If True, return MIN_CAPITAL instead of None when no records exist
+
+        Returns:
+            Account size in USD, or None if no applicable records
+        """
+        return self._server.get_miner_account_size(
+            hotkey, timestamp_ms, most_recent, use_account_floor
+        )
+
+    def get_all_miner_account_sizes(self, timestamp_ms: Optional[int] = None) -> Dict[str, float]:
+        """Return a dict of all miner account sizes at a timestamp_ms."""
+        return self._server.get_all_miner_account_sizes(timestamp_ms)
+
+    def miner_account_sizes_dict(self, most_recent_only: bool = False) -> Dict[str, List[Dict[str, Any]]]:
+        """Convert miner account sizes to checkpoint format for backup/sync."""
+        return self._server.miner_account_sizes_dict(most_recent_only)
+
+    def sync_miner_account_sizes_data(self, account_sizes_data: Dict[str, List[Dict[str, Any]]]) -> None:
+        """Sync miner account sizes data from external source (backup/sync)."""
+        self._server.sync_miner_account_sizes_data(account_sizes_data)
+
+    def re_init_account_sizes(self) -> None:
+        """Reload account sizes from disk."""
+        self._server.re_init_account_sizes()
+
+    def receive_collateral_record_update(self, collateral_record_data: dict) -> bool:
+        """Process an incoming CollateralRecord synapse."""
+        return self._server.receive_collateral_record_update(collateral_record_data)
+
+    # ==================== MinerAccount Cache Methods ====================
+
+    def get_or_create(self, hotkey: str) -> dict:
+        """
+        Get existing account or create from CollateralRecord.
+
+        Returns dict with:
+            - miner_hotkey: str
+            - account_size: float
+            - cash_balance: float
+        """
+        return self._server.get_or_create(hotkey)
+
+    def get_account(self, hotkey: str) -> Optional[dict]:
+        """
+        Get account if it exists, without creating.
+
+        Returns dict with:
+            - miner_hotkey: str
+            - account_size: float
+            - cash_balance: float
+        Or None if account doesn't exist.
+        """
+        return self._server.get_account(hotkey)
+
+    def get_all_hotkeys(self) -> list:
+        """Get all hotkeys with accounts."""
+        return self._server.get_all_hotkeys()
+
+    def update_account_size(self, hotkey: str, new_size: float) -> bool:
+        """
+        Update account size directly (triggers cash_balance adjustment).
+
+        Returns True if successful, False if account doesn't exist.
+        """
+        return self._server.update_account_size(hotkey, new_size)
+
+    # ==================== Cash Balance Methods ====================
+
+    def get_cash_balance(self, hotkey: str) -> Optional[float]:
+        """
+        Get cash balance for a miner.
+
+        Returns None if account doesn't exist.
+        """
+        return self._server.get_cash_balance(hotkey)
+
+    def set_cash_balance(self, hotkey: str, cash_balance: float) -> bool:
+        """
+        Set cash balance for a miner.
+
+        Returns True if successful, False if account doesn't exist.
+        """
+        return self._server.set_cash_balance(hotkey, cash_balance)
+
+    def health_check(self) -> dict:
+        """Health check for monitoring."""
+        return self._server.health_check()
