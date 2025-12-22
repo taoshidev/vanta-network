@@ -116,9 +116,10 @@ class Order(Signal):
     #     return values
 
     @model_validator(mode="before")
-    def check_exclusive_fields(cls, values):
+    def validate_size_fields(cls, values):
         """
-        Overrides inherited check_exclusive_fields from signal. When we populate the order we want to fill in all three leverage/value/quantity fields.
+        Overrides inherited validate_size_fields from Signal.
+        Order can have all three leverage/value/quantity fields filled.
         """
         return values
 

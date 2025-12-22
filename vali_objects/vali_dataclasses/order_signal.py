@@ -19,32 +19,64 @@ class Signal(BaseModel):
     take_profit: Optional[float] = None
 
     @model_validator(mode='before')
-    def check_exclusive_fields(cls, values):
-        """
-        Ensure that only ONE of leverage, value, or quantity is filled.
-        Exception: BRACKET orders can have all fields as None (will be populated from position).
-        """
+    def validate_order_type(cls, values):
+        """Validate order type restrictions."""
         execution_type = values.get('execution_type')
         if execution_type == ExecutionType.LIMIT_CANCEL:
             return values
 
-        fields = ['leverage', 'value', 'quantity']
-        filled = [f for f in fields if values.get(f) is not None]
-        if len(filled) == 0 and execution_type == ExecutionType.BRACKET:
-            return values
-        if len(filled) != 1:
-            raise ValueError(f"Exactly one of {fields} must be provided, got {filled}")
+        order_type = values.get('order_type')
+        is_flat = order_type == OrderType.FLAT or order_type == 'FLAT'
+        is_short = order_type == OrderType.SHORT or order_type == 'SHORT'
+
+        if execution_type == ExecutionType.LIMIT and is_flat:
+            raise ValueError("LIMIT orders cannot be FLAT")
+
+        trade_pair = cls.parse_trade_pair_from_signal(values)
+        if not trade_pair:
+            trade_pair = values.get('trade_pair')
+
+        if trade_pair.is_equities and is_short:
+            raise ValueError("Short selling is not allowed for equities")
+
         return values
 
     @model_validator(mode='before')
-    def check_price_fields(cls, values):
+    def validate_size_fields(cls, values):
+        """Validate and normalize size fields (leverage/value/quantity)."""
+        execution_type = values.get('execution_type')
+        if execution_type == ExecutionType.LIMIT_CANCEL:
+            return values
+
+        order_type = values.get('order_type')
+        fields = ['leverage', 'value', 'quantity']
+        filled = [f for f in fields if values.get(f) is not None]
+
+        # BRACKET allows empty size fields (populated from position)
+        if execution_type != ExecutionType.BRACKET and len(filled) != 1:
+            raise ValueError(f"Exactly one of {fields} must be provided, got {filled}")
+
+        # Normalize size sign based on order_type
+        for field in fields:
+            size = values.get(field)
+            if size is not None:
+                if order_type == OrderType.LONG and size < 0:
+                    raise ValueError(f"{field} must be positive for LONG orders.")
+                elif order_type == OrderType.SHORT:
+                    values[field] = -1.0 * abs(size)
+
+        return values
+
+    @model_validator(mode='before')
+    def validate_price_fields(cls, values):
+        """Validate price fields based on execution type."""
         execution_type = values.get('execution_type')
         order_type = values.get('order_type')
 
         if execution_type == ExecutionType.LIMIT:
             limit_price = values.get('limit_price')
             if not limit_price:
-                raise ValueError(f"Limit price must be specified for LIMIT orders")
+                raise ValueError("Limit price must be specified for LIMIT orders")
 
             sl = values.get('stop_loss')
             tp = values.get('take_profit')
@@ -63,33 +95,10 @@ class Signal(BaseModel):
             sl = values.get('stop_loss')
             tp = values.get('take_profit')
             if not sl and not tp:
-                raise ValueError(f"Either stop_loss or take_profit must be set for BRACKET orders")
+                raise ValueError("Either stop_loss or take_profit must be set for BRACKET orders")
             if sl and tp and sl == tp:
-                raise ValueError(f"stop_loss and take_profit must be unique")
+                raise ValueError("stop_loss and take_profit must be unique")
 
-        return values
-
-
-    @model_validator(mode='before')
-    def set_size(cls, values):
-        """
-        Ensure that long orders have positive size, and short orders have negative size,
-        applied to all non-None of leverage, value, and quantity.
-        """
-        execution_type = values.get('execution_type')
-        if execution_type == ExecutionType.LIMIT_CANCEL:
-            return values
-
-        order_type = values['order_type']
-
-        # Apply sign correction to leverage, value, and quantity
-        for field in ['leverage', 'value', 'quantity']:
-            size = values.get(field)
-            if size is not None:
-                if order_type == OrderType.LONG and size < 0:
-                    raise ValueError(f"{field} must be positive for LONG orders.")
-                elif order_type == OrderType.SHORT:
-                    values[field] = -1.0 * abs(size)
         return values
 
     @staticmethod
