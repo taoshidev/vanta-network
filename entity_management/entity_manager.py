@@ -40,6 +40,7 @@ from vali_objects.position_management.position_manager_client import PositionMan
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_client import DebtLedgerClient
 from vali_objects.contract.contract_client import ContractClient
 from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
+from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
 from time_util.time_util import TimeUtil
 
 
@@ -190,6 +191,13 @@ class EntityManager(ValidatorBroadcastBase):
 
         # Create AssetSelectionClient for asset class selection
         self._asset_selection_client = AssetSelectionClient(
+            connection_mode=connection_mode,
+            connect_immediately=False,
+            running_unit_tests=running_unit_tests
+        )
+
+        # Create LimitOrderClient for unfilled limit orders
+        self._limit_order_client = LimitOrderClient(
             connection_mode=connection_mode,
             connect_immediately=False,
             running_unit_tests=running_unit_tests
@@ -622,6 +630,7 @@ class EntityManager(ValidatorBroadcastBase):
         - ChallengePeriodClient: Challenge period status and bucket
         - DebtLedgerClient: Debt ledger data
         - PositionManagerClient: Open positions and leverage
+        - LimitOrderClient: Unfilled limit orders
         - MinerStatisticsClient: Cached statistics (metrics, scores, rankings, etc.)
         - EliminationClient: Elimination status
 
@@ -681,6 +690,13 @@ class EntityManager(ValidatorBroadcastBase):
         except Exception as e:
             bt.logging.debug(f"[ENTITY_MANAGER] Position data unavailable for {synthetic_hotkey}: {e}")
 
+        # Limit orders data (unfilled orders)
+        limit_orders_data = None
+        try:
+            limit_orders_data = self._limit_order_client.to_dashboard_dict(synthetic_hotkey)
+        except Exception as e:
+            bt.logging.debug(f"[ENTITY_MANAGER] Limit orders data unavailable for {synthetic_hotkey}: {e}")
+
         # Statistics data (from cached miner statistics - refreshed every 5 minutes)
         statistics_data = None
         try:
@@ -708,6 +724,7 @@ class EntityManager(ValidatorBroadcastBase):
             'challenge_period': challenge_data,
             'ledger': ledger_data,
             'positions': positions_data,
+            'limit_orders': limit_orders_data,
             'statistics': statistics_data,
             'elimination': elimination_data,
         }
