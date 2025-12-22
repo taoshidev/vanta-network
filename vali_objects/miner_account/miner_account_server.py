@@ -168,13 +168,6 @@ class MinerAccountServer(RPCServerBase):
         """Get all hotkeys with accounts."""
         return self._manager.get_all_hotkeys()
 
-    def update_account_size(self, hotkey: str, new_size: float) -> bool:
-        """Update account size directly (triggers cash_balance adjustment)."""
-        if hotkey not in self._manager.accounts:
-            return False
-        self._manager.accounts[hotkey].update_account_size(new_size)
-        return True
-
     def get_cash_balance(self, hotkey: str) -> Optional[float]:
         """Get cash balance for a miner."""
         account = self._manager.get_account(hotkey)

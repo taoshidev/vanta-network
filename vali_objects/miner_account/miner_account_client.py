@@ -159,14 +159,6 @@ class MinerAccountClient(RPCClientBase):
         """Get all hotkeys with accounts."""
         return self._server.get_all_hotkeys()
 
-    def update_account_size(self, hotkey: str, new_size: float) -> bool:
-        """
-        Update account size directly (triggers cash_balance adjustment).
-
-        Returns True if successful, False if account doesn't exist.
-        """
-        return self._server.update_account_size(hotkey, new_size)
-
     # ==================== Cash Balance Methods ====================
 
     def get_cash_balance(self, hotkey: str) -> Optional[float]:
