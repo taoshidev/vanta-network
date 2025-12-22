@@ -27,17 +27,9 @@ class Signal(BaseModel):
 
         order_type = values.get('order_type')
         is_flat = order_type == OrderType.FLAT or order_type == 'FLAT'
-        is_short = order_type == OrderType.SHORT or order_type == 'SHORT'
 
         if execution_type == ExecutionType.LIMIT and is_flat:
             raise ValueError("LIMIT orders cannot be FLAT")
-
-        trade_pair = cls.parse_trade_pair_from_signal(values)
-        if not trade_pair:
-            trade_pair = values.get('trade_pair')
-
-        if trade_pair.is_equities and is_short:
-            raise ValueError("Short selling is not allowed for equities")
 
         return values
 

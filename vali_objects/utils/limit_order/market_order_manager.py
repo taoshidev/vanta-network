@@ -138,6 +138,13 @@ class MarketOrderManager():
         if order_type == OrderType.FLAT:
             open_position = None
         else:
+            if trade_pair.is_equities and order_type == OrderType.SHORT:
+                raise SignalException(
+                    f"Cannot open a SHORT position for equities. "
+                    f"Miner [{miner_hotkey}] attempted to open a new position with SHORT order for [{trade_pair.trade_pair_id}]. "
+                    f"Equities can only be opened with LONG orders."
+                )
+
             # if a position doesn't exist, then make a new one
             open_position = Position(
                 miner_hotkey=miner_hotkey,
