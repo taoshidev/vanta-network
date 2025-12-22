@@ -21,7 +21,7 @@ from typing import Optional, Dict, List, Any
 
 from shared_objects.rpc.rpc_client_base import RPCClientBase
 from vali_objects.miner_account.miner_account_server import MinerAccountServer
-from vali_objects.vali_config import RPCConnectionMode, ValiConfig
+from vali_objects.vali_config import RPCConnectionMode, ValiConfig, TradePairCategory
 
 
 class MinerAccountClient(RPCClientBase):
@@ -138,6 +138,7 @@ class MinerAccountClient(RPCClientBase):
             - miner_hotkey: str
             - account_size: float
             - cash_balance: float
+            - total_borrowed_amount: float
         """
         return self._server.get_or_create(hotkey)
 
@@ -149,6 +150,7 @@ class MinerAccountClient(RPCClientBase):
             - miner_hotkey: str
             - account_size: float
             - cash_balance: float
+            - total_borrowed_amount: float
         Or None if account doesn't exist.
         """
         return self._server.get_account(hotkey)
@@ -186,3 +188,43 @@ class MinerAccountClient(RPCClientBase):
     def health_check(self) -> dict:
         """Health check for monitoring."""
         return self._server.health_check()
+
+    # ==================== Margin/Cash Processing Methods ====================
+
+    def process_order_buy(self, hotkey: str, order_value_usd: float,
+                          trade_pair_category: TradePairCategory) -> float:
+        """
+        Process buy order cash/margin.
+
+        Args:
+            hotkey: Miner's hotkey
+            order_value_usd: Order value in USD
+            trade_pair_category: TradePairCategory enum value
+
+        Returns:
+            Borrowed amount (float)
+
+        Raises: SignalException if insufficient funds for margin
+        """
+        return self._server.process_order_buy(hotkey, order_value_usd, trade_pair_category)
+
+    def process_order_sell(self, hotkey: str, sale_proceeds_usd: float,
+                           borrowed_for_position: float, trade_pair_category: TradePairCategory) -> dict:
+        """
+        Process sell/close order. Pay off loan first, return rest to cash.
+
+        Args:
+            hotkey: Miner's hotkey
+            sale_proceeds_usd: Proceeds from sale in USD
+            borrowed_for_position: Amount borrowed for this position
+            trade_pair_category: TradePairCategory enum value
+
+        Returns dict with:
+            - loan_repaid: float
+            - cash_returned: float
+        """
+        return self._server.process_order_sell(hotkey, sale_proceeds_usd, borrowed_for_position, trade_pair_category)
+
+    def get_total_borrowed_amount(self, hotkey: str) -> float:
+        """Get total borrowed amount for a miner."""
+        return self._server.get_total_borrowed_amount(hotkey)

@@ -589,6 +589,7 @@ class ServerOrchestrator:
             'perf_ledger',
             'live_price_fetcher',
             'asset_selection',
+            'miner_account',
             'challenge_period',
             'elimination',
             'position_manager',

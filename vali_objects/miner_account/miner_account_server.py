@@ -20,7 +20,7 @@ import bittensor as bt
 from typing import Optional, Dict, List, Any
 import time
 from setproctitle import setproctitle
-from vali_objects.vali_config import ValiConfig, RPCConnectionMode
+from vali_objects.vali_config import ValiConfig, RPCConnectionMode, TradePairCategory
 from shared_objects.rpc.rpc_server_base import RPCServerBase
 from vali_objects.miner_account.miner_account_manager import MinerAccountManager, MinerAccount
 
@@ -92,7 +92,6 @@ class MinerAccountServer(RPCServerBase):
         """Add service-specific health check details."""
         return {
             "account_count": len(self._manager.accounts),
-            "num_account_records": len(self._manager.miner_account_sizes),
         }
 
     # ==================== Account Size Methods ====================
@@ -150,6 +149,7 @@ class MinerAccountServer(RPCServerBase):
             'miner_hotkey': account.miner_hotkey,
             'account_size': account.account_size,
             'cash_balance': account.cash_balance,
+            'total_borrowed_amount': account.total_borrowed_amount,
         }
 
     def get_account(self, hotkey: str) -> Optional[dict]:
@@ -161,6 +161,7 @@ class MinerAccountServer(RPCServerBase):
             'miner_hotkey': account.miner_hotkey,
             'account_size': account.account_size,
             'cash_balance': account.cash_balance,
+            'total_borrowed_amount': account.total_borrowed_amount,
         }
 
     def get_all_hotkeys(self) -> list:
@@ -192,6 +193,22 @@ class MinerAccountServer(RPCServerBase):
     def health_check(self) -> dict:
         """Health check for monitoring."""
         return self._manager.health_check()
+
+    # ==================== Margin/Cash Processing Methods ====================
+
+    def process_order_buy(self, hotkey: str, order_value_usd: float,
+                          trade_pair_category: TradePairCategory) -> float:
+        """Process buy order cash/margin. Returns borrowed amount."""
+        return self._manager.process_order_buy(hotkey, order_value_usd, trade_pair_category)
+
+    def process_order_sell(self, hotkey: str, sale_proceeds_usd: float,
+                           borrowed_for_position: float, trade_pair_category: TradePairCategory) -> dict:
+        """Process sell/close order."""
+        return self._manager.process_order_sell(hotkey, sale_proceeds_usd, borrowed_for_position, trade_pair_category)
+
+    def get_total_borrowed_amount(self, hotkey: str) -> float:
+        """Get total borrowed amount for a miner."""
+        return self._manager.get_total_borrowed_amount(hotkey)
 
 
 # ==================== Server Entry Point ====================

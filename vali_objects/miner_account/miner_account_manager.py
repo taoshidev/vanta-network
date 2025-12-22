@@ -3,7 +3,7 @@ MinerAccountManager - Manages per-miner account state and account size tracking.
 
 This manager is the source of truth for miner account state including:
 - Account size (via CollateralRecord tracking)
-- Cash balance (for future equities margin)
+- Cash balance (for equities margin)
 - Disk persistence of account sizes
 
 This module contains ALL account size functionality, previously split across
@@ -15,9 +15,10 @@ from datetime import timezone, datetime, timedelta
 from typing import Dict, Optional, List, Any
 import bittensor as bt
 from time_util.time_util import TimeUtil
-from vali_objects.vali_config import ValiConfig
+from vali_objects.vali_config import TradePairCategory, ValiConfig
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
+from vali_objects.exceptions.signal_exception import SignalException
 
 
 # ==================== Data Classes ====================
@@ -53,16 +54,46 @@ class CollateralRecord:
 
 @dataclass
 class MinerAccount:
-    """Per-miner account state. Source of truth for account_size."""
+    """Per-miner account state. Unified source of truth for account data."""
     miner_hotkey: str
-    account_size: float              # From CollateralRecord (updated when chain updates)
-    cash_balance: float              # Available cash (for future equities margin)
+    cash_balance: float              # Available cash (for equities margin)
+    total_borrowed_amount: float = 0.0  # Total margin loans outstanding
+    collateral_records: List[CollateralRecord] = None  # Historical CollateralRecords (List[CollateralRecord])
 
-    def update_account_size(self, new_size: float):
-        """Called when CollateralRecord updates from chain."""
-        delta = new_size - self.account_size
-        self.account_size = new_size
-        self.cash_balance += delta  # Adjust cash by the delta
+    def __post_init__(self):
+        if self.collateral_records is None:
+            self.collateral_records = []
+
+    def add_collateral_record(self, record: 'CollateralRecord'):
+        """Add a new collateral record and update account_size."""
+        previous_size = self.get_account_size()
+        new_size = record.account_size
+        self.collateral_records.append(record)
+
+        if previous_size:
+            size_increase = new_size - previous_size
+            self.cash_balance += size_increase
+
+    def get_account_size(self, timestamp_ms: Optional[int] = None) -> Optional[float]:
+        if not self.collateral_records:
+            return None
+
+        if timestamp_ms is None:
+            return self.collateral_records[-1].account_size
+
+        # Get start of the requested day
+        start_of_day_ms = int(
+            datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc)
+            .replace(hour=0, minute=0, second=0, microsecond=0)
+            .timestamp() * 1000
+        )
+
+        # Iterate in reversed order, return first record valid for or before the requested day
+        for record in reversed(self.collateral_records):
+            if record.valid_date_timestamp <= start_of_day_ms:
+                return record.account_size
+
+        return None
 
 
 # ==================== Manager Implementation ====================
@@ -72,9 +103,10 @@ class MinerAccountManager:
     """
     Manages all miner accounts and account size tracking.
 
-    This is the source of truth for:
-    - Account sizes (via CollateralRecord history)
+    This is the unified source of truth for:
+    - Account sizes (via CollateralRecord history in MinerAccount)
     - Cash balances (for equities margin)
+    - Margin loans (total_borrowed_amount)
     - Disk persistence of account data
 
     The ValidatorContractManager delegates all account size operations here.
@@ -93,25 +125,22 @@ class MinerAccountManager:
         self.running_unit_tests = running_unit_tests
         self._collateral_balance_getter = collateral_balance_getter
 
-        # MinerAccount cache for dynamic account state (cash balance, etc.)
+        # Unified MinerAccount storage - single source of truth
         self.accounts: Dict[str, MinerAccount] = {}
-
-        # Account size history (CollateralRecords)
-        self.miner_account_sizes: Dict[str, List[CollateralRecord]] = {}
 
         # Locking strategy - EAGER initialization (not lazy!)
         # RLock allows same thread to acquire lock multiple times (needed for nested calls)
-        self._account_sizes_lock = threading.RLock()
+        self._accounts_lock = threading.RLock()
         # Lock for disk I/O serialization to prevent concurrent file writes
         self._disk_lock = threading.Lock()
 
-        # Initialize miner account sizes file location
-        self.MINER_ACCOUNT_SIZES_FILE = ValiBkpUtils.get_miner_account_sizes_file_location(
+        # Initialize miner accounts file location
+        self.MINER_ACCOUNTS_FILE = ValiBkpUtils.get_miner_account_sizes_file_location(
             running_unit_tests=running_unit_tests
         )
 
         # Load from disk
-        self._load_miner_account_sizes_from_disk()
+        self._load_accounts_from_disk()
 
     def set_collateral_balance_getter(self, getter):
         """Set the collateral balance getter (for lazy initialization)."""
@@ -119,101 +148,143 @@ class MinerAccountManager:
 
     # ==================== Disk Persistence ====================
 
-    def _load_miner_account_sizes_from_disk(self):
-        """Load miner account sizes from disk during initialization - protected by locks"""
+    def _load_accounts_from_disk(self):
+        """Load miner accounts from disk during initialization - protected by locks"""
         with self._disk_lock:
             try:
-                disk_data = ValiUtils.get_vali_json_file_dict(self.MINER_ACCOUNT_SIZES_FILE)
-                parsed_data = self._parse_miner_account_sizes_dict(disk_data)
+                disk_data = ValiUtils.get_vali_json_file_dict(self.MINER_ACCOUNTS_FILE)
+                parsed_accounts = self._parse_accounts_dict(disk_data)
 
-                # Acquire account_sizes_lock to update the dict
-                with self._account_sizes_lock:
-                    self.miner_account_sizes.clear()
-                    self.miner_account_sizes.update(parsed_data)
+                with self._accounts_lock:
+                    self.accounts.clear()
+                    self.accounts.update(parsed_accounts)
 
-                bt.logging.info(f"Loaded {len(self.miner_account_sizes)} miner account size records from disk")
+                bt.logging.info(f"Loaded {len(self.accounts)} miner accounts from disk")
             except Exception as e:
-                bt.logging.warning(f"Failed to load miner account sizes from disk: {e}")
+                bt.logging.warning(f"Failed to load miner accounts from disk: {e}")
 
     def re_init_account_sizes(self):
-        """Public method to reload account sizes from disk (useful for tests)"""
-        self._load_miner_account_sizes_from_disk()
+        """Public method to reload accounts from disk (useful for tests)"""
+        self._load_accounts_from_disk()
 
-    def _save_miner_account_sizes_to_disk(self):
-        """Save miner account sizes to disk - protected by _disk_lock to prevent concurrent writes"""
+    def _save_accounts_to_disk(self):
+        """Save miner accounts to disk - protected by _disk_lock to prevent concurrent writes"""
         with self._disk_lock:
             try:
-                data_dict = self.miner_account_sizes_dict()
-                ValiBkpUtils.write_file(self.MINER_ACCOUNT_SIZES_FILE, data_dict)
+                data_dict = self.accounts_dict()
+                ValiBkpUtils.write_file(self.MINER_ACCOUNTS_FILE, data_dict)
             except Exception as e:
-                bt.logging.error(f"Failed to save miner account sizes to disk: {e}")
+                bt.logging.error(f"Failed to save miner accounts to disk: {e}")
 
-    def miner_account_sizes_dict(self, most_recent_only: bool = False) -> Dict[str, List[Dict[str, Any]]]:
-        """Convert miner account sizes to checkpoint format for backup/sync
+    def accounts_dict(self, most_recent_only: bool = False) -> Dict[str, Any]:
+        """Convert miner accounts to checkpoint format for backup/sync
 
         Args:
-            most_recent_only: If True, only return the most recent record for each miner
+            most_recent_only: If True, only return the most recent collateral record for each miner
 
         Returns:
-            Dictionary with hotkeys as keys and list of record dicts as values
+            Dictionary with hotkeys as keys and account data as values
         """
-        with self._account_sizes_lock:
+        with self._accounts_lock:
             json_dict = {}
-            for hotkey, records in self.miner_account_sizes.items():
-                if most_recent_only and records:
-                    # Only include the most recent (last) record
-                    json_dict[hotkey] = [vars(records[-1])]
+            for hotkey, account in self.accounts.items():
+                if most_recent_only and account.collateral_records:
+                    records = [vars(account.collateral_records[-1])]
                 else:
-                    json_dict[hotkey] = [vars(record) for record in records]
+                    records = [vars(record) for record in account.collateral_records]
+
+                json_dict[hotkey] = {
+                    "collateral_records": records,
+                    "cash_balance": account.cash_balance,
+                    "total_borrowed_amount": account.total_borrowed_amount
+                }
+            return json_dict
+
+    # Backwards compatibility alias
+    def miner_account_sizes_dict(self, most_recent_only: bool = False) -> Dict[str, Any]:
+        """Backwards compatible method - converts to old format (hotkey -> list of CollateralRecords)"""
+        with self._accounts_lock:
+            json_dict = {}
+            for hotkey, account in self.accounts.items():
+                if most_recent_only and account.collateral_records:
+                    json_dict[hotkey] = [vars(account.collateral_records[-1])]
+                else:
+                    json_dict[hotkey] = [vars(record) for record in account.collateral_records]
             return json_dict
 
     @staticmethod
-    def _parse_miner_account_sizes_dict(data_dict: Dict[str, List[Dict[str, Any]]]) -> Dict[
-        str, List[CollateralRecord]]:
-        """Parse miner account sizes from disk format back to CollateralRecord objects"""
-        parsed_dict = {}
-        for hotkey, records_data in data_dict.items():
+    def _parse_accounts_dict(data_dict: Dict[str, Any]) -> Dict[str, MinerAccount]:
+        """Parse miner accounts from disk format back to MinerAccount objects.
+
+        Supports:
+        - Legacy format: {"hotkey": [list of CollateralRecord dicts]}
+        - New format: {"hotkey": {"collateral_records": [...], "cash_balance": ..., "total_borrowed_amount": ...}}
+        """
+        parsed_accounts = {}
+
+        for hotkey, account_data in data_dict.items():
             try:
-                parsed_records = []
-                for record_data in records_data:
-                    if isinstance(record_data, dict) and all(
-                            key in record_data for key in ["account_size", "update_time_ms"]):
+                collateral_records = []
+
+                # Determine format and extract records
+                if isinstance(account_data, dict) and "collateral_records" in account_data:
+                    records_list = account_data.get("collateral_records", [])
+                    cash_balance = account_data.get("cash_balance")
+                    total_borrowed = account_data.get("total_borrowed_amount", 0.0)
+                elif isinstance(account_data, list):
+                    records_list = account_data
+                    cash_balance = None  # Will default to account_size
+                    total_borrowed = 0.0
+                else:
+                    continue
+
+                # Parse collateral records
+                for record_data in records_list:
+                    if isinstance(record_data, dict) and "account_size" in record_data and "update_time_ms" in record_data:
                         record = CollateralRecord(
                             record_data["account_size"],
                             record_data.get("account_size_theta", 0),
                             record_data["update_time_ms"]
                         )
-                        parsed_records.append(record)
+                        collateral_records.append(record)
 
-                if parsed_records:  # Only add if we have valid records
-                    parsed_dict[hotkey] = parsed_records
+                if collateral_records:
+                    account_size = collateral_records[-1].account_size
+                    parsed_accounts[hotkey] = MinerAccount(
+                        miner_hotkey=hotkey,
+                        account_size=account_size,
+                        cash_balance=cash_balance if cash_balance is not None else account_size,
+                        total_borrowed_amount=total_borrowed,
+                        collateral_records=collateral_records
+                    )
             except Exception as e:
-                bt.logging.warning(f"Failed to parse account size records for {hotkey}: {e}")
+                bt.logging.warning(f"Failed to parse account for {hotkey}: {e}")
 
-        return parsed_dict
+        return parsed_accounts
 
-    def sync_miner_account_sizes_data(self, account_sizes_data: Dict[str, List[Dict[str, Any]]]):
+    def sync_miner_account_sizes_data(self, account_sizes_data: Dict[str, Any]):
         """
         Sync miner account sizes data from external source (backup/sync).
-        If empty dict is passed, clears all account sizes (useful for tests).
+        If empty dict is passed, clears all accounts (useful for tests).
         """
         try:
-            with self._account_sizes_lock:
+            with self._accounts_lock:
                 if not account_sizes_data:
                     assert self.running_unit_tests, "Empty account sizes data can only be used in test mode"
                     # Empty dict = clear all data (useful for test cleanup)
-                    bt.logging.info("Clearing all miner account sizes")
-                    self.miner_account_sizes.clear()
-                    self._save_miner_account_sizes_to_disk()
+                    bt.logging.info("Clearing all miner accounts")
+                    self.accounts.clear()
+                    self._save_accounts_to_disk()
                     return
 
-                synced_data = self._parse_miner_account_sizes_dict(account_sizes_data)
-                self.miner_account_sizes.clear()
-                self.miner_account_sizes.update(synced_data)
-                self._save_miner_account_sizes_to_disk()
-                bt.logging.info(f"Synced {len(self.miner_account_sizes)} miner account size records")
+                parsed_accounts = self._parse_accounts_dict(account_sizes_data)
+                self.accounts.clear()
+                self.accounts.update(parsed_accounts)
+
+                self._save_accounts_to_disk()
+                bt.logging.info(f"Synced {len(self.accounts)} miner accounts")
         except Exception as e:
-            bt.logging.error(f"Failed to sync miner account sizes data: {e}")
+            bt.logging.error(f"Failed to sync miner accounts data: {e}")
 
     # ==================== Account Size Methods ====================
 
@@ -236,7 +307,7 @@ class MinerAccountManager:
 
         # CRITICAL SECTION: Acquire lock for timestamp + record creation + append + save
         # Timestamp MUST be generated inside lock to ensure chronological ordering
-        with self._account_sizes_lock:
+        with self._accounts_lock:
             # Generate timestamp inside lock if not provided
             # This ensures records are added in strictly chronological order
             if timestamp_ms is None:
@@ -245,26 +316,22 @@ class MinerAccountManager:
             account_size = min(ValiConfig.MAX_COLLATERAL_BALANCE_THETA, collateral_balance_theta) * ValiConfig.COST_PER_THETA
             collateral_record = CollateralRecord(account_size, collateral_balance_theta, timestamp_ms)
 
+            # Get or create account
+            account = self.get_or_create(hotkey)
+
             # Skip if the new record matches the last existing record
-            if hotkey in self.miner_account_sizes and self.miner_account_sizes[hotkey]:
-                last_record = self.miner_account_sizes[hotkey][-1]
+            if account.collateral_records:
+                last_record = account.collateral_records[-1]
                 if (last_record.account_size == collateral_record.account_size and
                         last_record.account_size_theta == collateral_record.account_size_theta):
                     bt.logging.info(f"Skipping save for {hotkey} - new record matches last record")
                     return collateral_record
 
-            if hotkey not in self.miner_account_sizes:
-                self.miner_account_sizes[hotkey] = []
+            # Add the new record and update account size
+            account.add_collateral_record(collateral_record)
 
-            # Add the new record
-            self.miner_account_sizes[hotkey] = self.miner_account_sizes[hotkey] + [collateral_record]
-
-            # Save to disk (still inside account_sizes_lock, but _save will acquire _disk_lock)
-            self._save_miner_account_sizes_to_disk()
-
-            # Update MinerAccount cache if exists
-            if hotkey in self.accounts:
-                self.accounts[hotkey].update_account_size(account_size)
+            # Save to disk
+            self._save_accounts_to_disk()
 
         bt.logging.info(
             f"Updated account size for {hotkey}: ${account_size:,.2f} (valid from {collateral_record.valid_date_str})")
@@ -272,7 +339,7 @@ class MinerAccountManager:
         return collateral_record
 
     def get_miner_account_size(self, hotkey: str, timestamp_ms: Optional[int] = None, most_recent: bool = False,
-                               records_dict: Optional[dict] = None, use_account_floor: bool = False) -> float | None:
+                               use_account_floor: bool = False) -> float | None:
         """
         Get the account size for a miner at a given timestamp. Iterate list in reverse chronological order, and return
         the first record whose valid_date_timestamp <= start_of_day_ms
@@ -281,7 +348,6 @@ class MinerAccountManager:
             hotkey: Miner's hotkey (SS58 address)
             timestamp_ms: Timestamp to query for (defaults to now)
             most_recent: If True, return most recent record regardless of timestamp
-            records_dict: Optional dict to use instead of self.miner_account_sizes (for cached lookups)
             use_account_floor: If True, return MIN_CAPITAL instead of None when no records exist
 
         Returns:
@@ -290,87 +356,40 @@ class MinerAccountManager:
         if timestamp_ms is None:
             timestamp_ms = TimeUtil.now_in_millis()
 
-        # Use provided records_dict or default to self.miner_account_sizes
-        # If using external dict, assume caller handles locking
-        # If using self.miner_account_sizes, acquire lock
-        if records_dict is not None:
-            source_records = records_dict
-            lock_needed = False
-        else:
-            source_records = self.miner_account_sizes
-            lock_needed = True
-
-        def _get_account_size_locked():
-            """Inner function with the actual logic"""
-            if hotkey not in source_records or not source_records[hotkey]:
+        with self._accounts_lock:
+            account = self.accounts.get(hotkey)
+            if not account or not account.collateral_records:
                 # Use account floor if requested (for miners without collateral records)
                 return ValiConfig.MIN_CAPITAL if use_account_floor else None
 
-            # Get start of the requested day
-            start_of_day_ms = int(
-                datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc)
-                .replace(hour=0, minute=0, second=0, microsecond=0)
-                .timestamp() * 1000
-            )
-
             # Return most recent record
             if most_recent:
-                most_recent_record = source_records[hotkey][-1]
-                return most_recent_record.account_size
+                return account.get_account_size()
 
-            # Iterate in reversed order, and return the first record that is valid for or before the requested day
-            for record in reversed(source_records[hotkey]):
-                if record.valid_date_timestamp <= start_of_day_ms:
-                    return record.account_size
+            # Use MinerAccount's method to get account size at timestamp
+            result = account.get_account_size(timestamp_ms)
+            if result is None:
+                return ValiConfig.MIN_CAPITAL if use_account_floor else None
+            return result
 
-            # No applicable records found - use account floor if requested
-            return ValiConfig.MIN_CAPITAL if use_account_floor else None
-
-        # Execute with or without lock depending on source
-        if lock_needed:
-            with self._account_sizes_lock:
-                return _get_account_size_locked()
-        else:
-            return _get_account_size_locked()
-
-    def get_all_miner_account_sizes(self, miner_account_sizes: dict[str, List[CollateralRecord]] | None = None, timestamp_ms: Optional[int] = None) -> dict[str, float]:
+    def get_all_miner_account_sizes(self, timestamp_ms: Optional[int] = None) -> dict[str, float]:
         """
         Return a dict of all miner account sizes at a timestamp_ms
         """
         if timestamp_ms is None:
             timestamp_ms = TimeUtil.now_in_millis()
 
-        # If external dict provided, use it directly (caller handles locking)
-        if miner_account_sizes is not None:
+        with self._accounts_lock:
             all_miner_account_sizes = {}
-            for hotkey in miner_account_sizes.keys():
-                all_miner_account_sizes[hotkey] = self.get_miner_account_size(
-                    hotkey, timestamp_ms=timestamp_ms, records_dict=miner_account_sizes
-                )
+            for hotkey in self.accounts.keys():
+                account_size = self.get_miner_account_size(hotkey, timestamp_ms=timestamp_ms)
+                if account_size is not None:
+                    all_miner_account_sizes[hotkey] = account_size
             return all_miner_account_sizes
-
-        # Using self.miner_account_sizes - must prevent race conditions
-        # Copy the ENTIRE dict (not just keys) while holding lock to prevent iterator invalidation
-        # This prevents sync_miner_account_sizes_data() from clearing the dict while we're reading it
-        with self._account_sizes_lock:
-            # Deep copy: create new dict with shallow copies of record lists
-            # We don't need deep copy of CollateralRecord objects (they're immutable)
-            miner_account_sizes_snapshot = {
-                hotkey: list(records)  # Shallow copy of list
-                for hotkey, records in self.miner_account_sizes.items()
-            }
-
-        # Now work with the snapshot (no lock needed - we own this copy)
-        all_miner_account_sizes = {}
-        for hotkey in miner_account_sizes_snapshot.keys():
-            all_miner_account_sizes[hotkey] = self.get_miner_account_size(
-                hotkey, timestamp_ms=timestamp_ms, records_dict=miner_account_sizes_snapshot
-            )
-        return all_miner_account_sizes
 
     def receive_collateral_record_update(self, collateral_record_data: dict, is_mothership: bool = False) -> bool:
         """
-        Process an incoming CollateralRecord synapse and update miner_account_sizes.
+        Process an incoming CollateralRecord synapse and update accounts.
 
         Args:
             collateral_record_data: Dictionary containing hotkey, account_size, update_time_ms, valid_date_timestamp
@@ -382,7 +401,7 @@ class MinerAccountManager:
         try:
             if is_mothership:
                 return False
-            with self._account_sizes_lock:
+            with self._accounts_lock:
                 # Extract data from the synapse
                 hotkey = collateral_record_data.get("hotkey")
                 account_size = collateral_record_data.get("account_size")
@@ -397,24 +416,20 @@ class MinerAccountManager:
                 # Create a CollateralRecord object
                 collateral_record = CollateralRecord(account_size, account_size_theta, update_time_ms)
 
-                # Update miner account sizes
-                if hotkey not in self.miner_account_sizes:
-                    self.miner_account_sizes[hotkey] = []
+                # Get or create account
+                account = self.get_or_create(hotkey)
 
                 # Check if we already have this record (avoid duplicates)
-                if self.get_miner_account_size(hotkey, most_recent=True) == account_size:
-                    bt.logging.debug(f"Most recent collateral record for {hotkey} already exists")
-                    return True
+                if account.collateral_records:
+                    if account.collateral_records[-1].account_size == account_size:
+                        bt.logging.debug(f"Most recent collateral record for {hotkey} already exists")
+                        return True
 
-                # Add the new record
-                self.miner_account_sizes[hotkey] = self.miner_account_sizes[hotkey] + [collateral_record]
+                # Add the new record and update account size
+                account.add_collateral_record(collateral_record)
 
                 # Save to disk
-                self._save_miner_account_sizes_to_disk()
-
-                # Update MinerAccount cache if exists
-                if hotkey in self.accounts:
-                    self.accounts[hotkey].update_account_size(account_size)
+                self._save_accounts_to_disk()
 
                 bt.logging.info(
                     f"Updated miner account size for {hotkey}: ${account_size} (valid from {collateral_record.valid_date_str})")
@@ -447,26 +462,104 @@ class MinerAccountManager:
         return self.accounts.get(hotkey)
 
     def get_all_hotkeys(self) -> list:
-        """Get all hotkeys with account size records."""
-        with self._account_sizes_lock:
-            return list(self.miner_account_sizes.keys())
+        """Get all hotkeys with accounts."""
+        with self._accounts_lock:
+            return list(self.accounts.keys())
 
     def health_check(self) -> dict:
         """Health check for monitoring."""
+        with self._accounts_lock:
+            total_collateral_records = sum(
+                len(account.collateral_records) for account in self.accounts.values()
+            )
         return {
             "status": "ok",
             "timestamp_ms": TimeUtil.now_in_millis(),
-            "num_account_records": len(self.miner_account_sizes),
-            "num_cached_accounts": len(self.accounts)
+            "num_accounts": len(self.accounts),
+            "num_collateral_records": total_collateral_records
         }
 
-    # ==================== Static Methods ====================
+    # ==================== Margin/Cash Processing Methods ====================
 
-    @staticmethod
-    def min_collateral_penalty(collateral: float) -> float:
+    def process_order_buy(self, hotkey: str, order_value_usd: float,
+                          trade_pair_category: TradePairCategory) -> float:
         """
-        Penalize miners who do not reach the min collateral
+        Process buy order cash/margin.
+
+        Args:
+            hotkey: Miner's hotkey
+            order_value_usd: Order value in USD
+            trade_pair_category: TradePairCategory enum value
+
+        Returns: {cash_used, borrowed_amount}
+        Raises: SignalException if insufficient funds for margin
         """
-        if collateral >= ValiConfig.MIN_COLLATERAL_VALUE:
-            return 1
-        return 0.01
+        account = self.get_or_create(hotkey)
+
+        if trade_pair_category != TradePairCategory.EQUITIES:
+            return 0.0
+
+        with self._accounts_lock:
+            if order_value_usd <= account.cash_balance:
+                # Pure cash purchase - no margin needed
+                account.cash_balance -= order_value_usd
+                self._save_accounts_to_disk()
+                bt.logging.info(f"[{hotkey[:8]}] Cash purchase: ${order_value_usd:.2f}, remaining cash: ${account.cash_balance:.2f}")
+                return 0.0
+
+            # Margin purchase (50% initial margin requirement)
+            initial_margin = order_value_usd * 0.5
+            if account.cash_balance < initial_margin:
+                raise SignalException(
+                    f"Insufficient funds. Need ${initial_margin:.2f} (50% margin), have ${account.cash_balance:.2f}"
+                )
+
+            borrowed_amount = order_value_usd - initial_margin
+            account.cash_balance -= initial_margin
+            account.total_borrowed_amount += borrowed_amount
+
+            self._save_accounts_to_disk()
+            bt.logging.info(
+                f"[{hotkey[:8]}] Margin purchase: ${order_value_usd:.2f}, margin used: ${initial_margin:.2f}, "
+                f"borrowed: ${borrowed_amount:.2f}, total borrowed: ${account.total_borrowed_amount:.2f}"
+            )
+            return borrowed_amount
+
+    def process_order_sell(self, hotkey: str, sale_proceeds_usd: float,
+                           borrowed_for_position: float, trade_pair_category: TradePairCategory) -> dict:
+        """
+        Process sell/close order. Pay off loan first, return rest to cash.
+
+        Args:
+            hotkey: Miner's hotkey
+            sale_proceeds_usd: Proceeds from sale in USD
+            borrowed_for_position: Amount borrowed for this position
+            trade_pair_category: TradePairCategory enum value
+
+        Returns: {loan_repaid, cash_returned}
+        """
+        account = self.get_or_create(hotkey)
+
+        if trade_pair_category != TradePairCategory.EQUITIES:
+            return {"loan_repaid": 0.0, "cash_returned": 0.0}
+
+        with self._accounts_lock:
+            loan_repaid = min(borrowed_for_position, sale_proceeds_usd)
+            cash_returned = sale_proceeds_usd - loan_repaid
+
+            account.total_borrowed_amount -= loan_repaid
+            account.cash_balance += cash_returned
+
+            self._save_accounts_to_disk()
+            bt.logging.info(
+                f"[{hotkey[:8]}] Position closed: proceeds ${sale_proceeds_usd:.2f}, loan repaid: ${loan_repaid:.2f}, "
+                f"cash returned: ${cash_returned:.2f}, remaining borrowed: ${account.total_borrowed_amount:.2f}"
+            )
+            return {"loan_repaid": loan_repaid, "cash_returned": cash_returned}
+
+    def get_total_borrowed_amount(self, hotkey: str) -> float:
+        """Get total borrowed amount for a miner."""
+        account = self.get_account(hotkey)
+        if not account:
+            return 0.0
+        return account.total_borrowed_amount

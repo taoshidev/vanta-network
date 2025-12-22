@@ -59,6 +59,7 @@ class Position(BaseModel):
     unrealized_pnl: float = 0.0             # USD
     position_type: Optional[OrderType] = None
     is_closed_position: bool = False
+    borrowed_amount: float = 0.0            # Total margin loan for this position (equities)
 
     @model_validator(mode='before')
     def add_trade_pair_to_orders_and_self(cls, values):
@@ -329,6 +330,7 @@ class Position(BaseModel):
         self.position_type = None
         self.is_closed_position = False
         self.position_type = None
+        self.borrowed_amount = 0.0
 
         self._update_position(price_fetcher_client)
 
@@ -689,14 +691,14 @@ class Position(BaseModel):
 
         if order.quantity:
             proposed_quantity = self.net_quantity + order.quantity
-            if proposed_quantity == 0:
+            if proposed_quantity <= 0:
                 order.leverage = -self.net_leverage
                 order.order_type = OrderType.FLAT
                 return True
 
         if order.value:
             proposed_value = self.net_value + order.value
-            if proposed_value == 0:
+            if proposed_value <= 0:
                 order.leverage = -self.net_leverage
                 order.order_type = OrderType.FLAT
                 return True
