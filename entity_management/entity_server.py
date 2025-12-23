@@ -263,6 +263,29 @@ class EntityServer(RPCServerBase):
         """
         return self._manager.get_subaccount_dashboard_data(synthetic_hotkey)
 
+    def calculate_subaccount_payout_rpc(
+        self,
+        subaccount_uuid: str,
+        start_time_ms: int,
+        end_time_ms: int
+    ) -> Optional[dict]:
+        """
+        RPC method to calculate payout for a subaccount.
+
+        Args:
+            subaccount_uuid: The subaccount UUID
+            start_time_ms: Start timestamp (inclusive)
+            end_time_ms: End timestamp (inclusive)
+
+        Returns:
+            Dict with payout data or None if not found
+        """
+        return self._manager.calculate_subaccount_payout(
+            subaccount_uuid,
+            start_time_ms,
+            end_time_ms
+        )
+
     # ==================== Validator Broadcast RPC Methods ====================
 
     def broadcast_subaccount_registration_rpc(

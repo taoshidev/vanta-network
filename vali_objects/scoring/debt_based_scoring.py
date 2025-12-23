@@ -46,8 +46,8 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Tuple
 
 from time_util.time_util import TimeUtil
-from vali_objects.miner_account.miner_account_client import MinerAccountClient
-from vali_objects.vali_dataclasses.ledger.debt.debt_ledger import DebtLedger
+from vali_objects.contract.contract_client import ContractClient
+from vali_objects.vali_dataclasses.ledger.debt.debt_ledger import DebtLedger, DebtCheckpoint
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.vali_config import ValiConfig
 from vali_objects.scoring.scoring import Scoring
@@ -175,6 +175,44 @@ class DebtBasedScoring:
                 f"total remaining payout needed (${total_remaining_payout_usd:.2f}). "
                 f"Surplus: {surplus_pct:.1f}%. "
             )
+
+    @staticmethod
+    def calculate_payout_from_checkpoints(
+        checkpoints: List[DebtCheckpoint]
+    ) -> float:
+        """
+        Calculate payout from a list of debt checkpoints using the debt-based scoring formula.
+
+        NOTE: realized_pnl and unrealized_pnl are in USD, per-checkpoint values (NOT cumulative)
+        This cumulative approach allows negative PnL to carry forward and offset future gains
+
+        Formula:
+        - realized_component = sum(cp.realized_pnl * cp.total_penalty for all checkpoints)
+        - unrealized_component = min(0.0, last_cp.unrealized_pnl) * last_cp.total_penalty
+        - payout = realized_component + unrealized_component
+
+        Args:
+            checkpoints: List of DebtCheckpoint objects (should be in chronological order)
+
+        Returns:
+            Calculated payout in USD (can be negative if losses exceed gains)
+        """
+        if not checkpoints:
+            return 0.0
+
+        # Realized component: sum(realized_pnl * penalty) across all checkpoints
+        realized_component = sum(
+            cp.realized_pnl * cp.total_penalty
+            for cp in checkpoints
+        )
+
+        # Unrealized component: min(0, unrealized_pnl) * penalty of last checkpoint
+        # (only count unrealized losses, not gains)
+        last_checkpoint = checkpoints[-1]
+        unrealized_component = min(0.0, last_checkpoint.unrealized_pnl) * last_checkpoint.total_penalty
+
+        payout = realized_component + unrealized_component
+        return payout
 
     @staticmethod
     def compute_results(
@@ -322,23 +360,25 @@ class DebtBasedScoring:
                 if cp.challenge_period_status in (MinerBucket.MAINCOMP.value, MinerBucket.PROBATION.value)
             ]
 
-            # Calculate needed payout from activation through end of previous pay period (in USD)
-            # "needed payout" = sum of (realized_pnl * total_penalty) across all earning checkpoints
-            #                   and (unrealized_pnl * total_penalty) of the last checkpoint
-            # NOTE:
-            # realized_pnl and unrealized_pnl are both in USD. unrealized_pnl is cumulative.
-            # realized_pnl is a per-checkpoint value (NOT cumulative).
-            # This cumulative approach allows negative PnL to carry forward and offset future gains.
+            # Extract checkpoints for current month (up to now)
+            # Only include checkpoints where status is MAINCOMP or PROBATION (earning periods)
+            current_month_checkpoints = [
+                cp for cp in debt_ledger.checkpoints
+                if current_month_start_ms <= cp.timestamp_ms <= current_time_ms
+                and cp.challenge_period_status in (MinerBucket.MAINCOMP.value, MinerBucket.PROBATION.value)
+            ]
+
+            # Step 4: Calculate needed payout from November 1st through end of previous month (in USD)
             needed_payout_usd = 0.0
             penalty_loss_usd = 0.0
             if earning_checkpoints:
                 # Sum penalty-adjusted PnL across all checkpoints from activation to end of prev pay period
                 # Each checkpoint has its own PnL (for that 12-hour period) and its own penalty
-                last_checkpoint = earning_checkpoints[-1]
-                realized_component = sum(cp.realized_pnl * cp.total_penalty for cp in earning_checkpoints)
-                unrealized_component = min(0.0, last_checkpoint.unrealized_pnl) * last_checkpoint.total_penalty
-                needed_payout_usd = realized_component + unrealized_component
+                needed_payout_usd = DebtBasedScoring.calculate_payout_from_checkpoints(
+                    earning_checkpoints
+                )
 
+                last_checkpoint = earning_checkpoints[-1]
                 # Calculate penalty loss: what would have been earned WITHOUT penalties
                 payout_without_penalties = sum(cp.realized_pnl for cp in earning_checkpoints)
                 payout_without_penalties += min(0.0, last_checkpoint.unrealized_pnl)

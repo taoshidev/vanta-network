@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field
 
 import template.protocol
 from entity_management.entity_utils import is_synthetic_hotkey, parse_synthetic_hotkey
+from vali_objects.scoring.debt_based_scoring import DebtBasedScoring
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
@@ -41,6 +42,7 @@ from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_client import DebtLed
 from vali_objects.contract.contract_client import ContractClient
 from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
 from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 from time_util.time_util import TimeUtil
 
 
@@ -136,6 +138,9 @@ class EntityManager(ValidatorBroadcastBase):
         # Local dicts (NOT IPC managerized) - much faster!
         self.entities: Dict[str, EntityData] = {}
 
+        # Reverse index: UUID -> synthetic hotkey for O(1) lookups
+        self._uuid_to_hotkey: Dict[str, str] = {}
+
         # Per-entity locking strategy for better concurrency
         # Master lock protects the entities dict structure and the entity_locks dict
         # Use RLock (reentrant) to allow methods to call each other within locked contexts
@@ -209,6 +214,12 @@ class EntityManager(ValidatorBroadcastBase):
         if not self.is_backtesting:
             disk_data = ValiUtils.get_vali_json_file_dict(self.ENTITY_FILE)
             self.entities = self.parse_checkpoint_dict(disk_data)
+
+            # Build UUID -> hotkey reverse index
+            for entity_data in self.entities.values():
+                for subaccount in entity_data.subaccounts.values():
+                    self._uuid_to_hotkey[subaccount.subaccount_uuid] = subaccount.synthetic_hotkey
+
             # Recreate locks for all loaded entities
             for entity_hotkey in self.entities.keys():
                 self._entity_locks[entity_hotkey] = threading.RLock()
@@ -452,6 +463,11 @@ class EntityManager(ValidatorBroadcastBase):
             )
 
             entity_data.subaccounts[subaccount_id] = subaccount_info
+
+            # Update reverse index
+            with self._entities_lock:
+                self._uuid_to_hotkey[subaccount_uuid] = synthetic_hotkey
+
             self._write_entities_from_memory_to_disk()
 
             bt.logging.info(
@@ -547,6 +563,84 @@ class EntityManager(ValidatorBroadcastBase):
         entity_lock = self._get_entity_lock(entity_hotkey)
         with entity_lock:
             return self.entities.get(entity_hotkey)
+
+    def get_synthetic_hotkey_from_uuid(self, subaccount_uuid: str) -> Optional[str]:
+        """
+        Translate subaccount UUID to synthetic hotkey using O(1) reverse index.
+
+        Args:
+            subaccount_uuid: The subaccount UUID
+
+        Returns:
+            Synthetic hotkey if found, None otherwise
+        """
+        with self._entities_lock:
+            return self._uuid_to_hotkey.get(subaccount_uuid)
+
+    def calculate_subaccount_payout(
+        self,
+        subaccount_uuid: str,
+        start_time_ms: int,
+        end_time_ms: int
+    ) -> Optional[dict]:
+        """
+        Calculate payout for a subaccount based on debt ledger checkpoints in time range.
+
+        Orchestrates:
+        1. UUID -> hotkey translation
+        2. Debt ledger retrieval
+        3. Checkpoint filtering by time range
+        4. Payout calculation via DebtBasedScoring.calculate_payout_from_checkpoints()
+
+        Args:
+            subaccount_uuid: The subaccount UUID
+            start_time_ms: Start timestamp (inclusive)
+            end_time_ms: End timestamp (inclusive)
+
+        Returns:
+            Dict with {
+                'hotkey': str,
+                'total_checkpoints': int,
+                'checkpoints': List[dict],
+                'payout': float
+            } or None if subaccount not found
+        """
+        # Translate UUID to hotkey
+        synthetic_hotkey = self.get_synthetic_hotkey_from_uuid(subaccount_uuid)
+        if not synthetic_hotkey:
+            return None
+
+        # Get debt ledger for this hotkey
+        try:
+            debt_ledger = self._debt_ledger_client.get_ledger(synthetic_hotkey)
+            if not debt_ledger:
+                return None
+
+            # Filter checkpoints by time range
+            earning_checkpoints = [
+                cp for cp in debt_ledger.checkpoints
+                if start_time_ms <= cp.timestamp_ms <= end_time_ms
+                   and cp.challenge_period_status in (MinerBucket.MAINCOMP.value, MinerBucket.PROBATION.value)
+            ]
+
+            # Calculate payout
+            payout = DebtBasedScoring.calculate_payout_from_checkpoints(
+                earning_checkpoints
+            )
+
+            # Convert checkpoints to dict for JSON serialization
+            checkpoints_dict = [cp.to_dict() for cp in earning_checkpoints]
+
+            return {
+                'hotkey': synthetic_hotkey,
+                'total_checkpoints': len(earning_checkpoints),
+                'checkpoints': checkpoints_dict,
+                'payout': payout
+            }
+
+        except Exception as e:
+            bt.logging.error(f"[ENTITY_MANAGER] Error calculating payout for {subaccount_uuid}: {e}")
+            return None
 
     def validate_hotkey_for_orders(self, hotkey: str) -> dict:
         """
@@ -857,6 +951,11 @@ class EntityManager(ValidatorBroadcastBase):
                             if not local_sub:
                                 # New subaccount - add it
                                 local_entity.subaccounts[sub_id] = incoming_sub
+
+                                # Update reverse index
+                                with self._entities_lock:
+                                    self._uuid_to_hotkey[incoming_sub.subaccount_uuid] = incoming_sub.synthetic_hotkey
+
                                 stats['subaccounts_added'] += 1
                                 bt.logging.info(f"[ENTITY_MANAGER] Added subaccount {incoming_sub.synthetic_hotkey} from sync")
                             else:
@@ -1033,6 +1132,10 @@ class EntityManager(ValidatorBroadcastBase):
 
                 # Add to entity
                 entity_data.subaccounts[subaccount_id] = subaccount_info
+
+                # Update reverse index
+                with self._entities_lock:
+                    self._uuid_to_hotkey[subaccount_uuid] = synthetic_hotkey
 
                 # Update next_subaccount_id if needed
                 if subaccount_id >= entity_data.next_subaccount_id:
