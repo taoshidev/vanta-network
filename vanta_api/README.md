@@ -1033,6 +1033,66 @@ curl -X POST http://localhost:48888/entity/subaccount/eliminate \
 - All open positions for the subaccount are automatically closed (FLAT order)
 - Elimination is permanent and cannot be undone
 
+### Calculate Subaccount Payout
+
+`POST /entity/subaccount/payout`
+
+Calculate payout for a subaccount based on debt ledger checkpoints within a specified time range. This endpoint aggregates performance data from the debt ledger to determine earnings over a period.
+
+**Request Body:**
+```json
+{
+  "subaccount_uuid": "550e8400-e29b-41d4-a716-446655440000",
+  "start_time_ms": 1702345678901,
+  "end_time_ms": 1702432078901
+}
+```
+
+**Response:**
+```json
+{
+  "status": "success",
+  "data": {
+    "hotkey": "5GhDr3xy...abc_0",
+    "total_checkpoints": 10,
+    "checkpoints": [
+      ...
+    ],
+    "payout": 125.5
+  },
+  "timestamp": 1702432078901
+}
+```
+
+**Parameters:**
+- `subaccount_uuid` (string, required): The unique UUID of the subaccount
+- `start_time_ms` (int, required): Start timestamp in milliseconds (inclusive)
+- `end_time_ms` (int, required): End timestamp in milliseconds (inclusive)
+
+**Example:**
+```bash
+curl -X POST http://localhost:48888/entity/subaccount/payout \
+  -H "Authorization: Bearer YOUR_TIER_200_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "subaccount_uuid": "550e8400-e29b-41d4-a716-446655440000",
+    "start_time_ms": 1702345678901,
+    "end_time_ms": 1702432078901
+  }'
+```
+
+**Response Fields:**
+- `hotkey`: The synthetic hotkey of the subaccount
+- `total_checkpoints`: Number of debt ledger checkpoints in the time range
+- `checkpoints`: Array of checkpoint data with emissions and performance metrics
+- `payout`: Calculated payout amount based on the ledger data
+
+**Important Notes:**
+- Timestamps must be valid integers and non-negative
+- `start_time_ms` must be less than or equal to `end_time_ms`
+- Returns 404 if the subaccount has no debt ledger data in the specified time range
+- Payout calculation is based on debt ledger checkpoints that fall within the time range
+
 ### Entity Trading Workflow
 
 **1. Register as an entity miner:**
