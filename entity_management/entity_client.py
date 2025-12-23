@@ -204,6 +204,29 @@ class EntityClient(RPCClientBase):
         """
         return self._server.get_subaccount_dashboard_data_rpc(synthetic_hotkey)
 
+    def calculate_subaccount_payout(
+        self,
+        subaccount_uuid: str,
+        start_time_ms: int,
+        end_time_ms: int
+    ) -> Optional[dict]:
+        """
+        Calculate payout for a subaccount based on debt ledger checkpoints.
+
+        Args:
+            subaccount_uuid: The subaccount UUID
+            start_time_ms: Start timestamp (inclusive)
+            end_time_ms: End timestamp (inclusive)
+
+        Returns:
+            Dict with {hotkey, total_checkpoints, checkpoints, payout} or None
+        """
+        return self._server.calculate_subaccount_payout_rpc(
+            subaccount_uuid,
+            start_time_ms,
+            end_time_ms
+        )
+
     # ==================== Validator Broadcast Methods ====================
 
     def broadcast_subaccount_registration(

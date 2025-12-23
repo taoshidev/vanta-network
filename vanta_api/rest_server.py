@@ -1893,6 +1893,103 @@ class VantaRestServer(RPCServerBase, APIKeyMixin):
                 bt.logging.error(f"Error retrieving dashboard for {synthetic_hotkey}: {e}")
                 return jsonify({'error': 'Internal server error retrieving dashboard'}), 500
 
+        @self.app.route("/entity/subaccount/payout", methods=["POST"])
+        def calculate_subaccount_payout():
+            """
+            Calculate payout for a subaccount based on debt ledger checkpoints.
+
+            Request body:
+            {
+                "subaccount_uuid": "uuid-string",
+                "start_time_ms": 1234567890000,
+                "end_time_ms": 1234567890000
+            }
+
+            Response:
+            {
+                "status": "success",
+                "payout_data": {
+                    "hotkey": "entity_hotkey_0",
+                    "total_checkpoints": 10,
+                    "checkpoints": [...],
+                    "payout": 1234.56
+                },
+                "timestamp": 1234567890000
+            }
+
+            Requires tier 200 access.
+            """
+            # Check API key authentication
+            api_key = self._get_api_key_safe()
+            if not self.is_valid_api_key(api_key):
+                return jsonify({'error': 'Unauthorized access'}), 401
+
+            # Check tier 200 access
+            if not self.can_access_tier(api_key, 200):
+                return jsonify({'error': 'Your API key does not have access to tier 200 data'}), 403
+
+            # Check if entity client is available
+            if not self._entity_client:
+                return jsonify({'error': 'Entity management not available'}), 503
+
+            try:
+                # Parse JSON request
+                if not request.is_json:
+                    return jsonify({'error': 'Content-Type must be application/json'}), 400
+
+                data = request.get_json()
+                if not data:
+                    return jsonify({'error': 'Invalid JSON body'}), 400
+
+                # Validate required fields
+                required_fields = ['subaccount_uuid', 'start_time_ms', 'end_time_ms']
+                for field in required_fields:
+                    if field not in data:
+                        return jsonify({'error': f'Missing required field: {field}'}), 400
+
+                subaccount_uuid = data['subaccount_uuid']
+
+                # Validate timestamps
+                try:
+                    start_time_ms = int(data['start_time_ms'])
+                    end_time_ms = int(data['end_time_ms'])
+
+                    if start_time_ms < 0 or end_time_ms < 0:
+                        return jsonify({'error': 'Timestamps must be non-negative'}), 400
+
+                    if start_time_ms > end_time_ms:
+                        return jsonify({'error': 'start_time_ms must be <= end_time_ms'}), 400
+                except (ValueError, TypeError):
+                    return jsonify({'error': 'Timestamps must be valid integers'}), 400
+
+                # Calculate payout via EntityClient
+                payout_data = self._entity_client.calculate_subaccount_payout(
+                    subaccount_uuid,
+                    start_time_ms,
+                    end_time_ms
+                )
+
+                if payout_data:
+                    return jsonify({
+                        'status': 'success',
+                        'data': payout_data,
+                        'timestamp': TimeUtil.now_in_millis()
+                    }), 200
+                else:
+                    return jsonify({
+                        'error': f'Subaccount {subaccount_uuid} not found or has no debt ledger data'
+                    }), 404
+
+            except Exception as e:
+                error_msg = str(e)
+                bt.logging.error(f"Error calculating subaccount payout: {error_msg}")
+                bt.logging.error(traceback.format_exc())
+
+                return jsonify({
+                    'error': 'Internal server error calculating payout',
+                    'detail': error_msg if self.running_unit_tests else None
+                }), 500
+
     def _verify_coldkey_owns_hotkey(self, coldkey_ss58: str, hotkey_ss58: str) -> bool:
         """
         Verify that a coldkey owns the specified hotkey using subtensor.
