@@ -162,23 +162,12 @@ class MinerAccountClient(RPCClientBase):
     # ==================== Cash Balance Methods ====================
 
     def get_cash_balance(self, hotkey: str) -> Optional[float]:
-        """
-        Get cash balance for a miner.
-
-        Returns None if account doesn't exist.
-        """
         return self._server.get_cash_balance(hotkey)
 
     def set_cash_balance(self, hotkey: str, cash_balance: float) -> bool:
-        """
-        Set cash balance for a miner.
-
-        Returns True if successful, False if account doesn't exist.
-        """
         return self._server.set_cash_balance(hotkey, cash_balance)
 
     def health_check(self) -> dict:
-        """Health check for monitoring."""
         return self._server.health_check()
 
     # ==================== Margin/Cash Processing Methods ====================

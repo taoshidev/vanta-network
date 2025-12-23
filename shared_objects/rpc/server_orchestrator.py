@@ -278,7 +278,7 @@ class ServerOrchestrator:
             server_class=None,
             client_class=None,
             required_in_testing=True,
-            spawn_kwargs={}  # No daemon needed
+            spawn_kwargs={'start_daemon': False}
         ),
     }
 

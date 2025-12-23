@@ -52,6 +52,7 @@ class CollateralRecord:
         return str(vars(self))
 
 
+
 @dataclass
 class MinerAccount:
     """Per-miner account state. Unified source of truth for account data."""
@@ -59,8 +60,10 @@ class MinerAccount:
     cash_balance: float              # Available cash (for equities margin)
     total_borrowed_amount: float = 0.0  # Total margin loans outstanding
     collateral_records: List[CollateralRecord] = None  # Historical CollateralRecords (List[CollateralRecord])
+    last_interest_applied_ms: Optional[int] = None  # Timestamp of last interest application (compared by date)
 
     def __post_init__(self):
+        """Initialize collateral_records to empty list if None."""
         if self.collateral_records is None:
             self.collateral_records = []
 
@@ -94,6 +97,78 @@ class MinerAccount:
                 return record.account_size
 
         return None
+
+    def apply_interest(self, current_time_ms: int) -> bool:
+        """
+        Apply daily interest to this account if needed.
+
+        Returns:
+            True if interest was processed for this hotkey, False otherwise
+        """
+        daily_interest_rate = ValiConfig.DAILY_INTEREST_RATE
+
+        # Skip if no borrowed amount
+        if self.total_borrowed_amount <= 0:
+            self.last_interest_applied_ms = None
+            return False
+
+        current_date = datetime.fromtimestamp(current_time_ms / 1000, tz=timezone.utc).date()
+
+        if self.last_interest_applied_ms is None:
+            self.last_interest_applied_ms = current_time_ms
+            return True
+
+        last_applied_date = datetime.fromtimestamp(self.last_interest_applied_ms / 1000, tz=timezone.utc).date()
+        if last_applied_date == current_date:
+            return False
+
+        # Calculate daily interest
+        daily_interest = self.total_borrowed_amount * daily_interest_rate
+
+        if self.cash_balance >= daily_interest:
+            # Full interest paid from cash
+            self.cash_balance -= daily_interest
+            bt.logging.info(
+                f"[{self.miner_hotkey[:8]}] Interest charged: ${daily_interest:.4f} (paid from cash), "
+                f"remaining cash: ${self.cash_balance:.2f}, total borrowed: ${self.total_borrowed_amount:.2f}"
+            )
+        else:
+            # Partial/no cash available: use all cash, add remainder to loan
+            unpaid_interest = daily_interest - self.cash_balance
+            self.total_borrowed_amount += unpaid_interest
+            self.cash_balance = 0.0
+            bt.logging.warning(
+                f"[{self.miner_hotkey[:8]}] Interest charged: ${daily_interest:.4f} "
+                f"(${unpaid_interest:.4f} added to loan - compounding), "
+                f"total borrowed: ${self.total_borrowed_amount:.2f}"
+            )
+
+        # Update last interest applied timestamp
+        self.last_interest_applied_ms = current_time_ms
+        return True
+
+    def to_dict(self, include_collateral_records: bool = False) -> dict:
+        """
+        Convert MinerAccount to dictionary representation.
+
+        Args:
+            include_collateral_records: If True, include full collateral records history
+
+        Returns:
+            dict with account data
+        """
+        result = {
+            'miner_hotkey': self.miner_hotkey,
+            'account_size': self.get_account_size(),
+            'cash_balance': self.cash_balance,
+            'total_borrowed_amount': self.total_borrowed_amount,
+            'last_interest_applied_ms': self.last_interest_applied_ms
+        }
+
+        if include_collateral_records:
+            result['collateral_records'] = [vars(record) for record in self.collateral_records]
+
+        return result
 
 
 # ==================== Manager Implementation ====================
@@ -188,16 +263,20 @@ class MinerAccountManager:
         with self._accounts_lock:
             json_dict = {}
             for hotkey, account in self.accounts.items():
-                if most_recent_only and account.collateral_records:
-                    records = [vars(account.collateral_records[-1])]
-                else:
-                    records = [vars(record) for record in account.collateral_records]
-
-                json_dict[hotkey] = {
-                    "collateral_records": records,
+                # Get base account dict (without collateral records)
+                account_dict = {
                     "cash_balance": account.cash_balance,
-                    "total_borrowed_amount": account.total_borrowed_amount
+                    "total_borrowed_amount": account.total_borrowed_amount,
+                    "last_interest_applied_ms": account.last_interest_applied_ms
                 }
+
+                # Add collateral records
+                if most_recent_only and account.collateral_records:
+                    account_dict["collateral_records"] = [vars(account.collateral_records[-1])]
+                else:
+                    account_dict["collateral_records"] = [vars(record) for record in account.collateral_records]
+
+                json_dict[hotkey] = account_dict
             return json_dict
 
     # Backwards compatibility alias
@@ -218,7 +297,7 @@ class MinerAccountManager:
 
         Supports:
         - Legacy format: {"hotkey": [list of CollateralRecord dicts]}
-        - New format: {"hotkey": {"collateral_records": [...], "cash_balance": ..., "total_borrowed_amount": ...}}
+        - New format: {"hotkey": {"collateral_records": [...], "cash_balance": ..., "total_borrowed_amount": ..., "last_interest_applied_ms": ...}}
         """
         parsed_accounts = {}
 
@@ -231,10 +310,12 @@ class MinerAccountManager:
                     records_list = account_data.get("collateral_records", [])
                     cash_balance = account_data.get("cash_balance")
                     total_borrowed = account_data.get("total_borrowed_amount", 0.0)
+                    last_interest_applied_ms = account_data.get("last_interest_applied_ms")
                 elif isinstance(account_data, list):
                     records_list = account_data
                     cash_balance = None  # Will default to account_size
                     total_borrowed = 0.0
+                    last_interest_applied_ms = None
                 else:
                     continue
 
@@ -252,10 +333,10 @@ class MinerAccountManager:
                     account_size = collateral_records[-1].account_size
                     parsed_accounts[hotkey] = MinerAccount(
                         miner_hotkey=hotkey,
-                        account_size=account_size,
                         cash_balance=cash_balance if cash_balance is not None else account_size,
                         total_borrowed_amount=total_borrowed,
-                        collateral_records=collateral_records
+                        collateral_records=collateral_records,
+                        last_interest_applied_ms=last_interest_applied_ms
                     )
             except Exception as e:
                 bt.logging.warning(f"Failed to parse account for {hotkey}: {e}")
@@ -452,7 +533,6 @@ class MinerAccountManager:
 
             self.accounts[hotkey] = MinerAccount(
                 miner_hotkey=hotkey,
-                account_size=account_size,
                 cash_balance=account_size,
             )
         return self.accounts[hotkey]
@@ -563,3 +643,27 @@ class MinerAccountManager:
         if not account:
             return 0.0
         return account.total_borrowed_amount
+
+    def apply_daily_interest(self) -> int:
+        """
+        Apply daily interest to accounts with outstanding margin loans that need it.
+        Interest is applied on a 24-hour interval basis per account via MinerAccount.apply_interest().
+        """
+        accounts_processed = 0
+        current_time_ms = TimeUtil.now_in_millis()
+
+        with self._accounts_lock:
+            for hotkey, account in self.accounts.items():
+                # Let the account handle its own interest calculation
+                processed = account.apply_interest(current_time_ms)
+                if processed:
+                    accounts_processed += 1
+
+            # Save to disk
+            if accounts_processed > 0:
+                self._save_accounts_to_disk()
+
+        if accounts_processed > 0:
+            bt.logging.success(f"Daily interest applied to {accounts_processed} accounts")
+
+        return accounts_processed

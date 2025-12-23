@@ -7,10 +7,10 @@ This server runs in its own process and exposes miner account management via RPC
 Clients connect using MinerAccountClient.
 
 Usage:
-    # Validator spawns the server at startup
-    from vali_objects.miner_account.miner_account_server import start_miner_account_server
-    process = Process(target=start_miner_account_server, args=(...))
-    process.start()
+    # Validator spawns the server via ServerOrchestrator
+    from shared_objects.rpc.server_orchestrator import ServerOrchestrator
+    orchestrator = ServerOrchestrator.get_instance()
+    orchestrator.start_all_servers(mode=ServerMode.VALIDATOR, context=context)
 
     # Other processes connect via MinerAccountClient
     from vali_objects.miner_account.miner_account_client import MinerAccountClient
@@ -18,8 +18,6 @@ Usage:
 """
 import bittensor as bt
 from typing import Optional, Dict, List, Any
-import time
-from setproctitle import setproctitle
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode, TradePairCategory
 from shared_objects.rpc.rpc_server_base import RPCServerBase
 from vali_objects.miner_account.miner_account_manager import MinerAccountManager, MinerAccount
@@ -38,6 +36,7 @@ class MinerAccountServer(RPCServerBase):
         self,
         running_unit_tests=False,
         start_server=True,
+        start_daemon=True,
         connection_mode: RPCConnectionMode = RPCConnectionMode.RPC,
         collateral_balance_getter=None
     ):
@@ -47,6 +46,7 @@ class MinerAccountServer(RPCServerBase):
         Args:
             running_unit_tests: Whether running in test mode
             start_server: Whether to start RPC server immediately
+            start_daemon: Whether to start daemon immediately
             connection_mode: RPC or LOCAL mode
             collateral_balance_getter: Callable to get collateral balance for a hotkey
         """
@@ -59,7 +59,8 @@ class MinerAccountServer(RPCServerBase):
         # Store is_mothership status (set by contract manager later)
         self._is_mothership = False
 
-        # Initialize RPCServerBase
+        # Initialize RPCServerBase (may start RPC server immediately if start_server=True)
+        # At this point, self._manager exists, so RPC calls won't fail
         RPCServerBase.__init__(
             self,
             service_name=ValiConfig.RPC_MINERACCOUNT_SERVICE_NAME,
@@ -67,14 +68,34 @@ class MinerAccountServer(RPCServerBase):
             connection_mode=connection_mode,
             slack_notifier=None,
             start_server=start_server,
-            start_daemon=False,  # MinerAccount server doesn't need a daemon loop
+            start_daemon=False,  # We'll start daemon after full initialization
+            daemon_interval_s=3600,  # Run every hour
         )
+
+        # Start daemon if requested (deferred until all initialization complete)
+        if start_daemon:
+            self.start_daemon()
 
     # ==================== RPCServerBase Abstract Methods ====================
 
     def run_daemon_iteration(self) -> None:
-        """MinerAccount server doesn't need a daemon loop."""
-        pass
+        """
+        Daemon loop that runs every hour.
+        Calls apply_daily_interest() which handles per-account 24-hour interval checks.
+        """
+        try:
+            # Apply interest to accounts that need it (24-hour check is handled in the method)
+            result = self._manager.apply_daily_interest()
+
+            if result > 0:
+                bt.logging.success(
+                    f"Interest application completed: {result} accounts processed"
+                )
+            else:
+                bt.logging.debug("No interest application needed (no accounts ready for interest)")
+
+        except Exception as e:
+            bt.logging.error(f"Error in interest calculation daemon: {e}")
 
     # ==================== Setup Methods ====================
 
@@ -145,24 +166,14 @@ class MinerAccountServer(RPCServerBase):
     def get_or_create(self, hotkey: str) -> dict:
         """Get existing account or create from CollateralRecord. Returns dict representation."""
         account = self._manager.get_or_create(hotkey)
-        return {
-            'miner_hotkey': account.miner_hotkey,
-            'account_size': account.account_size,
-            'cash_balance': account.cash_balance,
-            'total_borrowed_amount': account.total_borrowed_amount,
-        }
+        return account.to_dict()
 
     def get_account(self, hotkey: str) -> Optional[dict]:
         """Get account if it exists, without creating. Returns dict representation."""
         account = self._manager.get_account(hotkey)
         if account is None:
             return None
-        return {
-            'miner_hotkey': account.miner_hotkey,
-            'account_size': account.account_size,
-            'cash_balance': account.cash_balance,
-            'total_borrowed_amount': account.total_borrowed_amount,
-        }
+        return account.to_dict()
 
     def get_all_hotkeys(self) -> list:
         """Get all hotkeys with accounts."""
@@ -202,37 +213,3 @@ class MinerAccountServer(RPCServerBase):
     def get_total_borrowed_amount(self, hotkey: str) -> float:
         """Get total borrowed amount for a miner."""
         return self._manager.get_total_borrowed_amount(hotkey)
-
-
-# ==================== Server Entry Point ====================
-
-def start_miner_account_server(
-    running_unit_tests=False,
-    server_ready=None,
-):
-    """
-    Entry point for server process.
-
-    Args:
-        running_unit_tests: Whether running in test mode
-        server_ready: Event to signal when server is ready
-    """
-    from shared_objects.rpc.shutdown_coordinator import ShutdownCoordinator
-    setproctitle("vali_MinerAccountServerProcess")
-
-    server_instance = MinerAccountServer(
-        running_unit_tests=running_unit_tests,
-        start_server=True,
-    )
-
-    bt.logging.success(f"MinerAccountServer ready on port {ValiConfig.RPC_MINERACCOUNT_PORT}")
-
-    if server_ready:
-        server_ready.set()
-
-    # Block until shutdown
-    while not ShutdownCoordinator.is_shutdown():
-        time.sleep(1)
-
-    server_instance.shutdown()
-    bt.logging.info("MinerAccountServer process exiting")

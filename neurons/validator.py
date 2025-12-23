@@ -198,6 +198,7 @@ class Validator(ValidatorBase):
         # Cache warmup happens automatically inside start_server_daemons() to eliminate race conditions
         orchestrator.start_server_daemons([
             'perf_ledger',
+            'miner_account',
             'challenge_period',
             'elimination',
             'position_manager',
