@@ -44,7 +44,8 @@ class MinerAccountClient(RPCClientBase):
         self,
         port: Optional[int] = None,
         connect_immediately: bool = False,
-        connection_mode: RPCConnectionMode = RPCConnectionMode.RPC
+        connection_mode: RPCConnectionMode = RPCConnectionMode.RPC,
+        running_unit_tests: bool = False
     ):
         """
         Initialize MinerAccountClient.
@@ -53,7 +54,10 @@ class MinerAccountClient(RPCClientBase):
             port: Port number of the server (default: ValiConfig.RPC_MINERACCOUNT_PORT)
             connect_immediately: If True, connect in __init__. If False, connect lazily.
             connection_mode: RPC or LOCAL mode
+            running_unit_tests: If True, running in test mode
         """
+        self.running_unit_tests = running_unit_tests
+
         super().__init__(
             service_name=ValiConfig.RPC_MINERACCOUNT_SERVICE_NAME,
             port=port or ValiConfig.RPC_MINERACCOUNT_PORT,
