@@ -59,6 +59,10 @@ class MinerAccountServer(RPCServerBase):
         # Store is_mothership status (set by contract manager later)
         self._is_mothership = False
 
+        # Daemon configuration
+        daemon_interval_s = 3600
+        hang_timeout_s = daemon_interval_s * 2
+
         # Initialize RPCServerBase (may start RPC server immediately if start_server=True)
         # At this point, self._manager exists, so RPC calls won't fail
         RPCServerBase.__init__(
@@ -69,7 +73,8 @@ class MinerAccountServer(RPCServerBase):
             slack_notifier=None,
             start_server=start_server,
             start_daemon=False,  # We'll start daemon after full initialization
-            daemon_interval_s=3600,  # Run every hour
+            daemon_interval_s=daemon_interval_s,
+            hang_timeout_s=hang_timeout_s,
         )
 
         # Start daemon if requested (deferred until all initialization complete)
