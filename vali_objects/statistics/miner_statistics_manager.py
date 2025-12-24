@@ -418,7 +418,7 @@ class MinerStatisticsManager:
             weighting = True
             for metric in self.metrics_calculator.metrics.values():
                 metric.requires_weighting = True
-        all_miner_account_sizes = self.contract_manager.get_all_miner_account_sizes(timestamp_ms=time_now)
+        all_miner_account_sizes = self._miner_account_client.get_all_miner_account_sizes(timestamp_ms=time_now)
         asset_class_scores = Scoring.score_miners(
             ledger_dict=ledgers,
             positions=positions,
@@ -536,7 +536,7 @@ class MinerStatisticsManager:
             now_ms = TimeUtil.now_in_millis()
 
         account_sizes = []
-        account_size_object = self.contract_manager.miner_account_sizes_dict()
+        account_size_object = self._miner_account_client.miner_account_sizes_dict()
 
         # Calculate raw PnL for each miner
         for hotkey, _ in filtered_ledger.items():
@@ -723,7 +723,7 @@ class MinerStatisticsManager:
             maincomp_ledger, asset_classes
         )
         bt.logging.info(f"generate_minerstats asset_class_min_days: {asset_class_min_days}")
-        all_miner_account_sizes = self.contract_manager.get_all_miner_account_sizes(timestamp_ms=time_now)
+        all_miner_account_sizes = self._miner_account_client.get_all_miner_account_sizes(timestamp_ms=time_now)
 
         # Get cached scores from ChallengePeriodManager (computed in evaluate_promotions)
         asset_softmaxed_scores, success_competitiveness = self.challengeperiod_manager.get_miner_scores()

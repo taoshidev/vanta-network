@@ -425,7 +425,7 @@ class TestMarketOrderManager(TestBase):
         initial_order_count = len(position.orders)
 
         # Calculate order size from leverage
-        signal = {"leverage": 1.0}
+        signal = {"leverage": 0.5}
         quantity, leverage, value = self.market_order_manager.parse_order_size(
             signal, 1.0, self.DEFAULT_TRADE_PAIR, self.DEFAULT_ACCOUNT_SIZE
         )
@@ -465,10 +465,12 @@ class TestMarketOrderManager(TestBase):
         price_sources = [self.create_test_price_source(50000.0, bid=49990.0, ask=50010.0, start_ms=now_ms)]
 
         # Calculate order size from leverage
-        signal = {"leverage": 1.0}
+        signal = {"leverage": 0.1}
         quantity, leverage, value = self.market_order_manager.parse_order_size(
             signal, 1.0, self.DEFAULT_TRADE_PAIR, self.DEFAULT_ACCOUNT_SIZE
         )
+
+        print(f"{quantity}, {leverage}, {value}")
 
         self.market_order_manager._add_order_to_existing_position(
             existing_position=position,

@@ -8,7 +8,7 @@ Focuses on edge cases and regression tests for price fetching logic.
 """
 import unittest
 from time_util.time_util import TimeUtil
-from vali_objects.vali_config import TradePair, TradePairCategory
+from vali_objects.vali_config import TradePair, TradePairCategory, ValiConfig
 from vali_objects.vali_dataclasses.price_source import PriceSource
 from data_generator.tiingo_data_service import TiingoDataService
 
@@ -162,7 +162,7 @@ class TestTiingoDataService(unittest.TestCase):
     def test_tiingo_equity_only(self):
         """Test TiingoDataService with only equity pairs."""
         order_time_ms = TimeUtil.now_in_millis()
-        trade_pairs = [TradePair.NVDA, TradePair.MSFT, TradePair.GOOG]
+        trade_pairs = [TradePair.NVDA, TradePair.MSFT, TradePair.GOOGL]
 
         result = self.tiingo_service.get_closes_rest(
             trade_pairs=trade_pairs,
@@ -267,7 +267,7 @@ class TestTiingoDataService(unittest.TestCase):
         # Mix of all categories
         trade_pairs = [
             TradePair.BTCUSD, TradePair.ETHUSD,  # Crypto
-            TradePair.NVDA, TradePair.MSFT, TradePair.GOOG,  # Equity
+            TradePair.NVDA, TradePair.MSFT, TradePair.GOOGL,  # Equity
             TradePair.EURUSD, TradePair.GBPUSD  # Forex
         ]
 
@@ -346,7 +346,7 @@ class TestTiingoDataService(unittest.TestCase):
             TradePair.BTCUSD, TradePair.ETHUSD, TradePair.SOLUSD,
             TradePair.XRPUSD, TradePair.ADAUSD, TradePair.DOGEUSD,
             # Equities
-            TradePair.NVDA, TradePair.MSFT, TradePair.GOOG,
+            TradePair.NVDA, TradePair.MSFT, TradePair.GOOGL,
             TradePair.AAPL, TradePair.TSLA, TradePair.AMZN
         ]
         batches_12 = self.tiingo_service._batch_trade_pairs(trade_pairs_12)
@@ -403,7 +403,7 @@ class TestTiingoDataService(unittest.TestCase):
 
         # Request 7 equity pairs - should trigger batching (2 batches: 5 + 2)
         equity_pairs = [
-            TradePair.NVDA, TradePair.MSFT, TradePair.GOOG,
+            TradePair.NVDA, TradePair.MSFT, TradePair.GOOGL,
             TradePair.AAPL, TradePair.TSLA, TradePair.AMZN,
             TradePair.META
         ]
@@ -473,7 +473,7 @@ class TestTiingoDataService(unittest.TestCase):
             TradePair.BTCUSD, TradePair.ETHUSD, TradePair.SOLUSD,
             TradePair.XRPUSD, TradePair.ADAUSD, TradePair.DOGEUSD,
             # 7 equity pairs (2 batches)
-            TradePair.NVDA, TradePair.MSFT, TradePair.GOOG,
+            TradePair.NVDA, TradePair.MSFT, TradePair.GOOGL,
             TradePair.AAPL, TradePair.TSLA, TradePair.AMZN, TradePair.META,
             # 6 forex pairs (2 batches)
             TradePair.EURUSD, TradePair.GBPUSD, TradePair.USDJPY,
@@ -504,9 +504,7 @@ class TestTiingoDataService(unittest.TestCase):
         tradeable = self.tiingo_service.get_tradeable_pairs(include_blocked=False)
 
         # Verify blocked pairs are NOT in the result
-        blocked_pair_ids = {'AUDJPY', 'CADJPY', 'CHFJPY', 'EURJPY', 'NZDJPY', 'GBPJPY', 'USDJPY',
-                           'XAUUSD', 'XAGUSD', 'NVDA', 'AAPL', 'TSLA', 'AMZN', 'MSFT', 'GOOG',
-                           'META', 'USDMXN'}
+        blocked_pair_ids = ValiConfig.BLOCKED_TRADE_PAIR_IDS
 
         tradeable_ids = {tp.trade_pair_id for tp in tradeable}
         blocked_in_tradeable = tradeable_ids & blocked_pair_ids

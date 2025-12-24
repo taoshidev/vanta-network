@@ -20,7 +20,7 @@ class Signal(BaseModel):
 
     @model_validator(mode='before')
     def validate_order_type(cls, values):
-        """Validate order type restrictions."""
+        """Validate order type restrictions and normalize size."""
         execution_type = values.get('execution_type')
         if execution_type == ExecutionType.LIMIT_CANCEL:
             return values
@@ -29,33 +29,32 @@ class Signal(BaseModel):
         is_flat = order_type == OrderType.FLAT or order_type == 'FLAT'
 
         if execution_type == ExecutionType.LIMIT and is_flat:
-            raise ValueError("LIMIT orders cannot be FLAT")
-
-        return values
-
-    @model_validator(mode='before')
-    def validate_size_fields(cls, values):
-        """Validate and normalize size fields (leverage/value/quantity)."""
-        execution_type = values.get('execution_type')
-        if execution_type == ExecutionType.LIMIT_CANCEL:
-            return values
-
-        order_type = values.get('order_type')
-        fields = ['leverage', 'value', 'quantity']
-        filled = [f for f in fields if values.get(f) is not None]
-
-        # BRACKET allows empty size fields (populated from position)
-        if execution_type != ExecutionType.BRACKET and len(filled) != 1:
-            raise ValueError(f"Exactly one of {fields} must be provided, got {filled}")
+            raise ValueError("FLAT order is not supported for LIMIT orders")
 
         # Normalize size sign based on order_type
-        for field in fields:
+        for field in ['leverage', 'value', 'quantity']:
             size = values.get(field)
             if size is not None:
                 if order_type == OrderType.LONG and size < 0:
                     raise ValueError(f"{field} must be positive for LONG orders.")
                 elif order_type == OrderType.SHORT:
                     values[field] = -1.0 * abs(size)
+
+        return values
+
+    @model_validator(mode='before')
+    def validate_size_fields(cls, values):
+        """Validate only one size field is filled (leverage/value/quantity)."""
+        execution_type = values.get('execution_type')
+        if execution_type == ExecutionType.LIMIT_CANCEL:
+            return values
+
+        fields = ['leverage', 'value', 'quantity']
+        filled = [f for f in fields if values.get(f) is not None]
+
+        # BRACKET allows empty size fields (populated from position)
+        if execution_type != ExecutionType.BRACKET and len(filled) != 1:
+            raise ValueError(f"Exactly one of {fields} must be provided, got {filled}")
 
         return values
 

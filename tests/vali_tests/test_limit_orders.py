@@ -244,36 +244,6 @@ class TestLimitOrders(TestBase):
             )
         self.assertIn("too many unfilled limit orders", str(context.exception))
 
-    def test_process_limit_order_rpc_flat_no_position(self):
-        """Test FLAT limit order rejection when no position exists"""
-        flat_order = self.create_test_limit_order(
-            order_type=OrderType.FLAT,
-            limit_price=51000.0
-        )
-
-        with self.assertRaises(SignalException) as context:
-            self.limit_order_client.process_limit_order(
-                self.DEFAULT_MINER_HOTKEY,
-                flat_order
-            )
-        self.assertIn("FLAT order is not supported for LIMIT orders", str(context.exception))
-
-    def test_process_limit_order_rpc_flat_with_position(self):
-        """Test FLAT limit order rejection even when position exists"""
-        position = self.create_test_position(position_type=OrderType.LONG)
-        self.position_client.save_miner_position(position)
-
-        flat_order = self.create_test_limit_order(
-            order_type=OrderType.FLAT,
-            limit_price=51000.0
-        )
-
-        with self.assertRaises(SignalException) as context:
-            self.limit_order_client.process_limit_order(
-                self.DEFAULT_MINER_HOTKEY,
-                flat_order
-            )
-        self.assertIn("FLAT order is not supported for LIMIT orders", str(context.exception))
 
     def test_process_limit_order_rpc_immediate_fill(self):
         """Test limit order is filled immediately when price already triggered"""
@@ -543,58 +513,6 @@ class TestLimitOrders(TestBase):
             50000.0
         )
         self.assertEqual(trigger, 50000.0)
-
-    def test_evaluate_trigger_price_flat_long_position(self):
-        """Test FLAT order trigger for LONG position (sells at bid)"""
-        position = self.create_test_position(position_type=OrderType.LONG)
-
-        # FLAT for LONG position: triggers when bid >= limit_price (selling)
-        price_source = self.create_test_price_source(50000.0, bid=49900.0, ask=50100.0)
-
-        # bid=49900 < limit=50000 -> no trigger
-        trigger = self.limit_order_client.evaluate_limit_trigger_price(
-            OrderType.FLAT,
-            position,
-            price_source,
-            50000.0
-        )
-        self.assertIsNone(trigger)
-
-        # bid=50100 > limit=50000 -> trigger at limit_price
-        price_source.bid = 50100.0
-        trigger = self.limit_order_client.evaluate_limit_trigger_price(
-            OrderType.FLAT,
-            position,
-            price_source,
-            50000.0
-        )
-        self.assertIsNone(trigger)
-
-    def test_evaluate_trigger_price_flat_short_position(self):
-        """Test FLAT order trigger for SHORT position (buys at ask)"""
-        position = self.create_test_position(position_type=OrderType.SHORT)
-
-        # FLAT for SHORT position: triggers when ask <= limit_price (buying)
-        price_source = self.create_test_price_source(50000.0, bid=49900.0, ask=50100.0)
-
-        # ask=50100 > limit=50000 -> no trigger
-        trigger = self.limit_order_client.evaluate_limit_trigger_price(
-            OrderType.FLAT,
-            position,
-            price_source,
-            50000.0
-        )
-        self.assertIsNone(trigger)
-
-        # ask=49900 < limit=50000 -> trigger at limit_price
-        price_source.ask = 49900.0
-        trigger = self.limit_order_client.evaluate_limit_trigger_price(
-            OrderType.FLAT,
-            position,
-            price_source,
-            50000.0
-        )
-        self.assertIsNone(trigger)
 
     def test_evaluate_trigger_price_fallback_to_open(self):
         """Test fallback to open price when bid/ask is 0"""

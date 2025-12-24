@@ -371,6 +371,12 @@ class VantaRestServer(RPCServerBase, APIKeyMixin):
         self._contract_client = ContractClient(connection_mode=connection_mode)
         print(f"[REST-INIT] Step 2d/9: ContractClient created ✓")
 
+        print(f"[REST-INIT] Step 2d2/9: Creating MinerAccountClient...")
+        # Create own MinerAccountClient (for account sizes data)
+        from vali_objects.miner_account.miner_account_client import MinerAccountClient
+        self._miner_account_client = MinerAccountClient(connection_mode=connection_mode)
+        print(f"[REST-INIT] Step 2d2/9: MinerAccountClient created ✓")
+
         print(f"[REST-INIT] Step 2e/9: Creating CoreOutputsClient...")
         # Create own CoreOutputsClient (forward compatibility - no parameter passing)
         from vali_objects.data_export.core_outputs_client import CoreOutputsClient
@@ -1236,10 +1242,10 @@ class VantaRestServer(RPCServerBase, APIKeyMixin):
                 # Get query parameters for filtering
                 hotkey_filter = request.args.get('hotkey')
                 most_recent_only = request.args.get('most_recent', 'false').lower() == 'true'
-                
+
                 # Get all collateral data using the proper serialization method
                 # Pass most_recent_only directly to avoid double iteration
-                data = self.contract_manager.miner_account_sizes_dict(most_recent_only=most_recent_only)
+                data = self._miner_account_client.miner_account_sizes_dict(most_recent_only=most_recent_only)
                 
                 # Apply hotkey filter if requested
                 if hotkey_filter and hotkey_filter in data:

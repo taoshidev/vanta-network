@@ -59,7 +59,7 @@ class Position(BaseModel):
     unrealized_pnl: float = 0.0             # USD
     position_type: Optional[OrderType] = None
     is_closed_position: bool = False
-    borrowed_amount: float = 0.0            # Total margin loan for this position (equities)
+    borrowed_amount: Optional[float] = None  # Total margin loan for this position (equities)
 
     @model_validator(mode='before')
     def add_trade_pair_to_orders_and_self(cls, values):
@@ -330,7 +330,7 @@ class Position(BaseModel):
         self.position_type = None
         self.is_closed_position = False
         self.position_type = None
-        self.borrowed_amount = 0.0
+        self.borrowed_amount = None
 
         self._update_position(price_fetcher_client)
 
@@ -369,7 +369,7 @@ class Position(BaseModel):
 
         if order.order_type != OrderType.FLAT and abs(order.leverage) > ValiConfig.ORDER_MAX_LEVERAGE:
             raise ValueError(
-                f'Order leverage [{order.leverage}] is above ORDER_MAX_LEVERAGE {ValiConfig.ORDER_MIN_LEVERAGE}, cannot increase size of position. Ignoring order.')
+                f'Order leverage [{order.leverage}] is above ORDER_MAX_LEVERAGE {ValiConfig.ORDER_MAX_LEVERAGE}, cannot increase size of position. Ignoring order.')
 
         if self._clamp_and_validate_leverage(order, abs(net_portfolio_leverage)):
             # This order's leverage got clamped to zero.
@@ -689,21 +689,24 @@ class Position(BaseModel):
         if order.order_type == OrderType.FLAT:
             return False
 
-        if order.quantity:
-            proposed_quantity = self.net_quantity + order.quantity
-            if proposed_quantity <= 0:
-                order.leverage = -self.net_leverage
-                order.order_type = OrderType.FLAT
-                return True
-
-        if order.value:
-            proposed_value = self.net_value + order.value
-            if proposed_value <= 0:
-                order.leverage = -self.net_leverage
-                order.order_type = OrderType.FLAT
-                return True
-
         is_first_order = len(self.orders) == 0
+
+        # Only check for position closing/flipping if there are existing orders
+        # Skip for first order to avoid false positives with SHORT orders (which have negative quantity/value)
+        if not is_first_order:
+            if order.quantity:
+                proposed_quantity = self.net_quantity + order.quantity
+                if proposed_quantity <= 0:
+                    order.leverage = -self.net_leverage
+                    order.order_type = OrderType.FLAT
+                    return True
+
+            if order.value:
+                proposed_value = self.net_value + order.value
+                if proposed_value <= 0:
+                    order.leverage = -self.net_leverage
+                    order.order_type = OrderType.FLAT
+                    return True
         proposed_leverage = self.net_leverage + order.leverage
         min_position_leverage, max_position_leverage = leverage_utils.get_position_leverage_bounds(self.trade_pair, order.processed_ms)
 

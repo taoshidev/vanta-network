@@ -24,6 +24,7 @@ class TestDebtBasedScoring(TestBase):
     metagraph_client = None
     challengeperiod_client = None
     contract_client = None
+    miner_account_client = None
 
     @classmethod
     def setUpClass(cls):
@@ -42,6 +43,7 @@ class TestDebtBasedScoring(TestBase):
         cls.metagraph_client = cls.orchestrator.get_client('metagraph')
         cls.challengeperiod_client = cls.orchestrator.get_client('challenge_period')
         cls.contract_client = cls.orchestrator.get_client('contract')
+        cls.miner_account_client = cls.orchestrator.get_client('miner_account')
 
     @classmethod
     def tearDownClass(cls):
@@ -133,7 +135,7 @@ class TestDebtBasedScoring(TestBase):
                 "account_size_theta": collateral_usd  # theta = same as actual for simplicity
             }]
 
-        self.contract_client.sync_miner_account_sizes_data(account_sizes_data)
+        self.miner_account_client.sync_miner_account_sizes_data(account_sizes_data)
 
     def test_empty_ledgers(self):
         """Test with no ledgers returns burn address with weight 1.0"""
@@ -141,7 +143,7 @@ class TestDebtBasedScoring(TestBase):
             {},
             self.metagraph_client,
             self.challengeperiod_client,
-            self.contract_client,
+            self.miner_account_client,
             is_testnet=False
         )
         # With no miners, burn address gets all weight
@@ -158,7 +160,7 @@ class TestDebtBasedScoring(TestBase):
             {"test_hotkey": ledger},
             self.metagraph_client,
             self.challengeperiod_client,
-            self.contract_client,
+            self.miner_account_client,
             is_testnet=False
         )
         # Single miner with no performance gets dust weight
@@ -170,6 +172,62 @@ class TestDebtBasedScoring(TestBase):
         # Verify sum is 1.0
         total_weight = sum(w for _, w in result)
         self.assertAlmostEqual(total_weight, 1.0, places=10)
+
+    def test_before_activation_date(self):
+        """Test that only dust weights + burn address before December 2025"""
+        # Use November 2025 as current time (previous month is October 2025, before December)
+        current_time = datetime(2025, 11, 15, 12, 0, 0, tzinfo=timezone.utc)
+        current_time_ms = int(current_time.timestamp() * 1000)
+
+        # Create ledgers with different statuses
+        prev_checkpoint = datetime(2025, 10, 30, 12, 0, 0, tzinfo=timezone.utc)
+        prev_checkpoint_ms = int(prev_checkpoint.timestamp() * 1000)
+
+        ledger1 = DebtLedger(hotkey="hotkey1", checkpoints=[])
+        ledger1.checkpoints.append(DebtCheckpoint(
+            timestamp_ms=prev_checkpoint_ms,
+            challenge_period_status=MinerBucket.MAINCOMP.value
+        ))
+
+        ledger2 = DebtLedger(hotkey="hotkey2", checkpoints=[])
+        ledger2.checkpoints.append(DebtCheckpoint(
+            timestamp_ms=prev_checkpoint_ms,
+            challenge_period_status=MinerBucket.CHALLENGE.value
+        ))
+
+        ledgers = {"hotkey1": ledger1, "hotkey2": ledger2}
+
+        # Set miner buckets
+        self._set_miner_buckets({
+            "hotkey1": MinerBucket.MAINCOMP,
+            "hotkey2": MinerBucket.CHALLENGE
+        })
+
+        result = DebtBasedScoring.compute_results(
+            ledgers,
+            self.metagraph_client,
+            self.challengeperiod_client,
+            self.miner_account_client,
+            current_time_ms=current_time_ms,
+            is_testnet=False
+        )
+
+        # Should have 3 entries: 2 miners + burn address
+        self.assertEqual(len(result), 3)
+
+        # Verify dust weights based on status
+        weights_dict = dict(result)
+        dust = self.expected_dynamic_dust
+        self.assertAlmostEqual(weights_dict["hotkey1"], 3 * dust)  # MAINCOMP = 3x dust
+        self.assertAlmostEqual(weights_dict["hotkey2"], 1 * dust)  # CHALLENGE = 1x dust
+
+        # Verify burn address gets excess (sum should be 1.0)
+        total_weight = sum(weight for _, weight in result)
+        self.assertAlmostEqual(total_weight, 1.0, places=10)
+
+        # Verify burn address is present
+        burn_hotkey = "burn_address_mainnet"
+        self.assertIn(burn_hotkey, weights_dict)
 
     def test_weights_sum_to_one(self):
         """Test that weights sum to 1.0"""
@@ -1844,7 +1902,7 @@ class TestDebtBasedScoring(TestBase):
             ledgers,
             self.metagraph_client,
             self.challengeperiod_client,
-            self.contract_client,
+            self.miner_account_client,
             current_time_ms=current_time_ms,
             is_testnet=False,
             verbose=True
@@ -1916,7 +1974,7 @@ class TestDebtBasedScoring(TestBase):
             ledgers,
             self.metagraph_client,
             self.challengeperiod_client,
-            self.contract_client,
+            self.miner_account_client,
             current_time_ms=current_time_ms,
             is_testnet=False,
             verbose=True
@@ -2044,7 +2102,7 @@ class TestDebtBasedScoring(TestBase):
             ledgers,
             self.metagraph_client,
             self.challengeperiod_client,
-            self.contract_client,
+            self.miner_account_client,
             current_time_ms=current_time_ms,
             is_testnet=False,
             verbose=True
@@ -2118,7 +2176,7 @@ class TestDebtBasedScoring(TestBase):
             ledgers,
             self.metagraph_client,
             self.challengeperiod_client,
-            self.contract_client,
+            self.miner_account_client,
             current_time_ms=current_time_ms,
             is_testnet=False,
             verbose=True
@@ -2180,7 +2238,7 @@ class TestDebtBasedScoring(TestBase):
             {"solo_challenge_miner": ledger},
             self.metagraph_client,
             self.challengeperiod_client,
-            self.contract_client,
+            self.miner_account_client,
             current_time_ms=current_time_ms,
             is_testnet=False,
             verbose=True
@@ -2242,7 +2300,7 @@ class TestDebtBasedScoring(TestBase):
             ledgers,
             self.metagraph_client,
             self.challengeperiod_client,
-            self.contract_client,
+            self.miner_account_client,
             current_time_ms=current_time_ms,
             is_testnet=False,
             verbose=True
