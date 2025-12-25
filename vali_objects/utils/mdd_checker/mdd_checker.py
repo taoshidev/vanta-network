@@ -64,6 +64,7 @@ class MDDChecker(CacheController):
         self._position_lock_client = PositionLockClient(running_unit_tests=running_unit_tests)
 
         self.all_trade_pairs = [trade_pair for trade_pair in TradePair]
+        self._prev_iteration_prices = {}
         self.reset_debug_counters()
         self.n_poly_api_requests = 0
 
@@ -163,6 +164,27 @@ class MDDChecker(CacheController):
         price_fetch_start = time.perf_counter()
         tp_to_price_sources = self.get_sorted_price_sources(hotkey_to_positions)
         price_fetch_ms = (time.perf_counter() - price_fetch_start) * 1000
+
+        now_ms = TimeUtil.now_in_millis()
+        today_date_est = TimeUtil.timestamp_ms_to_eastern_time_str(now_ms, short=True)
+        last_update_date_est = TimeUtil.timestamp_ms_to_eastern_time_str(self._last_update_time_ms, short=True)
+        is_new_day = today_date_est != last_update_date_est
+
+        # Check and apply if a stock split occured on new trading day (EST) or price fluctuation > 10%
+        for tp, sources in tp_to_price_sources.items():
+            if not tp.is_equities:
+                continue
+            new_price = sources[0].close
+            prev_price = self._prev_iteration_prices.get(tp)
+
+            stock_split_ratio = None
+            if is_new_day or (new_price and prev_price and abs((new_price - prev_price) / prev_price) >= 0.1):
+               stock_split_ratio = self._live_price_client.get_stock_split(tp, now_ms)
+
+            if stock_split_ratio is not None:
+                self._position_client.apply_stock_split(tp.trade_pair_id, stock_split_ratio)
+
+            self._prev_iteration_prices[tp] = sources[0].close
 
         for hotkey, sorted_positions in hotkey_to_positions.items():
             self.perform_price_corrections(hotkey, sorted_positions, tp_to_price_sources, iteration_epoch)

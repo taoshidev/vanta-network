@@ -380,7 +380,7 @@ class TimeUtil:
         return int(dt.timestamp() * 1000)
 
     @staticmethod
-    def timestamp_ms_to_eastern_time_str(timestamp_ms):
+    def timestamp_ms_to_eastern_time_str(timestamp_ms, short=False):
         # Convert milliseconds to seconds
         timestamp_s = timestamp_ms / 1000.0
 
@@ -393,9 +393,12 @@ class TimeUtil:
         # Adjust from UTC to Eastern Time
         eastern_datetime = utc_datetime + EST_OFFSET
 
-        # Format the datetime object to include the day of the week
-        formatted_date_string = eastern_datetime.strftime('%A, %Y-%m-%d %H:%M:%S EST')
-        return formatted_date_string
+        if short:
+            return eastern_datetime.strftime('%Y-%m-%d')
+        else:
+            # Format the datetime object to include the day of the week
+            formatted_date_string = eastern_datetime.strftime('%A, %Y-%m-%d %H:%M:%S EST')
+            return formatted_date_string
 
     @staticmethod
     def timestamp_to_millis(dt) -> int:

@@ -15,7 +15,7 @@ from vali_objects.exceptions.corrupt_data_exception import ValiBkpCorruptDataExc
 from vali_objects.exceptions.vali_bkp_file_missing_exception import ValiFileMissingException
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
-from vali_objects.vali_config import ValiConfig, TradePair, RPCConnectionMode
+from vali_objects.vali_config import TradePairCategory, ValiConfig, TradePair, RPCConnectionMode
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.enums.misc import OrderStatus
 from vali_objects.enums.order_source_enum import OrderSource
@@ -1307,6 +1307,17 @@ class PositionManager:
             Dict with splitting statistics
         """
         return dict(self.split_stats.get(hotkey, self._default_split_stats()))
+
+    def apply_stock_split(self, trade_pair_id: str, stock_split_ratio: float):
+        _cnt = 0
+        for _, positions_dict in self.hotkey_to_open_positions.items():
+            open_position = positions_dict.get(trade_pair_id, None)
+            if open_position:
+                open_position.apply_stock_split(stock_split_ratio)
+                _cnt += 1
+
+        bt.logging.info(f"Successfully applied {trade_pair_id} stock split (ratio: {stock_split_ratio}) to {_cnt} positions")
+        return
 
     def _write_position_to_disk(self, position: Position):
         """Write a single position to disk."""

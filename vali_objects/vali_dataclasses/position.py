@@ -772,6 +772,12 @@ class Position(BaseModel):
             order.order_type = OrderType.FLAT
         return False
 
+    def apply_stock_split(self, stock_split_ratio):
+        for order in self.orders:
+            order.quantity *= stock_split_ratio
+            order.price /= stock_split_ratio
+        self._update_position(None)
+
     def _update_position(self, price_fetcher_client):
         self.net_leverage = 0.0
         self.net_quantity = 0.0

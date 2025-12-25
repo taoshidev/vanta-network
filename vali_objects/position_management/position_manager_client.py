@@ -31,7 +31,7 @@ from vali_objects.decoders.generalized_json_decoder import GeneralizedJSONDecode
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.position_management.position_utils.position_filtering import PositionFiltering
 from vali_objects.position_management.position_manager import PositionManager
-from vali_objects.vali_config import ValiConfig, RPCConnectionMode
+from vali_objects.vali_config import TradePair, ValiConfig, RPCConnectionMode
 
 
 class PositionManagerClient(RPCClientBase):
@@ -412,6 +412,9 @@ class PositionManagerClient(RPCClientBase):
             Dict with splitting statistics
         """
         return self._server.get_split_stats_rpc(hotkey)
+
+    def apply_stock_split(self, trade_pair_id: str, stock_split_ratio: float):
+        return self._server.apply_stock_split_rpc(trade_pair_id, stock_split_ratio)
 
     @staticmethod
     def positions_are_the_same(position1: Position, position2: Position | dict) -> (bool, str):
