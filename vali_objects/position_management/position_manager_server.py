@@ -243,15 +243,3 @@ class PositionManagerServer(RPCServerBase):
             Dict with splitting statistics
         """
         return self._manager.get_split_stats(hotkey)
-
-    def position_needs_splitting_rpc(self, position: Position) -> bool:
-        """
-        Check if a position would actually be split by split_position_on_flat - delegates to manager.
-
-        Args:
-            position: The position to check
-
-        Returns:
-            True if the position would be split, False otherwise
-        """
-        return self._manager._position_needs_splitting(position)

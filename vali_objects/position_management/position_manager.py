@@ -1224,7 +1224,7 @@ class PositionManager:
             for position in positions_dict.values():  # Iterate over dict values
                 try:
                     # Split the position
-                    new_positions, split_info = self._split_position_on_flat(position, live_price_fetcher)
+                    new_positions, split_info = PositionSplitter.split_position_on_flat(position, live_price_fetcher)
 
                     # Add all resulting positions to the dict by UUID
                     for new_pos in new_positions:
@@ -1255,22 +1255,6 @@ class PositionManager:
 
         # Rebuild the open positions index after splitting
         self._rebuild_open_index()
-
-    def _find_split_points(self, position: Position) -> list[int]:
-        """
-        Find all valid split points in a position where splitting should occur.
-        Delegates to PositionSplitter utility (single source of truth).
-        """
-        return PositionSplitter.find_split_points(position)
-
-    def _split_position_on_flat(self, position: Position, live_price_fetcher) -> tuple[list[Position], dict]:
-        """
-        Split a position into multiple positions based on FLAT orders or implicit flats.
-        Delegates to PositionSplitter utility (single source of truth).
-        Returns tuple of (list of positions, split_info dict).
-        """
-        # Delegate to PositionSplitter for all splitting logic
-        return PositionSplitter.split_position_on_flat(position, live_price_fetcher, track_stats=False)
 
     # ==================== Public Splitting Methods ====================
 
@@ -1323,19 +1307,6 @@ class PositionManager:
             Dict with splitting statistics
         """
         return dict(self.split_stats.get(hotkey, self._default_split_stats()))
-
-    def _position_needs_splitting(self, position: Position) -> bool:
-        """
-        Check if a position would actually be split by split_position_on_flat.
-        Delegates to PositionSplitter utility (single source of truth).
-
-        Args:
-            position: The position to check
-
-        Returns:
-            True if the position would be split, False otherwise
-        """
-        return PositionSplitter.position_needs_splitting(position)
 
     def _write_position_to_disk(self, position: Position):
         """Write a single position to disk."""

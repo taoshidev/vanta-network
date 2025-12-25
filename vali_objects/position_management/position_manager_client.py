@@ -413,18 +413,6 @@ class PositionManagerClient(RPCClientBase):
         """
         return self._server.get_split_stats_rpc(hotkey)
 
-    def _position_needs_splitting(self, position: Position) -> bool:
-        """
-        Check if a position would actually be split by split_position_on_flat.
-
-        Args:
-            position: The position to check
-
-        Returns:
-            True if the position would be split, False otherwise
-        """
-        return self._server.position_needs_splitting_rpc(position)
-
     @staticmethod
     def positions_are_the_same(position1: Position, position2: Position | dict) -> (bool, str):
         # Iterate through all the attributes of position1 and compare them to position2.

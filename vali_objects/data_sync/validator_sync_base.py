@@ -6,6 +6,7 @@ from collections import defaultdict
 from time_util.time_util import TimeUtil
 from vali_objects.enums.misc import PositionSyncResult
 from vali_objects.enums.order_type_enum import OrderType
+from vali_objects.position_management.position_utils.position_splitter import PositionSplitter
 from vali_objects.vali_dataclasses.position import Position
 import bittensor as bt
 from shared_objects.rpc.shutdown_coordinator import ShutdownCoordinator
@@ -692,7 +693,7 @@ class ValidatorSyncBase():
                     else:
                         position_to_sync_status[e] = PositionSyncResult.NOTHING
                         # Check if position actually needs splitting before forcing write_modifications
-                        if self._position_manager_client and self._position_manager_client._position_needs_splitting(e):
+                        if self._position_manager_client and PositionSplitter.position_needs_splitting(e):
                             # Force write_modifications to be called for position splitting
                             min_timestamp_of_change = min(min_timestamp_of_change, e.open_ms)
                     ret.append(e)
@@ -732,7 +733,7 @@ class ValidatorSyncBase():
                     else:
                         position_to_sync_status[e] = PositionSyncResult.NOTHING
                         # Check if position actually needs splitting before forcing write_modifications
-                        if self._position_manager_client and self._position_manager_client._position_needs_splitting(e):
+                        if self._position_manager_client and PositionSplitter.position_needs_splitting(e):
                             # Force write_modifications to be called for position splitting
                             min_timestamp_of_change = min(min_timestamp_of_change, e.open_ms)
                     matched_candidates_by_uuid |= {c.position_uuid}

@@ -579,7 +579,6 @@ class Position(BaseModel):
         if self.current_return == 0:
             self._handle_liquidation(TimeUtil.now_in_millis() if time_ms is None else time_ms, live_price_fetcher)
 
-
     def set_returns(self, realtime_price, price_fetcher_client, time_ms=None, total_fees=None, order=None):
         # We used to multiple trade_pair.fees by net_leverage. Eventually we will
         # Update this calculation to approximate actual exchange fees.
