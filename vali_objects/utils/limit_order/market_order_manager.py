@@ -155,7 +155,7 @@ class MarketOrderManager():
             )
         return open_position
 
-    def _add_order_to_existing_position(self, existing_position, trade_pair, signal_order_type: OrderType,
+    def _add_order_to_existing_position(self, existing_position: Position, trade_pair: TradePair, signal_order_type: OrderType,
                                         quantity: float, leverage: float, value: float, order_time_ms: int, miner_hotkey: str,
                                         price_sources, miner_order_uuid: str, miner_repo_version: str, src:OrderSource,
                                         account_size=None, usd_base_price=None, execution_type=ExecutionType.MARKET,
@@ -174,6 +174,34 @@ class MarketOrderManager():
             )
             existing_position.account_size = ValiConfig.MIN_CAPITAL
 
+        # Calculate USD conversions
+        step_start = TimeUtil.now_in_millis()
+        if usd_base_price is None:
+            usd_base_price = self.live_price_fetcher.get_usd_base_conversion(trade_pair, order_time_ms, price, signal_order_type, existing_position)
+            usd_conversion_ms = TimeUtil.now_in_millis() - step_start
+            bt.logging.info(f"[ADD_ORDER_DETAIL] USD conversion calculation took {usd_conversion_ms}ms")
+
+        step_start = TimeUtil.now_in_millis()
+        net_portfolio_leverage = self.position_manager.calculate_net_portfolio_leverage(miner_hotkey)
+        leverage_calc_ms = TimeUtil.now_in_millis() - step_start
+        bt.logging.info(f"[ADD_ORDER_DETAIL] Net portfolio leverage calc took {leverage_calc_ms}ms")
+
+        if signal_order_type != OrderType.FLAT:
+            clamped_leverage = existing_position.calculate_clamped_leverage(signal_order_type, leverage)
+            if clamped_leverage == -existing_position.net_leverage:
+                signal_order_type = OrderType.FLAT
+            elif clamped_leverage != leverage:
+                quantity, leverage, value = self.parse_order_size({'leverage': leverage}, usd_base_price, trade_pair, existing_position.account_size)
+
+            if net_portfolio_leverage + abs(leverage) > ValiConfig.PORTFOLIO_LEVERAGE_CAP:
+                raise ValueError("Order attempted to exceed max portfolio leverage")
+
+            trade_pair_category = trade_pair.trade_pair_category
+            if signal_order_type == OrderType.LONG:
+                self._miner_account_client.process_order_buy(miner_hotkey, value, trade_pair_category)
+            else:
+                self._miner_account_client.process_order_sell(miner_hotkey, value, existing_position.borrowed_amount, trade_pair_category)
+
         order = Order(
             trade_pair=trade_pair,
             order_type=signal_order_type,
@@ -190,19 +218,12 @@ class MarketOrderManager():
             limit_price=limit_price,
             stop_loss=stop_loss,
             take_profit=take_profit,
-            execution_type=execution_type
+            execution_type=execution_type,
+            usd_base_rate=usd_base_price,
         )
         order_creation_ms = TimeUtil.now_in_millis() - step_start
-        bt.logging.info(f"[ADD_ORDER_DETAIL] Order object creation took {order_creation_ms}ms")
-
-        # Calculate USD conversions
-        step_start = TimeUtil.now_in_millis()
-        if usd_base_price is None:
-            usd_base_price = self.live_price_fetcher.get_usd_base_conversion(trade_pair, order_time_ms, price, signal_order_type, existing_position)
-        order.usd_base_rate = usd_base_price
         order.quote_usd_rate = self.live_price_fetcher.get_quote_usd_conversion(order, existing_position)
-        usd_conversion_ms = TimeUtil.now_in_millis() - step_start
-        bt.logging.info(f"[ADD_ORDER_DETAIL] USD conversion calculation took {usd_conversion_ms}ms")
+        bt.logging.info(f"[ADD_ORDER_DETAIL] Order object creation took {order_creation_ms}ms")
 
         # Refresh features - this may make expensive API calls on new day
         step_start = TimeUtil.now_in_millis()
@@ -230,11 +251,6 @@ class MarketOrderManager():
         order.slippage = PriceSlippageModel.calculate_slippage(order.bid, order.ask, order, existing_position.account_size)
         slippage_calc_ms = TimeUtil.now_in_millis() - step_start
         bt.logging.info(f"[ADD_ORDER_DETAIL] Slippage calculation took {slippage_calc_ms}ms")
-
-        step_start = TimeUtil.now_in_millis()
-        net_portfolio_leverage = self.position_manager.calculate_net_portfolio_leverage(miner_hotkey)
-        leverage_calc_ms = TimeUtil.now_in_millis() - step_start
-        bt.logging.info(f"[ADD_ORDER_DETAIL] Net portfolio leverage calc took {leverage_calc_ms}ms")
 
         step_start = TimeUtil.now_in_millis()
         existing_position.add_order(order, self.live_price_fetcher, net_portfolio_leverage)

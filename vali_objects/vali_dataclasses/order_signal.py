@@ -3,7 +3,7 @@
 from typing import Optional
 
 from vali_objects.enums.execution_type_enum import ExecutionType
-from vali_objects.vali_config import TradePair
+from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.enums.order_type_enum import OrderType
 from pydantic import BaseModel, model_validator
 
@@ -46,7 +46,8 @@ class Signal(BaseModel):
     def validate_size_fields(cls, values):
         """Validate only one size field is filled (leverage/value/quantity)."""
         execution_type = values.get('execution_type')
-        if execution_type == ExecutionType.LIMIT_CANCEL:
+        order_type = values.get('order_type')
+        if execution_type == ExecutionType.LIMIT_CANCEL or order_type == OrderType.FLAT:
             return values
 
         fields = ['leverage', 'value', 'quantity']

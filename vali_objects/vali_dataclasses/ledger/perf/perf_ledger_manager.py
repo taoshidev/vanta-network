@@ -444,7 +444,7 @@ class PerfLedgerManager(CacheController):
 
         return position_at_start_timestamp, position_at_end_timestamp
 
-    def generate_order_timeline(self, positions: list[Position], now_ms: int, hk: str) -> (list[tuple], int):
+    def generate_order_timeline(self, positions: list[Position], now_ms: int, hk: str) -> tuple[list[tuple], int]:
         # order to understand timestamps needing checking, position to understand returns per timestamp (will be adjusted)
         # (order, position)
         time_sorted_orders = []

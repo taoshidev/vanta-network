@@ -675,6 +675,31 @@ class Position(BaseModel):
         self.is_closed_position = False
         self.close_ms = None
 
+    def calculate_clamped_leverage(self, order_type, leverage) -> float:
+        if order_type == OrderType.FLAT:
+            return -self.net_leverage
+
+        if not leverage:
+            raise ValueError("Leverage must be calculated for order clamping")
+
+        min_position_leverage, max_position_leverage = self.trade_pair.min_leverage, self.trade_pair.max_leverage
+        proposed_position_leverage = self.net_leverage + leverage
+
+        # close position by overshooting to flip sign or sum to 0
+        # first order should never trigger this condition
+        if proposed_position_leverage * self.net_leverage < 0 or proposed_position_leverage == 0:
+            return -self.net_leverage
+
+        if abs(proposed_position_leverage) < min_position_leverage:
+            raise ValueError(f"Miner {self.miner_hotkey} attempted to set {self.trade_pair.trade_pair_id} position leverage below min_position_leverage {min_position_leverage}")
+
+        clamped_net_leverage = min(abs(proposed_position_leverage), max_position_leverage)
+        clamped_order_leverage = clamped_net_leverage - abs(self.net_leverage)
+        if order_type == OrderType.SHORT:
+            clamped_order_leverage  = -clamped_order_leverage
+
+        return clamped_order_leverage
+
     def _clamp_and_validate_leverage(self, order: Order, net_portfolio_leverage: float) -> bool:
         """
         If an order's leverage would make the position's leverage higher than max_position_leverage,
