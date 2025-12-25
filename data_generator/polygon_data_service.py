@@ -3,7 +3,7 @@ import traceback
 
 import requests
 
-from typing import List
+from typing import List, Optional
 
 from vali_objects.vali_dataclasses.order import Order
 from polygon.websocket import Market, EquityAgg, EquityTrade, CryptoTrade, ForexQuote, WebSocketClient, Feed
@@ -1227,6 +1227,30 @@ class PolygonDataService(BaseDataService):
 
         return rate.converted
 
+    def get_stock_split(self, trade_pair: TradePair, time_ms: int) -> Optional[float]:
+        if not trade_pair.is_equities:
+            return None
+
+        if self.POLYGON_CLIENT is None:
+            self.instantiate_not_pickleable_objects()
+
+        execution_date_str = TimeUtil.millis_to_short_date_str(time_ms)
+        splits = list(self.POLYGON_CLIENT.list_splits(
+            ticker=self.trade_pair_to_polygon_ticker(trade_pair),
+            execution_date=execution_date_str,
+            limit=1
+        ))
+
+        if not splits:
+            return None
+
+        split = splits[0]
+
+        if split.split_from and split.split_to:
+            return split.split_to / split.split_from
+
+        bt.logging.warning(f"Found stock split for {trade_pair.trade_pair_id} on {execution_date_str}, but could not resolves stock split ratio")
+        return None
 
 if __name__ == "__main__":
 

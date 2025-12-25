@@ -21,7 +21,7 @@ Usage in validator.py:
     price = client.get_latest_price(trade_pair)
 """
 import time
-from typing import List, Tuple, Dict
+from typing import List, Optional, Tuple, Dict
 
 from shared_objects.rpc.rpc_server_base import RPCServerBase
 import bittensor as bt
@@ -194,6 +194,9 @@ class LivePriceFetcherServer(RPCServerBase):
     def get_quote_usd_conversion(self, order, position):
         """Delegate to fetcher."""
         return self._fetcher.get_quote_usd_conversion(order, position)
+
+    def get_stock_split(self, trade_pair: TradePair, time_ms: int) -> Optional[float]:
+        return self._fetcher.get_stock_split(trade_pair, time_ms)
 
     def set_test_price_source(self, trade_pair: TradePair, price_source: PriceSource) -> None:
         """

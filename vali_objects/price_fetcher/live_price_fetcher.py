@@ -1,5 +1,5 @@
 import time
-from typing import List, Tuple, Dict
+from typing import List, Optional, Tuple, Dict
 
 import numpy as np
 from data_generator.tiingo_data_service import TiingoDataService
@@ -425,6 +425,9 @@ class LivePriceFetcher:
 
         bt.logging.error(f"Unable to fetch USD to base currency {trade_pair.base} conversion at time {time_ms}. No price sources available (websocket or REST).")
         return 1.0
+
+    def get_stock_split(self, trade_pair: TradePair, time_ms: int) -> Optional[float]:
+        return self.polygon_data_service.get_stock_split(trade_pair, time_ms)
 
 
 if __name__ == "__main__":
