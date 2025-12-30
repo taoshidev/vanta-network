@@ -47,7 +47,8 @@ class BaseDataService():
         self.DEBUG_LOG_INTERVAL_S = 180
         self.MAX_TIME_NO_EVENTS_S = 120
         self.enabled_websocket_categories = {TradePairCategory.CRYPTO,
-                                            TradePairCategory.FOREX}  # Exclude EQUITIES for now
+                                             TradePairCategory.FOREX,
+                                             TradePairCategory.EQUITIES}
 
         self.provider_name = provider_name
         self.running_unit_tests = running_unit_tests

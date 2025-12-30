@@ -186,21 +186,24 @@ class MarketOrderManager():
         leverage_calc_ms = TimeUtil.now_in_millis() - step_start
         bt.logging.info(f"[ADD_ORDER_DETAIL] Net portfolio leverage calc took {leverage_calc_ms}ms")
 
-        if signal_order_type != OrderType.FLAT:
-            clamped_leverage = existing_position.calculate_clamped_leverage(signal_order_type, leverage)
-            if clamped_leverage == -existing_position.net_leverage:
-                signal_order_type = OrderType.FLAT
-            elif clamped_leverage != leverage:
-                quantity, leverage, value = self.parse_order_size({'leverage': leverage}, usd_base_price, trade_pair, existing_position.account_size)
+        margin_loan = 0.0
+        clamped_leverage = existing_position.calculate_clamped_leverage(signal_order_type, leverage)
+        if clamped_leverage == -existing_position.net_leverage:
+            signal_order_type = OrderType.FLAT
+        elif clamped_leverage != leverage:
+            quantity, leverage, value = self.parse_order_size({'leverage': leverage}, usd_base_price, trade_pair, existing_position.account_size)
 
+        if signal_order_type != OrderType.FLAT:
             if net_portfolio_leverage + abs(leverage) > ValiConfig.PORTFOLIO_LEVERAGE_CAP:
                 raise ValueError("Order attempted to exceed max portfolio leverage")
 
-            trade_pair_category = trade_pair.trade_pair_category
-            if signal_order_type == OrderType.LONG:
-                self._miner_account_client.process_order_buy(miner_hotkey, value, trade_pair_category)
-            else:
-                self._miner_account_client.process_order_sell(miner_hotkey, value, existing_position.borrowed_amount, trade_pair_category)
+        trade_pair_category = trade_pair.trade_pair_category
+        if signal_order_type == OrderType.LONG:
+            margin_loan = self._miner_account_client.process_order_buy(miner_hotkey, value, trade_pair_category)
+        else:
+            loan_repaid = self._miner_account_client.process_order_sell(miner_hotkey, value, existing_position.margin_loan, trade_pair_category)
+            # Store loan repayment as negative margin_loan so position.margin_loan sums correctly
+            margin_loan = -loan_repaid
 
         order = Order(
             trade_pair=trade_pair,
@@ -220,6 +223,7 @@ class MarketOrderManager():
             take_profit=take_profit,
             execution_type=execution_type,
             usd_base_rate=usd_base_price,
+            margin_loan=margin_loan,
         )
         order_creation_ms = TimeUtil.now_in_millis() - step_start
         order.quote_usd_rate = self.live_price_fetcher.get_quote_usd_conversion(order, existing_position)

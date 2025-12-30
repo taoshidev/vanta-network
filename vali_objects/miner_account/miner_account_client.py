@@ -194,21 +194,19 @@ class MinerAccountClient(RPCClientBase):
         return self._server.process_order_buy(hotkey, order_value_usd, trade_pair_category)
 
     def process_order_sell(self, hotkey: str, sale_proceeds_usd: float,
-                           borrowed_for_position: float, trade_pair_category: TradePairCategory) -> dict:
+                           position_margin_loan: float, trade_pair_category: TradePairCategory) -> float:
         """
         Process sell/close order. Pay off loan first, return rest to cash.
 
         Args:
             hotkey: Miner's hotkey
             sale_proceeds_usd: Proceeds from sale in USD
-            borrowed_for_position: Amount borrowed for this position
+            position_margin_loan: Margin loan amount for this position
             trade_pair_category: TradePairCategory enum value
 
-        Returns dict with:
-            - loan_repaid: float
-            - cash_returned: float
+        Returns: loan_repaid
         """
-        return self._server.process_order_sell(hotkey, sale_proceeds_usd, borrowed_for_position, trade_pair_category)
+        return self._server.process_order_sell(hotkey, sale_proceeds_usd, position_margin_loan, trade_pair_category)
 
     def get_total_borrowed_amount(self, hotkey: str) -> float:
         """Get total borrowed amount for a miner."""

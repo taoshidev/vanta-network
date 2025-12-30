@@ -22,6 +22,7 @@ class Order(Signal):
     order_uuid: str
     price_sources: list = []
     src: int = OrderSource.ORGANIC
+    margin_loan: float = 0.0
 
     @field_validator('trade_pair', mode='before')
     @classmethod
@@ -155,7 +156,8 @@ class Order(Signal):
                 'execution_type': self.execution_type.name if self.execution_type else None,
                 'limit_price': self.limit_price,
                 'stop_loss': self.stop_loss,
-                'take_profit': self.take_profit}
+                'take_profit': self.take_profit,
+                'margin_loan': self.margin_loan}
 
     def __str__(self):
         # Ensuring the `trade_pair.trade_pair_id` is accessible for the string representation

@@ -59,7 +59,6 @@ class Position(BaseModel):
     unrealized_pnl: float = 0.0             # USD
     position_type: Optional[OrderType] = None
     is_closed_position: bool = False
-    borrowed_amount: Optional[float] = None  # Total margin loan for this position (equities)
 
     @model_validator(mode='before')
     def add_trade_pair_to_orders_and_self(cls, values):
@@ -208,6 +207,13 @@ class Position(BaseModel):
         else:
             return first_order.price
 
+    @property
+    def margin_loan(self) -> float:
+        """Total margin loan for this position (sum of all orders' margin loans)"""
+        if not self.orders:
+            return 0.0
+        return sum(order.margin_loan for order in self.orders)
+
     def __hash__(self):
         # Include specified fields in the hash, assuming trade_pair is accessible and immutable
         return hash((self.miner_hotkey, self.position_uuid, self.open_ms, self.current_return,
@@ -330,7 +336,6 @@ class Position(BaseModel):
         self.position_type = None
         self.is_closed_position = False
         self.position_type = None
-        self.borrowed_amount = None
 
         self._update_position(price_fetcher_client)
 

@@ -571,7 +571,7 @@ class MinerAccountManager:
             order_value_usd: Order value in USD
             trade_pair_category: TradePairCategory enum value
 
-        Returns: {cash_used, borrowed_amount}
+        Returns: borrowed_amount
         Raises: SignalException if insufficient funds for margin
         """
         account = self.get_or_create(hotkey)
@@ -606,25 +606,25 @@ class MinerAccountManager:
             return borrowed_amount
 
     def process_order_sell(self, hotkey: str, sale_proceeds_usd: float,
-                           borrowed_for_position: float, trade_pair_category: TradePairCategory) -> dict:
+                           position_margin_loan: float, trade_pair_category: TradePairCategory) -> float:
         """
         Process sell/close order. Pay off loan first, return rest to cash.
 
         Args:
             hotkey: Miner's hotkey
             sale_proceeds_usd: Proceeds from sale in USD
-            borrowed_for_position: Amount borrowed for this position
+            position_margin_loan: Margin loan amount for this position
             trade_pair_category: TradePairCategory enum value
 
-        Returns: {loan_repaid, cash_returned}
+        Returns: loan_repaid
         """
         account = self.get_or_create(hotkey)
 
         if trade_pair_category != TradePairCategory.EQUITIES:
-            return {"loan_repaid": 0.0, "cash_returned": 0.0}
+            return 0.0
 
         with self._accounts_lock:
-            loan_repaid = min(borrowed_for_position, sale_proceeds_usd)
+            loan_repaid = min(position_margin_loan, sale_proceeds_usd)
             cash_returned = sale_proceeds_usd - loan_repaid
 
             account.total_borrowed_amount -= loan_repaid
@@ -635,7 +635,7 @@ class MinerAccountManager:
                 f"[{hotkey[:8]}] Position closed: proceeds ${sale_proceeds_usd:.2f}, loan repaid: ${loan_repaid:.2f}, "
                 f"cash returned: ${cash_returned:.2f}, remaining borrowed: ${account.total_borrowed_amount:.2f}"
             )
-            return {"loan_repaid": loan_repaid, "cash_returned": cash_returned}
+            return loan_repaid
 
     def get_total_borrowed_amount(self, hotkey: str) -> float:
         """Get total borrowed amount for a miner."""
