@@ -59,6 +59,10 @@ class Order(Signal):
         Initializes quote_usd_rate and usd_base_rate based on the trade pair.
         Only sets values if they were left at the default 0.
         """
+        # Skip for FLAT_ALL or other cases where trade_pair is None
+        if self.trade_pair is None:
+            return self
+
         base = self.trade_pair.base  # e.g. BTC in BTCUSD
         quote = self.trade_pair.quote  # e.g. USD in BTCUSD
         price = self.price
@@ -137,7 +141,10 @@ class Order(Signal):
         return TimeUtil.now_in_millis() - order.processed_ms
 
     def to_python_dict(self):
-        trade_pair_id = self.trade_pair.trade_pair_id if hasattr(self.trade_pair, 'trade_pair_id') else 'unknown'
+        trade_pair_id = None
+        if self.trade_pair is not None:
+            trade_pair_id = self.trade_pair.trade_pair_id if hasattr(self.trade_pair, 'trade_pair_id') else 'unknown'
+
         return {'trade_pair_id': trade_pair_id,
                 'order_type': self.order_type.name,
                 'leverage': self.leverage,

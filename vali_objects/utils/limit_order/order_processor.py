@@ -120,7 +120,7 @@ class OrderProcessor:
 
         # Parse trade pair (allow None for LIMIT_CANCEL operations)
         trade_pair = Order.parse_trade_pair_from_signal(signal)
-        if trade_pair is None and execution_type != ExecutionType.LIMIT_CANCEL:
+        if trade_pair is None and execution_type not in [ExecutionType.LIMIT_CANCEL, ExecutionType.FLAT_ALL]:
             raise SignalException(
                 f"Invalid trade pair in signal. Raw signal: {signal}"
             )
@@ -322,6 +322,10 @@ class OrderProcessor:
         return order
 
     @staticmethod
+    def process_flat_all_order(order_uuid: str, now_ms: int, miner_hotkey: str, miner_repo_version: str, market_order_manager):
+        return market_order_manager.process_flat_all_order(order_uuid, miner_repo_version, miner_hotkey, now_ms)
+
+    @staticmethod
     def process_market_order(signal: dict, trade_pair, order_uuid: str, now_ms: int,
                             miner_hotkey: str, miner_repo_version: str,
                             market_order_manager) -> tuple:
@@ -429,6 +433,17 @@ class OrderProcessor:
                 should_track_uuid=False  # No UUID tracking for cancellations
             )
 
+        elif execution_type == ExecutionType.FLAT_ALL:
+            result = OrderProcessor.process_flat_all_order(
+                order_uuid, now_ms, miner_hotkey,
+                miner_repo_version, market_order_manager
+            )
+
+            return OrderProcessingResult(
+                execution_type=ExecutionType.FLAT_ALL,
+                result_dict=result,
+                should_track_uuid=True
+            )
         else:  # ExecutionType.MARKET
             err_msg, updated_position, created_order = OrderProcessor.process_market_order(
                 signal, trade_pair, order_uuid, now_ms,

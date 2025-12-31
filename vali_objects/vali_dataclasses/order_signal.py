@@ -8,7 +8,7 @@ from vali_objects.enums.order_type_enum import OrderType
 from pydantic import BaseModel, model_validator
 
 class Signal(BaseModel):
-    trade_pair: TradePair
+    trade_pair: Optional[TradePair] = None  # Optional for FLAT_ALL and LIMIT_CANCEL
     order_type: OrderType
     leverage: Optional[float] = None    # Multiplier of account size
     value: Optional[float] = None       # USD notional value
@@ -22,7 +22,7 @@ class Signal(BaseModel):
     def validate_order_type(cls, values):
         """Validate order type restrictions and normalize size."""
         execution_type = values.get('execution_type')
-        if execution_type == ExecutionType.LIMIT_CANCEL:
+        if execution_type in [ExecutionType.LIMIT_CANCEL, ExecutionType.FLAT_ALL]:
             return values
 
         order_type = values.get('order_type')
@@ -47,7 +47,8 @@ class Signal(BaseModel):
         """Validate only one size field is filled (leverage/value/quantity)."""
         execution_type = values.get('execution_type')
         order_type = values.get('order_type')
-        if execution_type == ExecutionType.LIMIT_CANCEL or order_type == OrderType.FLAT:
+        # Skip size validation for LIMIT_CANCEL, FLAT_ALL, and FLAT orders
+        if execution_type in [ExecutionType.LIMIT_CANCEL, ExecutionType.FLAT_ALL] or order_type == OrderType.FLAT:
             return values
 
         fields = ['leverage', 'value', 'quantity']
@@ -92,7 +93,6 @@ class Signal(BaseModel):
                 raise ValueError("stop_loss and take_profit must be unique")
 
         return values
-
     @staticmethod
     def parse_trade_pair_from_signal(signal) -> TradePair | None:
         if not signal or not isinstance(signal, dict):
@@ -108,7 +108,7 @@ class Signal(BaseModel):
 
     def __str__(self):
         base = {
-            'trade_pair': str(self.trade_pair),
+            'trade_pair': str(self.trade_pair) if self.trade_pair else None,
             'order_type': str(self.order_type),
             'leverage': self.leverage,
             'value': self.value,
@@ -127,7 +127,9 @@ class Signal(BaseModel):
             return str(base)
 
         elif self.execution_type == ExecutionType.LIMIT_CANCEL:
-            # No extra fields needed - order_uuid comes from synapse.miner_order_uuid
+            return str(base)
+
+        elif self.execution_type == ExecutionType.FLAT_ALL:
             return str(base)
 
         return str({**base, 'Error': 'Unknown execution type'})

@@ -1010,3 +1010,66 @@ class TestMarketOrderManager(TestBase):
         # Verify cache key format
         expected_key = (self.DEFAULT_MINER_HOTKEY, self.DEFAULT_TRADE_PAIR.trade_pair_id)
         self.assertIn(expected_key, self.market_order_manager.last_order_time_cache)
+
+    # ============================================================================
+    # Test: process_flat_all_order
+    # ============================================================================
+
+    def test_process_flat_all_order_closes_multiple_positions(self):
+        """Test FLAT_ALL closes all open positions for a miner"""
+        now_ms = TimeUtil.now_in_millis()
+
+        # Create multiple positions for the miner
+        # Use low leverage to avoid hitting portfolio max
+        trade_pairs = [TradePair.BTCUSD, TradePair.ETHUSD, TradePair.SOLUSD]
+
+        for i, trade_pair in enumerate(trade_pairs):
+            signal = self.create_test_signal(order_type=OrderType.LONG, leverage=0.1)
+            price_sources = [self.create_test_price_source(50000.0 + i * 1000, start_ms=now_ms + i * 1000)]
+
+            err_msg, position, created_order = self.market_order_manager._process_market_order(
+                miner_order_uuid=f"position_{i}",
+                miner_repo_version="1.0.0",
+                trade_pair=trade_pair,
+                now_ms=now_ms + i * 1000,
+                signal=signal,
+                miner_hotkey=self.DEFAULT_MINER_HOTKEY,
+                price_sources=price_sources,
+                enforce_market_cooldown=False
+            )
+
+            self.assertIsNone(err_msg)
+            self.assertIsNotNone(position)
+            self.assertFalse(position.is_closed_position)
+
+        # Verify all positions are open
+        open_positions_before = self.position_client.get_positions_for_hotkeys(
+            [self.DEFAULT_MINER_HOTKEY],
+            only_open_positions=True
+        ).get(self.DEFAULT_MINER_HOTKEY)
+
+        self.assertEqual(len(open_positions_before), 3)
+
+        # Close all positions with FLAT_ALL
+        close_time_ms = now_ms + 10000
+        result = self.market_order_manager.process_flat_all_order(
+            order_uuid="flat_all_uuid",
+            miner_repo_version="1.0.0",
+            miner_hotkey=self.DEFAULT_MINER_HOTKEY,
+            now_ms=close_time_ms
+        )
+
+        # Verify result
+        self.assertEqual(result["positions_closed"], 3)
+        self.assertEqual(result["positions_failed"], 0)
+        self.assertEqual(len(result["failed_trade_pairs"]), 0)
+
+        # Verify all positions are now closed
+        all_positions = self.position_client.get_positions_for_one_hotkey(self.DEFAULT_MINER_HOTKEY)
+
+        for position in all_positions:
+            self.assertTrue(position.is_closed_position)
+            # Verify the last order is FLAT with correct source
+            last_order = position.orders[-1]
+            self.assertEqual(last_order.order_type, OrderType.FLAT)
+            self.assertEqual(last_order.src, OrderSource.FLAT_ALL_CLOSE)
