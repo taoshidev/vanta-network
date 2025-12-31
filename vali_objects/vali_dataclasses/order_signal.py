@@ -8,7 +8,7 @@ from vali_objects.enums.order_type_enum import OrderType
 from pydantic import BaseModel, model_validator
 
 class Signal(BaseModel):
-    trade_pair: TradePair
+    trade_pair: Optional[TradePair] = None  # Optional for FLAT_ALL and LIMIT_CANCEL
     order_type: OrderType
     leverage: Optional[float] = None    # Multiplier of account size
     value: Optional[float] = None       # USD notional value
@@ -21,11 +21,36 @@ class Signal(BaseModel):
     @model_validator(mode='before')
     def check_exclusive_fields(cls, values):
         """
-        Ensure that only ONE of leverage, value, or quantity is filled.
-        Exception: BRACKET orders can have all fields as None (will be populated from position).
+        Normalize size sign based on order_type and validate FLAT/LIMIT combinations.
         """
         execution_type = values.get('execution_type')
-        if execution_type == ExecutionType.LIMIT_CANCEL:
+        if execution_type in [ExecutionType.LIMIT_CANCEL, ExecutionType.FLAT_ALL]:
+            return values
+
+        order_type = values.get('order_type')
+        is_flat = order_type == OrderType.FLAT or order_type == 'FLAT'
+
+        if execution_type == ExecutionType.LIMIT and is_flat:
+            raise ValueError("FLAT order is not supported for LIMIT orders")
+
+        # Normalize size sign based on order_type
+        for field in ['leverage', 'value', 'quantity']:
+            size = values.get(field)
+            if size is not None:
+                if order_type == OrderType.LONG and size < 0:
+                    raise ValueError(f"{field} must be positive for LONG orders.")
+                elif order_type == OrderType.SHORT:
+                    values[field] = -1.0 * abs(size)
+
+        return values
+
+    @model_validator(mode='before')
+    def validate_size_fields(cls, values):
+        """Validate only one size field is filled (leverage/value/quantity)."""
+        execution_type = values.get('execution_type')
+        order_type = values.get('order_type')
+        # Skip size validation for LIMIT_CANCEL, FLAT_ALL, and FLAT orders
+        if execution_type in [ExecutionType.LIMIT_CANCEL, ExecutionType.FLAT_ALL] or order_type == OrderType.FLAT:
             return values
 
         fields = ['leverage', 'value', 'quantity']
@@ -69,29 +94,6 @@ class Signal(BaseModel):
 
         return values
 
-
-    @model_validator(mode='before')
-    def set_size(cls, values):
-        """
-        Ensure that long orders have positive size, and short orders have negative size,
-        applied to all non-None of leverage, value, and quantity.
-        """
-        execution_type = values.get('execution_type')
-        if execution_type == ExecutionType.LIMIT_CANCEL:
-            return values
-
-        order_type = values['order_type']
-
-        # Apply sign correction to leverage, value, and quantity
-        for field in ['leverage', 'value', 'quantity']:
-            size = values.get(field)
-            if size is not None:
-                if order_type == OrderType.LONG and size < 0:
-                    raise ValueError(f"{field} must be positive for LONG orders.")
-                elif order_type == OrderType.SHORT:
-                    values[field] = -1.0 * abs(size)
-        return values
-
     @staticmethod
     def parse_trade_pair_from_signal(signal) -> TradePair | None:
         if not signal or not isinstance(signal, dict):
@@ -107,7 +109,7 @@ class Signal(BaseModel):
 
     def __str__(self):
         base = {
-            'trade_pair': str(self.trade_pair),
+            'trade_pair': str(self.trade_pair) if self.trade_pair else None,
             'order_type': str(self.order_type),
             'leverage': self.leverage,
             'value': self.value,
@@ -126,7 +128,9 @@ class Signal(BaseModel):
             return str(base)
 
         elif self.execution_type == ExecutionType.LIMIT_CANCEL:
-            # No extra fields needed - order_uuid comes from synapse.miner_order_uuid
+            return str(base)
+
+        elif self.execution_type == ExecutionType.FLAT_ALL:
             return str(base)
 
         return str({**base, 'Error': 'Unknown execution type'})

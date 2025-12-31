@@ -14,6 +14,7 @@ class OrderSource(IntEnum):
     BRACKET_UNFILLED = 8               # bracket order (stop loss/take profit) created but not yet filled
     BRACKET_FILLED = 9                 # bracket order (stop loss/take profit) that was filled
     BRACKET_CANCELLED = 10             # bracket order (stop loss/take profit) that was cancelled
+    FLAT_ALL_CLOSE = 11                # order inserted when miner sends FLAT_ALL to close all positions
 
     @staticmethod
     def get_fill(order_src):

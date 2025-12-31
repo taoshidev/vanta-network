@@ -303,6 +303,85 @@ class MarketOrderManager():
 
         return quantity, leverage, value
 
+    def process_flat_all_order(self, order_uuid, miner_repo_version, miner_hotkey, now_ms):
+        bt.logging.info(f"Processing FLAT_ALL order for miner [{miner_hotkey}]")
+
+        # Get all open positions for this miner
+        open_positions = self._position_client.get_positions_for_hotkeys([miner_hotkey], only_open_positions=True).get(miner_hotkey)
+
+        if not open_positions:
+            bt.logging.info(f"No open positions found for miner [{miner_hotkey}]")
+            return {
+                "positions_closed": 0,
+                "positions_failed": 0,
+                "failed_trade_pairs": []
+            }
+
+        total_positions = len(open_positions)
+        cnt_positions_closed = 0
+        cnt_positions_failed = 0
+        failed_trade_pairs = []
+
+        bt.logging.info(f"Found {total_positions} open positions for miner [{miner_hotkey}], closing all...")
+
+        for i, position in enumerate(open_positions):
+            trade_pair = position.trade_pair
+
+            try:
+                # Get price sources for this trade pair
+                price_sources = self.live_price_fetcher.get_sorted_price_sources_for_trade_pair(trade_pair, now_ms)
+                if not price_sources:
+                    bt.logging.error(
+                        f"[FLAT_ALL] No price sources available for position {i+1}/{total_positions} "
+                        f"[{trade_pair.trade_pair_id}] for miner [{miner_hotkey}]"
+                    )
+                    cnt_positions_failed += 1
+                    failed_trade_pairs.append(trade_pair.trade_pair_id)
+                    continue
+
+                # Acquire position lock before closing
+                with self._position_lock_client.get_lock(miner_hotkey, trade_pair.trade_pair_id):
+                    position_close_uuid = position.position_uuid[::-1]
+                    position_close_time = now_ms - (total_positions - i - 1)
+
+                    self._add_order_to_existing_position(
+                        position, trade_pair, OrderType.FLAT,
+                        0.0, 0.0, 0.0, position_close_time, miner_hotkey,
+                        price_sources, position_close_uuid, miner_repo_version,
+                        OrderSource.FLAT_ALL_CLOSE,
+                        position.account_size
+                    )
+
+                    cnt_positions_closed += 1
+                    bt.logging.info(
+                        f"[FLAT_ALL] Closed position {i+1}/{total_positions} "
+                        f"[{trade_pair.trade_pair_id}] for miner [{miner_hotkey}]"
+                    )
+
+                if i < total_positions - 1:
+                    time.sleep(0.05)
+
+            except Exception as e:
+                bt.logging.error(
+                    f"[FLAT_ALL] Failed to close position {i+1}/{total_positions} "
+                    f"[{trade_pair.trade_pair_id}] for miner [{miner_hotkey}]: {str(e)}"
+                )
+                cnt_positions_failed += 1
+                failed_trade_pairs.append(trade_pair.trade_pair_id)
+                continue
+
+        bt.logging.info(
+            f"[FLAT_ALL] Completed for miner [{miner_hotkey}]: "
+            f"{cnt_positions_closed}/{total_positions} positions closed, "
+            f"{cnt_positions_failed} failed"
+        )
+
+        return {
+            "positions_closed": cnt_positions_closed,
+            "positions_failed": cnt_positions_failed,
+            "failed_trade_pairs": failed_trade_pairs
+        }
+
     def process_market_order(self, synapse, miner_order_uuid, miner_repo_version, trade_pair, now_ms, signal, miner_hotkey, price_sources=None):
 
         err_message, existing_position, created_order = self._process_market_order(miner_order_uuid, miner_repo_version, trade_pair,
