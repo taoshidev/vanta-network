@@ -1,6 +1,7 @@
 # pickling and json files
 *.json
 *.pickle
+*.gz
 # model parameters
 !vali_objects/utils/model_parameters/all_model_parameters.json
 !vali_objects/utils/model_parameters/slippage_estimates.json
