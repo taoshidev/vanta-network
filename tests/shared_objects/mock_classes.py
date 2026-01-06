@@ -7,7 +7,6 @@ from shared_objects.cache_controller import CacheController
 from vali_objects.challenge_period import ChallengePeriodManager
 from vali_objects.price_fetcher import LivePriceFetcherServer
 from vali_objects.utils.mdd_checker.mdd_checker_server import MDDCheckerServer
-from vali_objects.plagiarism.plagiarism_detector import PlagiarismDetector
 from vali_objects.position_management.position_manager import PositionManager
 from vali_objects.utils.price_slippage_model import PriceSlippageModel
 from vali_objects.vali_config import TradePair, RPCConnectionMode
@@ -41,19 +40,6 @@ class MockPositionManager(PositionManager):
 class MockPerfLedgerManager(PerfLedgerManager):
     def __init__(self, metagraph):
         super().__init__(connection_mode=RPCConnectionMode.LOCAL)
-
-
-class MockPlagiarismDetector(PlagiarismDetector):
-    def __init__(self):
-        # Use RPC mode so clients connect to orchestrator servers
-        # (LOCAL mode would create disconnected clients expecting set_direct_server())
-        super().__init__(connection_mode=RPCConnectionMode.RPC)
-        # Override to get test-specific behaviors (fixed time, test directories)
-        self.running_unit_tests = True
-
-    # Lets us bypass the wait period in PlagiarismDetector
-    def get_last_update_time_ms(self):
-        return 0
 
 
 class MockChallengePeriodManager(ChallengePeriodManager):

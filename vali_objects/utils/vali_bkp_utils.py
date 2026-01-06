@@ -169,29 +169,6 @@ class ValiBkpUtils:
             return False
 
     @staticmethod
-    def get_plagiarism_dir(running_unit_tests=False) -> str:
-        suffix = "/tests" if running_unit_tests else ""
-        return ValiConfig.BASE_DIR + f"{suffix}/validation/plagiarism/"
-    @staticmethod
-    def get_plagiarism_raster_file_location(running_unit_tests=False) -> str:
-        suffix = "/tests" if running_unit_tests else ""
-        return ValiConfig.BASE_DIR + f"{suffix}/validation/plagiarism/raster_vectors"
-
-    @staticmethod
-    def get_plagiarism_positions_file_location(running_unit_tests=False) -> str:
-        suffix = "/tests" if running_unit_tests else ""
-        return ValiConfig.BASE_DIR + f"{suffix}/validation/plagiarism/positions"
-
-    @staticmethod
-    def get_plagiarism_scores_dir(running_unit_tests=False) -> str:
-        suffix = "/tests" if running_unit_tests else ""
-        return ValiConfig.BASE_DIR + f"{suffix}/validation/plagiarism/miners/"
-
-    @staticmethod
-    def get_plagiarism_score_file_location(hotkey, running_unit_tests=False) -> str:
-        return f"{ValiBkpUtils.get_plagiarism_scores_dir(running_unit_tests=running_unit_tests)}{hotkey}.json"
-
-    @staticmethod
     def get_challengeperiod_file_location(running_unit_tests=False) -> str:
         suffix = "/tests" if running_unit_tests else ""
         return ValiConfig.BASE_DIR + f"{suffix}/validation/challengeperiod.json"
@@ -218,10 +195,6 @@ class ValiBkpUtils:
     @staticmethod
     def get_taoshi_api_keys_file_location():
         return ValiConfig.BASE_DIR + "/config-development.json"
-
-    @staticmethod
-    def get_plagiarism_blocklist_file_location():
-        return ValiConfig.BASE_DIR + "/miner_blocklist.json"
 
     @staticmethod
     def get_vali_bkp_dir() -> str:

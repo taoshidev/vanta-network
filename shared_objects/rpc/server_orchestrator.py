@@ -223,12 +223,6 @@ class ServerOrchestrator:
             required_in_testing=True,
             spawn_kwargs={'start_daemon': False}  # Daemon started later via orchestrator (not currently used)
         ),
-        'plagiarism_detector': ServerConfig(
-            server_class=None,
-            client_class=None,
-            required_in_testing=True,
-            spawn_kwargs={'start_daemon': False}  # Daemon started later via orchestrator (overrides default=True)
-        ),
         'limit_order': ServerConfig(
             server_class=None,
             client_class=None,
@@ -350,8 +344,6 @@ class ServerOrchestrator:
         from vali_objects.position_management.position_manager_client import PositionManagerClient
         from vali_objects.plagiarism.plagiarism_server import PlagiarismServer
         from vali_objects.plagiarism.plagiarism_client import PlagiarismClient
-        from vali_objects.plagiarism.plagiarism_detector_server import PlagiarismDetectorServer
-        from vali_objects.plagiarism.plagiarism_detector_client import PlagiarismDetectorClient
         from vali_objects.utils.limit_order.limit_order_server import LimitOrderServer
         from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
         from vali_objects.utils.asset_selection.asset_selection_server import AssetSelectionServer
@@ -396,9 +388,6 @@ class ServerOrchestrator:
 
         self.SERVERS['plagiarism'].server_class = PlagiarismServer
         self.SERVERS['plagiarism'].client_class = PlagiarismClient
-
-        self.SERVERS['plagiarism_detector'].server_class = PlagiarismDetectorServer
-        self.SERVERS['plagiarism_detector'].client_class = PlagiarismDetectorClient
 
         self.SERVERS['limit_order'].server_class = LimitOrderServer
         self.SERVERS['limit_order'].client_class = LimitOrderClient
@@ -572,7 +561,6 @@ class ServerOrchestrator:
         - debt_ledger: depends on perf_ledger, position_manager (PenaltyLedgerManager uses PositionManagerClient)
         - websocket_notifier: depends on position_manager (broadcasts position updates)
         - plagiarism: depends on position_manager
-        - plagiarism_detector: depends on plagiarism, position_manager
         - limit_order: depends on position_manager
         - mdd_checker: depends on position_manager, elimination
         - core_outputs: depends on all above (aggregates checkpoint data)
@@ -597,7 +585,6 @@ class ServerOrchestrator:
             'debt_ledger',         # Must come AFTER position_manager (PenaltyLedgerManager uses PositionManagerClient)
             'websocket_notifier',
             'plagiarism',
-            'plagiarism_detector',
             'limit_order',
             'mdd_checker',
             'core_outputs',

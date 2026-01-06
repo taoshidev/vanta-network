@@ -190,11 +190,11 @@ def regenerate_miner_positions(perform_backup=True, backup_from_data_dir=False, 
         raise FileNotFoundError(f"No checkpoint file found at {uncompressed_path} or {compressed_path}")
 
     bt.logging.info("Found validator backup file with the following attributes:")
-    # Log every key and value pair in the data except for positions, eliminations, and plagiarism scores
+    # Log every key and value pair in the data except for positions and eliminations
     for key, value in data.items():
         # Check is the value is of type dict or list. If so, print the size of the dict or list
         if isinstance(value, dict) or isinstance(value, list):
-            # Log the size of the positions, eliminations, and plagiarism scores
+            # Log the size of the positions and eliminations
             bt.logging.info(f"    {key}: {len(value)} entries")
         else:
             bt.logging.info(f"    {key}: {value}")
@@ -278,7 +278,7 @@ def regenerate_miner_positions(perform_backup=True, backup_from_data_dir=False, 
         msg = (f"Detected {n_existing_position} hotkeys with positions, {n_existing_eliminations} eliminations")
         bt.logging.info(msg)
 
-        bt.logging.info("Overwriting all existing positions, eliminations, and plagiarism scores.")
+        bt.logging.info("Overwriting all existing positions and eliminations.")
         if perform_backup:
             backup_validation_directory()
 

@@ -39,7 +39,6 @@ class TestMinerStatistics(TestBase):
     elimination_client = None
     challenge_period_client = None
     plagiarism_client = None
-    plagiarism_detector_client = None
     asset_selection_client = None
     miner_statistics_client = None
     miner_statistics_handle = None  # Server handle for tests that need direct server access
@@ -65,7 +64,6 @@ class TestMinerStatistics(TestBase):
         cls.elimination_client = cls.orchestrator.get_client('elimination')
         cls.position_client = cls.orchestrator.get_client('position_manager')
         cls.plagiarism_client = cls.orchestrator.get_client('plagiarism')
-        cls.plagiarism_detector_client = cls.orchestrator.get_client('plagiarism_detector')
         cls.asset_selection_client = cls.orchestrator.get_client('asset_selection')
         cls.miner_statistics_client = cls.orchestrator.get_client('miner_statistics')
 
