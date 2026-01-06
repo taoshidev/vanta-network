@@ -216,7 +216,6 @@ class MinerStatisticsManager:
         from vali_objects.utils.elimination.elimination_client import EliminationClient
         from vali_objects.contract.contract_client import ContractClient
         from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
-        from vali_objects.plagiarism.plagiarism_detector_client import PlagiarismDetectorClient
         from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
 
         self._position_client = PositionManagerClient(
@@ -227,7 +226,6 @@ class MinerStatisticsManager:
         self._challengeperiod_client = ChallengePeriodClient(connection_mode=connection_mode)
         self._elimination_client = EliminationClient(connection_mode=connection_mode)
         self._perf_ledger_client = PerfLedgerClient(connection_mode=connection_mode)
-        self._plagiarism_detector_client = PlagiarismDetectorClient(connection_mode=connection_mode)
         self._contract_client = ContractClient(connection_mode=connection_mode)
         self._asset_selection_client = AssetSelectionClient(connection_mode=connection_mode)
 
@@ -262,11 +260,6 @@ class MinerStatisticsManager:
     def perf_ledger_manager(self):
         """Get perf ledger client."""
         return self._perf_ledger_client
-
-    @property
-    def plagiarism_detector(self):
-        """Get plagiarism detector client."""
-        return self._plagiarism_detector_client
 
     @property
     def asset_selection_manager(self):
@@ -783,9 +776,6 @@ class MinerStatisticsManager:
         weights_rank = self.rank_dictionary(combined_weights_list)
         weights_percentile = self.percentile_rank_dictionary(combined_weights_list)
 
-        # Load plagiarism once
-        plagiarism_scores = self._plagiarism_detector_client.get_plagiarism_scores_from_disk()
-
         # Prepare data for each miner
         miner_data = {}
         for hotkey in selected_miner_hotkeys:
@@ -895,9 +885,6 @@ class MinerStatisticsManager:
             # Account Size
             account_sizes = account_size_dict.get(hotkey)
 
-            # Plagiarism
-            plagiarism_val = plagiarism_scores.get(hotkey)
-
             # Weight
             w_val = weights_dict.get(hotkey)
             w_rank = weights_rank.get(hotkey)
@@ -928,7 +915,6 @@ class MinerStatisticsManager:
                 "daily_returns": daily_returns_list,
                 "volatility": volatility_subdict,
                 "drawdowns": drawdowns_subdict,
-                "plagiarism": plagiarism_val,
                 "engagement": engagement_subdict,
                 "risk_profile": risk_profile_single_dict,
                 "asset_class_performance": asset_class_performance,

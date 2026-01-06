@@ -160,11 +160,6 @@ class MinerStatisticsServer(RPCServerBase):
         return self._manager.perf_ledger_manager
 
     @property
-    def plagiarism_detector(self):
-        """Get plagiarism detector client (via manager)."""
-        return self._manager.plagiarism_detector
-
-    @property
     def metrics_calculator(self):
         """Get metrics calculator (via manager)."""
         return self._manager.metrics_calculator
