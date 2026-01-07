@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Optional
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.enums.order_type_enum import OrderType
+from vali_objects.exceptions.bracket_order_exception import BracketOrderException
 from vali_objects.exceptions.signal_exception import SignalException
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.vali_dataclasses.position import Position
@@ -461,7 +462,7 @@ class OrderProcessor:
                 if updated_position and not updated_position.is_closed_position:
                     try:
                         limit_order_client.create_sltp_order(miner_hotkey, created_order)
-                    except SignalException as e:
+                    except BracketOrderException as e:
                         raise SignalException(
                             f"Market order filled successfully, but bracket order creation failed: {e}"
                         )
