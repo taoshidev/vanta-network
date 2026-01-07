@@ -444,11 +444,11 @@ class ChallengePeriodManager(CacheController):
             if not has_minimum_ledger:
                 continue
 
-            # Unified check: Drawdown (6% threshold in 0-100 scale)
+            # Unified check: Drawdown (2.5% threshold in 0-100 scale)
             should_eliminate, reason = self._check_drawdown_limit(
                 hotkey=hotkey,
                 ledger=ledger,
-                drawdown_threshold_percentage=ValiConfig.SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD * 100  # Convert 0.06 to 6.0
+                drawdown_threshold_percentage=ValiConfig.SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD * 100  # Convert 0.025 to 2.5
             )
             if should_eliminate:
                 miners_to_eliminate[hotkey] = reason

@@ -439,8 +439,8 @@ class ValiConfig:
 
     # Challenge Period Configuration
     SUBACCOUNT_CHALLENGE_PERIOD_DAYS = 90  # Challenge period duration (90 days)
-    SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD = 0.03  # 3% returns required to pass challenge period
-    SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD = 0.06  # 6% max drawdown allowed during challenge period
+    SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD = 0.04  # 4% returns required to pass challenge period
+    SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD = 0.025  # 2.5% max drawdown allowed during challenge period
 
     # Distributional statistics
     SOFTMAX_TEMPERATURE = 0.15
@@ -475,7 +475,7 @@ class ValiConfig:
 
     # Entity Miner Collateral
     ENTITY_REGISTRATION_FEE = 5000  # Theta required to register an entity
-    ENTITY_COST_PER_THETA = 5000  # USD account size per theta of collateral for entity subaccounts
+    ENTITY_COST_PER_THETA = 2500  # USD account size per theta of collateral for entity subaccounts
     MAX_SUBACCOUNT_ACCOUNT_SIZE = 100_000  # Maximum account size in USD for entity subaccounts
 
     # Account Size
