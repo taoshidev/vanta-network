@@ -32,20 +32,30 @@ from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLed
 
 
 class CollateralRecord:
-    def __init__(self, account_size, account_size_theta, update_time_ms):
+    def __init__(self, account_size, account_size_theta, update_time_ms, is_first_record: bool = False):
         self.account_size = account_size
         self.account_size_theta = account_size_theta
         self.update_time_ms = update_time_ms
-        self.valid_date_timestamp = CollateralRecord.valid_from_ms(update_time_ms)
+        self.valid_date_timestamp = CollateralRecord.valid_from_ms(update_time_ms, is_first_record)
 
     @staticmethod
-    def valid_from_ms(update_time_ms) -> int:
-        """Returns timestamp of start of next day (00:00:00 UTC) when this record is valid"""
+    def valid_from_ms(update_time_ms, is_first_record: bool = False) -> int:
+        """
+        Returns timestamp when this record becomes valid.
+
+        First record: Valid from start of current day (allows same-day trading)
+        Subsequent records: Valid from start of next day (prevents intraday manipulation)
+        """
         dt = datetime.fromtimestamp(update_time_ms / 1000, tz=timezone.utc)
         start_of_day = dt.replace(hour=0, minute=0, second=0, microsecond=0)
-        # Record is valid from the start of the next day
-        start_of_next_day = start_of_day + timedelta(days=1)
-        return int(start_of_next_day.timestamp() * 1000)
+
+        if is_first_record:
+            # First record: valid immediately from start of current day
+            return int(start_of_day.timestamp() * 1000)
+        else:
+            # Subsequent records: valid from start of next day
+            start_of_next_day = start_of_day + timedelta(days=1)
+            return int(start_of_next_day.timestamp() * 1000)
 
     @property
     def valid_date_str(self) -> str:
@@ -868,7 +878,11 @@ class ValidatorContractManager(ValidatorBroadcastBase):
 
             if account_size is None:
                 account_size = min(ValiConfig.MAX_COLLATERAL_BALANCE_THETA, collateral_balance) * ValiConfig.COST_PER_THETA
-            collateral_record = CollateralRecord(account_size, collateral_balance, timestamp_ms)
+
+            # Check if this is the first record for this miner
+            is_first_record = hotkey not in self.miner_account_sizes or not self.miner_account_sizes[hotkey]
+
+            collateral_record = CollateralRecord(account_size, collateral_balance, timestamp_ms, is_first_record)
             # Skip if the new record matches the last existing record
             if hotkey in self.miner_account_sizes and self.miner_account_sizes[hotkey]:
                 last_record = self.miner_account_sizes[hotkey][-1]
@@ -1056,8 +1070,10 @@ class ValidatorContractManager(ValidatorBroadcastBase):
                     bt.logging.warning(f"Invalid collateral record data received: {collateral_record_data}")
                     return False
 
+                is_first_record = hotkey not in self.miner_account_sizes or not self.miner_account_sizes[hotkey]
+
                 # Create a CollateralRecord object
-                collateral_record = CollateralRecord(account_size, account_size_theta, update_time_ms)
+                collateral_record = CollateralRecord(account_size, account_size_theta, update_time_ms, is_first_record)
 
                 # Update miner account sizes
                 if hotkey not in self.miner_account_sizes:

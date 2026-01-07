@@ -103,7 +103,6 @@ class TestValidatorContractManager(TestBase):
     def test_set_and_get_miner_account_size(self):
         """Test setting and getting miner account sizes"""
         current_time = int(time.time() * 1000)
-        day_after_current_time = self.DAY_MS + current_time
 
         # Initially should return None for non-existent miner
         self.assertIsNone(self.contract_client.get_miner_account_size(self.MINER_1))
@@ -112,25 +111,24 @@ class TestValidatorContractManager(TestBase):
         # Test balance already injected in setUp()
         self.contract_client.set_miner_account_size(self.MINER_1, current_time)
 
-        # Verify retrieval - should return the calculated account size
-        account_size = self.contract_client.get_miner_account_size(self.MINER_1, day_after_current_time)
+        # First record should be available SAME day!
+        account_size = self.contract_client.get_miner_account_size(self.MINER_1, current_time)
         self.assertIsNotNone(account_size)
 
         # Set for second miner (balance already injected in setUp())
         self.contract_client.set_miner_account_size(self.MINER_2, current_time)
-        account_size_2 = self.contract_client.get_miner_account_size(self.MINER_2, day_after_current_time)
+        account_size_2 = self.contract_client.get_miner_account_size(self.MINER_2, current_time)
         self.assertIsNotNone(account_size_2)
 
     def test_account_size_persistence(self):
         """Test that account sizes are saved to and loaded from disk"""
         current_time = int(time.time() * 1000)
-        day_after_current_time = self.DAY_MS + current_time
 
         # Set account size (balance already injected in setUp())
         self.contract_client.set_miner_account_size(self.MINER_1, current_time)
 
-        # Verify it was set
-        account_size = self.contract_client.get_miner_account_size(self.MINER_1, day_after_current_time)
+        # Verify it was set (first record should be available same day)
+        account_size = self.contract_client.get_miner_account_size(self.MINER_1, current_time)
         self.assertIsNotNone(account_size)
 
         # Test the disk persistence by checking via miner_account_sizes_dict
@@ -293,11 +291,37 @@ class TestValidatorContractManager(TestBase):
         self.contract_client.set_miner_account_size(self.MINER_1, current_time)
         self.contract_client.set_miner_account_size(self.MINER_2, current_time)
 
-        # Get all account sizes
-        all_sizes = self.contract_client.get_all_miner_account_sizes(timestamp_ms=current_time + self.DAY_MS)
+        # Get all account sizes (first records should be available same day)
+        all_sizes = self.contract_client.get_all_miner_account_sizes(timestamp_ms=current_time)
 
         # Verify both miners are present
         self.assertIn(self.MINER_1, all_sizes)
         self.assertIn(self.MINER_2, all_sizes)
         self.assertIsNotNone(all_sizes[self.MINER_1])
         self.assertIsNotNone(all_sizes[self.MINER_2])
+
+    def test_first_record_same_day_subsequent_next_day(self):
+        """Test that first record is valid same day, subsequent records next day"""
+        base_time = int(time.time() * 1000)
+
+        # Create first record
+        self.contract_client.set_test_collateral_balance(self.MINER_1, 1_000_000)
+        self.contract_client.set_miner_account_size(self.MINER_1, base_time)
+
+        # First record should be available SAME day
+        account_size_day0 = self.contract_client.get_miner_account_size(self.MINER_1, base_time)
+        self.assertIsNotNone(account_size_day0)
+
+        # Create second record next day
+        day1_time = base_time + self.DAY_MS
+        self.contract_client.set_test_collateral_balance(self.MINER_1, 2_000_000)
+        self.contract_client.set_miner_account_size(self.MINER_1, day1_time)
+
+        # Second record should NOT be available on day 1 (still uses day 0 value)
+        account_size_day1 = self.contract_client.get_miner_account_size(self.MINER_1, day1_time)
+        self.assertEqual(account_size_day1, account_size_day0)  # Still old value
+
+        # Second record should be available on day 2
+        day2_time = day1_time + self.DAY_MS
+        account_size_day2 = self.contract_client.get_miner_account_size(self.MINER_1, day2_time)
+        self.assertNotEqual(account_size_day2, account_size_day0)  # New value
