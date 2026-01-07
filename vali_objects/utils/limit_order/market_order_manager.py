@@ -201,8 +201,8 @@ class MarketOrderManager():
         if signal_order_type == OrderType.LONG:
             margin_loan = self._miner_account_client.process_order_buy(miner_hotkey, value, trade_pair_category)
         else:
-            sale_proceeds = existing_position.net_value if signal_order_type == OrderType.FLAT else -value
-            loan_repaid = self._miner_account_client.process_order_sell(miner_hotkey, sale_proceeds, existing_position.margin_loan, trade_pair_category)
+            sale_proceeds = existing_position.net_value if signal_order_type == OrderType.FLAT else value
+            loan_repaid = self._miner_account_client.process_order_sell(miner_hotkey, abs(sale_proceeds), existing_position.margin_loan, trade_pair_category)
             # Store loan repayment as negative margin_loan so position.margin_loan sums correctly
             margin_loan = -loan_repaid
 
