@@ -179,7 +179,8 @@ class MDDChecker(CacheController):
 
             stock_split_ratio = None
             if is_new_day or (new_price and prev_price and abs((new_price - prev_price) / prev_price) >= 0.1):
-               stock_split_ratio = self._live_price_client.get_stock_split(tp, now_ms)
+                bt.logging.info(f"[STOCK SPLITS] Checking stock split for {tp.trade_pair_id} ({today_date_est})")
+                stock_split_ratio = self._live_price_client.get_stock_split(tp, now_ms)
 
             if stock_split_ratio is not None:
                 self._position_client.apply_stock_split(tp.trade_pair_id, stock_split_ratio)

@@ -1231,26 +1231,42 @@ class PolygonDataService(BaseDataService):
         if not trade_pair.is_equities:
             return None
 
-        if self.POLYGON_CLIENT is None:
-            self.instantiate_not_pickleable_objects()
-
         execution_date_str = TimeUtil.millis_to_short_date_str(time_ms)
-        splits = list(self.POLYGON_CLIENT.list_splits(
-            ticker=self.trade_pair_to_polygon_ticker(trade_pair),
-            execution_date=execution_date_str,
-            limit=1
-        ))
+        ticker = self.trade_pair_to_polygon_ticker(trade_pair)
 
-        if not splits:
+        endpoint = "https://api.massive.com/stocks/v1/splits"
+        params = {
+            "ticker": ticker,
+            "execution_date": execution_date_str,
+            "limit": 100,
+            "sort": "execution_date.desc",
+            "apiKey": self._api_key
+        }
+
+        try:
+            response = requests.get(endpoint, params=params)
+            response.raise_for_status()
+            data = response.json()
+
+            if 'results' in data and isinstance(data['results'], list):
+                for split in data['results']:
+                    # Match ticker and execution date
+                    if split.get('ticker') == ticker and split.get('execution_date') == execution_date_str:
+                        split_from = split.get('split_from')
+                        split_to = split.get('split_to')
+
+                        if split_from and split_to:
+                            return split_to / split_from
+                        else:
+                            bt.logging.warning(f"Found stock split for {trade_pair.trade_pair_id} on {execution_date_str}, but could not resolve stock split ratio")
+                            return None
+
+            # No matching split found
             return None
 
-        split = splits[0]
-
-        if split.split_from and split.split_to:
-            return split.split_to / split.split_from
-
-        bt.logging.warning(f"Found stock split for {trade_pair.trade_pair_id} on {execution_date_str}, but could not resolves stock split ratio")
-        return None
+        except Exception as e:
+            bt.logging.error(f"Failed to fetch stock split data from massive.com: {e}")
+            return None
 
 if __name__ == "__main__":
 
