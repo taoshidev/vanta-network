@@ -146,6 +146,7 @@ class ValiConfig:
 
     DAYS_IN_YEAR_CRYPTO = 365  # annualization factor
     DAYS_IN_YEAR_FOREX = 252
+    DAYS_IN_YEAR_EQUITIES = 252
 
     # Development hotkey for testing
     DEVELOPMENT_HOTKEY = "DEVELOPMENT"
@@ -268,13 +269,17 @@ class ValiConfig:
     CATEGORY_LOOKUP: dict[str, TradePairCategory] = _TradePair_Lookup()
     ASSET_CLASS_BREAKDOWN = {
         TradePairCategory.CRYPTO: {
-            "emission": 0.5,  # Total emission for crypto
+            "emission": 0.334,  # Total emission for crypto
             "days_in_year": DAYS_IN_YEAR_CRYPTO,
         },
         # These are based on margin requirements on brokerage accounts
         TradePairCategory.FOREX: {
-            "emission": 0.5,  # Total emission for forex
+            "emission": 0.333,  # Total emission for forex
             "days_in_year": DAYS_IN_YEAR_FOREX,
+        },
+        TradePairCategory.EQUITIES: {
+            "emission": 0.333,  # Total emission for equities
+            "days_in_year": DAYS_IN_YEAR_CRYPTO,
         },
     }
 
