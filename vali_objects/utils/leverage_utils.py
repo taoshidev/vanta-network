@@ -31,9 +31,7 @@ def get_position_leverage_bounds(trade_pair: TradePair, t_ms: int) -> (float, fl
         max_position_leverage = positional_leverage_limit_v2(trade_pair)
     else:
         max_position_leverage = positional_leverage_limit_v1(trade_pair)
-    if ((trade_pair.is_indices and t_ms > INDICES_SOFT_CUTOFF_MS) or
-            (trade_pair.is_equities and t_ms > EQUITIES_METALS_SOFT_CUTOFF_MS) or
-            (trade_pair.trade_pair_id in ["XAUUSD", "XAGUSD"] and t_ms > EQUITIES_METALS_SOFT_CUTOFF_MS)):
+    if (trade_pair.is_indices and t_ms > INDICES_SOFT_CUTOFF_MS):
         # do not allow trade_pair orders after a soft cutoff date
         max_position_leverage = 0.0
     min_position_leverage = trade_pair.min_leverage if is_leverage_v2 else 0.001  # clamping from below not needed in v1
