@@ -203,6 +203,165 @@ For the complete list of supported trade pairs and their current status, refer t
 4. For entity miners, the `subaccount_id` is used to construct a synthetic hotkey for position tracking
 5. Regular miners should omit the `subaccount_id` field entirely
 
+### Create Subaccount
+
+`POST /api/create-subaccount`
+
+This endpoint creates a new subaccount for entity miners. It signs the request with the miner's coldkey and forwards it to the validator's REST API for processing.
+
+**Required Headers**:
+```
+Content-Type: application/json
+```
+
+**Request Body Fields**:
+
+- `api_key` (string): Your API key as configured in `mining/miner_secrets.json`. Used for authentication.
+- `asset_class` (string): The asset class for the subaccount. Must be one of:
+  - `"crypto"`: Cryptocurrency trading
+  - `"forex"`: Foreign exchange trading
+- `account_size` (float): The account size in USD (e.g., `100000` for $100,000). Must be a positive number.
+
+**Example Request**:
+
+```json
+{
+  "api_key": "your_api_key_here",
+  "asset_class": "crypto",
+  "account_size": 10000.0
+}
+```
+
+**Success Response (200)**:
+
+```json
+{
+  "status": "success",
+  "message": "Subaccount created successfully",
+  "subaccount": {
+    "subaccount_id": 0,
+    "subaccount_uuid": "550e8400-e29b-41d4-a716-446655440000",
+    "synthetic_hotkey": "5xxx..._0",
+    "account_size": 100000.0,
+    "asset_class": "crypto",
+    "status": "active"
+  }
+}
+```
+
+**Subaccount Fields**:
+- `subaccount_id`: Integer ID for this subaccount (0, 1, 2, etc.)
+- `subaccount_uuid`: Unique UUID for the subaccount
+- `synthetic_hotkey`: The synthetic hotkey used for position tracking (format: `{entity_hotkey}_{subaccount_id}`)
+- `account_size`: The USD account size for this subaccount
+- `asset_class`: The asset class assigned to this subaccount
+- `status`: Current status of the subaccount (e.g., "active")
+
+**Error Responses**:
+
+Bad Request (400):
+```json
+{
+  "status": "error",
+  "message": "Missing required field: asset_class"
+}
+```
+
+```json
+{
+  "status": "error",
+  "message": "account_size must be a number"
+}
+```
+
+```json
+{
+  "status": "error",
+  "message": "account_size must be positive"
+}
+```
+
+```json
+{
+  "status": "error",
+  "message": "Invalid asset_class: stocks. Must be 'crypto' or 'forex'"
+}
+```
+
+Unauthorized (401):
+```json
+{
+  "status": "error",
+  "message": "Invalid API key"
+}
+```
+
+```json
+{
+  "error": "Invalid signature. Subaccount creation unauthorized"
+}
+```
+
+Forbidden (403):
+```json
+{
+  "error": "Coldkey does not own the specified hotkey"
+}
+```
+
+Internal Server Error (500):
+```json
+{
+  "status": "error",
+  "message": "Wallet not configured. Check miner_secrets.json"
+}
+```
+
+```json
+{
+  "status": "error",
+  "message": "Error creating subaccount: ..."
+}
+```
+
+Service Unavailable (503):
+```json
+{
+  "status": "error",
+  "message": "Could not connect to validator: ..."
+}
+```
+
+Gateway Timeout (504):
+```json
+{
+  "status": "error",
+  "message": "Request to validator timed out"
+}
+```
+
+**Configuration Requirements**:
+
+To use this endpoint, your `miner_secrets.json` must include wallet credentials:
+
+```json
+{
+  "api_key": "your_api_key",
+  "wallet_name": "your_wallet_name",
+  "wallet_hotkey": "your_hotkey_name",
+  "wallet_password": "your_wallet_password",
+  "validator_url": "http://validator_ip:48888"
+}
+```
+
+**Notes**:
+
+1. This endpoint is only needed for entity miners managing multiple subaccounts
+2. The miner server signs the request with the coldkey and forwards it to the validator
+3. The validator verifies the signature and coldkey-hotkey ownership before creating the subaccount
+4. Once created, use the `synthetic_hotkey` value when placing orders for this subaccount
+5. Include the `subaccount_id` in signal requests to route orders to the correct subaccount
+
 ## Testing sending a signal
 
 You can test a sample signal to ensure your server is running properly by running the
