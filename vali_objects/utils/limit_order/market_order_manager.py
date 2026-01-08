@@ -187,7 +187,7 @@ class MarketOrderManager():
         bt.logging.info(f"[ADD_ORDER_DETAIL] Net portfolio leverage calc took {leverage_calc_ms}ms")
 
         margin_loan = 0.0
-        clamped_leverage = existing_position.calculate_clamped_leverage(signal_order_type, leverage)
+        clamped_leverage = existing_position.calculate_clamped_leverage(signal_order_type, leverage, quantity, value)
         if clamped_leverage == -existing_position.net_leverage:
             signal_order_type = OrderType.FLAT
         if clamped_leverage != leverage or signal_order_type == OrderType.FLAT:

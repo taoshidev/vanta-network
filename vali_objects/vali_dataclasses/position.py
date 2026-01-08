@@ -679,12 +679,18 @@ class Position(BaseModel):
         self.is_closed_position = False
         self.close_ms = None
 
-    def calculate_clamped_leverage(self, order_type, leverage) -> float:
+    def calculate_clamped_leverage(self, order_type, leverage, quantity, value) -> float:
         if order_type == OrderType.FLAT:
             return -self.net_leverage
 
         if not leverage:
             raise ValueError("Leverage must be calculated for order clamping")
+
+        if quantity and self.net_quantity + quantity <= 0:
+            return -self.net_leverage
+
+        if value and self.net_value + value <= 0:
+            return -self.net_leverage
 
         min_position_leverage, max_position_leverage = self.trade_pair.min_leverage, self.trade_pair.max_leverage
         proposed_position_leverage = self.net_leverage + leverage

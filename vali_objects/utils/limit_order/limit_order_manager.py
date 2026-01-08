@@ -678,9 +678,9 @@ class LimitOrderManager(CacheController):
                 closing_order_type = OrderType.opposite_order_type(order.order_type)
                 if closing_order_type:
                     order_dict['order_type'] = closing_order_type.name
-                    order_dict['leverage'] = abs(order.leverage) if order.leverage else None
-                    order_dict['value'] = abs(order.value) if order.value else None
-                    order_dict['quantity'] = abs(order.quantity) if order.quantity else None
+                    order_dict['leverage'] = -order.leverage if order.leverage else None
+                    order_dict['value'] = -order.value if order.value else None
+                    order_dict['quantity'] = -order.quantity if order.quantity else None
                 else:
                     raise ValueError("Bracket Order type was not LONG or SHORT")
 
@@ -731,7 +731,7 @@ class LimitOrderManager(CacheController):
 
         except Exception as e:
             error_msg = f"Could not fill limit order [{order.order_uuid}]: {e}. Cancelling order"
-            bt.logging.info(error_msg)
+            bt.logging.error(error_msg)
             new_src = OrderSource.get_cancel(order.src)
 
         finally:
