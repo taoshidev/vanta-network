@@ -190,11 +190,16 @@ class MarketOrderManager():
         clamped_leverage = existing_position.calculate_clamped_leverage(signal_order_type, leverage)
         if clamped_leverage == -existing_position.net_leverage:
             signal_order_type = OrderType.FLAT
-        elif clamped_leverage != leverage:
-            quantity, leverage, value = self.parse_order_size({'leverage': leverage}, usd_base_price, trade_pair, existing_position.account_size)
+        if clamped_leverage != leverage or signal_order_type == OrderType.FLAT:
+            quantity, leverage, value = self.parse_order_size({'leverage': clamped_leverage}, usd_base_price, trade_pair, existing_position.account_size)
 
         if signal_order_type != OrderType.FLAT:
-            if net_portfolio_leverage + abs(leverage) > ValiConfig.PORTFOLIO_LEVERAGE_CAP:
+            current_adjusted_leverage = abs(existing_position.net_leverage) * trade_pair.leverage_multiplier
+            proposed_position_leverage = existing_position.net_leverage + leverage
+            proposed_adjusted_leverage = abs(proposed_position_leverage) * trade_pair.leverage_multiplier
+            proposed_portfolio_leverage = net_portfolio_leverage - current_adjusted_leverage + proposed_adjusted_leverage
+
+            if proposed_portfolio_leverage > ValiConfig.PORTFOLIO_LEVERAGE_CAP:
                 raise ValueError("Order attempted to exceed max portfolio leverage")
 
         trade_pair_category = trade_pair.trade_pair_category
