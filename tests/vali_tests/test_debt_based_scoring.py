@@ -629,12 +629,11 @@ class TestDebtBasedScoring(TestBase):
         )
 
         # Expected calculation:
-        # - 10 miners * 1 TAO/block = 10 TAO/block
+        # - 10 miners * 1 alpha/block = 10 alpha/block
         # - 7200 blocks/day * 10 days = 72000 blocks
-        # - 10 TAO/block * 72000 blocks = 720,000 TAO
-        # - 720,000 TAO / 0.5 (ALPHA to TAO rate) = 1,440,000 ALPHA
+        # - 10 alpha/block * 72000 blocks = 720,000 alpha
 
-        expected_alpha = 10 * 7200 * 10 / 0.5  # 1,440,000
+        expected_alpha = 10 * 7200 * 10  # 720,000
         self.assertAlmostEqual(projected_alpha, expected_alpha, places=0)
 
     def test_aggressive_payout_strategy(self):
