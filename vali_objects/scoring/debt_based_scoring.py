@@ -724,68 +724,83 @@ class DebtBasedScoring:
             Estimated total ALPHA emissions available (float)
         """
         try:
-            # Get total TAO emission per block for the subnet (sum across all miners)
-            # metagraph.emission is already in TAO (not RAO), but per tempo (360 blocks)
-            # Need to convert: per-tempo → per-block (÷360)
-            total_tao_per_tempo = sum(metagraph.get_emission())
-            total_tao_per_block = total_tao_per_tempo / 360
-
+            total_alpha_per_tempo = sum(metagraph.get_emission())
+            total_alpha_per_block = total_alpha_per_tempo / 360
             if verbose:
-                bt.logging.info(f"Current subnet emission rate: {total_tao_per_block:.6f} TAO/block")
+                bt.logging.info(f"Current subnet emission rate: {total_alpha_per_block:.6f} alpha/block")
 
             # Estimate blocks until target day
             # Use approximate 12 seconds per block (7200 blocks/day)
             blocks_until_target = days_until_target * DebtBasedScoring.BLOCKS_PER_DAY_FALLBACK
 
             # Calculate total TAO emissions until target
-            total_tao_until_target = total_tao_per_block * blocks_until_target
-
-            if verbose:
-                bt.logging.info(
-                    f"Estimated blocks until day {DebtBasedScoring.PAYOUT_TARGET_DAY}: {blocks_until_target}, "
-                    f"total TAO: {total_tao_until_target:.2f}"
-                )
-
-            # Get substrate reserves from shared metagraph (refreshed by MetagraphUpdater)
-            # Use safe helper to extract values from manager.Value() objects or plain numerics
-            tao_reserve_obj = getattr(metagraph, 'tao_reserve_rao', None)
-            alpha_reserve_obj = getattr(metagraph, 'alpha_reserve_rao', None)
-
-            tao_reserve_rao = DebtBasedScoring._safe_get_reserve_value(tao_reserve_obj)
-            alpha_reserve_rao = DebtBasedScoring._safe_get_reserve_value(alpha_reserve_obj)
-
-            if tao_reserve_rao == 0 or alpha_reserve_rao == 0:
-                bt.logging.warning(
-                    "Substrate reserve data not available in shared metagraph "
-                    f"(TAO={tao_reserve_rao} RAO, ALPHA={alpha_reserve_rao} RAO). "
-                    "Cannot calculate ALPHA conversion rate."
-                )
-                return 0.0
-
-            # Calculate ALPHA-to-TAO conversion rate from reserve data
-            # alpha_to_tao_rate = tao_reserve / alpha_reserve (both in RAO, ratio is unitless)
-            # (How much TAO per ALPHA)
-            alpha_to_tao_rate = tao_reserve_rao / alpha_reserve_rao
-
-            if verbose:
-                bt.logging.info(
-                    f"Substrate reserves: TAO={tao_reserve_rao / 1e9:.2f} TAO ({tao_reserve_rao:.0f} RAO), "
-                    f"ALPHA={alpha_reserve_rao / 1e9:.2f} ALPHA ({alpha_reserve_rao:.0f} RAO), "
-                    f"rate={alpha_to_tao_rate:.6f} TAO/ALPHA"
-                )
-
-            # Convert TAO to ALPHA
-            # If ALPHA costs X TAO per ALPHA, then Y TAO buys Y/X ALPHA
-            if alpha_to_tao_rate > 0:
-                total_alpha_until_target = total_tao_until_target / alpha_to_tao_rate
-            else:
-                bt.logging.warning("ALPHA-to-TAO rate is zero, cannot convert")
-                return 0.0
-
+            total_alpha_until_target = total_alpha_per_block * blocks_until_target
             if verbose:
                 bt.logging.info(f"Projected ALPHA available until target: {total_alpha_until_target:.2f}")
-
             return total_alpha_until_target
+
+            # # Get total TAO emission per block for the subnet (sum across all miners)
+            # # metagraph.emission is already in TAO (not RAO), but per tempo (360 blocks)
+            # # Need to convert: per-tempo → per-block (÷360)
+            # total_tao_per_tempo = sum(metagraph.get_emission())
+            # total_tao_per_block = total_tao_per_tempo / 360
+            #
+            # if verbose:
+            #     bt.logging.info(f"Current subnet emission rate: {total_tao_per_block:.6f} TAO/block")
+            #
+            # # Estimate blocks until target day
+            # # Use approximate 12 seconds per block (7200 blocks/day)
+            # blocks_until_target = days_until_target * DebtBasedScoring.BLOCKS_PER_DAY_FALLBACK
+            #
+            # # Calculate total TAO emissions until target
+            # total_tao_until_target = total_tao_per_block * blocks_until_target
+            #
+            # if verbose:
+            #     bt.logging.info(
+            #         f"Estimated blocks until day {DebtBasedScoring.PAYOUT_TARGET_DAY}: {blocks_until_target}, "
+            #         f"total TAO: {total_tao_until_target:.2f}"
+            #     )
+            #
+            # # Get substrate reserves from shared metagraph (refreshed by MetagraphUpdater)
+            # # Use safe helper to extract values from manager.Value() objects or plain numerics
+            # tao_reserve_obj = getattr(metagraph, 'tao_reserve_rao', None)
+            # alpha_reserve_obj = getattr(metagraph, 'alpha_reserve_rao', None)
+            #
+            # tao_reserve_rao = DebtBasedScoring._safe_get_reserve_value(tao_reserve_obj)
+            # alpha_reserve_rao = DebtBasedScoring._safe_get_reserve_value(alpha_reserve_obj)
+            #
+            # if tao_reserve_rao == 0 or alpha_reserve_rao == 0:
+            #     bt.logging.warning(
+            #         "Substrate reserve data not available in shared metagraph "
+            #         f"(TAO={tao_reserve_rao} RAO, ALPHA={alpha_reserve_rao} RAO). "
+            #         "Cannot calculate ALPHA conversion rate."
+            #     )
+            #     return 0.0
+            #
+            # # Calculate ALPHA-to-TAO conversion rate from reserve data
+            # # alpha_to_tao_rate = tao_reserve / alpha_reserve (both in RAO, ratio is unitless)
+            # # (How much TAO per ALPHA)
+            # alpha_to_tao_rate = tao_reserve_rao / alpha_reserve_rao
+            #
+            # if verbose:
+            #     bt.logging.info(
+            #         f"Substrate reserves: TAO={tao_reserve_rao / 1e9:.2f} TAO ({tao_reserve_rao:.0f} RAO), "
+            #         f"ALPHA={alpha_reserve_rao / 1e9:.2f} ALPHA ({alpha_reserve_rao:.0f} RAO), "
+            #         f"rate={alpha_to_tao_rate:.6f} TAO/ALPHA"
+            #     )
+            #
+            # # Convert TAO to ALPHA
+            # # If ALPHA costs X TAO per ALPHA, then Y TAO buys Y/X ALPHA
+            # if alpha_to_tao_rate > 0:
+            #     total_alpha_until_target = total_tao_until_target / alpha_to_tao_rate
+            # else:
+            #     bt.logging.warning("ALPHA-to-TAO rate is zero, cannot convert")
+            #     return 0.0
+            #
+            # if verbose:
+            #     bt.logging.info(f"Projected ALPHA available until target: {total_alpha_until_target:.2f}")
+            #
+            # return total_alpha_until_target
 
         except Exception as e:
             bt.logging.error(f"Error estimating ALPHA emissions: {e}")
