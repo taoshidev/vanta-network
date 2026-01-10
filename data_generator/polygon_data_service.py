@@ -766,7 +766,7 @@ class PolygonDataService(BaseDataService):
         elif trade_pair.is_indices:
             return 'I:' + trade_pair.trade_pair_id
         elif trade_pair.is_equities:
-            return trade_pair.trade_pair_id
+            return trade_pair.trade_pair
         else:
             raise ValueError(f"Unknown trade pair category: {trade_pair.trade_pair_category}")
 
