@@ -403,6 +403,9 @@ class TiingoDataService(BaseDataService):
             if verbose:
                 print(f'hitting url for batch of {len(batch)} tickers: {url}')
             requestResponse = requests.get(url, headers={'Content-Type': 'application/json'}, timeout=5)
+            # TODO re-enable after tiingo badwidth
+            if requestResponse.status_code == 429:
+                continue
             if requestResponse.status_code == 200:
                 time_now_ms = TimeUtil.now_in_millis()
                 for x in requestResponse.json():
