@@ -1364,6 +1364,39 @@ class PerfLedgerManager(CacheController):
                 tp_id_to_realtime_position_to_pop
             )
 
+            # Fix: Convert unrealized PnL to realized PnL for positions that closed during this checkpoint
+            # When a position closes during a checkpoint period, tp_to_historical_positions_dense contains
+            # the OPEN position (before FLAT order), while tp_id_to_realtime_position_to_pop contains the
+            # CLOSED position (after FLAT order). The tick-by-tick loop accumulates unrealized PnL from
+            # the open position, but we need to convert it to realized PnL from the closed position.
+            if tp_id_to_realtime_position_to_pop:
+                # For portfolio, check all positions; for trade pairs, check only the specific tp_id
+                positions_to_check = []
+                if tp_id == TP_ID_PORTFOLIO:
+                    positions_to_check = list(tp_id_to_realtime_position_to_pop.items())
+                elif tp_id in tp_id_to_realtime_position_to_pop:
+                    positions_to_check = [(tp_id, tp_id_to_realtime_position_to_pop[tp_id])]
+
+                for check_tp_id, closed_position in positions_to_check:
+                    # Only process if position is actually closed
+                    if not closed_position.is_closed_position:
+                        continue
+
+                    # Find the corresponding open position in historical positions
+                    if check_tp_id in tp_to_historical_positions_dense:
+                        for hist_pos in tp_to_historical_positions_dense[check_tp_id]:
+                            if hist_pos.position_uuid == closed_position.position_uuid:
+                                # Convert unrealized PnL to realized PnL
+                                # Subtract the open position's unrealized PnL (accumulated during tick-by-tick)
+                                tp_to_unrealized_pnl[tp_id] -= hist_pos.unrealized_pnl
+                                # Add the closed position's realized PnL
+                                tp_to_realized_pnl[tp_id] += closed_position.realized_pnl
+                                bt.logging.debug(
+                                    f"Converted PnL for position {closed_position.position_uuid[:8]} closing during checkpoint: "
+                                    f"removed unrealized ${hist_pos.unrealized_pnl:.2f}, added realized ${closed_position.realized_pnl:.2f}"
+                                )
+                                break
+
             perf_ledger.update_pl(current_return, end_time_ms, miner_hotkey, tp_to_any_open[tp_id],
                                   current_spread_fee, current_carry_fee,
                                   tp_to_realized_pnl[tp_id], tp_to_unrealized_pnl[tp_id])
