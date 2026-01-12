@@ -405,12 +405,11 @@ class PerfLedger():
         else:
             n_updates = 0
 
-        # Calculate deltas from previous checkpoint
+        # realized_pnl stores delta (sum of realized gains/losses during checkpoint period)
         delta_realized = current_realized_pnl_usd - current_cp.prev_portfolio_realized_pnl
-        delta_unrealized = current_unrealized_pnl_usd - current_cp.prev_portfolio_unrealized_pnl
-
         current_cp.realized_pnl += delta_realized
-        current_cp.unrealized_pnl += delta_unrealized
+        # unrealized_pnl stores snapshot (current unrealized PnL at checkpoint end)
+        current_cp.unrealized_pnl = current_unrealized_pnl_usd
 
         # Update fee losses
         if current_cp.prev_portfolio_carry_fee != current_portfolio_carry:
