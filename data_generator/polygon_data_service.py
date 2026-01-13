@@ -6,7 +6,7 @@ import requests
 from typing import List, Optional
 
 from vali_objects.vali_dataclasses.order import Order
-from polygon.websocket import Market, EquityAgg, EquityTrade, CryptoTrade, ForexQuote, WebSocketClient, Feed
+from polygon.websocket import Market, EquityAgg, EquityTrade, CryptoTrade, ForexQuote, FairMarketValue, WebSocketClient, Feed
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from data_generator.base_data_service import BaseDataService, POLYGON_PROVIDER_NAME
@@ -239,8 +239,8 @@ class PolygonDataService(BaseDataService):
         self.N_CANDLES_LIMIT = 50000
         self.tp_to_mfs = {}
         self.is_backtesting = is_backtesting
-        self.stocks_feed_round_robin_map = {0: Feed.RealTime, 1: Feed.Business}
-        self.stocks_feed_round_robin_counter = 0
+        # Use Business feed for equities to get FMV data
+        self.stocks_feed = Feed.Business
 
         # Test price source registry (only used when running_unit_tests=True)
         # Allows tests to inject specific price sources via IPC instead of hardcoded values
@@ -454,7 +454,7 @@ class PolygonDataService(BaseDataService):
         #    stats['t_vlp'] = t_ms
         return m.bid_price, m.ask_price, delta
 
-    async def handle_msg(self, msgs: List[ForexQuote | CryptoTrade | EquityAgg | EquityTrade]):
+    async def handle_msg(self, msgs: List[ForexQuote | CryptoTrade | EquityAgg | EquityTrade | FairMarketValue]):
         """
         received message: CurrencyAgg(event_type='CAS', pair='USD/CHF', open=0.91313, close=0.91317, high=0.91318,
         low=0.91313, volume=3, vwap=None, start_timestamp=1713273701000, end_timestamp=1713273702000,
@@ -487,16 +487,23 @@ class PolygonDataService(BaseDataService):
                     open = close = vwap = high = low = bid
 
             elif tp.is_equities:
-                if m.exchange != self.equities_mapping['nasdaq']:
-                    #print(f"Skipping equity trade from exchange {m.exchange} for {tp.trade_pair}")
+                if isinstance(m, FairMarketValue):
+                    # FMV messages: use fmv field as the price for open/close
+                    start_timestamp = m.timestamp // 1000000  # convert nanoseconds to milliseconds
+                    end_timestamp = None
+                    open = close = vwap = high = low = m.fmv
+                else:
                     return None, None
-                if isinstance(m, EquityTrade) and isinstance(m.conditions, list) and 12 in m.conditions:
-                    #print(f"Skipping Polygon websocket trade with afterhours condition for {m}")
-                    self.n_equity_events_skipped_afterhours += 1
-                    return None, None
-                start_timestamp = round(m.timestamp, -3)  # round to nearest second which allows aggresssive filtering via dup logic
-                end_timestamp = None
-                open = close = vwap = high = low = m.price
+                #if m.exchange != self.equities_mapping['nasdaq']:
+                #    #print(f"Skipping equity trade from exchange {m.exchange} for {tp.trade_pair}")
+                #    return None, None
+                #if isinstance(m, EquityTrade) and isinstance(m.conditions, list) and 12 in m.conditions:
+                #    #print(f"Skipping Polygon websocket trade with afterhours condition for {m}")
+                #    self.n_equity_events_skipped_afterhours += 1
+                #    return None, None
+                #start_timestamp = round(m.timestamp, -3)  # round to nearest second which allows aggresssive filtering via dup logic
+                #end_timestamp = None
+                #open = close = vwap = high = low = m.price
             elif tp.is_crypto:
                 if m.exchange != self.crypto_mapping['coinbase']:
                     #print(f"Skipping crypto trade from exchange {m.exchange} for {tp.trade_pair}")
@@ -562,6 +569,8 @@ class PolygonDataService(BaseDataService):
                     tp = self.symbol_to_trade_pair(m.pair)
                 elif isinstance(m, EquityTrade):
                     tp = self.symbol_to_trade_pair(m.symbol)
+                elif isinstance(m, FairMarketValue):
+                    tp = self.symbol_to_trade_pair(m.ticker)
                 else:
                     raise ValueError(f"Unknown message in POLY websocket: {m}")
 
@@ -621,7 +630,7 @@ class PolygonDataService(BaseDataService):
                 self.WEBSOCKET_OBJECTS[TradePairCategory.FOREX].subscribe(symbol)
                 subbed.append(symbol)
             elif tp.is_equities:
-                symbol = "T." + tp.trade_pair
+                symbol = "FMV." + tp.trade_pair
                 subbed.append(symbol)
                 self.WEBSOCKET_OBJECTS[TradePairCategory.EQUITIES].subscribe(symbol)
             elif tp.is_indices:
@@ -703,10 +712,9 @@ class PolygonDataService(BaseDataService):
         else:
             raise Exception(f'Unexpected tpc {tpc}')
 
-        # Depending on API key, the feed may be different for equities
+        # Use Business feed for equities to get FMV data
         if tpc == TradePairCategory.EQUITIES:
-            feed = self.stocks_feed_round_robin_map[self.stocks_feed_round_robin_counter]
-            self.stocks_feed_round_robin_counter = (1 + self.stocks_feed_round_robin_counter) % len(self.stocks_feed_round_robin_map)
+            feed = self.stocks_feed
         client = WebSocketClient(market=market, api_key=self._api_key, feed=feed)
         bt.logging.info(f"Created {self.provider_name} websocket for {tpc}. feed {feed.name}")
         self.WEBSOCKET_OBJECTS[tpc] = client

@@ -246,8 +246,9 @@ class TiingoDataService(BaseDataService):
         if self.TIINGO_CLIENT is None:
             self.instantiate_not_pickleable_objects()
 
-        client = _TiingoWebsocketClient(self, tpc, self._api_key)
-        bt.logging.info(f"Created {self.provider_name} websocket for {tpc}")
+        # client = _TiingoWebsocketClient(self, tpc, self._api_key)
+        client = _TiingoPseudoClient(self, tpc)
+        bt.logging.info(f"Created {self.provider_name} pseudo-websocket (REST polling) for {tpc}")
         self.WEBSOCKET_OBJECTS[tpc] = client
 
     def _subscribe_websockets(self, tpc):
