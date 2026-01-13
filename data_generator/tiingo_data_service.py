@@ -13,6 +13,7 @@ from time_util.time_util import TimeUtil
 from vali_objects.vali_config import TradePair, TradePairCategory
 
 import time
+import websockets
 
 from vali_objects.utils.vali_utils import ValiUtils
 import bittensor as bt
@@ -95,6 +96,99 @@ class _TiingoPseudoClient:
         bt.logging.info(f"Closed {self._svc.provider_name} websocket client for {self._cat}")
 
 
+class _TiingoWebsocketClient:
+    def __init__(self, service, category, api_key):
+        self._svc: TiingoDataService = service
+        self._cat: TradePairCategory = category
+        self._api_key = api_key
+        self._ws = None
+        self._should_close = False
+
+    async def connect(self, handle_msg):
+        """Connect to Tiingo websocket and process messages"""
+        # Determine endpoint based on category
+        if self._cat == TradePairCategory.EQUITIES:
+            url = "wss://api.tiingo.com/iex"
+            threshold_level = 6
+        elif self._cat == TradePairCategory.FOREX:
+            url = "wss://api.tiingo.com/fx"
+            threshold_level = 5
+        elif self._cat == TradePairCategory.CRYPTO:
+            url = "wss://api.tiingo.com/crypto"
+            threshold_level = 5
+        else:
+            raise ValueError(f"Unknown category: {self._cat}")
+
+        # Connect using websockets library (async-native)
+        # Don't use async with here - we want to keep connection open
+        self._ws = await websockets.connect(url)
+
+        try:
+            # Build subscribe message
+            trade_pairs_to_query = self._svc.get_tradeable_pairs(
+                category=self._cat,
+                include_blocked=False,
+                market_open_only=False  # Subscribe to all pairs, filter on receipt
+            )
+
+            tickers = [tp.trade_pair_id.lower() for tp in trade_pairs_to_query]
+
+            subscribe = {
+                'eventName': 'subscribe',
+                'authorization': self._api_key,
+                'eventData': {
+                    'thresholdLevel': threshold_level,
+                    'tickers': tickers if tickers else ['*']
+                }
+            }
+
+            bt.logging.info(f"Subscribing to {self._cat} with tickers: {tickers}")
+
+            # Send subscription (async send)
+            await self._ws.send(json.dumps(subscribe))
+            bt.logging.info(f"Subscribed to {len(tickers)} {self._cat} tickers")
+
+            # Receive loop - keep running until closed or error
+            bt.logging.info(f"Entering receive loop for {self._cat}")
+            first_message = True
+            while not self._should_close:
+                try:
+                    msg = await self._ws.recv()
+                    if first_message:
+                        bt.logging.info(f"Received first message on {self._cat}: {msg[:200]}...")
+                        first_message = False
+                    else:
+                        bt.logging.warning(f"Received message on {self._cat}: {msg[:100]}...")
+                    await handle_msg(msg)
+                except websockets.exceptions.ConnectionClosed as e:
+                    bt.logging.warning(f"Tiingo {self._cat} websocket closed: code={e.code}, reason={e.reason}")
+                    if first_message:
+                        bt.logging.error(f"Connection closed BEFORE receiving any data on {self._cat}")
+                    break
+                except Exception as e:
+                    if self._should_close:
+                        break
+                    bt.logging.error(f"Error receiving/handling message for {self._cat}: {e}")
+                    bt.logging.error(f"Exception type: {type(e).__name__}")
+                    bt.logging.error(traceback.format_exc())
+                    # Don't raise - continue receiving
+                    continue
+        finally:
+            # Ensure cleanup happens
+            if self._ws:
+                await self._ws.close()
+
+    async def close(self):
+        """Close websocket connection"""
+        self._should_close = True
+        if self._ws:
+            await self._ws.close()
+
+    def unsubscribe_all(self):
+        """Signal that client should close"""
+        self._should_close = True
+
+
 class TiingoDataService(BaseDataService):
 
     def __init__(self, api_key, disable_ws=False, running_unit_tests=False):
@@ -152,7 +246,7 @@ class TiingoDataService(BaseDataService):
         if self.TIINGO_CLIENT is None:
             self.instantiate_not_pickleable_objects()
 
-        client = _TiingoPseudoClient(self, tpc)
+        client = _TiingoWebsocketClient(self, tpc, self._api_key)
         bt.logging.info(f"Created {self.provider_name} websocket for {tpc}")
         self.WEBSOCKET_OBJECTS[tpc] = client
 
