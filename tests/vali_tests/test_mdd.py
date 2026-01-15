@@ -576,7 +576,7 @@ class TestMDDChecker(TestBase):
 
         o1 = Order(
             order_type=OrderType.LONG,
-            leverage=20.0,
+            leverage=TradePair.BTCUSD.max_leverage,
             price=live_btc_price * 1.001,  # Down 0.1%
             trade_pair=TradePair.BTCUSD,
             processed_ms=1000,
@@ -613,7 +613,7 @@ class TestMDDChecker(TestBase):
 
         o2 = Order(
             order_type=OrderType.LONG,
-            leverage=20.0,
+            leverage=TradePair.ETHUSD.max_leverage,
             price=live_eth_price * 1.001,  # Down 0.1%
             trade_pair=TradePair.ETHUSD,
             processed_ms=2000,

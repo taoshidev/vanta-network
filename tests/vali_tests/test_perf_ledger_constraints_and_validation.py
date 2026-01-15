@@ -1939,7 +1939,7 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
                 order_uuid=f"order_{i}",
                 trade_pair=TradePair.BTCUSD,
                 order_type=OrderType.LONG,
-                leverage=1.0
+                leverage=TradePair.BTCUSD.max_leverage/5
             )
             position.add_order(order, self.live_price_fetcher_client)
         

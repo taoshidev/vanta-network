@@ -711,13 +711,12 @@ class Position(BaseModel):
             return
 
         # Get leverage bounds
-        min_position_leverage, max_position_leverage = leverage_utils.get_position_leverage_bounds(self.trade_pair, order.processed_ms)
-        max_portfolio_leverage = leverage_utils.get_portfolio_leverage_cap(order.processed_ms)
+        min_position_leverage, max_position_leverage = leverage_utils.get_position_leverage_bounds(self.trade_pair)
+        max_portfolio_leverage = leverage_utils.get_portfolio_leverage_cap(self.trade_pair.trade_pair_category)
 
-        # Calculate proposed portfolio leverage
-        current_adjusted_leverage = abs(self.net_leverage) * self.trade_pair.leverage_multiplier
-        proposed_portfolio_leverage = (net_portfolio_leverage - current_adjusted_leverage +
-                                       (abs(proposed_leverage) * self.trade_pair.leverage_multiplier))
+        # Calculate proposed portfolio leverage (raw leverage since miners only trade one asset class)
+        current_leverage = abs(self.net_leverage)
+        proposed_portfolio_leverage = net_portfolio_leverage - current_leverage + abs(proposed_leverage)
 
         # Validate against max limits (when increasing leverage)
         if (is_first_order or abs(proposed_leverage) >= abs(self.net_leverage) or

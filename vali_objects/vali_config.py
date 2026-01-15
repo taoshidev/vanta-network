@@ -312,9 +312,9 @@ class ValiConfig:
 
     # Positional Leverage limits
     CRYPTO_MIN_LEVERAGE = 0.01
-    CRYPTO_MAX_LEVERAGE = 0.5
+    CRYPTO_MAX_LEVERAGE = 2.5
     FOREX_MIN_LEVERAGE = 0.1
-    FOREX_MAX_LEVERAGE = 5
+    FOREX_MAX_LEVERAGE = 10
     INDICES_MIN_LEVERAGE = 0.1
     INDICES_MAX_LEVERAGE = 5
     EQUITIES_MIN_LEVERAGE = 0.1
@@ -443,7 +443,12 @@ class ValiConfig:
     MIN_CHECKPOINTS_RECEIVED = 5
 
     # Cap leverage across miner's entire portfolio
-    PORTFOLIO_LEVERAGE_CAP = 10
+    PORTFOLIO_LEVERAGE_CAP = {
+        TradePairCategory.CRYPTO: 5,
+        TradePairCategory.FOREX: 20,
+        TradePairCategory.INDICES: 10,
+        TradePairCategory.EQUITIES: 2,
+    }
 
     # Collateral limits
     MIN_COLLATERAL_BALANCE_THETA = 300  # Required minimum total collateral balance per miner in Theta. Approx $150k capital account size
@@ -704,14 +709,6 @@ class TradePair(Enum):
                                TradePairCategory.INDICES: 1,
                                TradePairCategory.EQUITIES: 1}
         return trade_pair_lot_size[self.trade_pair_category]
-
-    @property
-    def leverage_multiplier(self) -> int:
-        trade_pair_leverage_multiplier = {TradePairCategory.CRYPTO: 10,
-                                          TradePairCategory.FOREX: 1,
-                                          TradePairCategory.INDICES: 1,
-                                          TradePairCategory.EQUITIES: 2}
-        return trade_pair_leverage_multiplier[self.trade_pair_category]
 
     @property
     def base(self):
