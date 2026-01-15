@@ -361,7 +361,7 @@ class Position(BaseModel):
         ]
         bt.logging.debug(f"position order details: " f"close_ms [{order_info}] ")
 
-    def add_order(self, order: Order, live_price_fetcher, net_portfolio_leverage: float=0.0) -> bool:
+    def add_order(self, order: Order, live_price_fetcher, net_portfolio_leverage: float=0.0, skip_validation=False) -> bool:
         """
         Add an order to a position, and adjust its size to stay within
         the trade pair max and portfolio max.
@@ -373,7 +373,8 @@ class Position(BaseModel):
                 f"Order trade pair [{order.trade_pair}] does not match position trade pair [{self.trade_pair}]")
 
         # may raise ValueError if invalid order size
-        self._validate_order_size(order, abs(net_portfolio_leverage))
+        if not skip_validation:
+            self.validate_order_size(order, abs(net_portfolio_leverage))
 
         self.orders.append(order)
         self._update_position(live_price_fetcher)
@@ -652,7 +653,7 @@ class Position(BaseModel):
         self.is_closed_position = False
         self.close_ms = None
 
-    def _validate_order_size(self, order: Order, net_portfolio_leverage: float) -> None:
+    def validate_order_size(self, order: Order, net_portfolio_leverage: float) -> None:
         """
         Validates that an order's size is within acceptable bounds.
 
@@ -671,11 +672,9 @@ class Position(BaseModel):
 
         # Check if quantity/value would result in flat position
         if order.quantity and self.net_quantity + order.quantity == 0:
-            order.order_type = OrderType.FLAT
             return
 
         if order.value and self.net_value + order.value == 0:
-            order.order_type = OrderType.FLAT
             return
 
         if not order.leverage:
@@ -707,7 +706,6 @@ class Position(BaseModel):
 
         # If sign flips, set to FLAT
         if not is_first_order and self.net_leverage * proposed_leverage <= 0:
-            order.order_type = OrderType.FLAT
             return
 
         # Get leverage bounds

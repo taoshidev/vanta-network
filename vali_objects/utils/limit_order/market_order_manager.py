@@ -263,7 +263,15 @@ class MarketOrderManager():
         bt.logging.info(f"[ADD_ORDER_DETAIL] Slippage calculation took {slippage_calc_ms}ms")
 
         step_start = TimeUtil.now_in_millis()
-        existing_position.add_order(order, self.live_price_fetcher, net_portfolio_leverage)
+        net_portfolio_leverage = self.position_manager.calculate_net_portfolio_leverage(miner_hotkey)
+        leverage_calc_ms = TimeUtil.now_in_millis() - step_start
+        bt.logging.info(f"[ADD_ORDER_DETAIL] Net portfolio leverage calc took {leverage_calc_ms}ms")
+
+        # Validate order before adding to position
+        existing_position.validate_order_size(order, net_portfolio_leverage)
+
+        step_start = TimeUtil.now_in_millis()
+        existing_position.add_order(order, self.live_price_fetcher, net_portfolio_leverage, skip_validation=True)
         add_order_ms = TimeUtil.now_in_millis() - step_start
         bt.logging.info(f"[ADD_ORDER_DETAIL] Position.add_order() took {add_order_ms}ms")
 
