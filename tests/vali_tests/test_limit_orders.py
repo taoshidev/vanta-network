@@ -615,7 +615,7 @@ class TestLimitOrders(TestBase):
 
     def test_fill_limit_order_success(self):
         """Test successful limit order fill creates position via market_order_manager"""
-        order = self.create_test_limit_order(limit_price=50000.0)
+        order = self.create_test_limit_order(limit_price=49000.0)
         price_source = self.create_test_price_source(49000.0, bid=49000.0, ask=49000.0)
 
         # Setup initial position
