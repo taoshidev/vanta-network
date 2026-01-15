@@ -574,14 +574,14 @@ class PositionManager:
 
     def calculate_net_portfolio_leverage(self, hotkey: str) -> float:
         """
-        Calculate leverage across all open positions for a hotkey.
-        Normalize each asset class with a multiplier.
+        Calculate total leverage across all open positions for a hotkey.
+        Since miners only trade one asset class at a time, this returns the raw leverage sum.
 
         Args:
             hotkey: The miner hotkey
 
         Returns:
-            Total portfolio leverage (sum of abs(leverage) * multiplier for each open position)
+            Total portfolio leverage (sum of abs(leverage) for each open position)
         """
         # Use O(1) open positions index for fast lookup
         if hotkey not in self.hotkey_to_open_positions:
@@ -589,7 +589,7 @@ class PositionManager:
 
         portfolio_leverage = 0.0
         for position in self.hotkey_to_open_positions[hotkey].values():
-            portfolio_leverage += abs(position.get_net_leverage()) * position.trade_pair.leverage_multiplier
+            portfolio_leverage += abs(position.get_net_leverage())
 
         return portfolio_leverage
 

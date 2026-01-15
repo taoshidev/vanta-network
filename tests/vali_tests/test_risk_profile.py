@@ -537,22 +537,22 @@ class TestRiskProfile(TestBase):
         self.assertLess(result, 0.1, "Low leverage should result in low margin utilization")
 
     def test_margin_utilization_increasing_slowly_winning(self):
-        # Test with position having high margin utilization
+        # Test with position having high margin utilization (using V3 crypto max of 2.5)
         position = deepcopy(self.default_position)
         order1 = copy.deepcopy(self.default_order)
-        order1.leverage = 0.4
+        order1.leverage = 1.8
         order1.price = 100
         order1.processed_ms = self.DEFAULT_ORDER_MS
         position.add_order(order1, self.live_price_fetcher_client)
 
         order2 = copy.deepcopy(self.default_order)
-        order2.leverage = 0.05
+        order2.leverage = 0.15
         order2.price = 110
         order2.processed_ms = self.DEFAULT_ORDER_MS + (1000 * 60 * 60 * 24)
         position.add_order(order2, self.live_price_fetcher_client)
 
         order3 = copy.deepcopy(self.default_order)
-        order3.leverage = 0.02
+        order3.leverage = 0.1
         order3.price = 120
         order3.processed_ms = self.DEFAULT_ORDER_MS + (1000 * 60 * 60 * 24 * 2)
         position.add_order(order3, self.live_price_fetcher_client)
@@ -561,27 +561,27 @@ class TestRiskProfile(TestBase):
         self.assertGreater(result, 0.8, "High leverage should result in high margin utilization")
 
     def test_margin_utilization_increasing_slowly_winning_short(self):
-        # Test with SHORT position
+        # Test with SHORT position (using V3 crypto max of 2.5)
         position = deepcopy(self.default_position)
         position.position_type = OrderType.SHORT
 
         order1 = copy.deepcopy(self.default_order)
         order1.order_type = OrderType.SHORT
-        order1.leverage = -0.4
+        order1.leverage = -1.8
         order1.price = 100
         order1.processed_ms = self.DEFAULT_ORDER_MS
         position.add_order(order1, self.live_price_fetcher_client)
 
         order2 = copy.deepcopy(self.default_order)
         order2.order_type = OrderType.SHORT
-        order2.leverage = -0.05
+        order2.leverage = -0.15
         order2.price = 90
         order2.processed_ms = self.DEFAULT_ORDER_MS + (1000 * 60 * 60 * 24)
         position.add_order(order2, self.live_price_fetcher_client)
 
         order3 = copy.deepcopy(self.default_order)
         order3.order_type = OrderType.SHORT
-        order3.leverage = -0.02
+        order3.leverage = -0.1
         order3.price = 80
         order3.processed_ms = self.DEFAULT_ORDER_MS + (1000 * 60 * 60 * 24 * 2)
         position.add_order(order3, self.live_price_fetcher_client)
