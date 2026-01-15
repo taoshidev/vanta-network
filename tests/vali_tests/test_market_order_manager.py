@@ -143,7 +143,7 @@ class TestMarketOrderManager(TestBase):
         return position
 
     @staticmethod
-    def create_test_signal(order_type:OrderType=OrderType.LONG, leverage=1.0, execution_type:ExecutionType=ExecutionType.MARKET,
+    def create_test_signal(order_type:OrderType=OrderType.LONG, leverage=0.3, execution_type:ExecutionType=ExecutionType.MARKET,
                           limit_price=None, stop_loss=None, take_profit=None):
         """Helper to create signal dict with optional execution parameters"""
         signal = {
@@ -425,7 +425,7 @@ class TestMarketOrderManager(TestBase):
         initial_order_count = len(position.orders)
 
         # Calculate order size from leverage
-        signal = {"leverage": 1.0}
+        signal = {"leverage": 0.3}
         quantity, leverage, value = self.market_order_manager.parse_order_size(
             signal, 1.0, self.DEFAULT_TRADE_PAIR, self.DEFAULT_ACCOUNT_SIZE
         )
@@ -452,7 +452,7 @@ class TestMarketOrderManager(TestBase):
         new_order = position.orders[-1]
         self.assertEqual(new_order.order_type, OrderType.LONG)
         self.assertGreater(new_order.leverage, 0)
-        self.assertLessEqual(new_order.leverage, 1.0)
+        self.assertLessEqual(new_order.leverage, 0.3)
         self.assertEqual(new_order.order_uuid, "test_order")
         self.assertEqual(new_order.src, OrderSource.ORGANIC)
         self.assertEqual(new_order.price, 50000.0)
@@ -465,7 +465,7 @@ class TestMarketOrderManager(TestBase):
         price_sources = [self.create_test_price_source(50000.0, bid=49990.0, ask=50010.0, start_ms=now_ms)]
 
         # Calculate order size from leverage
-        signal = {"leverage": 1.0}
+        signal = {"leverage": 0.3}
         quantity, leverage, value = self.market_order_manager.parse_order_size(
             signal, 1.0, self.DEFAULT_TRADE_PAIR, self.DEFAULT_ACCOUNT_SIZE
         )
@@ -527,7 +527,7 @@ class TestMarketOrderManager(TestBase):
         self.assertNotIn(cache_key, self.market_order_manager.last_order_time_cache)
 
         # Calculate order size from leverage
-        signal = {"leverage": 1.0}
+        signal = {"leverage": 0.3}
         quantity, leverage, value = self.market_order_manager.parse_order_size(
             signal, 1.0, self.DEFAULT_TRADE_PAIR, self.DEFAULT_ACCOUNT_SIZE
         )
@@ -559,7 +559,7 @@ class TestMarketOrderManager(TestBase):
         price_sources = [self.create_test_price_source(50000.0, start_ms=now_ms)]
 
         # Calculate order size from leverage
-        signal = {"leverage": 1.0}
+        signal = {"leverage": 0.3}
         quantity, leverage, value = self.market_order_manager.parse_order_size(
             signal, 1.0, self.DEFAULT_TRADE_PAIR, self.DEFAULT_ACCOUNT_SIZE
         )
@@ -593,7 +593,7 @@ class TestMarketOrderManager(TestBase):
         price_sources = [self.create_test_price_source(50000.0, start_ms=now_ms)]
 
         # Calculate order size from leverage
-        signal = {"leverage": 1.0}
+        signal = {"leverage": 0.3}
         quantity, leverage, value = self.market_order_manager.parse_order_size(
             signal, 1.0, self.DEFAULT_TRADE_PAIR, self.DEFAULT_ACCOUNT_SIZE
         )
@@ -624,7 +624,7 @@ class TestMarketOrderManager(TestBase):
     def test_process_market_order_creates_new_position(self):
         """Test processing market order creates new position"""
         now_ms = TimeUtil.now_in_millis()
-        signal = self.create_test_signal(order_type=OrderType.LONG, leverage=1.0)
+        signal = self.create_test_signal(order_type=OrderType.LONG, leverage=0.3)
         price_sources = [self.create_test_price_source(50000.0, start_ms=now_ms)]
 
         err_msg, position, created_order = self.market_order_manager._process_market_order(
@@ -689,7 +689,7 @@ class TestMarketOrderManager(TestBase):
     def test_process_market_order_no_price_sources_fails(self):
         """Test processing market order fails when no price sources available"""
         now_ms = TimeUtil.now_in_millis()
-        signal = self.create_test_signal(order_type=OrderType.LONG, leverage=1.0)
+        signal = self.create_test_signal(order_type=OrderType.LONG, leverage=0.3)
 
         # Pass empty list (not None) to simulate no prices available
         # None would cause the code to fetch prices from live_price_fetcher
@@ -715,7 +715,7 @@ class TestMarketOrderManager(TestBase):
         self.market_order_manager.last_order_time_cache[cache_key] = now_ms
 
         # Try second order too soon
-        signal = self.create_test_signal(order_type=OrderType.LONG, leverage=1.0)
+        signal = self.create_test_signal(order_type=OrderType.LONG, leverage=0.3)
         price_sources = [self.create_test_price_source(50000.0, start_ms=now_ms + 1000)]
 
         err_msg, position, created_order = self.market_order_manager._process_market_order(
@@ -757,7 +757,7 @@ class TestMarketOrderManager(TestBase):
     def test_process_market_order_gets_account_size(self):
         """Test that processing order retrieves account size"""
         now_ms = TimeUtil.now_in_millis()
-        signal = self.create_test_signal(order_type=OrderType.LONG, leverage=1.0)
+        signal = self.create_test_signal(order_type=OrderType.LONG, leverage=0.3)
         price_sources = [self.create_test_price_source(50000.0, start_ms=now_ms)]
 
         # Should not raise any errors (contract_client handles account size)
@@ -779,7 +779,7 @@ class TestMarketOrderManager(TestBase):
         now_ms = TimeUtil.now_in_millis()
         signal = self.create_test_signal(
             order_type=OrderType.LONG,
-            leverage=1.0,
+            leverage=0.3,
             execution_type=ExecutionType.LIMIT
         )
         price_sources = [self.create_test_price_source(50000.0, start_ms=now_ms)]
@@ -806,7 +806,7 @@ class TestMarketOrderManager(TestBase):
         now_ms = TimeUtil.now_in_millis()
         signal = self.create_test_signal(
             order_type=OrderType.LONG,
-            leverage=1.0,
+            leverage=0.3,
             execution_type=ExecutionType.MARKET
         )
         price_sources = [self.create_test_price_source(50000.0, start_ms=now_ms)]
@@ -840,7 +840,7 @@ class TestMarketOrderManager(TestBase):
         mock_synapse.order_json = None
 
         now_ms = TimeUtil.now_in_millis()
-        signal = self.create_test_signal(order_type=OrderType.LONG, leverage=1.0)
+        signal = self.create_test_signal(order_type=OrderType.LONG, leverage=0.3)
         price_sources = [self.create_test_price_source(50000.0, start_ms=now_ms)]
 
         created_order = self.market_order_manager.process_market_order(
@@ -865,7 +865,7 @@ class TestMarketOrderManager(TestBase):
         mock_synapse.error_message = None
 
         now_ms = TimeUtil.now_in_millis()
-        signal = self.create_test_signal(order_type=OrderType.LONG, leverage=1.0)
+        signal = self.create_test_signal(order_type=OrderType.LONG, leverage=0.3)
 
         # Pass empty list for price_sources to trigger error
         # process_market_order should raise SignalException
@@ -891,7 +891,7 @@ class TestMarketOrderManager(TestBase):
         self.metagraph_client.set_hotkeys([self.DEFAULT_MINER_HOTKEY, miner2])
 
         now_ms = TimeUtil.now_in_millis()
-        signal = self.create_test_signal(order_type=OrderType.LONG, leverage=1.0)
+        signal = self.create_test_signal(order_type=OrderType.LONG, leverage=0.3)
         price_sources = [self.create_test_price_source(50000.0, start_ms=now_ms)]
 
         # Process order for miner 1
@@ -923,7 +923,7 @@ class TestMarketOrderManager(TestBase):
     def test_process_market_order_multiple_trade_pairs(self):
         """Test single miner can have positions in multiple trade pairs"""
         now_ms = TimeUtil.now_in_millis()
-        signal = self.create_test_signal(order_type=OrderType.LONG, leverage=1.0)
+        signal = self.create_test_signal(order_type=OrderType.LONG, leverage=0.3)
 
         btc_price_sources = [self.create_test_price_source(50000.0, start_ms=now_ms)]
         eth_price_sources = [self.create_test_price_source(3000.0, start_ms=now_ms)]
@@ -961,7 +961,7 @@ class TestMarketOrderManager(TestBase):
     def test_process_market_order_missing_signal_keys(self):
         """Test error handling when signal dict is missing required keys"""
         now_ms = TimeUtil.now_in_millis()
-        invalid_signal = {"leverage": 1.0}  # Missing order_type
+        invalid_signal = {"leverage": 0.3}  # Missing order_type
         price_sources = [self.create_test_price_source(50000.0, start_ms=now_ms)]
 
         with self.assertRaises(KeyError):
@@ -984,7 +984,7 @@ class TestMarketOrderManager(TestBase):
         price_sources = [self.create_test_price_source(50000.0, start_ms=now_ms)]
 
         # Calculate order size from leverage
-        signal = {"leverage": 1.0}
+        signal = {"leverage": 0.3}
         quantity, leverage, value = self.market_order_manager.parse_order_size(
             signal, 1.0, self.DEFAULT_TRADE_PAIR, self.DEFAULT_ACCOUNT_SIZE
         )

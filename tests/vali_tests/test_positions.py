@@ -2058,6 +2058,7 @@ class TestPositions(TestBase):
         })
 
     def test_leverage_clamping_v1_long(self):
+        """Test that exceeding max leverage raises ValueError instead of clamping"""
         position = deepcopy(self.default_position)
         live_price = 69000
         min_allowed_leverage, max_allowed_leverage = get_position_leverage_bounds(TradePair.BTCUSD,
@@ -2077,25 +2078,25 @@ class TestPositions(TestBase):
                    processed_ms=2000,
                    order_uuid="2000")
 
-        o2_clamped = deepcopy(o2)
-        o2_clamped.leverage = 2
-        o2_clamped.value = o2_clamped.leverage * ValiConfig.DEFAULT_CAPITAL
-        o2_clamped.quantity = o2_clamped.value / live_price
+        # Add first order successfully
+        self.add_order_to_position_and_save(position, o1)
 
-        for order in [o1, o2]:
-            self.add_order_to_position_and_save(position, order)
+        # Second order should raise ValueError as it would exceed max leverage
+        with self.assertRaises(ValueError) as context:
+            self.add_order_to_position_and_save(position, o2)
 
-        net_value = max_allowed_leverage * ValiConfig.DEFAULT_CAPITAL
+        # Verify position only has first order
+        net_value = (max_allowed_leverage - 2) * ValiConfig.DEFAULT_CAPITAL
         net_quantity = net_value / live_price
 
         self.validate_intermediate_position_state(position, {
-            'orders': [o1, o2_clamped],
+            'orders': [o1],
             'position_type': OrderType.LONG,
             'is_closed_position': False,
-            'net_leverage': max_allowed_leverage,
+            'net_leverage': max_allowed_leverage - 2,
             'initial_entry_price': live_price,
             'average_entry_price': position.average_entry_price,
-            'cumulative_entry_value': 2000000.0,
+            'cumulative_entry_value': 1800000.0,
             'realized_pnl': 0,
             'close_ms': None,
             'return_at_close': position.return_at_close,
@@ -2110,10 +2111,11 @@ class TestPositions(TestBase):
             'net_quantity': net_quantity
         })
 
-        self.assertEqual(position.max_leverage_seen(), 20.0)
-        self.assertEqual(position.get_cumulative_leverage(), 20.0)
+        self.assertEqual(position.max_leverage_seen(), 18.0)
+        self.assertEqual(position.get_cumulative_leverage(), 18.0)
 
     def test_leverage_clamping_v2_long(self):
+        """Test that exceeding max leverage raises ValueError instead of clamping (v2)"""
         position = deepcopy(self.default_position)
         live_price = 69000
         o1 = Order(order_type=OrderType.LONG,
@@ -2129,24 +2131,24 @@ class TestPositions(TestBase):
                    processed_ms=LEVERAGE_BOUNDS_V2_START_TIME_MS + 2000,
                    order_uuid="2000")
 
-        o2_clamped = deepcopy(o2)
-        o2_clamped.leverage = TradePair.BTCUSD.max_leverage / 2
-        o2_clamped.value = o2_clamped.leverage * ValiConfig.DEFAULT_CAPITAL
-        o2_clamped.quantity = o2_clamped.value / live_price
+        # Add first order successfully
+        self.add_order_to_position_and_save(position, o1)
 
-        for order in [o1, o2]:
-            self.add_order_to_position_and_save(position, order)
+        # Second order should raise ValueError as it would exceed max leverage
+        with self.assertRaises(ValueError) as context:
+            self.add_order_to_position_and_save(position, o2)
 
+        # Verify position only has first order
         self.validate_intermediate_position_state(position, {
-            'orders': [o1, o2_clamped],
+            'orders': [o1],
             'position_type': OrderType.LONG,
             'is_closed_position': False,
-            'net_leverage': TradePair.BTCUSD.max_leverage,
-            'net_value': TradePair.BTCUSD.max_leverage * ValiConfig.DEFAULT_CAPITAL,
-            'net_quantity': TradePair.BTCUSD.max_leverage * ValiConfig.DEFAULT_CAPITAL / live_price,
+            'net_leverage': TradePair.BTCUSD.max_leverage / 2,
+            'net_value': TradePair.BTCUSD.max_leverage / 2 * ValiConfig.DEFAULT_CAPITAL,
+            'net_quantity': TradePair.BTCUSD.max_leverage / 2 * ValiConfig.DEFAULT_CAPITAL / live_price,
             'initial_entry_price': live_price,
             'average_entry_price': position.average_entry_price,
-            'cumulative_entry_value': 50000.0,
+            'cumulative_entry_value': 25000.0,
             'realized_pnl': 0,
             'close_ms': None,
             'return_at_close': position.return_at_close,
@@ -2159,8 +2161,8 @@ class TestPositions(TestBase):
             'unrealized_pnl': 0
         })
 
-        self.assertEqual(position.max_leverage_seen(), TradePair.BTCUSD.max_leverage)
-        self.assertEqual(position.get_cumulative_leverage(), TradePair.BTCUSD.max_leverage)
+        self.assertEqual(position.max_leverage_seen(), TradePair.BTCUSD.max_leverage / 2)
+        self.assertEqual(position.get_cumulative_leverage(), TradePair.BTCUSD.max_leverage / 2)
 
     def test_leverage_clamping_v1_skip_long_order(self):
         position = deepcopy(self.default_position)
@@ -2262,6 +2264,7 @@ class TestPositions(TestBase):
         self.assertEqual(position.get_cumulative_leverage(), TradePair.BTCUSD.max_leverage)
 
     def test_leverage_clamping_short_v1(self):
+        """Test that exceeding max leverage raises ValueError instead of clamping (SHORT v1)"""
         position = deepcopy(self.default_position)
         min_allowed_leverage, max_allowed_leverage = get_position_leverage_bounds(TradePair.BTCUSD,
                                                                                   LEVERAGE_BOUNDS_V2_START_TIME_MS - 1)
@@ -2279,28 +2282,28 @@ class TestPositions(TestBase):
                    processed_ms=2000,
                    order_uuid="2000")
 
-        o2_clamped = deepcopy(o2)
-        o2_clamped.leverage = -1.0 * (max_allowed_leverage - abs(o1.leverage))
-        o2_clamped.value = o2_clamped.leverage * ValiConfig.DEFAULT_CAPITAL
-        o2_clamped.quantity = o2_clamped.value / live_price
+        # Add first order successfully
+        self.add_order_to_position_and_save(position, o1)
 
-        for order in [o1, o2]:
-            self.add_order_to_position_and_save(position, order)
+        # Second order should raise ValueError as it would exceed max leverage
+        with self.assertRaises(ValueError) as context:
+            self.add_order_to_position_and_save(position, o2)
 
-        net_leverage = -1.0 * max_allowed_leverage
+        # Verify position only has first order
+        net_leverage = -10.0
         net_value = net_leverage * ValiConfig.DEFAULT_CAPITAL
         net_quantity = net_value / live_price
 
         self.validate_intermediate_position_state(position, {
-            'orders': [o1, o2_clamped],
+            'orders': [o1],
             'position_type': OrderType.SHORT,
             'is_closed_position': False,
-            'net_leverage': -1.0 * max_allowed_leverage,
+            'net_leverage': -10.0,
             'net_value': net_value,
             'net_quantity': net_quantity,
             'initial_entry_price': live_price,
             'average_entry_price': position.average_entry_price,
-            'cumulative_entry_value': -2000000.0,
+            'cumulative_entry_value': -1000000.0,
             'realized_pnl': 0,
             'close_ms': None,
             'return_at_close': position.return_at_close,
@@ -2312,10 +2315,11 @@ class TestPositions(TestBase):
             'account_size': ValiConfig.DEFAULT_CAPITAL,
             'unrealized_pnl': 0
         })
-        self.assertEqual(position.max_leverage_seen(), max_allowed_leverage)
-        self.assertEqual(position.get_cumulative_leverage(), max_allowed_leverage)
+        self.assertEqual(position.max_leverage_seen(), 10.0)
+        self.assertEqual(position.get_cumulative_leverage(), 10.0)
 
     def test_leverage_clamping_short_v2(self):
+        """Test that exceeding max leverage raises ValueError instead of clamping (SHORT v2)"""
         position = deepcopy(self.default_position)
         live_price = 4444
         o1 = Order(order_type=OrderType.SHORT,
@@ -2325,33 +2329,33 @@ class TestPositions(TestBase):
                    processed_ms=LEVERAGE_BOUNDS_V2_START_TIME_MS,
                    order_uuid="1000")
         o2 = Order(order_type=OrderType.SHORT,
-                   leverage=TradePair.BTCUSD.max_leverage,
+                   leverage=-TradePair.BTCUSD.max_leverage,
                    price=live_price,
                    trade_pair=TradePair.BTCUSD,
                    processed_ms=LEVERAGE_BOUNDS_V2_START_TIME_MS + 2000,
                    order_uuid="2000")
 
-        o2_clamped = deepcopy(o2)
-        o2_clamped.leverage = -1.0 * (TradePair.BTCUSD.max_leverage - abs(o1.leverage))
-        o2_clamped.value = o2_clamped.leverage * ValiConfig.DEFAULT_CAPITAL
-        o2_clamped.quantity = o2_clamped.value / live_price
+        # Add first order successfully
+        self.add_order_to_position_and_save(position, o1)
 
-        for order in [o1, o2]:
-            self.add_order_to_position_and_save(position, order)
+        # Second order should raise ValueError as it would exceed max leverage
+        with self.assertRaises(ValueError) as context:
+            self.add_order_to_position_and_save(position, o2)
 
-        net_value = -TradePair.BTCUSD.max_leverage * ValiConfig.DEFAULT_CAPITAL
+        # Verify position only has first order
+        net_value = -TradePair.BTCUSD.max_leverage * 0.80 * ValiConfig.DEFAULT_CAPITAL
         net_quantity = net_value / live_price
 
         self.validate_intermediate_position_state(position, {
-            'orders': [o1, o2_clamped],
+            'orders': [o1],
             'position_type': OrderType.SHORT,
             'is_closed_position': False,
-            'net_leverage': -TradePair.BTCUSD.max_leverage,
+            'net_leverage': -TradePair.BTCUSD.max_leverage * 0.80,
             'net_value': net_value,
             'net_quantity': net_quantity,
             'initial_entry_price': live_price,
             'average_entry_price': position.average_entry_price,
-            'cumulative_entry_value': -50000.0,
+            'cumulative_entry_value': -40000.0,
             'realized_pnl': 0,
             'close_ms': None,
             'return_at_close': position.return_at_close,
@@ -2363,8 +2367,8 @@ class TestPositions(TestBase):
             'account_size': ValiConfig.DEFAULT_CAPITAL,
             'unrealized_pnl': 0
         })
-        self.assertEqual(position.max_leverage_seen(), TradePair.BTCUSD.max_leverage)
-        self.assertEqual(position.get_cumulative_leverage(), TradePair.BTCUSD.max_leverage)
+        self.assertEqual(position.max_leverage_seen(), TradePair.BTCUSD.max_leverage * 0.80)
+        self.assertEqual(position.get_cumulative_leverage(), TradePair.BTCUSD.max_leverage * 0.80)
 
     def test_leverage_clamping_v2_clamps_leverage_to_small(self):
         position = deepcopy(self.default_position)
@@ -2534,7 +2538,7 @@ class TestPositions(TestBase):
 
     def test_long_order_crypto_leverage_exceed_portfolio_limit(self):
         """
-        3 positions, 2 positions within the portfolio leverage max, but the third order will exceed the max and gets clamped
+        3 positions, 2 positions within the portfolio leverage max, but the third order will exceed the max and raises ValueError
         """
         position = deepcopy(self.default_position)
         position.trade_pair=TradePair.AUDCAD
@@ -2561,8 +2565,6 @@ class TestPositions(TestBase):
         self.add_order_to_position_and_save(position2, o2)
         self.position_manager.save_miner_position(position2)
 
-        print(self.position_manager.calculate_net_portfolio_leverage(self.DEFAULT_MINER_HOTKEY))
-
         self.assertEqual(self.position_manager.calculate_net_portfolio_leverage(self.DEFAULT_MINER_HOTKEY), 9.0)
 
         position3 = deepcopy(self.default_position)
@@ -2575,15 +2577,13 @@ class TestPositions(TestBase):
                    processed_ms=leverage_utils.PORTFOLIO_LEVERAGE_BOUNDS_START_TIME_MS + 2000,
                    order_uuid="2000")
 
-        with self.assertLogs('root', level='DEBUG') as logger:
+        # Should raise ValueError instead of clamping
+        with self.assertRaises(ValueError) as context:
             self.add_order_to_position_and_save(position3, o3)
-            # print(logger.output)
-            self.assertEqual(position3.orders[0].leverage, 0.1)
-            self.assertEqual([f"WARNING:root:Miner {self.DEFAULT_MINER_HOTKEY} ETHUSD order leverage clamped to 0.1"], logger.output)
 
     def test_long_order_forex_leverage_exceed_portfolio_limit(self):
         """
-        3 positions, 2 positions within the portfolio leverage max, but the third order will exceed the max and gets clamped
+        3 positions, 2 positions within the portfolio leverage max, but the third order will exceed the max and raises ValueError
         """
         position = deepcopy(self.default_position)
         position.trade_pair=TradePair.AUDCAD
@@ -2623,15 +2623,13 @@ class TestPositions(TestBase):
                    quote_usd_rate=1.0,
                    usd_base_rate=1.0)
 
-        with self.assertLogs('root', level='DEBUG') as logger:
+        # Should raise ValueError instead of clamping
+        with self.assertRaises(ValueError) as context:
             self.add_order_to_position_and_save(position3, o3)
-            # print(logger.output)
-            self.assertEqual(position3.orders[0].leverage, 1)
-            self.assertEqual([f"WARNING:root:Miner {self.DEFAULT_MINER_HOTKEY} AUDJPY order leverage clamped to 1.0"], logger.output)
 
     def test_short_order_leverage_exceed_portfolio_limit(self):
         """
-        3 positions, 2 positions within the portfolio leverage max, but the third order will exceed the max and gets clamped
+        3 positions, 2 positions within the portfolio leverage max, but the third order will exceed the max and raises ValueError
         """
         position = deepcopy(self.default_position)
         position.trade_pair = TradePair.AUDCAD
@@ -2660,7 +2658,6 @@ class TestPositions(TestBase):
         position3 = deepcopy(self.default_position)
         position3.trade_pair = TradePair.ETHUSD
         position3.position_uuid = self.DEFAULT_POSITION_UUID + "_3"
-        # position3.position_type = OrderType.SHORT
         o3 = Order(order_type=OrderType.SHORT,
                    leverage=-0.2,
                    price=100,
@@ -2668,11 +2665,9 @@ class TestPositions(TestBase):
                    processed_ms=leverage_utils.PORTFOLIO_LEVERAGE_BOUNDS_START_TIME_MS + 2000,
                    order_uuid="2000")
 
-        with self.assertLogs('root', level='DEBUG') as logger:
+        # Should raise ValueError instead of clamping
+        with self.assertRaises(ValueError) as context:
             self.add_order_to_position_and_save(position3, o3)
-            # print(logger.output)
-            self.assertEqual(position3.orders[0].leverage, -0.1)
-            self.assertEqual([f"WARNING:root:Miner {self.DEFAULT_MINER_HOTKEY} ETHUSD order leverage clamped to -0.1"], logger.output)
 
     def test_position_below_min_while_portfolio_lev_exceeded(self):
         """
