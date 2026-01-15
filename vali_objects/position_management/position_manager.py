@@ -30,7 +30,7 @@ from vali_objects.price_fetcher.live_price_client import LivePriceFetcherClient
 from vali_objects.utils.elimination.elimination_client import EliminationClient
 from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
 
-TARGET_MS = 1761260399000 + (1000 * 60 * 60 * 6)  # + 6 hours
+TARGET_MS = 1768507200000 + (1000 * 60 * 60 * 6)  # + 6 hours
 
 
 class PositionManager:
@@ -769,36 +769,36 @@ class PositionManager:
         miners_to_promote = []
         position_uuids_to_delete = []
         wipe_positions = False
-        reopen_force_closed_orders = False
+        reopen_force_closed_orders = True
         miners_to_wipe_perf_ledger = []
 
         current_eliminations = self._elimination_client.get_eliminations_from_memory() if self._elimination_client else []
 
         if now_ms < TARGET_MS:
-            # temp slippage correction
-            SLIPPAGE_V2_TIME_MS = 1759431540000
-            n_slippage_corrections = 0
-            for hotkey, positions in hotkey_to_positions.items():
-                for position in positions:
-                    needs_save = False
-                    for order in position.orders:
-                        if (order.trade_pair.is_forex and SLIPPAGE_V2_TIME_MS < order.processed_ms):
-                            old_slippage = order.slippage
-                            order.slippage = PriceSlippageModel.calculate_slippage(order.bid, order.ask, order)
-                            if old_slippage != order.slippage:
-                                needs_save = True
-                                n_slippage_corrections += 1
-                                bt.logging.info(
-                                    f"Updated forex slippage for order {order}: "
-                                    f"{old_slippage:.6f} -> {order.slippage:.6f}")
-
-                    if needs_save:
-                        position.rebuild_position_with_updated_orders(self._live_price_client)
-                        self.save_miner_position(position, validate=False)
-            bt.logging.info(f"Applied {n_slippage_corrections} forex slippage corrections")
+            # # temp slippage correction
+            # SLIPPAGE_V2_TIME_MS = 1759431540000
+            # n_slippage_corrections = 0
+            # for hotkey, positions in hotkey_to_positions.items():
+            #     for position in positions:
+            #         needs_save = False
+            #         for order in position.orders:
+            #             if (order.trade_pair.is_forex and SLIPPAGE_V2_TIME_MS < order.processed_ms):
+            #                 old_slippage = order.slippage
+            #                 order.slippage = PriceSlippageModel.calculate_slippage(order.bid, order.ask, order)
+            #                 if old_slippage != order.slippage:
+            #                     needs_save = True
+            #                     n_slippage_corrections += 1
+            #                     bt.logging.info(
+            #                         f"Updated forex slippage for order {order}: "
+            #                         f"{old_slippage:.6f} -> {order.slippage:.6f}")
+            #
+            #         if needs_save:
+            #             position.rebuild_position_with_updated_orders(self._live_price_client)
+            #             self.save_miner_position(position, validate=False)
+            # bt.logging.info(f"Applied {n_slippage_corrections} forex slippage corrections")
 
             # All miners that wanted their challenge period restarted
-            miners_to_wipe = []
+            miners_to_wipe = ["5GCUMqFigwvKh62LdJXYYr3pHhCvpAhWbF83DqB2ZUDZRKwM_4"]
             position_uuids_to_delete = []
             miners_to_promote = []
 
@@ -861,8 +861,8 @@ class PositionManager:
                         print(f'Deleting position {pos.position_uuid} for trade pair {pos.trade_pair.trade_pair_id} for hk {pos.miner_hotkey}')
                         self.delete_position(pos.miner_hotkey, pos.position_uuid)
                     elif reopen_force_closed_orders:
-                        if any(o.src == 1 for o in pos.orders):
-                            pos.orders = [o for o in pos.orders if o.src != 1]
+                        if any((o.src in (1, 3)) for o in pos.orders):
+                            pos.orders = [o for o in pos.orders if (o.src not in (1, 3))]
                             pos.rebuild_position_with_updated_orders(self._live_price_client)
                             self.save_miner_position(pos, validate=False)
                             print(f'Removed eliminated orders from position {pos}')
