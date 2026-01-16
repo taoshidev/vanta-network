@@ -17,7 +17,7 @@ from collections import defaultdict
 
 from miner_config import MinerConfig
 from template.protocol import SendSignal
-from vali_objects.vali_config import TradePair
+from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 
 REPO_VERSION = 'unknown'
@@ -313,7 +313,7 @@ class PropNetOrderPlacer:
 
         return signal_file_path
 
-    def process_a_signal_for_rest(self, order_uuid: str, signal_data: dict, subaccount_id: str = None) -> dict:
+    def process_a_signal_for_rest(self, order_uuid: str, signal_data: dict, subaccount_id: str = None, verbose: bool = False) -> dict:
         """
         Process signal from REST endpoint (synchronous, returns structured result).
 
@@ -330,19 +330,20 @@ class PropNetOrderPlacer:
             order_uuid: UUID for this order
             signal_data: Signal dictionary with trade_pair, order_type, leverage, etc.
             subaccount_id: Optional subaccount ID for entity miners
+            verbose: If True, return all validator responses. If False, return only MOTHERSHIP validator responses (default: True)
 
         Returns:
             Dictionary with structure:
             {
-                "success": bool,  # True if all high-trust validators succeeded
+                "success": bool,  # True if MOTHERSHIP validator succeeded (verbose=false) or high-trust validators succeeded (verbose=true)
                 "order_uuid": str,
                 "validators_processed": int,
                 "validators_succeeded": int,
                 "high_trust_total": int,
                 "high_trust_succeeded": int,
                 "all_high_trust_succeeded": bool,
-                "created_orders": dict,  # validator_hotkey -> order_json
-                "error_messages": dict,  # validator_hotkey -> [error_msg, ...]
+                "created_orders": dict,  # validator_hotkey -> order_json (filtered if verbose=false)
+                "error_messages": dict,  # validator_hotkey -> [error_msg, ...] (filtered if verbose=false)
                 "processing_time": float,
                 "message": str  # Human-readable result
             }
@@ -351,6 +352,10 @@ class PropNetOrderPlacer:
         trade_pair_id = signal_data.get('trade_pair', {}).get('trade_pair_id', 'unknown')
         metrics = SignalMetrics(order_uuid, trade_pair_id)
         metrics.mark_network_start()
+
+        # Determine MOTHERSHIP validator hotkey based on network
+        mothership_hotkey = ValiConfig.MOTHERSHIP_HOTKEY_TESTNET if self.is_testnet else ValiConfig.MOTHERSHIP_HOTKEY
+        bt.logging.debug(f"Using MOTHERSHIP hotkey: {mothership_hotkey} (testnet={self.is_testnet})")
 
         try:
             # Get validators sorted by trust
@@ -460,22 +465,42 @@ class PropNetOrderPlacer:
             else:
                 self.write_signal_to_processed_directory(signal_data, fake_signal_file_path, retry_status)
 
-            # Build structured response
-            if high_trust_processed:
-                message = f"Order successfully processed by {metrics.high_trust_succeeded}/{metrics.high_trust_total} high-trust validators"
+            # Filter responses based on verbose flag
+            if not verbose:
+                # Return only MOTHERSHIP validator responses
+                bt.logging.debug(f"Filtering to MOTHERSHIP validator responses only (verbose=false)")
+                # Calculate success based on MOTHERSHIP validator only
+                mothership_success = mothership_hotkey in retry_status['created_orders']
+                created_orders = retry_status['created_orders'].get(mothership_hotkey)
+                error_messages = retry_status['validator_error_messages'].get(mothership_hotkey)
+
+                bt.logging.info(f"MOTHERSHIP validator {'succeeded' if mothership_success else 'failed'}")
             else:
+                # Return all validator responses (current behavior)
+                mothership_success = high_trust_processed
+                created_orders = retry_status['created_orders']
+                error_messages = retry_status['validator_error_messages']
+
+            # Build structured response
+            if verbose and high_trust_processed:
+                message = f"Order successfully processed by {metrics.high_trust_succeeded}/{metrics.high_trust_total} high-trust validators"
+            elif verbose and not high_trust_processed:
                 message = f"Order failed on {n_high_trust_validators_that_failed}/{n_high_trust_validators} high-trust validators"
+            elif not verbose and mothership_success:
+                message = f"Order successfully processed by Taoshi validator"
+            else:
+                message = f"Order failed on Taoshi validator"
 
             return {
-                "success": high_trust_processed,
+                "success": mothership_success,
                 "order_uuid": order_uuid,
                 "validators_processed": metrics.validators_attempted,
                 "validators_succeeded": metrics.validators_succeeded,
                 "high_trust_total": metrics.high_trust_total,
                 "high_trust_succeeded": metrics.high_trust_succeeded,
                 "all_high_trust_succeeded": metrics.all_high_trust_succeeded,
-                "created_orders": retry_status['created_orders'],
-                "error_messages": retry_status['validator_error_messages'],
+                "created_orders": created_orders,
+                "error_messages": error_messages,
                 "processing_time": metrics.processing_time,
                 "message": message
             }
