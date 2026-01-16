@@ -1,5 +1,5 @@
 """
-Order processing logic shared between validator.py and rest_server.py.
+Order processing logic shared between validator.py and validator_rest_server.py.
 
 This module provides a single source of truth for processing orders,
 ensuring consistent behavior whether orders come from miners via synapses
@@ -367,7 +367,7 @@ class OrderProcessor:
         Unified order processing dispatcher that routes to the appropriate handler.
 
         This method centralizes the execution type routing logic that was previously
-        duplicated in validator.py (lines 607-661) and rest_server.py (lines 1475-1549).
+        duplicated in validator.py (lines 607-661) and validator_rest_server.py (lines 1475-1549).
 
         Benefits:
         - Single source of truth for order processing logic

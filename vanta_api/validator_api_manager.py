@@ -3,12 +3,12 @@ import os
 import time
 
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
-from vanta_api.rest_server import VantaRestServer
+from vanta_api.validator_rest_server import ValidatorRestServer
 from shared_objects.slack_notifier import SlackNotifier
 from vanta_api.websocket_server import WebSocketServer
 
 
-class APIManager:
+class ValidatorAPIManager:
     """Manages API services and processes."""
 
     def __init__(self, refresh_interval=15,
@@ -82,7 +82,7 @@ class APIManager:
 
         # Spawn REST server using spawn_process() with configured host/port
         print(f"Spawning REST API server at http://{self.api_host}:{self.api_rest_port}...")
-        self.rest_handle = VantaRestServer.spawn_process(
+        self.rest_handle = ValidatorRestServer.spawn_process(
             api_keys_file=self.api_keys_file,
             refresh_interval=self.refresh_interval,
             slack_notifier=self.slack_notifier,
@@ -144,5 +144,5 @@ if __name__ == "__main__":
 
     # Create and run the API manager
     # WebSocket notifications now use RPC instead of multiprocessing.Queue
-    api_manager = APIManager()
+    api_manager = ValidatorAPIManager()
     api_manager.run()

@@ -9,7 +9,7 @@ import threading
 import signal
 
 from vali_objects.enums.misc import SynapseMethod
-from vanta_api.api_manager import APIManager
+from vanta_api.validator_api_manager import ValidatorAPIManager
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, NeuronContext
 from entity_management.entity_utils import is_synthetic_hotkey
 
@@ -248,7 +248,7 @@ class Validator(ValidatorBase):
         # Start API services (if enabled)
         if self.config.serve:
             # Create API Manager with configuration options
-            self.api_manager = APIManager(
+            self.api_manager = ValidatorAPIManager(
                 slack_webhook_url=getattr(self.config, 'slack_webhook_url', None),
                 validator_hotkey=self.wallet.hotkey.ss58_address,
                 api_host=getattr(self.config, 'api_host', '0.0.0.0'),

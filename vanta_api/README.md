@@ -1362,7 +1362,7 @@ Each API key is limited to a maximum of 5 concurrent WebSocket connections. When
 ### Launching the Server
 
 ```bash
-python api_manager.py --serve
+python validator_api_manager.py --serve
 ```
 
 ## Client Usage Examples

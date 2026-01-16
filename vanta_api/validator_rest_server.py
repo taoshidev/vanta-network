@@ -36,7 +36,7 @@ from shared_objects.rpc.rpc_server_base import RPCServerBase
 from entity_management.entity_client import EntityClient
 
 
-class VantaRestServer(BaseRestServer, RPCServerBase):
+class ValidatorRestServer(BaseRestServer, RPCServerBase):
     """Handles REST API requests with Flask and Waitress.
 
     Multiple inheritance:
@@ -1737,7 +1737,7 @@ if __name__ == "__main__":
     print(f"REST server will run on {ValiConfig.REST_API_HOST}:{ValiConfig.REST_API_PORT} (hardcoded in ValiConfig)")
 
     # Create and run the server (host/port read from ValiConfig)
-    server = VantaRestServer(
+    server = ValidatorRestServer(
         api_keys_file=args.api_keys,
         metrics_interval_minutes=1
     )
