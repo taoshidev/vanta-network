@@ -1,5 +1,3 @@
-# developer: Taoshi Inc
-# Copyright (c) 2024 Taoshi Inc
 """
 Miner REST Server - REST API for miners to receive order submissions.
 
@@ -20,9 +18,11 @@ import os
 import json
 import time
 import uuid
+import requests
 import bittensor as bt
 from typing import Optional
 from flask import jsonify, request
+from bittensor_wallet import Wallet
 
 from vanta_api.base_rest_server import BaseRestServer
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
@@ -97,9 +97,6 @@ class MinerRestServer(BaseRestServer):
         # Synchronous order submission (new primary endpoint)
         self.app.route("/api/submit-order", methods=["POST"])(self.submit_order_endpoint)
 
-        # Legacy file-based signal reception (backward compatible)
-        self.app.route("/api/receive-signal", methods=["POST"])(self.receive_signal_legacy)
-
         # Entity miner subaccount creation
         self.app.route("/api/create-subaccount", methods=["POST"])(self.create_subaccount_endpoint)
 
@@ -109,7 +106,7 @@ class MinerRestServer(BaseRestServer):
         # Health check
         self.app.route("/api/health", methods=["GET"])(self.health_endpoint)
 
-        print(f"[MINER-REST-INIT] 5 miner endpoints registered ✓")
+        print(f"[MINER-REST-INIT] 4 miner endpoints registered ✓")
 
     # ============================================================================
     # ENDPOINT HANDLERS
@@ -127,7 +124,9 @@ class MinerRestServer(BaseRestServer):
             "order_uuid": "optional-uuid",  // Auto-generated if not provided
             "trade_pair": "BTC/USD",
             "order_type": "LONG" | "SHORT" | "FLAT",
-            "leverage": 0.1,
+            "leverage": 0.1,  // Exactly one of leverage, value, or quantity required
+            "value": 1000.0,  // Exactly one of leverage, value, or quantity required
+            "quantity": 0.5,  // Exactly one of leverage, value, or quantity required
             "execution_type": "MARKET" | "LIMIT",
             "price": 50000.0,  // Required for LIMIT orders
             "subaccount_id": "optional-subaccount-id"
@@ -169,13 +168,23 @@ class MinerRestServer(BaseRestServer):
             if not signal_data:
                 return jsonify({'success': False, 'error': 'Invalid request: missing JSON body'}), 400
 
-            # Validate required fields
-            required_fields = ['trade_pair', 'order_type', 'leverage']
+            # Validate always-required fields
+            required_fields = ['trade_pair', 'order_type']
             missing_fields = [field for field in required_fields if field not in signal_data]
             if missing_fields:
                 return jsonify({
                     'success': False,
                     'error': f"Invalid request: missing required fields: {', '.join(missing_fields)}"
+                }), 400
+
+            # Validate exactly one of leverage/value/quantity is present
+            position_size_fields = ['leverage', 'value', 'quantity']
+            provided_fields = [field for field in position_size_fields if field in signal_data]
+
+            if len(provided_fields) != 1:
+                return jsonify({
+                    'success': False,
+                    'error': f"Invalid request: must provide exactly one of: leverage, value, or quantity, got: {', '.join(provided_fields)}"
                 }), 400
 
             # Generate order_uuid if not provided
@@ -212,81 +221,27 @@ class MinerRestServer(BaseRestServer):
                 'error': f'Internal error processing order: {str(e)}'
             }), 500
 
-    def receive_signal_legacy(self):
-        """
-        Legacy file-based signal reception (backward compatible).
-
-        This endpoint writes the signal to disk for the miner's main loop to pick up.
-        No synchronous feedback - returns 200 immediately.
-
-        Request body (JSON):
-        {
-            "trade_pair": "BTC/USD",
-            "order_type": "LONG" | "SHORT" | "FLAT",
-            "leverage": 0.1,
-            ... (same as submit_order_endpoint)
-        }
-
-        Response (200 OK):
-        {
-            "message": "Signal received and queued for processing",
-            "signal_uuid": "f47ac10b-58cc-4372-a567-0e02b2c3d479"
-        }
-        """
-        # 1. Validate API key
-        api_key = self._get_api_key_safe()
-        if not self.is_valid_api_key(api_key):
-            return jsonify({'error': 'Unauthorized access'}), 401
-
-        # 2. Parse request body
-        try:
-            signal_data = request.get_json()
-            if not signal_data:
-                return jsonify({'error': 'Invalid request: missing JSON body'}), 400
-
-            # Generate signal UUID
-            signal_uuid = str(uuid.uuid4())
-            signal_data['order_uuid'] = signal_uuid
-
-        except Exception as e:
-            bt.logging.error(f"Error parsing request body: {e}")
-            return jsonify({'error': f'Invalid request: {str(e)}'}), 400
-
-        # 3. Write to disk for miner main loop to pick up
-        try:
-            signals_dir = MinerConfig.get_miner_received_signals_dir()
-            os.makedirs(signals_dir, exist_ok=True)
-
-            signal_file = os.path.join(signals_dir, signal_uuid)
-            ValiBkpUtils.write_file(signal_file, json.dumps(signal_data))
-
-            bt.logging.info(f"Legacy signal {signal_uuid} written to {signal_file}")
-
-            return jsonify({
-                'message': 'Signal received and queued for processing',
-                'signal_uuid': signal_uuid
-            }), 200
-
-        except Exception as e:
-            bt.logging.error(f"Error writing signal to disk: {e}")
-            return jsonify({'error': f'Internal error: {str(e)}'}), 500
-
     def create_subaccount_endpoint(self):
         """
         Entity miner subaccount creation.
 
         Request body (JSON):
         {
-            "entity_id": "entity-uuid",
-            "subaccount_name": "optional-name"
+            "asset_class": "crypto" | "forex",  // Required
+            "account_size": float                // Required, must be > 0
         }
 
         Response (200 OK):
         {
-            "success": true,
-            "subaccount_id": "subaccount-uuid",
-            "entity_id": "entity-uuid",
-            "message": "Subaccount created successfully"
+            "status": "success",
+            "message": "...",
+            "subaccount": {
+                "subaccount_id": 0,
+                "subaccount_uuid": "uuid-string",
+                "synthetic_hotkey": "5xxx_0",
+                "account_size": 10000.0,
+                "asset_class": "crypto"
+            }
         }
         """
         # 1. Validate API key
@@ -298,35 +253,127 @@ class MinerRestServer(BaseRestServer):
         try:
             request_data = request.get_json()
             if not request_data:
-                return jsonify({'error': 'Invalid request: missing JSON body'}), 400
+                return jsonify({'status': 'error', 'message': 'Invalid request: missing JSON body'}), 400
 
-            entity_id = request_data.get('entity_id')
-            if not entity_id:
-                return jsonify({'error': 'Invalid request: missing entity_id'}), 400
+            # Validate required fields
+            if "asset_class" not in request_data:
+                return jsonify({'status': 'error', 'message': 'Missing required field: asset_class'}), 400
 
-            subaccount_name = request_data.get('subaccount_name')
+            if "account_size" not in request_data:
+                return jsonify({'status': 'error', 'message': 'Missing required field: account_size'}), 400
+
+            asset_class = request_data["asset_class"]
+
+            # Type conversion with error handling
+            try:
+                account_size = float(request_data["account_size"])
+            except (ValueError, TypeError):
+                return jsonify({'status': 'error', 'message': 'account_size must be a number'}), 400
+
+            # Asset class validation
+            if asset_class not in ["crypto", "forex"]:
+                return jsonify({
+                    'status': 'error',
+                    'message': f"Invalid asset_class: {asset_class}. Must be 'crypto' or 'forex'"
+                }), 400
+
+            # Account size validation
+            if account_size <= 0:
+                return jsonify({'status': 'error', 'message': 'account_size must be positive'}), 400
 
         except Exception as e:
             bt.logging.error(f"Error parsing request body: {e}")
-            return jsonify({'error': f'Invalid request: {str(e)}'}), 400
+            return jsonify({'status': 'error', 'message': f'Invalid request: {str(e)}'}), 400
 
-        # 3. Create subaccount (placeholder - actual implementation TBD)
+        # 3. Load wallet secrets
         try:
-            # TODO: Implement actual subaccount creation logic
-            subaccount_id = str(uuid.uuid4())
+            secrets_file = MinerConfig.get_api_keys_file_path()
+            with open(secrets_file, 'r') as f:
+                secrets = json.load(f)
 
-            bt.logging.info(f"Created subaccount {subaccount_id} for entity {entity_id}")
+            wallet_name = secrets.get('wallet_name')
+            wallet_hotkey = secrets.get('wallet_hotkey')
+            wallet_password = secrets.get('wallet_password')
+            validator_url = secrets.get('validator_url')
 
-            return jsonify({
-                'success': True,
-                'subaccount_id': subaccount_id,
-                'entity_id': entity_id,
-                'message': 'Subaccount created successfully'
-            }), 200
+            if not all([wallet_name, wallet_hotkey, wallet_password, validator_url]):
+                return jsonify({
+                    'status': 'error',
+                    'message': 'Missing wallet configuration in secrets file'
+                }), 500
 
         except Exception as e:
-            bt.logging.error(f"Error creating subaccount: {e}")
-            return jsonify({'error': f'Internal error: {str(e)}'}), 500
+            bt.logging.error(f"Error loading wallet secrets: {e}")
+            return jsonify({'status': 'error', 'message': 'Failed to load wallet configuration'}), 500
+
+        # 4. Initialize wallet and sign message
+        try:
+            wallet = Wallet(name=wallet_name, hotkey=wallet_hotkey)
+            coldkey = wallet.get_coldkey(password=wallet_password)
+            hotkey = wallet.hotkey
+
+            # Build message dict - CRITICAL: must use sort_keys=True for deterministic ordering
+            message_dict = {
+                "account_size": account_size,
+                "asset_class": asset_class,
+                "entity_coldkey": coldkey.ss58_address,
+                "entity_hotkey": hotkey.ss58_address
+            }
+            message = json.dumps(message_dict, sort_keys=True).encode('utf-8')
+
+            # Sign with coldkey
+            signature = coldkey.sign(message).hex()
+
+        except Exception as e:
+            bt.logging.error(f"Error signing message: {e}")
+            return jsonify({'status': 'error', 'message': f'Wallet error: {str(e)}'}), 500
+
+        # 5. Send request to validator
+        try:
+            payload = {
+                "entity_hotkey": hotkey.ss58_address,
+                "entity_coldkey": coldkey.ss58_address,
+                "account_size": account_size,
+                "asset_class": asset_class,
+                "signature": signature,
+                "version": "2.0.0"
+            }
+
+            response = requests.post(
+                f"{validator_url}/entity/create-subaccount",
+                json=payload,
+                headers={"Content-Type": "application/json"},
+                timeout=30
+            )
+
+            # Parse response
+            try:
+                response_data = response.json()
+            except json.JSONDecodeError:
+                return jsonify({
+                    'status': 'error',
+                    'message': 'Invalid JSON response from validator'
+                }), 500
+
+            # Return validator response
+            if response.status_code == 200:
+                return jsonify(response_data), 200
+            else:
+                error_message = response_data.get('message', 'Unknown error from validator')
+                return jsonify({
+                    'status': 'error',
+                    'message': error_message
+                }), response.status_code
+
+        except requests.exceptions.Timeout:
+            return jsonify({'status': 'error', 'message': 'Request to validator timed out'}), 504
+
+        except requests.exceptions.ConnectionError:
+            return jsonify({'status': 'error', 'message': 'Could not connect to validator'}), 503
+
+        except Exception as e:
+            bt.logging.error(f"Error communicating with validator: {e}")
+            return jsonify({'status': 'error', 'message': f'Validator communication error: {str(e)}'}), 500
 
     def order_status_endpoint(self, order_uuid):
         """

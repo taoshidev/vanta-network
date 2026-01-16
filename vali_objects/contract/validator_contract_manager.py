@@ -660,8 +660,8 @@ class ValidatorContractManager(ValidatorBroadcastBase):
                     amount=int(withdrawal_amount * 10 ** 9),  # convert theta to rao_theta
                     source_coldkey=miner_coldkey,
                     source_hotkey=miner_hotkey,
-                    vault_stake=self.vault_wallet.hotkey.ss58_address,
-                    vault_wallet=self.vault_wallet,
+                    vault_stake=self.wallet.hotkey.ss58_address,
+                    vault_wallet=self.wallet,
                     owner_address=owner_address,
                     owner_private_key=owner_private_key,
                     wallet_password=vault_password
