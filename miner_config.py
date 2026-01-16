@@ -33,6 +33,6 @@ class MinerConfig:
         return ValiConfig.BASE_DIR + f"/mining/positions.json"
 
     @staticmethod
-    def get_api_keys_file_path() -> str:
+    def get_secrets_file_path() -> str:
         """Get path to miner API keys file."""
         return ValiConfig.BASE_DIR + "/mining/miner_secrets.json"
