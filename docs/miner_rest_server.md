@@ -20,44 +20,35 @@ The file should look like so:
 Once you have your secrets file setup, you should keep it to reference from other systems
 to send in signals.
 
-## Running the receive signals server
+## Quick Start
 
-First, you'll want to make sure you have your venv setup. You can do this by following the
-Installation portion of the README.
+The miner REST server starts automatically when you run your miner (no --serve flag needed). The server runs on port 8088 by default and provides the following endpoints:
 
-Once you have your venv setup you can run the signals server. We've setup a convenient
-script that will ensure your server is running at all times named `run_receive_signals_server.sh`.
-
-You can run it with the following command inside the vanta-network directory:
-
-`sh run_receive_signals_server.sh`
-
-## Stopping the receive signals server
-
-If you want to stop your server at any time
-you can search for its PID and kill it with the following commands.
-
-`pkill -f run_receive_signals_server.sh` </br>
-`pkill -f run_receive_signals_server.py`
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/submit-order` | POST | Submit trading orders synchronously (returns validator feedback) |
+| `/api/create-subaccount` | POST | Create entity miner subaccounts |
+| `/api/order-status/<uuid>` | GET | Query order processing status |
+| `/api/health` | GET | Health check (no auth required) |
 
 ## API Endpoint Documentation
 
-### Receive Signal
+### Submit Order (Synchronous)
 
-`POST /api/receive-signal`
+`POST /api/submit-order`
 
-This endpoint receives trading signals from external systems and stores them locally for the miner to process and send to validators.
+This endpoint receives trading signals from external systems and processes them **synchronously**, returning immediate feedback on validator acceptance/rejection. The miner will send the order to validators and wait for responses before returning (typically 20-60 seconds).
 
 **Required Headers**:
 ```
-Content-Type: application/json
+'Content-Type': 'application/json',
+'Authorization': 'xxxx'   # (string): Your API key as configured in `mining/miner_secrets.json`. Used for authentication.
 ```
 
 **Request Body Fields**:
 
 #### Required Fields
 
-- `api_key` (string): Your API key as configured in `mining/miner_secrets.json`. Used for authentication.
 - `execution_type` (string): The execution type for the order. Must be one of:
   - `"MARKET"`: Execute immediately at current market price
   - `"LIMIT"`: Execute at a specific price when market reaches that level
@@ -65,7 +56,7 @@ Content-Type: application/json
   - `"LIMIT_CANCEL"`: Cancel an existing limit order
 - `trade_pair` (string or object): The trading pair for the order. Can be either:
   - Trade pair ID string (e.g., `"BTCUSD"`, `"ETHUSD"`, `"EURUSD"`)
-  - Trade pair object with `trade_pair_id` field
+  - Trade pair object with `trade_pair_id` field (e.g., `{"trade_pair_id": "BTCUSD"}`)
 - `order_type` (string): The direction of the order. Must be one of:
   - `"LONG"`: Open or increase a long position
   - `"SHORT"`: Open or increase a short position
@@ -92,13 +83,15 @@ You must provide **exactly one** of the following fields to specify the order si
 #### Optional Fields for Entity Miners
 
 - `subaccount_id` (integer): The subaccount ID for entity miners (e.g., `0`, `1`, `2`). Only applicable for registered entity miners with subaccounts. Regular miners should omit this field.
+- `verbose` (boolean): Optional. Defaults to `false`.
+  - `false`: Return only Taoshi validator responses (concise, recommended for most users)
+  - `true`: Return responses from all validators (detailed debugging information)
 
 **Example Requests**:
 
-#### Market Order (Standard Miner)
+#### Basic Market Order
 ```json
 {
-  "api_key": "your_api_key_here",
   "execution_type": "MARKET",
   "trade_pair": "BTCUSD",
   "order_type": "LONG",
@@ -106,10 +99,9 @@ You must provide **exactly one** of the following fields to specify the order si
 }
 ```
 
-#### Limit Order with Brackets
+#### Market Order with Verbose Response
 ```json
 {
-  "api_key": "your_api_key_here",
   "execution_type": "BRACKET",
   "trade_pair": "ETHUSD",
   "order_type": "SHORT",
@@ -117,35 +109,34 @@ You must provide **exactly one** of the following fields to specify the order si
   "limit_price": 3500.00,
   "stop_loss": 3600.00,
   "take_profit": 3300.00
+  "verbose": true
 }
 ```
 
-#### Market Order with USD Value
+#### Limit Order
 ```json
 {
-  "api_key": "your_api_key_here",
-  "execution_type": "MARKET",
   "trade_pair": "EURUSD",
   "order_type": "LONG",
   "value": 10000
+  "execution_type": "LIMIT",
+  "price": 50000.0
 }
 ```
 
-#### Close Position (Flat Order)
+#### Order with USD Value
 ```json
 {
-  "api_key": "your_api_key_here",
   "execution_type": "MARKET",
   "trade_pair": "BTCUSD",
-  "order_type": "FLAT",
-  "leverage": 0
+  "order_type": "LONG",
+  "value": 10000
 }
 ```
 
 #### Cancel Limit Order
 ```json
 {
-  "api_key": "your_api_key_here",
   "execution_type": "LIMIT_CANCEL",
   "trade_pair": "BTCUSD",
   "order_type": "FLAT",
@@ -156,7 +147,6 @@ You must provide **exactly one** of the following fields to specify the order si
 #### Entity Miner Subaccount Order
 ```json
 {
-  "api_key": "your_api_key_here",
   "execution_type": "MARKET",
   "trade_pair": "BTCUSD",
   "order_type": "LONG",
@@ -167,26 +157,98 @@ You must provide **exactly one** of the following fields to specify the order si
 
 **Response**:
 
-Success (200):
+Success (200) - verbose=false (default):
 ```json
 {
-  "message": "Signal {'trade_pair': ..., 'order_type': 'LONG', ...} received successfully"
+  "success": true,
+  "order_uuid": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+  "validators_processed": 5,
+  "validators_succeeded": 5,
+  "high_trust_total": 5,
+  "high_trust_succeeded": 5,
+  "all_high_trust_succeeded": true,
+  "created_orders": "{'trade_pair': 'BTCUSD', 'order_type': 'LONG', ...}",
+  "error_messages": null,
+  "processing_time": 23.456,
+  "message": "Order successfully processed by Taoshi validator"
 }
 ```
 
-Error (400):
+Success (200) - verbose=true:
 ```json
 {
-  "error": "Error message describing the issue"
+  "success": true,
+  "order_uuid": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+  "validators_processed": 5,
+  "validators_succeeded": 5,
+  "high_trust_total": 5,
+  "high_trust_succeeded": 5,
+  "all_high_trust_succeeded": true,
+  "created_orders": {
+    "5FeNwZ...UZmo": "{'trade_pair': 'BTCUSD', 'order_type': 'LONG', ...}",
+    "5GTNzN...bHLN": "{'trade_pair': 'BTCUSD', 'order_type': 'LONG', ...}",
+    "...": "..."
+  },
+  "error_messages": {},
+  "processing_time": 23.456,
+  "message": "Order successfully processed by 5/5 high-trust validators"
 }
 ```
 
-Error (401):
+Validation Error (400):
 ```json
 {
-  "error": "Invalid API key"
+  "success": false,
+  "error": "Invalid request: must provide exactly one of: leverage, value, or quantity"
 }
 ```
+
+Processing Error (400):
+```json
+{
+  "success": false,
+  "order_uuid": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+  "validators_processed": 5,
+  "validators_succeeded": 2,
+  "high_trust_total": 5,
+  "high_trust_succeeded": 2,
+  "all_high_trust_succeeded": false,
+  "created_orders": "{'trade_pair': 'BTCUSD', ...}",
+  "error_messages": ["Validator error message"],
+  "processing_time": 25.123,
+  "message": "Order failed on Taoshi validator"
+}
+```
+
+Authentication Error (401):
+```json
+{
+  "error": "Unauthorized access"
+}
+```
+
+Internal Error (500):
+```json
+{
+  "success": false,
+  "order_uuid": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+  "error": "Internal error processing order: ..."
+}
+```
+
+**Response Fields**:
+
+- `success`: Boolean indicating if the order was successfully processed by the Taoshi validator (verbose=false) or all high-trust validators (verbose=true)
+- `order_uuid`: Unique identifier for this order
+- `validators_processed`: Total number of validators that were contacted
+- `validators_succeeded`: Number of validators that successfully accepted the order
+- `high_trust_total`: Number of high-trust validators contacted
+- `high_trust_succeeded`: Number of high-trust validators that accepted the order
+- `all_high_trust_succeeded`: Boolean indicating if all high-trust validators succeeded
+- `created_orders`: When verbose=false, contains the Taoshi validator's response; when verbose=true, contains a dictionary mapping all validator hotkeys to their responses
+- `error_messages`: When verbose=false, contains Taoshi validator errors if any; when verbose=true, contains all validator errors
+- `processing_time`: Total time in seconds for the request processing
+- `message`: Human-readable description of the result
 
 **Supported Trade Pairs**:
 
@@ -197,26 +259,26 @@ For the complete list of supported trade pairs and their current status, refer t
 
 **Notes**:
 
-1. Orders are stored locally and processed by the miner in the order they are received
-2. The miner will send these orders to validators via the Bittensor network
-3. Only one order per trade pair is processed at a time; duplicate signals for the same trade pair will overwrite previous unprocessed signals
-4. For entity miners, the `subaccount_id` is used to construct a synthetic hotkey for position tracking
-5. Regular miners should omit the `subaccount_id` field entirely
+1. **Synchronous Processing**: This endpoint blocks for 20-60 seconds while the order is sent to validators and responses are collected. Use this for real-time trading systems that need immediate feedback.
+2. **Verbose Flag**: Default (verbose=false) returns only Taoshi validator responses for concise feedback. Set verbose=true for debugging or to see all validator responses.
+3. **Validator Trust**: The numeric metrics (validators_processed, validators_succeeded, etc.) always reflect actual processing regardless of the verbose flag.
+4. **Entity Miners**: Use the `subaccount_id` field to route orders to specific subaccounts. The ID is used to construct a synthetic hotkey for position tracking.
+5. **Regular Miners**: Omit the `subaccount_id` field entirely if you're not using entity miner subaccounts.
 
-### Create Subaccount
+### Create Subaccount (Entity Miners Only)
 
 `POST /api/create-subaccount`
 
-This endpoint creates a new subaccount for entity miners. It signs the request with the miner's coldkey and forwards it to the validator's REST API for processing.
+This endpoint creates a new subaccount for entity miners. The miner server signs the request with the miner's coldkey and forwards it to the validator's REST API for processing. This endpoint is **only needed for entity miners** managing multiple subaccounts.
 
 **Required Headers**:
 ```
-Content-Type: application/json
+'Content-Type': 'application/json',
+'Authorization': 'Bearer xxxx'   # (string): Your API key as configured in `mining/miner_secrets.json`. Used for authentication.
 ```
 
 **Request Body Fields**:
 
-- `api_key` (string): Your API key as configured in `mining/miner_secrets.json`. Used for authentication.
 - `asset_class` (string): The asset class for the subaccount. Must be one of:
   - `"crypto"`: Cryptocurrency trading
   - `"forex"`: Foreign exchange trading
@@ -226,7 +288,6 @@ Content-Type: application/json
 
 ```json
 {
-  "api_key": "your_api_key_here",
   "asset_class": "crypto",
   "account_size": 10000.0
 }
@@ -291,21 +352,7 @@ Bad Request (400):
 Unauthorized (401):
 ```json
 {
-  "status": "error",
-  "message": "Invalid API key"
-}
-```
-
-```json
-{
-  "error": "Invalid signature. Subaccount creation unauthorized"
-}
-```
-
-Forbidden (403):
-```json
-{
-  "error": "Coldkey does not own the specified hotkey"
+  "error": "Unauthorized access"
 }
 ```
 
@@ -356,11 +403,11 @@ To use this endpoint, your `miner_secrets.json` must include wallet credentials:
 
 **Notes**:
 
-1. This endpoint is only needed for entity miners managing multiple subaccounts
-2. The miner server signs the request with the coldkey and forwards it to the validator
-3. The validator verifies the signature and coldkey-hotkey ownership before creating the subaccount
-4. Once created, use the `synthetic_hotkey` value when placing orders for this subaccount
-5. Include the `subaccount_id` in signal requests to route orders to the correct subaccount
+1. **Entity Miners Only**: This endpoint is only needed for entity miners managing multiple subaccounts. Regular miners do not need to use this endpoint.
+2. **Wallet Signing**: The miner server signs the request with the coldkey using deterministic JSON serialization (sort_keys=True) for signature verification.
+4. **Using Subaccounts**: Once created, include the `subaccount_id` in your submit-order requests to route orders to the specific subaccount.
+5. **Synthetic Hotkey**: The validator assigns a synthetic hotkey (format: `{entity_hotkey}_{subaccount_id}`) used for position tracking on the network.
+
 
 ## Testing sending a signal
 

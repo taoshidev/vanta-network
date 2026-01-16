@@ -8,6 +8,7 @@
 
 # Markdown files (ignore temporary ones at root, keep important docs)
 *.md
+!docs/*.md
 !README.md
 !CLAUDE.md
 
