@@ -267,8 +267,16 @@ class MarketOrderManager():
         leverage_calc_ms = TimeUtil.now_in_millis() - step_start
         bt.logging.info(f"[ADD_ORDER_DETAIL] Net portfolio leverage calc took {leverage_calc_ms}ms")
 
-        # Validate order before adding to position
-        existing_position.validate_order_size(order, net_portfolio_leverage)
+        # Process cash balance after validation passes
+        trade_pair_category = trade_pair.trade_pair_category
+        if signal_order_type == OrderType.LONG:
+            order.margin_loan = self._miner_account_client.process_order_buy(miner_hotkey, value, trade_pair_category)
+        else:
+            processed_qty = existing_position.net_quantity if signal_order_type == OrderType.FLAT else quantity
+            sale_proceeds = processed_qty * order.price
+            loan_repaid = self._miner_account_client.process_order_sell(miner_hotkey, abs(sale_proceeds), existing_position.margin_loan, trade_pair_category)
+            # Store loan repayment as negative margin_loan so position.margin_loan sums correctly
+            order.margin_loan = -loan_repaid
 
         step_start = TimeUtil.now_in_millis()
         existing_position.add_order(order, self.live_price_fetcher, net_portfolio_leverage, skip_validation=True)
