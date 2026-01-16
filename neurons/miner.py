@@ -120,11 +120,11 @@ class Miner:
         self.my_subnet_uid = self.metagraph_client.hotkeys.index(self.wallet.hotkey.ss58_address)
         bt.logging.info(f"Running miner on netuid {self.config.netuid} with uid: {self.my_subnet_uid}")
 
-        # Start REST API server if requested (for synchronous order submission)
-        if not running_unit_tests and getattr(self.config, 'serve', False):
+        # Start REST API server (for synchronous order submission)
+        if not running_unit_tests:
             from vanta_api.miner_api_manager import MinerAPIManager
 
-            bt.logging.info("Starting Miner REST API server (--serve flag detected)...")
+            bt.logging.info("Starting Miner REST API server...")
             self.api_manager = MinerAPIManager(
                 prop_net_order_placer=self.prop_net_order_placer,
                 miner_hotkey=self.wallet.hotkey.ss58_address,
@@ -278,11 +278,6 @@ class Miner:
             help='Slack webhook URL for error notifications'
         )
         # Add REST API server arguments
-        parser.add_argument(
-            '--serve',
-            action='store_true',
-            help='Start the REST API server for synchronous order submission'
-        )
         parser.add_argument(
             '--api-host',
             type=str,
