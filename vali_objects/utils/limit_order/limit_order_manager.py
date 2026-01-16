@@ -72,6 +72,7 @@ class LimitOrderManager(CacheController):
         # Internal data structure: {TradePair: {hotkey: [Order]}}
         # Regular Python dict - NO IPC!
         self._limit_orders = {}
+        self._closed_orders = {}
         self._last_fill_time = {}
         self._last_print_time_ms = 0
 
@@ -336,35 +337,69 @@ class LimitOrderManager(CacheController):
             bt.logging.error(f"Error getting limit orders for trade pair: {e}")
             return {}
 
-    def to_dashboard_dict_rpc(self, miner_hotkey):
+    def to_dashboard_dict_rpc(self, miner_hotkey, status_filter=None):
         """
         RPC method to get dashboard representation of limit orders.
+
+        Args:
+            miner_hotkey: The miner's hotkey
+            status_filter: Optional list of status strings ['unfilled', 'filled', 'cancelled']
+
+        Returns:
+            If status_filter is None: list of order dicts (backward compatible)
+            If status_filter provided: dict of {status: [order dicts]}
         """
         try:
-            order_list = []
-            for trade_pair, hotkey_dict in self._limit_orders.items():
-                if miner_hotkey in hotkey_dict:
-                    for order in hotkey_dict[miner_hotkey]:
-                        data = {
-                            "trade_pair": [order.trade_pair.trade_pair_id, order.trade_pair.trade_pair],
-                            "order_type": str(order.order_type),
-                            "processed_ms": order.processed_ms,
-                            "limit_price": order.limit_price,
-                            "price": order.price,
-                            "leverage": order.leverage,
-                            'value': order.value,
-                            'quantity': order.quantity,
-                            "src": order.src,
-                            "execution_type": order.execution_type.name,
-                            "order_uuid": order.order_uuid,
-                            "stop_loss": order.stop_loss,
-                            "take_profit": order.take_profit
-                        }
-                        order_list.append(data)
-            return order_list if order_list else None
+            filtered_orders = []
+
+            if not status_filter or "unfilled" in status_filter:
+                # Get unfilled from memory
+                for _, hotkey_dict in self._limit_orders.items():
+                    if miner_hotkey in hotkey_dict:
+                        for order in hotkey_dict[miner_hotkey]:
+                            filtered_orders.append(order)
+
+            # No filter - return flat list (backward compatible)
+            if not status_filter:
+                return_data = [self._order_to_dict(o) for o in filtered_orders]
+                return return_data if return_data else None
+
+            # Get closed from cache (only when filtering)
+            for closed_order in self._closed_orders.get(miner_hotkey, []):
+                filtered_orders.append(closed_order)
+
+            # With filter - return dict grouped by status
+            status_set = set(s.upper() for s in status_filter)
+            result = {s.lower(): [] for s in status_set}
+
+            for order in filtered_orders:
+                status = OrderSource.status(order.src)  # "UNFILLED", "FILLED", "CANCELLED"
+                if status in status_set:
+                    result[status.lower()].append(self._order_to_dict(order))
+
+            return result if any(result.values()) else None
+
         except Exception as e:
             bt.logging.error(f"Error creating dashboard dict: {e}")
             return None
+
+    def _order_to_dict(self, order):
+        """Convert order to dict for dashboard response."""
+        return {
+            "trade_pair": [order.trade_pair.trade_pair_id, order.trade_pair.trade_pair],
+            "order_type": str(order.order_type),
+            "processed_ms": order.processed_ms,
+            "limit_price": order.limit_price,
+            "price": order.price,
+            "leverage": order.leverage,
+            "value": order.value,
+            "quantity": order.quantity,
+            "src": order.src,
+            "execution_type": order.execution_type.name,
+            "order_uuid": order.order_uuid,
+            "stop_loss": order.stop_loss,
+            "take_profit": order.take_profit,
+        }
 
     def get_all_limit_orders_rpc(self):
         """
@@ -772,6 +807,10 @@ class LimitOrderManager(CacheController):
                     o for o in orders if o.order_uuid != order_uuid
                 ]
 
+            if miner_hotkey not in self._closed_orders:
+                self._closed_orders[miner_hotkey] = []
+            self._closed_orders[miner_hotkey].append(order)
+
             bt.logging.info(f"Successfully closed limit order [{order_uuid}] [{trade_pair_id}] for [{miner_hotkey}]")
 
     def create_sltp_order(self, miner_hotkey, parent_order):
@@ -960,7 +999,7 @@ class LimitOrderManager(CacheController):
             if hotkey in eliminated_hotkeys:
                 continue
 
-            miner_order_dicts = ValiBkpUtils.get_limit_orders(hotkey, True, running_unit_tests=self.running_unit_tests)
+            miner_order_dicts = ValiBkpUtils.get_limit_orders(hotkey, False, running_unit_tests=self.running_unit_tests)
             for order_dict in miner_order_dicts:
                 try:
                     order = Order.from_dict(order_dict)
@@ -973,7 +1012,12 @@ class LimitOrderManager(CacheController):
                     if hotkey not in self._limit_orders[trade_pair]:
                         self._limit_orders[trade_pair][hotkey] = []
 
-                    self._limit_orders[trade_pair][hotkey].append(order)
+                    if OrderSource.is_open(order.src):
+                        self._limit_orders[trade_pair][hotkey].append(order)
+                    else:
+                        if hotkey not in self._closed_orders:
+                            self._closed_orders[hotkey] = []
+                        self._closed_orders[hotkey].append(order)
                     self._last_fill_time[trade_pair][hotkey] = 0
 
                 except Exception as e:

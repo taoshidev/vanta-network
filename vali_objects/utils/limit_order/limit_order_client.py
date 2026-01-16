@@ -119,17 +119,19 @@ class LimitOrderClient(RPCClientBase):
         """
         return self._server.get_all_limit_orders_rpc()
 
-    def to_dashboard_dict(self, miner_hotkey: str):
+    def to_dashboard_dict(self, miner_hotkey: str, status_filter: list = None):
         """
         Get dashboard representation via RPC.
 
         Args:
             miner_hotkey: Miner's hotkey
+            status_filter: Optional list of status strings ['unfilled', 'filled', 'cancelled']
 
         Returns:
-            List of order data for dashboard or None
+            If status_filter is None: list of order dicts (backward compatible)
+            If status_filter provided: dict of {status: [order dicts]}
         """
-        return self._server.to_dashboard_dict_rpc(miner_hotkey)
+        return self._server.to_dashboard_dict_rpc(miner_hotkey, status_filter)
 
     # ==================== Mutation Methods ====================
 

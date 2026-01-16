@@ -160,11 +160,19 @@ class LimitOrderServer(RPCServerBase):
         """
         return self._manager.get_limit_orders_for_trade_pair_rpc(trade_pair_id)
 
-    def to_dashboard_dict_rpc(self, miner_hotkey):
+    def to_dashboard_dict_rpc(self, miner_hotkey, status_filter=None):
         """
         RPC method to get dashboard representation of limit orders.
+
+        Args:
+            miner_hotkey: The miner's hotkey
+            status_filter: Optional list of status strings ['unfilled', 'filled', 'cancelled']
+
+        Returns:
+            If status_filter is None: list of order dicts (backward compatible)
+            If status_filter provided: dict of {status: [order dicts]}
         """
-        return self._manager.to_dashboard_dict_rpc(miner_hotkey)
+        return self._manager.to_dashboard_dict_rpc(miner_hotkey, status_filter)
 
     def get_all_limit_orders_rpc(self):
         """
@@ -416,9 +424,9 @@ class LimitOrderServer(RPCServerBase):
         """Delete all limit orders for a hotkey (direct call for tests)."""
         return self._manager.delete_all_limit_orders_for_hotkey_rpc(miner_hotkey)
 
-    def to_dashboard_dict(self, miner_hotkey):
+    def to_dashboard_dict(self, miner_hotkey, status_filter=None):
         """Get dashboard representation (direct call for tests)."""
-        return self._manager.to_dashboard_dict_rpc(miner_hotkey)
+        return self._manager.to_dashboard_dict_rpc(miner_hotkey, status_filter)
 
     def clear_limit_orders(self):
         """Clear all limit orders (direct call for tests)."""
