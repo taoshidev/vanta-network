@@ -387,6 +387,116 @@ Process an asset class selection.
 - `miner_hotkey` (string): Miner's hotkey SS58 address
 - `signature` (string): Request signature
 
+## Limit Orders
+
+The limit orders endpoint allows querying a miner's limit and bracket orders with optional status filtering.
+
+### Get Limit Orders
+
+`GET /limit-orders/<minerid>`
+
+Retrieve limit orders for a specific miner. Supports optional filtering by order status.
+
+**Query Parameters:**
+- `status` (optional): Comma-separated list of status values to filter by. Valid values: `unfilled`, `filled`, `cancelled`
+
+**Response Format:**
+
+Without `status` parameter - returns a flat list (backward compatible):
+```json
+[
+  {
+    "trade_pair": ["BTCUSD", "BTC/USD"],
+    "order_type": "OrderType.LONG",
+    "processed_ms": 1702345678901,
+    "limit_price": 95000.0,
+    "price": 0.0,
+    "leverage": 0.1,
+    "value": null,
+    "quantity": null,
+    "src": 5,
+    "execution_type": "LIMIT",
+    "order_uuid": "550e8400-e29b-41d4-a716-446655440000",
+    "stop_loss": 90000.0,
+    "take_profit": 100000.0
+  }
+]
+```
+
+With `status` parameter - returns orders grouped by status:
+```json
+{
+  "unfilled": [
+    {
+      "trade_pair": ["BTCUSD", "BTC/USD"],
+      "order_type": "OrderType.LONG",
+      "processed_ms": 1702345678901,
+      "limit_price": 95000.0,
+      "price": 0.0,
+      "leverage": 0.1,
+      "value": null,
+      "quantity": null,
+      "src": 5,
+      "execution_type": "LIMIT",
+      "order_uuid": "550e8400-e29b-41d4-a716-446655440000",
+      "stop_loss": 90000.0,
+      "take_profit": 100000.0
+    }
+  ],
+  "filled": [],
+  "cancelled": []
+}
+```
+
+**Examples:**
+
+```bash
+# Get all unfilled limit orders (default behavior)
+curl -H "Authorization: Bearer YOUR_API_KEY" \
+     http://localhost:48888/limit-orders/5GhDr...
+
+# Get only unfilled orders (grouped response)
+curl -H "Authorization: Bearer YOUR_API_KEY" \
+     "http://localhost:48888/limit-orders/5GhDr...?status=unfilled"
+
+# Get filled and cancelled orders
+curl -H "Authorization: Bearer YOUR_API_KEY" \
+     "http://localhost:48888/limit-orders/5GhDr...?status=filled,cancelled"
+
+# Get all order statuses
+curl -H "Authorization: Bearer YOUR_API_KEY" \
+     "http://localhost:48888/limit-orders/5GhDr...?status=unfilled,filled,cancelled"
+```
+
+**Response Fields:**
+- `trade_pair`: Array of [trade_pair_id, display_name]
+- `order_type`: Order direction (LONG, SHORT)
+- `processed_ms`: Timestamp when order was created/processed
+- `limit_price`: Target price for limit orders (null for bracket orders)
+- `price`: Fill price (0 if unfilled)
+- `leverage`: Position leverage
+- `value`: Order value in USD (if specified)
+- `quantity`: Order quantity (if specified)
+- `src`: Order source enum (5=LIMIT_UNFILLED, 6=LIMIT_FILLED, 7=LIMIT_CANCELLED, 8=BRACKET_UNFILLED, 9=BRACKET_FILLED, 10=BRACKET_CANCELLED)
+- `execution_type`: LIMIT or BRACKET
+- `order_uuid`: Unique order identifier
+- `stop_loss`: Stop-loss price (for bracket orders or limit orders with SL/TP)
+- `take_profit`: Take-profit price (for bracket orders or limit orders with SL/TP)
+
+**Error Responses:**
+
+```json
+// Invalid status value
+{
+  "error": "Invalid status values: {'invalid'}. Valid values are: unfilled, filled, cancelled"
+}
+
+// No orders found
+{
+  "error": "No limit orders found for miner 5GhDr..."
+}
+```
+
 ## Entity Management
 
 The entity management endpoints enable entity miners to register, create subaccounts, and manage trading under a hierarchical account structure. Entity miners can operate multiple subaccounts (each with its own synthetic hotkey) for diversified trading strategies.
