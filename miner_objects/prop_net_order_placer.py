@@ -313,6 +313,201 @@ class PropNetOrderPlacer:
 
         return signal_file_path
 
+    def process_a_signal_for_rest(self, order_uuid: str, signal_data: dict, subaccount_id: str = None) -> dict:
+        """
+        Process signal from REST endpoint (synchronous, returns structured result).
+
+        This is called from Flask worker threads via MinerRestServer. It provides
+        synchronous feedback on validator acceptance/rejection for external traders.
+
+        Key differences from process_a_signal():
+        - Synchronous (blocks in Flask worker thread, not async)
+        - Takes order_uuid and signal_data directly (not file path)
+        - Returns structured dict with validator feedback
+        - Still archives to processed_signals/ or failed_signals/ for audit trail
+
+        Args:
+            order_uuid: UUID for this order
+            signal_data: Signal dictionary with trade_pair, order_type, leverage, etc.
+            subaccount_id: Optional subaccount ID for entity miners
+
+        Returns:
+            Dictionary with structure:
+            {
+                "success": bool,  # True if all high-trust validators succeeded
+                "order_uuid": str,
+                "validators_processed": int,
+                "validators_succeeded": int,
+                "high_trust_total": int,
+                "high_trust_succeeded": int,
+                "all_high_trust_succeeded": bool,
+                "created_orders": dict,  # validator_hotkey -> order_json
+                "error_messages": dict,  # validator_hotkey -> [error_msg, ...]
+                "processing_time": float,
+                "message": str  # Human-readable result
+            }
+        """
+        # Create metrics tracker
+        trade_pair_id = signal_data.get('trade_pair', {}).get('trade_pair_id', 'unknown')
+        metrics = SignalMetrics(order_uuid, trade_pair_id)
+        metrics.mark_network_start()
+
+        try:
+            # Get validators sorted by trust
+            hotkey_to_v_trust = {neuron.hotkey: neuron.validator_trust for neuron in self.metagraph_client.get_neurons()}
+            axons_to_try = self.position_inspector.get_possible_validators()
+            axons_to_try.sort(key=lambda validator: hotkey_to_v_trust[validator.hotkey], reverse=True)
+
+            # Update metrics
+            metrics.validators_attempted = len(axons_to_try)
+
+            validator_hotkey_to_axon = {}
+            for axon in axons_to_try:
+                assert axon.hotkey not in validator_hotkey_to_axon, f"Duplicate hotkey {axon.hotkey} in axons"
+                validator_hotkey_to_axon[axon.hotkey] = axon
+
+            retry_status = {
+                'retry_attempts': 0,
+                'retry_delay_seconds': self.INITIAL_RETRY_DELAY_SECONDS,
+                'validators_needing_retry': axons_to_try,
+                'validator_error_messages': {},
+                'created_orders': {}
+            }
+
+            # Track the high-trust validators
+            high_trust_validators = self.get_high_trust_validators(axons_to_try, hotkey_to_v_trust)
+            metrics.high_trust_total = len(high_trust_validators)
+
+            # Thread-safe UUID check
+            with self._lock:
+                is_cancel_order = signal_data.get("execution_type", "MARKET") == "LIMIT_CANCEL"
+                if order_uuid in self.used_miner_uuids and not is_cancel_order:
+                    bt.logging.warning(f"Duplicate miner order uuid {order_uuid}, skipping")
+                    return {
+                        "success": False,
+                        "order_uuid": order_uuid,
+                        "error": "Duplicate order UUID",
+                        "message": "Order UUID already used"
+                    }
+                self.used_miner_uuids.add(order_uuid)
+
+            # Add subaccount_id to signal_data if provided
+            if subaccount_id:
+                signal_data['subaccount_id'] = subaccount_id
+
+            send_signal_request = SendSignal(
+                signal=signal_data,
+                miner_order_uuid=order_uuid,
+                repo_version=REPO_VERSION,
+                subaccount_id=signal_data.get('subaccount_id')
+            )
+
+            # Continue retrying until max retries reached
+            # Use asyncio.run() to execute async method synchronously
+            while retry_status['retry_attempts'] < self.MAX_RETRIES and retry_status['validators_needing_retry']:
+                if self._shutdown:
+                    bt.logging.warning("Shutting down, abandoning signal processing")
+                    return {
+                        "success": False,
+                        "order_uuid": order_uuid,
+                        "error": "Shutdown in progress",
+                        "message": "Miner shutting down"
+                    }
+                # Run async method synchronously
+                asyncio.run(self.attempt_to_send_signal(
+                    send_signal_request,
+                    retry_status,
+                    high_trust_validators,
+                    validator_hotkey_to_axon,
+                    metrics
+                ))
+
+            # After retries, check if all high-trust validators have processed the signal successfully
+            high_trust_processed = True
+            n_high_trust_validators = len(high_trust_validators)
+            n_high_trust_validators_that_failed = 0
+            for validator in high_trust_validators:
+                if validator in retry_status['validators_needing_retry']:
+                    high_trust_processed = False
+                    n_high_trust_validators_that_failed += 1
+
+            if self.is_testnet and retry_status['validator_error_messages']:
+                high_trust_processed = False
+
+            # Update metrics
+            metrics.high_trust_succeeded = n_high_trust_validators - n_high_trust_validators_that_failed
+            metrics.all_high_trust_succeeded = high_trust_processed
+            metrics.validators_succeeded = len(retry_status['created_orders'])
+
+            # Copy validator errors to metrics
+            for hotkey, errors in retry_status['validator_error_messages'].items():
+                metrics.validator_errors[hotkey] = errors
+
+            metrics.mark_network_end()
+
+            # Archive to processed_signals/ or failed_signals/ for audit trail
+            # Use order_uuid as fake file path for archiving
+            fake_signal_file_path = f"/rest-api/{order_uuid}"
+            if high_trust_processed:
+                self.write_signal_to_processed_directory(signal_data, fake_signal_file_path, retry_status)
+            elif self.config.write_failed_signal_logs:
+                v_trust_floor = min([hotkey_to_v_trust[validator.hotkey] for validator in high_trust_validators])
+                error_msg = (f"REST order {order_uuid} was not successfully processed by "
+                             f"{n_high_trust_validators_that_failed}/{n_high_trust_validators} high-trust validators. "
+                             f"(floor {v_trust_floor})")
+                bt.logging.error(error_msg)
+                self.write_signal_to_failure_directory(signal_data, fake_signal_file_path, retry_status)
+            else:
+                self.write_signal_to_processed_directory(signal_data, fake_signal_file_path, retry_status)
+
+            # Build structured response
+            if high_trust_processed:
+                message = f"Order successfully processed by {metrics.high_trust_succeeded}/{metrics.high_trust_total} high-trust validators"
+            else:
+                message = f"Order failed on {n_high_trust_validators_that_failed}/{n_high_trust_validators} high-trust validators"
+
+            return {
+                "success": high_trust_processed,
+                "order_uuid": order_uuid,
+                "validators_processed": metrics.validators_attempted,
+                "validators_succeeded": metrics.validators_succeeded,
+                "high_trust_total": metrics.high_trust_total,
+                "high_trust_succeeded": metrics.high_trust_succeeded,
+                "all_high_trust_succeeded": metrics.all_high_trust_succeeded,
+                "created_orders": retry_status['created_orders'],
+                "error_messages": retry_status['validator_error_messages'],
+                "processing_time": metrics.processing_time,
+                "message": message
+            }
+
+        except Exception as e:
+            metrics.exception = e
+            metrics.mark_network_end()
+            bt.logging.error(f"Error processing REST order {order_uuid}: {e}")
+
+            # Archive to failed_signals/ for audit trail
+            fake_signal_file_path = f"/rest-api/{order_uuid}"
+            if self.config.write_failed_signal_logs:
+                retry_status = {
+                    'validator_error_messages': {'exception': [str(e)]},
+                    'created_orders': {}
+                }
+                self.write_signal_to_failure_directory(signal_data, fake_signal_file_path, retry_status)
+
+            return {
+                "success": False,
+                "order_uuid": order_uuid,
+                "validators_processed": 0,
+                "validators_succeeded": 0,
+                "high_trust_total": 0,
+                "high_trust_succeeded": 0,
+                "all_high_trust_succeeded": False,
+                "created_orders": {},
+                "error_messages": {'exception': [str(e)]},
+                "processing_time": metrics.processing_time,
+                "message": f"Internal error: {str(e)}"
+            }
+
     def get_high_trust_validators(self, axons, hotkey_to_v_trust):
         """Returns a list of high-trust validators."""
         high_trust_validators = [ax for ax in axons if

@@ -120,7 +120,39 @@ class Miner:
         self.my_subnet_uid = self.metagraph_client.hotkeys.index(self.wallet.hotkey.ss58_address)
         bt.logging.info(f"Running miner on netuid {self.config.netuid} with uid: {self.my_subnet_uid}")
 
+        # Start REST API server if requested (for synchronous order submission)
+        if not running_unit_tests and getattr(self.config, 'serve', False):
+            from vanta_api.miner_api_manager import MinerAPIManager
 
+            bt.logging.info("Starting Miner REST API server (--serve flag detected)...")
+            self.api_manager = MinerAPIManager(
+                prop_net_order_placer=self.prop_net_order_placer,
+                miner_hotkey=self.wallet.hotkey.ss58_address,
+                api_host=getattr(self.config, 'api_host', '0.0.0.0'),
+                api_rest_port=getattr(self.config, 'api_rest_port', 8088)
+            )
+
+            self.api_thread = threading.Thread(target=self.api_manager.run, daemon=True)
+            self.api_thread.start()
+
+            # Give the API server a moment to start
+            time.sleep(0.5)
+
+            # Verify thread is alive
+            if not self.api_thread.is_alive():
+                error_msg = "API server thread failed to start"
+                bt.logging.error(error_msg)
+                self.slack_notifier.send_message(f"❌ {error_msg}", level="error")
+                raise RuntimeError(error_msg)
+
+            bt.logging.success(f"Miner REST API server started on http://{getattr(self.config, 'api_host', '0.0.0.0')}:{getattr(self.config, 'api_rest_port', 8088)}")
+            self.slack_notifier.send_message(
+                f"🌐 REST API enabled on port {getattr(self.config, 'api_rest_port', 8088)}",
+                level="info"
+            )
+        else:
+            self.api_manager = None
+            self.api_thread = None
 
         # Send startup notification with hotkey and IP
         self.slack_notifier.send_message(
@@ -245,6 +277,24 @@ class Miner:
             default=None,
             help='Slack webhook URL for error notifications'
         )
+        # Add REST API server arguments
+        parser.add_argument(
+            '--serve',
+            action='store_true',
+            help='Start the REST API server for synchronous order submission'
+        )
+        parser.add_argument(
+            '--api-host',
+            type=str,
+            default='0.0.0.0',
+            help='Host address for the REST API server (default: 0.0.0.0)'
+        )
+        parser.add_argument(
+            '--api-rest-port',
+            type=int,
+            default=8088,
+            help='Port for the REST API server (default: 8088)'
+        )
 
         # Parse the config (will take command-line arguments if provided)
         config = bt.config(parser)
@@ -330,6 +380,14 @@ class Miner:
                 # Shutdown the order placer's thread pool
                 bt.logging.info("Shutting down order placer thread pool...")
                 self.prop_net_order_placer.shutdown()
+
+                # Shutdown the API manager if running
+                if self.api_manager is not None:
+                    bt.logging.info("Shutting down API manager...")
+                    self.api_manager.shutdown()
+                    if self.api_thread is not None and self.api_thread.is_alive():
+                        self.api_thread.join(timeout=5.0)
+                    bt.logging.info("API manager shutdown complete.")
 
                 if self.dashboard_frontend_process:
                     self.dashboard_frontend_process.terminate()
