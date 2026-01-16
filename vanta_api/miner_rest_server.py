@@ -129,21 +129,22 @@ class MinerRestServer(BaseRestServer):
             "quantity": 0.5,  // Exactly one of leverage, value, or quantity required
             "execution_type": "MARKET" | "LIMIT",
             "price": 50000.0,  // Required for LIMIT orders
-            "subaccount_id": "optional-subaccount-id"
+            "subaccount_id": "optional-subaccount-id",
+            "verbose": false  // If true, return all validators; if false, return only MOTHERSHIP (default: false)
         }
 
         Response (200 OK):
         {
-            "success": true,
+            "success": true,  // MOTHERSHIP validator success if verbose=false
             "order_uuid": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
             "validators_processed": 5,
             "validators_succeeded": 5,
             "high_trust_total": 5,
             "high_trust_succeeded": 5,
-            "created_orders": {...},
-            "error_messages": {},
+            "created_orders": {...},  // Filtered to MOTHERSHIP only if verbose=false
+            "error_messages": {...},  // Filtered to MOTHERSHIP only if verbose=false
             "processing_time": 23.456,
-            "message": "Order successfully processed by 5/5 high-trust validators"
+            "message": "Order successfully processed"
         }
 
         Response (400 Bad Request):
@@ -191,6 +192,14 @@ class MinerRestServer(BaseRestServer):
             order_uuid = signal_data.get('order_uuid', str(uuid.uuid4()))
             subaccount_id = signal_data.get('subaccount_id')
 
+            # Extract verbose flag (default to false)
+            verbose = signal_data.get('verbose', False)
+            if not isinstance(verbose, bool):
+                # Handle string values for flexibility
+                verbose = str(verbose).lower() in ('true', '1', 'yes')
+
+            bt.logging.debug(f"Processing order {order_uuid} with verbose={verbose}")
+
         except Exception as e:
             bt.logging.error(f"Error parsing request body: {e}")
             return jsonify({'success': False, 'error': f'Invalid request: {str(e)}'}), 400
@@ -203,7 +212,8 @@ class MinerRestServer(BaseRestServer):
             result = self.order_placer.process_a_signal_for_rest(
                 order_uuid=order_uuid,
                 signal_data=signal_data,
-                subaccount_id=subaccount_id
+                subaccount_id=subaccount_id,
+                verbose=verbose
             )
 
             elapsed = time.time() - start_time
