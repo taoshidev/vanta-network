@@ -18,7 +18,7 @@ import time
 import bittensor as bt
 
 from miner_config import MinerConfig
-from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
+from vanta_api.miner_rest_server import MinerRestServer
 
 
 class MinerAPIManager:
@@ -43,14 +43,7 @@ class MinerAPIManager:
         self.refresh_interval = refresh_interval
 
         # Get API keys file path
-        self.api_keys_file = MinerConfig.get_api_keys_file_path()
-
-        # Verify API keys file exists
-        if not ValiBkpUtils.file_exists(self.api_keys_file):
-            bt.logging.warning(f"API keys file not found: {self.api_keys_file}")
-            bt.logging.warning("Creating empty API keys file. Please add API keys to enable access.")
-            # Create empty API keys file
-            ValiBkpUtils.write_file(self.api_keys_file, "{}")
+        self.secrets_file = MinerConfig.get_secrets_file_path()
 
         # REST server instance (created in run())
         self.rest_server = None
@@ -62,15 +55,13 @@ class MinerAPIManager:
         REST server runs in-process (Flask in background thread).
         This method blocks until KeyboardInterrupt.
         """
-        from vanta_api.miner_rest_server import MinerRestServer
-
         bt.logging.info("Starting Miner REST API server...")
 
         # Create REST server in-process with direct PropNetOrderPlacer reference
         try:
             self.rest_server = MinerRestServer(
                 prop_net_order_placer=self.prop_net_order_placer,
-                api_keys_file=self.api_keys_file,
+                api_keys_file=self.secrets_file,
                 refresh_interval=self.refresh_interval,
                 flask_host=self.api_host,
                 flask_port=self.api_rest_port
@@ -82,7 +73,6 @@ class MinerAPIManager:
             )
             bt.logging.info(f"Endpoints available:")
             bt.logging.info(f"  POST   /api/submit-order      - Synchronous order submission")
-            bt.logging.info(f"  POST   /api/receive-signal    - Legacy file-based submission")
             bt.logging.info(f"  POST   /api/create-subaccount - Entity subaccount creation")
             bt.logging.info(f"  GET    /api/order-status/<uuid> - Query order status")
             bt.logging.info(f"  GET    /api/health           - Health check")

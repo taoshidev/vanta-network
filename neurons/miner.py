@@ -19,6 +19,7 @@ from shared_objects.slack_notifier import SlackNotifier
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode, NeuronContext
 from vali_objects.decoders.generalized_json_decoder import GeneralizedJSONDecoder
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
+from vanta_api.miner_api_manager import MinerAPIManager
 
 
 class Miner:
@@ -122,8 +123,6 @@ class Miner:
 
         # Start REST API server (for synchronous order submission)
         if not running_unit_tests:
-            from vanta_api.miner_api_manager import MinerAPIManager
-
             bt.logging.info("Starting Miner REST API server...")
             self.api_manager = MinerAPIManager(
                 prop_net_order_placer=self.prop_net_order_placer,

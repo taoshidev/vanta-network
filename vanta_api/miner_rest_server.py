@@ -287,7 +287,7 @@ class MinerRestServer(BaseRestServer):
 
         # 3. Load wallet secrets
         try:
-            secrets_file = MinerConfig.get_api_keys_file_path()
+            secrets_file = MinerConfig.get_secrets_file_path()
             with open(secrets_file, 'r') as f:
                 secrets = json.load(f)
 
