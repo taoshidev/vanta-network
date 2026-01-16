@@ -34,12 +34,11 @@ if __name__ == "__main__":
 
     print("base URL endpoint:", base_url)
 
-    url = f'{base_url}/api/receive-signal'
+    url = f'{base_url}/api/submit-order'
 
     # Define the JSON data to be sent in the request
     # Required fields: 'api_key', 'execution_type', 'trade_pair', 'order_type', and exactly ONE of 'leverage'/'value'/'quantity'
     data = {
-        'api_key': 'xxxx',
         'execution_type': ExecutionType.MARKET,  # Execution types [MARKET, LIMIT, BRACKET, LIMIT_CANCEL]
         'trade_pair': TradePair.BTCUSD,
         'order_type': OrderType.LONG,
@@ -63,6 +62,7 @@ if __name__ == "__main__":
     # Set the headers to specify that the content is in JSON format
     headers = {
         'Content-Type': 'application/json',
+        'Authorization': 'xxxx'     # api key
     }
 
     # Make the POST request with JSON data
