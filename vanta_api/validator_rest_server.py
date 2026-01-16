@@ -630,9 +630,19 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         if not self.is_valid_api_key(api_key):
             return jsonify({'error': 'Unauthorized access'}), 401
 
+        # Parse status filter from query param
+        status_param = request.args.get('status')
+        status_filter = None
+        if status_param:
+            status_filter = [s.strip().lower() for s in status_param.split(',')]
+            valid = {'unfilled', 'filled', 'cancelled'}
+            invalid = set(status_filter) - valid
+            if invalid:
+                return jsonify({'error': f'Invalid status values: {invalid}. Valid values are: unfilled, filled, cancelled'}), 400
+
         api_key_tier = self.get_api_key_tier(api_key)
         if self.can_access_tier(api_key, 100) and self._limit_order_client:
-            orders_data = self._limit_order_client.to_dashboard_dict(minerid)
+            orders_data = self._limit_order_client.to_dashboard_dict(minerid, status_filter)
             if not orders_data:
                 return jsonify({'error': f'No limit orders found for miner {minerid}'}), 404
         else:
