@@ -775,7 +775,7 @@ class EntityManager(ValidatorBroadcastBase):
         # Position data
         positions_data = None
         try:
-            positions = self._position_client.get_positions_for_one_hotkey(synthetic_hotkey)
+            positions = self._position_client.get_positions_for_one_hotkey(synthetic_hotkey, sort_positions=True)
             if positions:
                 positions_data = PositionManagerClient.positions_to_dashboard_dict(positions, time_now_ms)
                 # Add total leverage
