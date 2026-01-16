@@ -1245,7 +1245,7 @@ class VantaRestServer(RPCServerBase, APIKeyMixin):
 
                 # Get all collateral data using the proper serialization method
                 # Pass most_recent_only directly to avoid double iteration
-                data = self._miner_account_client.miner_account_sizes_dict(most_recent_only=most_recent_only)
+                data = self._miner_account_client.accounts_dict(most_recent_only=most_recent_only)
                 
                 # Apply hotkey filter if requested
                 if hotkey_filter and hotkey_filter in data:

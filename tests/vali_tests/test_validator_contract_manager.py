@@ -138,8 +138,8 @@ class TestValidatorContractManager(TestBase):
         account_size = self.miner_account_client.get_miner_account_size(self.MINER_1, day_after_current_time)
         self.assertIsNotNone(account_size)
 
-        # Test the disk persistence by checking via miner_account_sizes_dict
-        account_sizes_dict = self.miner_account_client.miner_account_sizes_dict()
+        # Test the disk persistence by checking via accounts_dict
+        account_sizes_dict = self.miner_account_client.accounts_dict()
         self.assertIn(self.MINER_1, account_sizes_dict)
         self.assertEqual(len(account_sizes_dict[self.MINER_1]), 1)
 
@@ -158,7 +158,7 @@ class TestValidatorContractManager(TestBase):
         self.miner_account_client.set_miner_account_size(self.MINER_1, collateral_theta_3, base_time + 2000)
 
         # Verify records are stored
-        account_sizes_dict = self.miner_account_client.miner_account_sizes_dict()
+        account_sizes_dict = self.miner_account_client.accounts_dict()
         records = account_sizes_dict[self.MINER_1]
         self.assertEqual(len(records), 3)
 
@@ -178,7 +178,7 @@ class TestValidatorContractManager(TestBase):
         self.miner_account_client.set_miner_account_size(self.MINER_1, collateral_theta, base_time + 2000)
 
         # Verify only one record is stored (duplicates are skipped)
-        account_sizes_dict = self.miner_account_client.miner_account_sizes_dict()
+        account_sizes_dict = self.miner_account_client.accounts_dict()
         records = account_sizes_dict[self.MINER_1]
         self.assertEqual(len(records), 1)
 
@@ -208,7 +208,7 @@ class TestValidatorContractManager(TestBase):
         self.miner_account_client.sync_miner_account_sizes_data(test_data)
 
         # Verify data was synced correctly
-        account_sizes_dict = self.miner_account_client.miner_account_sizes_dict()
+        account_sizes_dict = self.miner_account_client.accounts_dict()
         self.assertIn(self.MINER_1, account_sizes_dict)
         self.assertIn(self.MINER_2, account_sizes_dict)
 
@@ -232,7 +232,7 @@ class TestValidatorContractManager(TestBase):
         self.miner_account_client.set_miner_account_size(self.MINER_2, collateral_theta_2, current_time)
 
         # Get checkpoint dict
-        checkpoint_dict = self.miner_account_client.miner_account_sizes_dict()
+        checkpoint_dict = self.miner_account_client.accounts_dict()
 
         # Verify structure
         self.assertIsInstance(checkpoint_dict, dict)

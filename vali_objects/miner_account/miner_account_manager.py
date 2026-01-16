@@ -258,66 +258,66 @@ class MinerAccountManager:
             most_recent_only: If True, only return the most recent collateral record for each miner
 
         Returns:
-            Dictionary with hotkeys as keys and account data as values
+            Dictionary with hotkeys as keys and list of collateral records as values.
+            Account-level fields are added to the last record in the list.
+            If no collateral records exist, a single record with only account-level fields is saved.
         """
         with self._accounts_lock:
             json_dict = {}
             for hotkey, account in self.accounts.items():
-                # Get base account dict (without collateral records)
-                account_dict = {
-                    "cash_balance": account.cash_balance,
-                    "total_borrowed_amount": account.total_borrowed_amount,
-                    "last_interest_applied_ms": account.last_interest_applied_ms
-                }
-
-                # Add collateral records
+                # Build list of collateral records
                 if most_recent_only and account.collateral_records:
-                    account_dict["collateral_records"] = [vars(account.collateral_records[-1])]
+                    records = [account.collateral_records[-1]]
                 else:
-                    account_dict["collateral_records"] = [vars(record) for record in account.collateral_records]
+                    records = account.collateral_records
 
-                json_dict[hotkey] = account_dict
-            return json_dict
+                records_list = []
+                for record in records:
+                    record_dict = vars(record).copy()
+                    record_dict["cash_balance"] = account.cash_balance
+                    record_dict["total_borrowed_amount"] = account.total_borrowed_amount
+                    record_dict["last_interest_applied_ms"] = account.last_interest_applied_ms
+                    records_list.append(record_dict)
 
-    # Backwards compatibility alias
-    def miner_account_sizes_dict(self, most_recent_only: bool = False) -> Dict[str, Any]:
-        """Backwards compatible method - converts to old format (hotkey -> list of CollateralRecords)"""
-        with self._accounts_lock:
-            json_dict = {}
-            for hotkey, account in self.accounts.items():
-                if most_recent_only and account.collateral_records:
-                    json_dict[hotkey] = [vars(account.collateral_records[-1])]
-                else:
-                    json_dict[hotkey] = [vars(record) for record in account.collateral_records]
+                # If no collateral records, still save account-level fields
+                if not records_list:
+                    records_list.append({
+                        "cash_balance": account.cash_balance,
+                        "total_borrowed_amount": account.total_borrowed_amount,
+                        "last_interest_applied_ms": account.last_interest_applied_ms
+                    })
+
+                json_dict[hotkey] = records_list
             return json_dict
 
     @staticmethod
     def _parse_accounts_dict(data_dict: Dict[str, Any]) -> Dict[str, MinerAccount]:
         """Parse miner accounts from disk format back to MinerAccount objects.
 
-        Supports:
-        - Legacy format: {"hotkey": [list of CollateralRecord dicts]}
-        - New format: {"hotkey": {"collateral_records": [...], "cash_balance": ..., "total_borrowed_amount": ..., "last_interest_applied_ms": ...}}
+        Format: {"hotkey": [list of CollateralRecord dicts]}
+        Account-level fields (cash_balance, total_borrowed_amount, last_interest_applied_ms)
+        are stored on the last record in the list.
         """
         parsed_accounts = {}
 
         for hotkey, account_data in data_dict.items():
             try:
+                if not isinstance(account_data, list):
+                    continue
+
+                records_list = account_data
                 collateral_records = []
 
-                # Determine format and extract records
-                if isinstance(account_data, dict) and "collateral_records" in account_data:
-                    records_list = account_data.get("collateral_records", [])
-                    cash_balance = account_data.get("cash_balance")
-                    total_borrowed = account_data.get("total_borrowed_amount", 0.0)
-                    last_interest_applied_ms = account_data.get("last_interest_applied_ms")
-                elif isinstance(account_data, list):
-                    records_list = account_data
+                # Extract account-level fields from the last record in the list
+                if records_list and isinstance(records_list[-1], dict):
+                    last_record = records_list[-1]
+                    cash_balance = last_record.get("cash_balance")
+                    total_borrowed = last_record.get("total_borrowed_amount", 0.0)
+                    last_interest_applied_ms = last_record.get("last_interest_applied_ms")
+                else:
                     cash_balance = None  # Will default to account_size
                     total_borrowed = 0.0
                     last_interest_applied_ms = None
-                else:
-                    continue
 
                 # Parse collateral records
                 for record_data in records_list:
@@ -329,15 +329,19 @@ class MinerAccountManager:
                         )
                         collateral_records.append(record)
 
-                if collateral_records:
-                    account_size = collateral_records[-1].account_size
-                    parsed_accounts[hotkey] = MinerAccount(
-                        miner_hotkey=hotkey,
-                        cash_balance=cash_balance if cash_balance is not None else account_size,
-                        total_borrowed_amount=total_borrowed,
-                        collateral_records=collateral_records,
-                        last_interest_applied_ms=last_interest_applied_ms
-                    )
+                # Skip if no collateral records and no cash_balance
+                if not collateral_records and cash_balance is None:
+                    continue
+
+                account_size = collateral_records[-1].account_size
+                parsed_accounts[hotkey] = MinerAccount(
+                    miner_hotkey=hotkey,
+                    cash_balance=cash_balance if cash_balance is not None else account_size,
+                    total_borrowed_amount=total_borrowed,
+                    collateral_records=collateral_records,
+                    last_interest_applied_ms=last_interest_applied_ms
+                )
+
             except Exception as e:
                 bt.logging.warning(f"Failed to parse account for {hotkey}: {e}")
 
