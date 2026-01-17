@@ -280,6 +280,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
         # Trading endpoints
         self.app.route("/limit-orders/<minerid>", methods=["GET"])(self.get_limit_orders_unique)
+        self.app.route("/orders/<minerid>", methods=["GET"])(self.get_orders_for_miner)
         self.app.route("/asset-selection", methods=["POST"])(self.asset_selection)
         self.app.route("/miner-selections", methods=["GET"])(self.get_miner_selections)
         self.app.route("/development/order", methods=["POST"])(self.process_development_order)
@@ -300,7 +301,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         self.app.route("/entity/subaccount/<synthetic_hotkey>", methods=["GET"])(self.get_subaccount_dashboard)
         self.app.route("/entity/subaccount/payout", methods=["POST"])(self.calculate_subaccount_payout)
 
-        print(f"[REST-INIT] 28 validator endpoints registered ✓")
+        print(f"[REST-INIT] 29 validator endpoints registered ✓")
 
     # ============================================================================
     # MINER POSITION ENDPOINTS
@@ -655,6 +656,68 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 return jsonify({'error': 'Error retrieving limit orders'}), 500
 
         return jsonify(orders_data)
+
+    def get_orders_for_miner(self, minerid):
+        """
+        Get all orders for a miner, grouped by status.
+
+        Query params:
+            status: Comma-separated list (unfilled, filled, cancelled)
+
+        Returns:
+            {"unfilled": [...], "filled": [...], "cancelled": [...]}
+        """
+        api_key = self._get_api_key_safe()
+        if not self.is_valid_api_key(api_key):
+            return jsonify({'error': 'Unauthorized access'}), 401
+
+        if not self.can_access_tier(api_key, 100):
+            return jsonify({'error': 'Your API key does not have access to tier 100 data'}), 403
+
+        # Parse status filter
+        status_param = request.args.get('status')
+        status_filter = None
+        if status_param:
+            status_filter = [s.strip().lower() for s in status_param.split(',')]
+            valid = {'unfilled', 'filled', 'cancelled'}
+            invalid = set(status_filter) - valid
+            if invalid:
+                return jsonify({'error': f'Invalid status values: {invalid}. Valid values are: unfilled, filled, cancelled'}), 400
+        else:
+            status_filter = ['unfilled', 'filled', 'cancelled']
+
+        result = {s: [] for s in status_filter}
+
+        try:
+            # Get unfilled/cancelled from LimitOrderClient (same as /limit-orders)
+            if ('unfilled' in status_filter or 'cancelled' in status_filter) and self._limit_order_client:
+                limit_statuses = [s for s in status_filter if s in ('unfilled', 'cancelled')]
+                limit_data = self._limit_order_client.to_dashboard_dict(minerid, limit_statuses)
+                if limit_data:
+                    for status in limit_statuses:
+                        if status in limit_data:
+                            result[status] = limit_data[status]
+
+            # Get filled orders from positions
+            if 'filled' in status_filter and self.position_manager:
+                positions = self.position_manager.get_positions_for_one_hotkey(minerid, sort_positions=True)
+                if positions:
+                    for position in positions:
+                        for order in position.orders:
+                            result['filled'].append(order.to_python_dict())
+
+            # Sort statuses by processed_ms
+            for status in result:
+                result[status].sort(key=lambda o: o.get('processed_ms', 0))
+
+            if not any(result.values()):
+                return jsonify({'error': f'No orders found for miner {minerid}'}), 404
+
+            return jsonify(result)
+
+        except Exception as e:
+            bt.logging.error(f"Error retrieving orders for {minerid}: {e}")
+            return jsonify({'error': 'Error retrieving orders'}), 500
 
     # ============================================================================
     # COLLATERAL ENDPOINTS
