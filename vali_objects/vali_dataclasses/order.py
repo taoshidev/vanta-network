@@ -136,7 +136,9 @@ class Order(Signal):
 
     def to_python_dict(self):
         trade_pair_id = self.trade_pair.trade_pair_id if hasattr(self.trade_pair, 'trade_pair_id') else 'unknown'
+        trade_pair_name = self.trade_pair.trade_pair if hasattr(self.trade_pair, 'trade_pair') else 'unknown'
         return {'trade_pair_id': trade_pair_id,
+                'trade_pair': [trade_pair_id, trade_pair_name],
                 'order_type': self.order_type.name,
                 'leverage': self.leverage,
                 'value': self.value,

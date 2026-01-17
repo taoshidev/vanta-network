@@ -497,6 +497,135 @@ curl -H "Authorization: Bearer YOUR_API_KEY" \
 }
 ```
 
+## All Orders (Unified)
+
+The orders endpoint provides a unified view of all orders for a miner, combining unfilled/cancelled limit orders with filled orders from positions.
+
+**Access Requirements:**
+- Requires **tier 100 API access**
+
+### Get All Orders
+
+`GET /orders/<minerid>`
+
+Retrieve all orders for a specific miner, grouped by status. This endpoint combines:
+- **Unfilled/Cancelled**: Limit and bracket orders from the LimitOrderManager (same source as `/limit-orders`)
+- **Filled**: Orders extracted from the miner's positions
+
+**Query Parameters:**
+- `status` (optional): Comma-separated list of status values to filter by. Valid values: `unfilled`, `filled`, `cancelled`. Defaults to all three if not specified.
+
+**Response Format:**
+
+Orders are always grouped by status:
+```json
+{
+  "unfilled": [
+    {
+      "trade_pair_id": "BTCUSD",
+      "trade_pair": ["BTCUSD", "BTC/USD"],
+      "order_type": "LONG",
+      "processed_ms": 1702345678901,
+      "limit_price": 95000.0,
+      "price": 0.0,
+      "leverage": 0.1,
+      "value": null,
+      "quantity": null,
+      "src": 5,
+      "execution_type": "LIMIT",
+      "order_uuid": "550e8400-e29b-41d4-a716-446655440000",
+      "stop_loss": 90000.0,
+      "take_profit": 100000.0
+    }
+  ],
+  "filled": [
+    {
+      "trade_pair_id": "ETHUSD",
+      "trade_pair": ["ETHUSD", "ETH/USD"],
+      "order_type": "SHORT",
+      "processed_ms": 1702345600000,
+      "price": 2500.50,
+      "leverage": -0.2,
+      "value": 5000.0,
+      "quantity": 2.0,
+      "src": 0,
+      "execution_type": "MARKET",
+      "order_uuid": "660e8400-e29b-41d4-a716-446655440001",
+      "bid": 2500.40,
+      "ask": 2500.60,
+      "slippage": 0.0001,
+      "quote_usd_rate": 1.0,
+      "usd_base_rate": 0.0004,
+      "stop_loss": null,
+      "take_profit": null
+    }
+  ],
+  "cancelled": []
+}
+```
+
+**Examples:**
+
+```bash
+# Get all orders (unfilled, filled, and cancelled)
+curl -H "Authorization: Bearer YOUR_API_KEY" \
+     http://localhost:48888/orders/5GhDr...
+
+# Get only filled orders
+curl -H "Authorization: Bearer YOUR_API_KEY" \
+     "http://localhost:48888/orders/5GhDr...?status=filled"
+
+# Get unfilled and cancelled orders
+curl -H "Authorization: Bearer YOUR_API_KEY" \
+     "http://localhost:48888/orders/5GhDr...?status=unfilled,cancelled"
+```
+
+**Response Fields:**
+
+Common fields across all statuses:
+- `trade_pair_id`: Trade pair identifier (e.g., "BTCUSD")
+- `trade_pair`: Array of [trade_pair_id, display_name]
+- `order_type`: Order direction (LONG, SHORT, FLAT)
+- `processed_ms`: Timestamp when order was created/filled
+- `leverage`: Position leverage
+- `value`: Order value in USD (if specified)
+- `quantity`: Order quantity (if specified)
+- `src`: Order source enum
+- `execution_type`: MARKET, LIMIT, or BRACKET
+- `order_uuid`: Unique order identifier
+- `stop_loss`: Stop-loss price (if set)
+- `take_profit`: Take-profit price (if set)
+
+Additional fields for filled orders:
+- `price`: Fill price
+- `bid`: Bid price at execution time
+- `ask`: Ask price at execution time
+- `slippage`: Slippage amount
+- `quote_usd_rate`: Quote currency to USD conversion rate
+- `usd_base_rate`: USD to base currency conversion rate
+
+Additional fields for unfilled orders:
+- `limit_price`: Target price for limit orders
+
+**Error Responses:**
+
+```json
+// Insufficient tier access
+{
+  "error": "Your API key does not have access to tier 100 data"
+}
+
+// Invalid status value
+{
+  "error": "Invalid status values: {'invalid'}. Valid values are: unfilled, filled, cancelled"
+}
+
+// No orders found
+{
+  "error": "No orders found for miner 5GhDr..."
+}
+```
+
 ## Entity Management
 
 The entity management endpoints enable entity miners to register, create subaccounts, and manage trading under a hierarchical account structure. Entity miners can operate multiple subaccounts (each with its own synthetic hotkey) for diversified trading strategies.

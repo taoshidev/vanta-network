@@ -385,21 +385,7 @@ class LimitOrderManager(CacheController):
 
     def _order_to_dict(self, order):
         """Convert order to dict for dashboard response."""
-        return {
-            "trade_pair": [order.trade_pair.trade_pair_id, order.trade_pair.trade_pair],
-            "order_type": str(order.order_type),
-            "processed_ms": order.processed_ms,
-            "limit_price": order.limit_price,
-            "price": order.price,
-            "leverage": order.leverage,
-            "value": order.value,
-            "quantity": order.quantity,
-            "src": order.src,
-            "execution_type": order.execution_type.name,
-            "order_uuid": order.order_uuid,
-            "stop_loss": order.stop_loss,
-            "take_profit": order.take_profit,
-        }
+        return order.to_python_dict()
 
     def get_all_limit_orders_rpc(self):
         """
