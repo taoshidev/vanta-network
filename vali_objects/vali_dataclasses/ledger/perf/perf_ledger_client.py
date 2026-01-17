@@ -255,5 +255,5 @@ class PerfLedgerClient(RPCClientBase):
         """Check server health."""
         return self._server.health_check_rpc()
 
-    def update(self, t_ms=None):
-        return self._server.update_rpc(t_ms=t_ms)
+    def update(self, testing_one_hotkey=None, regenerate_all_ledgers=False, t_ms=None):
+        return self._server.update_rpc(testing_one_hotkey=testing_one_hotkey, regenerate_all_ledgers=regenerate_all_ledgers, t_ms=t_ms)
