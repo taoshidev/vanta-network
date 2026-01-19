@@ -233,9 +233,9 @@ class LimitOrderManager(CacheController):
                     f"{order.order_type.name} @ {order.limit_price}"
                 )
 
-            # Check if order can be filled immediately
+            # Check if order can be filled immediately (only if market is open)
             price_sources = self.live_price_fetcher.get_sorted_price_sources_for_trade_pair(trade_pair, order.processed_ms)
-            if price_sources:
+            if price_sources and self.live_price_fetcher.is_market_open(trade_pair, order.processed_ms):
                 trigger_price = self._evaluate_trigger_price(order, position, price_sources[0])
 
                 if trigger_price:
