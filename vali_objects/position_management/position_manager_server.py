@@ -255,3 +255,33 @@ class PositionManagerServer(RPCServerBase):
             True if the position would be split, False otherwise
         """
         return self._manager._position_needs_splitting(position)
+
+    # ==================== Bracket Order Attachment RPC Methods ====================
+
+    def attach_bracket_order_to_position_rpc(self, miner_hotkey: str, trade_pair_id: str, order_dict: dict) -> bool:
+        """
+        Attach a bracket order to a position - delegates to manager.
+
+        Args:
+            miner_hotkey: The miner's hotkey
+            trade_pair_id: The trade pair ID
+            order_dict: The order as a dictionary
+
+        Returns:
+            True if successfully attached, False if no open position found
+        """
+        return self._manager.attach_bracket_order_to_position(miner_hotkey, trade_pair_id, order_dict)
+
+    def remove_bracket_order_from_position_rpc(self, miner_hotkey: str, trade_pair_id: str, order_uuid: str) -> bool:
+        """
+        Remove a bracket order from a position - delegates to manager.
+
+        Args:
+            miner_hotkey: The miner's hotkey
+            trade_pair_id: The trade pair ID
+            order_uuid: The UUID of the order to remove
+
+        Returns:
+            True if found and removed, False otherwise
+        """
+        return self._manager.remove_bracket_order_from_position(miner_hotkey, trade_pair_id, order_uuid)

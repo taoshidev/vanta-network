@@ -114,6 +114,10 @@ class PositionManagerClient(RPCClientBase):
             if position_dict.get('close_ms') is None:
                 position_dict['close_ms'] = 0
 
+            # Add unfilled_orders for API response (excluded from disk serialization)
+            if p.unfilled_orders:
+                position_dict['unfilled_orders'] = [o.to_python_dict() for o in p.unfilled_orders]
+
             ans["positions"].append(position_dict)
         return ans
 
@@ -487,3 +491,33 @@ class PositionManagerClient(RPCClientBase):
             (caller is responsible for updating perf ledgers)
         """
         return self._server.pre_run_setup_rpc(perform_order_corrections)
+
+    # ==================== Bracket Order Attachment Methods ====================
+
+    def attach_bracket_order_to_position(self, miner_hotkey: str, trade_pair_id: str, order_dict: dict) -> bool:
+        """
+        Attach a bracket order to a position.
+
+        Args:
+            miner_hotkey: The miner's hotkey
+            trade_pair_id: The trade pair ID
+            order_dict: The order as a dictionary
+
+        Returns:
+            True if successfully attached, False if no open position found
+        """
+        return self._server.attach_bracket_order_to_position_rpc(miner_hotkey, trade_pair_id, order_dict)
+
+    def remove_bracket_order_from_position(self, miner_hotkey: str, trade_pair_id: str, order_uuid: str) -> bool:
+        """
+        Remove a bracket order from a position.
+
+        Args:
+            miner_hotkey: The miner's hotkey
+            trade_pair_id: The trade pair ID
+            order_uuid: The UUID of the order to remove
+
+        Returns:
+            True if found and removed, False otherwise
+        """
+        return self._server.remove_bracket_order_from_position_rpc(miner_hotkey, trade_pair_id, order_uuid)
