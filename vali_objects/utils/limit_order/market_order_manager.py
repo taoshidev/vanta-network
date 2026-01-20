@@ -269,10 +269,10 @@ class MarketOrderManager():
 
         # Process cash balance after validation passes
         trade_pair_category = trade_pair.trade_pair_category
-        if signal_order_type == OrderType.LONG:
+        if order.order_type == OrderType.LONG:
             order.margin_loan = self._miner_account_client.process_order_buy(miner_hotkey, value, trade_pair_category)
         else:
-            processed_qty = existing_position.net_quantity if signal_order_type == OrderType.FLAT else quantity
+            processed_qty = existing_position.net_quantity if order.order_type == OrderType.FLAT else quantity
             sale_proceeds = processed_qty * order.price
             loan_repaid = self._miner_account_client.process_order_sell(miner_hotkey, abs(sale_proceeds), existing_position.margin_loan, trade_pair_category)
             # Store loan repayment as negative margin_loan so position.margin_loan sums correctly
