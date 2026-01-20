@@ -77,9 +77,10 @@ class MinerAccount:
             size_increase = new_size - previous_size
             self.cash_balance += size_increase
 
-    def get_account_size(self, timestamp_ms: Optional[int] = None) -> Optional[float]:
+    def get_account_size(self, timestamp_ms: Optional[int] = None) -> float:
+        """Get account size at a given timestamp. Returns MIN_CAPITAL if no collateral records."""
         if not self.collateral_records:
-            return None
+            return ValiConfig.MIN_CAPITAL
 
         if timestamp_ms is None:
             return self.collateral_records[-1].account_size
@@ -96,7 +97,8 @@ class MinerAccount:
             if record.valid_date_timestamp <= start_of_day_ms:
                 return record.account_size
 
-        return None
+        # No valid record for the timestamp, return MIN_CAPITAL
+        return ValiConfig.MIN_CAPITAL
 
     def apply_interest(self, current_time_ms: int) -> bool:
         """
@@ -324,11 +326,12 @@ class MinerAccountManager:
                         )
                         collateral_records.append(record)
 
-                # Skip if no collateral records and no cash_balance
-                if not collateral_records and cash_balance is None:
-                    continue
+                # Get account_size from collateral records, or fall back to cash_balance, or MIN_CAPITAL
+                if collateral_records:
+                    account_size = collateral_records[-1].account_size
+                else:
+                    account_size = ValiConfig.MIN_CAPITAL
 
-                account_size = collateral_records[-1].account_size
                 parsed_accounts[hotkey] = MinerAccount(
                     miner_hotkey=hotkey,
                     cash_balance=cash_balance if cash_balance is not None else account_size,
@@ -421,36 +424,32 @@ class MinerAccountManager:
     def get_miner_account_size(self, hotkey: str, timestamp_ms: Optional[int] = None, most_recent: bool = False,
                                use_account_floor: bool = False) -> float | None:
         """
-        Get the account size for a miner at a given timestamp. Iterate list in reverse chronological order, and return
-        the first record whose valid_date_timestamp <= start_of_day_ms
+        Get the account size for a miner at a given timestamp.
 
         Args:
             hotkey: Miner's hotkey (SS58 address)
             timestamp_ms: Timestamp to query for (defaults to now)
             most_recent: If True, return most recent record regardless of timestamp
-            use_account_floor: If True, return MIN_CAPITAL instead of None when no records exist
+            use_account_floor: If True, return MIN_CAPITAL instead of None when no account exists
 
         Returns:
-            Account size in USD, or None if no applicable records (or MIN_CAPITAL if use_account_floor=True)
+            Account size in USD. Returns MIN_CAPITAL for accounts without collateral records.
+            Returns None if account doesn't exist (or MIN_CAPITAL if use_account_floor=True).
         """
         if timestamp_ms is None:
             timestamp_ms = TimeUtil.now_in_millis()
 
         with self._accounts_lock:
             account = self.accounts.get(hotkey)
-            if not account or not account.collateral_records:
-                # Use account floor if requested (for miners without collateral records)
+            if not account:
                 return ValiConfig.MIN_CAPITAL if use_account_floor else None
 
-            # Return most recent record
+            # Return most recent record (or MIN_CAPITAL if no collateral records)
             if most_recent:
                 return account.get_account_size()
 
-            # Use MinerAccount's method to get account size at timestamp
-            result = account.get_account_size(timestamp_ms)
-            if result is None:
-                return ValiConfig.MIN_CAPITAL if use_account_floor else None
-            return result
+            # Get account size at timestamp (returns MIN_CAPITAL if no applicable records)
+            return account.get_account_size(timestamp_ms)
 
     def get_all_miner_account_sizes(self, timestamp_ms: Optional[int] = None) -> dict[str, float]:
         """
@@ -524,15 +523,11 @@ class MinerAccountManager:
     # ==================== MinerAccount Cache Methods ====================
 
     def get_or_create(self, hotkey: str) -> MinerAccount:
-        """Get existing account or create from CollateralRecord."""
+        """Get existing account or create new one with MIN_CAPITAL."""
         if hotkey not in self.accounts:
-            account_size = self.get_miner_account_size(hotkey)
-            if account_size is None:
-                account_size = ValiConfig.MIN_CAPITAL
-
             self.accounts[hotkey] = MinerAccount(
                 miner_hotkey=hotkey,
-                cash_balance=account_size,
+                cash_balance=ValiConfig.MIN_CAPITAL,
             )
         return self.accounts[hotkey]
 
