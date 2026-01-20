@@ -181,7 +181,7 @@ class MinerRestServer(BaseRestServer):
             # Validate exactly one of leverage/value/quantity is present
             # Exception: BRACKET orders don't require size fields
             execution_type = signal_data.get('execution_type', 'MARKET')
-            if execution_type in ['BRACKET', 'LIMIT_CANCEL']:
+            if execution_type not in ['BRACKET', 'LIMIT_CANCEL']:
                 position_size_fields = ['leverage', 'value', 'quantity']
                 provided_fields = [field for field in position_size_fields if field in signal_data]
 
