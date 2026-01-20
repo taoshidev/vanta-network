@@ -672,9 +672,11 @@ class Position(BaseModel):
 
         # Check if quantity/value would result in flat position
         if order.quantity and self.net_quantity + order.quantity == 0:
+            order.order_type = OrderType.FLAT
             return
 
         if order.value and self.net_value + order.value == 0:
+            order.order_type = OrderType.FLAT
             return
 
         if not order.leverage:
