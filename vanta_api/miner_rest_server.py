@@ -179,14 +179,17 @@ class MinerRestServer(BaseRestServer):
                 }), 400
 
             # Validate exactly one of leverage/value/quantity is present
-            position_size_fields = ['leverage', 'value', 'quantity']
-            provided_fields = [field for field in position_size_fields if field in signal_data]
+            # Exception: BRACKET orders don't require size fields
+            execution_type = signal_data.get('execution_type', 'MARKET')
+            if execution_type in ['BRACKET', 'LIMIT_CANCEL']:
+                position_size_fields = ['leverage', 'value', 'quantity']
+                provided_fields = [field for field in position_size_fields if field in signal_data]
 
-            if len(provided_fields) != 1:
-                return jsonify({
-                    'success': False,
-                    'error': f"Invalid request: must provide exactly one of: leverage, value, or quantity, got: {', '.join(provided_fields)}"
-                }), 400
+                if len(provided_fields) != 1:
+                    return jsonify({
+                        'success': False,
+                        'error': f"Invalid request: must provide exactly one of: leverage, value, or quantity, got: {', '.join(provided_fields)}"
+                    }), 400
 
             # Generate order_uuid if not provided
             order_uuid = signal_data.get('order_uuid', str(uuid.uuid4()))
