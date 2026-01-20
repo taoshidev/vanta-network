@@ -708,6 +708,7 @@ class Position(BaseModel):
 
         # If sign flips, set to FLAT
         if not is_first_order and self.net_leverage * proposed_leverage <= 0:
+            order.order_type = OrderType.FLAT
             return
 
         # Get leverage bounds
