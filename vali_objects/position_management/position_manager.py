@@ -1335,8 +1335,7 @@ class PositionManager:
         position = self.get_open_position_for_trade_pair(miner_hotkey, trade_pair_id)
         if not position:
             return False
-        order = Order.from_dict(order_dict)
-        position.add_unfilled_order(order)
+        position.add_unfilled_order(order_dict)
         return True
 
     def remove_bracket_order_from_position(self, miner_hotkey: str, trade_pair_id: str, order_uuid: str) -> bool:

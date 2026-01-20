@@ -59,7 +59,7 @@ class Position(BaseModel):
     unrealized_pnl: float = 0.0             # USD
     position_type: Optional[OrderType] = None
     is_closed_position: bool = False
-    unfilled_orders: List[Order] = Field(default=[], exclude=True)
+    unfilled_orders: list = Field(default=[], exclude=True)
 
     @model_validator(mode='before')
     def add_trade_pair_to_orders_and_self(cls, values):
@@ -271,16 +271,16 @@ class Position(BaseModel):
     def is_open_position(self):
         return not self.is_closed_position
 
-    def add_unfilled_order(self, order: Order) -> None:
-        """Add an unfilled bracket order to this position."""
-        existing_uuids = {o.order_uuid for o in self.unfilled_orders}
-        if order.order_uuid not in existing_uuids:
-            self.unfilled_orders.append(order)
+    def add_unfilled_order(self, order_dict: dict) -> None:
+        """Add an unfilled bracket order dict to this position."""
+        existing_uuids = {o.get('order_uuid') for o in self.unfilled_orders}
+        if order_dict.get('order_uuid') not in existing_uuids:
+            self.unfilled_orders.append(order_dict)
 
     def remove_unfilled_order(self, order_uuid: str) -> bool:
         """Remove an unfilled order by UUID. Returns True if found."""
-        for i, order in enumerate(self.unfilled_orders):
-            if order.order_uuid == order_uuid:
+        for i, order_dict in enumerate(self.unfilled_orders):
+            if order_dict.get('order_uuid') == order_uuid:
                 self.unfilled_orders.pop(i)
                 return True
         return False
