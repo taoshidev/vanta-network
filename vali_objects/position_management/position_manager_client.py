@@ -116,7 +116,7 @@ class PositionManagerClient(RPCClientBase):
 
             # Add unfilled_orders for API response (excluded from disk serialization)
             if p.unfilled_orders:
-                position_dict['unfilled_orders'] = [o.to_python_dict() for o in p.unfilled_orders]
+                position_dict['unfilled_orders'] = p.unfilled_orders
 
             ans["positions"].append(position_dict)
         return ans
