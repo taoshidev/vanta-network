@@ -992,6 +992,12 @@ class LimitOrderManager(CacheController):
 
         eliminated_hotkeys = self.elimination_manager.get_eliminated_hotkeys()
 
+        total_orders_read = 0
+        total_bracket_orders = 0
+        total_bracket_attached = 0
+
+        bt.logging.info(f"[LIMIT ORDER DISK] Reading limit orders from disk for {len(hotkeys)} hotkeys...")
+
         for hotkey in hotkeys:
             if hotkey in eliminated_hotkeys:
                 continue
@@ -1011,11 +1017,19 @@ class LimitOrderManager(CacheController):
 
                     if OrderSource.is_open(order.src):
                         self._limit_orders[trade_pair][hotkey].append(order)
+                        total_orders_read += 1
                         # Attach bracket orders to position
                         if order.src == OrderSource.BRACKET_UNFILLED:
-                            self.position_manager.attach_bracket_order_to_position(
+                            total_bracket_orders += 1
+                            bt.logging.info(f"[BRACKET ATTACH] Attempting to attach {order.order_uuid} to {hotkey}/{trade_pair.trade_pair_id}")
+                            attached = self.position_manager.attach_bracket_order_to_position(
                                 hotkey, trade_pair.trade_pair_id, order.to_python_dict()
                             )
+                            if attached:
+                                total_bracket_attached += 1
+                                bt.logging.info(f"[BRACKET ATTACH] SUCCESS: {order.order_uuid}")
+                            else:
+                                bt.logging.info(f"[BRACKET ATTACH] FAILED: No open position for {hotkey}/{trade_pair.trade_pair_id}")
                     else:
                         if hotkey not in self._closed_orders:
                             self._closed_orders[hotkey] = []
@@ -1030,6 +1044,8 @@ class LimitOrderManager(CacheController):
         for trade_pair in self._limit_orders:
             for hotkey in self._limit_orders[trade_pair]:
                 self._limit_orders[trade_pair][hotkey].sort(key=lambda o: o.processed_ms)
+
+        bt.logging.info(f"[LIMIT ORDER DISK] Finished reading limit orders: {total_orders_read} open orders, {total_bracket_orders} bracket orders, {total_bracket_attached} attached to positions")
 
     def _write_to_disk(self, miner_hotkey, order):
         """Write order to disk."""
