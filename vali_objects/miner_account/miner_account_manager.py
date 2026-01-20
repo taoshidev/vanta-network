@@ -271,21 +271,16 @@ class MinerAccountManager:
                 else:
                     records = account.collateral_records
 
-                records_list = []
-                for record in records:
-                    record_dict = vars(record).copy()
-                    record_dict["cash_balance"] = account.cash_balance
-                    record_dict["total_borrowed_amount"] = account.total_borrowed_amount
-                    record_dict["last_interest_applied_ms"] = account.last_interest_applied_ms
-                    records_list.append(record_dict)
+                records_list = [vars(record).copy() for record in records]
 
-                # If no collateral records, still save account-level fields
+                # If no collateral records, create empty record for account-level fields
                 if not records_list:
-                    records_list.append({
-                        "cash_balance": account.cash_balance,
-                        "total_borrowed_amount": account.total_borrowed_amount,
-                        "last_interest_applied_ms": account.last_interest_applied_ms
-                    })
+                    records_list.append({})
+
+                # Add account-level fields to the last record
+                records_list[-1]["cash_balance"] = account.cash_balance
+                records_list[-1]["total_borrowed_amount"] = account.total_borrowed_amount
+                records_list[-1]["last_interest_applied_ms"] = account.last_interest_applied_ms
 
                 json_dict[hotkey] = records_list
             return json_dict
