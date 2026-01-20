@@ -795,6 +795,12 @@ class LimitOrderManager(CacheController):
                     o for o in orders if o.order_uuid != order_uuid
                 ]
 
+            # Remove from position if bracket order
+            if order.execution_type == ExecutionType.BRACKET:
+                self.position_manager.remove_bracket_order_from_position(
+                    miner_hotkey, trade_pair_id, order_uuid
+                )
+
             if miner_hotkey not in self._closed_orders:
                 self._closed_orders[miner_hotkey] = []
             self._closed_orders[miner_hotkey].append(order)
@@ -891,6 +897,11 @@ class LimitOrderManager(CacheController):
 
                 self._write_to_disk(miner_hotkey, bracket_order)
                 self._limit_orders[trade_pair][miner_hotkey].append(bracket_order)
+
+                # Attach bracket order to position via RPC
+                self.position_manager.attach_bracket_order_to_position(
+                    miner_hotkey, trade_pair.trade_pair_id, bracket_order.to_python_dict()
+                )
 
                 bt.logging.success(
                     f"Created bracket order [{bracket_order.order_uuid}] "
@@ -1002,6 +1013,11 @@ class LimitOrderManager(CacheController):
 
                     if OrderSource.is_open(order.src):
                         self._limit_orders[trade_pair][hotkey].append(order)
+                        # Attach bracket orders to position
+                        if order.src == OrderSource.BRACKET_UNFILLED:
+                            self.position_manager.attach_bracket_order_to_position(
+                                hotkey, trade_pair.trade_pair_id, order.to_python_dict()
+                            )
                     else:
                         if hotkey not in self._closed_orders:
                             self._closed_orders[hotkey] = []

@@ -1318,6 +1318,46 @@ class PositionManager:
 
         bt.logging.info(f"Applied {trade_pair_id} stock split (ratio: {stock_split_ratio}, date: {execution_date}) to {_cnt} positions")
 
+    # ==================== Bracket Order Attachment Methods ====================
+
+    def attach_bracket_order_to_position(self, miner_hotkey: str, trade_pair_id: str, order_dict: dict) -> bool:
+        """
+        Attach a bracket order to a position. Called by LimitOrderManager.
+
+        Args:
+            miner_hotkey: The miner's hotkey
+            trade_pair_id: The trade pair ID
+            order_dict: The order as a dictionary
+
+        Returns:
+            True if successfully attached, False if no open position found
+        """
+        position = self.get_open_position_for_trade_pair(miner_hotkey, trade_pair_id)
+        if not position:
+            return False
+        order = Order.from_dict(order_dict)
+        position.add_unfilled_order(order)
+        return True
+
+    def remove_bracket_order_from_position(self, miner_hotkey: str, trade_pair_id: str, order_uuid: str) -> bool:
+        """
+        Remove a bracket order from a position. Called by LimitOrderManager.
+
+        Args:
+            miner_hotkey: The miner's hotkey
+            trade_pair_id: The trade pair ID
+            order_uuid: The UUID of the order to remove
+
+        Returns:
+            True if found and removed, False otherwise
+        """
+        position = self.get_open_position_for_trade_pair(miner_hotkey, trade_pair_id)
+        if not position:
+            return False
+        return position.remove_unfilled_order(order_uuid)
+
+    # ==================== Disk I/O Methods ====================
+
     def _write_position_to_disk(self, position: Position):
         """Write a single position to disk."""
         try:
