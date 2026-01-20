@@ -33,6 +33,9 @@ class Order(Signal):
             # Handle dict with 'trade_pair_id' key (from disk serialization)
             if 'trade_pair_id' in v:
                 return TradePair.from_trade_pair_id(v['trade_pair_id'])
+        elif isinstance(v, list) and len(v) >= 1:
+            # Handle list format ['BTCUSD', 'BTC/USD'] from to_python_dict()
+            return TradePair.from_trade_pair_id(v[0])
         return v
 
     @field_validator('execution_type', mode='before')
