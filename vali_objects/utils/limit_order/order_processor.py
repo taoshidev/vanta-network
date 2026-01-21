@@ -132,7 +132,7 @@ class OrderProcessor:
 
     @staticmethod
     def process_limit_order(signal: dict, trade_pair, order_uuid: str, now_ms: int,
-                           miner_hotkey: str, limit_order_client) -> Order:
+                           miner_hotkey: str, limit_order_client, is_edit: bool = False) -> Order:
         """
         Process a LIMIT order by creating an Order object and calling limit_order_manager.
 
@@ -143,6 +143,7 @@ class OrderProcessor:
             now_ms: Current timestamp in milliseconds
             miner_hotkey: Miner's hotkey
             limit_order_client: Client to process the limit order
+            is_edit: If True, this is an edit operation (replaces existing order)
 
         Returns:
             The created Order object
@@ -176,25 +177,16 @@ class OrderProcessor:
         # Convert remaining numeric fields to float
         limit_price = float(limit_price)
 
+        # Basic sanity validation only - business rule validation (SL/TP vs limit_price) is in LimitOrderManager
         if stop_loss is not None:
             stop_loss = float(stop_loss)
             if stop_loss <= 0:
                 raise SignalException("stop_loss must be greater than 0")
 
-            if signal_order_type == OrderType.LONG and stop_loss >= limit_price:
-                raise SignalException(f"For LONG orders, stop_loss ({stop_loss}) must be less than limit_price ({limit_price})")
-            elif signal_order_type == OrderType.SHORT and stop_loss <= limit_price:
-                raise SignalException(f"For SHORT orders, stop_loss ({stop_loss}) must be greater than limit_price ({limit_price})")
-
         if take_profit is not None:
             take_profit = float(take_profit)
             if take_profit <= 0:
                 raise SignalException("take_profit must be greater than 0")
-
-            if signal_order_type == OrderType.LONG and take_profit <= limit_price:
-                raise SignalException(f"For LONG orders, take_profit ({take_profit}) must be greater than limit_price ({limit_price})")
-            elif signal_order_type == OrderType.SHORT and take_profit >= limit_price:
-                raise SignalException(f"For SHORT orders, take_profit ({take_profit}) must be less than limit_price ({limit_price})")
 
         # Create order object
         order = Order(
@@ -214,9 +206,9 @@ class OrderProcessor:
         )
 
         # Process the limit order (may throw SignalException)
-        limit_order_client.process_limit_order(miner_hotkey, order)
+        limit_order_client.process_limit_order(miner_hotkey, order, is_edit=is_edit)
 
-        bt.logging.info(f"[ORDER_PROCESSOR] Processed LIMIT order: {order.order_uuid} for {miner_hotkey}")
+        bt.logging.info(f"[ORDER_PROCESSOR] Processed LIMIT order{'(EDIT)' if is_edit else ''}: {order.order_uuid} for {miner_hotkey}")
         return order
 
     @staticmethod
@@ -253,7 +245,7 @@ class OrderProcessor:
 
     @staticmethod
     def process_bracket_order(signal: dict, trade_pair, order_uuid: str, now_ms: int,
-                             miner_hotkey: str, limit_order_client) -> Order:
+                             miner_hotkey: str, limit_order_client, is_edit: bool = False) -> Order:
         """
         Process a BRACKET order by creating an Order object and calling limit_order_manager.
 
@@ -268,6 +260,7 @@ class OrderProcessor:
             now_ms: Current timestamp in milliseconds
             miner_hotkey: Miner's hotkey
             limit_order_client: Client to process the bracket order
+            is_edit: If True, this is an edit operation (replaces existing order)
 
         Returns:
             The created Order object
@@ -316,10 +309,67 @@ class OrderProcessor:
         )
 
         # Process the bracket order - manager validates position and sets correct order_type/leverage
-        limit_order_client.process_limit_order(miner_hotkey, order)
+        limit_order_client.process_limit_order(miner_hotkey, order, is_edit=is_edit)
 
-        bt.logging.info(f"Processed BRACKET order: {order.order_uuid} for {miner_hotkey}")
+        bt.logging.info(f"[ORDER_PROCESSOR] Processed BRACKET order{'(EDIT)' if is_edit else ''}: {order.order_uuid} for {miner_hotkey}")
         return order
+
+    @staticmethod
+    def process_limit_edit(signal: dict, order_uuid: str, now_ms: int,
+                          miner_hotkey: str, limit_order_client) -> Order:
+        """
+        Process a LIMIT_EDIT operation by validating the existing order and delegating
+        to the appropriate handler based on execution type.
+
+        Users must resubmit the entire signal (no partial updates).
+
+        Validation responsibilities:
+        - OrderProcessor: Order exists, is unfilled, trade pair matches (fail fast)
+        - Delegated handler: Field validation and business rules
+
+        Args:
+            signal: Signal dictionary with complete order details
+            order_uuid: UUID of the order to edit
+            now_ms: Current timestamp in milliseconds
+            miner_hotkey: Miner's hotkey
+            limit_order_client: Client to process the edit
+
+        Returns:
+            The updated Order object
+
+        Raises:
+            SignalException: If order not found, not unfilled, or trade pair mismatch
+        """
+        # 1. LOOKUP existing order - fail fast if not found
+        existing_order_dict = limit_order_client.get_limit_order_by_uuid(miner_hotkey, order_uuid)
+        if not existing_order_dict:
+            raise SignalException(f"Cannot edit order {order_uuid}: order not found")
+
+        existing_order = Order.from_dict(existing_order_dict)
+
+        # 2. VALIDATE order is unfilled
+        if existing_order.src not in [OrderSource.LIMIT_UNFILLED, OrderSource.BRACKET_UNFILLED]:
+            raise SignalException(f"Cannot edit order {order_uuid}: order is not unfilled (status: {existing_order.src})")
+
+        # 3. VALIDATE trade pair matches
+        trade_pair = Order.parse_trade_pair_from_signal(signal)
+        if not trade_pair:
+            raise SignalException("Invalid trade pair in signal for LIMIT_EDIT")
+        if trade_pair != existing_order.trade_pair:
+            raise SignalException(
+                f"Cannot edit order {order_uuid}: trade pair mismatch "
+                f"(order is for {existing_order.trade_pair.trade_pair_id}, not {trade_pair.trade_pair_id})"
+            )
+
+        # 4. DELEGATE based on existing order's execution type
+        if existing_order.execution_type == ExecutionType.BRACKET:
+            return OrderProcessor.process_bracket_order(
+                signal, trade_pair, order_uuid, now_ms, miner_hotkey, limit_order_client, is_edit=True
+            )
+        else:
+            return OrderProcessor.process_limit_order(
+                signal, trade_pair, order_uuid, now_ms, miner_hotkey, limit_order_client, is_edit=True
+            )
 
     @staticmethod
     def process_market_order(signal: dict, trade_pair, order_uuid: str, now_ms: int,
@@ -427,6 +477,17 @@ class OrderProcessor:
                 execution_type=ExecutionType.LIMIT_CANCEL,
                 result_dict=result,
                 should_track_uuid=False  # No UUID tracking for cancellations
+            )
+
+        elif execution_type == ExecutionType.LIMIT_EDIT:
+            order = OrderProcessor.process_limit_edit(
+                signal, order_uuid, now_ms,
+                miner_hotkey, limit_order_client
+            )
+            return OrderProcessingResult(
+                execution_type=ExecutionType.LIMIT_EDIT,
+                order=order,
+                should_track_uuid=False  # No UUID tracking for edits (keeps same UUID)
             )
 
         else:  # ExecutionType.MARKET

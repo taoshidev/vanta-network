@@ -120,16 +120,17 @@ class LimitOrderServer(RPCServerBase):
         """Add service-specific health check details."""
         return self._manager.health_check_rpc()
 
-    def process_limit_order_rpc(self, miner_hotkey, order):
+    def process_limit_order_rpc(self, miner_hotkey, order, is_edit=False):
         """
         RPC method to process a limit order or bracket order.
         Args:
             miner_hotkey: The miner's hotkey
             order: Order object (pickled automatically by RPC)
+            is_edit: If True, this is an edit operation (replaces existing order)
         Returns:
             dict with status and order_uuid
         """
-        return self._manager.process_limit_order(miner_hotkey, order)
+        return self._manager.process_limit_order(miner_hotkey, order, is_edit)
 
     def cancel_limit_order_rpc(self, miner_hotkey, trade_pair_id, order_uuid, now_ms):
         """
@@ -143,6 +144,17 @@ class LimitOrderServer(RPCServerBase):
             dict with cancellation details
         """
         return self._manager.cancel_limit_order(miner_hotkey, trade_pair_id, order_uuid, now_ms)
+
+    def get_limit_order_by_uuid_rpc(self, miner_hotkey, order_uuid):
+        """
+        RPC method to get an unfilled limit order by UUID.
+        Args:
+            miner_hotkey: The miner's hotkey
+            order_uuid: UUID of the order to find
+        Returns:
+            Order dict if found, None if not found
+        """
+        return self._manager.get_limit_order_by_uuid(miner_hotkey, order_uuid)
 
     def get_limit_orders_for_hotkey_rpc(self, miner_hotkey):
         """
@@ -404,13 +416,17 @@ class LimitOrderServer(RPCServerBase):
     # ==================== Forward-Compatible Aliases (without _rpc suffix) ====================
     # These allow direct use of the server in tests without RPC
 
-    def process_limit_order(self, miner_hotkey, order):
+    def process_limit_order(self, miner_hotkey, order, is_edit=False):
         """Process a limit order (direct call for tests)."""
-        return self._manager.process_limit_order(miner_hotkey, order)
+        return self._manager.process_limit_order(miner_hotkey, order, is_edit)
 
     def cancel_limit_order(self, miner_hotkey, trade_pair_id, order_uuid, now_ms):
         """Cancel limit order(s) (direct call for tests)."""
         return self._manager.cancel_limit_order(miner_hotkey, trade_pair_id, order_uuid, now_ms)
+
+    def get_limit_order_by_uuid(self, miner_hotkey, order_uuid):
+        """Get an unfilled limit order by UUID (direct call for tests)."""
+        return self._manager.get_limit_order_by_uuid(miner_hotkey, order_uuid)
 
     def get_limit_orders(self, miner_hotkey):
         """Get all limit orders for a hotkey (direct call for tests)."""
