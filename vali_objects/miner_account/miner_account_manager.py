@@ -428,7 +428,7 @@ class MinerAccountManager:
 
         Args:
             hotkey: Miner's hotkey (SS58 address)
-            timestamp_ms: Timestamp to query for (defaults to now)
+            timestamp_ms: Timestamp to query for. If None, returns most recent record.
             most_recent: If True, return most recent record regardless of timestamp
             use_account_floor: If True, return MIN_CAPITAL instead of None when no account exists
 
@@ -436,16 +436,13 @@ class MinerAccountManager:
             Account size in USD. Returns MIN_CAPITAL for accounts without collateral records.
             Returns None if account doesn't exist (or MIN_CAPITAL if use_account_floor=True).
         """
-        if timestamp_ms is None:
-            timestamp_ms = TimeUtil.now_in_millis()
-
         with self._accounts_lock:
             account = self.accounts.get(hotkey)
             if not account:
                 return ValiConfig.MIN_CAPITAL if use_account_floor else None
 
-            # Return most recent record (or MIN_CAPITAL if no collateral records)
-            if most_recent:
+            # Return most recent record when no timestamp provided or most_recent=True
+            if most_recent or timestamp_ms is None:
                 return account.get_account_size()
 
             # Get account size at timestamp (returns MIN_CAPITAL if no applicable records)
@@ -453,11 +450,8 @@ class MinerAccountManager:
 
     def get_all_miner_account_sizes(self, timestamp_ms: Optional[int] = None) -> dict[str, float]:
         """
-        Return a dict of all miner account sizes at a timestamp_ms
+        Return a dict of all miner account sizes. If timestamp_ms is None, returns most recent sizes.
         """
-        if timestamp_ms is None:
-            timestamp_ms = TimeUtil.now_in_millis()
-
         with self._accounts_lock:
             all_miner_account_sizes = {}
             for hotkey in self.accounts.keys():

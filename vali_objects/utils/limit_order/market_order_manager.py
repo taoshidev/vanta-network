@@ -495,7 +495,7 @@ class MarketOrderManager():
 
             # TIMING: Get account size
             account_size_start = TimeUtil.now_in_millis()
-            account_size = self._miner_account_client.get_miner_account_size(miner_hotkey, now_ms, use_account_floor=True)
+            account_size = self._miner_account_client.get_miner_account_size(miner_hotkey, use_account_floor=True)
             account_size_ms = TimeUtil.now_in_millis() - account_size_start
             bt.logging.info(f"[LOCK_WORK] Get account size took {account_size_ms}ms")
 
