@@ -1246,6 +1246,8 @@ class PerfLedgerManager(CacheController):
             tp_to_any_open = {tp_id: TradePairReturnStatus.TP_NO_OPEN_POSITIONS for tp_id in tp_ids_to_build}
             tp_to_current_spread_fee = initial_tp_to_spread_fee.copy()
             tp_to_current_carry_fee = initial_tp_to_carry_fee.copy()
+            tp_to_realized_pnl = initial_tp_to_realized_pnl.copy()
+            tp_to_unrealized_pnl = initial_tp_to_unrealized_pnl.copy()
 
             bt.logging.warning(f"build_perf_ledger: while loop will not execute for miner {miner_hotkey}. "
                              f"start_time: {TimeUtil.millis_to_formatted_date_str(start_time_ms)}, "
