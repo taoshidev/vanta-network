@@ -353,9 +353,22 @@ class LimitOrderManager(CacheController):
                     if o.order_uuid == order_uuid:
                         orders_list[i] = order
                         break
+                # Update bracket order on position for edits
+                if order.execution_type == ExecutionType.BRACKET:
+                    self.position_manager.remove_bracket_order_from_position(
+                        miner_hotkey, trade_pair.trade_pair_id, order_uuid
+                    )
+                    self.position_manager.attach_bracket_order_to_position(
+                        miner_hotkey, trade_pair.trade_pair_id, order.to_python_dict()
+                    )
             else:
                 # Append new order
                 self._limit_orders[trade_pair][miner_hotkey].append(order)
+                # Attach bracket order to position for new orders
+                if order.execution_type == ExecutionType.BRACKET:
+                    self.position_manager.attach_bracket_order_to_position(
+                        miner_hotkey, trade_pair.trade_pair_id, order.to_python_dict()
+                    )
 
         return {"status": "success", "order_uuid": order_uuid}
 
