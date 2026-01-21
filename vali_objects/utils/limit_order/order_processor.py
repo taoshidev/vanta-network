@@ -298,7 +298,7 @@ class OrderProcessor:
             order_uuid=order_uuid,
             processed_ms=now_ms,
             price=0.0,
-            order_type=OrderType.LONG,  # Placeholder - will be overridden by manager
+            order_type=OrderType.FLAT,  # Placeholder - will be overridden by manager
             leverage=leverage,
             quantity=quantity,
             value=value,
