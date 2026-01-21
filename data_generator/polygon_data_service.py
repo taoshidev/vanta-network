@@ -1209,7 +1209,12 @@ class PolygonDataService(BaseDataService):
                 limit=1
             )
             for q in quotes:
+                # Handle case where Polygon returns None for any field
+                if q.bid_price is None or q.ask_price is None or q.participant_timestamp is None:
+                    return None, None, None
                 return q.bid_price, q.ask_price, int(q.participant_timestamp/1_000_000)  # convert ns back to ms
+            # No quotes found
+            return None, None, None
         else:
             # crypto
             return 0, 0, 0
