@@ -145,21 +145,67 @@ class LimitOrderManager(CacheController):
 
     # ==================== Validation Helper Methods ====================
 
-    def _validate_bracket_order(self, order, open_position, unfilled_orders):
+    def _validate_sltp_against_price(self, order_type, stop_loss, take_profit, reference_price, order_uuid=None):
+        """
+        Validate stop loss and take profit values against a reference price.
+
+        Args:
+            order_type: OrderType.LONG or OrderType.SHORT
+            stop_loss: Stop loss price (or None)
+            take_profit: Take profit price (or None)
+            reference_price: The price to validate against (fill price or limit price)
+            order_uuid: Optional order UUID for error messages
+
+        Raises:
+            SignalException: If validation fails
+        """
+        order_id = f"[{order_uuid}]" if order_uuid else ""
+
+        if order_type == OrderType.LONG:
+            # For LONG: SL must be below reference, TP must be above reference
+            if stop_loss is not None and stop_loss >= reference_price:
+                raise SignalException(
+                    f"Invalid LONG bracket order {order_id}: "
+                    f"stop_loss ({stop_loss}) must be < reference_price ({reference_price})"
+                )
+            if take_profit is not None and take_profit <= reference_price:
+                raise SignalException(
+                    f"Invalid LONG bracket order {order_id}: "
+                    f"take_profit ({take_profit}) must be > reference_price ({reference_price})"
+                )
+        elif order_type == OrderType.SHORT:
+            # For SHORT: SL must be above reference, TP must be below reference
+            if stop_loss is not None and stop_loss <= reference_price:
+                raise SignalException(
+                    f"Invalid SHORT bracket order {order_id}: "
+                    f"stop_loss ({stop_loss}) must be > reference_price ({reference_price})"
+                )
+            if take_profit is not None and take_profit >= reference_price:
+                raise SignalException(
+                    f"Invalid SHORT bracket order {order_id}: "
+                    f"take_profit ({take_profit}) must be < reference_price ({reference_price})"
+                )
+        else:
+            raise SignalException(
+                f"Invalid order type for bracket order {order_id}: {order_type}. Must be LONG or SHORT"
+            )
+
+    def _validate_bracket_order(self, order, open_position, unfilled_orders, reference_price=None):
         """
         Validate a BRACKET order and apply position-derived values.
 
         Args:
             order: Order object to validate (will be modified in place)
-            position: Position object (required for BRACKET orders)
-            trade_pair: TradePair for error messages
+            open_position: Position object (optional)
+            unfilled_orders: List of unfilled limit orders (optional)
+            reference_price: Optional price to validate SL/TP against (e.g., limit_price, fill_price)
 
         Raises:
             SignalException: If validation fails
         """
         if not open_position and not unfilled_orders:
             raise SignalException(
-                f"Cannot create bracket order: no open position found for {order.trade_pair.trade_pair_id}"
+                f"Invalid bracket order: no open position or previous unfilled limit orders found for {order.trade_pair.trade_pair_id}"
             )
 
         # Validate that at least one of SL or TP is set
@@ -168,26 +214,20 @@ class LimitOrderManager(CacheController):
                 f"BRACKET orders must have at least one of stop_loss or take_profit set"
             )
 
-        # Set order type from position
+        # Set order type based on open position, skip validation if there is no position.
         if open_position:
             order.order_type = open_position.position_type
+        else:
             return
 
-        # Validate SL/TP relationship
-        if order.stop_loss and order.take_profit:
-            if order.order_type == OrderType.LONG and order.stop_loss >= order.take_profit:
-                raise SignalException(
-                    f"BRACKET orders for LONG positions must satisfy: stop_loss < take_profit. "
-                    f"Got stop_loss={order.stop_loss}, take_profit={order.take_profit}"
-                )
-            if order.order_type == OrderType.SHORT and order.stop_loss <= order.take_profit:
-                raise SignalException(
-                    f"BRACKET orders for SHORT positions must satisfy: take_profit < stop_loss. "
-                    f"Got take_profit={order.take_profit}, stop_loss={order.stop_loss}"
-                )
+        # Validate SL/TP against reference price if provided
+        if reference_price is not None:
+            self._validate_sltp_against_price(
+                order.order_type, order.stop_loss, order.take_profit, reference_price, order.order_uuid
+            )
 
         # Use position quantity if not specified
-        if order.leverage is None and order.value is None and order.quantity is None:
+        if open_position and order.leverage is None and order.value is None and order.quantity is None:
             order.quantity = open_position.net_quantity
 
     def _validate_limit_order(self, order):
@@ -208,30 +248,17 @@ class LimitOrderManager(CacheController):
         if order.order_type == OrderType.FLAT:
             raise SignalException(f"FLAT order is not supported for LIMIT orders")
 
-        # Validate SL/TP against limit price if provided
-        if order.stop_loss is not None:
-            if order.stop_loss <= 0:
-                raise SignalException("stop_loss must be greater than 0")
-            if order.order_type == OrderType.LONG and order.stop_loss >= order.limit_price:
-                raise SignalException(
-                    f"For LONG orders, stop_loss ({order.stop_loss}) must be less than limit_price ({order.limit_price})"
-                )
-            elif order.order_type == OrderType.SHORT and order.stop_loss <= order.limit_price:
-                raise SignalException(
-                    f"For SHORT orders, stop_loss ({order.stop_loss}) must be greater than limit_price ({order.limit_price})"
-                )
+        # Validate SL/TP are positive if provided
+        if order.stop_loss is not None and order.stop_loss <= 0:
+            raise SignalException("stop_loss must be greater than 0")
+        if order.take_profit is not None and order.take_profit <= 0:
+            raise SignalException("take_profit must be greater than 0")
 
-        if order.take_profit is not None:
-            if order.take_profit <= 0:
-                raise SignalException("take_profit must be greater than 0")
-            if order.order_type == OrderType.LONG and order.take_profit <= order.limit_price:
-                raise SignalException(
-                    f"For LONG orders, take_profit ({order.take_profit}) must be greater than limit_price ({order.limit_price})"
-                )
-            elif order.order_type == OrderType.SHORT and order.take_profit >= order.limit_price:
-                raise SignalException(
-                    f"For SHORT orders, take_profit ({order.take_profit}) must be less than limit_price ({order.limit_price})"
-                )
+        # Validate SL/TP against limit price if provided
+        if order.stop_loss is not None or order.take_profit is not None:
+            self._validate_sltp_against_price(
+                order.order_type, order.stop_loss, order.take_profit, order.limit_price, order.order_uuid
+            )
 
     # ==================== Public API Methods ====================
 
@@ -1004,48 +1031,13 @@ class LimitOrderManager(CacheController):
 
         # Validate SL/TP against fill price before creating bracket order
         fill_price = parent_order.price
-        order_type = parent_order.order_type
-
         if not fill_price:
             raise BracketOrderException(f"Unexpected: no fill price from order [{parent_order.order_uuid}]")
 
-        # Validate stop loss and take profit based on order type
-        if order_type == OrderType.LONG:
-            # For LONG positions:
-            # - Stop loss must be BELOW fill price (selling at a loss)
-            # - Take profit must be ABOVE fill price (selling at a gain)
-            if parent_order.stop_loss is not None and parent_order.stop_loss >= fill_price:
-                raise BracketOrderException(
-                    f"Invalid LONG bracket order [{parent_order.order_uuid}]: "
-                    f"stop_loss ({parent_order.stop_loss}) must be < fill_price ({fill_price})"
-                )
-
-            if parent_order.take_profit is not None and parent_order.take_profit <= fill_price:
-                raise BracketOrderException(
-                    f"Invalid LONG bracket order [{parent_order.order_uuid}]: "
-                    f"take_profit ({parent_order.take_profit}) must be > fill_price ({fill_price})"
-                )
-
-        elif order_type == OrderType.SHORT:
-            # For SHORT positions:
-            # - Stop loss must be ABOVE fill price (buying back at a loss)
-            # - Take profit must be BELOW fill price (buying back at a gain)
-            if parent_order.stop_loss is not None and parent_order.stop_loss <= fill_price:
-                raise BracketOrderException(
-                    f"Invalid SHORT bracket order [{parent_order.order_uuid}]: "
-                    f"stop_loss ({parent_order.stop_loss}) must be > fill_price ({fill_price})"
-                )
-
-            if parent_order.take_profit is not None and parent_order.take_profit >= fill_price:
-                raise BracketOrderException(
-                    f"Invalid SHORT bracket order [{parent_order.order_uuid}]: "
-                    f"take_profit ({parent_order.take_profit}) must be < fill_price ({fill_price})"
-                )
-        else:
-            raise BracketOrderException(
-                f"Invalid order type for bracket order [{parent_order.order_uuid}]: {order_type}. "
-                f"Must be LONG or SHORT"
-            )
+        self._validate_sltp_against_price(
+            parent_order.order_type, parent_order.stop_loss, parent_order.take_profit,
+            fill_price, parent_order.order_uuid
+        )
 
         try:
             # Create single bracket order with both SL and TP
@@ -1137,7 +1129,8 @@ class LimitOrderManager(CacheController):
         bid_price = ps.bid if ps.bid > 0 else ps.open
         ask_price = ps.ask if ps.ask > 0 else ps.open
 
-        order_type = order.order_type
+        order_type = position.position_type
+        order.order_type = order_type
 
         # For LONG orders:
         # - Stop loss: triggers when market price < SL (use bid for selling)
@@ -1259,11 +1252,14 @@ class LimitOrderManager(CacheController):
             # Validate bracket order now that we have a position
             # This handles bracket orders submitted on pending limit orders (no position at submission)
             try:
-                self._validate_bracket_order(order, position, [])
+                self._validate_bracket_order(order, position, [], reference_price=position.initial_entry_price)
             except SignalException as e:
                 bt.logging.warning(f"[BRACKET SYNC] Validation failed for {order.order_uuid}: {e}")
                 self._close_limit_order(miner_hotkey, order, OrderSource.BRACKET_CANCELLED, now_ms)
                 continue
+
+            # Persist updated order to disk (order_type was set by _validate_bracket_order)
+            self._write_to_disk(miner_hotkey, order)
 
             # Attach to position
             attached = self.position_manager.attach_bracket_order_to_position(
