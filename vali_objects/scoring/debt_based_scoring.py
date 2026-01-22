@@ -529,22 +529,13 @@ class DebtBasedScoring:
 
         # Calculate days until target payout day (day 25)
         current_day = current_dt.day
-
-        if current_day > DebtBasedScoring.PAYOUT_TARGET_DAY:
-            # Past target day, treat as 0 days remaining (will warn about insufficient time)
-            actual_days_until_target = 0
-        else:
-            actual_days_until_target = DebtBasedScoring.PAYOUT_TARGET_DAY - current_day + 1  # +1 to include today
+        actual_days_until_target = max(0, DebtBasedScoring.PAYOUT_TARGET_DAY - current_day + 1)  # +1 to include today
 
         # Apply aggressive payout strategy:
         # Early in month: Use shorter time horizon (e.g., 4 days) to be more aggressive
         # Late in month: Use actual remaining days as we approach deadline
         # This creates urgency early while respecting the hard deadline
-        days_until_target = min(actual_days_until_target, DebtBasedScoring.AGGRESSIVE_PAYOUT_BUFFER_DAYS)
-
-        # Ensure at least 1 day if we haven't reached deadline yet
-        if actual_days_until_target > 0 and days_until_target == 0:
-            days_until_target = 1
+        days_until_target = max(1, min(actual_days_until_target, DebtBasedScoring.AGGRESSIVE_PAYOUT_BUFFER_DAYS))   # at least 1 for calculation purposes. This will attempt to pay everything today
 
         if verbose:
             bt.logging.info(
@@ -648,7 +639,7 @@ class DebtBasedScoring:
             verbose=verbose
         )
 
-        if total_remaining_payout_usd > 0 and days_until_target > 0:
+        if total_remaining_payout_usd > 0:
             DebtBasedScoring.log_projections(metagraph, days_until_target, verbose, total_remaining_payout_usd)
         else:
             bt.logging.info(
@@ -661,11 +652,7 @@ class DebtBasedScoring:
         # This implements the aggressive payout strategy correctly
         miner_daily_target_payouts_usd = {}
         for hotkey, remaining_payout_usd in miner_remaining_payouts_usd.items():
-            if days_until_target > 0:
-                daily_target = remaining_payout_usd / days_until_target
-            else:
-                # Past deadline or exactly at deadline, pay everything today
-                daily_target = remaining_payout_usd
+            daily_target = remaining_payout_usd / days_until_target
 
             miner_daily_target_payouts_usd[hotkey] = daily_target
 
@@ -675,11 +662,7 @@ class DebtBasedScoring:
         # Weights are performance-scaled by 30-day PnL within each bucket
         # NOTE: Weights are unitless proportions, normalized against projected daily emissions
         # Calculate projected daily emissions in USD
-        if days_until_target > 0:
-            projected_daily_usd = projected_usd_available / days_until_target
-        else:
-            # Past deadline, use full remaining emissions for today
-            projected_daily_usd = projected_usd_available
+        projected_daily_usd = projected_usd_available / days_until_target
 
         miner_weights_with_minimums = DebtBasedScoring._apply_minimum_weights(
             ledger_dict=ledger_dict,
