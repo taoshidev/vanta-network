@@ -89,7 +89,7 @@ class MinerAccount:
             return ValiConfig.MIN_CAPITAL
 
         if timestamp_ms is None:
-            return self.collateral_records[-1].account_size
+            return max(self.collateral_records[-1].account_size, ValiConfig.MIN_CAPITAL)
 
         # Get start of the requested day
         start_of_day_ms = int(
@@ -101,7 +101,7 @@ class MinerAccount:
         # Iterate in reversed order, return first record valid for or before the requested day
         for record in reversed(self.collateral_records):
             if record.valid_date_timestamp <= start_of_day_ms:
-                return record.account_size
+                return max(record.account_size, ValiConfig.MIN_CAPITAL)
 
         # No valid record for the timestamp, return MIN_CAPITAL
         return ValiConfig.MIN_CAPITAL
