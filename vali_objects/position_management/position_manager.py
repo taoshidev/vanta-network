@@ -30,7 +30,7 @@ from vali_objects.price_fetcher.live_price_client import LivePriceFetcherClient
 from vali_objects.utils.elimination.elimination_client import EliminationClient
 from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
 
-TARGET_MS = 1761260399000 + (1000 * 60 * 60 * 6)  # + 6 hours
+TARGET_MS = 1769068800000 + (1000 * 60 * 60 * 6)  # + 6 hours
 
 
 class PositionManager:
@@ -770,7 +770,7 @@ class PositionManager:
         position_uuids_to_delete = []
         wipe_positions = False
         reopen_force_closed_orders = False
-        miners_to_wipe_perf_ledger = []
+        miners_to_wipe_perf_ledger = ["5GYxdxQU1UKhAKD3rm4Gy1vfDjrboK76jYwQkZtn6W4yuJNX"]
 
         current_eliminations = self._elimination_client.get_eliminations_from_memory() if self._elimination_client else []
 

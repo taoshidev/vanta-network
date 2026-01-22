@@ -688,7 +688,8 @@ class PerfLedgerManager(CacheController):
 
     def positions_to_portfolio_return(self, possible_tp_ids, tp_to_historical_positions_dense: dict[str: Position],
                                       t_ms, mode, end_time_ms, tp_to_initial_return, tp_to_initial_realized_pnl, tp_to_initial_unrealized_pnl,
-                                      tp_to_initial_spread_fee, tp_to_initial_carry_fee, portfolio_pl):
+                                      tp_to_initial_spread_fee, tp_to_initial_carry_fee, portfolio_pl,
+                                      tp_id_to_realtime_position_to_pop: dict[str, Position] = None):
         # Answers "What is the portfolio return at this time t_ms?"
         tp_to_any_open : dict[str, TradePairReturnStatus] = {x: TradePairReturnStatus.TP_NO_OPEN_POSITIONS for x in possible_tp_ids}
         tp_to_return = tp_to_initial_return.copy()
@@ -718,10 +719,29 @@ class PerfLedgerManager(CacheController):
 
                 # Check if market is open
                 if not self.market_calendar.is_market_open(historical_position.trade_pair, t_ms):
+                    # Check if this position closes at or before this checkpoint time
+                    closed_position = None
+                    if (tp_id_to_realtime_position_to_pop and
+                        tp_id in tp_id_to_realtime_position_to_pop):
+                        candidate = tp_id_to_realtime_position_to_pop[tp_id]
+                        if (candidate.position_uuid == historical_position.position_uuid and
+                            candidate.is_closed_position and
+                            candidate.close_ms is not None and
+                            t_ms >= candidate.close_ms):
+                            closed_position = candidate
+
                     for x in tp_ids_to_build:
                         tp_to_return[x] *= historical_position.return_at_close
+
+                        # Always add realized PnL (cumulative from all orders)
                         tp_to_realized_pnl[x] += historical_position.realized_pnl
-                        tp_to_unrealized_pnl[x] += historical_position.unrealized_pnl
+
+                        # Only add unrealized PnL if position is NOT closed at this checkpoint
+                        if not closed_position:
+                            # Position is still open - add unrealized PnL
+                            tp_to_unrealized_pnl[x] += historical_position.unrealized_pnl
+                        # else: Position is closed - unrealized PnL is 0, don't add
+
                         # Only update to MARKET_NOT_OPEN if we haven't seen any open positions yet
                         if tp_to_any_open[x] == TradePairReturnStatus.TP_NO_OPEN_POSITIONS:
                             tp_to_any_open[x] = TradePairReturnStatus.TP_MARKET_NOT_OPEN
@@ -761,10 +781,28 @@ class PerfLedgerManager(CacheController):
                     portfolio_pl.last_known_prices[tp_id] = (price_at_t_ms, t_ms)
 
                 # Update returns for all relevant IDs
+                # Check if this position closes at or before this checkpoint time
+                closed_position = None
+                if (tp_id_to_realtime_position_to_pop and
+                    tp_id in tp_id_to_realtime_position_to_pop):
+                    candidate = tp_id_to_realtime_position_to_pop[tp_id]
+                    if (candidate.position_uuid == historical_position.position_uuid and
+                        candidate.is_closed_position and
+                        candidate.close_ms is not None and
+                        t_ms >= candidate.close_ms):
+                        closed_position = candidate
+
                 for x in tp_ids_to_build:
                     tp_to_return[x] *= historical_position.return_at_close
+
+                    # Always add realized PnL (cumulative from all orders)
                     tp_to_realized_pnl[x] += historical_position.realized_pnl
-                    tp_to_unrealized_pnl[x] += historical_position.unrealized_pnl
+
+                    # Only add unrealized PnL if position is NOT closed at this checkpoint
+                    if not closed_position:
+                        # Position is still open - add unrealized PnL
+                        tp_to_unrealized_pnl[x] += historical_position.unrealized_pnl
+                    # else: Position is closed - unrealized PnL is 0, don't add
 
                 # Update status based on price change
                 # Use the enum ordering to ensure we keep the highest priority status
@@ -1263,7 +1301,8 @@ class PerfLedgerManager(CacheController):
 
             tp_to_current_return, tp_to_realized_pnl, tp_to_unrealized_pnl, tp_to_any_open, tp_to_current_spread_fee, tp_to_current_carry_fee, = \
                 self.positions_to_portfolio_return(tp_ids_to_build, tp_to_historical_positions_dense, t_ms, mode,
-                   end_time_ms, tp_to_closed_pos_return, tp_to_closed_pos_realized_pnl, tp_to_closed_pos_unrealized_pnl, tp_to_closed_pos_spread_fee, tp_to_closed_pos_carry_fee, portfolio_pl)
+                   end_time_ms, tp_to_closed_pos_return, tp_to_closed_pos_realized_pnl, tp_to_closed_pos_unrealized_pnl, tp_to_closed_pos_spread_fee, tp_to_closed_pos_carry_fee, portfolio_pl,
+                   tp_id_to_realtime_position_to_pop)
             portfolio_return = tp_to_current_return[TP_ID_PORTFOLIO]
 
             if portfolio_return == 0 and self.check_liquidated(miner_hotkey, portfolio_return, t_ms, tp_to_historical_positions, perf_ledger_bundle):
@@ -1363,6 +1402,39 @@ class PerfLedgerManager(CacheController):
                 calculated_return, tp_to_current_spread_fee[tp_id], tp_to_current_carry_fee[tp_id],
                 tp_id_to_realtime_position_to_pop
             )
+
+            # Fix: Convert unrealized PnL to realized PnL for positions that closed during this checkpoint
+            # When a position closes during a checkpoint period, tp_to_historical_positions_dense contains
+            # the OPEN position (before FLAT order), while tp_id_to_realtime_position_to_pop contains the
+            # CLOSED position (after FLAT order). The tick-by-tick loop accumulates unrealized PnL from
+            # the open position, but we need to convert it to realized PnL from the closed position.
+            if tp_id_to_realtime_position_to_pop:
+                # For portfolio, check all positions; for trade pairs, check only the specific tp_id
+                positions_to_check = []
+                if tp_id == TP_ID_PORTFOLIO:
+                    positions_to_check = list(tp_id_to_realtime_position_to_pop.items())
+                elif tp_id in tp_id_to_realtime_position_to_pop:
+                    positions_to_check = [(tp_id, tp_id_to_realtime_position_to_pop[tp_id])]
+
+                for check_tp_id, closed_position in positions_to_check:
+                    # Only process if position is actually closed
+                    if not closed_position.is_closed_position:
+                        continue
+
+                    # Find the corresponding open position in historical positions
+                    if check_tp_id in tp_to_historical_positions_dense:
+                        for hist_pos in tp_to_historical_positions_dense[check_tp_id]:
+                            if hist_pos.position_uuid == closed_position.position_uuid:
+                                # Convert unrealized PnL to realized PnL
+                                # Subtract the open position's unrealized PnL (accumulated during tick-by-tick)
+                                tp_to_unrealized_pnl[tp_id] -= hist_pos.unrealized_pnl
+                                # Add the closed position's realized PnL
+                                tp_to_realized_pnl[tp_id] += closed_position.realized_pnl
+                                bt.logging.debug(
+                                    f"Converted PnL for position {closed_position.position_uuid[:8]} closing during checkpoint: "
+                                    f"removed unrealized ${hist_pos.unrealized_pnl:.2f}, added realized ${closed_position.realized_pnl:.2f}"
+                                )
+                                break
 
             perf_ledger.update_pl(current_return, end_time_ms, miner_hotkey, tp_to_any_open[tp_id],
                                   current_spread_fee, current_carry_fee,

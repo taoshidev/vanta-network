@@ -76,7 +76,7 @@ class DebtBasedScoring:
     ACTIVATION_MONTH = 11
 
     # Target payout completion by day 25
-    PAYOUT_TARGET_DAY = 25
+    PAYOUT_TARGET_DAY = 20
 
     # Aggressive payout buffer: aim to complete this many days from now (minimum)
     # This makes early-month payouts more aggressive (day 1 targets 4-day completion)
@@ -571,7 +571,7 @@ class DebtBasedScoring:
             # This allows negative PnL to accumulate and offset future gains
             cumulative_checkpoints = [
                 cp for cp in debt_ledger.checkpoints
-                if payout_calc_start_ms <= cp.timestamp_ms <= prev_month_end_ms
+                if payout_calc_start_ms <= cp.timestamp_ms <= (prev_month_end_ms + ValiConfig.TARGET_CHECKPOINT_DURATION_MS)         # Temp fix: Use first checkpoint of current month as upper bound to capture all prev month realized PnL
             ]
 
             # Only include checkpoints where status is MAINCOMP or PROBATION (earning periods)
@@ -630,6 +630,7 @@ class DebtBasedScoring:
             miner_penalty_loss_usd[hotkey] = penalty_loss_usd
 
         # Step 7-9: Query real-time emissions and project availability (in USD)
+        bt.logging.info(f"Remaining miner payouts: {miner_remaining_payouts_usd}")
         total_remaining_payout_usd = sum(miner_remaining_payouts_usd.values())
 
         # Step 9a: Calculate projected emissions (needed for weight normalization)

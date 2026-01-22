@@ -149,8 +149,8 @@ class PerfLedgerServer(RPCServerBase):
             "num_eliminations": len(self._manager.pl_elimination_rows)
         }
 
-    def update_rpc(self, t_ms=None) -> dict:
-        return self._manager.update(t_ms=t_ms)
+    def update_rpc(self, testing_one_hotkey=None, regenerate_all_ledgers=False, t_ms=None) -> dict:
+        return self._manager.update(testing_one_hotkey=testing_one_hotkey, regenerate_all_ledgers=regenerate_all_ledgers, t_ms=t_ms)
 
     def get_perf_ledgers_rpc(self, portfolio_only: bool = True, from_disk: bool = False) -> dict:
         """Get performance ledgers via RPC."""
