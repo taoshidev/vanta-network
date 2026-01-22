@@ -44,18 +44,18 @@ Each miner selects a single asset class to compete in (crypto or forex), and com
 
 **Debt-Based Scoring System** (Active December 2025+)
 
-Vanta uses a debt-based scoring system that pays miners proportionally based on their previous month's performance. The system tracks three key components for each miner:
+Vanta uses a debt-based scoring system that pays miners proportionally based on their previous week's performance. The system tracks three key components for each miner:
 
 1. **Emissions Ledger**: Records ALPHA/TAO/USD tokens earned in 12-hour checkpoints
 2. **Performance Ledger**: Tracks PnL, fees, drawdown, and portfolio returns
 3. **Penalty Ledger**: Applies multipliers for drawdown, risk profile, min collateral, and risk-adjusted performance
 
 These components are combined into a **Debt Ledger** that calculates:
-- **Needed Payout**: Previous month's PnL scaled by penalties (in USD)
-- **Actual Payout**: Current month's emissions already received (in USD)
+- **Needed Payout**: Previous week's PnL scaled by penalties (in USD)
+- **Actual Payout**: Current week's emissions already received (in USD)
 - **Remaining Payout**: Debt still owed to the miner (in USD)
 
-Weights are distributed proportionally to remaining payouts, targeting completion by **day 25 of each month**. The system uses an aggressive payout strategy that front-loads emissions early in the month while respecting the hard deadline.
+Weights are distributed proportionally to remaining payouts, targeting completion by **midnight on Sunday of each week**.
 
 *Average Daily PnL* has the highest weight (90%) and incentivizes miners to maintain high returns while increasing account sizes. The remaining scoring metrics (Calmar, Sharpe, Omega, Sortino, Statistical Confidence) each contribute 2% to ensure well-rounded performance evaluation.
 
@@ -184,21 +184,16 @@ We also implement a [portfolio level leverage limit](https://docs.taoshi.io/tips
 
 Starting in December 2025, Vanta uses a debt-based scoring algorithm to calculate miner weights:
 
-1. **Previous Month Performance**: Calculate each miner's needed payout from previous month (PnL × penalties in USD)
-2. **Current Month Emissions**: Sum emissions already received in current month (in USD)
+1. **Previous Week's Performance**: Calculate each miner's needed payout from previous week (PnL × penalties in USD)
+2. **Current Week's Emissions**: Sum emissions already received in current week (in USD)
 3. **Remaining Debt**: Calculate remaining payout = needed - actual (in USD)
-4. **Weight Assignment**: Weights are proportional to remaining debt, targeting payout completion by day 25
+4. **Weight Assignment**: Weights are proportional to remaining debt, targeting payout completion by midnight on Sunday
 5. **Dynamic Dust Weights**: All miners receive minimum weights based on their challenge period status:
    - MAINCOMP: 3× dust floor (scaled up to +1 dust based on 30-day performance)
    - PROBATION: 2× dust floor (scaled up to +1 dust based on 30-day performance)
    - CHALLENGE/PLAGIARISM: 1× dust floor (scaled up to +1 dust based on 30-day performance)
    - UNKNOWN: 0× dust (no weight)
 6. **Burn Address**: Excess weight (when sum < 1.0) goes to burn address (UID 229 mainnet / UID 5 testnet)
-
-**Aggressive Payout Strategy**:
-- Early month (days 1-20): Target 4-day completion to front-load emissions
-- Late month (days 21-24): Target actual remaining days until deadline
-- Day 25: Final payout deadline
 
 This system ensures miners are compensated fairly based on their performance while maintaining network security through minimum weights and preventing weight concentration through the burn mechanism.
 

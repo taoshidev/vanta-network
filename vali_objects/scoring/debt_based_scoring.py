@@ -2,55 +2,48 @@
 Debt-Based Scoring
 
 This module computes miner weights based on debt ledger information.
-The algorithm pays miners based on their previous month's performance (PnL scaled by penalties),
-proportionally distributing emissions to cover remaining debt by day 25 of the current month.
+The algorithm pays miners based on their previous payout period's performance (PnL scaled by penalties),
+proportionally distributing emissions to cover remaining debt by end of the current week.
 
 Key Concepts:
-- "Needed payout" = Cumulative earnings from Nov 1st through end of previous month (PnL in USD * penalties)
-- "Actual payout" = Cumulative emissions paid from Nov 1st through current time (emissions in USD)
+- Activation began 2025-11-01, and was originally on a monthly basis
+- Payout periods are now weekly, starting and ending at midnight on Sunday, 00:00:00 UTC
+- "Needed payout" = Cumulative earnings from activation through end of previous pay period (PnL in USD * penalties)
+- "Actual payout" = Cumulative emissions paid from activation through current time (emissions in USD)
 - "Remaining payout" = needed_payout_usd - actual_payout_usd (in USD)
 - "Projected emissions" = Estimated total ALPHA available, converted to USD for comparison
 - Weights = Proportional to remaining_payout_usd, with warning if insufficient emissions
 - Cumulative tracking allows negative PnL to carry forward and offset future gains
 
 Algorithm Flow:
-1. Calculate needed_payout_usd from Nov 1st through end of previous month (only MAINCOMP/PROBATION checkpoints)
-2. Calculate actual_payout_usd from Nov 1st through current time (only MAINCOMP/PROBATION checkpoints)
-3. Calculate remaining_payout_usd for each miner (in USD)
-4. Query real-time TAO emission rate from subtensor
-5. Convert to ALPHA, then convert ALPHA to USD using current conversion rates
-6. Apply aggressive payout strategy (early month = 4-day horizon, late month = actual remaining)
-7. Project total USD value available over aggressive timeline
-8. Set weights proportional to remaining_payout_usd
-9. Warn if sum(remaining_payouts_usd) > projected_usd_emissions
-10. Enforce minimum weights based on challenge period status:
+- Calculate needed_payout_usd from activation through end of previous pay period (only MAINCOMP/PROBATION checkpoints)
+- Calculate actual_payout_usd from activation through current time (only MAINCOMP/PROBATION checkpoints)
+- Calculate remaining_payout_usd for each miner (in USD)
+- Query real-time TAO emission rate from subtensor
+- Convert to ALPHA, then convert ALPHA to USD using current conversion rates
+- Project total USD value available over current pay period
+- Set weights proportional to remaining_payout_usd
+- Warn if sum(remaining_payouts_usd) > projected_usd_emissions
+- Enforce minimum weights based on challenge period status:
     - CHALLENGE/PLAGIARISM: 1x dust
     - PROBATION: 2x dust
     - MAINCOMP: 3x dust
     - UNKNOWN: 0x dust (no weight)
-11. Normalize weights with burn address logic:
+- Normalize weights with burn address logic:
     - If sum < 1.0: assign (1.0 - sum) to burn address (uid 229 mainnet / uid 5 testnet)
     - If sum >= 1.0: normalize to 1.0, burn address gets 0
 
-Aggressive Payout Strategy:
-- Day 1-20: Target completion in 4 days (aggressive, creates urgency)
-- Day 21-24: Target completion in actual remaining days (tapers off)
-- Day 25: Final deadline
-- This front-loads emissions early in the month while respecting the hard deadline
-
 Important Notes:
-- Debt-based scoring activates December 2025 (pays for November 2025 performance)
-- Before December 2025, miners only receive minimum dust weights
+- Debt-based scoring activated December 2025 (on a monthly basis, paid for November 2025)
+- Before December 2025, miners only received minimum dust weights
 - Excess weight (when sum < 1.0) goes to burn address (uid 229 mainnet, uid 220 testnet)
-- Hard deadline: day 25 of each month
 - Checkpoints are 12-hour intervals (2 per day)
 - Uses real-time subtensor queries for emission rate estimation
 """
 
 import bittensor as bt
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import List, Tuple
-from calendar import monthrange
 
 from time_util.time_util import TimeUtil
 from vali_objects.contract.contract_client import ContractClient
@@ -64,24 +57,16 @@ from collections import defaultdict
 class DebtBasedScoring:
     """
     Debt-based scoring system that pays miners proportionally to their cumulative performance
-    from November 1st through the previous month, targeting payout completion by day 25.
+    from activation through the previous pay period, targeting payout completion by the
+    beginning of the next pay period.
 
     Uses cumulative tracking to allow negative PnL to carry forward and offset future gains.
     Uses real-time subtensor queries to estimate emission rates and project available ALPHA.
     """
 
     # Activation: First payouts in December 2025 for November 2025 performance
-    # (Previous month must be >= November 2025 to activate debt-based payouts)
     ACTIVATION_YEAR = 2025
     ACTIVATION_MONTH = 11
-
-    # Target payout completion by day 25
-    PAYOUT_TARGET_DAY = 20
-
-    # Aggressive payout buffer: aim to complete this many days from now (minimum)
-    # This makes early-month payouts more aggressive (day 1 targets 4-day completion)
-    # while tapering to actual remaining days as we approach the deadline
-    AGGRESSIVE_PAYOUT_BUFFER_DAYS = 4
 
     # Bittensor network parameters (approximate, for fallback)
     BLOCKS_PER_DAY_FALLBACK = 7200  # ~12 seconds per block
@@ -136,9 +121,9 @@ class DebtBasedScoring:
 
     @staticmethod
     def calculate_dynamic_dust(
-        metagraph: 'bt.metagraph_handle',
-        target_daily_usd: float = 0.01,
-        verbose: bool = False
+            metagraph: 'bt.metagraph_handle',
+            target_daily_usd: float = 0.01,
+            verbose: bool = False
     ) -> float:
         """
         DEPRECATED: This function is no longer used. Dust is now a static value.
@@ -386,7 +371,6 @@ class DebtBasedScoring:
                 f"⚠️  INSUFFICIENT EMISSIONS: Projected USD value in next {days_until_target} days "
                 f"(${projected_usd_available:.2f}) is less than total remaining payout needed "
                 f"(${total_remaining_payout_usd:.2f}). Shortage: {shortage_pct:.1f}%. "
-                f"Using aggressive {days_until_target}-day payout strategy (target day {DebtBasedScoring.PAYOUT_TARGET_DAY}). "
                 f"Miners will receive proportional payouts."
             )
         else:
@@ -395,34 +379,32 @@ class DebtBasedScoring:
                 f"✓ Projected USD value in next {days_until_target} days (${projected_usd_available:.2f}) exceeds "
                 f"total remaining payout needed (${total_remaining_payout_usd:.2f}). "
                 f"Surplus: {surplus_pct:.1f}%. "
-                f"Using aggressive {days_until_target}-day payout strategy (actual deadline: day {DebtBasedScoring.PAYOUT_TARGET_DAY})."
             )
 
     @staticmethod
     def compute_results(
-        ledger_dict: dict[str, DebtLedger],
-        metagraph: 'MetagraphClient',
-        challengeperiod_client: 'ChallengePeriodClient',
-        contract_client: 'ContractClient',
-        current_time_ms: int = None,
-        verbose: bool = False,
-        is_testnet: bool = False
+            ledger_dict: dict[str, DebtLedger],
+            metagraph: 'MetagraphClient',
+            challengeperiod_client: 'ChallengePeriodClient',
+            contract_client: 'ContractClient',
+            current_time_ms: int = None,
+            verbose: bool = False,
+            is_testnet: bool = False
     ) -> List[Tuple[str, float]]:
         """
         Compute miner weights based on debt ledger information with real-time emission projections.
 
         The algorithm works as follows:
-        1. Check if we're in activation period (>= December 2025)
-        2. For each miner, calculate their "needed payout" from Nov 1st through end of previous month (cumulative)
-        3. Calculate "actual payout" from Nov 1st through current time (cumulative)
-        4. Calculate "remaining payout" to be distributed (allows negative PnL to carry forward)
-        5. Query real-time TAO emission rate from metagraph
-        6. Convert to ALPHA using reserve data from shared metagraph (TAO/ALPHA ratio)
-        7. Project total ALPHA available from now until day 25
-        8. Set weights proportional to remaining_payout
-        9. Warn if sum(remaining_payouts) > projected_emissions
-        10. Enforce minimum weights with static dust (performance-scaled by 30-day PnL within buckets)
-        11. Normalize weights with burn address logic (sum < 1.0 → burn gets excess)
+        - For each miner, calculate their "needed payout" from activation through end of previous pay period (cumulative)
+        - Calculate "actual payout" from activation through current time (cumulative)
+        - Calculate "remaining payout" to be distributed (allows negative PnL to carry forward)
+        - Query real-time TAO emission rate from metagraph
+        - Convert to ALPHA using reserve data from shared metagraph (TAO/ALPHA ratio)
+        - Project total ALPHA available from now until day 25
+        - Set weights proportional to remaining_payout
+        - Warn if sum(remaining_payouts) > projected_emissions
+        - Enforce minimum weights with static dust (performance-scaled by 30-day PnL within buckets)
+        - Normalize weights with burn address logic (sum < 1.0 → burn gets excess)
 
         Args:
             ledger_dict: Dict of {hotkey: DebtLedger} containing debt ledger data
@@ -452,10 +434,8 @@ class DebtBasedScoring:
             burn_hotkey = DebtBasedScoring._get_burn_address_hotkey(metagraph, is_testnet)
             return [(burn_hotkey, 1.0)]
 
-        # Step 1: Get current month and year
+        # Get current datetime
         current_dt = TimeUtil.millis_to_datetime(current_time_ms)
-        current_year = current_dt.year
-        current_month = current_dt.month
 
         if verbose:
             bt.logging.info(
@@ -463,42 +443,10 @@ class DebtBasedScoring:
                 f"({len(ledger_dict)} miners)"
             )
 
-        # Step 2: Check if previous month is before November 2025
-        # Calculate previous month
-        if current_month == 1:
-            prev_month = 12
-            prev_year = current_year - 1
-        else:
-            prev_month = current_month - 1
-            prev_year = current_year
-
-        if verbose:
-            bt.logging.info(f"Previous month: {prev_year}-{prev_month:02d}")
-
-        # Check activation date: prev_month must be >= November 2025 for debt-based payouts
-        # This means first debt-based payouts occur in December 2025 (for Nov 2025 performance)
-        if (prev_year < DebtBasedScoring.ACTIVATION_YEAR or
-            (prev_year == DebtBasedScoring.ACTIVATION_YEAR and
-             prev_month < DebtBasedScoring.ACTIVATION_MONTH)):
-            bt.logging.info(
-                f"Previous month ({prev_year}-{prev_month:02d}) is before activation "
-                f"({DebtBasedScoring.ACTIVATION_YEAR}-{DebtBasedScoring.ACTIVATION_MONTH:02d}). "
-                f"Applying only minimum dust weights, excess goes to burn address."
-            )
-            # Before activation: apply minimum dust weights only, burn the rest
-            return DebtBasedScoring._apply_pre_activation_weights(
-                ledger_dict=ledger_dict,
-                metagraph=metagraph,
-                challengeperiod_client=challengeperiod_client,
-                contract_client=contract_client,
-                current_time_ms=current_time_ms,
-                is_testnet=is_testnet,
-                verbose=verbose
-            )
-
-        # Step 3: Calculate month boundaries
-        # Needed payout calculation: Sum from November 1st, 2025 through end of previous month
-        # This allows negative PnL to carry across months and offset future gains
+        # Calculate boundaries
+        # Needed payout calculation: Sum from activation through end of previous
+        # week (considered midnight on Sunday 00:00:00)
+        # This allows negative PnL to carry across weeks and offset future gains
         payout_calc_start_dt = datetime(
             DebtBasedScoring.ACTIVATION_YEAR,
             DebtBasedScoring.ACTIVATION_MONTH,
@@ -507,47 +455,23 @@ class DebtBasedScoring:
         )
         payout_calc_start_ms = int(payout_calc_start_dt.timestamp() * 1000)
 
-        # Previous month: end boundary for needed payout calculation
-        prev_month_days = monthrange(prev_year, prev_month)[1]  # Number of days in previous month
-        prev_month_end_dt = datetime(prev_year, prev_month, prev_month_days, 23, 59, 59, 999999, tzinfo=timezone.utc)
-        prev_month_end_ms = int(prev_month_end_dt.timestamp() * 1000)
-
-        # Current month: from start of month to now
-        current_month_start_dt = datetime(current_year, current_month, 1, 0, 0, 0, tzinfo=timezone.utc)
-        current_month_start_ms = int(current_month_start_dt.timestamp() * 1000)
+        current_weekday = current_dt.weekday()
+        prev_target_day_offset = (current_weekday + 1) % 7
+        days_until_target = 6 - prev_target_day_offset
+        prev_target_dt = current_dt - timedelta(days=prev_target_day_offset)
+        prev_target_end_dt = datetime.combine(prev_target_dt, datetime.min.time())
+        prev_target_end_ms = int(prev_target_end_dt.timestamp() * 1000)
 
         if verbose:
             bt.logging.info(
                 f"Needed payout window (cumulative): {payout_calc_start_dt.strftime('%Y-%m-%d')} to "
-                f"{prev_month_end_dt.strftime('%Y-%m-%d')} "
-                f"(allows negative PnL to carry across months)"
-            )
-            bt.logging.info(
-                f"Current month elapsed: {current_month_start_dt.strftime('%Y-%m-%d')} to "
-                f"{current_dt.strftime('%Y-%m-%d %H:%M:%S')}"
+                f"{prev_target_end_dt.strftime('%Y-%m-%d')} "
+                f"(allows negative PnL to carry across weeks)"
             )
 
-        # Calculate days until target payout day (day 25)
-        current_day = current_dt.day
-        actual_days_until_target = max(0, DebtBasedScoring.PAYOUT_TARGET_DAY - current_day + 1)  # +1 to include today
-
-        # Apply aggressive payout strategy:
-        # Early in month: Use shorter time horizon (e.g., 4 days) to be more aggressive
-        # Late in month: Use actual remaining days as we approach deadline
-        # This creates urgency early while respecting the hard deadline
-        days_until_target = max(1, min(actual_days_until_target, DebtBasedScoring.AGGRESSIVE_PAYOUT_BUFFER_DAYS))   # at least 1 for calculation purposes. This will attempt to pay everything today
-
-        if verbose:
-            bt.logging.info(
-                f"Current day: {current_day}, "
-                f"target day: {DebtBasedScoring.PAYOUT_TARGET_DAY}, "
-                f"actual days until target: {actual_days_until_target}, "
-                f"aggressive days until target: {days_until_target}"
-            )
-
-        # Step 4-6: Process each miner to calculate remaining payouts (in USD)
+        # Process each miner to calculate remaining payouts (in USD)
         miner_remaining_payouts_usd = {}
-        miner_actual_payouts_usd = {}  # Track what's been paid so far this month
+        miner_actual_payouts_usd = {}  # Track what's been paid so far this pay period
         miner_penalty_loss_usd = {}  # Track how much was lost to penalties
 
         for hotkey, debt_ledger in ledger_dict.items():
@@ -558,11 +482,11 @@ class DebtBasedScoring:
                 miner_actual_payouts_usd[hotkey] = 0.0
                 continue
 
-            # Extract checkpoints from November 1st through end of previous month (cumulative)
+            # Extract checkpoints from activation through end of previous pay period (cumulative)
             # This allows negative PnL to accumulate and offset future gains
             cumulative_checkpoints = [
                 cp for cp in debt_ledger.checkpoints
-                if payout_calc_start_ms <= cp.timestamp_ms <= (prev_month_end_ms + ValiConfig.TARGET_CHECKPOINT_DURATION_MS)         # Temp fix: Use first checkpoint of current month as upper bound to capture all prev month realized PnL
+                if payout_calc_start_ms <= cp.timestamp_ms <= prev_target_end_ms
             ]
 
             # Only include checkpoints where status is MAINCOMP or PROBATION (earning periods)
@@ -571,23 +495,17 @@ class DebtBasedScoring:
                 if cp.challenge_period_status in (MinerBucket.MAINCOMP.value, MinerBucket.PROBATION.value)
             ]
 
-            # Extract checkpoints for current month (up to now)
-            # Only include checkpoints where status is MAINCOMP or PROBATION (earning periods)
-            current_month_checkpoints = [
-                cp for cp in debt_ledger.checkpoints
-                if current_month_start_ms <= cp.timestamp_ms <= current_time_ms
-                and cp.challenge_period_status in (MinerBucket.MAINCOMP.value, MinerBucket.PROBATION.value)
-            ]
-
-            # Step 4: Calculate needed payout from November 1st through end of previous month (in USD)
+            # Calculate needed payout from activation through end of previous pay period (in USD)
             # "needed payout" = sum of (realized_pnl * total_penalty) across all earning checkpoints
             #                   and (unrealized_pnl * total_penalty) of the last checkpoint
-            # NOTE: realized_pnl and unrealized_pnl are in USD, per-checkpoint values (NOT cumulative)
-            # This cumulative approach allows negative PnL to carry forward and offset future gains
+            # NOTE:
+            # realized_pnl and unrealized_pnl are both in USD. unrealized_pnl is cumulative.
+            # realized_pnl is a per-checkpoint value (NOT cumulative).
+            # This cumulative approach allows negative PnL to carry forward and offset future gains.
             needed_payout_usd = 0.0
             penalty_loss_usd = 0.0
             if earning_checkpoints:
-                # Sum penalty-adjusted PnL across all checkpoints from Nov 1st to end of prev month
+                # Sum penalty-adjusted PnL across all checkpoints from activation to end of prev pay period
                 # Each checkpoint has its own PnL (for that 12-hour period) and its own penalty
                 last_checkpoint = earning_checkpoints[-1]
                 realized_component = sum(cp.realized_pnl * cp.total_penalty for cp in earning_checkpoints)
@@ -599,8 +517,8 @@ class DebtBasedScoring:
                 payout_without_penalties += min(0.0, last_checkpoint.unrealized_pnl)
                 penalty_loss_usd = payout_without_penalties - needed_payout_usd
 
-            # Step 5: Calculate actual payout (in USD)
-            # Use cumulative approach: sum all emissions from November 1st through current time
+            # Calculate actual payout (in USD)
+            # Use cumulative approach: sum all emissions from activation through current time
             # This matches the cumulative needed payout calculation
             cumulative_payout_checkpoints = [
                 cp for cp in debt_ledger.checkpoints
@@ -609,7 +527,7 @@ class DebtBasedScoring:
             ]
             actual_payout_usd = sum(cp.chunk_emissions_usd for cp in cumulative_payout_checkpoints)
 
-            # Step 6: Calculate remaining payout (in USD)
+            # Calculate remaining payout (in USD)
             remaining_payout_usd = needed_payout_usd - actual_payout_usd
 
             # Clamp to zero if negative (over-paid or negative performance)
@@ -620,11 +538,10 @@ class DebtBasedScoring:
             miner_actual_payouts_usd[hotkey] = actual_payout_usd
             miner_penalty_loss_usd[hotkey] = penalty_loss_usd
 
-        # Step 7-9: Query real-time emissions and project availability (in USD)
-        bt.logging.info(f"Remaining miner payouts: {miner_remaining_payouts_usd}")
+        # Query real-time emissions and project availability (in USD)
         total_remaining_payout_usd = sum(miner_remaining_payouts_usd.values())
 
-        # Step 9a: Calculate projected emissions (needed for weight normalization)
+        # Calculate projected emissions (needed for weight normalization)
         # Get projected ALPHA emissions
         projected_alpha_available = DebtBasedScoring._estimate_alpha_emissions_until_target(
             metagraph=metagraph,
@@ -647,16 +564,15 @@ class DebtBasedScoring:
                 f"{days_until_target}, skipping projection log"
             )
 
-        # Step 9b: Calculate daily target payouts using aggressive payout strategy
+        # Calculate daily target payouts
         # Instead of paying the entire remaining amount at once, spread it over days_until_target
-        # This implements the aggressive payout strategy correctly
         miner_daily_target_payouts_usd = {}
         for hotkey, remaining_payout_usd in miner_remaining_payouts_usd.items():
             daily_target = remaining_payout_usd / days_until_target
 
             miner_daily_target_payouts_usd[hotkey] = daily_target
 
-        # Step 10: Enforce minimum weights based on challenge period status
+        # Enforce minimum weights based on challenge period status
         # All miners get minimum "dust" weights based on their current status
         # Dust is a static value from ValiConfig.CHALLENGE_PERIOD_MIN_WEIGHT
         # Weights are performance-scaled by 30-day PnL within each bucket
@@ -675,7 +591,7 @@ class DebtBasedScoring:
             verbose=verbose
         )
 
-        # Step 11: Normalize weights with special burn address logic
+        # Normalize weights with special burn address logic
         # If sum < 1.0: assign remaining weight to burn address (uid 229 / uid 5)
         # If sum >= 1.0: normalize to 1.0, burn address gets 0
         result = DebtBasedScoring._normalize_with_burn_address(
@@ -689,9 +605,9 @@ class DebtBasedScoring:
 
     @staticmethod
     def _estimate_alpha_emissions_until_target(
-        metagraph: 'MetagraphClient',
-        days_until_target: int,
-        verbose: bool = False
+            metagraph: 'MetagraphClient',
+            days_until_target: int,
+            verbose: bool = False
     ) -> float:
         """
         Estimate total ALPHA emissions available from now until target day.
@@ -792,9 +708,9 @@ class DebtBasedScoring:
 
     @staticmethod
     def _convert_alpha_to_usd(
-        alpha_amount: float,
-        metagraph: 'bt.metagraph_handle',
-        verbose: bool = False
+            alpha_amount: float,
+            metagraph: 'bt.metagraph_handle',
+            verbose: bool = False
     ) -> float:
         """
         Convert ALPHA amount to USD value using current market rates.
@@ -871,10 +787,10 @@ class DebtBasedScoring:
 
     @staticmethod
     def _calculate_penalty_adjusted_pnl(
-        ledger: DebtLedger,
-        start_time_ms: int,
-        end_time_ms: int,
-        earning_statuses: set[str] = None
+            ledger: DebtLedger,
+            start_time_ms: int,
+            end_time_ms: int,
+            earning_statuses: set[str] = None
     ) -> float:
         """
         Calculate penalty-adjusted PnL for a time period (in USD).
@@ -909,7 +825,7 @@ class DebtBasedScoring:
         relevant_checkpoints = [
             cp for cp in ledger.checkpoints
             if start_time_ms <= cp.timestamp_ms <= end_time_ms
-            and cp.challenge_period_status in earning_statuses
+               and cp.challenge_period_status in earning_statuses
         ]
 
         if not relevant_checkpoints:
@@ -926,9 +842,9 @@ class DebtBasedScoring:
 
     @staticmethod
     def _calculate_pnl_scores_for_bucket(
-        miners: list[tuple[str, DebtLedger]],
-        lookback_start_ms: int,
-        current_time_ms: int
+            miners: list[tuple[str, DebtLedger]],
+            lookback_start_ms: int,
+            current_time_ms: int
     ) -> dict[str, float]:
         """
         Calculate 30-day penalty-adjusted PnL scores for miners in a bucket.
@@ -958,9 +874,9 @@ class DebtBasedScoring:
 
     @staticmethod
     def _calculate_collateral_priority_scores(
-        pnl_scores: dict[str, float],
-        collateral_balances: dict[str, float],
-        min_collateral_threshold: float = None
+            pnl_scores: dict[str, float],
+            collateral_balances: dict[str, float],
+            min_collateral_threshold: float = None
     ) -> dict[str, tuple[int, float]]:
         """
         Calculate priority scores for CHALLENGE miners based on collateral + PnL.
@@ -1003,10 +919,10 @@ class DebtBasedScoring:
 
     @staticmethod
     def _calculate_challenge_zero_weight_miners(
-        pnl_scores: dict[str, float],
-        contract_client: 'ContractClient',
-        percentile: float = 0.25,
-        max_zero_weight_miners: int = 10
+            pnl_scores: dict[str, float],
+            contract_client: 'ContractClient',
+            percentile: float = 0.25,
+            max_zero_weight_miners: int = 10
     ) -> set[str]:
         """
         Determine which CHALLENGE miners should get 0 weight (dereg candidates).
@@ -1093,10 +1009,10 @@ class DebtBasedScoring:
 
     @staticmethod
     def _calculate_challenge_percentile_threshold(
-        pnl_scores: dict[str, float],
-        percentile: float = 0.25,
-        max_zero_weight_miners: int = 10
-    ) -> float:
+            pnl_scores: dict[str, float],
+            percentile: float = 0.25,
+            max_zero_weight_miners: int = 10
+    ) -> float | None:
         """
         DEPRECATED: Use _calculate_challenge_zero_weight_miners instead for collateral-aware selection.
 
@@ -1129,12 +1045,12 @@ class DebtBasedScoring:
 
     @staticmethod
     def _assign_weights_with_performance_scaling(
-        pnl_scores: dict[str, float],
-        bucket: int,
-        floor: float,
-        ceiling: float,
-        zero_weight_miners: set[str] = None,
-        verbose: bool = False
+            pnl_scores: dict[str, float],
+            bucket: int,
+            floor: float,
+            ceiling: float,
+            zero_weight_miners: set[str] = None,
+            verbose: bool = False
     ) -> dict[str, float]:
         """
         Assign weights to miners based on PnL scores with performance scaling.
@@ -1195,11 +1111,11 @@ class DebtBasedScoring:
 
     @staticmethod
     def _handle_zero_pnl_weights(
-        pnl_scores: dict[str, float],
-        bucket: int,
-        floor: float,
-        zero_weight_miners: set[str] = None,
-        verbose: bool = False
+            pnl_scores: dict[str, float],
+            bucket: int,
+            floor: float,
+            zero_weight_miners: set[str] = None,
+            verbose: bool = False
     ) -> dict[str, float]:
         """
         Handle weight assignment when all miners in a bucket have 0 PnL.
@@ -1248,12 +1164,12 @@ class DebtBasedScoring:
 
     @staticmethod
     def _calculate_dynamic_dust_weights(
-        ledger_dict: dict[str, DebtLedger],
-        challengeperiod_client: 'ChallengePeriodClient',
-        contract_client: 'ContractClient',
-        current_time_ms: int,
-        base_dust: float,
-        verbose: bool = False
+            ledger_dict: dict[str, DebtLedger],
+            challengeperiod_client: 'ChallengePeriodClient',
+            contract_client: 'ContractClient',
+            current_time_ms: int,
+            base_dust: float,
+            verbose: bool = False
     ) -> dict[str, float]:
         """
         Calculate performance-scaled dust weights for all miners.
@@ -1286,11 +1202,11 @@ class DebtBasedScoring:
         """
         # Original dust floor multipliers (respecting existing system)
         BUCKET_DUST_FLOORS = {
-            MinerBucket.CHALLENGE.value: 1,      # 1x dust floor
-            MinerBucket.PROBATION.value: 2,      # 2x dust floor
-            MinerBucket.MAINCOMP.value: 3,       # 3x dust floor
-            MinerBucket.UNKNOWN.value: 0,        # 0x dust (no weight for unknown status)
-            MinerBucket.PLAGIARISM.value: 1,     # 1x dust floor
+            MinerBucket.CHALLENGE.value: 1,  # 1x dust floor
+            MinerBucket.PROBATION.value: 2,  # 2x dust floor
+            MinerBucket.MAINCOMP.value: 3,  # 3x dust floor
+            MinerBucket.UNKNOWN.value: 0,  # 0x dust (no weight for unknown status)
+            MinerBucket.PLAGIARISM.value: 1,  # 1x dust floor
         }
 
         dynamic_weights = {}
@@ -1372,14 +1288,14 @@ class DebtBasedScoring:
 
     @staticmethod
     def _apply_minimum_weights(
-        ledger_dict: dict[str, DebtLedger],
-        miner_remaining_payouts_usd: dict[str, float],
-        challengeperiod_client: 'ChallengePeriodClient',
-        contract_client: 'ContractClient',
-        metagraph: 'bt.metagraph_handle',
-        current_time_ms: int = None,
-        projected_daily_emissions_usd: float = None,
-        verbose: bool = False
+            ledger_dict: dict[str, DebtLedger],
+            miner_remaining_payouts_usd: dict[str, float],
+            challengeperiod_client: 'ChallengePeriodClient',
+            contract_client: 'ContractClient',
+            metagraph: 'bt.metagraph_handle',
+            current_time_ms: int = None,
+            projected_daily_emissions_usd: float = None,
+            verbose: bool = False
     ) -> dict[str, float]:
         """
         Enforce minimum weights based on challenge period status with performance scaling.
@@ -1487,7 +1403,7 @@ class DebtBasedScoring:
                     f"Normalizing weights against projected daily emissions: "
                     f"total_daily_target=${total_daily_target_payout:.2f}, "
                     f"projected_daily_emissions=${projected_daily_emissions_usd:.2f}, "
-                    f"payout_fraction={total_daily_target_payout/projected_daily_emissions_usd:.4f}"
+                    f"payout_fraction={total_daily_target_payout / projected_daily_emissions_usd:.4f}"
                 )
 
             normalized_debt_weights = {
@@ -1530,8 +1446,8 @@ class DebtBasedScoring:
 
     @staticmethod
     def _get_burn_address_hotkey(
-        metagraph: 'bt.metagraph_handle',
-        is_testnet: bool = False
+            metagraph: 'bt.metagraph_handle',
+            is_testnet: bool = False
     ) -> str:
         """
         Get the hotkey for the burn address.
@@ -1558,10 +1474,10 @@ class DebtBasedScoring:
 
     @staticmethod
     def _normalize_with_burn_address(
-        weights: dict[str, float],
-        metagraph: 'bt.metagraph_handle',
-        is_testnet: bool = False,
-        verbose: bool = False
+            weights: dict[str, float],
+            metagraph: 'bt.metagraph_handle',
+            is_testnet: bool = False,
+            verbose: bool = False
     ) -> List[Tuple[str, float]]:
         """
         Normalize weights with special burn address logic.
@@ -1626,13 +1542,13 @@ class DebtBasedScoring:
 
     @staticmethod
     def _apply_pre_activation_weights(
-        ledger_dict: dict[str, DebtLedger],
-        metagraph: 'bt.metagraph_handle',
-        challengeperiod_client: 'ChallengePeriodClient',
-        contract_client: 'ContractClient',
-        current_time_ms: int = None,
-        is_testnet: bool = False,
-        verbose: bool = False
+            ledger_dict: dict[str, DebtLedger],
+            metagraph: 'bt.metagraph_handle',
+            challengeperiod_client: 'ChallengePeriodClient',
+            contract_client: 'ContractClient',
+            current_time_ms: int = None,
+            is_testnet: bool = False,
+            verbose: bool = False
     ) -> List[Tuple[str, float]]:
         """
         Apply weights for pre-activation period (before December 2025).
