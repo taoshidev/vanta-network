@@ -1176,18 +1176,12 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 'leverage': data.get('leverage'),
                 'value': data.get('value'),
                 'quantity': data.get('quantity'),
-                'execution_type': data.get('execution_type', 'MARKET').upper()
+                'execution_type': data.get('execution_type', 'MARKET').upper(),
+                'limit_price': data.get('limit_price'),
+                'stop_loss': data.get('stop_loss'),
+                'take_profit': data.get('take_profit'),
+                'bracket_orders': data.get('bracket_orders'),
             }
-
-            # Add limit_price for limit orders
-            if 'limit_price' in data:
-                signal['limit_price'] = data['limit_price']
-
-            if 'stop_loss' in data:
-                signal['stop_loss'] = data['stop_loss']
-
-            if 'take_profit' in data:
-                signal['take_profit'] = data['take_profit']
 
             now_ms = TimeUtil.now_in_millis()
             miner_repo_version = "development"
