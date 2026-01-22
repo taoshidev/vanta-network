@@ -117,7 +117,8 @@ def handle_data():
             execution_type = ExecutionType.from_string(data.get("execution_type", "MARKET").upper()),
             limit_price=float(data["limit_price"]) if "limit_price" in data else None,
             stop_loss=float(data["stop_loss"]) if "stop_loss" in data else None,
-            take_profit=float(data["take_profit"]) if "take_profit" in data else None
+            take_profit=float(data["take_profit"]) if "take_profit" in data else None,
+            bracket_orders=data.get("bracket_orders")
         )
         # make miner received signals dir if doesnt exist
         ValiBkpUtils.make_dir(MinerConfig.get_miner_received_signals_dir())
