@@ -785,16 +785,21 @@ class ValidatorContractManager:
             bt.logging.info(f"Processing slash of {slash_amount} Theta from {miner_hotkey}")
             owner_address = self.get_secret("collateral_owner_address")
             owner_private_key = self.get_secret("collateral_owner_private_key")
+            vault_password = self.get_secret("gcp_vali_pw_name")
             try:
-                self.collateral_manager.slash(
+                self.collateral_manager.slash_with_burn(
                     address=miner_hotkey,
                     amount=int(slash_amount * 10 ** 9),
                     owner_address=owner_address,
                     owner_private_key=owner_private_key,
+                    vault_stake=self.vault_wallet.hotkey.ss58_address,
+                    vault_wallet=self.vault_wallet,
+                    wallet_password=vault_password
                 )
             finally:
                 del owner_address
                 del owner_private_key
+                del vault_password
             bt.logging.info(f"Successfully slashed {slash_amount} Theta from {miner_hotkey}")
             return True
 

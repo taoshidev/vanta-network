@@ -770,7 +770,7 @@ class PositionManager:
         position_uuids_to_delete = []
         wipe_positions = False
         reopen_force_closed_orders = False
-        miners_to_wipe_perf_ledger = ["5GYxdxQU1UKhAKD3rm4Gy1vfDjrboK76jYwQkZtn6W4yuJNX"]
+        miners_to_wipe_perf_ledger = []
 
         current_eliminations = self._elimination_client.get_eliminations_from_memory() if self._elimination_client else []
 
