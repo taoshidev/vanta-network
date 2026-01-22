@@ -162,6 +162,7 @@ class OrderProcessor:
         limit_price = signal.get("limit_price")
         stop_loss = signal.get("stop_loss")
         take_profit = signal.get("take_profit")
+        bracket_orders = signal.get("bracket_orders")
 
         # Validate required fields
         if not signal_order_type_str:
@@ -203,6 +204,7 @@ class OrderProcessor:
             limit_price=float(limit_price),
             stop_loss=stop_loss,
             take_profit=take_profit,
+            bracket_orders=bracket_orders,
             src=OrderSource.LIMIT_UNFILLED
         )
 
@@ -502,9 +504,8 @@ class OrderProcessor:
             if err_msg:
                 raise SignalException(err_msg)
 
-            # Create bracket order for SL/TP if market order succeeded and position is open
-            # The created_order already contains stop_loss/take_profit from the signal
-            if created_order and (created_order.stop_loss or created_order.take_profit):
+            # Create bracket order(s) if market order succeeded and position is open
+            if created_order and created_order.bracket_orders:
                 if updated_position and not updated_position.is_closed_position:
                     try:
                         limit_order_client.create_sltp_order(miner_hotkey, created_order)

@@ -248,17 +248,22 @@ class LimitOrderManager(CacheController):
         if order.order_type == OrderType.FLAT:
             raise SignalException(f"FLAT order is not supported for LIMIT orders")
 
-        # Validate SL/TP are positive if provided
-        if order.stop_loss is not None and order.stop_loss <= 0:
-            raise SignalException("stop_loss must be greater than 0")
-        if order.take_profit is not None and order.take_profit <= 0:
-            raise SignalException("take_profit must be greater than 0")
+        # Validate bracket_orders if provided
+        if order.bracket_orders:
+            for i, bracket in enumerate(order.bracket_orders):
+                stop_loss = bracket.get('stop_loss')
+                take_profit = bracket.get('take_profit')
 
-        # Validate SL/TP against limit price if provided
-        if order.stop_loss is not None or order.take_profit is not None:
-            self._validate_sltp_against_price(
-                order.order_type, order.stop_loss, order.take_profit, order.limit_price, order.order_uuid
-            )
+                # Validate SL/TP are positive if provided
+                if stop_loss is not None and stop_loss <= 0:
+                    raise SignalException(f"bracket_orders[{i}]: stop_loss must be greater than 0")
+                if take_profit is not None and take_profit <= 0:
+                    raise SignalException(f"bracket_orders[{i}]: take_profit must be greater than 0")
+
+                # Validate SL/TP against limit price
+                self._validate_sltp_against_price(
+                    order.order_type, stop_loss, take_profit, order.limit_price, f"{order.order_uuid}-bracket-{i}"
+                )
 
     # ==================== Public API Methods ====================
 
@@ -1015,49 +1020,52 @@ class LimitOrderManager(CacheController):
 
     def create_sltp_order(self, miner_hotkey, parent_order):
         """
-        Create a single bracket order with both stop loss and take profit.
-        Replaces the previous two-order SLTP system.
+        Create bracket order(s) from parent_order.bracket_orders list.
 
-        DESIGN: Bracket order UUID format is "{parent_uuid}-bracket"
-        This allows miners to cancel the bracket order by providing the parent order UUID.
+        Note: Order's normalize_bracket_orders validator converts stop_loss/take_profit
+        to bracket_orders format, so this method only needs to process bracket_orders.
+
+        DESIGN: Bracket order UUID format is "{parent_uuid}-bracket-{i}"
+        This allows miners to cancel bracket orders by providing the parent order UUID.
         See _find_orders_to_cancel_by_uuid() for the cancellation logic.
         """
         trade_pair = parent_order.trade_pair
         now_ms = TimeUtil.now_in_millis()
 
-        # Require at least one of SL or TP to be set
-        if parent_order.stop_loss is None and parent_order.take_profit is None:
-            raise BracketOrderException(f"No SL/TP specified for order [{parent_order.order_uuid}]")
-
-        # Validate SL/TP against fill price before creating bracket order
+        # Validate fill price exists
         fill_price = parent_order.price
         if not fill_price:
             raise BracketOrderException(f"Unexpected: no fill price from order [{parent_order.order_uuid}]")
 
-        self._validate_sltp_against_price(
-            parent_order.order_type, parent_order.stop_loss, parent_order.take_profit,
-            fill_price, parent_order.order_uuid
-        )
+        if not parent_order.bracket_orders:
+            raise SignalException(f"No bracket_orders specified for order [{parent_order.order_uuid}]")
 
-        try:
-            # Create single bracket order with both SL and TP
-            # UUID format: "{parent_uuid}-bracket" enables cancellation via parent UUID
-            bracket_order = Order(
-                trade_pair=trade_pair,
-                order_uuid=f"{parent_order.order_uuid}-bracket",
-                processed_ms=now_ms,
-                price=0.0,
-                order_type=parent_order.order_type,
-                leverage=None,
-                value=None,
-                quantity=parent_order.quantity,  # Unify to quantity
-                execution_type=ExecutionType.BRACKET,
-                limit_price=None,  # Not used for bracket orders
-                stop_loss=parent_order.stop_loss,
-                take_profit=parent_order.take_profit,
-                src=OrderSource.BRACKET_UNFILLED
+        # Build brackets to create
+        brackets_to_create = []
+        for i, bracket in enumerate(parent_order.bracket_orders):
+            stop_loss = float(bracket['stop_loss']) if bracket.get('stop_loss') is not None else None
+            take_profit = float(bracket['take_profit']) if bracket.get('take_profit') is not None else None
+            leverage = float(bracket['leverage']) if bracket.get('leverage') is not None else None
+            value = float(bracket['value']) if bracket.get('value') is not None else None
+            quantity = float(bracket['quantity']) if bracket.get('quantity') is not None else None
+
+            bracket_uuid = f"{parent_order.order_uuid}-bracket-{i}"
+
+            self._validate_sltp_against_price(
+                parent_order.order_type, stop_loss, take_profit,
+                fill_price, bracket_uuid
             )
 
+            brackets_to_create.append({
+                'uuid': bracket_uuid,
+                'stop_loss': stop_loss,
+                'take_profit': take_profit,
+                'leverage': leverage,
+                'value': value,
+                'quantity': quantity,
+            })
+
+        try:
             with self.limit_order_locks.get_lock(miner_hotkey, trade_pair.trade_pair_id):
                 if trade_pair not in self._limit_orders:
                     self._limit_orders[trade_pair] = {}
@@ -1066,18 +1074,35 @@ class LimitOrderManager(CacheController):
                     self._limit_orders[trade_pair][miner_hotkey] = []
                     self._last_fill_time[trade_pair][miner_hotkey] = 0
 
-                self._write_to_disk(miner_hotkey, bracket_order)
-                self._limit_orders[trade_pair][miner_hotkey].append(bracket_order)
+                for bracket_data in brackets_to_create:
+                    bracket_order = Order(
+                        trade_pair=trade_pair,
+                        order_uuid=bracket_data['uuid'],
+                        processed_ms=now_ms,
+                        price=0.0,
+                        order_type=parent_order.order_type,
+                        leverage=bracket_data['leverage'],
+                        value=bracket_data['value'],
+                        quantity=bracket_data['quantity'],
+                        execution_type=ExecutionType.BRACKET,
+                        limit_price=None,
+                        stop_loss=bracket_data['stop_loss'],
+                        take_profit=bracket_data['take_profit'],
+                        src=OrderSource.BRACKET_UNFILLED
+                    )
 
-                # Attach bracket order to position via RPC
-                self.position_manager.attach_bracket_order_to_position(
-                    miner_hotkey, trade_pair.trade_pair_id, bracket_order.to_python_dict()
-                )
+                    self._write_to_disk(miner_hotkey, bracket_order)
+                    self._limit_orders[trade_pair][miner_hotkey].append(bracket_order)
 
-                bt.logging.success(
-                    f"Created bracket order [{bracket_order.order_uuid}] "
-                    f"with SL={parent_order.stop_loss}, TP={parent_order.take_profit}"
-                )
+                    # Attach bracket order to position via RPC
+                    self.position_manager.attach_bracket_order_to_position(
+                        miner_hotkey, trade_pair.trade_pair_id, bracket_order.to_python_dict()
+                    )
+
+                    bt.logging.success(
+                        f"Created bracket order [{bracket_order.order_uuid}] "
+                        f"with SL={bracket_data['stop_loss']}, TP={bracket_data['take_profit']}"
+                    )
 
         except Exception as e:
             bt.logging.error(f"Error creating bracket order: {e}")

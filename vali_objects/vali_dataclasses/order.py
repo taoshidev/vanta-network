@@ -131,6 +131,62 @@ class Order(Signal):
         """
         return values
 
+    @model_validator(mode="before")
+    @classmethod
+    def check_bracket_orders(cls, values):
+        """
+        Overrides inherited check_bracket_orders from Signal.
+        Order allows both bracket_orders and stop_loss/take_profit for display purposes.
+        """
+        return values
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_bracket_orders(cls, values):
+        """
+        Convert stop_loss/take_profit to bracket_orders format and validate entries.
+        """
+        bracket_orders = values.get('bracket_orders')
+        stop_loss = values.get('stop_loss')
+        take_profit = values.get('take_profit')
+        has_sl_tp = stop_loss is not None or take_profit is not None
+
+        execution_type = values.get('execution_type')
+        if execution_type not in [ExecutionType.MARKET, ExecutionType.LIMIT]:
+            return values
+
+        # Convert stop_loss/take_profit to bracket_orders
+        if has_sl_tp and not bracket_orders:
+            values['bracket_orders'] = [{
+                'stop_loss': stop_loss,
+                'take_profit': take_profit,
+                'leverage': values.get('leverage'),
+                'value': values.get('value'),
+                'quantity': values.get('quantity'),
+            }]
+            return values
+
+        # Validate bracket_orders entries
+        bracket_orders = values.get('bracket_orders')
+        if not bracket_orders:
+            return values
+
+        size_fields = {'leverage', 'value', 'quantity'}
+        price_fields = {'stop_loss', 'take_profit'}
+
+        for i, bracket in enumerate(bracket_orders):
+            # Exactly one size field required
+            size_present = [f for f in size_fields if bracket.get(f) is not None]
+            if len(size_present) != 1:
+                raise ValueError(f"bracket_orders[{i}]: exactly one of leverage/value/quantity required")
+
+            # At least one price field required
+            price_present = [f for f in price_fields if bracket.get(f) is not None]
+            if len(price_present) < 1:
+                raise ValueError(f"bracket_orders[{i}]: at least one of stop_loss/take_profit required")
+
+        return values
+
     @classmethod
     def from_dict(cls, order_dict):
         """
@@ -166,7 +222,7 @@ class Order(Signal):
                 'limit_price': self.limit_price,
                 'stop_loss': self.stop_loss,
                 'take_profit': self.take_profit,
-                'margin_loan': self.margin_loan}
+                'bracket_orders': self.bracket_orders}
 
     def __str__(self):
         # Ensuring the `trade_pair.trade_pair_id` is accessible for the string representation

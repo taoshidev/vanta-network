@@ -17,6 +17,21 @@ class Signal(BaseModel):
     limit_price: Optional[float] = None
     stop_loss: Optional[float] = None
     take_profit: Optional[float] = None
+    bracket_orders: Optional[list[dict]] = None
+
+    @model_validator(mode='before')
+    @classmethod
+    def check_bracket_orders(cls, values):
+        """
+        Validate mutual exclusivity: bracket_orders vs stop_loss/take_profit.
+        """
+        bracket_orders = values.get('bracket_orders')
+        has_sl_tp = values.get('stop_loss') is not None or values.get('take_profit') is not None
+
+        if bracket_orders and has_sl_tp:
+            raise ValueError("Cannot set both bracket_orders and stop_loss/take_profit on Signal")
+
+        return values
 
     @model_validator(mode='before')
     def validate_order_type(cls, values):
@@ -113,7 +128,8 @@ class Signal(BaseModel):
             'leverage': self.leverage,
             'value': self.value,
             'quantity': self.quantity,
-            'execution_type': str(self.execution_type)
+            'execution_type': str(self.execution_type),
+            'bracket_orders': self.bracket_orders
         }
         if self.execution_type == ExecutionType.MARKET:
             return str(base)

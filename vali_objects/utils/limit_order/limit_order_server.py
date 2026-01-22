@@ -382,7 +382,7 @@ class LimitOrderServer(RPCServerBase):
         if not self.running_unit_tests:
             raise Exception('get_position_for_rpc can only be called in unit test mode')
 
-        return self._manager._get_position_for(hotkey, order)
+        return self._manager._get_open_position(hotkey, order)
 
     def create_sltp_order_rpc(self, miner_hotkey, parent_order):
         """
