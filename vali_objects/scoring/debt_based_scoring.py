@@ -76,7 +76,7 @@ class DebtBasedScoring:
     ACTIVATION_MONTH = 11
 
     # Target payout completion by day 25
-    PAYOUT_TARGET_DAY = 25
+    PAYOUT_TARGET_DAY = 20
 
     # Aggressive payout buffer: aim to complete this many days from now (minimum)
     # This makes early-month payouts more aggressive (day 1 targets 4-day completion)
