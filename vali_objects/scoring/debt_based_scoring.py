@@ -516,9 +516,6 @@ class DebtBasedScoring:
         current_month_start_dt = datetime(current_year, current_month, 1, 0, 0, 0, tzinfo=timezone.utc)
         current_month_start_ms = int(current_month_start_dt.timestamp() * 1000)
 
-        # Temp fix: Use first checkpoint of current month as upper bound to capture all prev month realized PnL
-        payout_calc_end_ms = current_month_start_ms
-
         if verbose:
             bt.logging.info(
                 f"Needed payout window (cumulative): {payout_calc_start_dt.strftime('%Y-%m-%d')} to "
@@ -574,7 +571,7 @@ class DebtBasedScoring:
             # This allows negative PnL to accumulate and offset future gains
             cumulative_checkpoints = [
                 cp for cp in debt_ledger.checkpoints
-                if payout_calc_start_ms <= cp.timestamp_ms <= payout_calc_end_ms
+                if payout_calc_start_ms <= cp.timestamp_ms <= (prev_month_end_ms + ValiConfig.TARGET_CHECKPOINT_DURATION_MS)         # Temp fix: Use first checkpoint of current month as upper bound to capture all prev month realized PnL
             ]
 
             # Only include checkpoints where status is MAINCOMP or PROBATION (earning periods)
