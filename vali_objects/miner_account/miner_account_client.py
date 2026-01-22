@@ -211,3 +211,35 @@ class MinerAccountClient(RPCClientBase):
     def get_total_borrowed_amount(self, hotkey: str) -> float:
         """Get total borrowed amount for a miner."""
         return self._server.get_total_borrowed_amount(hotkey)
+
+    def can_withdraw_collateral(self, hotkey: str, amount_theta: float) -> bool:
+        """
+        Check if miner can withdraw the specified amount of collateral.
+
+        Args:
+            hotkey: Miner's hotkey
+            amount_theta: Requested withdrawal amount in theta
+
+        Returns:
+            True if withdrawal is allowed, False otherwise
+        """
+        return self._server.can_withdraw_collateral(hotkey, amount_theta)
+
+    def recalculate_cash_balance_for_asset_selection(
+        self, hotkey: str, asset_selection: TradePairCategory
+    ) -> bool:
+        """
+        Recalculate cash balance when a miner selects an asset class.
+
+        This handles the case where a miner deposits collateral before selecting an asset class.
+        When they later select an asset class, the cash balance is recalculated based on
+        the new multiplier (e.g., CRYPTO=5x, FOREX=20x, EQUITIES=1x).
+
+        Args:
+            hotkey: Miner's hotkey
+            asset_selection: The TradePairCategory the miner selected
+
+        Returns:
+            True if cash balance was updated, False otherwise
+        """
+        return self._server.recalculate_cash_balance_for_asset_selection(hotkey, asset_selection)

@@ -418,30 +418,27 @@ class ValidatorContractManager:
         """
         try:
             bt.logging.info("Received withdrawal query")
-            # Check current collateral balance (uses test balance injection in test mode)
-            try:
-                theta_current_balance = self.get_miner_collateral_balance(miner_hotkey)
-                if theta_current_balance is None:
-                    error_msg = f"Failed to retrieve collateral balance for {miner_hotkey}"
-                    bt.logging.error(error_msg)
-                    return {
-                        "successfully_processed": False,
-                        "error_message": error_msg
-                    }
-                if amount > theta_current_balance:
-                    error_msg = f"Insufficient collateral balance. Available: {theta_current_balance}, Requested: {amount}"
-                    bt.logging.error(error_msg)
-                    return {
-                        "successfully_processed": False,
-                        "error_message": error_msg
-                    }
-            except Exception as e:
-                error_msg = f"Failed to check collateral balance: {str(e)}"
+
+            # Check collateral balance
+            theta_current_balance = self.get_miner_collateral_balance(miner_hotkey)
+            if theta_current_balance is None:
+                error_msg = f"Failed to retrieve collateral balance for {miner_hotkey}"
                 bt.logging.error(error_msg)
-                return {
-                    "successfully_processed": False,
-                    "error_message": error_msg
-                }
+                return {"successfully_processed": False, "error_message": error_msg}
+
+            if amount > theta_current_balance:
+                error_msg = f"Insufficient collateral balance. Available: {theta_current_balance}, Requested: {amount}"
+                bt.logging.error(error_msg)
+                return {"successfully_processed": False, "error_message": error_msg}
+
+            # Check if collateral can be withdrawn based on cash usage
+            if not self._miner_account_client.can_withdraw_collateral(miner_hotkey, amount):
+                error_msg = (
+                    f"Cannot withdraw {amount:.2f} Theta. Insufficient cash balance to support withdrawal. "
+                    f"This may be due to open positions, trading losses, or accrued interest on margin loans."
+                )
+                bt.logging.error(error_msg)
+                return {"successfully_processed": False, "error_message": error_msg}
 
             # Determine amount slashed and remaining amount eligible for withdrawal
             drawdown = self._position_client.compute_realtime_drawdown(miner_hotkey)
@@ -485,23 +482,27 @@ class ValidatorContractManager:
         """
         try:
             bt.logging.info("Received withdrawal request")
-            try:
-                current_balance = self.collateral_manager.balance_of(miner_hotkey)
-                theta_current_balance = self.to_theta(current_balance)
-                if amount > theta_current_balance:
-                    error_msg = f"Insufficient collateral balance. Available: {theta_current_balance}, Requested: {amount}"
-                    bt.logging.error(error_msg)
-                    return {
-                        "successfully_processed": False,
-                        "error_message": error_msg
-                    }
-            except Exception as e:
-                error_msg = f"Failed to check collateral balance: {str(e)}"
+
+            # Check collateral balance
+            theta_current_balance = self.get_miner_collateral_balance(miner_hotkey)
+            if theta_current_balance is None:
+                error_msg = f"Failed to retrieve collateral balance for {miner_hotkey}"
                 bt.logging.error(error_msg)
-                return {
-                    "successfully_processed": False,
-                    "error_message": error_msg
-                }
+                return {"successfully_processed": False, "error_message": error_msg}
+
+            if amount > theta_current_balance:
+                error_msg = f"Insufficient collateral balance. Available: {theta_current_balance}, Requested: {amount}"
+                bt.logging.error(error_msg)
+                return {"successfully_processed": False, "error_message": error_msg}
+
+            # Check if collateral can be withdrawn based on cash usage
+            if not self._miner_account_client.can_withdraw_collateral(miner_hotkey, amount):
+                error_msg = (
+                    f"Cannot withdraw {amount:.2f} Theta. Insufficient cash balance to support withdrawal. "
+                    f"This may be due to open positions, trading losses, or accrued interest on margin loans."
+                )
+                bt.logging.error(error_msg)
+                return {"successfully_processed": False, "error_message": error_msg}
 
             # Determine amount slashed and remaining amount eligible for withdrawal
             drawdown = self._position_client.compute_realtime_drawdown(miner_hotkey)

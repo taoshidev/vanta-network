@@ -63,6 +63,10 @@ class AssetSelectionManager:
         from shared_objects.rpc.metagraph_client import MetagraphClient
         self._metagraph_client = MetagraphClient(connection_mode=connection_mode)
 
+        # Create MinerAccountClient to update cash balances when asset selection changes
+        from vali_objects.miner_account.miner_account_client import MinerAccountClient
+        self._miner_account_client = MinerAccountClient(connection_mode=connection_mode)
+
         # Initialize wallet directly
         if not running_unit_tests and config is not None:
             self.is_testnet = config.netuid == 116
@@ -380,6 +384,9 @@ class AssetSelectionManager:
 
             bt.logging.info(f"[ASSET_MGR] Miner {miner} selected asset class: {asset_selection}")
 
+            # Recalculate miner's cash balance based on the new asset selection multiplier
+            self._recalculate_miner_cash_balance(miner, asset_class)
+
             return {
                 'successfully_processed': True,
                 'success_message': f'Miner {miner} successfully selected asset class: {asset_selection}',
@@ -470,11 +477,39 @@ class AssetSelectionManager:
                 # Save to disk
                 self._save_asset_selections_to_disk()
 
-                bt.logging.info(f"[ASSET_MGR] Updated miner asset selection for {hotkey}: {asset_selection}")
-                return True
+            bt.logging.info(f"[ASSET_MGR] Updated miner asset selection for {hotkey}: {asset_selection}")
+
+            # Recalculate miner's cash balance based on the new asset selection multiplier
+            self._recalculate_miner_cash_balance(hotkey, asset_class)
+
+            return True
 
         except Exception as e:
             bt.logging.error(f"[ASSET_MGR] Error processing asset selection update: {e}")
             import traceback
             bt.logging.error(traceback.format_exc())
             return False
+
+    def _recalculate_miner_cash_balance(self, hotkey: str, asset_selection: TradePairCategory) -> None:
+        """
+        Recalculate miner's cash balance after asset selection.
+
+        This handles the case where a miner deposits collateral before selecting an asset class.
+        The cash balance is recalculated based on the asset class multiplier.
+
+        Args:
+            hotkey: Miner's hotkey
+            asset_selection: The TradePairCategory the miner selected
+        """
+        try:
+            success = self._miner_account_client.recalculate_cash_balance_for_asset_selection(
+                hotkey, asset_selection
+            )
+            if success:
+                bt.logging.info(
+                    f"[ASSET_MGR] Recalculated cash balance for {hotkey[:8]} after selecting {asset_selection.value}"
+                )
+        except Exception as e:
+            bt.logging.warning(
+                f"[ASSET_MGR] Failed to recalculate cash balance for {hotkey[:8]}: {e}"
+            )

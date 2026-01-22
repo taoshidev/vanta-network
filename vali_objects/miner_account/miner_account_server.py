@@ -53,7 +53,8 @@ class MinerAccountServer(RPCServerBase):
         # Create the manager FIRST, before RPCServerBase.__init__
         self._manager = MinerAccountManager(
             running_unit_tests=running_unit_tests,
-            collateral_balance_getter=collateral_balance_getter
+            collateral_balance_getter=collateral_balance_getter,
+            connection_mode=connection_mode
         )
 
         # Store is_mothership status (set by contract manager later)
@@ -218,3 +219,22 @@ class MinerAccountServer(RPCServerBase):
     def get_total_borrowed_amount(self, hotkey: str) -> float:
         """Get total borrowed amount for a miner."""
         return self._manager.get_total_borrowed_amount(hotkey)
+
+    def can_withdraw_collateral(self, hotkey: str, amount_theta: float) -> bool:
+        """Check if miner can withdraw the specified amount of collateral."""
+        return self._manager.can_withdraw_collateral(hotkey, amount_theta)
+
+    def recalculate_cash_balance_for_asset_selection(
+        self, hotkey: str, asset_selection: TradePairCategory
+    ) -> bool:
+        """
+        Recalculate cash balance when a miner selects an asset class.
+
+        Args:
+            hotkey: Miner's hotkey
+            asset_selection: The TradePairCategory the miner selected
+
+        Returns:
+            True if cash balance was updated, False otherwise
+        """
+        return self._manager.recalculate_cash_balance_for_asset_selection(hotkey, asset_selection)

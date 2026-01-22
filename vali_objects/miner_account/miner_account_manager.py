@@ -15,10 +15,11 @@ from datetime import timezone, datetime, timedelta
 from typing import Dict, Optional, List, Any
 import bittensor as bt
 from time_util.time_util import TimeUtil
-from vali_objects.vali_config import TradePairCategory, ValiConfig
+from vali_objects.vali_config import TradePairCategory, ValiConfig, RPCConnectionMode
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.exceptions.signal_exception import SignalException
+from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
 
 
 # ==================== Data Classes ====================
@@ -67,15 +68,20 @@ class MinerAccount:
         if self.collateral_records is None:
             self.collateral_records = []
 
-    def add_collateral_record(self, record: 'CollateralRecord'):
-        """Add a new collateral record and update account_size."""
+    def add_collateral_record(self, record: 'CollateralRecord', multiplier: float = 1.0):
+        """Add a new collateral record and update account_size.
+
+        Args:
+            record: The CollateralRecord to add
+            multiplier: Cash balance multiplier based on asset selection (default 1.0)
+        """
         previous_size = self.get_account_size()
         new_size = record.account_size
         self.collateral_records.append(record)
 
         if previous_size:
             size_increase = new_size - previous_size
-            self.cash_balance += size_increase
+            self.cash_balance += size_increase * multiplier
 
     def get_account_size(self, timestamp_ms: Optional[int] = None) -> float:
         """Get account size at a given timestamp. Returns MIN_CAPITAL if no collateral records."""
@@ -189,7 +195,12 @@ class MinerAccountManager:
     The ValidatorContractManager delegates all account size operations here.
     """
 
-    def __init__(self, running_unit_tests: bool = False, collateral_balance_getter=None):
+    def __init__(
+        self,
+        running_unit_tests: bool = False,
+        collateral_balance_getter=None,
+        connection_mode: RPCConnectionMode = RPCConnectionMode.RPC
+    ):
         """
         Initialize the manager.
 
@@ -198,9 +209,11 @@ class MinerAccountManager:
             collateral_balance_getter: Callable to get collateral balance for a hotkey.
                                        Signature: (hotkey: str) -> Optional[float]
                                        Returns balance in theta tokens, or None.
+            connection_mode: RPC or LOCAL mode for asset selection client
         """
         self.running_unit_tests = running_unit_tests
         self._collateral_balance_getter = collateral_balance_getter
+        self.connection_mode = connection_mode
 
         # Unified MinerAccount storage - single source of truth
         self.accounts: Dict[str, MinerAccount] = {}
@@ -210,6 +223,12 @@ class MinerAccountManager:
         self._accounts_lock = threading.RLock()
         # Lock for disk I/O serialization to prevent concurrent file writes
         self._disk_lock = threading.Lock()
+
+        # Asset selection client for determining miner's trading category
+        self._asset_selection_client = AssetSelectionClient(
+            connection_mode=connection_mode,
+            running_unit_tests=running_unit_tests
+        )
 
         # Initialize miner accounts file location
         self.MINER_ACCOUNTS_FILE = ValiBkpUtils.get_miner_account_sizes_file_location(
@@ -410,8 +429,12 @@ class MinerAccountManager:
                     bt.logging.info(f"Skipping save for {hotkey} - new record matches last record")
                     return collateral_record
 
+            # Get asset selection multiplier for cash balance scaling
+            asset_selection = self._asset_selection_client.get_asset_selection(hotkey)
+            multiplier = ValiConfig.CASH_BALANCE_MULTIPLIER.get(asset_selection, 1.0)
+
             # Add the new record and update account size
-            account.add_collateral_record(collateral_record)
+            account.add_collateral_record(collateral_record, multiplier=multiplier)
 
             # Save to disk
             self._save_accounts_to_disk()
@@ -498,8 +521,12 @@ class MinerAccountManager:
                         bt.logging.debug(f"Most recent collateral record for {hotkey} already exists")
                         return True
 
+                # Get asset selection multiplier for cash balance scaling
+                asset_selection = self._asset_selection_client.get_asset_selection(hotkey)
+                multiplier = ValiConfig.CASH_BALANCE_MULTIPLIER.get(asset_selection, 1.0)
+
                 # Add the new record and update account size
-                account.add_collateral_record(collateral_record)
+                account.add_collateral_record(collateral_record, multiplier=multiplier)
 
                 # Save to disk
                 self._save_accounts_to_disk()
@@ -517,11 +544,14 @@ class MinerAccountManager:
     # ==================== MinerAccount Cache Methods ====================
 
     def get_or_create(self, hotkey: str) -> MinerAccount:
-        """Get existing account or create new one with MIN_CAPITAL."""
+        """Get existing account or create new one with MIN_CAPITAL scaled by asset selection multiplier."""
         if hotkey not in self.accounts:
+            # Get asset selection multiplier for initial cash balance
+            asset_selection = self._asset_selection_client.get_asset_selection(hotkey)
+            multiplier = ValiConfig.CASH_BALANCE_MULTIPLIER.get(asset_selection, 1.0)
             self.accounts[hotkey] = MinerAccount(
                 miner_hotkey=hotkey,
-                cash_balance=ValiConfig.MIN_CAPITAL,
+                cash_balance=ValiConfig.MIN_CAPITAL * multiplier,
             )
         return self.accounts[hotkey]
 
@@ -655,3 +685,105 @@ class MinerAccountManager:
             bt.logging.success(f"Daily interest applied to {accounts_processed} accounts")
 
         return accounts_processed
+
+    # ==================== Asset Selection / Withdrawal Methods ====================
+
+    def set_asset_selection_client(self, client: AssetSelectionClient) -> None:
+        """Set the asset selection client (for testing or lazy initialization)."""
+        self._asset_selection_client = client
+
+    def can_withdraw_collateral(self, hotkey: str, amount_theta: float) -> bool:
+        """
+        Check if miner can withdraw the specified amount of collateral.
+
+        The cash balance represents available trading capacity. If positions are open,
+        some collateral must be withheld to support those positions.
+
+        Formula:
+            total_cash_capacity = account_size * multiplier
+            cash_used = total_cash_capacity - cash_balance
+            collateral_needed_usd = cash_used / multiplier
+            max_withdrawable_usd = account_size - collateral_needed_usd
+            max_withdrawable_theta = max_withdrawable_usd / COST_PER_THETA
+
+        Args:
+            hotkey: Miner's hotkey
+            amount_theta: Requested withdrawal amount in theta
+
+        Returns:
+            True if withdrawal is allowed, False otherwise
+        """
+        # No asset selection = no positions possible = no restrictions
+        # TODO update for crypto and forex, ignore initially for equities
+        asset_selection = self._asset_selection_client.get_asset_selection(hotkey)
+        if asset_selection is None or asset_selection != TradePairCategory.EQUITIES:
+            return True
+
+        with self._accounts_lock:
+            account = self.accounts.get(hotkey)
+            if account is None:
+                return True
+
+            account_size = account.get_account_size()
+            cash_balance = account.cash_balance
+            multiplier = ValiConfig.CASH_BALANCE_MULTIPLIER.get(asset_selection, 1.0)
+
+            # Total virtual cash capacity based on account size and multiplier
+            total_cash_capacity = account_size * multiplier
+
+            # Cash used in positions = total capacity - available cash
+            cash_used = total_cash_capacity - cash_balance
+
+            # Collateral needed to back the used cash (inverse of multiplier)
+            collateral_needed_usd = cash_used / multiplier
+
+            # Max withdrawable is current account size minus what's needed
+            max_withdrawable_usd = account_size - collateral_needed_usd
+
+            # Convert to theta
+            max_withdrawable_theta = max_withdrawable_usd / ValiConfig.COST_PER_THETA
+
+            return amount_theta <= max(0.0, max_withdrawable_theta)
+
+    def recalculate_cash_balance_for_asset_selection(self, hotkey: str, asset_selection: TradePairCategory) -> bool:
+        """
+        Recalculate cash balance when a miner selects an asset class.
+
+        This handles the case where a miner deposits collateral before selecting an asset class.
+        When they later select an asset class, the cash balance needs to be recalculated
+        based on the new multiplier.
+
+        Formula:
+            new_cash_balance = account_size * multiplier
+
+        Args:
+            hotkey: Miner's hotkey
+            asset_selection: The TradePairCategory the miner selected
+
+        Returns:
+            True if cash balance was updated, False otherwise
+        """
+        with self._accounts_lock:
+            account = self.accounts.get(hotkey)
+            if account is None:
+                bt.logging.debug(f"[{hotkey[:8]}] No account found for asset selection recalculation")
+                return False
+
+            account_size = account.get_account_size()
+            multiplier = ValiConfig.CASH_BALANCE_MULTIPLIER.get(asset_selection, 1.0)
+
+            # Calculate new cash balance based on account size and multiplier
+            new_cash_balance = account_size * multiplier
+            old_cash_balance = account.cash_balance
+
+            # Update cash balance
+            account.cash_balance = new_cash_balance
+
+            # Save to disk
+            self._save_accounts_to_disk()
+
+            bt.logging.info(
+                f"[{hotkey[:8]}] Recalculated cash balance for {asset_selection.value}: "
+                f"${old_cash_balance:,.2f} -> ${new_cash_balance:,.2f} (multiplier: {multiplier}x)"
+            )
+            return True
