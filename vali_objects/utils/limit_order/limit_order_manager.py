@@ -351,7 +351,7 @@ class LimitOrderManager(CacheController):
 
             bt.logging.info(
                 f"{'EDIT' if is_edit else 'INCOMING'} {order.execution_type} ORDER | {trade_pair.trade_pair_id} | "
-                f"{order.order_type.name} | SL={order.stop_loss} TP={order.take_profit}"
+                f"{order.order_type.name} | bracket_orders={order.bracket_orders}"
             )
 
             # Check if order can be filled immediately (only if market is open)
@@ -427,7 +427,7 @@ class LimitOrderManager(CacheController):
         RPC method to cancel limit order(s).
         Args:
             miner_hotkey: The miner's hotkey
-            order_uuid: UUID of specific order to cancel, or None/empty for all
+            order_uuid: UUID of specific order to cancel, comma-separated for multiple, or None/empty for all
             now_ms: Current timestamp
         Returns:
             dict with cancellation details
@@ -437,8 +437,13 @@ class LimitOrderManager(CacheController):
             # Parse trade_pair only if trade_pair_id is provided
             # trade_pair = TradePair.from_trade_pair_id(trade_pair_id) if trade_pair_id else None
 
-            # Try to find orders by UUID first
-            orders_to_cancel = self._find_orders_to_cancel_by_uuid(miner_hotkey, order_uuid)
+            # Split order_uuid by commas to support multiple cancellations
+            order_uuids = [uuid.strip() for uuid in order_uuid.split(',')] if order_uuid else []
+
+            # Find orders for each UUID
+            orders_to_cancel = []
+            for uuid in order_uuids:
+                orders_to_cancel.extend(self._find_orders_to_cancel_by_uuid(miner_hotkey, uuid))
 
             # Only cancel one order at a time with order_uuid
             # if not orders_to_cancel and trade_pair:
