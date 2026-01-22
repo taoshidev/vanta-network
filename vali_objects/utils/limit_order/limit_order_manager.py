@@ -954,7 +954,7 @@ class LimitOrderManager(CacheController):
                     # New position created - sync any pending bracket orders with the position
                     self._sync_pending_bracket_orders(miner_hotkey, updated_position)
 
-                if (order.stop_loss is not None or order.take_profit is not None):
+                if order.bracket_orders is not None:
                     self.create_sltp_order(miner_hotkey, order)
 
         except BracketOrderException as e:
