@@ -630,6 +630,7 @@ class DebtBasedScoring:
             miner_penalty_loss_usd[hotkey] = penalty_loss_usd
 
         # Step 7-9: Query real-time emissions and project availability (in USD)
+        bt.logging.info(f"Remaining miner payouts: {miner_remaining_payouts_usd}")
         total_remaining_payout_usd = sum(miner_remaining_payouts_usd.values())
 
         # Step 9a: Calculate projected emissions (needed for weight normalization)
