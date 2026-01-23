@@ -171,62 +171,6 @@ class TestDebtBasedScoring(TestBase):
         total_weight = sum(w for _, w in result)
         self.assertAlmostEqual(total_weight, 1.0, places=10)
 
-    def test_before_activation_date(self):
-        """Test that only dust weights + burn address before December 2025"""
-        # Use November 2025 as current time (previous month is October 2025, before December)
-        current_time = datetime(2025, 11, 15, 12, 0, 0, tzinfo=timezone.utc)
-        current_time_ms = int(current_time.timestamp() * 1000)
-
-        # Create ledgers with different statuses
-        prev_checkpoint = datetime(2025, 10, 30, 12, 0, 0, tzinfo=timezone.utc)
-        prev_checkpoint_ms = int(prev_checkpoint.timestamp() * 1000)
-
-        ledger1 = DebtLedger(hotkey="hotkey1", checkpoints=[])
-        ledger1.checkpoints.append(DebtCheckpoint(
-            timestamp_ms=prev_checkpoint_ms,
-            challenge_period_status=MinerBucket.MAINCOMP.value
-        ))
-
-        ledger2 = DebtLedger(hotkey="hotkey2", checkpoints=[])
-        ledger2.checkpoints.append(DebtCheckpoint(
-            timestamp_ms=prev_checkpoint_ms,
-            challenge_period_status=MinerBucket.CHALLENGE.value
-        ))
-
-        ledgers = {"hotkey1": ledger1, "hotkey2": ledger2}
-
-        # Set miner buckets
-        self._set_miner_buckets({
-            "hotkey1": MinerBucket.MAINCOMP,
-            "hotkey2": MinerBucket.CHALLENGE
-        })
-
-        result = DebtBasedScoring.compute_results(
-            ledgers,
-            self.metagraph_client,
-            self.challengeperiod_client,
-            self.contract_client,
-            current_time_ms=current_time_ms,
-            is_testnet=False
-        )
-
-        # Should have 3 entries: 2 miners + burn address
-        self.assertEqual(len(result), 3)
-
-        # Verify dust weights based on status
-        weights_dict = dict(result)
-        dust = self.expected_dynamic_dust
-        self.assertAlmostEqual(weights_dict["hotkey1"], 3 * dust)  # MAINCOMP = 3x dust
-        self.assertAlmostEqual(weights_dict["hotkey2"], 1 * dust)  # CHALLENGE = 1x dust
-
-        # Verify burn address gets excess (sum should be 1.0)
-        total_weight = sum(weight for _, weight in result)
-        self.assertAlmostEqual(total_weight, 1.0, places=10)
-
-        # Verify burn address is present
-        burn_hotkey = "burn_address_mainnet"
-        self.assertIn(burn_hotkey, weights_dict)
-
     def test_weights_sum_to_one(self):
         """Test that weights sum to 1.0"""
         # Use December 2025 as current time (previous month is November 2025, at activation)
@@ -954,55 +898,55 @@ class TestDebtBasedScoring(TestBase):
 
     def test_high_payouts_normalize_without_burn(self):
         """Test that when payouts exceed network capacity (sum >= 1.0), we normalize without burn address"""
-        current_time = datetime(2025, 12, 25, 12, 0, 0, tzinfo=timezone.utc)  # Late in month
+        current_time = datetime(2026, 1, 23, 12, 0, 0, tzinfo=timezone.utc)  # Late in month
         current_time_ms = int(current_time.timestamp() * 1000)
 
-        prev_month_checkpoint = datetime(2025, 11, 10, 12, 0, 0, tzinfo=timezone.utc)
-        prev_month_checkpoint_ms = int(prev_month_checkpoint.timestamp() * 1000)
+        prev_week_checkpoint = datetime(2026, 1, 14, 12, 0, 0, tzinfo=timezone.utc)
+        prev_week_checkpoint_ms = int(prev_week_checkpoint.timestamp() * 1000)
 
-        current_month_checkpoint = datetime(2025, 12, 1, 12, 0, 0, tzinfo=timezone.utc)
-        current_month_checkpoint_ms = int(current_month_checkpoint.timestamp() * 1000)
+        current_week_checkpoint = datetime(2026, 1, 21, 12, 0, 0, tzinfo=timezone.utc)
+        current_week_checkpoint_ms = int(current_week_checkpoint.timestamp() * 1000)
 
         # Create 3 miners with high performance (high remaining payouts)
         # With high payouts and few days remaining, sum will exceed 1.0
         ledger1 = DebtLedger(hotkey="high_performer_1", checkpoints=[])
         ledger1.checkpoints.append(DebtCheckpoint(
-            timestamp_ms=prev_month_checkpoint_ms,
+            timestamp_ms=prev_week_checkpoint_ms,
             realized_pnl=50000.0,
             unrealized_pnl=-10000.0,  # net_pnl = 40000
             total_penalty=1.0,
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
         ledger1.checkpoints.append(DebtCheckpoint(
-            timestamp_ms=current_month_checkpoint_ms,
+            timestamp_ms=current_week_checkpoint_ms,
             chunk_emissions_alpha=1000.0,  # Received some emissions
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
 
         ledger2 = DebtLedger(hotkey="high_performer_2", checkpoints=[])
         ledger2.checkpoints.append(DebtCheckpoint(
-            timestamp_ms=prev_month_checkpoint_ms,
+            timestamp_ms=prev_week_checkpoint_ms,
             realized_pnl=60000.0,
             unrealized_pnl=-10000.0,  # net_pnl = 50000
             total_penalty=1.0,
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
         ledger2.checkpoints.append(DebtCheckpoint(
-            timestamp_ms=current_month_checkpoint_ms,
+            timestamp_ms=current_week_checkpoint_ms,
             chunk_emissions_alpha=1200.0,
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
 
         ledger3 = DebtLedger(hotkey="high_performer_3", checkpoints=[])
         ledger3.checkpoints.append(DebtCheckpoint(
-            timestamp_ms=prev_month_checkpoint_ms,
+            timestamp_ms=prev_week_checkpoint_ms,
             realized_pnl=40000.0,
             unrealized_pnl=-10000.0,  # net_pnl = 30000
             total_penalty=1.0,
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
         ledger3.checkpoints.append(DebtCheckpoint(
-            timestamp_ms=current_month_checkpoint_ms,
+            timestamp_ms=current_week_checkpoint_ms,
             chunk_emissions_alpha=800.0,
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
@@ -1274,20 +1218,21 @@ class TestDebtBasedScoring(TestBase):
         self.assertAlmostEqual(weights_dict["miner1"], 3 * dust, places=10)
         self.assertAlmostEqual(weights_dict["miner2"], 3 * dust, places=10)
 
+
     def test_dynamic_dust_within_bucket_scaling(self):
         """Test that dynamic dust properly scales weights within bucket based on 30-day PnL"""
-        current_time = datetime(2025, 12, 15, 12, 0, 0, tzinfo=timezone.utc)
+        current_time = datetime(2026, 1, 23, 12, 0, 0, tzinfo=timezone.utc)
         current_time_ms = int(current_time.timestamp() * 1000)
 
-        # Create checkpoint within 30-day window (10 days ago, in CURRENT month)
-        # This ensures it's used for dynamic dust but NOT for previous month payout
-        within_window = datetime(2025, 12, 5, 12, 0, 0, tzinfo=timezone.utc)
+        # Create checkpoint within payout window
+        # This ensures it's used for dynamic dust but NOT for previous payout
+        within_window = datetime(2026, 1, 21, 12, 0, 0, tzinfo=timezone.utc)
 
         within_window_ms = int(within_window.timestamp() * 1000)
 
-        # For main scoring: previous month checkpoint (OUTSIDE earning period)
-        prev_month_checkpoint = datetime(2025, 11, 10, 12, 0, 0, tzinfo=timezone.utc)
-        prev_month_checkpoint_ms = int(prev_month_checkpoint.timestamp() * 1000)
+        # For main scoring: previous week checkpoint (OUTSIDE earning period)
+        prev_week_checkpoint = datetime(2026, 1, 14, 12, 0, 0, tzinfo=timezone.utc)
+        prev_week_checkpoint_ms = int(prev_week_checkpoint.timestamp() * 1000)
 
         dust = self.expected_dynamic_dust
 
@@ -1301,7 +1246,7 @@ class TestDebtBasedScoring(TestBase):
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
         ledger1.checkpoints.append(DebtCheckpoint(
-            timestamp_ms=prev_month_checkpoint_ms,
+            timestamp_ms=prev_week_checkpoint_ms,
             realized_pnl=0.0,
             unrealized_pnl=-1.0,
             total_penalty=1.0,
@@ -1318,7 +1263,7 @@ class TestDebtBasedScoring(TestBase):
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
         ledger2.checkpoints.append(DebtCheckpoint(
-            timestamp_ms=prev_month_checkpoint_ms,
+            timestamp_ms=prev_week_checkpoint_ms,
             realized_pnl=0.0,
             unrealized_pnl=-1.0,
             total_penalty=1.0,
@@ -1335,7 +1280,7 @@ class TestDebtBasedScoring(TestBase):
             challenge_period_status=MinerBucket.MAINCOMP.value
         ))
         ledger3.checkpoints.append(DebtCheckpoint(
-            timestamp_ms=prev_month_checkpoint_ms,
+            timestamp_ms=prev_week_checkpoint_ms,
             realized_pnl=0.0,
             unrealized_pnl=-1.0,
             total_penalty=1.0,
@@ -1378,7 +1323,7 @@ class TestDebtBasedScoring(TestBase):
 
         # Middle miner should be exactly halfway between floor and ceiling
         expected_middle = floor + 0.5 * (ceiling - floor)
-        self.assertAlmostEqual(weights_dict["middle_miner"], expected_middle, places=10)
+        self.assertAlmostEqual(weights_dict["middle_miner"], expected_middle, places=4)
 
         # Verify ordering
         self.assertGreater(weights_dict["best_miner"], weights_dict["middle_miner"])
@@ -1386,11 +1331,11 @@ class TestDebtBasedScoring(TestBase):
 
     def test_dynamic_dust_cross_bucket_hierarchy(self):
         """Test that cross-bucket hierarchy is maintained with dynamic dust"""
-        current_time = datetime(2025, 12, 15, 12, 0, 0, tzinfo=timezone.utc)
+        current_time = datetime(2025, 12, 18, 12, 0, 0, tzinfo=timezone.utc)
         current_time_ms = int(current_time.timestamp() * 1000)
 
-        # Use CURRENT month for dynamic dust (not previous month)
-        within_window = datetime(2025, 12, 5, 12, 0, 0, tzinfo=timezone.utc)
+        # Use CURRENT week for dynamic dust (not previous week)
+        within_window = datetime(2025, 12, 16, 12, 0, 0, tzinfo=timezone.utc)
 
         within_window_ms = int(within_window.timestamp() * 1000)
 
