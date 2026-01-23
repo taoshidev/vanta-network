@@ -841,13 +841,6 @@ class ServerOrchestrator:
         if plagiarism_client:
             safe_clear('plagiarism', lambda: plagiarism_client.clear_plagiarism_data())
 
-        # Clear plagiarism events (class-level cache - not RPC, always safe)
-        try:
-            from vali_objects.plagiarism import PlagiarismEvents
-            PlagiarismEvents.clear_plagiarism_events()
-        except Exception as e:
-            bt.logging.warning(f"Failed to clear plagiarism events: {e}")
-
         # Clear limit order data
         limit_order_client = get_client_safe('limit_order')
         if limit_order_client:
