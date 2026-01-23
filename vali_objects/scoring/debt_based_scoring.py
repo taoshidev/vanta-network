@@ -457,7 +457,7 @@ class DebtBasedScoring:
 
         current_weekday = current_dt.weekday()
         prev_target_day_offset = (current_weekday + 1) % 7
-        days_until_target = 6 - prev_target_day_offset
+        days_until_target = 7 - prev_target_day_offset
         prev_target_dt = current_dt - timedelta(days=prev_target_day_offset)
         prev_target_end_dt = datetime.combine(prev_target_dt, datetime.min.time())
         prev_target_end_ms = int(prev_target_end_dt.timestamp() * 1000)
@@ -539,6 +539,7 @@ class DebtBasedScoring:
             miner_penalty_loss_usd[hotkey] = penalty_loss_usd
 
         # Query real-time emissions and project availability (in USD)
+        bt.logging.info(f"Remaining miner payouts: {miner_remaining_payouts_usd}")
         total_remaining_payout_usd = sum(miner_remaining_payouts_usd.values())
 
         # Calculate projected emissions (needed for weight normalization)
@@ -569,7 +570,6 @@ class DebtBasedScoring:
         miner_daily_target_payouts_usd = {}
         for hotkey, remaining_payout_usd in miner_remaining_payouts_usd.items():
             daily_target = remaining_payout_usd / days_until_target
-
             miner_daily_target_payouts_usd[hotkey] = daily_target
 
         # Enforce minimum weights based on challenge period status
