@@ -244,5 +244,5 @@ class PositionManagerServer(RPCServerBase):
         """
         return self._manager.get_split_stats(hotkey)
 
-    def apply_stock_split_rpc(self, trade_pair_id: str, stock_split_ratio: float):
-        return self._manager.apply_stock_split(trade_pair_id, stock_split_ratio)
+    def apply_stock_split_rpc(self, trade_pair_id: str, stock_split_ratio: float, execution_date: str):
+        return self._manager.apply_stock_split(trade_pair_id, stock_split_ratio, execution_date)

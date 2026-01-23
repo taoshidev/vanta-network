@@ -183,7 +183,7 @@ class MDDChecker(CacheController):
                 stock_split_ratio = self._live_price_client.get_stock_split(tp, now_ms)
 
             if stock_split_ratio is not None:
-                self._position_client.apply_stock_split(tp.trade_pair_id, stock_split_ratio)
+                self._position_client.apply_stock_split(tp.trade_pair_id, stock_split_ratio, today_date_est)
 
             self._prev_iteration_prices[tp] = sources[0].close
 

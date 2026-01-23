@@ -1308,16 +1308,15 @@ class PositionManager:
         """
         return dict(self.split_stats.get(hotkey, self._default_split_stats()))
 
-    def apply_stock_split(self, trade_pair_id: str, stock_split_ratio: float):
+    def apply_stock_split(self, trade_pair_id: str, stock_split_ratio: float, execution_date: str):
         _cnt = 0
         for _, positions_dict in self.hotkey_to_open_positions.items():
             open_position = positions_dict.get(trade_pair_id, None)
-            if open_position:
-                open_position.apply_stock_split(stock_split_ratio)
+            if open_position and open_position.apply_stock_split(stock_split_ratio, execution_date):
+                self._write_position_to_disk(open_position)
                 _cnt += 1
 
-        bt.logging.info(f"Successfully applied {trade_pair_id} stock split (ratio: {stock_split_ratio}) to {_cnt} positions")
-        return
+        bt.logging.info(f"Applied {trade_pair_id} stock split (ratio: {stock_split_ratio}, date: {execution_date}) to {_cnt} positions")
 
     def _write_position_to_disk(self, position: Position):
         """Write a single position to disk."""

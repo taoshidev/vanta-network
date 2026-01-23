@@ -1244,7 +1244,8 @@ class PolygonDataService(BaseDataService):
         if not trade_pair.is_equities:
             return None
 
-        execution_date_str = TimeUtil.millis_to_short_date_str(time_ms)
+        # Use EST timezone to match MDD checker's date comparison for idempotency
+        execution_date_str = TimeUtil.timestamp_ms_to_eastern_time_str(time_ms, short=True)
         ticker = self.trade_pair_to_polygon_ticker(trade_pair)
 
         endpoint = "https://api.massive.com/stocks/v1/splits"

@@ -59,6 +59,7 @@ class Position(BaseModel):
     unrealized_pnl: float = 0.0             # USD
     position_type: Optional[OrderType] = None
     is_closed_position: bool = False
+    last_stock_split_date: Optional[str] = None  # Only set for equities
 
     @model_validator(mode='before')
     def add_trade_pair_to_orders_and_self(cls, values):
@@ -742,11 +743,25 @@ class Position(BaseModel):
                     f"position leverage below min_position_leverage {min_position_leverage}. "
                     f"Proposed: {abs(proposed_leverage):.2f}. Ignoring order.")
 
-    def apply_stock_split(self, stock_split_ratio):
+    def apply_stock_split(self, stock_split_ratio: float, execution_date: str) -> bool:
+        """
+        Apply stock split to position. Returns True if applied, False if already applied.
+        Only applicable to equities positions.
+        """
+        if not self.trade_pair.is_equities:
+            return False
+
+        if self.last_stock_split_date == execution_date:
+            bt.logging.info(f"Stock split for {execution_date} already applied to position {self.position_uuid}")
+            return False
+
         for order in self.orders:
             order.quantity *= stock_split_ratio
             order.price /= stock_split_ratio
+
+        self.last_stock_split_date = execution_date
         self._update_position(None)
+        return True
 
     def _update_position(self, price_fetcher_client):
         self.net_leverage = 0.0
