@@ -133,13 +133,17 @@ class MinerAccount:
 
         current_date = datetime.fromtimestamp(current_time_ms / 1000, tz=timezone.utc).date()
 
+        # First time seeing this loan - mark date, don't charge (first day free)
+        if not self.interest_payments:
+            self.interest_payments.append((current_time_ms, 0.0, 0.0))
+            return True
+
         # Check last applied date from history
-        if self.interest_payments:
-            last_applied_date = datetime.fromtimestamp(
-                self.interest_payments[-1][0] / 1000, tz=timezone.utc
-            ).date()
-            if last_applied_date == current_date:
-                return False
+        last_applied_date = datetime.fromtimestamp(
+            self.interest_payments[-1][0] / 1000, tz=timezone.utc
+        ).date()
+        if last_applied_date == current_date:
+            return False
 
         # Calculate daily interest
         daily_interest = self.total_borrowed_amount * daily_interest_rate
@@ -628,14 +632,8 @@ class MinerAccountManager:
                 )
 
             borrowed_amount = order_value_usd - initial_margin
-            was_zero = account.total_borrowed_amount == 0
             account.cash_balance -= initial_margin
             account.total_borrowed_amount += borrowed_amount
-
-            # Record borrow date to prevent same-day interest charges
-            if was_zero:
-                current_time_ms = TimeUtil.now_in_millis()
-                account.interest_payments.append((current_time_ms, 0.0, 0.0))
 
             self._save_accounts_to_disk()
             bt.logging.info(
