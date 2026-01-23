@@ -394,6 +394,19 @@ class OrderProcessor:
                     if not existing_bracket:
                         bt.logging.warning(f"Cannot edit order {bracket_uuid}: order not found, skipping")
                         continue
+
+                    # If bracket_uuid exists but both SL and TP are None, cancel the order
+                    if bracket.get("stop_loss") is None and bracket.get("take_profit") is None:
+                        try:
+                            OrderProcessor.process_limit_cancel(
+                                None, None, bracket_uuid, now_ms,
+                                miner_hotkey, limit_order_client
+                            )
+                            bt.logging.info(f"[ORDER_PROCESSOR] Cancelled bracket order {bracket_uuid} (no SL/TP provided)")
+                        except SignalException as e:
+                            bt.logging.warning(f"Failed to cancel bracket order {bracket_uuid}: {e}, skipping")
+                        continue
+
                     is_edit = True
                 else:
                     # No UUID provided - generate new one
