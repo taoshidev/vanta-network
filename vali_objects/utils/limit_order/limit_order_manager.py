@@ -243,6 +243,7 @@ class LimitOrderManager(CacheController):
         # Fill outside the lock to avoid reentrant lock issue
         # Treat order that fills immediately as market order
         if should_fill_immediately:
+            order.execution_type = ExecutionType.MARKET
             order.src = OrderSource.ORGANIC
             fill_error = self._fill_limit_order_with_price_source(miner_hotkey, order, price_sources[0], None, enforce_market_cooldown=True)
             if fill_error:

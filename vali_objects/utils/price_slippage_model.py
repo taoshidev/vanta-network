@@ -12,6 +12,7 @@ import pandas as pd
 import bittensor as bt
 
 from time_util.time_util import TimeUtil
+from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
@@ -60,6 +61,9 @@ class PriceSlippageModel:
         returns the percentage slippage of the current order.
         each asset class uses a unique model
         """
+        if order.execution_type != ExecutionType.MARKET:
+            return 0
+
         if not PriceSlippageModel.slippage_estimates:
             PriceSlippageModel.slippage_estimates = cls.read_slippage_estimates()
 

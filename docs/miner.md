@@ -140,7 +140,7 @@ We want to simulate real costs of trading for our miners, to make signals from V
 
 Cost of carry is reflective of real exchanges, and how they manage the cost of holding a position overnight. This rate changes depending on the asset class, the logic of which may be found in [our proposal 4](https://docs.taoshi.io/tips/p4/).
 
-Slippage costs are modeled to estimate the difference between a trade's expected price (typically the last traded price or mid-price between the best bid and ask) and its actual execution price. This cost is higher for larger orders, as well as for assets with lower liquidity and higher volatility. Read more in [proposal 16](https://docs.taoshi.io/tips/p16/).
+Slippage costs are modeled to estimate the difference between a trade's expected price (typically the last traded price or mid-price between the best bid and ask) and its actual execution price. This cost is higher for larger orders, as well as for assets with lower liquidity and higher volatility. Slippage is only applied to market orders. Read more in [proposal 16](https://docs.taoshi.io/tips/p16/).
 
 Spread fee is applied to crypto pairs only and is calculated as 0.1% multiplied by the leverage of each order. This fee simulates a transaction cost that a normal exchange would add.
 
@@ -350,15 +350,9 @@ btcli wallet list
 
 ## 2a. Getting Testnet TAO
 
-### Discord
+### Miners' Union Testnet Token Faucet
 
-Please ask the Bittensor Discord community for testnet TAO. This will let you register your miner(s) on Testnet.
-
-Please first join the Bittensor Discord here: https://discord.com/invite/bittensor
-
-Then request testnet TAO here: https://discord.com/channels/799672011265015819/1331693251589312553/1331694633822060544
-
-Bittensor Discord -> help-forum -> Requests for Testnet TAO
+The Miners' Union maintains a testnet token faucet here: https://app.minersunion.ai/testnet-faucet
 
 ## 3. Register keys
 
