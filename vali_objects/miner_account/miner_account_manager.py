@@ -61,12 +61,14 @@ class MinerAccount:
     cash_balance: float              # Available cash (for equities margin)
     total_borrowed_amount: float = 0.0  # Total margin loans outstanding
     collateral_records: List[CollateralRecord] = None  # Historical CollateralRecords (List[CollateralRecord])
-    last_interest_applied_ms: Optional[int] = None  # Timestamp of last interest application (compared by date)
+    interest_payments: List[tuple] = None  # List of (timestamp_ms, amount, added_to_loan)
 
     def __post_init__(self):
-        """Initialize collateral_records to empty list if None."""
+        """Initialize collateral_records and interest_payments to empty list if None."""
         if self.collateral_records is None:
             self.collateral_records = []
+        if self.interest_payments is None:
+            self.interest_payments = []
 
     def add_collateral_record(self, record: 'CollateralRecord', multiplier: float = 1.0):
         """Add a new collateral record and update account_size.
@@ -106,6 +108,16 @@ class MinerAccount:
         # No valid record for the timestamp, return MIN_CAPITAL
         return ValiConfig.MIN_CAPITAL
 
+    def _trim_interest_payments(self, current_time_ms: int):
+        """Remove interest entries older than 60 days."""
+        if not self.interest_payments:
+            return
+        cutoff_ms = current_time_ms - (60 * 24 * 60 * 60 * 1000)  # 60 days in ms
+        self.interest_payments = [
+            entry for entry in self.interest_payments
+            if entry[0] >= cutoff_ms
+        ]
+
     def apply_interest(self, current_time_ms: int) -> bool:
         """
         Apply daily interest to this account if needed.
@@ -117,21 +129,21 @@ class MinerAccount:
 
         # Skip if no borrowed amount
         if self.total_borrowed_amount <= 0:
-            self.last_interest_applied_ms = None
             return False
 
         current_date = datetime.fromtimestamp(current_time_ms / 1000, tz=timezone.utc).date()
 
-        if self.last_interest_applied_ms is None:
-            self.last_interest_applied_ms = current_time_ms
-            return True
-
-        last_applied_date = datetime.fromtimestamp(self.last_interest_applied_ms / 1000, tz=timezone.utc).date()
-        if last_applied_date == current_date:
-            return False
+        # Check last applied date from history
+        if self.interest_payments:
+            last_applied_date = datetime.fromtimestamp(
+                self.interest_payments[-1][0] / 1000, tz=timezone.utc
+            ).date()
+            if last_applied_date == current_date:
+                return False
 
         # Calculate daily interest
         daily_interest = self.total_borrowed_amount * daily_interest_rate
+        unpaid_interest = 0.0
 
         if self.cash_balance >= daily_interest:
             # Full interest paid from cash
@@ -151,8 +163,9 @@ class MinerAccount:
                 f"total borrowed: ${self.total_borrowed_amount:.2f}"
             )
 
-        # Update last interest applied timestamp
-        self.last_interest_applied_ms = current_time_ms
+        # Record interest payment in history
+        self.interest_payments.append((current_time_ms, daily_interest, unpaid_interest))
+        self._trim_interest_payments(current_time_ms)
         return True
 
     def to_dict(self, include_collateral_records: bool = False) -> dict:
@@ -170,7 +183,7 @@ class MinerAccount:
             'account_size': self.get_account_size(),
             'cash_balance': self.cash_balance,
             'total_borrowed_amount': self.total_borrowed_amount,
-            'last_interest_applied_ms': self.last_interest_applied_ms
+            'interest_payments': self.interest_payments
         }
 
         if include_collateral_records:
@@ -301,7 +314,7 @@ class MinerAccountManager:
                 # Add account-level fields to the last record
                 records_list[-1]["cash_balance"] = account.cash_balance
                 records_list[-1]["total_borrowed_amount"] = account.total_borrowed_amount
-                records_list[-1]["last_interest_applied_ms"] = account.last_interest_applied_ms
+                records_list[-1]["interest_payments"] = account.interest_payments
 
                 json_dict[hotkey] = records_list
             return json_dict
@@ -311,7 +324,7 @@ class MinerAccountManager:
         """Parse miner accounts from disk format back to MinerAccount objects.
 
         Format: {"hotkey": [list of CollateralRecord dicts]}
-        Account-level fields (cash_balance, total_borrowed_amount, last_interest_applied_ms)
+        Account-level fields (cash_balance, total_borrowed_amount, interest_payments)
         are stored on the last record in the list.
         """
         parsed_accounts = {}
@@ -329,11 +342,13 @@ class MinerAccountManager:
                     last_record = records_list[-1]
                     cash_balance = last_record.get("cash_balance")
                     total_borrowed = last_record.get("total_borrowed_amount", 0.0)
-                    last_interest_applied_ms = last_record.get("last_interest_applied_ms")
+                    interest_payments = last_record.get("interest_payments", [])
+                    # Convert list format back to tuples
+                    interest_payments = [tuple(entry) for entry in interest_payments]
                 else:
                     cash_balance = None  # Will default to account_size
                     total_borrowed = 0.0
-                    last_interest_applied_ms = None
+                    interest_payments = []
 
                 # Parse collateral records
                 for record_data in records_list:
@@ -356,7 +371,7 @@ class MinerAccountManager:
                     cash_balance=cash_balance if cash_balance is not None else account_size,
                     total_borrowed_amount=total_borrowed,
                     collateral_records=collateral_records,
-                    last_interest_applied_ms=last_interest_applied_ms
+                    interest_payments=interest_payments
                 )
 
             except Exception as e:
@@ -680,9 +695,7 @@ class MinerAccountManager:
             # Save to disk
             if accounts_processed > 0:
                 self._save_accounts_to_disk()
-
-        if accounts_processed > 0:
-            bt.logging.success(f"Daily interest applied to {accounts_processed} accounts")
+                bt.logging.success(f"Daily interest applied to {accounts_processed} accounts")
 
         return accounts_processed
 

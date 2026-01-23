@@ -98,7 +98,7 @@ class MinerAccountServer(RPCServerBase):
                     f"Interest application completed: {result} accounts processed"
                 )
             else:
-                bt.logging.debug("No interest application needed (no accounts ready for interest)")
+                bt.logging.info("No interest application needed (no accounts ready for interest)")
 
         except Exception as e:
             bt.logging.error(f"Error in interest calculation daemon: {e}")
