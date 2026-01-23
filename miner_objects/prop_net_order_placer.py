@@ -156,7 +156,14 @@ class PropNetOrderPlacer:
     async def _safe_process_signal(self, signal_file_path, signal_data):
         """Wrapper for process_a_signal with error handling and metrics"""
         signal_uuid = signal_file_path.split('/')[-1]
-        trade_pair_id = signal_data.get('trade_pair', {}).get('trade_pair_id', 'Unknown')
+        # Support both object {"trade_pair_id": "BTCUSD"} and string "BTCUSD"
+        trade_pair = signal_data.get('trade_pair', 'Unknown')
+        if isinstance(trade_pair, dict):
+            trade_pair_id = trade_pair.get('trade_pair_id', 'Unknown')
+        elif isinstance(trade_pair, str):
+            trade_pair_id = trade_pair
+        else:
+            trade_pair_id = 'Unknown'
         metrics = SignalMetrics(signal_uuid, trade_pair_id)
 
         try:
@@ -350,7 +357,14 @@ class PropNetOrderPlacer:
             }
         """
         # Create metrics tracker
-        trade_pair_id = signal_data.get('trade_pair', {}).get('trade_pair_id', 'unknown')
+        # Support both object {"trade_pair_id": "BTCUSD"} and string "BTCUSD"
+        trade_pair = signal_data.get('trade_pair', 'unknown')
+        if isinstance(trade_pair, dict):
+            trade_pair_id = trade_pair.get('trade_pair_id', 'unknown')
+        elif isinstance(trade_pair, str):
+            trade_pair_id = trade_pair
+        else:
+            trade_pair_id = 'unknown'
         metrics = SignalMetrics(order_uuid, trade_pair_id)
         metrics.mark_network_start()
 
@@ -377,7 +391,8 @@ class PropNetOrderPlacer:
                 'retry_delay_seconds': self.INITIAL_RETRY_DELAY_SECONDS,
                 'validators_needing_retry': axons_to_try,
                 'validator_error_messages': {},
-                'created_orders': {}
+                'created_orders': {},
+                'permanent_failures': {}  # Track validators with permanent errors
             }
 
             # Track the high-trust validators
@@ -547,6 +562,38 @@ class PropNetOrderPlacer:
         else:
             return high_trust_validators
 
+    @staticmethod
+    def _is_retryable_error(error_message: str) -> bool:
+        """
+        Classify error as transient (should retry) or permanent (skip retry).
+
+        Returns:
+            True if error should be retried, False if permanent validation error
+        """
+        if not error_message:
+            return True  # Empty error = network timeout, should retry
+
+        error_lower = error_message.lower()
+
+        # Permanent validation errors - don't waste time retrying
+        permanent_keywords = [
+            'rate limited',
+            'cooldown',
+            'eliminated',
+            'asset class',
+            'market',  # "market closed", "market not available"
+            'duplicate',
+            'no longer supported',
+            'not active',
+            'already been processed',
+            'invalid subaccount',
+            'blocked',
+            'cannot trade'
+        ]
+
+        if any(keyword in error_lower for keyword in permanent_keywords):
+            return False
+        return True
 
     async def attempt_to_send_signal(self, send_signal_request: SendSignal, retry_status: dict,
                                high_trust_validators: list, validator_hotkey_to_axon: dict,
@@ -620,6 +667,11 @@ class PropNetOrderPlacer:
                     retry_status['validator_error_messages'][response.validator_hotkey].append(response.error_message)
                     metrics.validator_errors[response.validator_hotkey].append(response.error_message)
 
+                    # Check if error is permanent (non-retryable)
+                    if not self._is_retryable_error(response.error_message):
+                        retry_status['permanent_failures'][response.validator_hotkey] = response.error_message
+                        bt.logging.info(f"Permanent validation error from {response.validator_hotkey}, skipping retries: {response.error_message}")
+
         if all_high_trust_validators_succeeded:
             v_trust_floor = min([hotkey_to_v_trust[validator.hotkey] for validator in high_trust_validators])
             n_high_trust = len(high_trust_validators)
@@ -627,6 +679,8 @@ class PropNetOrderPlacer:
                                f"(min v_trust: {v_trust_floor})")
 
         def _allow_retry(axon):
+            if axon.hotkey in retry_status['permanent_failures']:
+                return False
             if axon.hotkey in success_validators:
                 return False
             if axon.hotkey in self.recently_acked_validators:
@@ -635,6 +689,12 @@ class PropNetOrderPlacer:
 
         new_validators_to_retry = [axon for axon in retry_status['validators_needing_retry'] if _allow_retry(axon)]
         new_validators_to_retry.sort(key=lambda validator: hotkey_to_v_trust[validator.hotkey], reverse=True)
+
+        bt.logging.info(
+            f"Retry #{retry_status['retry_attempts']}: "
+            f"{len(new_validators_to_retry)} validators need retry, "
+            f"{len(retry_status['permanent_failures'])} have permanent errors"
+        )
 
         retry_status['validators_needing_retry'] = new_validators_to_retry
         retry_status['retry_attempts'] += 1
