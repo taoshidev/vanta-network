@@ -628,8 +628,14 @@ class MinerAccountManager:
                 )
 
             borrowed_amount = order_value_usd - initial_margin
+            was_zero = account.total_borrowed_amount == 0
             account.cash_balance -= initial_margin
             account.total_borrowed_amount += borrowed_amount
+
+            # Record borrow date to prevent same-day interest charges
+            if was_zero:
+                current_time_ms = TimeUtil.now_in_millis()
+                account.interest_payments.append((current_time_ms, 0.0, 0.0))
 
             self._save_accounts_to_disk()
             bt.logging.info(
