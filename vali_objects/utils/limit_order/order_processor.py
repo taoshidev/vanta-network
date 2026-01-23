@@ -326,6 +326,9 @@ class OrderProcessor:
 
         Users must resubmit the entire signal (no partial updates).
 
+        Supports bulk bracket order updates: If order_uuid doesn't exist but bracket_orders
+        is provided, process each bracket order (update if order_uuid exists, create if not).
+
         Validation responsibilities:
         - OrderProcessor: Order exists, is unfilled, trade pair matches (fail fast)
         - Delegated handler: Field validation and business rules
@@ -338,41 +341,92 @@ class OrderProcessor:
             limit_order_client: Client to process the edit
 
         Returns:
-            The updated Order object
+            The updated Order object (or first order for bulk updates)
 
         Raises:
             SignalException: If order not found, not unfilled, or trade pair mismatch
         """
-        # 1. LOOKUP existing order - fail fast if not found
+        # 1. LOOKUP existing order
         existing_order_dict = limit_order_client.get_limit_order_by_uuid(miner_hotkey, order_uuid)
-        if not existing_order_dict:
-            raise SignalException(f"Cannot edit order {order_uuid}: order not found")
 
-        existing_order = Order.from_dict(existing_order_dict)
+        # 2. If order found, process single order edit
+        if existing_order_dict:
+            existing_order = Order.from_dict(existing_order_dict)
 
-        # 2. VALIDATE order is unfilled
-        if existing_order.src not in [OrderSource.LIMIT_UNFILLED, OrderSource.BRACKET_UNFILLED]:
-            raise SignalException(f"Cannot edit order {order_uuid}: order is not unfilled (status: {existing_order.src})")
+            # VALIDATE order is unfilled
+            if existing_order.src not in [OrderSource.LIMIT_UNFILLED, OrderSource.BRACKET_UNFILLED]:
+                raise SignalException(f"Cannot edit order {order_uuid}: order is not unfilled (status: {existing_order.src})")
 
-        # 3. VALIDATE trade pair matches
-        trade_pair = Order.parse_trade_pair_from_signal(signal)
-        if not trade_pair:
-            raise SignalException("Invalid trade pair in signal for LIMIT_EDIT")
-        if trade_pair != existing_order.trade_pair:
-            raise SignalException(
-                f"Cannot edit order {order_uuid}: trade pair mismatch "
-                f"(order is for {existing_order.trade_pair.trade_pair_id}, not {trade_pair.trade_pair_id})"
+            # VALIDATE trade pair matches
+            trade_pair = Order.parse_trade_pair_from_signal(signal)
+            if not trade_pair:
+                raise SignalException("Invalid trade pair in signal for LIMIT_EDIT")
+            if trade_pair != existing_order.trade_pair:
+                raise SignalException(
+                    f"Cannot edit order {order_uuid}: trade pair mismatch "
+                    f"(order is for {existing_order.trade_pair.trade_pair_id}, not {trade_pair.trade_pair_id})"
+                )
+
+            # DELEGATE based on existing order's execution type
+            if existing_order.execution_type == ExecutionType.BRACKET:
+                return OrderProcessor.process_bracket_order(
+                    signal, trade_pair, order_uuid, now_ms, miner_hotkey, limit_order_client, is_edit=True
+                )
+            else:
+                return OrderProcessor.process_limit_order(
+                    signal, trade_pair, order_uuid, now_ms, miner_hotkey, limit_order_client, is_edit=True
+                )
+
+        # 3. Order not found - check for bulk bracket update via bracket_orders field
+        bracket_orders = signal.get("bracket_orders")
+        if bracket_orders:
+            trade_pair = Order.parse_trade_pair_from_signal(signal)
+            if not trade_pair:
+                raise SignalException("Invalid trade pair in signal for bulk bracket update")
+
+            processed_orders = []
+            for bracket in bracket_orders:
+                bracket_uuid = bracket.get("order_uuid")
+
+                # Check if this bracket order exists (for update)
+                if bracket_uuid:
+                    existing_bracket = limit_order_client.get_limit_order_by_uuid(miner_hotkey, bracket_uuid)
+                    if not existing_bracket:
+                        bt.logging.warning(f"Cannot edit order {bracket_uuid}: order not found, skipping")
+                        continue
+                    is_edit = True
+                else:
+                    # No UUID provided - generate new one
+                    is_edit = False
+                    bracket_uuid = str(uuid.uuid4())
+
+                # Build bracket signal
+                bracket_signal = {
+                    "trade_pair": signal.get("trade_pair"),
+                    "stop_loss": bracket.get("stop_loss"),
+                    "take_profit": bracket.get("take_profit"),
+                    "leverage": bracket.get("leverage"),
+                    "value": bracket.get("value"),
+                    "quantity": bracket.get("quantity"),
+                }
+
+                order = OrderProcessor.process_bracket_order(
+                    bracket_signal, trade_pair, bracket_uuid, now_ms,
+                    miner_hotkey, limit_order_client, is_edit=is_edit
+                )
+                processed_orders.append(order)
+
+            bt.logging.info(
+                f"[ORDER_PROCESSOR] Processed bulk bracket update for {miner_hotkey}: "
+                f"{len(processed_orders)} orders"
             )
 
-        # 4. DELEGATE based on existing order's execution type
-        if existing_order.execution_type == ExecutionType.BRACKET:
-            return OrderProcessor.process_bracket_order(
-                signal, trade_pair, order_uuid, now_ms, miner_hotkey, limit_order_client, is_edit=True
-            )
-        else:
-            return OrderProcessor.process_limit_order(
-                signal, trade_pair, order_uuid, now_ms, miner_hotkey, limit_order_client, is_edit=True
-            )
+            if processed_orders:
+                return processed_orders[0]
+
+            raise SignalException("No bracket edits to process")
+
+        raise SignalException(f"Cannot edit order {order_uuid}: order not found")
 
     @staticmethod
     def process_market_order(signal: dict, trade_pair, order_uuid: str, now_ms: int,
