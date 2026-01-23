@@ -553,8 +553,11 @@ class PropNetOrderPlacer:
                                metrics: SignalMetrics):
         hotkey_to_v_trust = {neuron.hotkey: neuron.validator_trust for neuron in self.metagraph_client.get_neurons()}
 
+        # trade_pair may not exist for LIMIT_CANCEL orders
+        trade_pair_info = send_signal_request.signal.get('trade_pair', {})
+        trade_pair_id = trade_pair_info.get('trade_pair_id', 'N/A') if isinstance(trade_pair_info, dict) else trade_pair_info
         bt.logging.info(
-            f"Attempt #{retry_status['retry_attempts']} for {send_signal_request.signal['trade_pair']['trade_pair_id']} "
+            f"Attempt #{retry_status['retry_attempts']} for {trade_pair_id} "
             f"uuid {send_signal_request.miner_order_uuid}. "
             f"Sending order to {len(retry_status['validators_needing_retry'])} hotkeys...")
 
@@ -639,7 +642,9 @@ class PropNetOrderPlacer:
     def write_signal_to_processed_directory(self, signal_data, signal_file_path: str, retry_status: dict):
         """Moves a processed signal file to the processed directory."""
         signal_copy = signal_data.copy()
-        signal_copy['trade_pair'] = signal_copy['trade_pair']['trade_pair_id']
+        # trade_pair may not exist for LIMIT_CANCEL orders
+        if 'trade_pair' in signal_copy and isinstance(signal_copy['trade_pair'], dict):
+            signal_copy['trade_pair'] = signal_copy['trade_pair']['trade_pair_id']
         data_to_write = {
             'signal_data': signal_copy,
             'created_orders': retry_status['created_orders'],

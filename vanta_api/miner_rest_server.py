@@ -169,8 +169,18 @@ class MinerRestServer(BaseRestServer):
             if not signal_data:
                 return jsonify({'success': False, 'error': 'Invalid request: missing JSON body'}), 400
 
-            # Validate always-required fields
-            required_fields = ['trade_pair', 'order_type']
+            # Get execution type first (needed to determine required fields)
+            execution_type = signal_data.get('execution_type', 'MARKET')
+
+            # Validate required fields based on execution type
+            # LIMIT_CANCEL only needs order_uuid (trade_pair and order_type are not required)
+            if execution_type == 'LIMIT_CANCEL':
+                required_fields = []
+            elif execution_type == 'BRACKET':
+                required_fields = ['trade_pair']
+            else:
+                required_fields = ['trade_pair', 'order_type']
+
             missing_fields = [field for field in required_fields if field not in signal_data]
             if missing_fields:
                 return jsonify({
@@ -179,8 +189,7 @@ class MinerRestServer(BaseRestServer):
                 }), 400
 
             # Validate exactly one of leverage/value/quantity is present
-            # Exception: BRACKET orders don't require size fields
-            execution_type = signal_data.get('execution_type', 'MARKET')
+            # Exception: BRACKET, LIMIT_CANCEL, LIMIT_EDIT don't require size fields
             if execution_type not in ['BRACKET', 'LIMIT_CANCEL', 'LIMIT_EDIT']:
                 position_size_fields = ['leverage', 'value', 'quantity']
                 provided_fields = [field for field in position_size_fields if field in signal_data]
