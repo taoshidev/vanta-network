@@ -694,14 +694,24 @@ class Position(BaseModel):
         if not is_first_order:
             if order.quantity:
                 proposed_quantity = self.net_quantity + order.quantity
-                if proposed_quantity <= 0:
+                # For LONG: close if proposed <= 0; For SHORT: close if proposed >= 0
+                if self.position_type == OrderType.LONG and proposed_quantity <= 0:
+                    order.leverage = -self.net_leverage
+                    order.order_type = OrderType.FLAT
+                    return True
+                elif self.position_type == OrderType.SHORT and proposed_quantity >= 0:
                     order.leverage = -self.net_leverage
                     order.order_type = OrderType.FLAT
                     return True
 
             if order.value:
                 proposed_value = self.net_value + order.value
-                if proposed_value <= 0:
+                # For LONG: close if proposed <= 0; For SHORT: close if proposed >= 0
+                if self.position_type == OrderType.LONG and proposed_value <= 0:
+                    order.leverage = -self.net_leverage
+                    order.order_type = OrderType.FLAT
+                    return True
+                elif self.position_type == OrderType.SHORT and proposed_value >= 0:
                     order.leverage = -self.net_leverage
                     order.order_type = OrderType.FLAT
                     return True
