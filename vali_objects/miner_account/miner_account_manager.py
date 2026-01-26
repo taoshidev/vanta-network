@@ -60,6 +60,7 @@ class MinerAccount:
     miner_hotkey: str
     cash_balance: float              # Available cash (for equities margin)
     total_borrowed_amount: float = 0.0  # Total margin loans outstanding
+    asset_class: Optional[TradePairCategory] = None  # EQUITIES, CRYPTO, FOREX
     collateral_records: List[CollateralRecord] = None  # Historical CollateralRecords (List[CollateralRecord])
     interest_payments: List[tuple] = None  # List of (timestamp_ms, amount, added_to_loan)
 
@@ -91,7 +92,8 @@ class MinerAccount:
             return ValiConfig.MIN_CAPITAL
 
         if timestamp_ms is None:
-            return max(self.collateral_records[-1].account_size, ValiConfig.MIN_CAPITAL)
+            theta = min(self.collateral_records[-1].account_size_theta, ValiConfig.MAX_COLLATERAL_BALANCE_THETA)
+            return max(theta * ValiConfig.COST_PER_THETA, ValiConfig.MIN_CAPITAL)
 
         # Get start of the requested day
         start_of_day_ms = int(
@@ -103,7 +105,8 @@ class MinerAccount:
         # Iterate in reversed order, return first record valid for or before the requested day
         for record in reversed(self.collateral_records):
             if record.valid_date_timestamp <= start_of_day_ms:
-                return max(record.account_size, ValiConfig.MIN_CAPITAL)
+                theta = min(record.account_size_theta, ValiConfig.MAX_COLLATERAL_BALANCE_THETA)
+                return max(theta * ValiConfig.COST_PER_THETA, ValiConfig.MIN_CAPITAL)
 
         # No valid record for the timestamp, return MIN_CAPITAL
         return ValiConfig.MIN_CAPITAL
@@ -186,6 +189,7 @@ class MinerAccount:
             'miner_hotkey': self.miner_hotkey,
             'account_size': self.get_account_size(),
             'cash_balance': self.cash_balance,
+            'asset_class': self.asset_class.value if self.asset_class else None,
             'total_borrowed_amount': self.total_borrowed_amount,
             'interest_payments': self.interest_payments
         }
@@ -251,6 +255,9 @@ class MinerAccountManager:
         self.MINER_ACCOUNTS_FILE = ValiBkpUtils.get_miner_account_sizes_file_location(
             running_unit_tests=running_unit_tests
         )
+        self.ASSET_SELECTIONS_FILE = ValiBkpUtils.get_asset_selections_file_location(
+            running_unit_tests=running_unit_tests
+        )
 
         # Load from disk
         self._load_accounts_from_disk()
@@ -265,8 +272,9 @@ class MinerAccountManager:
         """Load miner accounts from disk during initialization - protected by locks"""
         with self._disk_lock:
             try:
-                disk_data = ValiUtils.get_vali_json_file_dict(self.MINER_ACCOUNTS_FILE)
-                parsed_accounts = self._parse_accounts_dict(disk_data)
+                accounts_data = ValiUtils.get_vali_json_file_dict(self.MINER_ACCOUNTS_FILE)
+                asset_selection_data = dict(ValiUtils.get_vali_json_file(self.ASSET_SELECTIONS_FILE))
+                parsed_accounts = self._parse_accounts_dict(accounts_data, asset_selection_data)
 
                 with self._accounts_lock:
                     self.accounts.clear()
@@ -317,6 +325,7 @@ class MinerAccountManager:
 
                 # Add account-level fields to the last record
                 records_list[-1]["cash_balance"] = account.cash_balance
+                records_list[-1]["asset_class"] = account.asset_class.value if account.asset_class else None
                 records_list[-1]["total_borrowed_amount"] = account.total_borrowed_amount
                 records_list[-1]["interest_payments"] = account.interest_payments
 
@@ -324,12 +333,16 @@ class MinerAccountManager:
             return json_dict
 
     @staticmethod
-    def _parse_accounts_dict(data_dict: Dict[str, Any]) -> Dict[str, MinerAccount]:
+    def _parse_accounts_dict(data_dict: Dict[str, Any], asset_selection_dict: Optional[Dict[str, str]] = None) -> Dict[str, MinerAccount]:
         """Parse miner accounts from disk format back to MinerAccount objects.
 
         Format: {"hotkey": [list of CollateralRecord dicts]}
-        Account-level fields (cash_balance, total_borrowed_amount, interest_payments)
+        Account-level fields (cash_balance, asset_class, total_borrowed_amount, interest_payments)
         are stored on the last record in the list.
+
+        Args:
+            data_dict: Dict of hotkey -> list of collateral record dicts
+            asset_selection_dict: Optional dict of hotkey -> asset class string (for initial sync)
         """
         parsed_accounts = {}
 
@@ -370,10 +383,21 @@ class MinerAccountManager:
                 else:
                     account_size = ValiConfig.MIN_CAPITAL
 
+                # Get asset_class from asset_selections file (source of truth during migration)
+                asset_class = None
+                if asset_selection_dict:
+                    asset_class_str = asset_selection_dict.get(hotkey)
+                    if asset_class_str:
+                        try:
+                            asset_class = TradePairCategory(asset_class_str)
+                        except ValueError:
+                            bt.logging.warning(f"Unknown asset_class '{asset_class_str}' for {hotkey}")
+
                 parsed_accounts[hotkey] = MinerAccount(
                     miner_hotkey=hotkey,
                     cash_balance=cash_balance if cash_balance is not None else account_size,
                     total_borrowed_amount=total_borrowed,
+                    asset_class=asset_class,
                     collateral_records=collateral_records,
                     interest_payments=interest_payments
                 )
@@ -392,13 +416,13 @@ class MinerAccountManager:
             with self._accounts_lock:
                 if not account_sizes_data:
                     assert self.running_unit_tests, "Empty account sizes data can only be used in test mode"
-                    # Empty dict = clear all data (useful for test cleanup)
                     bt.logging.info("Clearing all miner accounts")
                     self.accounts.clear()
                     self._save_accounts_to_disk()
                     return
 
-                parsed_accounts = self._parse_accounts_dict(account_sizes_data)
+                asset_data = dict(ValiUtils.get_vali_json_file(self.ASSET_SELECTIONS_FILE))
+                parsed_accounts = self._parse_accounts_dict(account_sizes_data, asset_data)
                 self.accounts.clear()
                 self.accounts.update(parsed_accounts)
 
@@ -451,6 +475,10 @@ class MinerAccountManager:
             # Get asset selection multiplier for cash balance scaling
             asset_selection = self._asset_selection_client.get_asset_selection(hotkey)
             multiplier = ValiConfig.CASH_BALANCE_MULTIPLIER.get(asset_selection, 1.0)
+
+            # Update asset_class if not already set
+            if account.asset_class is None:
+                account.asset_class = asset_selection
 
             # Add the new record and update account size
             account.add_collateral_record(collateral_record, multiplier=multiplier)
@@ -544,6 +572,10 @@ class MinerAccountManager:
                 asset_selection = self._asset_selection_client.get_asset_selection(hotkey)
                 multiplier = ValiConfig.CASH_BALANCE_MULTIPLIER.get(asset_selection, 1.0)
 
+                # Update asset_class if not already set
+                if account.asset_class is None:
+                    account.asset_class = asset_selection
+
                 # Add the new record and update account size
                 account.add_collateral_record(collateral_record, multiplier=multiplier)
 
@@ -565,12 +597,13 @@ class MinerAccountManager:
     def get_or_create(self, hotkey: str) -> MinerAccount:
         """Get existing account or create new one with MIN_CAPITAL scaled by asset selection multiplier."""
         if hotkey not in self.accounts:
-            # Get asset selection multiplier for initial cash balance
+            # Get asset selection for initial cash balance and asset_class
             asset_selection = self._asset_selection_client.get_asset_selection(hotkey)
             multiplier = ValiConfig.CASH_BALANCE_MULTIPLIER.get(asset_selection, 1.0)
             self.accounts[hotkey] = MinerAccount(
                 miner_hotkey=hotkey,
                 cash_balance=ValiConfig.MIN_CAPITAL * multiplier,
+                asset_class=asset_selection,
             )
         return self.accounts[hotkey]
 
@@ -793,8 +826,9 @@ class MinerAccountManager:
             new_cash_balance = account_size * multiplier
             old_cash_balance = account.cash_balance
 
-            # Update cash balance
+            # Update cash balance and asset_class
             account.cash_balance = new_cash_balance
+            account.asset_class = asset_selection
 
             # Save to disk
             self._save_accounts_to_disk()
