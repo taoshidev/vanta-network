@@ -151,6 +151,7 @@ class MarketOrderManager():
                 position_uuid=miner_order_uuid if miner_order_uuid else str(uuid.uuid4()),
                 open_ms=order_time_ms,
                 trade_pair=trade_pair,
+                position_type=order_type,
                 account_size=account_size
             )
         return open_position
@@ -269,7 +270,8 @@ class MarketOrderManager():
 
         # Process cash balance after validation passes
         trade_pair_category = trade_pair.trade_pair_category
-        if order.order_type == OrderType.LONG:
+        if order.order_type == existing_position.position_type:
+            # raises SignalException if invalid
             order.margin_loan = self._miner_account_client.process_order_buy(miner_hotkey, value, trade_pair_category)
         else:
             processed_qty = existing_position.net_quantity if order.order_type == OrderType.FLAT else quantity

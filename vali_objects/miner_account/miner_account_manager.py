@@ -656,6 +656,7 @@ class MinerAccountManager:
         account = self.get_or_create(hotkey)
 
         if trade_pair_category != TradePairCategory.EQUITIES:
+            bt.logging.info(f"[PROCESS ORDER BUY] ${order_value_usd} for {trade_pair_category}")
             return 0.0
 
         with self._accounts_lock:
@@ -691,7 +692,7 @@ class MinerAccountManager:
                 "loan_delta": borrowed_amount
             }, running_unit_tests=self.running_unit_tests)
             bt.logging.info(
-                f"[{hotkey[:8]}] Margin purchase: ${order_value_usd:.2f}, margin used: ${initial_margin:.2f}, "
+                f"[PROCESS ORDER BUY] {hotkey} Margin purchase: ${order_value_usd:.2f}, margin used: ${initial_margin:.2f}, "
                 f"borrowed: ${borrowed_amount:.2f}, total borrowed: ${account.total_borrowed_amount:.2f}"
             )
             return borrowed_amount
@@ -712,6 +713,7 @@ class MinerAccountManager:
         account = self.get_or_create(hotkey)
 
         if trade_pair_category != TradePairCategory.EQUITIES:
+            bt.logging.info(f"[PROCESS ORDER SELL] ${sale_proceeds_usd} for {trade_pair_category}")
             return 0.0
 
         with self._accounts_lock:
@@ -729,7 +731,7 @@ class MinerAccountManager:
                 "loan_delta": -loan_repaid
             }, running_unit_tests=self.running_unit_tests)
             bt.logging.info(
-                f"[{hotkey[:8]}] Position closed: proceeds ${sale_proceeds_usd:.2f}, loan repaid: ${loan_repaid:.2f}, "
+                f"[PROCESS ORDER SELL] {hotkey} Sell processed: proceeds ${sale_proceeds_usd:.2f}, loan repaid: ${loan_repaid:.2f}, "
                 f"cash returned: ${cash_returned:.2f}, remaining borrowed: ${account.total_borrowed_amount:.2f}"
             )
             return loan_repaid
