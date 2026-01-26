@@ -19,9 +19,10 @@ import sys
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
+from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.enums.misc import OrderStatus
 from vali_objects.miner_account.miner_account_manager import MinerAccountManager
-from vali_objects.vali_config import TradePairCategory, ValiConfig, TradePair
+from vali_objects.vali_config import TradePairCategory, ValiConfig, TradePair, RPCConnectionMode
 
 DRY_RUN = False
 for arg in sys.argv[1:]:
@@ -94,6 +95,7 @@ def migrate_hotkey(
     manager: MinerAccountManager,
     hotkey: str,
     positions: list[Position],
+    asset_selections: dict[str, TradePairCategory],
     dry_run: bool
 ) -> dict:
     """Migrate cash balance for a single hotkey."""
@@ -103,12 +105,25 @@ def migrate_hotkey(
         'errors': []
     }
 
-    # Get account and reset cash balance to account_size * multiplier
-    account = manager.get_or_create(hotkey)
+    # Get account directly without RPC
+    account = manager.get_account(hotkey)
+    if not account:
+        # Create account manually
+        asset_class = asset_selections.get(hotkey)
+        multiplier = ValiConfig.CASH_BALANCE_MULTIPLIER.get(asset_class, 1.0) if asset_class else 1.0
+        from vali_objects.miner_account.miner_account_manager import MinerAccount
+        account = MinerAccount(
+            miner_hotkey=hotkey,
+            cash_balance=ValiConfig.MIN_CAPITAL * multiplier,
+            asset_class=asset_class,
+        )
+        manager.accounts[hotkey] = account
+
     account_size = account.get_account_size()
 
     # Get asset class multiplier
-    asset_class = account.asset_class
+    asset_class = asset_selections.get(hotkey) or account.asset_class
+    account.asset_class = asset_class
     multiplier = ValiConfig.CASH_BALANCE_MULTIPLIER.get(asset_class, 1.0) if asset_class else 1.0
 
     # Reset cash balance and borrowed amount for migration
@@ -139,14 +154,32 @@ def migrate_hotkey(
     return stats
 
 
+def load_asset_selections() -> dict[str, TradePairCategory]:
+    """Load asset selections directly from disk."""
+    asset_file = ValiBkpUtils.get_asset_selections_file_location(running_unit_tests=False)
+    asset_data = dict(ValiUtils.get_vali_json_file(asset_file))
+    result = {}
+    for hotkey, asset_str in asset_data.items():
+        try:
+            result[hotkey] = TradePairCategory(asset_str)
+        except ValueError:
+            pass
+    return result
+
+
 def main():
     print("Initializing MinerAccountManager...")
-    manager = MinerAccountManager(running_unit_tests=False)
+    manager = MinerAccountManager(running_unit_tests=False, connection_mode=RPCConnectionMode.LOCAL)
+
+    # Load asset selections from disk (bypass RPC)
+    asset_selections = load_asset_selections()
+    print(f"Loaded {len(asset_selections)} asset selections from disk")
 
     all_positions = load_open_positions()
-    if not all_positions:
-        print("No open positions found. Exiting.")
-        return
+
+    # Get all hotkeys that need processing (from accounts + positions)
+    all_hotkeys = set(manager.accounts.keys()) | set(all_positions.keys())
+    print(f"Total hotkeys to process: {len(all_hotkeys)}")
 
     total_stats = {
         'hotkeys_processed': 0,
@@ -155,10 +188,11 @@ def main():
         'errors': []
     }
 
-    print(f"\nProcessing {len(all_positions)} hotkeys...")
+    print(f"\nProcessing {len(all_hotkeys)} hotkeys...")
 
-    for hotkey, positions in all_positions.items():
-        stats = migrate_hotkey(manager, hotkey, positions, DRY_RUN)
+    for hotkey in all_hotkeys:
+        positions = all_positions.get(hotkey, [])
+        stats = migrate_hotkey(manager, hotkey, positions, asset_selections, DRY_RUN)
 
         # Print account status
         account = manager.get_account(hotkey)
