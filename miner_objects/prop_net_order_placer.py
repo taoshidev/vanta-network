@@ -631,12 +631,35 @@ class PropNetOrderPlacer:
                 validator_responses.append(mock_response)
             metrics.mark_network_end()
         else:
-            # Production mode: make actual network calls
-            # Use async context manager for automatic cleanup
+            # Production mode: send to all validators, only wait for MOTHERSHIP
+            mothership_hotkey = ValiConfig.MOTHERSHIP_HOTKEY_TESTNET if self.is_testnet else ValiConfig.MOTHERSHIP_HOTKEY
+            metrics.mark_network_start()
+
             async with bt.dendrite(wallet=self.wallet) as dendrite:
-                metrics.mark_network_start()
-                validator_responses: list[Synapse] = await dendrite.aquery(retry_status['validators_needing_retry'], send_signal_request)
-                metrics.mark_network_end()
+                # Create individual tasks for each validator
+                async def query_single(axon):
+                    try:
+                        responses = await dendrite.aquery([axon], send_signal_request)
+                        return responses[0] if responses else None
+                    except Exception as e:
+                        bt.logging.warning(f"Error querying {axon.hotkey}: {e}")
+                        return None
+
+                axons = retry_status['validators_needing_retry']
+                tasks = {axon.hotkey: asyncio.create_task(query_single(axon)) for axon in axons}
+
+                # Wait only for MOTHERSHIP validator
+                if mothership_hotkey in tasks:
+                    target_response = await tasks[mothership_hotkey]
+                    metrics.mark_network_end()
+                    # Let other tasks continue in background
+                    validator_responses = [target_response] if target_response else []
+                else:
+                    # MOTHERSHIP not in list, fall back to waiting for all
+                    bt.logging.warning(f"MOTHERSHIP {mothership_hotkey} not in validator list, waiting for all")
+                    responses = await asyncio.gather(*tasks.values())
+                    metrics.mark_network_end()
+                    validator_responses = [r for r in responses if r is not None]
 
         all_high_trust_validators_succeeded = True
         success_validators = set()
