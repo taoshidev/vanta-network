@@ -166,12 +166,14 @@ class MinerAccount:
         self.last_interest_date_ms = current_time_ms
 
         # Record interest transaction
-        MinerAccountManager.record_transaction(self.miner_hotkey, {
-            "timestamp_ms": current_time_ms,
-            "type": "INTEREST",
-            "cash_delta": -(daily_interest - unpaid_interest),  # cash paid (negative)
-            "loan_delta": unpaid_interest  # unpaid added to loan (positive)
-        }, running_unit_tests=running_unit_tests)
+        MinerAccountManager.record_transaction(
+            self.miner_hotkey,
+            timestamp_ms=current_time_ms,
+            tx_type="INTEREST",
+            cash_delta=-(daily_interest - unpaid_interest),
+            loan_delta=unpaid_interest,
+            running_unit_tests=running_unit_tests
+        )
 
         return True
 
@@ -630,12 +632,25 @@ class MinerAccountManager:
     # ==================== Margin/Cash Processing Methods ====================
 
     @staticmethod
-    def record_transaction(hotkey: str, transaction: dict, running_unit_tests: bool = False) -> None:
+    def record_transaction(
+        hotkey: str,
+        timestamp_ms: int,
+        tx_type: str,
+        cash_delta: float = 0.0,
+        loan_delta: float = 0.0,
+        running_unit_tests: bool = False
+    ) -> None:
         """Record a transaction to the miner's transaction history."""
         try:
             tx_path = ValiBkpUtils.get_miner_transactions_path(
                 hotkey, running_unit_tests=running_unit_tests
             )
+            transaction = {
+                "timestamp_ms": timestamp_ms,
+                "type": tx_type,
+                "cash_delta": cash_delta,
+                "loan_delta": loan_delta
+            }
             ValiBkpUtils.append_transaction(tx_path, transaction)
         except Exception as e:
             bt.logging.error(f"Failed to record transaction for {hotkey}: {e}")
@@ -654,22 +669,35 @@ class MinerAccountManager:
         Raises: SignalException if insufficient funds for margin
         """
         account = self.get_or_create(hotkey)
-
-        if trade_pair_category != TradePairCategory.EQUITIES:
-            bt.logging.info(f"[PROCESS ORDER BUY] ${order_value_usd} for {trade_pair_category}")
-            return 0.0
+        order_value_usd = abs(order_value_usd)
 
         with self._accounts_lock:
+            if trade_pair_category != TradePairCategory.EQUITIES:
+                # Crypto/Forex: cash only, no margin
+                if order_value_usd > account.cash_balance:
+                    raise SignalException(
+                        f"Insufficient cash. Need ${order_value_usd:.2f}, have ${account.cash_balance:.2f}"
+                    )
+                account.cash_balance -= order_value_usd
+                self._save_accounts_to_disk()
+                MinerAccountManager.record_transaction(
+                    hotkey, TimeUtil.now_in_millis(), "BUY",
+                    cash_delta=-order_value_usd,
+                    running_unit_tests=self.running_unit_tests
+                )
+                bt.logging.info(f"[{hotkey[:8]}] Cash purchase: ${order_value_usd:.2f}, remaining cash: ${account.cash_balance:.2f}")
+                return 0.0
+
+            # Equities: cash or margin
             if order_value_usd <= account.cash_balance:
                 # Pure cash purchase - no margin needed
                 account.cash_balance -= order_value_usd
                 self._save_accounts_to_disk()
-                MinerAccountManager.record_transaction(hotkey, {
-                    "timestamp_ms": TimeUtil.now_in_millis(),
-                    "type": "BUY",
-                    "cash_delta": -order_value_usd,
-                    "loan_delta": 0.0
-                }, running_unit_tests=self.running_unit_tests)
+                MinerAccountManager.record_transaction(
+                    hotkey, TimeUtil.now_in_millis(), "BUY",
+                    cash_delta=-order_value_usd,
+                    running_unit_tests=self.running_unit_tests
+                )
                 bt.logging.info(f"[{hotkey[:8]}] Cash purchase: ${order_value_usd:.2f}, remaining cash: ${account.cash_balance:.2f}")
                 return 0.0
 
@@ -685,14 +713,14 @@ class MinerAccountManager:
             account.total_borrowed_amount += borrowed_amount
 
             self._save_accounts_to_disk()
-            MinerAccountManager.record_transaction(hotkey, {
-                "timestamp_ms": TimeUtil.now_in_millis(),
-                "type": "BUY",
-                "cash_delta": -initial_margin,
-                "loan_delta": borrowed_amount
-            }, running_unit_tests=self.running_unit_tests)
+            MinerAccountManager.record_transaction(
+                hotkey, TimeUtil.now_in_millis(), "BUY",
+                cash_delta=-initial_margin,
+                loan_delta=borrowed_amount,
+                running_unit_tests=self.running_unit_tests
+            )
             bt.logging.info(
-                f"[PROCESS ORDER BUY] {hotkey} Margin purchase: ${order_value_usd:.2f}, margin used: ${initial_margin:.2f}, "
+                f"[{hotkey[:8]}] Margin purchase: ${order_value_usd:.2f}, margin used: ${initial_margin:.2f}, "
                 f"borrowed: ${borrowed_amount:.2f}, total borrowed: ${account.total_borrowed_amount:.2f}"
             )
             return borrowed_amount
@@ -711,12 +739,23 @@ class MinerAccountManager:
         Returns: loan_repaid
         """
         account = self.get_or_create(hotkey)
-
-        if trade_pair_category != TradePairCategory.EQUITIES:
-            bt.logging.info(f"[PROCESS ORDER SELL] ${sale_proceeds_usd} for {trade_pair_category}")
-            return 0.0
+        sale_proceeds_usd = abs(sale_proceeds_usd)
+        position_margin_loan = abs(position_margin_loan)
 
         with self._accounts_lock:
+            if trade_pair_category != TradePairCategory.EQUITIES:
+                # Crypto/Forex: no margin loans, all proceeds return to cash
+                account.cash_balance += sale_proceeds_usd
+                self._save_accounts_to_disk()
+                MinerAccountManager.record_transaction(
+                    hotkey, TimeUtil.now_in_millis(), "SELL",
+                    cash_delta=sale_proceeds_usd,
+                    running_unit_tests=self.running_unit_tests
+                )
+                bt.logging.info(f"[{hotkey[:8]}] Sell processed: ${sale_proceeds_usd:.2f}, cash: ${account.cash_balance:.2f}")
+                return 0.0
+
+            # Equities: pay off loan first, return rest to cash
             loan_repaid = min(position_margin_loan, sale_proceeds_usd)
             cash_returned = sale_proceeds_usd - loan_repaid
 
@@ -724,14 +763,14 @@ class MinerAccountManager:
             account.cash_balance += cash_returned
 
             self._save_accounts_to_disk()
-            MinerAccountManager.record_transaction(hotkey, {
-                "timestamp_ms": TimeUtil.now_in_millis(),
-                "type": "SELL",
-                "cash_delta": cash_returned,
-                "loan_delta": -loan_repaid
-            }, running_unit_tests=self.running_unit_tests)
+            MinerAccountManager.record_transaction(
+                hotkey, TimeUtil.now_in_millis(), "SELL",
+                cash_delta=cash_returned,
+                loan_delta=-loan_repaid,
+                running_unit_tests=self.running_unit_tests
+            )
             bt.logging.info(
-                f"[PROCESS ORDER SELL] {hotkey} Sell processed: proceeds ${sale_proceeds_usd:.2f}, loan repaid: ${loan_repaid:.2f}, "
+                f"[{hotkey[:8]}] Sell processed: proceeds ${sale_proceeds_usd:.2f}, loan repaid: ${loan_repaid:.2f}, "
                 f"cash returned: ${cash_returned:.2f}, remaining borrowed: ${account.total_borrowed_amount:.2f}"
             )
             return loan_repaid

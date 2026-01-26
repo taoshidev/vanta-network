@@ -272,7 +272,7 @@ class MarketOrderManager():
         trade_pair_category = trade_pair.trade_pair_category
         if order.order_type == existing_position.position_type:
             # raises SignalException if invalid
-            order.margin_loan = self._miner_account_client.process_order_buy(miner_hotkey, value, trade_pair_category)
+            order.margin_loan = self._miner_account_client.process_order_buy(miner_hotkey, abs(value), trade_pair_category)
         else:
             processed_qty = existing_position.net_quantity if order.order_type == OrderType.FLAT else quantity
             sale_proceeds = processed_qty * order.price
