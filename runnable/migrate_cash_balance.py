@@ -110,8 +110,6 @@ def migrate_hotkey(
     # Get asset class multiplier
     asset_class = account.asset_class
     multiplier = ValiConfig.CASH_BALANCE_MULTIPLIER.get(asset_class, 1.0) if asset_class else 1.0
-    if asset_class == TradePairCategory.EQUITIES:
-        return stats
 
     # Reset cash balance and borrowed amount for migration
     initial_cash = account_size * multiplier
