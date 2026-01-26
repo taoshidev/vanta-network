@@ -62,14 +62,12 @@ class MinerAccount:
     total_borrowed_amount: float = 0.0  # Total margin loans outstanding
     asset_class: Optional[TradePairCategory] = None  # EQUITIES, CRYPTO, FOREX
     collateral_records: List[CollateralRecord] = None  # Historical CollateralRecords (List[CollateralRecord])
-    interest_payments: List[tuple] = None  # List of (timestamp_ms, amount, added_to_loan)
+    last_interest_date_ms: Optional[int] = None  # Last date interest was applied
 
     def __post_init__(self):
-        """Initialize collateral_records and interest_payments to empty list if None."""
+        """Initialize collateral_records to empty list if None."""
         if self.collateral_records is None:
             self.collateral_records = []
-        if self.interest_payments is None:
-            self.interest_payments = []
 
     def add_collateral_record(self, record: 'CollateralRecord', multiplier: float = 1.0):
         """Add a new collateral record and update account_size.
@@ -111,19 +109,13 @@ class MinerAccount:
         # No valid record for the timestamp, return MIN_CAPITAL
         return ValiConfig.MIN_CAPITAL
 
-    def _trim_interest_payments(self, current_time_ms: int):
-        """Remove interest entries older than 60 days."""
-        if not self.interest_payments:
-            return
-        cutoff_ms = current_time_ms - (60 * 24 * 60 * 60 * 1000)  # 60 days in ms
-        self.interest_payments = [
-            entry for entry in self.interest_payments
-            if entry[0] >= cutoff_ms
-        ]
-
-    def apply_interest(self, current_time_ms: int) -> bool:
+    def apply_interest(self, current_time_ms: int, running_unit_tests: bool = False) -> bool:
         """
         Apply daily interest to this account if needed.
+
+        Args:
+            current_time_ms: Current timestamp in milliseconds
+            running_unit_tests: Whether running in test mode (for transaction recording)
 
         Returns:
             True if interest was processed for this hotkey, False otherwise
@@ -137,13 +129,13 @@ class MinerAccount:
         current_date = datetime.fromtimestamp(current_time_ms / 1000, tz=timezone.utc).date()
 
         # First time seeing this loan - mark date, don't charge (first day free)
-        if not self.interest_payments:
-            self.interest_payments.append((current_time_ms, 0.0, 0.0))
+        if self.last_interest_date_ms is None:
+            self.last_interest_date_ms = current_time_ms
             return True
 
-        # Check last applied date from history
+        # Check last applied date
         last_applied_date = datetime.fromtimestamp(
-            self.interest_payments[-1][0] / 1000, tz=timezone.utc
+            self.last_interest_date_ms / 1000, tz=timezone.utc
         ).date()
         if last_applied_date == current_date:
             return False
@@ -170,9 +162,17 @@ class MinerAccount:
                 f"total borrowed: ${self.total_borrowed_amount:.2f}"
             )
 
-        # Record interest payment in history
-        self.interest_payments.append((current_time_ms, daily_interest, unpaid_interest))
-        self._trim_interest_payments(current_time_ms)
+        # Update last interest date
+        self.last_interest_date_ms = current_time_ms
+
+        # Record interest transaction
+        MinerAccountManager.record_transaction(self.miner_hotkey, {
+            "timestamp_ms": current_time_ms,
+            "type": "INTEREST",
+            "cash_delta": -(daily_interest - unpaid_interest),  # cash paid (negative)
+            "loan_delta": unpaid_interest  # unpaid added to loan (positive)
+        }, running_unit_tests=running_unit_tests)
+
         return True
 
     def to_dict(self, include_collateral_records: bool = False) -> dict:
@@ -191,7 +191,7 @@ class MinerAccount:
             'cash_balance': self.cash_balance,
             'asset_class': self.asset_class.value if self.asset_class else None,
             'total_borrowed_amount': self.total_borrowed_amount,
-            'interest_payments': self.interest_payments
+            'last_interest_date_ms': self.last_interest_date_ms
         }
 
         if include_collateral_records:
@@ -327,7 +327,7 @@ class MinerAccountManager:
                 records_list[-1]["cash_balance"] = account.cash_balance
                 records_list[-1]["asset_class"] = account.asset_class.value if account.asset_class else None
                 records_list[-1]["total_borrowed_amount"] = account.total_borrowed_amount
-                records_list[-1]["interest_payments"] = account.interest_payments
+                records_list[-1]["last_interest_date_ms"] = account.last_interest_date_ms
 
                 json_dict[hotkey] = records_list
             return json_dict
@@ -337,7 +337,7 @@ class MinerAccountManager:
         """Parse miner accounts from disk format back to MinerAccount objects.
 
         Format: {"hotkey": [list of CollateralRecord dicts]}
-        Account-level fields (cash_balance, asset_class, total_borrowed_amount, interest_payments)
+        Account-level fields (cash_balance, asset_class, total_borrowed_amount, last_interest_date_ms)
         are stored on the last record in the list.
 
         Args:
@@ -359,13 +359,11 @@ class MinerAccountManager:
                     last_record = records_list[-1]
                     cash_balance = last_record.get("cash_balance")
                     total_borrowed = last_record.get("total_borrowed_amount", 0.0)
-                    interest_payments = last_record.get("interest_payments", [])
-                    # Convert list format back to tuples
-                    interest_payments = [tuple(entry) for entry in interest_payments]
+                    last_interest_date_ms = last_record.get("last_interest_date_ms")
                 else:
                     cash_balance = None  # Will default to account_size
                     total_borrowed = 0.0
-                    interest_payments = []
+                    last_interest_date_ms = None
 
                 # Parse collateral records
                 for record_data in records_list:
@@ -399,7 +397,7 @@ class MinerAccountManager:
                     total_borrowed_amount=total_borrowed,
                     asset_class=asset_class,
                     collateral_records=collateral_records,
-                    interest_payments=interest_payments
+                    last_interest_date_ms=last_interest_date_ms
                 )
 
             except Exception as e:
@@ -631,6 +629,17 @@ class MinerAccountManager:
 
     # ==================== Margin/Cash Processing Methods ====================
 
+    @staticmethod
+    def record_transaction(hotkey: str, transaction: dict, running_unit_tests: bool = False) -> None:
+        """Record a transaction to the miner's transaction history."""
+        try:
+            tx_path = ValiBkpUtils.get_miner_transactions_path(
+                hotkey, running_unit_tests=running_unit_tests
+            )
+            ValiBkpUtils.append_transaction(tx_path, transaction)
+        except Exception as e:
+            bt.logging.error(f"Failed to record transaction for {hotkey}: {e}")
+
     def process_order_buy(self, hotkey: str, order_value_usd: float,
                           trade_pair_category: TradePairCategory) -> float:
         """
@@ -654,6 +663,12 @@ class MinerAccountManager:
                 # Pure cash purchase - no margin needed
                 account.cash_balance -= order_value_usd
                 self._save_accounts_to_disk()
+                MinerAccountManager.record_transaction(hotkey, {
+                    "timestamp_ms": TimeUtil.now_in_millis(),
+                    "type": "BUY",
+                    "cash_delta": -order_value_usd,
+                    "loan_delta": 0.0
+                }, running_unit_tests=self.running_unit_tests)
                 bt.logging.info(f"[{hotkey[:8]}] Cash purchase: ${order_value_usd:.2f}, remaining cash: ${account.cash_balance:.2f}")
                 return 0.0
 
@@ -669,6 +684,12 @@ class MinerAccountManager:
             account.total_borrowed_amount += borrowed_amount
 
             self._save_accounts_to_disk()
+            MinerAccountManager.record_transaction(hotkey, {
+                "timestamp_ms": TimeUtil.now_in_millis(),
+                "type": "BUY",
+                "cash_delta": -initial_margin,
+                "loan_delta": borrowed_amount
+            }, running_unit_tests=self.running_unit_tests)
             bt.logging.info(
                 f"[{hotkey[:8]}] Margin purchase: ${order_value_usd:.2f}, margin used: ${initial_margin:.2f}, "
                 f"borrowed: ${borrowed_amount:.2f}, total borrowed: ${account.total_borrowed_amount:.2f}"
@@ -701,6 +722,12 @@ class MinerAccountManager:
             account.cash_balance += cash_returned
 
             self._save_accounts_to_disk()
+            MinerAccountManager.record_transaction(hotkey, {
+                "timestamp_ms": TimeUtil.now_in_millis(),
+                "type": "SELL",
+                "cash_delta": cash_returned,
+                "loan_delta": -loan_repaid
+            }, running_unit_tests=self.running_unit_tests)
             bt.logging.info(
                 f"[{hotkey[:8]}] Position closed: proceeds ${sale_proceeds_usd:.2f}, loan repaid: ${loan_repaid:.2f}, "
                 f"cash returned: ${cash_returned:.2f}, remaining borrowed: ${account.total_borrowed_amount:.2f}"
@@ -725,7 +752,7 @@ class MinerAccountManager:
         with self._accounts_lock:
             for hotkey, account in self.accounts.items():
                 # Let the account handle its own interest calculation
-                processed = account.apply_interest(current_time_ms)
+                processed = account.apply_interest(current_time_ms, running_unit_tests=self.running_unit_tests)
                 if processed:
                     accounts_processed += 1
 
@@ -735,6 +762,59 @@ class MinerAccountManager:
                 bt.logging.success(f"Daily interest applied to {accounts_processed} accounts")
 
         return accounts_processed
+
+    def reconstruct_account_from_transactions(self, hotkey: str) -> Optional[MinerAccount]:
+        """
+        Reconstruct a MinerAccount from collateral records and transaction history.
+        Returns None if account doesn't exist.
+        """
+        account = self.get_account(hotkey)
+        if not account or not account.collateral_records:
+            return None
+
+        multiplier = ValiConfig.CASH_BALANCE_MULTIPLIER.get(account.asset_class, 1.0) if account.asset_class else 1.0
+
+        # Start with first collateral record
+        initial_size = account.collateral_records[0].account_size
+        cash_balance = initial_size * multiplier
+        total_borrowed = 0.0
+
+        # Read transactions
+        tx_path = ValiBkpUtils.get_miner_transactions_path(hotkey, running_unit_tests=self.running_unit_tests)
+        transactions = ValiBkpUtils.read_transactions(tx_path)
+
+        # Track collateral changes
+        cr_idx = 1
+        for tx in sorted(transactions, key=lambda x: x['timestamp_ms']):
+            tx_time = tx['timestamp_ms']
+
+            # Apply collateral changes before this transaction
+            while cr_idx < len(account.collateral_records):
+                cr = account.collateral_records[cr_idx]
+                if cr.valid_date_timestamp <= tx_time:
+                    prev_size = account.collateral_records[cr_idx - 1].account_size
+                    cash_balance += (cr.account_size - prev_size) * multiplier
+                    cr_idx += 1
+                else:
+                    break
+
+            cash_balance += tx['cash_delta']
+            total_borrowed += tx['loan_delta']
+
+        # Apply remaining collateral records
+        while cr_idx < len(account.collateral_records):
+            cr = account.collateral_records[cr_idx]
+            prev_size = account.collateral_records[cr_idx - 1].account_size
+            cash_balance += (cr.account_size - prev_size) * multiplier
+            cr_idx += 1
+
+        return MinerAccount(
+            miner_hotkey=hotkey,
+            cash_balance=cash_balance,
+            total_borrowed_amount=total_borrowed,
+            asset_class=account.asset_class,
+            collateral_records=account.collateral_records
+        )
 
     # ==================== Asset Selection / Withdrawal Methods ====================
 

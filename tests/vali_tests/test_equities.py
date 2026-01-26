@@ -16,6 +16,7 @@ from vali_objects.vali_dataclasses.order import Order
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.exceptions.signal_exception import SignalException
 from vali_objects.miner_account.miner_account_manager import MinerAccount, CollateralRecord
+from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 
 
 class TestEquities(TestBase):
@@ -909,6 +910,224 @@ class TestEquities(TestBase):
                              msg="After FLAT: Cash should return to $100,000")
         self.assertAlmostEqual(account['total_borrowed_amount'], 0.0, places=2,
                              msg="After FLAT: Borrowed should be $0")
+
+
+    # ==================== Transaction History Tests ====================
+
+    def test_transaction_history_buy_cash(self):
+        """
+        Test that cash purchases create BUY transaction with correct deltas.
+        """
+        # Clear any existing transactions
+        tx_path = ValiBkpUtils.get_miner_transactions_path(
+            self.DEFAULT_MINER_HOTKEY, running_unit_tests=True
+        )
+        ValiBkpUtils.clear_transactions(tx_path)
+
+        # Make a cash purchase
+        order_value = 50_000.0
+        self.miner_account_manager.process_order_buy(
+            self.DEFAULT_MINER_HOTKEY,
+            order_value,
+            TradePairCategory.EQUITIES
+        )
+
+        # Read transactions
+        transactions = ValiBkpUtils.read_transactions(tx_path)
+
+        self.assertEqual(len(transactions), 1)
+        tx = transactions[0]
+        self.assertEqual(tx['type'], 'BUY')
+        self.assertAlmostEqual(tx['cash_delta'], -order_value, places=2)
+        self.assertEqual(tx['loan_delta'], 0.0)
+        self.assertIn('timestamp_ms', tx)
+
+    def test_transaction_history_buy_margin(self):
+        """
+        Test that margin purchases create BUY transaction with cash and loan deltas.
+        """
+        tx_path = ValiBkpUtils.get_miner_transactions_path(
+            self.DEFAULT_MINER_HOTKEY, running_unit_tests=True
+        )
+        ValiBkpUtils.clear_transactions(tx_path)
+
+        # Make a margin purchase ($150k with $100k cash = 50% margin)
+        order_value = 150_000.0
+        initial_margin = order_value * 0.5
+        borrowed = order_value - initial_margin
+
+        self.miner_account_manager.process_order_buy(
+            self.DEFAULT_MINER_HOTKEY,
+            order_value,
+            TradePairCategory.EQUITIES
+        )
+
+        transactions = ValiBkpUtils.read_transactions(tx_path)
+
+        self.assertEqual(len(transactions), 1)
+        tx = transactions[0]
+        self.assertEqual(tx['type'], 'BUY')
+        self.assertAlmostEqual(tx['cash_delta'], -initial_margin, places=2)
+        self.assertAlmostEqual(tx['loan_delta'], borrowed, places=2)
+
+    def test_transaction_history_sell(self):
+        """
+        Test that selling creates SELL transaction with correct deltas.
+        """
+        tx_path = ValiBkpUtils.get_miner_transactions_path(
+            self.DEFAULT_MINER_HOTKEY, running_unit_tests=True
+        )
+        ValiBkpUtils.clear_transactions(tx_path)
+
+        # First buy on margin
+        order_value = 150_000.0
+        borrowed = self.miner_account_manager.process_order_buy(
+            self.DEFAULT_MINER_HOTKEY,
+            order_value,
+            TradePairCategory.EQUITIES
+        )
+
+        # Then sell
+        sale_proceeds = 160_000.0
+        loan_repaid = self.miner_account_manager.process_order_sell(
+            self.DEFAULT_MINER_HOTKEY,
+            sale_proceeds,
+            borrowed,
+            TradePairCategory.EQUITIES
+        )
+
+        transactions = ValiBkpUtils.read_transactions(tx_path)
+
+        self.assertEqual(len(transactions), 2)
+
+        # Check SELL transaction
+        sell_tx = transactions[1]
+        self.assertEqual(sell_tx['type'], 'SELL')
+        expected_cash_returned = sale_proceeds - loan_repaid
+        self.assertAlmostEqual(sell_tx['cash_delta'], expected_cash_returned, places=2)
+        self.assertAlmostEqual(sell_tx['loan_delta'], -loan_repaid, places=2)
+
+    def test_transaction_history_interest_initialization(self):
+        """
+        Test that interest system initializes correctly.
+        First day marks loan start but doesn't charge interest.
+        """
+        tx_path = ValiBkpUtils.get_miner_transactions_path(
+            self.DEFAULT_MINER_HOTKEY, running_unit_tests=True
+        )
+        ValiBkpUtils.clear_transactions(tx_path)
+
+        # Buy on margin to create a loan
+        order_value = 150_000.0
+        borrowed = self.miner_account_manager.process_order_buy(
+            self.DEFAULT_MINER_HOTKEY,
+            order_value,
+            TradePairCategory.EQUITIES
+        )
+        self.assertGreater(borrowed, 0)
+
+        # Apply interest (first day initializes, no interest charged)
+        accounts_processed = self.miner_account_manager.apply_daily_interest()
+
+        # First call initializes but doesn't charge interest (no INTEREST tx)
+        transactions = ValiBkpUtils.read_transactions(tx_path)
+
+        # Should have 1 BUY transaction from the margin purchase
+        self.assertEqual(len(transactions), 1)
+        self.assertEqual(transactions[0]['type'], 'BUY')
+
+        # Verify the account processed (initialization counts as processed)
+        self.assertEqual(accounts_processed, 1)
+
+        # Verify last_interest_date_ms was set
+        account = self.miner_account_manager.get_account(self.DEFAULT_MINER_HOTKEY)
+        self.assertIsNotNone(account['last_interest_date_ms'])
+
+    def test_reconstruct_account_from_transactions(self):
+        """
+        Test that account can be reconstructed from collateral records and transactions.
+        """
+        tx_path = ValiBkpUtils.get_miner_transactions_path(
+            self.DEFAULT_MINER_HOTKEY, running_unit_tests=True
+        )
+        ValiBkpUtils.clear_transactions(tx_path)
+
+        # Execute some operations
+        # 1. Cash purchase ($50k)
+        self.miner_account_manager.process_order_buy(
+            self.DEFAULT_MINER_HOTKEY,
+            50_000.0,
+            TradePairCategory.EQUITIES
+        )
+
+        # 2. Margin purchase ($80k with 50% margin = $40k cash, $40k borrowed)
+        borrowed = self.miner_account_manager.process_order_buy(
+            self.DEFAULT_MINER_HOTKEY,
+            80_000.0,
+            TradePairCategory.EQUITIES
+        )
+
+        # 3. Sell with proceeds ($90k - repays loan, rest to cash)
+        self.miner_account_manager.process_order_sell(
+            self.DEFAULT_MINER_HOTKEY,
+            90_000.0,
+            borrowed,
+            TradePairCategory.EQUITIES
+        )
+
+        # Get actual account state
+        actual_account = self.miner_account_manager.get_account(self.DEFAULT_MINER_HOTKEY)
+        actual_cash = actual_account['cash_balance']
+        actual_borrowed = actual_account['total_borrowed_amount']
+
+        # Reconstruct account from transactions
+        reconstructed = self.miner_account_manager.reconstruct_account_from_transactions(
+            self.DEFAULT_MINER_HOTKEY
+        )
+
+        self.assertIsNotNone(reconstructed)
+        self.assertAlmostEqual(reconstructed['cash_balance'], actual_cash, places=2,
+                             msg="Reconstructed cash balance should match actual")
+        self.assertAlmostEqual(reconstructed['total_borrowed_amount'], actual_borrowed, places=2,
+                             msg="Reconstructed borrowed amount should match actual")
+
+    def test_transaction_file_format_ndjson(self):
+        """
+        Test that transactions are stored in NDJSON format (one JSON object per line).
+        """
+        tx_path = ValiBkpUtils.get_miner_transactions_path(
+            self.DEFAULT_MINER_HOTKEY, running_unit_tests=True
+        )
+        ValiBkpUtils.clear_transactions(tx_path)
+
+        # Make multiple transactions
+        self.miner_account_manager.process_order_buy(
+            self.DEFAULT_MINER_HOTKEY,
+            30_000.0,
+            TradePairCategory.EQUITIES
+        )
+        self.miner_account_manager.process_order_buy(
+            self.DEFAULT_MINER_HOTKEY,
+            20_000.0,
+            TradePairCategory.EQUITIES
+        )
+
+        # Read file directly and verify format
+        import os
+        self.assertTrue(os.path.exists(tx_path))
+
+        with open(tx_path, 'r') as f:
+            lines = f.readlines()
+
+        self.assertEqual(len(lines), 2)
+        for line in lines:
+            # Each line should be valid JSON
+            import json
+            tx = json.loads(line.strip())
+            self.assertIn('type', tx)
+            self.assertIn('timestamp_ms', tx)
+            self.assertIn('cash_delta', tx)
+            self.assertIn('loan_delta', tx)
 
 
 if __name__ == '__main__':

@@ -243,3 +243,14 @@ class MinerAccountClient(RPCClientBase):
             True if cash balance was updated, False otherwise
         """
         return self._server.recalculate_cash_balance_for_asset_selection(hotkey, asset_selection)
+
+    def apply_daily_interest(self) -> int:
+        """Apply daily interest to accounts with outstanding margin loans."""
+        return self._server.apply_daily_interest()
+
+    def reconstruct_account_from_transactions(self, hotkey: str) -> Optional[dict]:
+        """
+        Reconstruct a MinerAccount from collateral records and transaction history.
+        Returns None if account doesn't exist.
+        """
+        return self._server.reconstruct_account_from_transactions(hotkey)
