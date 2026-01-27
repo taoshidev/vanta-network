@@ -256,6 +256,10 @@ class OrderProcessor:
         The limit_order_manager validates the position exists and forces the order type
         to match the position direction.
 
+        Supports two input formats:
+        1. Top-level stop_loss/take_profit fields
+        2. Single bracket_orders entry (when top-level fields are empty)
+
         Args:
             signal: Signal dictionary with bracket order details
             trade_pair: Parsed TradePair object
@@ -271,12 +275,22 @@ class OrderProcessor:
         Raises:
             SignalException: If required fields are missing, no position exists, or processing fails
         """
-        # Parse size fields using common method
-        leverage, value, quantity = OrderProcessor.parse_size(signal)
-
-        # Extract other signal data
+        # Extract signal data
         stop_loss = signal.get("stop_loss")
         take_profit = signal.get("take_profit")
+        bracket_orders = signal.get("bracket_orders")
+
+        # If top-level SL/TP empty but bracket_orders provided, extract from first entry
+        if stop_loss is None and take_profit is None and bracket_orders:
+            if len(bracket_orders) != 1:
+                raise SignalException("bracket_orders must contain exactly one entry when used for BRACKET orders")
+
+            signal = {**signal, **bracket_orders[0]}
+            stop_loss = signal.get("stop_loss")
+            take_profit = signal.get("take_profit")
+
+        # Parse size fields using common method
+        leverage, value, quantity = OrderProcessor.parse_size(signal)
 
         # Validate that at least one of SL or TP is set
         if stop_loss is None and take_profit is None:

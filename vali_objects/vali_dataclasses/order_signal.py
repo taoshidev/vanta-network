@@ -102,8 +102,10 @@ class Signal(BaseModel):
         elif execution_type == ExecutionType.BRACKET:
             sl = values.get('stop_loss')
             tp = values.get('take_profit')
-            if not sl and not tp:
-                raise ValueError("Either stop_loss or take_profit must be set for BRACKET orders")
+            bracket_orders = values.get('bracket_orders')
+            # Allow bracket_orders as alternative to top-level stop_loss/take_profit
+            if not sl and not tp and not bracket_orders:
+                raise ValueError(f"Either stop_loss, take_profit, or bracket_orders must be set for BRACKET orders")
             if sl and tp and sl == tp:
                 raise ValueError("stop_loss and take_profit must be unique")
 
