@@ -58,6 +58,9 @@ class ValidatorSyncBase():
         # Create own LimitOrderClient (forward compatibility - no parameter passing)
         from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
         self._limit_order_client = LimitOrderClient(running_unit_tests=running_unit_tests)
+        # Create own MinerAccountClient (forward compatibility - no parameter passing)
+        from vali_objects.miner_account.miner_account_client import MinerAccountClient
+        self._miner_account_client = MinerAccountClient(running_unit_tests=running_unit_tests)
         self.init_data()
 
     def init_data(self):
@@ -184,14 +187,12 @@ class ValidatorSyncBase():
             if not shadow_mode:
                 self._challenge_period_client.sync_challenge_period_data(challengeperiod_data)
 
-        # Sync miner account sizes if available and contract manager is present
+        # Sync miner account sizes if available
         miner_account_sizes_data = candidate_data.get('miner_account_sizes', {})
-        if miner_account_sizes_data and hasattr(self, 'contract_manager') and self.contract_manager:
+        if miner_account_sizes_data:
             if not shadow_mode:
                 bt.logging.info(f"Syncing {len(miner_account_sizes_data)} miner account size records from auto sync")
-                self.contract_manager.sync_miner_account_sizes_data(miner_account_sizes_data)
-        elif miner_account_sizes_data:
-            bt.logging.warning("Miner account sizes data found but contract manager not available for sync")
+                self._miner_account_client.sync_miner_account_sizes_data(miner_account_sizes_data)
 
         eliminated_hotkeys = set([e['hotkey'] for e in eliminations])
         # For a healthy validator, the existing positions will always be a superset of the candidate positions
