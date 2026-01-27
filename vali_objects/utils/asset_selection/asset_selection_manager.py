@@ -441,7 +441,7 @@ class AssetSelectionManager:
             with self.asset_selection_lock:
                 # Extract data from the synapse
                 hotkey = asset_selection_data.get("hotkey")
-                asset_selection = asset_selection_data.get("")
+                asset_selection = asset_selection_data.get("asset_selection")
                 bt.logging.info(f"[ASSET_MGR] Processing asset selection for miner {hotkey}")
 
                 if not all([hotkey, asset_selection is not None]):
