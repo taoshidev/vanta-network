@@ -2,6 +2,7 @@
 Migration script to track cash balance for open positions.
 
 This script migrates miner accounts to track cash balance by:
+- Clearing all existing transaction JSONL files
 - Setting initial cash balance based on account size and asset class multiplier
 - Processing each order chronologically using MinerAccountManager methods
 - Only processes currently OPEN positions
@@ -77,18 +78,30 @@ def process_order_for_migration(
     position: Position
 ):
     """Process a single order for cash balance migration."""
-    trade_pair_category = position.trade_pair.trade_pair_category
+    account = manager.get_account(hotkey)
+    if not account:
+        return
 
     # Determine if this is a buy (adding to position) or sell (reducing/closing)
     is_buy = order.order_type == position.position_type
 
     if is_buy:
         order_value = abs(order.value) if order.value else 0.0
-        manager.process_order_buy(hotkey, order_value, trade_pair_category)
+        account.cash_balance -= order_value
+        MinerAccountManager.record_transaction(
+            hotkey, order.processed_ms, "BUY",
+            cash_delta=-order_value,
+            running_unit_tests=False
+        )
     else:
         qty = abs(order.quantity) if order.quantity else 0.0
         sale_proceeds = qty * order.price if order.price else 0.0
-        manager.process_order_sell(hotkey, abs(sale_proceeds), 0, trade_pair_category)
+        account.cash_balance += abs(sale_proceeds)
+        MinerAccountManager.record_transaction(
+            hotkey, order.processed_ms, "SELL",
+            cash_delta=abs(sale_proceeds),
+            running_unit_tests=False
+        )
 
 
 def migrate_hotkey(
@@ -167,9 +180,35 @@ def load_asset_selections() -> dict[str, TradePairCategory]:
     return result
 
 
+def clear_all_transactions(dry_run: bool) -> int:
+    """Clear all transaction JSONL files for all miners."""
+    base_dir = ValiBkpUtils.get_miner_dir(running_unit_tests=False)
+    cleared_count = 0
+
+    if not os.path.exists(base_dir):
+        return 0
+
+    for hotkey in os.listdir(base_dir):
+        hotkey_path = os.path.join(base_dir, hotkey)
+        if not os.path.isdir(hotkey_path):
+            continue
+
+        tx_path = ValiBkpUtils.get_miner_transactions_path(hotkey, running_unit_tests=False)
+        if os.path.exists(tx_path):
+            if not dry_run:
+                ValiBkpUtils.clear_transactions(tx_path)
+            cleared_count += 1
+
+    return cleared_count
+
+
 def main():
     print("Initializing MinerAccountManager...")
     manager = MinerAccountManager(running_unit_tests=False, connection_mode=RPCConnectionMode.LOCAL)
+
+    # Clear all transaction JSONL files
+    cleared_count = clear_all_transactions(DRY_RUN)
+    print(f"Cleared {cleared_count} transaction files")
 
     # Load asset selections from disk (bypass RPC)
     asset_selections = load_asset_selections()
@@ -178,7 +217,7 @@ def main():
     all_positions = load_open_positions()
 
     # Get all hotkeys that need processing (from accounts + positions)
-    all_hotkeys = set(manager.accounts.keys()) | set(all_positions.keys())
+    all_hotkeys = set(asset_selections.keys() | manager.accounts.keys() | set(all_positions.keys()))
     print(f"Total hotkeys to process: {len(all_hotkeys)}")
 
     total_stats = {
