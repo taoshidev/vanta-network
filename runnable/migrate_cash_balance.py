@@ -95,7 +95,8 @@ def process_order_for_migration(
         )
     else:
         qty = abs(order.quantity) if order.quantity else 0.0
-        sale_proceeds = qty * order.price if order.price else 0.0
+        lot_size = position.trade_pair.lot_size
+        sale_proceeds = qty * lot_size / order.usd_base_rate if order.usd_base_rate else 0.0
         account.cash_balance += abs(sale_proceeds)
         MinerAccountManager.record_transaction(
             hotkey, order.processed_ms, "SELL",

@@ -275,7 +275,7 @@ class MarketOrderManager():
             order.margin_loan = self._miner_account_client.process_order_buy(miner_hotkey, abs(value), trade_pair_category)
         else:
             processed_qty = existing_position.net_quantity if order.order_type == OrderType.FLAT else quantity
-            sale_proceeds = processed_qty * order.price
+            sale_proceeds = processed_qty * trade_pair.lot_size / order.usd_base_rate
             loan_repaid = self._miner_account_client.process_order_sell(miner_hotkey, abs(sale_proceeds), existing_position.margin_loan, trade_pair_category)
             # Store loan repayment as negative margin_loan so position.margin_loan sums correctly
             order.margin_loan = -loan_repaid
@@ -349,7 +349,7 @@ class MarketOrderManager():
         if quantity is not None:
             value = quantity * trade_pair.lot_size / usd_base_conversion
             leverage = value / portfolio_value
-        if leverage is not None:
+        elif leverage is not None:
             value = leverage * portfolio_value
             quantity = (value * usd_base_conversion) / trade_pair.lot_size
         elif value is not None:
