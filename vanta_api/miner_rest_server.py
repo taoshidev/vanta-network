@@ -173,40 +173,8 @@ class MinerRestServer(BaseRestServer):
             if not signal_data:
                 return jsonify({'success': False, 'error': 'Invalid request: missing JSON body'}), 400
 
-            # Get execution type first (needed to determine required fields)
-            execution_type = signal_data.get('execution_type', 'MARKET')
-
-            # Validate required fields based on execution type
-            # LIMIT_CANCEL only needs order_uuid (trade_pair and order_type are not required)
-            if execution_type == 'LIMIT_CANCEL':
-                required_fields = []
-            elif execution_type == 'BRACKET':
-                required_fields = ['trade_pair']
-            else:
-                required_fields = ['trade_pair', 'order_type']
-
-            missing_fields = [field for field in required_fields if field not in signal_data]
-            if missing_fields:
-                return jsonify({
-                    'success': False,
-                    'error': f"Invalid request: missing required fields: {', '.join(missing_fields)}"
-                }), 400
-
-            # Validate exactly one of leverage/value/quantity is present
-            # Exception: BRACKET, LIMIT_CANCEL, LIMIT_EDIT don't require size fields
-            if execution_type not in ['BRACKET', 'LIMIT_CANCEL', 'LIMIT_EDIT']:
-                position_size_fields = ['leverage', 'value', 'quantity']
-                provided_fields = [field for field in position_size_fields if field in signal_data]
-
-                if len(provided_fields) != 1:
-                    return jsonify({
-                        'success': False,
-                        'error': f"Invalid request: must provide exactly one of: leverage, value, or quantity, got: {', '.join(provided_fields)}"
-                    }), 400
-
             # Generate order_uuid if not provided
             order_uuid = signal_data.get('order_uuid', str(uuid.uuid4()))
-            subaccount_id = signal_data.get('subaccount_id')
 
             # Extract verbose flag (default to false)
             verbose = signal_data.get('verbose', False)
@@ -244,7 +212,7 @@ class MinerRestServer(BaseRestServer):
                 leverage=float(signal_data['leverage']) if 'leverage' in signal_data else None,
                 value=float(signal_data['value']) if 'value' in signal_data else None,
                 quantity=float(signal_data['quantity']) if 'quantity' in signal_data else None,
-                execution_type=ExecutionType.from_string(execution_type.upper()),
+                execution_type=ExecutionType.from_string(signal_data.get('execution_type', 'MARKET').upper()),
                 limit_price=float(signal_data['limit_price']) if 'limit_price' in signal_data else None,
                 stop_loss=float(signal_data['stop_loss']) if 'stop_loss' in signal_data else None,
                 take_profit=float(signal_data['take_profit']) if 'take_profit' in signal_data else None,
@@ -274,7 +242,7 @@ class MinerRestServer(BaseRestServer):
             result = self.order_placer.process_a_signal_for_rest(
                 order_uuid=order_uuid,
                 signal=signal,
-                subaccount_id=subaccount_id,
+                subaccount_id=signal_data.get('subaccount_id'),
                 verbose=verbose
             )
 
