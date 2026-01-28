@@ -103,10 +103,28 @@ class Signal(BaseModel):
             sl = values.get('stop_loss')
             tp = values.get('take_profit')
             bracket_orders = values.get('bracket_orders')
-            # Allow bracket_orders as alternative to top-level stop_loss/take_profit
-            if not sl and not tp and not bracket_orders:
-                raise ValueError(f"Either stop_loss, take_profit, or bracket_orders must be set for BRACKET orders")
-            if sl and tp and sl == tp:
+
+            # If top-level SL/TP empty but bracket_orders provided, extract from first entry
+            if sl is None and tp is None and bracket_orders:
+                if len(bracket_orders) != 1:
+                    raise ValueError("bracket_orders must contain exactly one entry when used for BRACKET orders")
+                sl = bracket_orders[0].get('stop_loss')
+                tp = bracket_orders[0].get('take_profit')
+
+            # Validate at least one of SL or TP is set
+            if sl is None and tp is None:
+                raise ValueError("Bracket order must specify at least one of stop_loss or take_profit")
+
+            # Validate stop_loss > 0 if present
+            if sl is not None and float(sl) <= 0:
+                raise ValueError("stop_loss must be greater than 0")
+
+            # Validate take_profit > 0 if present
+            if tp is not None and float(tp) <= 0:
+                raise ValueError("take_profit must be greater than 0")
+
+            # Validate SL and TP are unique if both set
+            if sl is not None and tp is not None and float(sl) == float(tp):
                 raise ValueError("stop_loss and take_profit must be unique")
 
         return values
