@@ -555,39 +555,6 @@ class PropNetOrderPlacer:
         else:
             return high_trust_validators
 
-    @staticmethod
-    def _is_retryable_error(error_message: str) -> bool:
-        """
-        Classify error as transient (should retry) or permanent (skip retry).
-
-        Returns:
-            True if error should be retried, False if permanent validation error
-        """
-        if not error_message:
-            return True  # Empty error = network timeout, should retry
-
-        error_lower = error_message.lower()
-
-        # Permanent validation errors - don't waste time retrying
-        permanent_keywords = [
-            'rate limited',
-            'cooldown',
-            'eliminated',
-            'asset class',
-            'market',  # "market closed", "market not available"
-            'duplicate',
-            'no longer supported',
-            'not active',
-            'already been processed',
-            'invalid subaccount',
-            'blocked',
-            'cannot trade'
-        ]
-
-        if any(keyword in error_lower for keyword in permanent_keywords):
-            return False
-        return True
-
     async def attempt_to_send_signal(self, send_signal_request: SendSignal, retry_status: dict,
                                high_trust_validators: list, validator_hotkey_to_axon: dict,
                                metrics: SignalMetrics):
@@ -683,10 +650,12 @@ class PropNetOrderPlacer:
                     retry_status['validator_error_messages'][response.validator_hotkey].append(response.error_message)
                     metrics.validator_errors[response.validator_hotkey].append(response.error_message)
 
-                    # Check if error is permanent (non-retryable)
-                    if not self._is_retryable_error(response.error_message):
+                    # Check validator's explicit retry guidance
+                    if not response.should_retry:
                         retry_status['permanent_failures'][response.validator_hotkey] = response.error_message
-                        bt.logging.info(f"Permanent validation error from {response.validator_hotkey}, skipping retries: {response.error_message}")
+                        bt.logging.info(
+                            f"Validator {response.validator_hotkey} marked error as non-retryable: {response.error_message}"
+                        )
 
         if all_high_trust_validators_succeeded:
             v_trust_floor = min([hotkey_to_v_trust[validator.hotkey] for validator in high_trust_validators])

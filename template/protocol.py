@@ -16,6 +16,7 @@ class SendSignal(bt.Synapse):
     repo_version: str = Field("N/A", title="Repo version (use the same meta.json file as validator)", frozen=False, max_length=256)
     successfully_processed: bool = Field(False, title="Successfully Processed", frozen=False)
     error_message: str = Field("", title="Error Message", frozen=False, max_length=4096)
+    should_retry: bool = Field(True, title="Whether miner should retry this validator on failure", frozen=False)
     validator_hotkey: str = Field("", title="Hotkey set by validator", frozen=False, max_length=256)
     order_json: str = Field("", title="New Order JSON set by validator", frozen=False)
     miner_order_uuid: str = Field("", title="Order UUID set by miner", frozen=False, max_length=256)

@@ -595,6 +595,7 @@ class Validator(ValidatorBase):
             if not validation['is_valid']:
                 synapse.successfully_processed = False
                 synapse.error_message = validation['error_message']
+                synapse.should_retry = False
                 bt.logging.info(
                     f"received invalid subaccount_id signal [{signal}] from miner_hotkey [{synthetic_hotkey}] using repo version [{miner_repo_version}].")
                 return synapse
@@ -669,6 +670,7 @@ class Validator(ValidatorBase):
                 else:
                     bt.logging.error(error_message)
                     synapse.successfully_processed = False
+                    synapse.should_retry = False
 
                 synapse.error_message = error_message
                 final_processing_ms = TimeUtil.now_in_millis() - final_processing_start
