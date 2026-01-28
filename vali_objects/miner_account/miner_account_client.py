@@ -176,8 +176,7 @@ class MinerAccountClient(RPCClientBase):
 
     # ==================== Margin/Cash Processing Methods ====================
 
-    def process_order_buy(self, hotkey: str, order_value_usd: float,
-                          trade_pair_category: TradePairCategory) -> float:
+    def process_order_buy(self, hotkey: str, order_value_usd: float) -> float:
         """
         Process buy order cash/margin.
 
@@ -191,10 +190,9 @@ class MinerAccountClient(RPCClientBase):
 
         Raises: SignalException if insufficient funds for margin
         """
-        return self._server.process_order_buy(hotkey, order_value_usd, trade_pair_category)
+        return self._server.process_order_buy(hotkey, order_value_usd)
 
-    def process_order_sell(self, hotkey: str, sale_proceeds_usd: float,
-                           position_margin_loan: float, trade_pair_category: TradePairCategory) -> float:
+    def process_order_sell(self, hotkey: str, sale_proceeds_usd: float, position_margin_loan: float) -> float:
         """
         Process sell/close order. Pay off loan first, return rest to cash.
 
@@ -206,7 +204,7 @@ class MinerAccountClient(RPCClientBase):
 
         Returns: loan_repaid
         """
-        return self._server.process_order_sell(hotkey, sale_proceeds_usd, position_margin_loan, trade_pair_category)
+        return self._server.process_order_sell(hotkey, sale_proceeds_usd, position_margin_loan)
 
     def get_total_borrowed_amount(self, hotkey: str) -> float:
         """Get total borrowed amount for a miner."""

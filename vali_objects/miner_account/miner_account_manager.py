@@ -655,15 +655,13 @@ class MinerAccountManager:
         except Exception as e:
             bt.logging.error(f"Failed to record transaction for {hotkey}: {e}")
 
-    def process_order_buy(self, hotkey: str, order_value_usd: float,
-                          trade_pair_category: TradePairCategory) -> float:
+    def process_order_buy(self, hotkey: str, order_value_usd: float) -> float:
         """
         Process buy order cash/margin.
 
         Args:
             hotkey: Miner's hotkey
             order_value_usd: Order value in USD
-            trade_pair_category: TradePairCategory enum value
 
         Returns: borrowed_amount
         Raises: SignalException if insufficient funds for margin
@@ -672,7 +670,7 @@ class MinerAccountManager:
         order_value_usd = abs(order_value_usd)
 
         with self._accounts_lock:
-            if trade_pair_category != TradePairCategory.EQUITIES:
+            if account.asset_class != TradePairCategory.EQUITIES:
                 # Crypto/Forex: cash only, no margin
                 if order_value_usd > account.cash_balance:
                     raise SignalException(
@@ -725,8 +723,7 @@ class MinerAccountManager:
             )
             return borrowed_amount
 
-    def process_order_sell(self, hotkey: str, sale_proceeds_usd: float,
-                           position_margin_loan: float, trade_pair_category: TradePairCategory) -> float:
+    def process_order_sell(self, hotkey: str, sale_proceeds_usd: float, position_margin_loan: float) -> float:
         """
         Process sell/close order. Pay off loan first, return rest to cash.
 
@@ -743,7 +740,7 @@ class MinerAccountManager:
         position_margin_loan = abs(position_margin_loan)
 
         with self._accounts_lock:
-            if trade_pair_category != TradePairCategory.EQUITIES:
+            if account.asset_class != TradePairCategory.EQUITIES:
                 # Crypto/Forex: no margin loans, all proceeds return to cash
                 account.cash_balance += sale_proceeds_usd
                 self._save_accounts_to_disk()
