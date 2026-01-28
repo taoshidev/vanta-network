@@ -135,11 +135,16 @@ class Signal(BaseModel):
         if 'trade_pair' not in signal:
             return None
         temp = signal["trade_pair"]
-        if 'trade_pair_id' not in temp:
-            return None
-        string_trade_pair = signal["trade_pair"]["trade_pair_id"]
-        trade_pair = TradePair.from_trade_pair_id(string_trade_pair)
-        return trade_pair
+        # Handle list format from model_dump(mode='json'): ['BTCUSD', 'BTC/USD', ...]
+        if isinstance(temp, list) and len(temp) >= 1:
+            return TradePair.from_trade_pair_id(temp[0])
+        # Handle dict format: {'trade_pair_id': 'BTCUSD', ...}
+        if isinstance(temp, dict) and 'trade_pair_id' in temp:
+            return TradePair.from_trade_pair_id(temp['trade_pair_id'])
+        # Handle string format: 'BTCUSD'
+        if isinstance(temp, str):
+            return TradePair.from_trade_pair_id(temp)
+        return None
 
     def __str__(self):
         base = {
