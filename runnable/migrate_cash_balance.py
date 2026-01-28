@@ -87,20 +87,25 @@ def process_order_for_migration(
 
     if is_buy:
         order_value = abs(order.value) if order.value else 0.0
-        account.cash_balance -= order_value
+        margin_loan = order.margin_loan if order.margin_loan else 0.0
+        equity_used = order_value - margin_loan
+        account.cash_balance -= equity_used
         MinerAccountManager.record_transaction(
             hotkey, order.processed_ms, "BUY",
-            cash_delta=-order_value,
+            cash_delta=-equity_used,
+            loan_delta=margin_loan,
             running_unit_tests=False
         )
     else:
         qty = abs(order.quantity) if order.quantity else 0.0
         lot_size = position.trade_pair.lot_size
         sale_proceeds = qty * lot_size / order.usd_base_rate if order.usd_base_rate else 0.0
+        margin_loan = order.margin_loan if order.margin_loan else 0.0
         account.cash_balance += abs(sale_proceeds)
         MinerAccountManager.record_transaction(
             hotkey, order.processed_ms, "SELL",
             cash_delta=abs(sale_proceeds),
+            loan_delta=margin_loan,
             running_unit_tests=False
         )
 
