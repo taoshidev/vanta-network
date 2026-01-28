@@ -27,6 +27,10 @@ from bittensor_wallet import Wallet
 from vanta_api.base_rest_server import BaseRestServer
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from miner_config import MinerConfig
+from vali_objects.vali_dataclasses.order_signal import Signal
+from vali_objects.vali_config import TradePair
+from vali_objects.enums.order_type_enum import OrderType
+from vali_objects.enums.execution_type_enum import ExecutionType
 
 
 class MinerRestServer(BaseRestServer):
@@ -216,6 +220,52 @@ class MinerRestServer(BaseRestServer):
             bt.logging.error(f"Error parsing request body: {e}")
             return jsonify({'success': False, 'error': f'Invalid request: {str(e)}'}), 400
 
+        # 2.5. Validate signal data
+        try:
+            # Convert trade_pair string to TradePair enum
+            if isinstance(signal_data.get('trade_pair'), str):
+                trade_pair = TradePair.from_trade_pair_id(signal_data['trade_pair'])
+            elif isinstance(signal_data.get('trade_pair'), dict):
+                trade_pair = TradePair.from_trade_pair_id(signal_data['trade_pair'].get('trade_pair_id'))
+            else:
+                trade_pair = signal_data.get('trade_pair')  # Might already be TradePair enum
+
+            if trade_pair is None:
+                bt.logging.warning(
+                    f"Signal validation failed for order {order_uuid} Invalid trade pair '{signal_data.get('trade_pair')}'")
+                return jsonify({
+                    'success': False,
+                    'error': f'Invalid trade pair: {signal_data.get("trade_pair")}'
+                }), 400
+
+            signal = Signal(
+                trade_pair=trade_pair,
+                order_type=OrderType.from_string(signal_data['order_type'].upper()) if 'order_type' in signal_data else None,
+                leverage=float(signal_data['leverage']) if 'leverage' in signal_data else None,
+                value=float(signal_data['value']) if 'value' in signal_data else None,
+                quantity=float(signal_data['quantity']) if 'quantity' in signal_data else None,
+                execution_type=ExecutionType.from_string(execution_type.upper()),
+                limit_price=float(signal_data['limit_price']) if 'limit_price' in signal_data else None,
+                stop_loss=float(signal_data['stop_loss']) if 'stop_loss' in signal_data else None,
+                take_profit=float(signal_data['take_profit']) if 'take_profit' in signal_data else None,
+                bracket_orders=signal_data.get('bracket_orders')
+            )
+
+            bt.logging.debug(f"Signal validation passed for order {order_uuid}: {signal}")
+
+        except ValueError as e:
+            bt.logging.warning(f"Signal validation failed for order {order_uuid}")
+            return jsonify({
+                'success': False,
+                'error': f'Invalid signal data: {str(e)}'
+            }), 400
+        except Exception as e:
+            bt.logging.error(f"Unexpected error during signal validation for order {order_uuid}")
+            return jsonify({
+                'success': False,
+                'error': f'Signal validation error: {str(e)}'
+            }), 400
+
         # 3. Call order_placer.process_a_signal_for_rest() directly (blocks 20-60s)
         try:
             bt.logging.info(f"Processing order {order_uuid} synchronously...")
@@ -223,7 +273,7 @@ class MinerRestServer(BaseRestServer):
 
             result = self.order_placer.process_a_signal_for_rest(
                 order_uuid=order_uuid,
-                signal_data=signal_data,
+                signal=signal,
                 subaccount_id=subaccount_id,
                 verbose=verbose
             )

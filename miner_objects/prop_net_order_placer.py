@@ -19,6 +19,7 @@ from miner_config import MinerConfig
 from template.protocol import SendSignal
 from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
+from vali_objects.vali_dataclasses.order_signal import Signal
 
 REPO_VERSION = 'unknown'
 with open(ValiBkpUtils.get_meta_json_path(), 'r') as f:
@@ -321,7 +322,7 @@ class PropNetOrderPlacer:
 
         return signal_file_path
 
-    def process_a_signal_for_rest(self, order_uuid: str, signal_data: dict, subaccount_id: str = None, verbose: bool = False) -> dict:
+    def process_a_signal_for_rest(self, order_uuid: str, signal: Signal, subaccount_id: str = None, verbose: bool = False) -> dict:
         """
         Process signal from REST endpoint (synchronous, returns structured result).
 
@@ -330,15 +331,15 @@ class PropNetOrderPlacer:
 
         Key differences from process_a_signal():
         - Synchronous (blocks in Flask worker thread, not async)
-        - Takes order_uuid and signal_data directly (not file path)
+        - Takes order_uuid and Signal object directly (not file path)
         - Returns structured dict with validator feedback
         - Still archives to processed_signals/ or failed_signals/ for audit trail
 
         Args:
             order_uuid: UUID for this order
-            signal_data: Signal dictionary with trade_pair, order_type, leverage, etc.
+            signal: Validated Signal object with trade_pair, order_type, leverage, etc.
             subaccount_id: Optional subaccount ID for entity miners
-            verbose: If True, return all validator responses. If False, return only MOTHERSHIP validator responses (default: True)
+            verbose: If True, return all validator responses. If False, return only priority validator responses
 
         Returns:
             Dictionary with structure:
@@ -357,14 +358,7 @@ class PropNetOrderPlacer:
             }
         """
         # Create metrics tracker
-        # Support both object {"trade_pair_id": "BTCUSD"} and string "BTCUSD"
-        trade_pair = signal_data.get('trade_pair', 'unknown')
-        if isinstance(trade_pair, dict):
-            trade_pair_id = trade_pair.get('trade_pair_id', 'unknown')
-        elif isinstance(trade_pair, str):
-            trade_pair_id = trade_pair
-        else:
-            trade_pair_id = 'unknown'
+        trade_pair_id = signal.trade_pair.trade_pair_id
         metrics = SignalMetrics(order_uuid, trade_pair_id)
         metrics.mark_network_start()
 
@@ -401,7 +395,7 @@ class PropNetOrderPlacer:
 
             # Thread-safe UUID check
             with self._lock:
-                execution_type = signal_data.get("execution_type", "MARKET")
+                execution_type = str(signal.execution_type)
                 is_uuid_reuse_allowed = execution_type in ("LIMIT_CANCEL", "LIMIT_EDIT")
                 if order_uuid in self.used_miner_uuids and not is_uuid_reuse_allowed:
                     bt.logging.warning(f"Duplicate miner order uuid {order_uuid}, skipping")
@@ -413,15 +407,14 @@ class PropNetOrderPlacer:
                     }
                 self.used_miner_uuids.add(order_uuid)
 
-            # Add subaccount_id to signal_data if provided
-            if subaccount_id:
-                signal_data['subaccount_id'] = subaccount_id
+            # Convert Signal object to dict
+            signal_data = signal.model_dump()
 
             send_signal_request = SendSignal(
                 signal=signal_data,
                 miner_order_uuid=order_uuid,
                 repo_version=REPO_VERSION,
-                subaccount_id=signal_data.get('subaccount_id')
+                subaccount_id=subaccount_id
             )
 
             # Continue retrying until max retries reached
