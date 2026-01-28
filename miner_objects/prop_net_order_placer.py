@@ -407,8 +407,8 @@ class PropNetOrderPlacer:
                     }
                 self.used_miner_uuids.add(order_uuid)
 
-            # Convert Signal object to dict
-            signal_data = signal.model_dump()
+            # Convert Signal object to dict (mode='json' ensures enums are serialized)
+            signal_data = signal.model_dump(mode='json')
 
             send_signal_request = SendSignal(
                 signal=signal_data,
