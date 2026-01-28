@@ -591,35 +591,52 @@ class PropNetOrderPlacer:
                 validator_responses.append(mock_response)
             metrics.mark_network_end()
         else:
-            # Production mode: send to all validators, only wait for MOTHERSHIP
+            # Production mode: send to MOTHERSHIP first, then fire-and-forget to others
             mothership_hotkey = ValiConfig.MOTHERSHIP_HOTKEY_TESTNET if self.is_testnet else ValiConfig.MOTHERSHIP_HOTKEY
             metrics.mark_network_start()
 
-            async with bt.dendrite(wallet=self.wallet) as dendrite:
-                # Create individual tasks for each validator
-                async def query_single(axon):
-                    try:
-                        responses = await dendrite.aquery([axon], send_signal_request)
-                        return responses[0] if responses else None
-                    except Exception as e:
-                        bt.logging.warning(f"Error querying {axon.hotkey}: {e}")
-                        return None
-
-                axons = retry_status['validators_needing_retry']
-                tasks = {axon.hotkey: asyncio.create_task(query_single(axon)) for axon in axons}
-
-                # Wait only for MOTHERSHIP validator
-                if mothership_hotkey in tasks:
-                    target_response = await tasks[mothership_hotkey]
-                    metrics.mark_network_end()
-                    # Let other tasks continue in background
-                    validator_responses = [target_response] if target_response else []
+            # Separate MOTHERSHIP from other validators
+            axons = retry_status['validators_needing_retry']
+            mothership_axon = None
+            other_axons = []
+            for axon in axons:
+                if axon.hotkey == mothership_hotkey:
+                    mothership_axon = axon
                 else:
-                    # MOTHERSHIP not in list, fall back to waiting for all
-                    bt.logging.warning(f"MOTHERSHIP {mothership_hotkey} not in validator list, waiting for all")
-                    responses = await asyncio.gather(*tasks.values())
+                    other_axons.append(axon)
+
+            validator_responses = []
+
+            async with bt.dendrite(wallet=self.wallet) as dendrite:
+                # 1. Query MOTHERSHIP first (warms up connection, provides fast feedback)
+                if mothership_axon:
+                    try:
+                        responses = await dendrite.aquery([mothership_axon], send_signal_request)
+                        if responses and responses[0]:
+                            validator_responses.append(responses[0])
+                    except Exception as e:
+                        bt.logging.warning(f"Error querying MOTHERSHIP {mothership_hotkey}: {e}")
                     metrics.mark_network_end()
-                    validator_responses = [r for r in responses if r is not None]
+
+                    # 2. Fire-and-forget to other validators (don't wait for responses)
+                    if other_axons:
+                        bt.logging.debug(f"Sending to {len(other_axons)} other validators (fire-and-forget)")
+                        # Use thread to avoid task cancellation when asyncio.run() exits
+                        thread = threading.Thread(
+                            target=self._query_validators_sync,
+                            args=(other_axons, send_signal_request),
+                            daemon=True
+                        )
+                        thread.start()
+                else:
+                    # MOTHERSHIP not in list, fall back to querying all and waiting
+                    bt.logging.warning(f"MOTHERSHIP {mothership_hotkey} not in validator list, querying all")
+                    try:
+                        responses = await dendrite.aquery(axons, send_signal_request)
+                        validator_responses = [r for r in responses if r is not None]
+                    except Exception as e:
+                        bt.logging.warning(f"Error querying validators: {e}")
+                    metrics.mark_network_end()
 
         all_high_trust_validators_succeeded = True
         success_validators = set()
@@ -683,6 +700,18 @@ class PropNetOrderPlacer:
 
         retry_status['validators_needing_retry'] = new_validators_to_retry
         retry_status['retry_attempts'] += 1
+
+    def _query_validators_sync(self, axons, send_signal_request):
+        """Fire-and-forget query to validators (runs in separate thread)."""
+        try:
+            asyncio.run(self._query_validators_async(axons, send_signal_request))
+        except Exception as e:
+            bt.logging.debug(f"Background validator query error (non-critical): {e}")
+
+    async def _query_validators_async(self, axons, send_signal_request):
+        """Async helper for background validator queries."""
+        async with bt.dendrite(wallet=self.wallet) as dendrite:
+            await dendrite.aquery(axons, send_signal_request)
 
     def write_signal_to_processed_directory(self, signal_data, signal_file_path: str, retry_status: dict):
         """Moves a processed signal file to the processed directory."""
