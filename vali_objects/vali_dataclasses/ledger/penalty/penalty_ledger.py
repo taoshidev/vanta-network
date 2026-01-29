@@ -32,6 +32,8 @@ from shared_objects.slack_notifier import SlackNotifier
 import bittensor as bt
 
 
+FEB_1_MS = 1769932800000    # FEB 1 2026 timestamp
+
 class PenaltyInputType(Enum):
     LEDGER = auto()
     POSITIONS = auto()
@@ -915,7 +917,13 @@ class PenaltyLedgerManager:
                         penalty_value = 1.0
 
                     penalties[penalty_name] = penalty_value
-                    total_penalty *= penalty_value
+
+                    if checkpoint_ms >= FEB_1_MS:
+                        # skip risk adjusted performance penalty
+                        if penalty_name != "risk_adjusted_performance":
+                            total_penalty *= penalty_value
+                    else:
+                        total_penalty *= penalty_value
 
                 # Get challenge period status
                 # For full rebuilds: first try to copy from old ledger, then fall back to backfilling
