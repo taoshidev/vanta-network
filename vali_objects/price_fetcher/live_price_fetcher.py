@@ -299,8 +299,13 @@ class LivePriceFetcher:
 
     def get_quote(self, trade_pair: TradePair, processed_ms: int) -> Tuple[float, float, int]:
         """
-        returns the bid and ask quote for a trade_pair at processed_ms. Only Polygon supports point-in-time bid/ask.
+        Returns the bid and ask quote for a trade_pair at processed_ms.
+        Uses Databento for equities, Polygon for other asset classes.
         """
+        if trade_pair.is_equities and self.databento_data_service:
+            price_source = self.databento_data_service.get_closes_websocket([trade_pair], processed_ms).get(trade_pair)
+            if price_source and price_source.bid and price_source.ask and price_source.bid > 0 and price_source.ask > 0:
+                return price_source.bid, price_source.ask, price_source.start_ms
         return self.polygon_data_service.get_quote(trade_pair, processed_ms)
 
     def get_candles(self, trade_pairs, start_time_ms, end_time_ms) -> dict:

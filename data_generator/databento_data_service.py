@@ -125,9 +125,11 @@ class DatabentoDataService(BaseDataService):
             ask=ask,
         )
 
+        bt.logging.info(f"DATABENTO WEBSOCKET MESSAGE: {tp.trade_pair} | bid: {bid}, ask: {ask}")
+
         # Update state
         self.latest_websocket_events[symbol] = ps
-        self.trade_pair_to_recent_events_realtime[symbol].add_event(ps)
+        self.trade_pair_to_recent_events[symbol].add_event(ps)
         self.tpc_to_n_events[TradePairCategory.EQUITIES] += 1
         self.tpc_to_last_event_time[TradePairCategory.EQUITIES] = time.time()
 
