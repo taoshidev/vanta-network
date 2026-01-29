@@ -4,6 +4,7 @@ from typing import List, Optional, Tuple, Dict
 import numpy as np
 from data_generator.tiingo_data_service import TiingoDataService
 from data_generator.polygon_data_service import PolygonDataService
+from data_generator.databento_data_service import DatabentoDataService
 from time_util.time_util import TimeUtil
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair, ValiConfig
@@ -29,9 +30,20 @@ class LivePriceFetcher:
         else:
             raise Exception("Polygon API key not found in secrets.json")
 
+        # Optional Databento service for equities
+        self.databento_data_service = None
+        if "databento_apikey" in secrets:
+            self.databento_data_service = DatabentoDataService(
+                api_key=secrets["databento_apikey"],
+                disable_ws=disable_ws,
+                running_unit_tests=running_unit_tests
+            )
+
     def stop_all_threads(self):
         self.tiingo_data_service.stop_threads()
         self.polygon_data_service.stop_threads()
+        if self.databento_data_service:
+            self.databento_data_service.stop_threads()
 
     def set_test_price_source(self, trade_pair: TradePair, price_source: PriceSource) -> None:
         """
@@ -159,7 +171,10 @@ class LivePriceFetcher:
         # Utilize get_events_in_range
         poly_sources = self.polygon_data_service.trade_pair_to_recent_events[trade_pair.trade_pair].get_events_in_range(start_ms, end_ms)
         t_sources = self.tiingo_data_service.trade_pair_to_recent_events[trade_pair.trade_pair].get_events_in_range(start_ms, end_ms)
-        return poly_sources + t_sources
+        db_sources = []
+        if self.databento_data_service and trade_pair.is_equities:
+            db_sources = self.databento_data_service.trade_pair_to_recent_events[trade_pair.trade_pair].get_events_in_range(start_ms, end_ms)
+        return poly_sources + t_sources + db_sources
 
     def get_latest_price(self, trade_pair: TradePair, time_ms=None) -> Tuple[float, List[PriceSource]] | Tuple[None, None]:
         """
@@ -183,13 +198,25 @@ class LivePriceFetcher:
 
         websocket_prices_polygon = self.polygon_data_service.get_closes_websocket(trade_pairs, time_ms)
         websocket_prices_tiingo_data = self.tiingo_data_service.get_closes_websocket(trade_pairs, time_ms)
+
+        # Get Databento prices for equities
+        websocket_prices_databento = {}
+        if self.databento_data_service:
+            equity_pairs = [tp for tp in trade_pairs if tp.is_equities]
+            if equity_pairs:
+                websocket_prices_databento = self.databento_data_service.get_closes_websocket(equity_pairs, time_ms)
+
         trade_pairs_needing_rest_data = []
 
         results = {}
 
         # Initial check using WebSocket data
         for trade_pair in trade_pairs:
-            events = [websocket_prices_polygon.get(trade_pair), websocket_prices_tiingo_data.get(trade_pair)]
+            events = [
+                websocket_prices_polygon.get(trade_pair),
+                websocket_prices_tiingo_data.get(trade_pair),
+                websocket_prices_databento.get(trade_pair)
+            ]
             sources = self.sorted_valid_price_sources(events, time_ms, filter_recent_only=True)
             if sources:
                 results[trade_pair] = sources
@@ -206,6 +233,7 @@ class LivePriceFetcher:
             sources = self.sorted_valid_price_sources([
                 websocket_prices_polygon.get(trade_pair),
                 websocket_prices_tiingo_data.get(trade_pair),
+                websocket_prices_databento.get(trade_pair),
                 rest_prices_polygon.get(trade_pair),
                 rest_prices_tiingo_data.get(trade_pair)
             ], time_ms, filter_recent_only=False)
@@ -219,7 +247,11 @@ class LivePriceFetcher:
         now_ms = TimeUtil.now_in_millis()
         t1 = self.polygon_data_service.get_websocket_lag_for_trade_pair_s(tp=trade_pair.trade_pair, now_ms=now_ms)
         t2 = self.tiingo_data_service.get_websocket_lag_for_trade_pair_s(tp=trade_pair.trade_pair, now_ms=now_ms)
-        return max([x for x in (t1, t2) if x])
+        t3 = None
+        if self.databento_data_service and trade_pair.is_equities:
+            t3 = self.databento_data_service.get_websocket_lag_for_trade_pair_s(tp=trade_pair.trade_pair, now_ms=now_ms)
+        lags = [x for x in (t1, t2, t3) if x]
+        return max(lags) if lags else None
 
     def filter_outliers(self, unique_data: List[PriceSource]) -> List[PriceSource]:
         """
