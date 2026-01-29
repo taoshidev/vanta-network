@@ -14,16 +14,18 @@ DATABENTO_PROVIDER_NAME = "Databento"
 
 
 class DatabentoDataService(BaseDataService):
-    """Equities-only live WebSocket feed from Databento using bbo-1m schema."""
+    """Equities-only live WebSocket feed from Databento using bbo-1s schema."""
 
     DATASET = "EQUS.MINI"
-    SCHEMA = "bbo-1m"
+    SCHEMA = "bbo-1s"
 
     def __init__(self, api_key: str, disable_ws=False, running_unit_tests=False):
-        super().__init__(DATABENTO_PROVIDER_NAME, running_unit_tests)
+        super().__init__(
+            DATABENTO_PROVIDER_NAME,
+            running_unit_tests,
+            enabled_websocket_categories={TradePairCategory.EQUITIES}
+        )
         self._api_key = api_key
-        # Only enable equities
-        self.enabled_websocket_categories = {TradePairCategory.EQUITIES}
         # Map instrument_id -> symbol (populated from SymbolMappingMsg)
         self._instrument_map = {}
 
@@ -52,7 +54,7 @@ class DatabentoDataService(BaseDataService):
         bt.logging.info(f"Created {self.provider_name} Live client for {tpc}")
 
     def _subscribe_websockets(self, tpc: TradePairCategory):
-        """Subscribe to all equity symbols with bbo-1m schema."""
+        """Subscribe to all equity symbols with bbo-1s schema."""
         if tpc != TradePairCategory.EQUITIES:
             return
 
@@ -125,7 +127,7 @@ class DatabentoDataService(BaseDataService):
             ask=ask,
         )
 
-        bt.logging.info(f"DATABENTO WEBSOCKET MESSAGE: {tp.trade_pair} | bid: {bid}, ask: {ask}")
+        # bt.logging.info(f"DATABENTO WEBSOCKET MESSAGE: {tp.trade_pair} | bid: {bid}, ask: {ask}")
 
         # Update state
         self.latest_websocket_events[symbol] = ps

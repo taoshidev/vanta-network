@@ -251,7 +251,11 @@ class PolygonDataService(BaseDataService):
         # Key: (trade_pair, start_ms, end_ms) -> Value: List[PriceSource]
         self._test_candle_data = {}
 
-        super().__init__(provider_name=POLYGON_PROVIDER_NAME, running_unit_tests=running_unit_tests)
+        super().__init__(
+            provider_name=POLYGON_PROVIDER_NAME,
+            running_unit_tests=running_unit_tests,
+            enabled_websocket_categories={TradePairCategory.CRYPTO, TradePairCategory.FOREX}
+        )
 
         self.MARKET_STATUS = None
 

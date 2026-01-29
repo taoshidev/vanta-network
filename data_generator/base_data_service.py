@@ -43,12 +43,15 @@ def exception_handler_decorator():
     return decorator
 
 class BaseDataService():
-    def __init__(self, provider_name, running_unit_tests=False):
+    def __init__(self, provider_name, running_unit_tests=False, enabled_websocket_categories=None):
         self.DEBUG_LOG_INTERVAL_S = 180
         self.MAX_TIME_NO_EVENTS_S = 120
-        self.enabled_websocket_categories = {TradePairCategory.CRYPTO,
-                                             TradePairCategory.FOREX,
-                                             TradePairCategory.EQUITIES}
+        if enabled_websocket_categories is None:
+            self.enabled_websocket_categories = {TradePairCategory.CRYPTO,
+                                                 TradePairCategory.FOREX,
+                                                 TradePairCategory.EQUITIES}
+        else:
+            self.enabled_websocket_categories = enabled_websocket_categories
 
         self.provider_name = provider_name
         self.running_unit_tests = running_unit_tests
