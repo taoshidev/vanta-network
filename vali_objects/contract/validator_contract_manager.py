@@ -142,6 +142,8 @@ class ValidatorContractManager(ValidatorBroadcastBase):
 
         # Lock for test collateral balances dict (prevents concurrent modifications in tests)
         self._test_balances_lock = threading.Lock()
+        # Lock for coldkey-hotkey ownership cache (prevents concurrent modifications)
+        self._coldkey_hotkey_cache_lock = threading.Lock()
 
         # Initialize collateral manager based on network type
         if self.is_testnet:
@@ -173,6 +175,11 @@ class ValidatorContractManager(ValidatorBroadcastBase):
         # Key: miner_hotkey -> Value: list of balances (FIFO queue)
         # This is needed for race condition tests that simulate multiple concurrent balance changes
         self._test_collateral_balance_queues: Dict[str, list] = {}
+
+        # Coldkey-hotkey ownership cache
+        # Key: (coldkey_ss58, hotkey_ss58) -> Value: is_owner (bool)
+        # Cached permanently in memory (cleared only on restart)
+        self._coldkey_hotkey_cache: Dict[tuple[str, str], bool] = {}
 
         self.setup()
 
@@ -971,7 +978,9 @@ class ValidatorContractManager(ValidatorBroadcastBase):
 
     def verify_coldkey_owns_hotkey(self, coldkey_ss58: str, hotkey_ss58: str) -> bool:
         """
-        Verify that a coldkey owns a specific hotkey using subtensor.
+        Verify that a coldkey owns a specific hotkey.
+        Uses metagraph first (fast), falls back to subtensor query (cached).
+        Results are cached in memory for the lifetime of the validator process.
 
         Args:
             coldkey_ss58: The coldkey SS58 address
@@ -980,10 +989,40 @@ class ValidatorContractManager(ValidatorBroadcastBase):
         Returns:
             bool: True if coldkey owns the hotkey, False otherwise
         """
+        cache_key = (coldkey_ss58, hotkey_ss58)
+
+        # 1. Check in-memory cache first
+        with self._coldkey_hotkey_cache_lock:
+            if cache_key in self._coldkey_hotkey_cache:
+                bt.logging.info(f"Using cached ownership result for {hotkey_ss58}")
+                return self._coldkey_hotkey_cache[cache_key]
+
+        # 2. Try metagraph (fast - already in memory, no blockchain query)
         try:
+            neurons = self._metagraph_client.get_neurons()
+            for neuron in neurons:
+                if neuron.hotkey == hotkey_ss58 and neuron.coldkey == coldkey_ss58:
+                    # Cache the result
+                    with self._coldkey_hotkey_cache_lock:
+                        self._coldkey_hotkey_cache[cache_key] = True
+                    bt.logging.info(f"Verified ownership via metagraph for {coldkey_ss58} and {hotkey_ss58}")
+                    return True
+        except Exception as e:
+            bt.logging.warning(f"Failed to check metagraph for {hotkey_ss58}: {e}")
+
+        # 3. Fallback to subtensor for non-registered hotkeys
+        try:
+            bt.logging.info(f"Hotkey {hotkey_ss58} not in metagraph, querying subtensor")
             subtensor_api = self.collateral_manager.subtensor_api
             coldkey_owner = subtensor_api.queries.query_subtensor("Owner", None, [hotkey_ss58])
-            return coldkey_owner == coldkey_ss58
+            is_owner = coldkey_owner == coldkey_ss58
+
+            # Cache the result
+            with self._coldkey_hotkey_cache_lock:
+                self._coldkey_hotkey_cache[cache_key] = is_owner
+
+            bt.logging.info(f"Verified ownership via subtensor for {coldkey_ss58} and {hotkey_ss58}")
+            return is_owner
         except Exception as e:
             bt.logging.error(f"Error verifying coldkey-hotkey ownership: {e}")
             return False
