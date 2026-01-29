@@ -1320,6 +1320,10 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             "signature": "0x..."
           }'
         """
+        import time
+        t_start = time.time()
+        timings = {}
+
         # Check if entity client is available
         if not self._entity_client:
             return jsonify({'error': 'Entity management not available'}), 503
@@ -1369,6 +1373,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             asset_class = asset_class.strip()
 
             # Verify signature
+            t0 = time.time()
             keypair = Keypair(ss58_address=entity_coldkey)
             message = json.dumps({
                 "entity_coldkey": entity_coldkey,
@@ -1378,22 +1383,28 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             }, sort_keys=True).encode('utf-8')
 
             is_valid = keypair.verify(message, bytes.fromhex(data['signature']))
+            timings['verify_signature'] = int((time.time() - t0) * 1000)
             if not is_valid:
                 return jsonify({'error': 'Invalid signature. Subaccount creation unauthorized'}), 401
 
             # Verify coldkey-hotkey ownership using subtensor
+            t0 = time.time()
             owns_hotkey = self._verify_coldkey_owns_hotkey(entity_coldkey, entity_hotkey)
+            timings['verify_coldkey_ownership'] = int((time.time() - t0) * 1000)
             if not owns_hotkey:
                 return jsonify({'error': 'Coldkey does not own the specified hotkey'}), 403
 
             # Create subaccount via RPC
+            t0 = time.time()
             success, subaccount_info, message = self._entity_client.create_subaccount(
                 entity_hotkey, account_size, asset_class
             )
+            timings['create_subaccount_rpc'] = int((time.time() - t0) * 1000)
 
             if success:
                 # Broadcast subaccount registration to other validators
                 try:
+                    t0 = time.time()
                     self._entity_client.broadcast_subaccount_registration(
                         entity_hotkey=entity_hotkey,
                         subaccount_id=subaccount_info['subaccount_id'],
@@ -1402,10 +1413,14 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                         account_size=subaccount_info['account_size'],
                         asset_class=subaccount_info['asset_class']
                     )
+                    timings['broadcast_rpc'] = int((time.time() - t0) * 1000)
                     bt.logging.info(f"[REST_API] Broadcasted subaccount registration for {subaccount_info['synthetic_hotkey']}")
                 except Exception as e:
                     # Don't fail the request if broadcast fails - it's a background operation
                     bt.logging.warning(f"[REST_API] Failed to broadcast subaccount registration: {e}")
+
+                total_ms = int((time.time() - t_start) * 1000)
+                bt.logging.info(f"[REST_API] create_subaccount completed ({total_ms} ms) | timings: {timings}")
 
                 return jsonify({
                     'status': 'success',

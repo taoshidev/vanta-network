@@ -348,6 +348,10 @@ class EntityManager(ValidatorBroadcastBase):
         Returns:
             (success: bool, subaccount_info: Optional[SubaccountInfo], message: str)
         """
+        import time
+        t_start = time.time()
+        timings = {}
+
         # Validate account size (must be <= MAX_SUBACCOUNT_ACCOUNT_SIZE)
         if account_size > ValiConfig.MAX_SUBACCOUNT_ACCOUNT_SIZE:
             return False, None, (
@@ -373,7 +377,10 @@ class EntityManager(ValidatorBroadcastBase):
             # Verify collateral balance
             try:
                 if not self.running_unit_tests:
+                    t0 = time.time()
                     current_balance = self._contract_client.get_miner_collateral_balance(entity_hotkey)
+                    timings['get_collateral_balance'] = int((time.time() - t0) * 1000)
+
                     if current_balance is None:
                         bt.logging.warning(f"[ENTITY_MANAGER] Unable to verify collateral for {entity_hotkey} - balance check returned None")
                         return False, None, "Unable to verify collateral balance"
@@ -398,10 +405,13 @@ class EntityManager(ValidatorBroadcastBase):
                 synthetic_hotkey = f"{entity_hotkey}_{subaccount_id}"
 
                 # Process asset selection for synthetic hotkey
+                t0 = time.time()
                 asset_selection_result = self._asset_selection_client.process_asset_selection_request(
                     asset_selection=asset_class,
                     miner=synthetic_hotkey
                 )
+                timings['asset_selection_rpc'] = int((time.time() - t0) * 1000)
+
                 if not asset_selection_result.get('successfully_processed', False):
                     bt.logging.warning(
                         f"[ENTITY_MANAGER] Failed to process asset selection for {synthetic_hotkey}: "
@@ -415,11 +425,14 @@ class EntityManager(ValidatorBroadcastBase):
 
                 # Set account size for synthetic hotkey with explicit account_size parameter
                 # This records the account size in the contract manager's miner_account_sizes
+                t0 = time.time()
                 set_size_success = self._contract_client.set_miner_account_size(
                     synthetic_hotkey,
                     timestamp_ms=TimeUtil.now_in_millis(),
                     account_size=account_size
                 )
+                timings['set_account_size'] = int((time.time() - t0) * 1000)
+
                 if not set_size_success:
                     bt.logging.warning(
                         f"[ENTITY_MANAGER] Failed to set account size for {synthetic_hotkey}, "
@@ -434,7 +447,10 @@ class EntityManager(ValidatorBroadcastBase):
 
                 if not self.running_unit_tests:
                     # Slash required collateral
+                    t0 = time.time()
                     slash_success = self._contract_client.slash_miner_collateral(entity_hotkey, required_theta)
+                    timings['slash_collateral'] = int((time.time() - t0) * 1000)
+
                     if not slash_success:
                         bt.logging.error(f"[ENTITY_MANAGER] Failed to slash subaccount collateral for {entity_hotkey}")
                         # Rollback subaccount ID increment
@@ -468,12 +484,15 @@ class EntityManager(ValidatorBroadcastBase):
             with self._entities_lock:
                 self._uuid_to_hotkey[subaccount_uuid] = synthetic_hotkey
 
+            t0 = time.time()
             self._write_entities_from_memory_to_disk()
+            timings['write_to_disk'] = int((time.time() - t0) * 1000)
 
+            total_ms = int((time.time() - t_start) * 1000)
             bt.logging.info(
                 f"[ENTITY_MANAGER] Created subaccount {subaccount_id} for entity {entity_hotkey}: "
                 f"{synthetic_hotkey}, account_size=${account_size}, asset_class={asset_class}, "
-                f"slashed {required_theta} theta"
+                f"slashed {required_theta} theta ({total_ms} ms) | timings: {timings}"
             )
             return True, subaccount_info, (
                 f"Subaccount {subaccount_id} created successfully - "
