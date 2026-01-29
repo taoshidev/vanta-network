@@ -212,10 +212,21 @@ class LivePriceFetcher:
 
         # Initial check using WebSocket data
         for trade_pair in trade_pairs:
+            # For equities, prioritize Databento - use it exclusively if available
+            if trade_pair.is_equities:
+                databento_price = websocket_prices_databento.get(trade_pair)
+                if databento_price:
+                    sources = self.sorted_valid_price_sources([databento_price], time_ms, filter_recent_only=True)
+                    if sources:
+                        results[trade_pair] = sources
+                        continue
+                # No valid Databento price, fall back to REST
+                trade_pairs_needing_rest_data.append(trade_pair)
+                continue
+
             events = [
                 websocket_prices_polygon.get(trade_pair),
                 websocket_prices_tiingo_data.get(trade_pair),
-                websocket_prices_databento.get(trade_pair)
             ]
             sources = self.sorted_valid_price_sources(events, time_ms, filter_recent_only=True)
             if sources:
@@ -233,7 +244,6 @@ class LivePriceFetcher:
             sources = self.sorted_valid_price_sources([
                 websocket_prices_polygon.get(trade_pair),
                 websocket_prices_tiingo_data.get(trade_pair),
-                websocket_prices_databento.get(trade_pair),
                 rest_prices_polygon.get(trade_pair),
                 rest_prices_tiingo_data.get(trade_pair)
             ], time_ms, filter_recent_only=False)

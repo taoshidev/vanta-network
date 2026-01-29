@@ -434,7 +434,7 @@ class BaseDataService():
     def instantiate_not_pickleable_objects(self):
         raise NotImplementedError
 
-    def get_closes_websocket(self, trade_pairs: List[TradePair], time_ms) -> dict[str: PriceSource]:
+    def get_closes_websocket(self, trade_pairs: List[TradePair], time_ms) -> dict[str, PriceSource]:
         events = {}
         for trade_pair in trade_pairs:
             symbol = trade_pair.trade_pair

@@ -232,14 +232,15 @@ class MarketOrderManager():
             usd_base_rate=usd_base_price,
             margin_loan=margin_loan,
         )
+        bt.logging.info(f"[ORDER DETAIL] Using price source {price_sources}")
 
         # Override bid/ask with Databento quote for equities slippage calculation
-        if trade_pair.is_equities:
-            db_bid, db_ask, _ = self._live_price_client.get_quote(trade_pair, order_time_ms)
-            bt.logging.info(f"RECEIVED BID {db_bid} ASK {db_ask}")
-            if db_bid and db_ask and db_bid > 0 and db_ask > 0:
-                order.bid = db_bid
-                order.ask = db_ask
+        # if trade_pair.is_equities:
+        #     db_bid, db_ask, _ = self._live_price_client.get_quote(trade_pair, order_time_ms)
+        #     bt.logging.info(f"RECEIVED BID {db_bid} ASK {db_ask}")
+        #     if db_bid and db_ask and db_bid > 0 and db_ask > 0:
+        #         order.bid = db_bid
+        #         order.ask = db_ask
 
         order_creation_ms = TimeUtil.now_in_millis() - step_start
         order.quote_usd_rate = self.live_price_fetcher.get_quote_usd_conversion(order, existing_position)
