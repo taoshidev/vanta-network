@@ -223,7 +223,7 @@ def main():
     all_positions = load_open_positions()
 
     # Get all hotkeys that need processing (from accounts + positions)
-    all_hotkeys = set(asset_selections.keys() | manager.accounts.keys() | set(all_positions.keys()))
+    all_hotkeys = set(asset_selections.keys() | manager.accounts.keys())
     print(f"Total hotkeys to process: {len(all_hotkeys)}")
 
     total_stats = {
