@@ -1,10 +1,7 @@
-import asyncio
 import threading
 import time
-import traceback
 import bittensor as bt
 import databento as db
-from setproctitle import setproctitle
 
 from data_generator.base_data_service import BaseDataService
 from vali_objects.vali_config import TradePair, TradePairCategory
@@ -13,11 +10,76 @@ from vali_objects.vali_dataclasses.price_source import PriceSource
 DATABENTO_PROVIDER_NAME = "Databento"
 
 
-class DatabentoDataService(BaseDataService):
-    """Equities-only live WebSocket feed from Databento using bbo-1s schema."""
+class DatabentoWebSocketClient:
+    """
+    Wrapper around db.Live to match Polygon WebSocketClient interface.
+
+    db.Live uses a class-level singleton thread that can only be started once,
+    so we reuse the same client instance across reconnections. After stop(),
+    calling subscribe() and iterating will reconnect with a fresh session.
+    """
 
     DATASET = "EQUS.MINI"
     SCHEMA = "bbo-1s"
+
+    def __init__(self, api_key: str):
+        self._api_key = api_key
+        self._client = None
+        self._symbols = []
+        self._instrument_map = {}
+
+    def subscribe(self, symbol: str):
+        """Queue symbol for subscription (called before connect)."""
+        self._symbols.append(symbol)
+
+    async def connect(self, handler):
+        """Connect and process messages via callback."""
+        # Reuse existing db.Live client - it uses a class-level singleton thread
+        # that can only be started once. The client can be reused after stop().
+        if self._client is None:
+            self._client = db.Live(key=self._api_key)
+            bt.logging.info("Created new Databento Live client")
+        self._client.subscribe(
+            dataset=self.DATASET,
+            schema=self.SCHEMA,
+            symbols=self._symbols
+        )
+
+        bt.logging.info(f"Databento websocket connected, subscribed to {len(self._symbols)} symbols")
+
+        # Translate async iteration to callback pattern
+        async for msg in self._client:
+            # Handle symbol mapping messages internally
+            if isinstance(msg, db.SymbolMappingMsg):
+                self._instrument_map[msg.instrument_id] = msg.stype_in_symbol
+                continue
+
+            # Attach symbol resolution to message for handler
+            if hasattr(msg, 'instrument_id'):
+                msg._resolved_symbol = self._instrument_map.get(msg.instrument_id)
+
+            await handler(msg)
+
+    def unsubscribe_all(self):
+        """Clear pending subscriptions."""
+        self._symbols.clear()
+
+    def stop(self):
+        """Stop the client connection but keep client for reuse."""
+        if self._client:
+            try:
+                self._client.stop()
+            except Exception as e:
+                bt.logging.warning(f"Error stopping Databento client: {e}")
+            # Don't set to None - db.Live can be reused after stop()
+
+    def get_symbol(self, instrument_id: int) -> str | None:
+        """Get resolved symbol for an instrument ID."""
+        return self._instrument_map.get(instrument_id)
+
+
+class DatabentoDataService(BaseDataService):
+    """Equities-only live WebSocket feed from Databento using bbo-1s schema."""
 
     def __init__(self, api_key: str, disable_ws=False, running_unit_tests=False):
         super().__init__(
@@ -26,10 +88,8 @@ class DatabentoDataService(BaseDataService):
             enabled_websocket_categories={TradePairCategory.EQUITIES}
         )
         self._api_key = api_key
-        # Map instrument_id -> symbol (populated from SymbolMappingMsg)
-        self._instrument_map = {}
 
-        # Start websocket manager thread
+        # Start websocket manager thread (uses base class implementation)
         if disable_ws:
             self.websocket_manager_thread = None
         else:
@@ -45,16 +105,22 @@ class DatabentoDataService(BaseDataService):
         return symbols
 
     def _create_websocket_client(self, tpc: TradePairCategory):
-        """Create Databento Live client for equities."""
+        """Create or reuse Databento websocket client wrapper for equities."""
         if tpc != TradePairCategory.EQUITIES:
             return
 
-        client = db.Live(key=self._api_key)
+        # Reuse existing client - db.Live uses singleton thread that can't restart
+        existing = self.WEBSOCKET_OBJECTS.get(tpc)
+        if existing is not None:
+            bt.logging.info(f"Reusing existing {self.provider_name} websocket client for {tpc}")
+            return
+
+        client = DatabentoWebSocketClient(api_key=self._api_key)
         self.WEBSOCKET_OBJECTS[tpc] = client
-        bt.logging.info(f"Created {self.provider_name} Live client for {tpc}")
+        bt.logging.info(f"Created {self.provider_name} websocket client for {tpc}")
 
     def _subscribe_websockets(self, tpc: TradePairCategory):
-        """Subscribe to all equity symbols with bbo-1s schema."""
+        """Subscribe to all equity symbols."""
         if tpc != TradePairCategory.EQUITIES:
             return
 
@@ -68,35 +134,18 @@ class DatabentoDataService(BaseDataService):
             bt.logging.error(f"No client available for {tpc}")
             return
 
-        try:
-            client.subscribe(
-                dataset=self.DATASET,
-                schema=self.SCHEMA,
-                symbols=symbols,
-            )
-            bt.logging.info(
-                f"{self.provider_name} subscribed to {len(symbols)} symbols: {symbols}"
-            )
-        except db.BentoError as e:
-            bt.logging.error(f"{self.provider_name} subscription failed: {e}")
-            self.WEBSOCKET_OBJECTS[tpc] = None
-            raise
+        for symbol in symbols:
+            client.subscribe(symbol)
+        bt.logging.info(f"{self.provider_name} queued {len(symbols)} symbols for subscription")
 
     async def handle_msg(self, msg):
         """Convert Databento BBO message to PriceSource and update state."""
-
-        # Capture symbol mappings
-        if isinstance(msg, db.SymbolMappingMsg):
-            self._instrument_map[msg.instrument_id] = msg.stype_in_symbol
-            return
-
         # Skip non-BBO messages
         if not isinstance(msg, db.BBOMsg):
             return
 
-        # Resolve instrument_id to symbol
-        instrument_id = msg.instrument_id
-        symbol = self._instrument_map.get(instrument_id)
+        # Get resolved symbol from wrapper (attached during iteration)
+        symbol = getattr(msg, '_resolved_symbol', None)
         if symbol is None:
             return
 
@@ -127,8 +176,6 @@ class DatabentoDataService(BaseDataService):
             ask=ask,
         )
 
-        # bt.logging.info(f"DATABENTO WEBSOCKET MESSAGE: {tp.trade_pair} | bid: {bid}, ask: {ask}")
-
         # Update state
         self.latest_websocket_events[symbol] = ps
         self.trade_pair_to_recent_events[symbol].add_event(ps)
@@ -139,117 +186,16 @@ class DatabentoDataService(BaseDataService):
         self.closed_market_prices[tp] = None
 
     async def _cleanup_websocket(self, tpc: TradePairCategory):
-        """Clean up Databento websocket resources."""
+        """Clean up websocket but keep client for reuse."""
         client = self.WEBSOCKET_OBJECTS.get(tpc)
         if client:
             try:
+                client.unsubscribe_all()
                 client.stop()
-                bt.logging.info(f"Cleaned up {self.provider_name}[{tpc}] websocket")
+                bt.logging.info(f"Cleaned up {self.provider_name}[{tpc}] websocket (keeping client)")
             except Exception as e:
                 bt.logging.error(f"Cleanup error for {tpc}: {e}")
-            finally:
-                self.WEBSOCKET_OBJECTS[tpc] = None
-
-    def websocket_manager(self):
-        """
-        Override base class to use Databento's async iteration pattern instead of connect().
-        """
-        setproctitle(f"vali_ws_{self.provider_name}")
-        bt.logging.enable_info()
-
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-        self.websocket_tasks = {}
-        self._websocket_loop = loop
-
-        async def run_websocket(category):
-            while True:
-                try:
-                    self._create_websocket_client(category)
-                    self._subscribe_websockets(category)
-                    client = self.WEBSOCKET_OBJECTS.get(category)
-
-                    if client is None:
-                        bt.logging.warning(f"{self.provider_name}[{category}] client not created, retrying")
-                        await asyncio.sleep(5)
-                        continue
-
-                    bt.logging.info(f"Starting {self.provider_name} async iteration for {category}")
-
-                    # Databento uses async iteration instead of connect()
-                    async for msg in client:
-                        await self.handle_msg(msg)
-
-                    bt.logging.warning(f"{self.provider_name}[{category}] iteration ended, restarting")
-
-                except asyncio.CancelledError:
-                    bt.logging.info(f"{self.provider_name}[{category}] websocket task cancelled")
-                    break
-                except Exception as e:
-                    bt.logging.error(f"{self.provider_name}[{category}] websocket error: {e}")
-                    bt.logging.error(traceback.format_exc())
-
-                # Clean up before reconnecting
-                try:
-                    await self._cleanup_websocket(category)
-                    await asyncio.sleep(2)
-                except Exception as e:
-                    bt.logging.error(f"Error during websocket cleanup for {category}: {e}")
-                    await asyncio.sleep(5)
-
-        self._run_websocket = run_websocket
-
-        async def health_check():
-            self.task_locks = {tpc: asyncio.Lock() for tpc in self.enabled_websocket_categories}
-            self.restart_backoff = {tpc: 1.0 for tpc in self.enabled_websocket_categories}
-            self.last_restart_time = {tpc: 0 for tpc in self.enabled_websocket_categories}
-
-            last_debug = time.time()
-
-            while True:
-                try:
-                    now = time.time()
-
-                    for tpc in self.enabled_websocket_categories:
-                        await self._check_websocket_health(tpc, loop)
-
-                    if now - last_debug > self.DEBUG_LOG_INTERVAL_S:
-                        try:
-                            self.debug_log()
-                        except Exception as e:
-                            bt.logging.error(f"debug_log() failed: {e}")
-                        last_debug = now
-
-                except Exception as e:
-                    bt.logging.error(f"Error in health check: {e}")
-                    bt.logging.error(traceback.format_exc())
-
-                await asyncio.sleep(5)
-
-        # Create tasks for each websocket category
-        tasks = []
-        for tpc in self.enabled_websocket_categories:
-            task = loop.create_task(run_websocket(tpc))
-            self.websocket_tasks[tpc] = task
-            tasks.append(task)
-
-        # Add health check task
-        health_task = loop.create_task(health_check())
-        tasks.append(health_task)
-
-        try:
-            loop.run_until_complete(asyncio.gather(*tasks))
-        except Exception as e:
-            bt.logging.error(f"Main event loop error: {e}")
-            bt.logging.error(traceback.format_exc())
-        finally:
-            try:
-                for task in tasks:
-                    task.cancel()
-                loop.close()
-            except Exception as e:
-                bt.logging.error(f"Error during shutdown: {e}")
+            # Don't set to None - we want to reuse the client
 
     def instantiate_not_pickleable_objects(self):
         """Initialize non-pickleable clients after unpickling."""
@@ -268,19 +214,21 @@ if __name__ == "__main__":
         print("Error: databento_apikey not found in secrets")
         exit(1)
 
-    print(f"Creating DatabentoDataService...")
+    print("Creating DatabentoDataService...")
     # Use disable_ws=True to prevent background thread from starting
     service = DatabentoDataService(api_key=api_key, disable_ws=True)
 
     symbols = service._get_equity_symbols()
     print(f"Equity symbols ({len(symbols)}): {symbols}")
 
-    # Create client and subscribe directly (not through service methods to avoid state issues)
-    print(f"\nConnecting to {service.DATASET} with schema {service.SCHEMA}...")
+    # Create client and subscribe directly using wrapper constants
+    dataset = DatabentoWebSocketClient.DATASET
+    schema = DatabentoWebSocketClient.SCHEMA
+    print(f"\nConnecting to {dataset} with schema {schema}...")
     client = db.Live(key=api_key)
     client.subscribe(
-        dataset=service.DATASET,
-        schema=service.SCHEMA,
+        dataset=dataset,
+        schema=schema,
         symbols=symbols,
     )
     print(f"Subscribed to {len(symbols)} symbols")
