@@ -133,8 +133,8 @@ class LivePriceFetcherClient(RPCClientBase):
         """Get the conversion rate between an order's quote currency and USD."""
         return self._server.get_quote_usd_conversion(order, position)
 
-    def get_stock_split(self, trade_pair: TradePair, time_ms: int) -> Optional[float]:
-        return self._server.get_stock_split(trade_pair, time_ms)
+    def get_stock_splits(self, time_ms: int) -> dict[str, float]:
+        return self._server.get_stock_splits(time_ms)
 
     def set_test_price_source(self, trade_pair: TradePair, price_source: PriceSource) -> None:
         """Set test price source for a specific trade pair (test-only)."""

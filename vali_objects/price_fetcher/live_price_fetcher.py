@@ -473,8 +473,9 @@ class LivePriceFetcher:
         bt.logging.error(f"Unable to fetch USD to base currency {trade_pair.base} conversion at time {time_ms}. No price sources available (websocket or REST).")
         return 1.0
 
-    def get_stock_split(self, trade_pair: TradePair, time_ms: int) -> Optional[float]:
-        return self.polygon_data_service.get_stock_split(trade_pair, time_ms)
+    def get_stock_splits(self, time_ms: int) -> dict[str, float]:
+        return self.polygon_data_service.get_stock_splits(time_ms)
+        # return self.databento_data_service.get_stock_splits(time_ms)
 
 
 if __name__ == "__main__":

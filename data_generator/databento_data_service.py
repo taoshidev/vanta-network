@@ -4,6 +4,7 @@ import bittensor as bt
 import databento as db
 
 from data_generator.base_data_service import BaseDataService
+from time_util.time_util import TimeUtil
 from vali_objects.vali_config import TradePair, TradePairCategory
 from vali_objects.vali_dataclasses.price_source import PriceSource
 
@@ -88,6 +89,7 @@ class DatabentoDataService(BaseDataService):
             enabled_websocket_categories={TradePairCategory.EQUITIES}
         )
         self._api_key = api_key
+        self._ref_client = db.Reference(key=api_key)
 
         # Start websocket manager thread (uses base class implementation)
         if disable_ws:
@@ -163,7 +165,7 @@ class DatabentoDataService(BaseDataService):
 
         ps = PriceSource(
             source=f"{DATABENTO_PROVIDER_NAME}_ws",
-            timespan_ms=0,  # Point-in-time for websocket
+            timespan_ms=1000,  # 1 second interval for BBO-1s
             open=mid,
             close=mid,
             vwap=mid,
@@ -201,6 +203,44 @@ class DatabentoDataService(BaseDataService):
         """Initialize non-pickleable clients after unpickling."""
         # Live client will be created in _create_websocket_client
         pass
+
+    def get_stock_splits(self, time_ms) -> dict[str, float]:
+        """
+        Get stock splits for all equity symbols on a given date.
+
+        Returns:
+            dict mapping trade_pair_id to split ratio (ratio_new / ratio_old)
+        """
+        execution_date_str = TimeUtil.timestamp_ms_to_eastern_time_str(time_ms, short=True)
+
+        try:
+            df_raw = self._ref_client.corporate_actions.get_range(
+                symbols=self._get_equity_symbols(),
+                start=execution_date_str,
+                end=execution_date_str,
+                index="ex_date",
+                events=["FSPLT", "RSPLT"],
+                countries=["US"]
+            )
+        except Exception as e:
+            bt.logging.error(f"Failed to fetch stock splits from Databento: {e}")
+            return {}
+
+        if df_raw is None or df_raw.empty:
+            return {}
+
+        result = {}
+        for _, row in df_raw.iterrows():
+            symbol = row.get("symbol")
+            ratio_old = row.get("ratio_old")
+            ratio_new = row.get("ratio_new")
+
+            if symbol and ratio_old and ratio_new and ratio_old != 0:
+                # trade_pair_id is the symbol for equities
+                result[symbol] = ratio_new / ratio_old
+
+        return result
+
 
 
 if __name__ == "__main__":

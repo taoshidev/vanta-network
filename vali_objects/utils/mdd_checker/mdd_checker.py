@@ -184,18 +184,29 @@ class MDDChecker(CacheController):
         last_update_date_est = TimeUtil.timestamp_ms_to_eastern_time_str(self._last_update_time_ms, short=True)
         is_new_day = today_date_est != last_update_date_est
 
-        # Check and apply if a stock split occured on new trading day (EST) or price fluctuation > 10%
+        # Fetch all stock splits once for efficiency
+        stock_splits = {}
+        should_check_splits = is_new_day or any(
+            tp.is_equities and self._prev_iteration_prices.get(tp) and sources[0].close
+            and abs((sources[0].close - self._prev_iteration_prices[tp]) / self._prev_iteration_prices[tp]) >= 0.1
+            for tp, sources in tp_to_price_sources.items()
+        )
+        if should_check_splits:
+            bt.logging.info(f"[STOCK SPLITS] Fetching stock splits for {today_date_est}")
+            stock_splits = self._live_price_client.get_stock_splits(now_ms)
+            if stock_splits:
+                bt.logging.info(f"[STOCK SPLITS] Found splits: {stock_splits}")
+            else:
+                bt.logging.info(f"[STOCK SPLITS] No stock splits found for {today_date_est}")
+
+        # Check and apply if a stock split occurred on new trading day (EST) or price fluctuation > 10%
         for tp, sources in tp_to_price_sources.items():
             if not tp.is_equities:
                 continue
             new_price = sources[0].close
             prev_price = self._prev_iteration_prices.get(tp)
 
-            stock_split_ratio = None
-            if is_new_day or (new_price and prev_price and abs((new_price - prev_price) / prev_price) >= 0.1):
-                bt.logging.info(f"[STOCK SPLITS] Checking stock split for {tp.trade_pair_id} ({today_date_est})")
-                stock_split_ratio = self._live_price_client.get_stock_split(tp, now_ms)
-
+            stock_split_ratio = stock_splits.get(tp.trade_pair_id)
             if stock_split_ratio is not None:
                 self._position_client.apply_stock_split(tp.trade_pair_id, stock_split_ratio, today_date_est)
 

@@ -254,7 +254,7 @@ class PolygonDataService(BaseDataService):
         super().__init__(
             provider_name=POLYGON_PROVIDER_NAME,
             running_unit_tests=running_unit_tests,
-            enabled_websocket_categories={TradePairCategory.CRYPTO, TradePairCategory.FOREX, TradePairCategory.EQUITIES}
+            enabled_websocket_categories={TradePairCategory.CRYPTO, TradePairCategory.FOREX} #, TradePairCategory.EQUITIES}
         )
 
         self.MARKET_STATUS = None
@@ -1244,19 +1244,22 @@ class PolygonDataService(BaseDataService):
 
         return rate.converted
 
-    def get_stock_split(self, trade_pair: TradePair, time_ms: int) -> Optional[float]:
-        if not trade_pair.is_equities:
-            return None
+    def get_stock_splits(self, time_ms: int) -> dict[str, float]:
+        """
+        Get stock splits for all equity symbols on a given date.
 
-        # Use EST timezone to match MDD checker's date comparison for idempotency
+        Returns:
+            dict mapping trade_pair_id to split ratio (split_to / split_from)
+        """
         execution_date_str = TimeUtil.timestamp_ms_to_eastern_time_str(time_ms, short=True)
-        ticker = self.trade_pair_to_polygon_ticker(trade_pair)
+
+        # Get all equity symbols we care about
+        equity_symbols = {tp.trade_pair for tp in TradePair if tp.is_equities}
 
         endpoint = "https://api.massive.com/stocks/v1/splits"
         params = {
-            "ticker": ticker,
             "execution_date": execution_date_str,
-            "limit": 100,
+            "limit": 1000,
             "sort": "execution_date.desc",
             "apiKey": self._api_key
         }
@@ -1266,25 +1269,29 @@ class PolygonDataService(BaseDataService):
             response.raise_for_status()
             data = response.json()
 
+            result = {}
             if 'results' in data and isinstance(data['results'], list):
                 for split in data['results']:
-                    # Match ticker and execution date
-                    if split.get('ticker') == ticker and split.get('execution_date') == execution_date_str:
-                        split_from = split.get('split_from')
-                        split_to = split.get('split_to')
+                    ticker = split.get('ticker')
+                    # Only include splits for our supported equity symbols
+                    if ticker not in equity_symbols:
+                        continue
+                    if split.get('execution_date') != execution_date_str:
+                        continue
 
-                        if split_from and split_to:
-                            return split_to / split_from
-                        else:
-                            bt.logging.warning(f"Found stock split for {trade_pair.trade_pair_id} on {execution_date_str}, but could not resolve stock split ratio")
-                            return None
+                    split_from = split.get('split_from')
+                    split_to = split.get('split_to')
 
-            # No matching split found
-            return None
+                    if split_from and split_to and split_from != 0:
+                        result[ticker] = split_to / split_from
+                    else:
+                        bt.logging.warning(f"Found stock split for {ticker} on {execution_date_str}, but could not resolve stock split ratio")
+
+            return result
 
         except Exception as e:
             bt.logging.error(f"Failed to fetch stock split data from massive.com: {e}")
-            return None
+            return {}
 
 if __name__ == "__main__":
 
