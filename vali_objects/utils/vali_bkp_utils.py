@@ -573,3 +573,9 @@ class ValiBkpUtils:
                     bt.logging.error(f"Error accessing {status} directory {status_dir}: {e}")
 
         return orders
+
+    @staticmethod
+    def get_stock_splits_file_location(running_unit_tests=False) -> str:
+        suffix = "/tests" if running_unit_tests else ""
+        return ValiConfig.BASE_DIR + f"{suffix}/validation/stock_splits.json"
+

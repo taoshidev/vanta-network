@@ -1,4 +1,5 @@
 import time
+import requests
 from typing import List, Optional, Tuple, Dict
 
 import numpy as np
@@ -7,6 +8,7 @@ from data_generator.polygon_data_service import PolygonDataService
 from data_generator.databento_data_service import DatabentoDataService
 from time_util.time_util import TimeUtil
 from vali_objects.utils.vali_utils import ValiUtils
+from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.vali_config import TradePair, ValiConfig
 import bittensor as bt
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
@@ -38,6 +40,11 @@ class LivePriceFetcher:
                 disable_ws=disable_ws,
                 running_unit_tests=running_unit_tests
             )
+
+        # Stock splits cache - load from disk on startup
+        self.STOCK_SPLITS_FILE = ValiBkpUtils.get_stock_splits_file_location()
+        self._stock_splits = ValiUtils.get_vali_json_file_dict(self.STOCK_SPLITS_FILE)
+        self._last_split_check_ms = 0
 
     def stop_all_threads(self):
         self.tiingo_data_service.stop_threads()
@@ -474,7 +481,59 @@ class LivePriceFetcher:
         return 1.0
 
     def get_stock_splits(self, time_ms: int) -> dict[str, float]:
-        return self.polygon_data_service.get_stock_splits(time_ms)
+        target_date = TimeUtil.timestamp_ms_to_eastern_time_str(time_ms, short=True)
+
+        # 12 hours in case the mdd checker daily call runs faster than 24 hours
+        if time_ms - self._last_split_check_ms < 12 * 60 * 60 * 1000:
+            return self._stock_splits.get(target_date, {})
+
+        url = 'https://api.nasdaq.com/api/calendar/splits'
+        headers = {
+            'User-Agent': 'Mozilla/5.0',
+            'Accept': 'application/json'
+        }
+        try:
+            response = requests.get(url, headers=headers, timeout=10)
+            if not response.ok:
+                bt.logging.error(f"NASDAQ API returned status {response.status_code}")
+                return self._stock_splits.get(target_date, {})
+            data = response.json()
+        except Exception as e:
+            bt.logging.error(f"Failed to fetch stock splits from NASDAQ API: {e}")
+            return self._stock_splits.get(target_date, {})
+
+        equity_symbols = {tp.trade_pair: tp for tp in TradePair if tp.is_equities}
+
+        new_split_entries = {}
+        for row in data.get("data", {}).get("rows", []):
+            ticker = row.get("symbol")
+            if not ticker or ticker not in equity_symbols:
+                continue
+
+            # only need to change for BRK.B (will be useful one day)
+            trade_pair_id = equity_symbols[ticker].trade_pair_id
+
+            execution_date = TimeUtil.format_nasdaq_api_date(row.get("executionDate"))
+            ratio_str = row.get("ratio")
+            split_to, split_from = map(float, map(str.strip, ratio_str.split(":")))
+            ratio = split_to / split_from
+
+            if execution_date not in self._stock_splits:
+                self._stock_splits[execution_date] = {}
+            if trade_pair_id not in self._stock_splits[execution_date]:
+                new_split_entries[trade_pair_id] = ratio
+            self._stock_splits[execution_date].update({trade_pair_id: ratio})
+
+        self._last_split_check_ms = time_ms
+
+        if new_split_entries:
+            bt.logging.info(f"NEW UPCOMING STOCK SPLITS ADDED TO RECORD: {new_split_entries}")
+            ValiBkpUtils.write_file(self.STOCK_SPLITS_FILE, self._stock_splits)
+        else:
+            bt.logging.info("No new upcoming stock splits found")
+
+        return self._stock_splits.get(target_date, {})
+        # return self.polygon_data_service.get_stock_splits(time_ms)
         # return self.databento_data_service.get_stock_splits(time_ms)
 
 
