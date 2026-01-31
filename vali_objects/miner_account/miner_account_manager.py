@@ -59,7 +59,7 @@ class MinerAccount:
     """Per-miner account state. Unified source of truth for account data."""
     miner_hotkey: str
     cash_balance: float              # Available cash (for equities margin)
-    total_borrowed_amount: float = 0.0  # Total margin loans outstanding
+    total_borrowed_amount: float = 1.0  # Total margin loans outstanding
     asset_class: Optional[TradePairCategory] = None  # EQUITIES, CRYPTO, FOREX
     collateral_records: List[CollateralRecord] = None  # Historical CollateralRecords (List[CollateralRecord])
     last_interest_date_ms: Optional[int] = None  # Last date interest was applied
@@ -124,9 +124,10 @@ class MinerAccount:
 
         # Skip if no borrowed amount
         if self.total_borrowed_amount <= 0:
+            if self.last_interest_date_ms:
+                self.last_interest_date_ms = None
+                return True
             return False
-
-        current_date = datetime.fromtimestamp(current_time_ms / 1000, tz=timezone.utc).date()
 
         # First time seeing this loan - mark date, don't charge (first day free)
         if self.last_interest_date_ms is None:
@@ -134,10 +135,9 @@ class MinerAccount:
             return True
 
         # Check last applied date
-        last_applied_date = datetime.fromtimestamp(
-            self.last_interest_date_ms / 1000, tz=timezone.utc
-        ).date()
-        if last_applied_date == current_date:
+        current_date = datetime.fromtimestamp(current_time_ms/1000, tz=timezone.utc).date()
+        last_applied_date = datetime.fromtimestamp(self.last_interest_date_ms/1000, tz=timezone.utc).date()
+        if last_applied_date >= current_date:
             return False
 
         # Calculate daily interest
@@ -753,7 +753,8 @@ class MinerAccountManager:
                 return 0.0
 
             # Equities: pay off loan first, return rest to cash
-            loan_repaid = min(position_margin_loan, sale_proceeds_usd)
+            # Floor by total_borrowed_amount to prevent negative balance
+            loan_repaid = min(position_margin_loan, sale_proceeds_usd, account.total_borrowed_amount)
             cash_returned = sale_proceeds_usd - loan_repaid
 
             account.total_borrowed_amount -= loan_repaid
