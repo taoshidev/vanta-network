@@ -289,11 +289,12 @@ class MarketOrderManager():
 
             if existing_position.position_type == OrderType.SHORT:
                 # For SHORT positions: proceeds = entry_value + (entry_value - current_value)
+                # Note: cumulative_entry_value is negative for shorts, so we use abs()
                 if order.order_type == OrderType.FLAT:
-                    entry_value = existing_position.cumulative_entry_value
+                    entry_value = abs(existing_position.cumulative_entry_value)
                 else:
                     proportion = abs(processed_qty) / abs(existing_position.net_quantity)
-                    entry_value = proportion * existing_position.cumulative_entry_value
+                    entry_value = proportion * abs(existing_position.cumulative_entry_value)
                 sale_proceeds = 2 * entry_value - current_value
             else:
                 # For LONG positions: proceeds = current_value
