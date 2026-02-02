@@ -35,11 +35,23 @@ class DatabentoWebSocketClient:
 
     async def connect(self, handler):
         """Connect and process messages via callback."""
-        # Reuse existing db.Live client - it uses a class-level singleton thread
-        # that can only be started once. The client can be reused after stop().
-        if self._client is None:
-            self._client = db.Live(key=self._api_key)
-            bt.logging.info("Created new Databento Live client")
+        # Reset dead singleton thread before creating new db.Live instance.
+        # db.Live uses a class-level _thread that runs _loop.run_forever().
+        # When the thread dies, we must replace it with a new thread that
+        # has the same target so the library can start it again.
+        if hasattr(db.Live, '_thread') and db.Live._thread is not None:
+            if not db.Live._thread.is_alive():
+                bt.logging.info("Replacing dead Databento singleton thread")
+                # Recreate with same target as original: _loop.run_forever
+                db.Live._thread = threading.Thread(
+                    target=db.Live._loop.run_forever,
+                    name="databento_live",
+                    daemon=True,
+                )
+
+        # Create fresh client each time - the old one can't be reused after stop()
+        self._client = db.Live(key=self._api_key)
+        bt.logging.info("Created new Databento Live client")
         self._client.subscribe(
             dataset=self.DATASET,
             schema=self.SCHEMA,
@@ -66,13 +78,15 @@ class DatabentoWebSocketClient:
         self._symbols.clear()
 
     def stop(self):
-        """Stop the client connection but keep client for reuse."""
+        """Stop the client connection."""
         if self._client:
             try:
                 self._client.stop()
             except Exception as e:
                 bt.logging.warning(f"Error stopping Databento client: {e}")
-            # Don't set to None - db.Live can be reused after stop()
+            # Set to None so a fresh client is created on reconnect.
+            # db.Live's singleton thread can't be restarted, so we need a new instance.
+            self._client = None
 
     def get_symbol(self, instrument_id: int) -> str | None:
         """Get resolved symbol for an instrument ID."""
