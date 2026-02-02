@@ -4,7 +4,7 @@ Migration script to track cash balance for open positions.
 This script migrates miner accounts to track cash balance by:
 - Clearing all existing transaction JSONL files
 - Setting initial cash balance based on account size and asset class multiplier
-- Processing each order chronologically using MinerAccountManager methods
+- Subtracting the net value of each open position from cash balance
 - Only processes currently OPEN positions
 
 Usage:
@@ -17,7 +17,6 @@ Options:
 import os
 import sys
 
-from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
@@ -71,45 +70,6 @@ def load_open_positions() -> dict[str, list[Position]]:
     return all_positions
 
 
-def process_order_for_migration(
-    manager: MinerAccountManager,
-    hotkey: str,
-    order,
-    position: Position
-):
-    """Process a single order for cash balance migration."""
-    account = manager.get_account(hotkey)
-    if not account:
-        return
-
-    # Determine if this is a buy (adding to position) or sell (reducing/closing)
-    is_buy = order.order_type == position.position_type
-
-    if is_buy:
-        order_value = abs(order.value) if order.value else 0.0
-        margin_loan = order.margin_loan if order.margin_loan else 0.0
-        equity_used = order_value - margin_loan
-        account.cash_balance -= equity_used
-        MinerAccountManager.record_transaction(
-            hotkey, order.processed_ms, "BUY",
-            cash_delta=-equity_used,
-            loan_delta=margin_loan,
-            running_unit_tests=False
-        )
-    else:
-        qty = abs(order.quantity) if order.quantity else 0.0
-        lot_size = position.trade_pair.lot_size
-        sale_proceeds = qty * lot_size / order.usd_base_rate if order.usd_base_rate else 0.0
-        margin_loan = order.margin_loan if order.margin_loan else 0.0
-        account.cash_balance += abs(sale_proceeds)
-        MinerAccountManager.record_transaction(
-            hotkey, order.processed_ms, "SELL",
-            cash_delta=abs(sale_proceeds),
-            loan_delta=margin_loan,
-            running_unit_tests=False
-        )
-
-
 def migrate_hotkey(
     manager: MinerAccountManager,
     hotkey: str,
@@ -120,7 +80,6 @@ def migrate_hotkey(
     """Migrate cash balance for a single hotkey."""
     stats = {
         'positions_processed': 0,
-        'orders_processed': 0,
         'errors': []
     }
 
@@ -150,26 +109,14 @@ def migrate_hotkey(
     account.cash_balance = initial_cash
     account.total_borrowed_amount = 0.0
 
-    # Sort all positions by their first order timestamp
-    positions_sorted = sorted(positions, key=lambda p: p.orders[0].processed_ms if p.orders else 0)
-
-    # Collect all orders across positions and sort by timestamp
-    all_orders = []
-    for position in positions_sorted:
-        for order in position.orders:
-            all_orders.append((order, position))
-
-    all_orders.sort(key=lambda x: x[0].processed_ms)
-
-    # Process orders chronologically
-    for order, position in all_orders:
+    # Subtract net value of each open position from cash balance
+    for position in positions:
         try:
-            process_order_for_migration(manager, hotkey, order, position)
-            stats['orders_processed'] += 1
+            account.cash_balance -= abs(position.net_value)
+            stats['positions_processed'] += 1
         except Exception as e:
-            stats['errors'].append(f"Order {order.order_uuid}: {e}")
+            stats['errors'].append(f"Position {position.position_uuid}: {e}")
 
-    stats['positions_processed'] = len(positions)
     return stats
 
 
@@ -229,7 +176,6 @@ def main():
     total_stats = {
         'hotkeys_processed': 0,
         'positions_processed': 0,
-        'orders_processed': 0,
         'errors': []
     }
 
@@ -242,11 +188,10 @@ def main():
         # Print account status
         account = manager.get_account(hotkey)
         if account:
-            print(f"[{hotkey[:8]}] cash: ${account.cash_balance:,.2f}, borrowed: ${account.total_borrowed_amount:,.2f}, positions: {stats['positions_processed']}, orders: {stats['orders_processed']}")
+            print(f"[{hotkey[:8]}] cash: ${account.cash_balance:,.2f}, borrowed: ${account.total_borrowed_amount:,.2f}, positions: {stats['positions_processed']}")
 
         total_stats['hotkeys_processed'] += 1
         total_stats['positions_processed'] += stats['positions_processed']
-        total_stats['orders_processed'] += stats['orders_processed']
         total_stats['errors'].extend(stats['errors'])
 
     # Save accounts to disk
@@ -258,7 +203,6 @@ def main():
     print("=" * 60)
     print(f"Hotkeys processed:    {total_stats['hotkeys_processed']}")
     print(f"Positions processed:  {total_stats['positions_processed']}")
-    print(f"Orders processed:     {total_stats['orders_processed']}")
 
     if total_stats['errors']:
         print(f"\nErrors ({len(total_stats['errors'])}):")
