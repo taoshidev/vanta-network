@@ -285,7 +285,20 @@ class MarketOrderManager():
         else:
             # Sell: receive sale proceeds minus slippage cost
             processed_qty = existing_position.net_quantity if order.order_type == OrderType.FLAT else quantity
-            sale_proceeds = processed_qty * trade_pair.lot_size / order.usd_base_rate
+            current_value = abs(processed_qty) * trade_pair.lot_size / order.usd_base_rate
+
+            if existing_position.position_type == OrderType.SHORT:
+                # For SHORT positions: proceeds = entry_value + (entry_value - current_value)
+                if order.order_type == OrderType.FLAT:
+                    entry_value = existing_position.cumulative_entry_value
+                else:
+                    proportion = abs(processed_qty) / abs(existing_position.net_quantity)
+                    entry_value = proportion * existing_position.cumulative_entry_value
+                sale_proceeds = 2 * entry_value - current_value
+            else:
+                # For LONG positions: proceeds = current_value
+                sale_proceeds = current_value
+
             loan_repaid = self._miner_account_client.process_order_sell(miner_hotkey, abs(sale_proceeds) * (1 - order.slippage), existing_position.margin_loan)
             # Store loan repayment as negative margin_loan so position.margin_loan sums correctly
             order.margin_loan = -loan_repaid
