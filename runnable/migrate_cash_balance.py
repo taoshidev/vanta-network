@@ -112,6 +112,9 @@ def migrate_hotkey(
     # Subtract net value of each open position from cash balance
     for position in positions:
         try:
+            # Skip positions that don't belong to this asset class
+            if asset_class and position.trade_pair.trade_pair_category != asset_class:
+                continue
             account.cash_balance -= abs(position.net_value)
             stats['positions_processed'] += 1
         except Exception as e:
