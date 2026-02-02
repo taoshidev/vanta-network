@@ -18,7 +18,7 @@ from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.utils.vali_utils import ValiUtils
-from vali_objects.vali_config import TradePair
+from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.vali_dataclasses.order import Order
 
 
@@ -576,15 +576,20 @@ class TestMinerStatistics(TestBase):
         # Set different account sizes - one above minimum ($150k), one below
         # NOTE: Currently, min_collateral penalty is not applied in calculate_penalties_breakdown()
         # This test verifies that account size data can be injected and retrieved correctly
+        # account_size = account_size_theta * COST_PER_THETA (500), so:
+        # - $200k account needs theta = 400
+        # - $100k account needs theta = 200
         miner_account_client = self.orchestrator.get_client('miner_account')
+        high_collateral_theta = 200000.0 / ValiConfig.COST_PER_THETA  # 400
+        low_collateral_theta = 100000.0 / ValiConfig.COST_PER_THETA   # 200
         account_sizes_data = {
             high_collateral_miner: [
-                {'account_size': 200000.0, 'account_size_theta': 200000.0, 'update_time_ms': start_time},
-                {'account_size': 200000.0, 'account_size_theta': 200000.0, 'update_time_ms': current_time}
+                {'account_size': 200000.0, 'account_size_theta': high_collateral_theta, 'update_time_ms': start_time},
+                {'account_size': 200000.0, 'account_size_theta': high_collateral_theta, 'update_time_ms': current_time}
             ],
             low_collateral_miner: [
-                {'account_size': 100000.0, 'account_size_theta': 100000.0, 'update_time_ms': start_time},
-                {'account_size': 100000.0, 'account_size_theta': 100000.0, 'update_time_ms': current_time}
+                {'account_size': 100000.0, 'account_size_theta': low_collateral_theta, 'update_time_ms': start_time},
+                {'account_size': 100000.0, 'account_size_theta': low_collateral_theta, 'update_time_ms': current_time}
             ]
         }
         miner_account_client.sync_miner_account_sizes_data(account_sizes_data)

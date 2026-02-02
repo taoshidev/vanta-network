@@ -59,7 +59,7 @@ class MinerAccount:
     """Per-miner account state. Unified source of truth for account data."""
     miner_hotkey: str
     cash_balance: float              # Available cash (for equities margin)
-    total_borrowed_amount: float = 1.0  # Total margin loans outstanding
+    total_borrowed_amount: float = 0.0  # Total margin loans outstanding
     asset_class: Optional[TradePairCategory] = None  # EQUITIES, CRYPTO, FOREX
     collateral_records: List[CollateralRecord] = None  # Historical CollateralRecords (List[CollateralRecord])
     last_interest_date_ms: Optional[int] = None  # Last date interest was applied

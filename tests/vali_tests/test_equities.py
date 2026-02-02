@@ -60,6 +60,7 @@ class TestEquities(TestBase):
         cls.metagraph_client = cls.orchestrator.get_client('metagraph')
         cls.position_client = cls.orchestrator.get_client('position_manager')
         cls.miner_account_client = cls.orchestrator.get_client('miner_account')
+        cls.asset_selection_client = cls.orchestrator.get_client('asset_selection')
 
         # Initialize metagraph with test miners
         cls.metagraph_client.set_hotkeys([cls.DEFAULT_MINER_HOTKEY, cls.DEFAULT_MINER_HOTKEY_2])
@@ -88,6 +89,12 @@ class TestEquities(TestBase):
 
     def _create_test_data(self):
         """Helper to create fresh test data."""
+        # Set asset selection to EQUITIES for test miners (required for margin trading)
+        self.asset_selection_client.sync_miner_asset_selection_data({
+            self.DEFAULT_MINER_HOTKEY: TradePairCategory.EQUITIES.value,
+            self.DEFAULT_MINER_HOTKEY_2: TradePairCategory.EQUITIES.value
+        })
+
         # Set account sizes for test miners
         # Use timestamp from yesterday so collateral record is valid today
         yesterday_ms = self.DEFAULT_OPEN_MS - (24 * 60 * 60 * 1000)
@@ -598,8 +605,7 @@ class TestEquities(TestBase):
         order_value = 50_000.0
         borrowed = self.miner_account_manager.process_order_buy(
             self.DEFAULT_MINER_HOTKEY,
-            order_value,
-            TradePairCategory.EQUITIES
+            order_value
         )
 
         # Should be pure cash purchase
@@ -632,8 +638,7 @@ class TestEquities(TestBase):
 
         borrowed = self.miner_account_manager.process_order_buy(
             self.DEFAULT_MINER_HOTKEY,
-            order_value,
-            TradePairCategory.EQUITIES
+            order_value
         )
 
         # Should borrow 50% of order value
@@ -656,8 +661,7 @@ class TestEquities(TestBase):
         with self.assertRaises(SignalException) as context:
             self.miner_account_manager.process_order_buy(
                 self.DEFAULT_MINER_HOTKEY,
-                order_value,
-                TradePairCategory.EQUITIES
+                order_value
             )
 
         self.assertIn("Insufficient funds", str(context.exception))
@@ -670,8 +674,7 @@ class TestEquities(TestBase):
         order_value = 150_000.0
         borrowed = self.miner_account_manager.process_order_buy(
             self.DEFAULT_MINER_HOTKEY,
-            order_value,
-            TradePairCategory.EQUITIES
+            order_value
         )
 
         account = self.miner_account_manager.get_account(self.DEFAULT_MINER_HOTKEY)
@@ -682,8 +685,7 @@ class TestEquities(TestBase):
         loan_repaid = self.miner_account_manager.process_order_sell(
             self.DEFAULT_MINER_HOTKEY,
             sale_proceeds,
-            borrowed,  # position margin loan
-            TradePairCategory.EQUITIES
+            borrowed  # position margin loan
         )
 
         # Should repay full loan ($75k)
@@ -707,8 +709,7 @@ class TestEquities(TestBase):
         order_value = 150_000.0
         borrowed = self.miner_account_manager.process_order_buy(
             self.DEFAULT_MINER_HOTKEY,
-            order_value,
-            TradePairCategory.EQUITIES
+            order_value
         )
 
         account = self.miner_account_manager.get_account(self.DEFAULT_MINER_HOTKEY)
@@ -719,8 +720,7 @@ class TestEquities(TestBase):
         loan_repaid = self.miner_account_manager.process_order_sell(
             self.DEFAULT_MINER_HOTKEY,
             sale_proceeds,
-            borrowed,
-            TradePairCategory.EQUITIES
+            borrowed
         )
 
         # Should repay what we can (all proceeds)
@@ -739,21 +739,22 @@ class TestEquities(TestBase):
 
     def test_margin_non_equity_no_margin_tracking(self):
         """
-        Test that non-equity trades don't affect margin/cash tracking.
+        Test that non-equity trades use cash-only (no margin/loans).
+        For EQUITIES asset class, all purchases use cash first.
         """
         account = self.miner_account_manager.get_account(self.DEFAULT_MINER_HOTKEY)
         initial_cash = account['cash_balance']
 
-        # Process non-equity buy (should return 0, no changes)
+        # Process buy within cash limit (should use cash, no margin)
+        order_value = 50_000.0
         borrowed = self.miner_account_manager.process_order_buy(
             self.DEFAULT_MINER_HOTKEY,
-            100_000.0,
-            TradePairCategory.CRYPTO
+            order_value
         )
 
         self.assertEqual(borrowed, 0.0)
         account = self.miner_account_manager.get_account(self.DEFAULT_MINER_HOTKEY)
-        self.assertEqual(account['cash_balance'], initial_cash)
+        self.assertEqual(account['cash_balance'], initial_cash - order_value)
         self.assertEqual(account['total_borrowed_amount'], 0.0)
 
     def test_margin_multiple_positions_cumulative_loan(self):
@@ -764,8 +765,7 @@ class TestEquities(TestBase):
         order_value_1 = 150_000.0
         borrowed_1 = self.miner_account_manager.process_order_buy(
             self.DEFAULT_MINER_HOTKEY,
-            order_value_1,
-            TradePairCategory.EQUITIES
+            order_value_1
         )
 
         # Should have borrowed $75k (50% of $150k)
@@ -796,8 +796,7 @@ class TestEquities(TestBase):
         order_value = 150_000.0
         borrowed = self.miner_account_manager.process_order_buy(
             self.DEFAULT_MINER_HOTKEY,
-            order_value,
-            TradePairCategory.EQUITIES
+            order_value
         )
 
         # Verify total borrowed amount is tracked
@@ -861,8 +860,7 @@ class TestEquities(TestBase):
         order_value_1 = 150_000.0
         borrowed_1 = self.miner_account_manager.process_order_buy(
             self.DEFAULT_MINER_HOTKEY,
-            order_value_1,
-            TradePairCategory.EQUITIES
+            order_value_1
         )
 
         # Should borrow $75,000 (need $75k margin at 50%, have $100k cash)
@@ -879,8 +877,7 @@ class TestEquities(TestBase):
         loan_repaid_1 = self.miner_account_manager.process_order_sell(
             self.DEFAULT_MINER_HOTKEY,
             sale_proceeds_1,
-            borrowed_1,  # position's margin loan
-            TradePairCategory.EQUITIES
+            borrowed_1  # position's margin loan
         )
 
         # Should repay full $75,000 loan, remainder ($25k) goes to cash
@@ -898,8 +895,7 @@ class TestEquities(TestBase):
         loan_repaid_2 = self.miner_account_manager.process_order_sell(
             self.DEFAULT_MINER_HOTKEY,
             sale_proceeds_2,
-            remaining_loan,
-            TradePairCategory.EQUITIES
+            remaining_loan
         )
 
         # No loan to repay, all proceeds go to cash
@@ -928,8 +924,7 @@ class TestEquities(TestBase):
         order_value = 50_000.0
         self.miner_account_manager.process_order_buy(
             self.DEFAULT_MINER_HOTKEY,
-            order_value,
-            TradePairCategory.EQUITIES
+            order_value
         )
 
         # Read transactions
@@ -958,8 +953,7 @@ class TestEquities(TestBase):
 
         self.miner_account_manager.process_order_buy(
             self.DEFAULT_MINER_HOTKEY,
-            order_value,
-            TradePairCategory.EQUITIES
+            order_value
         )
 
         transactions = ValiBkpUtils.read_transactions(tx_path)
@@ -983,8 +977,7 @@ class TestEquities(TestBase):
         order_value = 150_000.0
         borrowed = self.miner_account_manager.process_order_buy(
             self.DEFAULT_MINER_HOTKEY,
-            order_value,
-            TradePairCategory.EQUITIES
+            order_value
         )
 
         # Then sell
@@ -992,8 +985,7 @@ class TestEquities(TestBase):
         loan_repaid = self.miner_account_manager.process_order_sell(
             self.DEFAULT_MINER_HOTKEY,
             sale_proceeds,
-            borrowed,
-            TradePairCategory.EQUITIES
+            borrowed
         )
 
         transactions = ValiBkpUtils.read_transactions(tx_path)
@@ -1021,8 +1013,7 @@ class TestEquities(TestBase):
         order_value = 150_000.0
         borrowed = self.miner_account_manager.process_order_buy(
             self.DEFAULT_MINER_HOTKEY,
-            order_value,
-            TradePairCategory.EQUITIES
+            order_value
         )
         self.assertGreater(borrowed, 0)
 
@@ -1056,23 +1047,20 @@ class TestEquities(TestBase):
         # 1. Cash purchase ($50k)
         self.miner_account_manager.process_order_buy(
             self.DEFAULT_MINER_HOTKEY,
-            50_000.0,
-            TradePairCategory.EQUITIES
+            50_000.0
         )
 
         # 2. Margin purchase ($80k with 50% margin = $40k cash, $40k borrowed)
         borrowed = self.miner_account_manager.process_order_buy(
             self.DEFAULT_MINER_HOTKEY,
-            80_000.0,
-            TradePairCategory.EQUITIES
+            80_000.0
         )
 
         # 3. Sell with proceeds ($90k - repays loan, rest to cash)
         self.miner_account_manager.process_order_sell(
             self.DEFAULT_MINER_HOTKEY,
             90_000.0,
-            borrowed,
-            TradePairCategory.EQUITIES
+            borrowed
         )
 
         # Get actual account state
@@ -1103,13 +1091,11 @@ class TestEquities(TestBase):
         # Make multiple transactions
         self.miner_account_manager.process_order_buy(
             self.DEFAULT_MINER_HOTKEY,
-            30_000.0,
-            TradePairCategory.EQUITIES
+            30_000.0
         )
         self.miner_account_manager.process_order_buy(
             self.DEFAULT_MINER_HOTKEY,
-            20_000.0,
-            TradePairCategory.EQUITIES
+            20_000.0
         )
 
         # Read file directly and verify format
