@@ -173,62 +173,6 @@ class TestDebtBasedScoring(TestBase):
         total_weight = sum(w for _, w in result)
         self.assertAlmostEqual(total_weight, 1.0, places=10)
 
-    def test_before_activation_date(self):
-        """Test that only dust weights + burn address before December 2025"""
-        # Use November 2025 as current time (previous month is October 2025, before December)
-        current_time = datetime(2025, 11, 15, 12, 0, 0, tzinfo=timezone.utc)
-        current_time_ms = int(current_time.timestamp() * 1000)
-
-        # Create ledgers with different statuses
-        prev_checkpoint = datetime(2025, 10, 30, 12, 0, 0, tzinfo=timezone.utc)
-        prev_checkpoint_ms = int(prev_checkpoint.timestamp() * 1000)
-
-        ledger1 = DebtLedger(hotkey="hotkey1", checkpoints=[])
-        ledger1.checkpoints.append(DebtCheckpoint(
-            timestamp_ms=prev_checkpoint_ms,
-            challenge_period_status=MinerBucket.MAINCOMP.value
-        ))
-
-        ledger2 = DebtLedger(hotkey="hotkey2", checkpoints=[])
-        ledger2.checkpoints.append(DebtCheckpoint(
-            timestamp_ms=prev_checkpoint_ms,
-            challenge_period_status=MinerBucket.CHALLENGE.value
-        ))
-
-        ledgers = {"hotkey1": ledger1, "hotkey2": ledger2}
-
-        # Set miner buckets
-        self._set_miner_buckets({
-            "hotkey1": MinerBucket.MAINCOMP,
-            "hotkey2": MinerBucket.CHALLENGE
-        })
-
-        result = DebtBasedScoring.compute_results(
-            ledgers,
-            self.metagraph_client,
-            self.challengeperiod_client,
-            self.miner_account_client,
-            current_time_ms=current_time_ms,
-            is_testnet=False
-        )
-
-        # Should have 3 entries: 2 miners + burn address
-        self.assertEqual(len(result), 3)
-
-        # Verify dust weights based on status
-        weights_dict = dict(result)
-        dust = self.expected_dynamic_dust
-        self.assertAlmostEqual(weights_dict["hotkey1"], 3 * dust)  # MAINCOMP = 3x dust
-        self.assertAlmostEqual(weights_dict["hotkey2"], 1 * dust)  # CHALLENGE = 1x dust
-
-        # Verify burn address gets excess (sum should be 1.0)
-        total_weight = sum(weight for _, weight in result)
-        self.assertAlmostEqual(total_weight, 1.0, places=10)
-
-        # Verify burn address is present
-        burn_hotkey = "burn_address_mainnet"
-        self.assertIn(burn_hotkey, weights_dict)
-
     def test_weights_sum_to_one(self):
         """Test that weights sum to 1.0"""
         # Use December 2025 as current time (previous month is November 2025, at activation)

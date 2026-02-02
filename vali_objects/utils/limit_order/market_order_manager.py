@@ -187,31 +187,7 @@ class MarketOrderManager():
         leverage_calc_ms = TimeUtil.now_in_millis() - step_start
         bt.logging.info(f"[ADD_ORDER_DETAIL] Net portfolio leverage calc took {leverage_calc_ms}ms")
 
-        margin_loan = 0.0
-        clamped_leverage = existing_position.calculate_clamped_leverage(signal_order_type, leverage, quantity, value)
-        if clamped_leverage == -existing_position.net_leverage:
-            signal_order_type = OrderType.FLAT
-        if clamped_leverage != leverage or signal_order_type == OrderType.FLAT:
-            quantity, leverage, value = self.parse_order_size({'leverage': clamped_leverage}, usd_base_price, trade_pair, existing_position.account_size)
-
-        if signal_order_type != OrderType.FLAT:
-            current_adjusted_leverage = abs(existing_position.net_leverage) * trade_pair.leverage_multiplier
-            proposed_position_leverage = existing_position.net_leverage + leverage
-            proposed_adjusted_leverage = abs(proposed_position_leverage) * trade_pair.leverage_multiplier
-            proposed_portfolio_leverage = net_portfolio_leverage - current_adjusted_leverage + proposed_adjusted_leverage
-
-            if proposed_portfolio_leverage > ValiConfig.PORTFOLIO_LEVERAGE_CAP:
-                raise ValueError("Order attempted to exceed max portfolio leverage")
-
-        trade_pair_category = trade_pair.trade_pair_category
-        if signal_order_type == OrderType.LONG:
-            margin_loan = self._miner_account_client.process_order_buy(miner_hotkey, value, trade_pair_category)
-        else:
-            sale_proceeds = existing_position.net_value if signal_order_type == OrderType.FLAT else value
-            loan_repaid = self._miner_account_client.process_order_sell(miner_hotkey, abs(sale_proceeds), existing_position.margin_loan, trade_pair_category)
-            # Store loan repayment as negative margin_loan so position.margin_loan sums correctly
-            margin_loan = -loan_repaid
-
+        # Create order (margin_loan will be set after validation)
         order = Order(
             trade_pair=trade_pair,
             order_type=signal_order_type,
@@ -230,7 +206,6 @@ class MarketOrderManager():
             take_profit=take_profit,
             execution_type=execution_type,
             usd_base_rate=usd_base_price,
-            margin_loan=margin_loan,
         )
         bt.logging.info(f"[ORDER DETAIL] Using price source {price_sources}")
 
@@ -273,10 +248,8 @@ class MarketOrderManager():
         slippage_calc_ms = TimeUtil.now_in_millis() - step_start
         bt.logging.info(f"[ADD_ORDER_DETAIL] Slippage calculation took {slippage_calc_ms}ms")
 
-        step_start = TimeUtil.now_in_millis()
-        net_portfolio_leverage = self.position_manager.calculate_net_portfolio_leverage(miner_hotkey)
-        leverage_calc_ms = TimeUtil.now_in_millis() - step_start
-        bt.logging.info(f"[ADD_ORDER_DETAIL] Net portfolio leverage calc took {leverage_calc_ms}ms")
+        # Validate order before processing cash balance (raises ValueError if invalid)
+        existing_position.validate_order_size(order, net_portfolio_leverage)
 
         # Process cash balance after validation passes
         if order.order_type == existing_position.position_type:

@@ -443,42 +443,10 @@ class DebtBasedScoring:
                 f"({len(ledger_dict)} miners)"
             )
 
-        # Step 2: Check if previous month is before November 2025
-        # Calculate previous month
-        if current_month == 1:
-            prev_month = 12
-            prev_year = current_year - 1
-        else:
-            prev_month = current_month - 1
-            prev_year = current_year
-
-        if verbose:
-            bt.logging.info(f"Previous month: {prev_year}-{prev_month:02d}")
-
-        # Check activation date: prev_month must be >= November 2025 for debt-based payouts
-        # This means first debt-based payouts occur in December 2025 (for Nov 2025 performance)
-        if (prev_year < DebtBasedScoring.ACTIVATION_YEAR or
-            (prev_year == DebtBasedScoring.ACTIVATION_YEAR and
-             prev_month < DebtBasedScoring.ACTIVATION_MONTH)):
-            bt.logging.info(
-                f"Previous month ({prev_year}-{prev_month:02d}) is before activation "
-                f"({DebtBasedScoring.ACTIVATION_YEAR}-{DebtBasedScoring.ACTIVATION_MONTH:02d}). "
-                f"Applying only minimum dust weights, excess goes to burn address."
-            )
-            # Before activation: apply minimum dust weights only, burn the rest
-            return DebtBasedScoring._apply_pre_activation_weights(
-                ledger_dict=ledger_dict,
-                metagraph=metagraph,
-                challengeperiod_client=challengeperiod_client,
-                miner_account_client=miner_account_client,
-                current_time_ms=current_time_ms,
-                is_testnet=is_testnet,
-                verbose=verbose
-            )
-
-        # Step 3: Calculate month boundaries
-        # Needed payout calculation: Sum from November 1st, 2025 through end of previous month
-        # This allows negative PnL to carry across months and offset future gains
+        # Calculate boundaries
+        # Needed payout calculation: Sum from activation through end of previous
+        # week (considered midnight on Sunday 00:00:00)
+        # This allows negative PnL to carry across weeks and offset future gains
         payout_calc_start_dt = datetime(
             DebtBasedScoring.ACTIVATION_YEAR,
             DebtBasedScoring.ACTIVATION_MONTH,
