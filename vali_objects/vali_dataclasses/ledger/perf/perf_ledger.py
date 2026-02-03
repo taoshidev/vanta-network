@@ -407,7 +407,7 @@ class PerfLedger():
 
         # realized_pnl stores delta (sum of realized gains/losses during checkpoint period)
         delta_realized = current_realized_pnl_usd - current_cp.prev_portfolio_realized_pnl
-        current_cp.realized_pnl = delta_realized
+        current_cp.realized_pnl += delta_realized
         # unrealized_pnl stores snapshot (current unrealized PnL at checkpoint end)
         current_cp.unrealized_pnl = current_unrealized_pnl_usd
 
