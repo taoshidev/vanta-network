@@ -230,7 +230,7 @@ class TestDebtBasedScoring(TestBase):
             ledgers,
             self.metagraph_client,
             self.challengeperiod_client,
-            self.contract_client,
+            self.miner_account_client,
             current_time_ms=current_time_ms,
             is_testnet=False
         )
@@ -300,7 +300,7 @@ class TestDebtBasedScoring(TestBase):
             ledgers,
             self.metagraph_client,
             self.challengeperiod_client,
-            self.contract_client,
+            self.miner_account_client,
             current_time_ms=current_time_ms,
             is_testnet=False,
             verbose=True
@@ -368,7 +368,7 @@ class TestDebtBasedScoring(TestBase):
             {"test_hotkey_1": ledger1, "test_hotkey_2": ledger2},
             self.metagraph_client,
             self.challengeperiod_client,
-            self.contract_client,
+            self.miner_account_client,
             current_time_ms=current_time_ms,
             is_testnet=False
         )
@@ -427,7 +427,7 @@ class TestDebtBasedScoring(TestBase):
             {"test_hotkey_1": ledger1, "test_hotkey_2": ledger2},
             self.metagraph_client,
             self.challengeperiod_client,
-            self.contract_client,
+            self.miner_account_client,
             current_time_ms=current_time_ms,
             is_testnet=True  # TESTNET
         )
@@ -490,7 +490,7 @@ class TestDebtBasedScoring(TestBase):
             ledgers,
             self.metagraph_client,
             self.challengeperiod_client,
-            self.contract_client,
+            self.miner_account_client,
             current_time_ms=current_time_ms,
             is_testnet=False,
             verbose=True
@@ -548,7 +548,7 @@ class TestDebtBasedScoring(TestBase):
             ledgers,
             self.metagraph_client,
             self.challengeperiod_client,
-            self.contract_client,
+            self.miner_account_client,
             current_time_ms=current_time_ms,
             is_testnet=False
         )
@@ -609,7 +609,7 @@ class TestDebtBasedScoring(TestBase):
             {"test_hotkey": ledger},
             self.metagraph_client,
             self.challengeperiod_client,
-            self.contract_client,
+            self.miner_account_client,
             current_time_ms=current_time_ms_day1,
             is_testnet=False,
             verbose=True
@@ -629,7 +629,7 @@ class TestDebtBasedScoring(TestBase):
             {"test_hotkey": ledger},
             self.metagraph_client,
             self.challengeperiod_client,
-            self.contract_client,
+            self.miner_account_client,
             current_time_ms=current_time_ms_day23,
             is_testnet=False,
             verbose=True
@@ -679,7 +679,7 @@ class TestDebtBasedScoring(TestBase):
             {"test_hotkey": ledger},
             self.metagraph_client,
             self.challengeperiod_client,
-            self.contract_client,
+            self.miner_account_client,
             current_time_ms=current_time_ms,
             is_testnet=False,
             verbose=True
@@ -798,7 +798,7 @@ class TestDebtBasedScoring(TestBase):
                 ledgers,
                 self.metagraph_client,
                 self.challengeperiod_client,
-                self.contract_client,
+                self.miner_account_client,
                 current_time_ms=current_time_ms,
                 is_testnet=False,
                 verbose=False
@@ -970,7 +970,7 @@ class TestDebtBasedScoring(TestBase):
             ledgers,
             self.metagraph_client,
             self.challengeperiod_client,
-            self.contract_client,
+            self.miner_account_client,
             current_time_ms=current_time_ms,
             is_testnet=False,
             verbose=True
@@ -1117,7 +1117,7 @@ class TestDebtBasedScoring(TestBase):
             ledgers,
             self.metagraph_client,
             self.challengeperiod_client,
-            self.contract_client,
+            self.miner_account_client,
             current_time_ms=current_time_ms,
             is_testnet=False,
             verbose=True
@@ -1208,7 +1208,7 @@ class TestDebtBasedScoring(TestBase):
             ledgers,
             self.metagraph_client,
             self.challengeperiod_client,
-            self.contract_client,
+            self.miner_account_client,
             current_time_ms=current_time_ms,
             is_testnet=False,
             verbose=True
@@ -1307,7 +1307,7 @@ class TestDebtBasedScoring(TestBase):
             ledgers,
             self.metagraph_client,
             self.challengeperiod_client,
-            self.contract_client,
+            self.miner_account_client,
             current_time_ms=current_time_ms,
             is_testnet=False,
             verbose=True
@@ -1401,7 +1401,7 @@ class TestDebtBasedScoring(TestBase):
             ledgers,
             self.metagraph_client,
             self.challengeperiod_client,
-            self.contract_client,
+            self.miner_account_client,
             current_time_ms=current_time_ms,
             is_testnet=False,
             verbose=True
@@ -1465,7 +1465,7 @@ class TestDebtBasedScoring(TestBase):
             ledgers,
             self.metagraph_client,
             self.challengeperiod_client,
-            self.contract_client,
+            self.miner_account_client,
             current_time_ms=current_time_ms,
             is_testnet=False,
             verbose=True
@@ -1536,7 +1536,7 @@ class TestDebtBasedScoring(TestBase):
             ledgers,
             self.metagraph_client,
             self.challengeperiod_client,
-            self.contract_client,
+            self.miner_account_client,
             current_time_ms=current_time_ms,
             is_testnet=False,
             verbose=True
@@ -1614,7 +1614,7 @@ class TestDebtBasedScoring(TestBase):
             ledgers,
             self.metagraph_client,
             self.challengeperiod_client,
-            self.contract_client,
+            self.miner_account_client,
             current_time_ms=current_time_ms,
             is_testnet=False,
             verbose=True
@@ -1711,7 +1711,7 @@ class TestDebtBasedScoring(TestBase):
             ledgers,
             self.metagraph_client,
             self.challengeperiod_client,
-            self.contract_client,
+            self.miner_account_client,
             current_time_ms=current_time_ms,
             is_testnet=False,
             verbose=True
@@ -1905,7 +1905,7 @@ class TestDebtBasedScoring(TestBase):
             },
             self.metagraph_client,
             self.challengeperiod_client,
-            self.contract_client,
+            self.miner_account_client,
             current_time_ms=current_time_ms,
             is_testnet=False
         )

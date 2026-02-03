@@ -45,7 +45,9 @@ import bittensor as bt
 from datetime import datetime, timedelta, timezone
 from typing import List, Tuple
 
+from shared_objects.rpc.metagraph_client import MetagraphClient
 from time_util.time_util import TimeUtil
+from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
 from vali_objects.miner_account.miner_account_client import MinerAccountClient
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger import DebtLedger, DebtCheckpoint
 from vali_objects.enums.miner_bucket_enum import MinerBucket

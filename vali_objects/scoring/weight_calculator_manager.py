@@ -102,12 +102,8 @@ class WeightCalculatorManager(CacheController):
             connection_mode=connection_mode
         )
 
-        from vali_objects.contract.contract_client import ContractClient
-        self._contract_client = ContractClient(
-            running_unit_tests=running_unit_tests,
-            connect_immediately=False,
-            connection_mode=connection_mode
-        )
+        from vali_objects.miner_account.miner_account_client import MinerAccountClient
+        self._miner_account_client = MinerAccountClient()
 
         from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_client import DebtLedgerClient
         self._debt_ledger_client = DebtLedgerClient(
@@ -314,7 +310,7 @@ class WeightCalculatorManager(CacheController):
             ledger_dict=filtered_debt_ledgers,
             metagraph_client=self._metagraph_client,
             challengeperiod_client=self._challengeperiod_client,
-            contract_client=self._contract_client,
+            miner_account_client=self._miner_account_client,
             current_time_ms=current_time,
             verbose=True,
             is_testnet=not self.is_mainnet
