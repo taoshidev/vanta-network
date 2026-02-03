@@ -529,6 +529,8 @@ class Position(BaseModel):
                            trade_pair=position.trade_pair,
                            order_type=OrderType.FLAT,
                            leverage=-position.net_leverage,
+                           value=-position.net_value,
+                           quantity=-position.net_quantity,
                            src=src,
                            price_sources=[x for x in (price_source, extra_price_source) if x is not None])
         flat_order.quote_usd_rate = price_fetcher_client.get_quote_usd_conversion(flat_order, position)

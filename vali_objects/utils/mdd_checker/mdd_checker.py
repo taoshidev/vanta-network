@@ -295,6 +295,7 @@ class MDDChecker(CacheController):
             order.price = winning_event.parse_appropriate_price(order_time_ms, trade_pair.is_forex, order.order_type, position)
             order.bid = winning_event.bid
             order.ask = winning_event.ask
+            # TODO: update order value/quantity based on new price
             order.slippage = PriceSlippageModel.calculate_slippage(winning_event.bid, winning_event.ask, order)
             order.price_sources = new_price_sources
             return True
