@@ -43,11 +43,15 @@ def exception_handler_decorator():
     return decorator
 
 class BaseDataService():
-    def __init__(self, provider_name, running_unit_tests=False):
+    def __init__(self, provider_name, running_unit_tests=False, enabled_websocket_categories=None):
         self.DEBUG_LOG_INTERVAL_S = 180
         self.MAX_TIME_NO_EVENTS_S = 120
-        self.enabled_websocket_categories = {TradePairCategory.CRYPTO,
-                                            TradePairCategory.FOREX}  # Exclude EQUITIES for now
+        if enabled_websocket_categories is None:
+            self.enabled_websocket_categories = {TradePairCategory.CRYPTO,
+                                                 TradePairCategory.FOREX,
+                                                 TradePairCategory.EQUITIES}
+        else:
+            self.enabled_websocket_categories = enabled_websocket_categories
 
         self.provider_name = provider_name
         self.running_unit_tests = running_unit_tests
@@ -430,7 +434,7 @@ class BaseDataService():
     def instantiate_not_pickleable_objects(self):
         raise NotImplementedError
 
-    def get_closes_websocket(self, trade_pairs: List[TradePair], time_ms) -> dict[str: PriceSource]:
+    def get_closes_websocket(self, trade_pairs: List[TradePair], time_ms) -> dict[str, PriceSource]:
         events = {}
         for trade_pair in trade_pairs:
             symbol = trade_pair.trade_pair

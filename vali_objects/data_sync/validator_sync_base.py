@@ -6,6 +6,7 @@ from collections import defaultdict
 from time_util.time_util import TimeUtil
 from vali_objects.enums.misc import PositionSyncResult
 from vali_objects.enums.order_type_enum import OrderType
+from vali_objects.position_management.position_utils.position_splitter import PositionSplitter
 from vali_objects.vali_dataclasses.position import Position
 import bittensor as bt
 from shared_objects.rpc.shutdown_coordinator import ShutdownCoordinator
@@ -57,6 +58,9 @@ class ValidatorSyncBase():
         # Create own LimitOrderClient (forward compatibility - no parameter passing)
         from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
         self._limit_order_client = LimitOrderClient(running_unit_tests=running_unit_tests)
+        # Create own MinerAccountClient (forward compatibility - no parameter passing)
+        from vali_objects.miner_account.miner_account_client import MinerAccountClient
+        self._miner_account_client = MinerAccountClient(running_unit_tests=running_unit_tests)
         self.init_data()
 
     def init_data(self):
@@ -183,14 +187,12 @@ class ValidatorSyncBase():
             if not shadow_mode:
                 self._challenge_period_client.sync_challenge_period_data(challengeperiod_data)
 
-        # Sync miner account sizes if available and contract manager is present
+        # Sync miner account sizes if available
         miner_account_sizes_data = candidate_data.get('miner_account_sizes', {})
-        if miner_account_sizes_data and hasattr(self, 'contract_manager') and self.contract_manager:
+        if miner_account_sizes_data:
             if not shadow_mode:
                 bt.logging.info(f"Syncing {len(miner_account_sizes_data)} miner account size records from auto sync")
-                self.contract_manager.sync_miner_account_sizes_data(miner_account_sizes_data)
-        elif miner_account_sizes_data:
-            bt.logging.warning("Miner account sizes data found but contract manager not available for sync")
+                self._miner_account_client.sync_miner_account_sizes_data(miner_account_sizes_data)
 
         eliminated_hotkeys = set([e['hotkey'] for e in eliminations])
         # For a healthy validator, the existing positions will always be a superset of the candidate positions
@@ -692,7 +694,7 @@ class ValidatorSyncBase():
                     else:
                         position_to_sync_status[e] = PositionSyncResult.NOTHING
                         # Check if position actually needs splitting before forcing write_modifications
-                        if self._position_manager_client and self._position_manager_client._position_needs_splitting(e):
+                        if self._position_manager_client and PositionSplitter.position_needs_splitting(e):
                             # Force write_modifications to be called for position splitting
                             min_timestamp_of_change = min(min_timestamp_of_change, e.open_ms)
                     ret.append(e)
@@ -732,7 +734,7 @@ class ValidatorSyncBase():
                     else:
                         position_to_sync_status[e] = PositionSyncResult.NOTHING
                         # Check if position actually needs splitting before forcing write_modifications
-                        if self._position_manager_client and self._position_manager_client._position_needs_splitting(e):
+                        if self._position_manager_client and PositionSplitter.position_needs_splitting(e):
                             # Force write_modifications to be called for position splitting
                             min_timestamp_of_change = min(min_timestamp_of_change, e.open_ms)
                     matched_candidates_by_uuid |= {c.position_uuid}

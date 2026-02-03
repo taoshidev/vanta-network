@@ -12,7 +12,7 @@ import time
 
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
-from vali_objects.contract.validator_contract_manager import CollateralRecord
+from vali_objects.miner_account.miner_account_manager import CollateralRecord
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import ValiConfig
 
@@ -35,6 +35,7 @@ class TestValidatorContractManager(TestBase):
     position_client = None
     perf_ledger_client = None
     contract_client = None
+    miner_account_client = None
 
     # Test constants
     MINER_1 = "5C4hrfjw9DjXZTzV3MwzrrAr9P1MJhSrvWGWqi1eSuyUpnhM"
@@ -59,6 +60,7 @@ class TestValidatorContractManager(TestBase):
         cls.position_client = cls.orchestrator.get_client('position_manager')
         cls.perf_ledger_client = cls.orchestrator.get_client('perf_ledger')
         cls.contract_client = cls.orchestrator.get_client('contract')
+        cls.miner_account_client = cls.orchestrator.get_client('miner_account')
 
     @classmethod
     def tearDownClass(cls):
@@ -106,19 +108,21 @@ class TestValidatorContractManager(TestBase):
         day_after_current_time = self.DAY_MS + current_time
 
         # Initially should return None for non-existent miner
-        self.assertIsNone(self.contract_client.get_miner_account_size(self.MINER_1))
+        self.assertIsNone(self.miner_account_client.get_miner_account_size(self.MINER_1))
 
-        # Set account size (ValidatorContractManager calculates account size from collateral)
-        # Test balance already injected in setUp()
-        self.contract_client.set_miner_account_size(self.MINER_1, current_time)
+        # Set account size via MinerAccountClient (pass collateral balance in theta directly)
+        # 1M rao = 0.001 theta
+        collateral_theta_1 = 1000000 / 10**9
+        self.miner_account_client.set_miner_account_size(self.MINER_1, collateral_theta_1, current_time)
 
         # Verify retrieval - should return the calculated account size
-        account_size = self.contract_client.get_miner_account_size(self.MINER_1, day_after_current_time)
+        account_size = self.miner_account_client.get_miner_account_size(self.MINER_1, day_after_current_time)
         self.assertIsNotNone(account_size)
 
-        # Set for second miner (balance already injected in setUp())
-        self.contract_client.set_miner_account_size(self.MINER_2, current_time)
-        account_size_2 = self.contract_client.get_miner_account_size(self.MINER_2, day_after_current_time)
+        # Set for second miner (500K rao = 0.0005 theta)
+        collateral_theta_2 = 500000 / 10**9
+        self.miner_account_client.set_miner_account_size(self.MINER_2, collateral_theta_2, current_time)
+        account_size_2 = self.miner_account_client.get_miner_account_size(self.MINER_2, day_after_current_time)
         self.assertIsNotNone(account_size_2)
 
     def test_account_size_persistence(self):
@@ -126,15 +130,16 @@ class TestValidatorContractManager(TestBase):
         current_time = int(time.time() * 1000)
         day_after_current_time = self.DAY_MS + current_time
 
-        # Set account size (balance already injected in setUp())
-        self.contract_client.set_miner_account_size(self.MINER_1, current_time)
+        # Set account size via MinerAccountClient (1M rao = 0.001 theta)
+        collateral_theta = 1000000 / 10**9
+        self.miner_account_client.set_miner_account_size(self.MINER_1, collateral_theta, current_time)
 
         # Verify it was set
-        account_size = self.contract_client.get_miner_account_size(self.MINER_1, day_after_current_time)
+        account_size = self.miner_account_client.get_miner_account_size(self.MINER_1, day_after_current_time)
         self.assertIsNotNone(account_size)
 
-        # Test the disk persistence by checking via miner_account_sizes_dict
-        account_sizes_dict = self.contract_client.miner_account_sizes_dict()
+        # Test the disk persistence by checking via accounts_dict
+        account_sizes_dict = self.miner_account_client.accounts_dict()
         self.assertIn(self.MINER_1, account_sizes_dict)
         self.assertEqual(len(account_sizes_dict[self.MINER_1]), 1)
 
@@ -142,18 +147,18 @@ class TestValidatorContractManager(TestBase):
         """Test that multiple records are stored and sorted correctly"""
         base_time = int(time.time() * 1000)
 
-        # Inject different collateral balances for each call
-        self.contract_client.set_test_collateral_balance(self.MINER_1, 1_000_000)  # First call
-        self.contract_client.set_miner_account_size(self.MINER_1, base_time)
+        # Set different collateral balances directly via MinerAccountClient
+        collateral_theta_1 = 1_000_000 / 10**9  # 0.001 theta
+        self.miner_account_client.set_miner_account_size(self.MINER_1, collateral_theta_1, base_time)
 
-        self.contract_client.set_test_collateral_balance(self.MINER_1, 2_000_000)  # Second call
-        self.contract_client.set_miner_account_size(self.MINER_1, base_time + 1000)
+        collateral_theta_2 = 2_000_000 / 10**9  # 0.002 theta
+        self.miner_account_client.set_miner_account_size(self.MINER_1, collateral_theta_2, base_time + 1000)
 
-        self.contract_client.set_test_collateral_balance(self.MINER_1, 3_000_000)  # Third call
-        self.contract_client.set_miner_account_size(self.MINER_1, base_time + 2000)
+        collateral_theta_3 = 3_000_000 / 10**9  # 0.003 theta
+        self.miner_account_client.set_miner_account_size(self.MINER_1, collateral_theta_3, base_time + 2000)
 
         # Verify records are stored
-        account_sizes_dict = self.contract_client.miner_account_sizes_dict()
+        account_sizes_dict = self.miner_account_client.accounts_dict()
         records = account_sizes_dict[self.MINER_1]
         self.assertEqual(len(records), 3)
 
@@ -165,14 +170,15 @@ class TestValidatorContractManager(TestBase):
         """Test that duplicate records are ignored"""
         base_time = int(time.time() * 1000)
 
-        # Use same balance for all calls (already injected in setUp() as 1M rao)
+        # Use same balance for all calls (1M rao = 0.001 theta)
         # Add multiple records with different timestamps but same balance
-        self.contract_client.set_miner_account_size(self.MINER_1, base_time)
-        self.contract_client.set_miner_account_size(self.MINER_1, base_time + 1000)
-        self.contract_client.set_miner_account_size(self.MINER_1, base_time + 2000)
+        collateral_theta = 1_000_000 / 10**9
+        self.miner_account_client.set_miner_account_size(self.MINER_1, collateral_theta, base_time)
+        self.miner_account_client.set_miner_account_size(self.MINER_1, collateral_theta, base_time + 1000)
+        self.miner_account_client.set_miner_account_size(self.MINER_1, collateral_theta, base_time + 2000)
 
         # Verify only one record is stored (duplicates are skipped)
-        account_sizes_dict = self.contract_client.miner_account_sizes_dict()
+        account_sizes_dict = self.miner_account_client.accounts_dict()
         records = account_sizes_dict[self.MINER_1]
         self.assertEqual(len(records), 1)
 
@@ -198,12 +204,11 @@ class TestValidatorContractManager(TestBase):
             ]
         }
 
-        # Sync the data
-
-        self.contract_client.sync_miner_account_sizes_data(test_data)
+        # Sync the data via MinerAccountClient
+        self.miner_account_client.sync_miner_account_sizes_data(test_data)
 
         # Verify data was synced correctly
-        account_sizes_dict = self.contract_client.miner_account_sizes_dict()
+        account_sizes_dict = self.miner_account_client.accounts_dict()
         self.assertIn(self.MINER_1, account_sizes_dict)
         self.assertIn(self.MINER_2, account_sizes_dict)
 
@@ -220,12 +225,14 @@ class TestValidatorContractManager(TestBase):
         """Test converting account sizes to checkpoint dictionary format"""
         current_time = int(time.time() * 1000)
 
-        # Set account sizes (balances already injected in setUp())
-        self.contract_client.set_miner_account_size(self.MINER_1, current_time)
-        self.contract_client.set_miner_account_size(self.MINER_2, current_time)
+        # Set account sizes via MinerAccountClient
+        collateral_theta_1 = 1000000 / 10**9  # 0.001 theta
+        collateral_theta_2 = 500000 / 10**9   # 0.0005 theta
+        self.miner_account_client.set_miner_account_size(self.MINER_1, collateral_theta_1, current_time)
+        self.miner_account_client.set_miner_account_size(self.MINER_2, collateral_theta_2, current_time)
 
         # Get checkpoint dict
-        checkpoint_dict = self.contract_client.miner_account_sizes_dict()
+        checkpoint_dict = self.miner_account_client.accounts_dict()
 
         # Verify structure
         self.assertIsInstance(checkpoint_dict, dict)
@@ -289,12 +296,14 @@ class TestValidatorContractManager(TestBase):
         """Test getting all miner account sizes at a specific timestamp"""
         current_time = int(time.time() * 1000)
 
-        # Set account sizes for multiple miners (balances already injected in setUp())
-        self.contract_client.set_miner_account_size(self.MINER_1, current_time)
-        self.contract_client.set_miner_account_size(self.MINER_2, current_time)
+        # Set account sizes for multiple miners via MinerAccountClient
+        collateral_theta_1 = 1000000 / 10**9  # 0.001 theta
+        collateral_theta_2 = 500000 / 10**9   # 0.0005 theta
+        self.miner_account_client.set_miner_account_size(self.MINER_1, collateral_theta_1, current_time)
+        self.miner_account_client.set_miner_account_size(self.MINER_2, collateral_theta_2, current_time)
 
         # Get all account sizes
-        all_sizes = self.contract_client.get_all_miner_account_sizes(timestamp_ms=current_time + self.DAY_MS)
+        all_sizes = self.miner_account_client.get_all_miner_account_sizes(timestamp_ms=current_time + self.DAY_MS)
 
         # Verify both miners are present
         self.assertIn(self.MINER_1, all_sizes)

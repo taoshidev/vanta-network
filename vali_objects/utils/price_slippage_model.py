@@ -120,18 +120,19 @@ class PriceSlippageModel:
         size = abs(order.value)
         volume_shares = size / mid_price
 
-        if order.processed_ms > 1735718400000:  # Use fitted BB+ for orders after jan 1, 2024, 08:00:00 UTC
-            size_str = cls.get_order_size_bucket(size)
-            side = "buy" if order.leverage > 0 else "sell"
-            model_config = cls.parameters["equity"][order.trade_pair.trade_pair_id][side][size_str]
-            intercept, c1, c2, c3 = (model_config[key] for key in ["intercept", "spread/price", "annualized_vol", f"{side}_order_size/adv"])
-            slippage_pct = intercept + (c1 * spread / mid_price) + (c2 * annualized_volatility) + (c3 * volume_shares / avg_daily_volume)
-        else:
-            # direct BB+ model for orders before
-            term1 = 0.433 * spread / mid_price
-            term2 = 0.335 * math.sqrt(annualized_volatility ** 2 / 3 / 250)
-            term3 = math.sqrt(volume_shares / (0.3 * avg_daily_volume))
-            slippage_pct = term1 + term2 * term3
+        # if order.processed_ms > 1735718400000:  # Use fitted BB+ for orders after jan 1, 2024, 08:00:00 UTC
+        #     size_str = cls.get_order_size_bucket(size)
+        #     side = "buy" if order.leverage > 0 else "sell"
+        #     model_config = cls.parameters["equity"][order.trade_pair.trade_pair_id][side][size_str]
+        #     intercept, c1, c2, c3 = (model_config[key] for key in ["intercept", "spread/price", "annualized_vol", f"{side}_order_size/adv"])
+        #     slippage_pct = intercept + (c1 * spread / mid_price) + (c2 * annualized_volatility) + (c3 * volume_shares / avg_daily_volume)
+        # else:
+
+        # use BB+ model for orders for equities from 2026 Feb 1
+        term1 = 0.433 * spread / mid_price
+        term2 = 0.335 * math.sqrt(annualized_volatility ** 2 / 3 / 250)
+        term3 = math.sqrt(volume_shares / (0.3 * avg_daily_volume))
+        slippage_pct = term1 + term2 * term3
         return slippage_pct
 
     @classmethod

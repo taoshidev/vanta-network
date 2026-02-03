@@ -16,6 +16,8 @@ from typing import List, Dict
 
 import bittensor as bt
 
+from collections import defaultdict
+
 from shared_objects.cache_controller import CacheController
 from shared_objects.rpc.common_data_client import CommonDataClient
 from time_util.time_util import TimeUtil
@@ -24,6 +26,8 @@ from vali_objects.price_fetcher.live_price_client import LivePriceFetcherClient
 from shared_objects.locks.position_lock_client import PositionLockClient
 from vali_objects.position_management.position_manager_client import PositionManagerClient
 from vali_objects.utils.price_slippage_model import PriceSlippageModel
+from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
+from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import ValiConfig, TradePair, RPCConnectionMode
 from vali_objects.vali_dataclasses.price_source import PriceSource
 
@@ -64,8 +68,19 @@ class MDDChecker(CacheController):
         self._position_lock_client = PositionLockClient(running_unit_tests=running_unit_tests)
 
         self.all_trade_pairs = [trade_pair for trade_pair in TradePair]
+        self._prev_iteration_prices = {}
         self.reset_debug_counters()
         self.n_poly_api_requests = 0
+
+        # Load persisted slippage features from disk for equities slippage calculation
+        try:
+            features_file = ValiBkpUtils.get_slippage_model_features_file()
+            persisted_features = ValiUtils.get_vali_json_file_dict(features_file)
+            if persisted_features:
+                PriceSlippageModel.features = defaultdict(dict, persisted_features)
+                bt.logging.info(f"MDDChecker loaded {len(persisted_features)} days of slippage features")
+        except Exception as e:
+            bt.logging.warning(f"MDDChecker could not load slippage features: {e}")
 
         bt.logging.info("MDDChecker initialized")
 
@@ -163,6 +178,39 @@ class MDDChecker(CacheController):
         price_fetch_start = time.perf_counter()
         tp_to_price_sources = self.get_sorted_price_sources(hotkey_to_positions)
         price_fetch_ms = (time.perf_counter() - price_fetch_start) * 1000
+
+        now_ms = TimeUtil.now_in_millis()
+        today_date_est = TimeUtil.timestamp_ms_to_eastern_time_str(now_ms, short=True)
+        last_update_date_est = TimeUtil.timestamp_ms_to_eastern_time_str(self._last_update_time_ms, short=True)
+        is_new_day = today_date_est != last_update_date_est
+
+        # Fetch all stock splits once for efficiency
+        stock_splits = {}
+        should_check_splits = is_new_day or any(
+            tp.is_equities and self._prev_iteration_prices.get(tp) and sources[0].close
+            and abs((sources[0].close - self._prev_iteration_prices[tp]) / self._prev_iteration_prices[tp]) >= 0.1
+            for tp, sources in tp_to_price_sources.items()
+        )
+        if should_check_splits:
+            bt.logging.info(f"[STOCK SPLITS] Fetching stock splits for {today_date_est}")
+            stock_splits = self._live_price_client.get_stock_splits(now_ms)
+            if stock_splits:
+                bt.logging.info(f"[STOCK SPLITS] Found splits: {stock_splits}")
+            else:
+                bt.logging.info(f"[STOCK SPLITS] No stock splits found for {today_date_est}")
+
+        # Check and apply if a stock split occurred on new trading day (EST) or price fluctuation > 10%
+        for tp, sources in tp_to_price_sources.items():
+            if not tp.is_equities:
+                continue
+            new_price = sources[0].close
+            prev_price = self._prev_iteration_prices.get(tp)
+
+            stock_split_ratio = stock_splits.get(tp.trade_pair_id)
+            if stock_split_ratio is not None:
+                self._position_client.apply_stock_split(tp.trade_pair_id, stock_split_ratio, today_date_est)
+
+            self._prev_iteration_prices[tp] = sources[0].close
 
         for hotkey, sorted_positions in hotkey_to_positions.items():
             self.perform_price_corrections(hotkey, sorted_positions, tp_to_price_sources, iteration_epoch)

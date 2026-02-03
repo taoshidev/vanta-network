@@ -229,6 +229,10 @@ class MinerStatisticsManager:
         self._contract_client = ContractClient(connection_mode=connection_mode)
         self._asset_selection_client = AssetSelectionClient(connection_mode=connection_mode)
 
+        # MinerAccountClient - source of truth for account sizes
+        from vali_objects.miner_account.miner_account_client import MinerAccountClient
+        self._miner_account_client = MinerAccountClient(connection_mode=connection_mode)
+
         self.metrics_calculator = MetricsCalculator(metrics=metrics)
 
         # Statistics cache (regular dict - no IPC needed)
@@ -414,7 +418,7 @@ class MinerStatisticsManager:
             weighting = True
             for metric in self.metrics_calculator.metrics.values():
                 metric.requires_weighting = True
-        all_miner_account_sizes = self.contract_manager.get_all_miner_account_sizes(timestamp_ms=time_now)
+        all_miner_account_sizes = self._miner_account_client.get_all_miner_account_sizes(timestamp_ms=time_now)
         asset_class_scores = Scoring.score_miners(
             ledger_dict=ledgers,
             positions=positions,
@@ -532,13 +536,13 @@ class MinerStatisticsManager:
             now_ms = TimeUtil.now_in_millis()
 
         account_sizes = []
-        account_size_object = self.contract_manager.miner_account_sizes_dict()
+        account_size_object = self._miner_account_client.accounts_dict()
 
         # Calculate raw PnL for each miner
         for hotkey, _ in filtered_ledger.items():
 
             # Fetch most recent account size even if it isn't valid yet for scoring
-            account_size = self.contract_manager.get_miner_account_size(hotkey, now_ms, most_recent=True)
+            account_size = self._miner_account_client.get_miner_account_size(hotkey, now_ms, most_recent=True)
             if account_size is None:
                 account_size = ValiConfig.MIN_CAPITAL
             else:
@@ -553,12 +557,20 @@ class MinerStatisticsManager:
         # Build result dictionary
         result = {}
         for hotkey in account_sizes_dict:
+            account_records = account_size_object.get(hotkey, [])
+            # cash_balance and total_borrowed_amount are stored on the last record
+            last_record = account_records[-1] if account_records else {}
+            cash_balance = last_record.get("cash_balance")
+            total_borrowed_amount = last_record.get("total_borrowed_amount")
+
             result[hotkey] = {
                 "account_size_statistics": {
                     "value": account_sizes_dict.get(hotkey),
                     "rank": account_size_ranks.get(hotkey),
                     "percentile": account_size_percentiles.get(hotkey),
-                "account_sizes": account_size_object.get(hotkey, [])
+                    "account_sizes": account_records,
+                    "cash_balance": cash_balance,
+                    "total_borrowed_amount": total_borrowed_amount
                 }
             }
 
@@ -719,7 +731,7 @@ class MinerStatisticsManager:
             maincomp_ledger, asset_classes
         )
         bt.logging.info(f"generate_minerstats asset_class_min_days: {asset_class_min_days}")
-        all_miner_account_sizes = self.contract_manager.get_all_miner_account_sizes(timestamp_ms=time_now)
+        all_miner_account_sizes = self._miner_account_client.get_all_miner_account_sizes(timestamp_ms=time_now)
 
         # Get cached scores from ChallengePeriodManager (computed in evaluate_promotions)
         asset_softmaxed_scores, success_competitiveness = self.challengeperiod_manager.get_miner_scores()

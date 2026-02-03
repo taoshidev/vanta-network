@@ -78,6 +78,7 @@ class CoreOutputsManager:
         from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
         from vali_objects.contract.contract_client import ContractClient
         from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
+        from vali_objects.miner_account.miner_account_client import MinerAccountClient
 
         self._position_client = PositionManagerClient(
             port=ValiConfig.RPC_POSITIONMANAGER_PORT,
@@ -91,6 +92,8 @@ class CoreOutputsManager:
         self._limit_order_client = LimitOrderClient(connection_mode=connection_mode)
         # Create own ContractClient (forward compatibility - no parameter passing)
         self._contract_client = ContractClient(connection_mode=connection_mode)
+        # MinerAccountClient for miner account operations (forward compatibility)
+        self._miner_account_client = MinerAccountClient(connection_mode=connection_mode)
         # AssetSelectionClient for asset selection operations (forward compatibility)
         self._asset_selection_client = AssetSelectionClient(connection_mode=connection_mode)
 
@@ -447,10 +450,10 @@ class CoreOutputsManager:
 
         challengeperiod_dict = self.challengeperiod_manager.to_checkpoint_dict()
 
-        # Get miner account sizes if contract manager is available
+        # Get miner account sizes from miner account client
         miner_account_sizes_dict = {}
-        if self.contract_manager:
-            miner_account_sizes_dict = self.contract_manager.miner_account_sizes_dict()
+        if self._miner_account_client:
+            miner_account_sizes_dict = self._miner_account_client.accounts_dict()
 
         # Handle legacy parameter
         if write_and_upload_production_files:

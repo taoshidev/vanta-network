@@ -18,7 +18,7 @@ from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.utils.vali_utils import ValiUtils
-from vali_objects.vali_config import TradePair
+from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.vali_dataclasses.order import Order
 
 
@@ -66,6 +66,7 @@ class TestMinerStatistics(TestBase):
         cls.plagiarism_client = cls.orchestrator.get_client('plagiarism')
         cls.asset_selection_client = cls.orchestrator.get_client('asset_selection')
         cls.miner_statistics_client = cls.orchestrator.get_client('miner_statistics')
+        cls.miner_account_client = cls.orchestrator.get_client('miner_account')
 
         # Get server handle for tests that need direct server access (for property checks)
         cls.miner_statistics_handle = cls.orchestrator._servers.get('miner_statistics')
@@ -203,7 +204,7 @@ class TestMinerStatistics(TestBase):
         # Note: Data persistence handled automatically by server - no manual disk write needed
 
         # Inject account sizes data for all test miners (required for scoring penalty calculations)
-        contract_client = self.orchestrator.get_client('contract')
+        miner_account_client = self.orchestrator.get_client('miner_account')
         account_sizes_data = {}
         for hotkey in self.test_hotkeys:
             # Create dummy account size records with correct format
@@ -221,8 +222,8 @@ class TestMinerStatistics(TestBase):
                     'update_time_ms': current_time
                 }
             ]
-        contract_client.sync_miner_account_sizes_data(account_sizes_data)
-        contract_client.re_init_account_sizes()  # Force reload from disk
+        miner_account_client.sync_miner_account_sizes_data(account_sizes_data)
+        miner_account_client.re_init_account_sizes()  # Force reload from disk
 
     # ==================== Basic Server Tests ====================
 
@@ -470,15 +471,15 @@ class TestMinerStatistics(TestBase):
         self.challenge_period_client.update_miners(miners_dict)
 
         # Inject account sizes
-        contract_client = self.orchestrator.get_client('contract')
+        miner_account_client = self.orchestrator.get_client('miner_account')
         account_sizes_data = {
             hk: [
                 {'account_size': 200000.0, 'account_size_theta': 200000.0, 'update_time_ms': start_time},
                 {'account_size': 200000.0, 'account_size_theta': 200000.0, 'update_time_ms': current_time}
             ] for hk in all_miners
         }
-        contract_client.sync_miner_account_sizes_data(account_sizes_data)
-        contract_client.re_init_account_sizes()
+        miner_account_client.sync_miner_account_sizes_data(account_sizes_data)
+        miner_account_client.re_init_account_sizes()
 
         # Generate statistics
         stats_data = self.miner_statistics_client.generate_miner_statistics_data(
@@ -575,22 +576,27 @@ class TestMinerStatistics(TestBase):
         # Set different account sizes - one above minimum ($150k), one below
         # NOTE: Currently, min_collateral penalty is not applied in calculate_penalties_breakdown()
         # This test verifies that account size data can be injected and retrieved correctly
-        contract_client = self.orchestrator.get_client('contract')
+        # account_size = account_size_theta * COST_PER_THETA (500), so:
+        # - $200k account needs theta = 400
+        # - $100k account needs theta = 200
+        miner_account_client = self.orchestrator.get_client('miner_account')
+        high_collateral_theta = 200000.0 / ValiConfig.COST_PER_THETA  # 400
+        low_collateral_theta = 100000.0 / ValiConfig.COST_PER_THETA   # 200
         account_sizes_data = {
             high_collateral_miner: [
-                {'account_size': 200000.0, 'account_size_theta': 200000.0, 'update_time_ms': start_time},
-                {'account_size': 200000.0, 'account_size_theta': 200000.0, 'update_time_ms': current_time}
+                {'account_size': 200000.0, 'account_size_theta': high_collateral_theta, 'update_time_ms': start_time},
+                {'account_size': 200000.0, 'account_size_theta': high_collateral_theta, 'update_time_ms': current_time}
             ],
             low_collateral_miner: [
-                {'account_size': 100000.0, 'account_size_theta': 100000.0, 'update_time_ms': start_time},
-                {'account_size': 100000.0, 'account_size_theta': 100000.0, 'update_time_ms': current_time}
+                {'account_size': 100000.0, 'account_size_theta': low_collateral_theta, 'update_time_ms': start_time},
+                {'account_size': 100000.0, 'account_size_theta': low_collateral_theta, 'update_time_ms': current_time}
             ]
         }
-        contract_client.sync_miner_account_sizes_data(account_sizes_data)
-        contract_client.re_init_account_sizes()
+        miner_account_client.sync_miner_account_sizes_data(account_sizes_data)
+        miner_account_client.re_init_account_sizes()
 
         # Verify account sizes were stored correctly
-        retrieved_sizes = contract_client.get_all_miner_account_sizes(timestamp_ms=current_time)
+        retrieved_sizes = miner_account_client.get_all_miner_account_sizes(timestamp_ms=current_time)
         self.assertIn(high_collateral_miner, retrieved_sizes)
         self.assertIn(low_collateral_miner, retrieved_sizes)
         self.assertEqual(retrieved_sizes[high_collateral_miner], 200000.0)
@@ -699,15 +705,15 @@ class TestMinerStatistics(TestBase):
         self.challenge_period_client.update_miners(miners_dict)
 
         # Inject account sizes
-        contract_client = self.orchestrator.get_client('contract')
+        miner_account_client = self.orchestrator.get_client('miner_account')
         account_sizes_data = {
             hk: [
                 {'account_size': 200000.0, 'account_size_theta': 200000.0, 'update_time_ms': start_time},
                 {'account_size': 200000.0, 'account_size_theta': 200000.0, 'update_time_ms': current_time}
             ] for hk in miners
         }
-        contract_client.sync_miner_account_sizes_data(account_sizes_data)
-        contract_client.re_init_account_sizes()
+        miner_account_client.sync_miner_account_sizes_data(account_sizes_data)
+        miner_account_client.re_init_account_sizes()
 
         # Generate statistics
         stats_data = self.miner_statistics_client.generate_miner_statistics_data(
@@ -799,15 +805,15 @@ class TestMinerStatistics(TestBase):
         self.challenge_period_client.clear_all_miners()
         self.challenge_period_client.update_miners(miners_dict)
 
-        contract_client = self.orchestrator.get_client('contract')
+        miner_account_client = self.orchestrator.get_client('miner_account')
         account_sizes_data = {
             hk: [
                 {'account_size': 200000.0, 'account_size_theta': 200000.0, 'update_time_ms': start_time},
                 {'account_size': 200000.0, 'account_size_theta': 200000.0, 'update_time_ms': current_time}
             ] for hk in miners
         }
-        contract_client.sync_miner_account_sizes_data(account_sizes_data)
-        contract_client.re_init_account_sizes()
+        miner_account_client.sync_miner_account_sizes_data(account_sizes_data)
+        miner_account_client.re_init_account_sizes()
 
         # Generate statistics
         stats_data = self.miner_statistics_client.generate_miner_statistics_data(
@@ -887,14 +893,14 @@ class TestMinerStatistics(TestBase):
         self.challenge_period_client.clear_all_miners()
         self.challenge_period_client.update_miners({solo_miner: (MinerBucket.MAINCOMP, start_time, None, None)})
 
-        contract_client = self.orchestrator.get_client('contract')
-        contract_client.sync_miner_account_sizes_data({
+        miner_account_client = self.orchestrator.get_client('miner_account')
+        miner_account_client.sync_miner_account_sizes_data({
             solo_miner: [
                 {'account_size': 200000.0, 'account_size_theta': 200000.0, 'update_time_ms': start_time},
                 {'account_size': 200000.0, 'account_size_theta': 200000.0, 'update_time_ms': current_time}
             ]
         })
-        contract_client.re_init_account_sizes()
+        miner_account_client.re_init_account_sizes()
 
         # Generate statistics - should handle single miner gracefully
         stats_data = self.miner_statistics_client.generate_miner_statistics_data(

@@ -284,6 +284,9 @@ class PenaltyLedgerManager:
             validator_hotkey: Optional validator hotkey for notifications
         """
         self.contract_client = ContractClient(running_unit_tests=running_unit_tests)
+        # Create own MinerAccountClient (source of truth for account sizes)
+        from vali_objects.miner_account.miner_account_client import MinerAccountClient
+        self._miner_account_client = MinerAccountClient()
         self.running_unit_tests = running_unit_tests
 
         # Create own RPC clients (forward compatibility - no parameter passing)
@@ -848,7 +851,7 @@ class PenaltyLedgerManager:
                     )
 
             # Get miner's collateral/account size
-            miner_account_size = self.contract_client.get_miner_account_size(miner_hotkey)
+            miner_account_size = self._miner_account_client.get_miner_account_size(miner_hotkey)
             if miner_account_size is None:
                 miner_account_size = 0
 

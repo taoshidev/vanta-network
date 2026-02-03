@@ -148,7 +148,7 @@ class TestMarketHours(unittest.TestCase):
                         self.assertTrue(self.umc.is_market_open(TradePair.MSFT, timestamp))
                         self.assertTrue(self.umc.is_market_open(TradePair.NVDA, timestamp))
                 else:
-                    self.assertFalse(self.umc.is_market_open(TradePair.GOOG, timestamp))
+                    self.assertFalse(self.umc.is_market_open(TradePair.GOOGL, timestamp))
                     self.assertFalse(self.umc.is_market_open(TradePair.NVDA, timestamp))
             else:  # Saturday and Sunday
                 self.assertFalse(self.umc.is_market_open(TradePair.AMZN, timestamp))

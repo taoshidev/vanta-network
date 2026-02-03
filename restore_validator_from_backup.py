@@ -24,6 +24,7 @@ from vali_objects.position_management.position_manager_client import PositionMan
 from vali_objects.position_management.position_manager_server import PositionManagerServer
 from vali_objects.contract.contract_server import ContractServer
 from vali_objects.contract.contract_client import ContractClient
+from vali_objects.miner_account.miner_account_client import MinerAccountClient
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
 from vali_objects.utils.asset_selection.asset_selection_server import AssetSelectionServer
@@ -209,6 +210,7 @@ def regenerate_miner_positions(perform_backup=True, backup_from_data_dir=False, 
         position_client = PositionManagerClient(running_unit_tests=True)
         elimination_client = EliminationClient()
         contract_client = ContractClient()
+        miner_account_client = MinerAccountClient()
         perf_ledger_client = PerfLedgerClient(running_unit_tests=True)
         challengeperiod_client = ChallengePeriodClient(running_unit_tests=True)
         limit_order_client = LimitOrderClient(running_unit_tests=True)
@@ -410,7 +412,7 @@ def regenerate_miner_positions(perform_backup=True, backup_from_data_dir=False, 
         miner_account_sizes = data.get('miner_account_sizes', {})
         if miner_account_sizes:
             bt.logging.info(f"syncing {len(miner_account_sizes)} miner account size records")
-            contract_client.sync_miner_account_sizes_data(miner_account_sizes)
+            miner_account_client.sync_miner_account_sizes_data(miner_account_sizes)
         else:
             bt.logging.info("No miner account sizes found in backup data")
 

@@ -6,6 +6,8 @@ ContractServer - RPC server for contract/collateral management.
 This server runs in its own process and exposes contract management via RPC.
 Clients connect using ContractClient.
 
+Account size operations are delegated to MinerAccountClient.
+
 Usage:
     # Validator spawns the server at startup
     from vali_objects.utils.contract_server import start_contract_server
@@ -17,12 +19,13 @@ Usage:
     client = ContractClient()  # Uses ValiConfig.RPC_CONTRACTMANAGER_PORT
 """
 import bittensor as bt
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional
 import time
 from setproctitle import setproctitle
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 from shared_objects.rpc.rpc_server_base import RPCServerBase
 import template.protocol
+from vali_objects.miner_account.miner_account_client import MinerAccountClient
 
 
 # ==================== Server Implementation ====================
@@ -32,6 +35,8 @@ class ContractServer(RPCServerBase):
     RPC Server for contract/collateral management.
 
     Inherits from RPCServerBase for RPC server lifecycle management.
+
+    Account size operations are delegated to MinerAccountClient.
 
     All public methods ending in _rpc are exposed via RPC to ContractClient.
     """
@@ -70,6 +75,9 @@ class ContractServer(RPCServerBase):
             is_backtesting=is_backtesting,
             connection_mode=connection_mode
         )
+
+        # MinerAccountClient for receive_collateral_record synapse handling
+        self._miner_account_client = MinerAccountClient(connection_mode=connection_mode)
 
         # Initialize RPCServerBase (may start RPC server immediately if start_server=True)
         # At this point, self._manager exists, so RPC calls won't fail
@@ -114,17 +122,32 @@ class ContractServer(RPCServerBase):
         """Add service-specific health check details."""
         return self._manager.health_check()
 
-    def miner_account_sizes_dict_rpc(self, most_recent_only: bool = False) -> Dict[str, List[Dict[str, Any]]]:
-        """Convert miner account sizes to checkpoint format for backup/sync."""
-        return self._manager.miner_account_sizes_dict(most_recent_only)
+    # ==================== CollateralRecord RPC Methods ====================
 
-    def sync_miner_account_sizes_data_rpc(self, account_sizes_data: Dict[str, List[Dict[str, Any]]]):
-        """Sync miner account sizes data from external source (backup/sync)."""
-        return self._manager.sync_miner_account_sizes_data(account_sizes_data)
+    def receive_collateral_record_rpc(self, synapse: template.protocol.CollateralRecord) -> template.protocol.CollateralRecord:
+        """Receive collateral record update, and update miner account sizes."""
+        try:
+            sender_hotkey = synapse.dendrite.hotkey
+            bt.logging.info(f"Received collateral record update from validator hotkey [{sender_hotkey}].")
+            success = self._miner_account_client.receive_collateral_record_update(synapse.collateral_record)
 
-    def re_init_account_sizes_rpc(self):
-        """Reload account sizes from disk (useful for tests)."""
-        return self._manager.re_init_account_sizes()
+            if success:
+                synapse.successfully_processed = True
+                synapse.error_message = ""
+                bt.logging.info(f"Successfully processed CollateralRecord synapse from {sender_hotkey}")
+            else:
+                synapse.successfully_processed = False
+                synapse.error_message = "Failed to process collateral record update"
+                bt.logging.warning(f"Failed to process CollateralRecord synapse from {sender_hotkey}")
+
+        except Exception as e:
+            synapse.successfully_processed = False
+            synapse.error_message = f"Error processing collateral record: {str(e)}"
+            bt.logging.error(f"Exception in receive_collateral_record: {e}")
+
+        return synapse
+
+    # ==================== Collateral RPC Methods (from ValidatorContractManager) ====================
 
     def process_deposit_request_rpc(self, extrinsic_hex: str) -> Dict[str, Any]:
         """Process a collateral deposit request using raw data."""
@@ -162,46 +185,6 @@ class ContractServer(RPCServerBase):
         """Get total slashed collateral in theta."""
         return self._manager.get_slashed_collateral()
 
-    def set_miner_account_size_rpc(self, hotkey: str, timestamp_ms: int = None) -> bool:
-        """Set the account size for a miner."""
-        return self._manager.set_miner_account_size(hotkey, timestamp_ms)
-
-    def get_miner_account_size_rpc(self, hotkey: str, timestamp_ms: int = None, most_recent: bool = False,
-                                   records_dict: dict = None, use_account_floor: bool = False) -> Optional[float]:
-        """Get the account size for a miner at a given timestamp."""
-        return self._manager.get_miner_account_size(hotkey, timestamp_ms, most_recent, records_dict, use_account_floor)
-
-    def get_all_miner_account_sizes_rpc(self, miner_account_sizes: dict = None, timestamp_ms: int = None) -> Dict[str, float]:
-        """Return a dict of all miner account sizes at a timestamp_ms."""
-        return self._manager.get_all_miner_account_sizes(miner_account_sizes, timestamp_ms)
-
-    def receive_collateral_record_rpc(self, synapse: template.protocol.CollateralRecord) -> template.protocol.CollateralRecord:
-        """Receive collateral record update, and update miner account sizes."""
-        try:
-            sender_hotkey = synapse.dendrite.hotkey
-            bt.logging.info(f"Received collateral record update from validator hotkey [{sender_hotkey}].")
-            success = self.receive_collateral_record_update_rpc(synapse.collateral_record)
-
-            if success:
-                synapse.successfully_processed = True
-                synapse.error_message = ""
-                bt.logging.info(f"Successfully processed CollateralRecord synapse from {sender_hotkey}")
-            else:
-                synapse.successfully_processed = False
-                synapse.error_message = "Failed to process collateral record update"
-                bt.logging.warning(f"Failed to process CollateralRecord synapse from {sender_hotkey}")
-
-        except Exception as e:
-            synapse.successfully_processed = False
-            synapse.error_message = f"Error processing collateral record: {str(e)}"
-            bt.logging.error(f"Exception in receive_collateral_record: {e}")
-
-        return synapse
-
-    def receive_collateral_record_update_rpc(self, collateral_record_data: dict) -> bool:
-        """Process an incoming CollateralRecord synapse and update miner_account_sizes."""
-        return self._manager.receive_collateral_record_update(collateral_record_data)
-
     def verify_coldkey_owns_hotkey_rpc(self, coldkey_ss58: str, hotkey_ss58: str) -> bool:
         """Verify that a coldkey owns a specific hotkey using subtensor."""
         return self._manager.verify_coldkey_owns_hotkey(coldkey_ss58, hotkey_ss58)
@@ -223,25 +206,6 @@ class ContractServer(RPCServerBase):
 
     def get_miner_collateral_balance(self, miner_address: str, max_retries: int = 4) -> Optional[float]:
         return self._manager.get_miner_collateral_balance(miner_address, max_retries)
-
-    def get_miner_account_size(self, hotkey: str, timestamp_ms: int = None, most_recent: bool = False,
-                               records_dict: dict = None, use_account_floor: bool = False) -> Optional[float]:
-        return self._manager.get_miner_account_size(hotkey, timestamp_ms, most_recent, records_dict, use_account_floor)
-
-    def set_miner_account_size(self, hotkey: str, timestamp_ms: int = None) -> bool:
-        return self._manager.set_miner_account_size(hotkey, timestamp_ms)
-
-    def get_all_miner_account_sizes(self, miner_account_sizes: dict = None, timestamp_ms: int = None) -> Dict[str, float]:
-        return self._manager.get_all_miner_account_sizes(miner_account_sizes, timestamp_ms)
-
-    def miner_account_sizes_dict(self, most_recent_only: bool = False) -> Dict[str, List[Dict[str, Any]]]:
-        return self._manager.miner_account_sizes_dict(most_recent_only)
-
-    def sync_miner_account_sizes_data(self, account_sizes_data: Dict[str, List[Dict[str, Any]]]):
-        return self._manager.sync_miner_account_sizes_data(account_sizes_data)
-
-    def re_init_account_sizes(self):
-        return self._manager.re_init_account_sizes()
 
     def process_deposit_request(self, extrinsic_hex: str) -> Dict[str, Any]:
         return self._manager.process_deposit_request(extrinsic_hex)
@@ -269,9 +233,6 @@ class ContractServer(RPCServerBase):
 
     def receive_collateral_record(self, synapse: template.protocol.CollateralRecord) -> template.protocol.CollateralRecord:
         return self.receive_collateral_record_rpc(synapse)
-
-    def receive_collateral_record_update(self, collateral_record_data: dict) -> bool:
-        return self._manager.receive_collateral_record_update(collateral_record_data)
 
     def verify_coldkey_owns_hotkey(self, coldkey_ss58: str, hotkey_ss58: str) -> bool:
         return self._manager.verify_coldkey_owns_hotkey(coldkey_ss58, hotkey_ss58)

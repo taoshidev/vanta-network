@@ -3,10 +3,10 @@ import traceback
 
 import requests
 
-from typing import List
+from typing import List, Optional
 
 from vali_objects.vali_dataclasses.order import Order
-from polygon.websocket import Market, EquityAgg, EquityTrade, CryptoTrade, ForexQuote, WebSocketClient, Feed
+from polygon.websocket import Market, EquityAgg, EquityTrade, CryptoTrade, ForexQuote, FairMarketValue, WebSocketClient, Feed
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from data_generator.base_data_service import BaseDataService, POLYGON_PROVIDER_NAME
@@ -239,8 +239,8 @@ class PolygonDataService(BaseDataService):
         self.N_CANDLES_LIMIT = 50000
         self.tp_to_mfs = {}
         self.is_backtesting = is_backtesting
-        self.stocks_feed_round_robin_map = {0: Feed.RealTime, 1: Feed.Business}
-        self.stocks_feed_round_robin_counter = 0
+        # Use Business feed for equities to get FMV data
+        self.stocks_feed = Feed.Business
 
         # Test price source registry (only used when running_unit_tests=True)
         # Allows tests to inject specific price sources via IPC instead of hardcoded values
@@ -251,7 +251,11 @@ class PolygonDataService(BaseDataService):
         # Key: (trade_pair, start_ms, end_ms) -> Value: List[PriceSource]
         self._test_candle_data = {}
 
-        super().__init__(provider_name=POLYGON_PROVIDER_NAME, running_unit_tests=running_unit_tests)
+        super().__init__(
+            provider_name=POLYGON_PROVIDER_NAME,
+            running_unit_tests=running_unit_tests,
+            enabled_websocket_categories={TradePairCategory.CRYPTO, TradePairCategory.FOREX, TradePairCategory.EQUITIES}
+        )
 
         self.MARKET_STATUS = None
 
@@ -454,7 +458,7 @@ class PolygonDataService(BaseDataService):
         #    stats['t_vlp'] = t_ms
         return m.bid_price, m.ask_price, delta
 
-    async def handle_msg(self, msgs: List[ForexQuote | CryptoTrade | EquityAgg | EquityTrade]):
+    async def handle_msg(self, msgs: List[ForexQuote | CryptoTrade | EquityAgg | EquityTrade | FairMarketValue]):
         """
         received message: CurrencyAgg(event_type='CAS', pair='USD/CHF', open=0.91313, close=0.91317, high=0.91318,
         low=0.91313, volume=3, vwap=None, start_timestamp=1713273701000, end_timestamp=1713273702000,
@@ -487,16 +491,23 @@ class PolygonDataService(BaseDataService):
                     open = close = vwap = high = low = bid
 
             elif tp.is_equities:
-                if m.exchange != self.equities_mapping['nasdaq']:
-                    #print(f"Skipping equity trade from exchange {m.exchange} for {tp.trade_pair}")
+                if isinstance(m, FairMarketValue):
+                    # FMV messages: use fmv field as the price for open/close
+                    start_timestamp = m.timestamp // 1000000  # convert nanoseconds to milliseconds
+                    end_timestamp = None
+                    open = close = vwap = high = low = m.fmv
+                else:
                     return None, None
-                if isinstance(m, EquityTrade) and isinstance(m.conditions, list) and 12 in m.conditions:
-                    #print(f"Skipping Polygon websocket trade with afterhours condition for {m}")
-                    self.n_equity_events_skipped_afterhours += 1
-                    return None, None
-                start_timestamp = round(m.timestamp, -3)  # round to nearest second which allows aggresssive filtering via dup logic
-                end_timestamp = None
-                open = close = vwap = high = low = m.price
+                #if m.exchange != self.equities_mapping['nasdaq']:
+                #    #print(f"Skipping equity trade from exchange {m.exchange} for {tp.trade_pair}")
+                #    return None, None
+                #if isinstance(m, EquityTrade) and isinstance(m.conditions, list) and 12 in m.conditions:
+                #    #print(f"Skipping Polygon websocket trade with afterhours condition for {m}")
+                #    self.n_equity_events_skipped_afterhours += 1
+                #    return None, None
+                #start_timestamp = round(m.timestamp, -3)  # round to nearest second which allows aggresssive filtering via dup logic
+                #end_timestamp = None
+                #open = close = vwap = high = low = m.price
             elif tp.is_crypto:
                 if m.exchange != self.crypto_mapping['coinbase']:
                     #print(f"Skipping crypto trade from exchange {m.exchange} for {tp.trade_pair}")
@@ -562,6 +573,8 @@ class PolygonDataService(BaseDataService):
                     tp = self.symbol_to_trade_pair(m.pair)
                 elif isinstance(m, EquityTrade):
                     tp = self.symbol_to_trade_pair(m.symbol)
+                elif isinstance(m, FairMarketValue):
+                    tp = self.symbol_to_trade_pair(m.ticker)
                 else:
                     raise ValueError(f"Unknown message in POLY websocket: {m}")
 
@@ -621,7 +634,7 @@ class PolygonDataService(BaseDataService):
                 self.WEBSOCKET_OBJECTS[TradePairCategory.FOREX].subscribe(symbol)
                 subbed.append(symbol)
             elif tp.is_equities:
-                symbol = "T." + tp.trade_pair
+                symbol = "FMV." + tp.trade_pair
                 subbed.append(symbol)
                 self.WEBSOCKET_OBJECTS[TradePairCategory.EQUITIES].subscribe(symbol)
             elif tp.is_indices:
@@ -703,10 +716,9 @@ class PolygonDataService(BaseDataService):
         else:
             raise Exception(f'Unexpected tpc {tpc}')
 
-        # Depending on API key, the feed may be different for equities
+        # Use Business feed for equities to get FMV data
         if tpc == TradePairCategory.EQUITIES:
-            feed = self.stocks_feed_round_robin_map[self.stocks_feed_round_robin_counter]
-            self.stocks_feed_round_robin_counter = (1 + self.stocks_feed_round_robin_counter) % len(self.stocks_feed_round_robin_map)
+            feed = self.stocks_feed
         client = WebSocketClient(market=market, api_key=self._api_key, feed=feed)
         bt.logging.info(f"Created {self.provider_name} websocket for {tpc}. feed {feed.name}")
         self.WEBSOCKET_OBJECTS[tpc] = client
@@ -766,7 +778,7 @@ class PolygonDataService(BaseDataService):
         elif trade_pair.is_indices:
             return 'I:' + trade_pair.trade_pair_id
         elif trade_pair.is_equities:
-            return trade_pair.trade_pair_id
+            return trade_pair.trade_pair
         else:
             raise ValueError(f"Unknown trade pair category: {trade_pair.trade_pair_category}")
 
@@ -1201,7 +1213,12 @@ class PolygonDataService(BaseDataService):
                 limit=1
             )
             for q in quotes:
+                # Handle case where Polygon returns None for any field
+                if q.bid_price is None or q.ask_price is None or q.participant_timestamp is None:
+                    return None, None, None
                 return q.bid_price, q.ask_price, int(q.participant_timestamp/1_000_000)  # convert ns back to ms
+            # No quotes found
+            return None, None, None
         else:
             # crypto
             return 0, 0, 0
@@ -1227,6 +1244,54 @@ class PolygonDataService(BaseDataService):
 
         return rate.converted
 
+    def get_stock_splits(self, time_ms: int) -> dict[str, float]:
+        """
+        Get stock splits for all equity symbols on a given date.
+
+        Returns:
+            dict mapping trade_pair_id to split ratio (split_to / split_from)
+        """
+        execution_date_str = TimeUtil.timestamp_ms_to_eastern_time_str(time_ms, short=True)
+
+        # Get all equity symbols we care about
+        equity_symbols = {tp.trade_pair for tp in TradePair if tp.is_equities}
+
+        endpoint = "https://api.massive.com/stocks/v1/splits"
+        params = {
+            "execution_date": execution_date_str,
+            "limit": 1000,
+            "sort": "execution_date.desc",
+            "apiKey": self._api_key
+        }
+
+        try:
+            response = requests.get(endpoint, params=params)
+            response.raise_for_status()
+            data = response.json()
+
+            result = {}
+            if 'results' in data and isinstance(data['results'], list):
+                for split in data['results']:
+                    ticker = split.get('ticker')
+                    # Only include splits for our supported equity symbols
+                    if ticker not in equity_symbols:
+                        continue
+                    if split.get('execution_date') != execution_date_str:
+                        continue
+
+                    split_from = split.get('split_from')
+                    split_to = split.get('split_to')
+
+                    if split_from and split_to and split_from != 0:
+                        result[ticker] = split_to / split_from
+                    else:
+                        bt.logging.warning(f"Found stock split for {ticker} on {execution_date_str}, but could not resolve stock split ratio")
+
+            return result
+
+        except Exception as e:
+            bt.logging.error(f"Failed to fetch stock split data from massive.com: {e}")
+            return {}
 
 if __name__ == "__main__":
 

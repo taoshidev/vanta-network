@@ -22,6 +22,7 @@ class Order(Signal):
     order_uuid: str
     price_sources: list = []
     src: int = OrderSource.ORGANIC
+    margin_loan: float = 0.0
 
     @field_validator('trade_pair', mode='before')
     @classmethod
@@ -58,6 +59,10 @@ class Order(Signal):
         Initializes quote_usd_rate and usd_base_rate based on the trade pair.
         Only sets values if they were left at the default 0.
         """
+        # Skip for FLAT_ALL or other cases where trade_pair is None
+        if self.trade_pair is None:
+            return self
+
         base = self.trade_pair.base  # e.g. BTC in BTCUSD
         quote = self.trade_pair.quote  # e.g. USD in BTCUSD
         price = self.price
@@ -116,9 +121,10 @@ class Order(Signal):
     #     return values
 
     @model_validator(mode="before")
-    def check_exclusive_fields(cls, values):
+    def validate_size_fields(cls, values):
         """
-        Overrides inherited check_exclusive_fields from signal. When we populate the order we want to fill in all three leverage/value/quantity fields.
+        Overrides inherited validate_size_fields from Signal.
+        Order can have all three leverage/value/quantity fields filled.
         """
         return values
 
@@ -135,7 +141,10 @@ class Order(Signal):
         return TimeUtil.now_in_millis() - order.processed_ms
 
     def to_python_dict(self):
-        trade_pair_id = self.trade_pair.trade_pair_id if hasattr(self.trade_pair, 'trade_pair_id') else 'unknown'
+        trade_pair_id = None
+        if self.trade_pair is not None:
+            trade_pair_id = self.trade_pair.trade_pair_id if hasattr(self.trade_pair, 'trade_pair_id') else 'unknown'
+
         return {'trade_pair_id': trade_pair_id,
                 'order_type': self.order_type.name,
                 'leverage': self.leverage,
@@ -154,7 +163,8 @@ class Order(Signal):
                 'execution_type': self.execution_type.name if self.execution_type else None,
                 'limit_price': self.limit_price,
                 'stop_loss': self.stop_loss,
-                'take_profit': self.take_profit}
+                'take_profit': self.take_profit,
+                'margin_loan': self.margin_loan}
 
     def __str__(self):
         # Ensuring the `trade_pair.trade_pair_id` is accessible for the string representation

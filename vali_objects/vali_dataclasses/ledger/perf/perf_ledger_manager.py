@@ -444,7 +444,7 @@ class PerfLedgerManager(CacheController):
 
         return position_at_start_timestamp, position_at_end_timestamp
 
-    def generate_order_timeline(self, positions: list[Position], now_ms: int, hk: str) -> (list[tuple], int):
+    def generate_order_timeline(self, positions: list[Position], now_ms: int, hk: str) -> tuple[list[tuple], int]:
         # order to understand timestamps needing checking, position to understand returns per timestamp (will be adjusted)
         # (order, position)
         time_sorted_orders = []
@@ -1065,7 +1065,7 @@ class PerfLedgerManager(CacheController):
         return accumulated_time_ms
 
 
-    def build_perf_ledger(self, perf_ledger_bundle: dict[str:dict[str, PerfLedger]], tp_to_historical_positions: dict[str: Position], start_time_ms, end_time_ms, miner_hotkey, tp_id_to_realtime_position_to_pop: dict[str, Position]) -> bool:
+    def build_perf_ledger(self, perf_ledger_bundle: dict[str, dict[str, PerfLedger]], tp_to_historical_positions: dict[str, Position], start_time_ms, end_time_ms, miner_hotkey, tp_id_to_realtime_position_to_pop: dict[str, Position]) -> bool:
         # tp_id_to_realtime_position_to_pop is a dictionary mapping trade pair IDs to their realtime positions
         portfolio_pl = perf_ledger_bundle[TP_ID_PORTFOLIO]
         is_first_update = len(portfolio_pl.cps) == 0
@@ -1246,6 +1246,8 @@ class PerfLedgerManager(CacheController):
             tp_to_any_open = {tp_id: TradePairReturnStatus.TP_NO_OPEN_POSITIONS for tp_id in tp_ids_to_build}
             tp_to_current_spread_fee = initial_tp_to_spread_fee.copy()
             tp_to_current_carry_fee = initial_tp_to_carry_fee.copy()
+            tp_to_realized_pnl = initial_tp_to_realized_pnl.copy()
+            tp_to_unrealized_pnl = initial_tp_to_unrealized_pnl.copy()
 
             bt.logging.warning(f"build_perf_ledger: while loop will not execute for miner {miner_hotkey}. "
                              f"start_time: {TimeUtil.millis_to_formatted_date_str(start_time_ms)}, "

@@ -32,6 +32,10 @@ class MarketOrderManager():
         from vali_objects.contract.contract_client import ContractClient
         self._contract_client = ContractClient(running_unit_tests=running_unit_tests, connection_mode=connection_mode)
 
+        # Create own MinerAccountClient (source of truth for account sizes)
+        from vali_objects.miner_account.miner_account_client import MinerAccountClient
+        self._miner_account_client = MinerAccountClient(connection_mode=connection_mode)
+
         # Create own LivePriceFetcherClient (forward compatibility - no parameter passing)
         from vali_objects.price_fetcher import LivePriceFetcherClient
         self._live_price_client = LivePriceFetcherClient(running_unit_tests=running_unit_tests, connection_mode=connection_mode)
@@ -134,17 +138,25 @@ class MarketOrderManager():
         if order_type == OrderType.FLAT:
             open_position = None
         else:
+            if trade_pair.is_equities and order_type == OrderType.SHORT:
+                raise SignalException(
+                    f"Cannot open a SHORT position for equities. "
+                    f"Miner [{miner_hotkey}] attempted to open a new position with SHORT order for [{trade_pair.trade_pair_id}]. "
+                    f"Equities can only be opened with LONG orders."
+                )
+
             # if a position doesn't exist, then make a new one
             open_position = Position(
                 miner_hotkey=miner_hotkey,
                 position_uuid=miner_order_uuid if miner_order_uuid else str(uuid.uuid4()),
                 open_ms=order_time_ms,
                 trade_pair=trade_pair,
+                position_type=order_type,
                 account_size=account_size
             )
         return open_position
 
-    def _add_order_to_existing_position(self, existing_position, trade_pair, signal_order_type: OrderType,
+    def _add_order_to_existing_position(self, existing_position: Position, trade_pair: TradePair, signal_order_type: OrderType,
                                         quantity: float, leverage: float, value: float, order_time_ms: int, miner_hotkey: str,
                                         price_sources, miner_order_uuid: str, miner_repo_version: str, src:OrderSource,
                                         account_size=None, usd_base_price=None, execution_type=ExecutionType.MARKET,
@@ -163,6 +175,19 @@ class MarketOrderManager():
             )
             existing_position.account_size = ValiConfig.MIN_CAPITAL
 
+        # Calculate USD conversions
+        step_start = TimeUtil.now_in_millis()
+        if usd_base_price is None:
+            usd_base_price = self.live_price_fetcher.get_usd_base_conversion(trade_pair, order_time_ms, price, signal_order_type, existing_position)
+            usd_conversion_ms = TimeUtil.now_in_millis() - step_start
+            bt.logging.info(f"[ADD_ORDER_DETAIL] USD conversion calculation took {usd_conversion_ms}ms")
+
+        step_start = TimeUtil.now_in_millis()
+        net_portfolio_leverage = self.position_manager.calculate_net_portfolio_leverage(miner_hotkey)
+        leverage_calc_ms = TimeUtil.now_in_millis() - step_start
+        bt.logging.info(f"[ADD_ORDER_DETAIL] Net portfolio leverage calc took {leverage_calc_ms}ms")
+
+        # Create order (margin_loan will be set after validation)
         order = Order(
             trade_pair=trade_pair,
             order_type=signal_order_type,
@@ -179,19 +204,22 @@ class MarketOrderManager():
             limit_price=limit_price,
             stop_loss=stop_loss,
             take_profit=take_profit,
-            execution_type=execution_type
+            execution_type=execution_type,
+            usd_base_rate=usd_base_price,
         )
-        order_creation_ms = TimeUtil.now_in_millis() - step_start
-        bt.logging.info(f"[ADD_ORDER_DETAIL] Order object creation took {order_creation_ms}ms")
+        bt.logging.info(f"[ORDER DETAIL] Using price source {price_sources}")
 
-        # Calculate USD conversions
-        step_start = TimeUtil.now_in_millis()
-        if usd_base_price is None:
-            usd_base_price = self.live_price_fetcher.get_usd_base_conversion(trade_pair, order_time_ms, price, signal_order_type, existing_position)
-        order.usd_base_rate = usd_base_price
+        # Override bid/ask with Databento quote for equities slippage calculation
+        # if trade_pair.is_equities:
+        #     db_bid, db_ask, _ = self._live_price_client.get_quote(trade_pair, order_time_ms)
+        #     bt.logging.info(f"RECEIVED BID {db_bid} ASK {db_ask}")
+        #     if db_bid and db_ask and db_bid > 0 and db_ask > 0:
+        #         order.bid = db_bid
+        #         order.ask = db_ask
+
+        order_creation_ms = TimeUtil.now_in_millis() - step_start
         order.quote_usd_rate = self.live_price_fetcher.get_quote_usd_conversion(order, existing_position)
-        usd_conversion_ms = TimeUtil.now_in_millis() - step_start
-        bt.logging.info(f"[ADD_ORDER_DETAIL] USD conversion calculation took {usd_conversion_ms}ms")
+        bt.logging.info(f"[ADD_ORDER_DETAIL] Order object creation took {order_creation_ms}ms")
 
         # Refresh features - this may make expensive API calls on new day
         step_start = TimeUtil.now_in_millis()
@@ -220,13 +248,32 @@ class MarketOrderManager():
         slippage_calc_ms = TimeUtil.now_in_millis() - step_start
         bt.logging.info(f"[ADD_ORDER_DETAIL] Slippage calculation took {slippage_calc_ms}ms")
 
-        step_start = TimeUtil.now_in_millis()
-        net_portfolio_leverage = self.position_manager.calculate_net_portfolio_leverage(miner_hotkey)
-        leverage_calc_ms = TimeUtil.now_in_millis() - step_start
-        bt.logging.info(f"[ADD_ORDER_DETAIL] Net portfolio leverage calc took {leverage_calc_ms}ms")
+        # Validate order before processing cash balance (raises ValueError if invalid)
+        existing_position.validate_order_size(order, net_portfolio_leverage)
+
+        # Process cash balance after validation passes
+        if order.order_type == existing_position.position_type:
+            # Buy: pay value plus slippage cost (raises SignalException if invalid)
+            order.margin_loan = self._miner_account_client.process_order_buy(miner_hotkey, abs(value) * (1 + order.slippage))
+        else:
+            # Sell: receive sale proceeds minus slippage cost
+            processed_qty = existing_position.net_quantity if order.order_type == OrderType.FLAT else quantity
+            current_value = abs(processed_qty) * trade_pair.lot_size / order.usd_base_rate
+
+            if existing_position.position_type == OrderType.SHORT:
+                # For SHORT positions: proceeds = entry_value + (entry_value - current_value)
+                entry_value = abs(processed_qty) * trade_pair.lot_size * existing_position.average_entry_price * order.quote_usd_rate
+                sale_proceeds = 2 * entry_value - current_value
+            else:
+                # For LONG positions: proceeds = current_value
+                sale_proceeds = current_value
+
+            loan_repaid = self._miner_account_client.process_order_sell(miner_hotkey, abs(sale_proceeds) * (1 - order.slippage), existing_position.margin_loan)
+            # Store loan repayment as negative margin_loan so position.margin_loan sums correctly
+            order.margin_loan = -loan_repaid
 
         step_start = TimeUtil.now_in_millis()
-        existing_position.add_order(order, self.live_price_fetcher, net_portfolio_leverage)
+        existing_position.add_order(order, self.live_price_fetcher, net_portfolio_leverage, skip_validation=True)
         add_order_ms = TimeUtil.now_in_millis() - step_start
         bt.logging.info(f"[ADD_ORDER_DETAIL] Position.add_order() took {add_order_ms}ms")
 
@@ -294,7 +341,7 @@ class MarketOrderManager():
         if quantity is not None:
             value = quantity * trade_pair.lot_size / usd_base_conversion
             leverage = value / portfolio_value
-        if leverage is not None:
+        elif leverage is not None:
             value = leverage * portfolio_value
             quantity = (value * usd_base_conversion) / trade_pair.lot_size
         elif value is not None:
@@ -302,6 +349,85 @@ class MarketOrderManager():
             quantity = (value * usd_base_conversion) / trade_pair.lot_size
 
         return quantity, leverage, value
+
+    def process_flat_all_order(self, order_uuid, miner_repo_version, miner_hotkey, now_ms):
+        bt.logging.info(f"Processing FLAT_ALL order for miner [{miner_hotkey}]")
+
+        # Get all open positions for this miner
+        open_positions = self._position_client.get_positions_for_hotkeys([miner_hotkey], only_open_positions=True).get(miner_hotkey)
+
+        if not open_positions:
+            bt.logging.info(f"No open positions found for miner [{miner_hotkey}]")
+            return {
+                "positions_closed": 0,
+                "positions_failed": 0,
+                "failed_trade_pairs": []
+            }
+
+        total_positions = len(open_positions)
+        cnt_positions_closed = 0
+        cnt_positions_failed = 0
+        failed_trade_pairs = []
+
+        bt.logging.info(f"Found {total_positions} open positions for miner [{miner_hotkey}], closing all...")
+
+        for i, position in enumerate(open_positions):
+            trade_pair = position.trade_pair
+
+            try:
+                # Get price sources for this trade pair
+                price_sources = self.live_price_fetcher.get_sorted_price_sources_for_trade_pair(trade_pair, now_ms)
+                if not price_sources:
+                    bt.logging.error(
+                        f"[FLAT_ALL] No price sources available for position {i+1}/{total_positions} "
+                        f"[{trade_pair.trade_pair_id}] for miner [{miner_hotkey}]"
+                    )
+                    cnt_positions_failed += 1
+                    failed_trade_pairs.append(trade_pair.trade_pair_id)
+                    continue
+
+                # Acquire position lock before closing
+                with self._position_lock_client.get_lock(miner_hotkey, trade_pair.trade_pair_id):
+                    position_close_uuid = position.position_uuid[::-1]
+                    position_close_time = now_ms - (total_positions - i - 1)
+
+                    self._add_order_to_existing_position(
+                        position, trade_pair, OrderType.FLAT,
+                        0.0, 0.0, 0.0, position_close_time, miner_hotkey,
+                        price_sources, position_close_uuid, miner_repo_version,
+                        OrderSource.FLAT_ALL_CLOSE,
+                        position.account_size
+                    )
+
+                    cnt_positions_closed += 1
+                    bt.logging.info(
+                        f"[FLAT_ALL] Closed position {i+1}/{total_positions} "
+                        f"[{trade_pair.trade_pair_id}] for miner [{miner_hotkey}]"
+                    )
+
+                if i < total_positions - 1:
+                    time.sleep(0.05)
+
+            except Exception as e:
+                bt.logging.error(
+                    f"[FLAT_ALL] Failed to close position {i+1}/{total_positions} "
+                    f"[{trade_pair.trade_pair_id}] for miner [{miner_hotkey}]: {str(e)}"
+                )
+                cnt_positions_failed += 1
+                failed_trade_pairs.append(trade_pair.trade_pair_id)
+                continue
+
+        bt.logging.info(
+            f"[FLAT_ALL] Completed for miner [{miner_hotkey}]: "
+            f"{cnt_positions_closed}/{total_positions} positions closed, "
+            f"{cnt_positions_failed} failed"
+        )
+
+        return {
+            "positions_closed": cnt_positions_closed,
+            "positions_failed": cnt_positions_failed,
+            "failed_trade_pairs": failed_trade_pairs
+        }
 
     def process_market_order(self, synapse, miner_order_uuid, miner_repo_version, trade_pair, now_ms, signal, miner_hotkey, price_sources=None):
 
@@ -363,7 +489,7 @@ class MarketOrderManager():
 
             # TIMING: Get account size
             account_size_start = TimeUtil.now_in_millis()
-            account_size = self.contract_manager.get_miner_account_size(miner_hotkey, now_ms, use_account_floor=True)
+            account_size = self._miner_account_client.get_miner_account_size(miner_hotkey, use_account_floor=True)
             account_size_ms = TimeUtil.now_in_millis() - account_size_start
             bt.logging.info(f"[LOCK_WORK] Get account size took {account_size_ms}ms")
 
@@ -398,8 +524,11 @@ class MarketOrderManager():
                 price = fill_price if fill_price else best_price_source.parse_appropriate_price(now_ms, trade_pair.is_forex, signal_order_type, existing_position)
                 usd_base_price = self.live_price_fetcher.get_usd_base_conversion(trade_pair, now_ms, price, signal_order_type, existing_position)
 
-                # Parse order size (supports leverage, value, or quantity)
-                quantity, leverage, value = self.parse_order_size(signal, usd_base_price, trade_pair, existing_position.account_size)
+                if signal_order_type != OrderType.FLAT:
+                    # Parse order size (supports leverage, value, or quantity)
+                    quantity, leverage, value = self.parse_order_size(signal, usd_base_price, trade_pair, existing_position.account_size)
+                else:
+                    quantity, leverage, value = 0.0, 0.0, 0.0
 
                 created_order = self._add_order_to_existing_position(existing_position, trade_pair, signal_order_type,
                                                      quantity, leverage, value, now_ms, miner_hotkey,

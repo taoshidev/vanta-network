@@ -24,6 +24,7 @@ class TestDebtBasedScoring(TestBase):
     metagraph_client = None
     challengeperiod_client = None
     contract_client = None
+    miner_account_client = None
 
     @classmethod
     def setUpClass(cls):
@@ -42,6 +43,7 @@ class TestDebtBasedScoring(TestBase):
         cls.metagraph_client = cls.orchestrator.get_client('metagraph')
         cls.challengeperiod_client = cls.orchestrator.get_client('challenge_period')
         cls.contract_client = cls.orchestrator.get_client('contract')
+        cls.miner_account_client = cls.orchestrator.get_client('miner_account')
 
     @classmethod
     def tearDownClass(cls):
@@ -133,7 +135,7 @@ class TestDebtBasedScoring(TestBase):
                 "account_size_theta": collateral_usd  # theta = same as actual for simplicity
             }]
 
-        self.contract_client.sync_miner_account_sizes_data(account_sizes_data)
+        self.miner_account_client.sync_miner_account_sizes_data(account_sizes_data)
 
     def test_empty_ledgers(self):
         """Test with no ledgers returns burn address with weight 1.0"""
@@ -141,7 +143,7 @@ class TestDebtBasedScoring(TestBase):
             {},
             self.metagraph_client,
             self.challengeperiod_client,
-            self.contract_client,
+            self.miner_account_client,
             is_testnet=False
         )
         # With no miners, burn address gets all weight
@@ -158,7 +160,7 @@ class TestDebtBasedScoring(TestBase):
             {"test_hotkey": ledger},
             self.metagraph_client,
             self.challengeperiod_client,
-            self.contract_client,
+            self.miner_account_client,
             is_testnet=False
         )
         # Single miner with no performance gets dust weight
@@ -1844,7 +1846,7 @@ class TestDebtBasedScoring(TestBase):
             ledgers,
             self.metagraph_client,
             self.challengeperiod_client,
-            self.contract_client,
+            self.miner_account_client,
             current_time_ms=current_time_ms,
             is_testnet=False,
             verbose=True
@@ -1916,7 +1918,7 @@ class TestDebtBasedScoring(TestBase):
             ledgers,
             self.metagraph_client,
             self.challengeperiod_client,
-            self.contract_client,
+            self.miner_account_client,
             current_time_ms=current_time_ms,
             is_testnet=False,
             verbose=True
@@ -2044,7 +2046,7 @@ class TestDebtBasedScoring(TestBase):
             ledgers,
             self.metagraph_client,
             self.challengeperiod_client,
-            self.contract_client,
+            self.miner_account_client,
             current_time_ms=current_time_ms,
             is_testnet=False,
             verbose=True
@@ -2118,7 +2120,7 @@ class TestDebtBasedScoring(TestBase):
             ledgers,
             self.metagraph_client,
             self.challengeperiod_client,
-            self.contract_client,
+            self.miner_account_client,
             current_time_ms=current_time_ms,
             is_testnet=False,
             verbose=True
@@ -2180,7 +2182,7 @@ class TestDebtBasedScoring(TestBase):
             {"solo_challenge_miner": ledger},
             self.metagraph_client,
             self.challengeperiod_client,
-            self.contract_client,
+            self.miner_account_client,
             current_time_ms=current_time_ms,
             is_testnet=False,
             verbose=True
@@ -2242,7 +2244,7 @@ class TestDebtBasedScoring(TestBase):
             ledgers,
             self.metagraph_client,
             self.challengeperiod_client,
-            self.contract_client,
+            self.miner_account_client,
             current_time_ms=current_time_ms,
             is_testnet=False,
             verbose=True

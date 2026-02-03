@@ -1568,10 +1568,10 @@ class TestAutoSync(TestBase):
         # Simulate time passing
         self.position_syncer.last_signal_sync_time_ms = TimeUtil.now_in_millis() - 1000 * 60 * 31
         
-        # Test outside time window
+        # Test outside time window (hour=5 is not hour=0)
         with patch('vali_objects.data_sync.auto_sync.TimeUtil.generate_start_timestamp') as mock_time:
             mock_dt = Mock()
-            mock_dt.hour = 5  # Not 6
+            mock_dt.hour = 5  # Not 0
             mock_dt.minute = 15
             mock_time.return_value = mock_dt
             
@@ -1579,13 +1579,13 @@ class TestAutoSync(TestBase):
                 self.position_syncer.sync_positions_with_cooldown(auto_sync_enabled=True)
                 mock_sync.assert_not_called()
         
-        # Test within time window
+        # Test within time window (hour=0, minute between 7 and 17)
         with patch('vali_objects.data_sync.auto_sync.TimeUtil.generate_start_timestamp') as mock_time:
             mock_dt = Mock()
-            mock_dt.hour = 21
-            mock_dt.minute = 15  # Between 8 and 20
+            mock_dt.hour = 0
+            mock_dt.minute = 15  # Between 7 and 17
             mock_time.return_value = mock_dt
-            
+
             with patch.object(self.position_syncer, 'perform_sync') as mock_sync:
                 self.position_syncer.sync_positions_with_cooldown(auto_sync_enabled=True)
                 mock_sync.assert_called_once()

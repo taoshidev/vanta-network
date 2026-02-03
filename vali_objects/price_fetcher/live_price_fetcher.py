@@ -1,11 +1,14 @@
 import time
-from typing import List, Tuple, Dict
+import requests
+from typing import List, Optional, Tuple, Dict
 
 import numpy as np
 from data_generator.tiingo_data_service import TiingoDataService
 from data_generator.polygon_data_service import PolygonDataService
+from data_generator.databento_data_service import DatabentoDataService
 from time_util.time_util import TimeUtil
 from vali_objects.utils.vali_utils import ValiUtils
+from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.vali_config import TradePair, ValiConfig
 import bittensor as bt
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
@@ -29,9 +32,25 @@ class LivePriceFetcher:
         else:
             raise Exception("Polygon API key not found in secrets.json")
 
+        # Optional Databento service for equities
+        self.databento_data_service = None
+        if "databento_apikey" in secrets:
+            self.databento_data_service = DatabentoDataService(
+                api_key=secrets["databento_apikey"],
+                disable_ws=disable_ws,
+                running_unit_tests=running_unit_tests
+            )
+
+        # Stock splits cache - load from disk on startup
+        self.STOCK_SPLITS_FILE = ValiBkpUtils.get_stock_splits_file_location()
+        self._stock_splits = ValiUtils.get_vali_json_file_dict(self.STOCK_SPLITS_FILE)
+        self._last_split_check_ms = 0
+
     def stop_all_threads(self):
         self.tiingo_data_service.stop_threads()
         self.polygon_data_service.stop_threads()
+        if self.databento_data_service:
+            self.databento_data_service.stop_threads()
 
     def set_test_price_source(self, trade_pair: TradePair, price_source: PriceSource) -> None:
         """
@@ -159,7 +178,10 @@ class LivePriceFetcher:
         # Utilize get_events_in_range
         poly_sources = self.polygon_data_service.trade_pair_to_recent_events[trade_pair.trade_pair].get_events_in_range(start_ms, end_ms)
         t_sources = self.tiingo_data_service.trade_pair_to_recent_events[trade_pair.trade_pair].get_events_in_range(start_ms, end_ms)
-        return poly_sources + t_sources
+        db_sources = []
+        if self.databento_data_service and trade_pair.is_equities:
+            db_sources = self.databento_data_service.trade_pair_to_recent_events[trade_pair.trade_pair].get_events_in_range(start_ms, end_ms)
+        return poly_sources + t_sources + db_sources
 
     def get_latest_price(self, trade_pair: TradePair, time_ms=None) -> Tuple[float, List[PriceSource]] | Tuple[None, None]:
         """
@@ -183,13 +205,36 @@ class LivePriceFetcher:
 
         websocket_prices_polygon = self.polygon_data_service.get_closes_websocket(trade_pairs, time_ms)
         websocket_prices_tiingo_data = self.tiingo_data_service.get_closes_websocket(trade_pairs, time_ms)
+
+        # Get Databento prices for equities
+        websocket_prices_databento = {}
+        if self.databento_data_service:
+            equity_pairs = [tp for tp in trade_pairs if tp.is_equities]
+            if equity_pairs:
+                websocket_prices_databento = self.databento_data_service.get_closes_websocket(equity_pairs, time_ms)
+
         trade_pairs_needing_rest_data = []
 
         results = {}
 
         # Initial check using WebSocket data
         for trade_pair in trade_pairs:
-            events = [websocket_prices_polygon.get(trade_pair), websocket_prices_tiingo_data.get(trade_pair)]
+            # For equities, prioritize Databento - use it exclusively if available
+            if trade_pair.is_equities:
+                databento_price = websocket_prices_databento.get(trade_pair)
+                if databento_price:
+                    sources = self.sorted_valid_price_sources([databento_price], time_ms, filter_recent_only=True)
+                    if sources:
+                        results[trade_pair] = sources
+                        continue
+                # No valid Databento price, fall back to REST
+                trade_pairs_needing_rest_data.append(trade_pair)
+                continue
+
+            events = [
+                websocket_prices_polygon.get(trade_pair),
+                websocket_prices_tiingo_data.get(trade_pair),
+            ]
             sources = self.sorted_valid_price_sources(events, time_ms, filter_recent_only=True)
             if sources:
                 results[trade_pair] = sources
@@ -219,7 +264,11 @@ class LivePriceFetcher:
         now_ms = TimeUtil.now_in_millis()
         t1 = self.polygon_data_service.get_websocket_lag_for_trade_pair_s(tp=trade_pair.trade_pair, now_ms=now_ms)
         t2 = self.tiingo_data_service.get_websocket_lag_for_trade_pair_s(tp=trade_pair.trade_pair, now_ms=now_ms)
-        return max([x for x in (t1, t2) if x])
+        t3 = None
+        if self.databento_data_service and trade_pair.is_equities:
+            t3 = self.databento_data_service.get_websocket_lag_for_trade_pair_s(tp=trade_pair.trade_pair, now_ms=now_ms)
+        lags = [x for x in (t1, t2, t3) if x]
+        return max(lags) if lags else None
 
     def filter_outliers(self, unique_data: List[PriceSource]) -> List[PriceSource]:
         """
@@ -267,8 +316,13 @@ class LivePriceFetcher:
 
     def get_quote(self, trade_pair: TradePair, processed_ms: int) -> Tuple[float, float, int]:
         """
-        returns the bid and ask quote for a trade_pair at processed_ms. Only Polygon supports point-in-time bid/ask.
+        Returns the bid and ask quote for a trade_pair at processed_ms.
+        Uses Databento for equities, Polygon for other asset classes.
         """
+        if trade_pair.is_equities and self.databento_data_service:
+            price_source = self.databento_data_service.get_closes_websocket([trade_pair], processed_ms).get(trade_pair)
+            if price_source and price_source.bid and price_source.ask and price_source.bid > 0 and price_source.ask > 0:
+                return price_source.bid, price_source.ask, price_source.start_ms
         return self.polygon_data_service.get_quote(trade_pair, processed_ms)
 
     def get_candles(self, trade_pairs, start_time_ms, end_time_ms) -> dict:
@@ -425,6 +479,62 @@ class LivePriceFetcher:
 
         bt.logging.error(f"Unable to fetch USD to base currency {trade_pair.base} conversion at time {time_ms}. No price sources available (websocket or REST).")
         return 1.0
+
+    def get_stock_splits(self, time_ms: int) -> dict[str, float]:
+        target_date = TimeUtil.timestamp_ms_to_eastern_time_str(time_ms, short=True)
+
+        # 12 hours in case the mdd checker daily call runs faster than 24 hours
+        if time_ms - self._last_split_check_ms < 12 * 60 * 60 * 1000:
+            return self._stock_splits.get(target_date, {})
+
+        url = 'https://api.nasdaq.com/api/calendar/splits'
+        headers = {
+            'User-Agent': 'Mozilla/5.0',
+            'Accept': 'application/json'
+        }
+        try:
+            response = requests.get(url, headers=headers, timeout=10)
+            if not response.ok:
+                bt.logging.error(f"NASDAQ API returned status {response.status_code}")
+                return self._stock_splits.get(target_date, {})
+            data = response.json()
+        except Exception as e:
+            bt.logging.error(f"Failed to fetch stock splits from NASDAQ API: {e}")
+            return self._stock_splits.get(target_date, {})
+
+        equity_symbols = {tp.trade_pair: tp for tp in TradePair if tp.is_equities}
+
+        new_split_entries = {}
+        for row in data.get("data", {}).get("rows", []):
+            ticker = row.get("symbol")
+            if not ticker or ticker not in equity_symbols:
+                continue
+
+            # only need to change for BRK.B (will be useful one day)
+            trade_pair_id = equity_symbols[ticker].trade_pair_id
+
+            execution_date = TimeUtil.format_nasdaq_api_date(row.get("executionDate"))
+            ratio_str = row.get("ratio")
+            split_to, split_from = map(float, map(str.strip, ratio_str.split(":")))
+            ratio = split_to / split_from
+
+            if execution_date not in self._stock_splits:
+                self._stock_splits[execution_date] = {}
+            if trade_pair_id not in self._stock_splits[execution_date]:
+                new_split_entries[trade_pair_id] = ratio
+            self._stock_splits[execution_date].update({trade_pair_id: ratio})
+
+        self._last_split_check_ms = time_ms
+
+        if new_split_entries:
+            bt.logging.info(f"NEW UPCOMING STOCK SPLITS ADDED TO RECORD: {new_split_entries}")
+            ValiBkpUtils.write_file(self.STOCK_SPLITS_FILE, self._stock_splits)
+        else:
+            bt.logging.info("No new upcoming stock splits found")
+
+        return self._stock_splits.get(target_date, {})
+        # return self.polygon_data_service.get_stock_splits(time_ms)
+        # return self.databento_data_service.get_stock_splits(time_ms)
 
 
 if __name__ == "__main__":

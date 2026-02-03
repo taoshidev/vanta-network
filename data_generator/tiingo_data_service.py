@@ -13,6 +13,7 @@ from time_util.time_util import TimeUtil
 from vali_objects.vali_config import TradePair, TradePairCategory
 
 import time
+import websockets
 
 from vali_objects.utils.vali_utils import ValiUtils
 import bittensor as bt
@@ -95,6 +96,90 @@ class _TiingoPseudoClient:
         bt.logging.info(f"Closed {self._svc.provider_name} websocket client for {self._cat}")
 
 
+class _TiingoWebsocketClient:
+    def __init__(self, service, category, api_key):
+        self._svc: TiingoDataService = service
+        self._cat: TradePairCategory = category
+        self._api_key = api_key
+        self._ws = None
+        self._should_close = False
+
+    async def connect(self, handle_msg):
+        """Connect to Tiingo websocket and process messages"""
+        # Determine endpoint based on category
+        if self._cat == TradePairCategory.EQUITIES:
+            url = "wss://api.tiingo.com/iex"
+            threshold_level = 6
+        elif self._cat == TradePairCategory.FOREX:
+            url = "wss://api.tiingo.com/fx"
+            threshold_level = 5
+        elif self._cat == TradePairCategory.CRYPTO:
+            url = "wss://api.tiingo.com/crypto"
+            threshold_level = 5
+        else:
+            raise ValueError(f"Unknown category: {self._cat}")
+
+        # Connect using websockets library (async-native)
+        # Don't use async with here - we want to keep connection open
+        self._ws = await websockets.connect(url)
+
+        try:
+            # Build subscribe message
+            trade_pairs_to_query = self._svc.get_tradeable_pairs(
+                category=self._cat,
+                include_blocked=False,
+                market_open_only=False  # Subscribe to all pairs, filter on receipt
+            )
+
+            tickers = [tp.trade_pair_id.lower() for tp in trade_pairs_to_query]
+
+            subscribe = {
+                'eventName': 'subscribe',
+                'authorization': self._api_key,
+                'eventData': {
+                    'thresholdLevel': threshold_level,
+                    'tickers': tickers if tickers else ['*']
+                }
+            }
+
+            bt.logging.info(f"Subscribing to {self._cat} with tickers: {tickers}")
+
+            # Send subscription (async send)
+            await self._ws.send(json.dumps(subscribe))
+            bt.logging.info(f"Subscribed to {len(tickers)} {self._cat} tickers")
+
+            # Receive loop - keep running until closed or error
+            while not self._should_close:
+                try:
+                    msg = await self._ws.recv()
+                    await handle_msg(msg)
+                except websockets.exceptions.ConnectionClosed as e:
+                    bt.logging.warning(f"Tiingo {self._cat} websocket closed: code={e.code}, reason={e.reason}")
+                    break
+                except Exception as e:
+                    if self._should_close:
+                        break
+                    bt.logging.error(f"Error receiving/handling message for {self._cat}: {e}")
+                    bt.logging.error(f"Exception type: {type(e).__name__}")
+                    bt.logging.error(traceback.format_exc())
+                    # Don't raise - continue receiving
+                    continue
+        finally:
+            # Ensure cleanup happens
+            if self._ws:
+                await self._ws.close()
+
+    async def close(self):
+        """Close websocket connection"""
+        self._should_close = True
+        if self._ws:
+            await self._ws.close()
+
+    def unsubscribe_all(self):
+        """Signal that client should close"""
+        self._should_close = True
+
+
 class TiingoDataService(BaseDataService):
 
     def __init__(self, api_key, disable_ws=False, running_unit_tests=False):
@@ -152,8 +237,9 @@ class TiingoDataService(BaseDataService):
         if self.TIINGO_CLIENT is None:
             self.instantiate_not_pickleable_objects()
 
-        client = _TiingoPseudoClient(self, tpc)
-        bt.logging.info(f"Created {self.provider_name} websocket for {tpc}")
+        client = _TiingoWebsocketClient(self, tpc, self._api_key)
+        # client = _TiingoPseudoClient(self, tpc)
+        bt.logging.info(f"Created {self.provider_name} pseudo-websocket (REST polling) for {tpc}")
         self.WEBSOCKET_OBJECTS[tpc] = client
 
     def _subscribe_websockets(self, tpc):
@@ -186,10 +272,9 @@ class TiingoDataService(BaseDataService):
 
     async def handle_msg(self, msg):
         """
-        {'service': 'iex', 'messageType': 'A', 'data': ['T', '2024-11-15T08:41:29.291307201-05:00', 1731678089291307201, 'srad', None, None, None, None, None, 17.58, 30, None, 1, 0, 1, 0]}
-
-         CurrencyAgg(event_type='XAS', pair='ETH-USD', open=3084.37, close=3084.24, high=3084.37, low=3084.08,
-         volume=0.99917426, vwap=3084.1452, start_timestamp=1713273981000, end_timestamp=1713273982000, avg_trade_size=0)
+        IEX/Equities: {'messageType': 'A', 'service': 'iex', 'data': ['2019-01-30T13:33:45.383129126-05:00', 'vym', 81.585]}
+        Forex: {'messageType': 'A', 'service': 'fx', 'data': ['Q', 'eurusd', '2019-01-30T18:33:45.000Z', 100000, 1.14555, 1.14560, 1.14565, 100000]}
+        Crypto: {'messageType': 'A', 'service': 'crypto_data', 'data': ['T', 'btcusd', '2019-01-30T18:33:45.000Z', 'gdax', 0.5, 3400.50]}
         """
         def msg_to_price_sources(m:dict, tp:TradePair) -> PriceSource | None:
             symbol = tp.trade_pair
@@ -198,14 +283,11 @@ class TiingoDataService(BaseDataService):
             ask_price = 0
             if tp.is_forex:
                 assert len(data) == 8, data
-                mode, ticker, date_str, bid_size, bid_price, mid_price, ask_size, ask_price = data
+                mode, ticker, date_str, bid_size, bid_price, mid_price, ask_price, ask_size = data
                 start_timestamp_orig = TimeUtil.parse_iso_to_ms(date_str)
                 start_timestamp = round(start_timestamp_orig, -3)  # round to nearest second which allows aggresssive filtering via dup logic
-                #print(tp.trade_pair, start_timestamp_orig, start_timestamp)
-                #print(f'Received forex message {symbol} price {new_price} time {TimeUtil.millis_to_formatted_date_str(start_timestamp)}')
-                #print(m, symbol in self.trade_pair_to_recent_events, self.trade_pair_to_recent_events[symbol].timestamp_exists(start_timestamp))
                 if symbol in self.trade_pair_to_recent_events and self.trade_pair_to_recent_events[symbol].timestamp_exists(start_timestamp):
-                    self.trade_pair_to_recent_events[symbol].update_prices_for_median(start_timestamp, bid_price)
+                    self.trade_pair_to_recent_events[symbol].update_prices_for_median(start_timestamp, bid_price, ask_price)
                     return None
 
                 open = vwap = high = low = bid_price
@@ -219,18 +301,10 @@ class TiingoDataService(BaseDataService):
                 open = vwap = high = low = price
 
             elif tp.is_equities:
-                (mode, date_str, timestamp_ns, ticker, bid_size, bid_price, mid_price, ask_price, ask_size, last_price,
-                 last_size, halted, after_hours, intermarket_sweep, oddlot, nms) = data
-                if mode != 'T':
-                    #print(f'Skipping equities trade due to non-T mode {m}')
-                    return None
-                elif (after_hours and int(after_hours) == 1):
-                    self.n_equity_events_skipped_afterhours += 1
-                    return None
-                # Exchange here is always iex!
-                timestamp_ms = timestamp_ns // 1e6
-                start_timestamp = round(timestamp_ms, -3)  # round to nearest second which allows aggresssive filtering via dup logic
-                open = vwap = high = low = last_price
+                date_str, ticker, price = data
+                start_timestamp = TimeUtil.parse_iso_to_ms(date_str)
+                start_timestamp = round(start_timestamp, -3)  # round to nearest second
+                open = vwap = high = low = price
 
             elif tp.is_indices:
                 raise Exception(f'TODO! {msg}')
@@ -269,7 +343,7 @@ class TiingoDataService(BaseDataService):
                 ptn_trade_pair_id = f'{tp0}{tp1}'
                 tp = TradePair.from_trade_pair_id(ptn_trade_pair_id)
             elif msg['service'] == 'iex':
-                ptn_trade_pair_id = msg['data'][3].upper()
+                ptn_trade_pair_id = msg['data'][1].upper()
                 tp = TradePair.from_trade_pair_id(ptn_trade_pair_id)
                 #if tp:
                 #    print(msg)
@@ -403,6 +477,9 @@ class TiingoDataService(BaseDataService):
             if verbose:
                 print(f'hitting url for batch of {len(batch)} tickers: {url}')
             requestResponse = requests.get(url, headers={'Content-Type': 'application/json'}, timeout=5)
+            # TODO re-enable after tiingo badwidth
+            if requestResponse.status_code == 429:
+                continue
             if requestResponse.status_code == 200:
                 time_now_ms = TimeUtil.now_in_millis()
                 for x in requestResponse.json():

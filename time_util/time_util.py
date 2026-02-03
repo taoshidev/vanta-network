@@ -380,22 +380,18 @@ class TimeUtil:
         return int(dt.timestamp() * 1000)
 
     @staticmethod
-    def timestamp_ms_to_eastern_time_str(timestamp_ms):
-        # Convert milliseconds to seconds
+    def format_nasdaq_api_date(date):
+        return datetime.strptime(date, "%m/%d/%Y").strftime("%Y-%m-%d")
+
+    @staticmethod
+    def timestamp_ms_to_eastern_time_str(timestamp_ms, short=False):
         timestamp_s = timestamp_ms / 1000.0
+        utc_datetime = datetime.fromtimestamp(timestamp_s, tz=ZoneInfo("UTC"))
+        eastern_datetime = utc_datetime.astimezone(ZoneInfo("America/New_York"))
 
-        # Create a datetime object in UTC
-        utc_datetime = datetime.utcfromtimestamp(timestamp_s)
-
-        # Manually define the Eastern Standard Time offset (-5 hours from UTC)
-        EST_OFFSET = timedelta(hours=-5)
-
-        # Adjust from UTC to Eastern Time
-        eastern_datetime = utc_datetime + EST_OFFSET
-
-        # Format the datetime object to include the day of the week
-        formatted_date_string = eastern_datetime.strftime('%A, %Y-%m-%d %H:%M:%S EST')
-        return formatted_date_string
+        if short:
+            return eastern_datetime.strftime('%Y-%m-%d')
+        return eastern_datetime.strftime('%A, %Y-%m-%d %H:%M:%S %Z')
 
     @staticmethod
     def timestamp_to_millis(dt) -> int:

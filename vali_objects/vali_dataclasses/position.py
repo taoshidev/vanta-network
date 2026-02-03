@@ -59,6 +59,7 @@ class Position(BaseModel):
     unrealized_pnl: float = 0.0             # USD
     position_type: Optional[OrderType] = None
     is_closed_position: bool = False
+    last_stock_split_date: Optional[str] = None  # Only set for equities
 
     @model_validator(mode='before')
     def add_trade_pair_to_orders_and_self(cls, values):
@@ -207,6 +208,13 @@ class Position(BaseModel):
         else:
             return first_order.price
 
+    @property
+    def margin_loan(self) -> float:
+        """Total margin loan for this position (sum of all orders' margin loans)"""
+        if not self.orders:
+            return 0.0
+        return sum(order.margin_loan for order in self.orders)
+
     def __hash__(self):
         # Include specified fields in the hash, assuming trade_pair is accessible and immutable
         return hash((self.miner_hotkey, self.position_uuid, self.open_ms, self.current_return,
@@ -354,7 +362,7 @@ class Position(BaseModel):
         ]
         bt.logging.debug(f"position order details: " f"close_ms [{order_info}] ")
 
-    def add_order(self, order: Order, live_price_fetcher, net_portfolio_leverage: float=0.0) -> bool:
+    def add_order(self, order: Order, live_price_fetcher, net_portfolio_leverage: float=0.0, skip_validation=False) -> bool:
         """
         Add an order to a position, and adjust its size to stay within
         the trade pair max and portfolio max.
@@ -365,35 +373,9 @@ class Position(BaseModel):
             raise ValueError(
                 f"Order trade pair [{order.trade_pair}] does not match position trade pair [{self.trade_pair}]")
 
-        if order.order_type != OrderType.FLAT and abs(order.leverage) > ValiConfig.ORDER_MAX_LEVERAGE:
-            raise ValueError(
-                f'Order leverage [{order.leverage}] is above ORDER_MAX_LEVERAGE {ValiConfig.ORDER_MIN_LEVERAGE}, cannot increase size of position. Ignoring order.')
-
-        if self._clamp_and_validate_leverage(order, abs(net_portfolio_leverage)):
-            # This order's leverage got clamped to zero.
-            # Skip it since we don't want to consider this a FLAT position and we don't want to allow bad actors
-            # to send in a bunch of spam orders.
-            if order.leverage == 0:
-                max_portfolio_leverage = leverage_utils.get_portfolio_leverage_cap(order.processed_ms)
-                if abs(net_portfolio_leverage) >= max_portfolio_leverage:
-                    raise ValueError(
-                        f"Miner {self.miner_hotkey} attempted to exceed max adjusted portfolio leverage of {max_portfolio_leverage}. Ignoring order.")
-                else:
-                    raise ValueError(
-                        f"Miner {self.miner_hotkey} attempted to exceed leverage bounds [{self.trade_pair.min_leverage}, {self.trade_pair.max_leverage}] for trade pair {self.trade_pair.trade_pair_id}. Ignoring order.")
-            else:
-                logging.warning(f"Miner {self.miner_hotkey} {self.trade_pair.trade_pair_id} order leverage clamped to {order.leverage}")
-                # Set order quantity and value base on clamped leverage
-                order.value = order.leverage * self.account_size
-                if order.price == 0:
-                    order.quantity = 0
-                else:
-                    order.quantity = (order.value * order.usd_base_rate) / order.trade_pair.lot_size
-                # order.slippage = PriceSlippageModel.calculate_slippage(order.bid, order.ask, order)   # recalculate slippage based on new order size
-
-        if order.order_type != OrderType.FLAT and abs(order.leverage) < ValiConfig.ORDER_MIN_LEVERAGE:
-            raise ValueError(
-                f'Order leverage [{order.leverage}] is below ORDER_MIN_LEVERAGE {ValiConfig.ORDER_MIN_LEVERAGE}, cannot increase size of position. Ignoring order.')
+        # may raise ValueError if invalid order size
+        if not skip_validation:
+            self.validate_order_size(order, abs(net_portfolio_leverage))
 
         self.orders.append(order)
         self._update_position(live_price_fetcher)
@@ -577,7 +559,6 @@ class Position(BaseModel):
         if self.current_return == 0:
             self._handle_liquidation(TimeUtil.now_in_millis() if time_ms is None else time_ms, live_price_fetcher)
 
-
     def set_returns(self, realtime_price, price_fetcher_client, time_ms=None, total_fees=None, order=None):
         # We used to multiple trade_pair.fees by net_leverage. Eventually we will
         # Update this calculation to approximate actual exchange fees.
@@ -673,75 +654,124 @@ class Position(BaseModel):
         self.is_closed_position = False
         self.close_ms = None
 
-    def _clamp_and_validate_leverage(self, order: Order, net_portfolio_leverage: float) -> bool:
+    def validate_order_size(self, order: Order, net_portfolio_leverage: float) -> None:
         """
-        If an order's leverage would make the position's leverage higher than max_position_leverage,
-        we clamp the order's leverage. If clamping causes the order's leverage to be below
-        ValiConfig.ORDER_MIN_LEVERAGE, we raise an error.
+        Validates that an order's size is within acceptable bounds.
 
-        If an order's leverage would take the position leverage below min_position_leverage, we raise an error.
+        Raises ValueError if the proposed order size exceeds position or portfolio leverage limits,
+        or if it would set position leverage below minimum.
 
-        Returns:
-            bool: True if the order's leverage was clamped (to any value including zero), False otherwise (order leverage unchanged)
+        Args:
+            order: The order to validate
+            net_portfolio_leverage: Current net portfolio leverage
+
+        Raises:
+            ValueError: If the proposed order size is out of bounds
         """
         if order.order_type == OrderType.FLAT:
-            return False
+            return
 
-        if order.quantity:
-            proposed_quantity = self.net_quantity + order.quantity
-            if proposed_quantity == 0:
-                order.leverage = -self.net_leverage
-                order.order_type = OrderType.FLAT
-                return True
+        # Check if quantity/value would result in flat position
+        if order.quantity and self.net_quantity + order.quantity == 0:
+            order.order_type = OrderType.FLAT
+            return
 
-        if order.value:
-            proposed_value = self.net_value + order.value
-            if proposed_value == 0:
-                order.leverage = -self.net_leverage
-                order.order_type = OrderType.FLAT
-                return True
+        if order.value and self.net_value + order.value == 0:
+            order.order_type = OrderType.FLAT
+            return
+
+        if not order.leverage:
+            raise ValueError("Leverage must be specified for order size validation")
+
+        if not (ValiConfig.ORDER_MIN_LEVERAGE <= abs(order.leverage) <= ValiConfig.ORDER_MAX_LEVERAGE):
+            raise ValueError(
+                f'Order leverage [{order.leverage}] is outside the allowed range [{ValiConfig.ORDER_MIN_LEVERAGE}, {ValiConfig.ORDER_MAX_LEVERAGE}]. Ignoring order.')
 
         is_first_order = len(self.orders) == 0
-        proposed_leverage = self.net_leverage + order.leverage
-        min_position_leverage, max_position_leverage = leverage_utils.get_position_leverage_bounds(self.trade_pair, order.processed_ms)
 
-        current_adjusted_leverage = abs(self.net_leverage) * self.trade_pair.leverage_multiplier
-        proposed_portfolio_leverage = (net_portfolio_leverage - current_adjusted_leverage +
-                                       (abs(proposed_leverage) * self.trade_pair.leverage_multiplier))
-        max_portfolio_leverage = leverage_utils.get_portfolio_leverage_cap(order.processed_ms)
-
-        # we only need to worry about clamping if the sign of the position leverage remains the same i.e. position does not flip and close
-        if is_first_order or self.net_leverage * proposed_leverage > 0:
-            if (abs(proposed_leverage) > max_position_leverage
-                    or proposed_portfolio_leverage > max_portfolio_leverage):
-                if (is_first_order
-                        or abs(proposed_leverage) >= abs(self.net_leverage)
-                        or proposed_portfolio_leverage >= net_portfolio_leverage):
-
-                    clamped_position_leverage = max_position_leverage - abs(self.net_leverage)
-                    clamped_portfolio_leverage = (max_portfolio_leverage - net_portfolio_leverage) / self.trade_pair.leverage_multiplier
-                    # take leverage up to the limit for position or portfolio, whichever is hit first
-                    clamped_leverage = min(clamped_position_leverage, clamped_portfolio_leverage)
-                    order.leverage = max(0.0, clamped_leverage)  # ensure leverage is always >= 0
-
-                    if order.order_type == OrderType.SHORT:
-                        order.leverage *= -1
+        # Only check for position closing/flipping if there are existing orders
+        # Skip for first order to avoid false positives with SHORT orders (which have negative quantity/value)
+        if not is_first_order:
+            if order.quantity:
+                proposed_quantity = self.net_quantity + order.quantity
+                # For LONG: close if proposed <= 0; For SHORT: close if proposed >= 0
+                if self.position_type == OrderType.LONG and proposed_quantity <= 0:
+                    order.leverage = -self.net_leverage
+                    order.order_type = OrderType.FLAT
                     return True
-                else:
-                    # portfolio leverage attempts to go under min
-                    if abs(proposed_leverage) < min_position_leverage:
-                        raise ValueError(f"Miner {self.miner_hotkey} attempted to set {self.trade_pair.trade_pair_id} position leverage below min_position_leverage {min_position_leverage} while exceeding max_portfolio_leverage {max_portfolio_leverage}")
-                    else:
-                        pass  #  We are getting the leverage closer to the new boundary (decrease) so allow it
-            elif abs(proposed_leverage) < min_position_leverage:
-                if is_first_order or abs(proposed_leverage) < abs(self.net_leverage):
-                    raise ValueError(f'Miner {self.miner_hotkey} attempted to set {self.trade_pair.trade_pair_id} position leverage below min_position_leverage {min_position_leverage}')
-                else:
-                    pass  # We are trying to increase the leverage here so let it happen
-        else:
-            # attempting to flip position
+                elif self.position_type == OrderType.SHORT and proposed_quantity >= 0:
+                    order.leverage = -self.net_leverage
+                    order.order_type = OrderType.FLAT
+                    return True
+
+            if order.value:
+                proposed_value = self.net_value + order.value
+                # For LONG: close if proposed <= 0; For SHORT: close if proposed >= 0
+                if self.position_type == OrderType.LONG and proposed_value <= 0:
+                    order.leverage = -self.net_leverage
+                    order.order_type = OrderType.FLAT
+                    return True
+                elif self.position_type == OrderType.SHORT and proposed_value >= 0:
+                    order.leverage = -self.net_leverage
+                    order.order_type = OrderType.FLAT
+                    return True
+        proposed_leverage = self.net_leverage + order.leverage
+
+        # If sign flips, set to FLAT
+        if not is_first_order and self.net_leverage * proposed_leverage <= 0:
             order.order_type = OrderType.FLAT
-        return False
+            return
+
+        # Get leverage bounds
+        min_position_leverage, max_position_leverage = leverage_utils.get_position_leverage_bounds(self.trade_pair)
+        max_portfolio_leverage = leverage_utils.get_portfolio_leverage_cap(self.trade_pair.trade_pair_category)
+
+        # Calculate proposed portfolio leverage (raw leverage since miners only trade one asset class)
+        current_leverage = abs(self.net_leverage)
+        proposed_portfolio_leverage = net_portfolio_leverage - current_leverage + abs(proposed_leverage)
+
+        # Validate against max limits (when increasing leverage)
+        if (is_first_order or abs(proposed_leverage) >= abs(self.net_leverage) or
+            proposed_portfolio_leverage >= net_portfolio_leverage):
+
+            if proposed_portfolio_leverage > max_portfolio_leverage:
+                raise ValueError(
+                    f"Miner {self.miner_hotkey} attempted to exceed max adjusted portfolio leverage of "
+                    f"{max_portfolio_leverage}. Proposed: {proposed_portfolio_leverage:.2f}. Ignoring order.")
+
+            if abs(proposed_leverage) > max_position_leverage:
+                raise ValueError(
+                    f"Miner {self.miner_hotkey} attempted to exceed max position leverage of "
+                    f"{max_position_leverage} for trade pair {self.trade_pair.trade_pair_id}. "
+                    f"Proposed: {abs(proposed_leverage):.2f}. Ignoring order.")
+
+        # Validate against min limit (when decreasing leverage below minimum)
+        if abs(proposed_leverage) < min_position_leverage:
+            if is_first_order or abs(proposed_leverage) < abs(self.net_leverage):
+                raise ValueError(
+                    f"Miner {self.miner_hotkey} attempted to set {self.trade_pair.trade_pair_id} "
+                    f"position leverage below min_position_leverage {min_position_leverage}. "
+                    f"Proposed: {abs(proposed_leverage):.2f}. Ignoring order.")
+
+    def apply_stock_split(self, stock_split_ratio: float, execution_date: str) -> bool:
+        """
+        Apply stock split to position. Returns True if applied, False if already applied.
+        Only applicable to equities positions.
+        """
+        if not self.trade_pair.is_equities:
+            return False
+
+        if self.last_stock_split_date == execution_date:
+            bt.logging.info(f"Stock split for {execution_date} already applied to position {self.position_uuid}")
+            return False
+
+        for order in self.orders:
+            order.quantity *= stock_split_ratio
+            order.price /= stock_split_ratio
+
+        self.last_stock_split_date = execution_date
+        self._update_position(None)
+        return True
 
     def _update_position(self, price_fetcher_client):
         self.net_leverage = 0.0

@@ -143,7 +143,7 @@ class TestMarketOrderManager(TestBase):
         return position
 
     @staticmethod
-    def create_test_signal(order_type:OrderType=OrderType.LONG, leverage=1.0, execution_type:ExecutionType=ExecutionType.MARKET,
+    def create_test_signal(order_type:OrderType=OrderType.LONG, leverage=0.3, execution_type:ExecutionType=ExecutionType.MARKET,
                           limit_price=None, stop_loss=None, take_profit=None):
         """Helper to create signal dict with optional execution parameters"""
         signal = {
@@ -425,7 +425,7 @@ class TestMarketOrderManager(TestBase):
         initial_order_count = len(position.orders)
 
         # Calculate order size from leverage
-        signal = {"leverage": 1.0}
+        signal = {"leverage": 0.3}
         quantity, leverage, value = self.market_order_manager.parse_order_size(
             signal, 1.0, self.DEFAULT_TRADE_PAIR, self.DEFAULT_ACCOUNT_SIZE
         )
@@ -452,7 +452,7 @@ class TestMarketOrderManager(TestBase):
         new_order = position.orders[-1]
         self.assertEqual(new_order.order_type, OrderType.LONG)
         self.assertGreater(new_order.leverage, 0)
-        self.assertLessEqual(new_order.leverage, 1.0)
+        self.assertLessEqual(new_order.leverage, 0.3)
         self.assertEqual(new_order.order_uuid, "test_order")
         self.assertEqual(new_order.src, OrderSource.ORGANIC)
         self.assertEqual(new_order.price, 50000.0)
@@ -465,10 +465,12 @@ class TestMarketOrderManager(TestBase):
         price_sources = [self.create_test_price_source(50000.0, bid=49990.0, ask=50010.0, start_ms=now_ms)]
 
         # Calculate order size from leverage
-        signal = {"leverage": 1.0}
+        signal = {"leverage": 0.3}
         quantity, leverage, value = self.market_order_manager.parse_order_size(
             signal, 1.0, self.DEFAULT_TRADE_PAIR, self.DEFAULT_ACCOUNT_SIZE
         )
+
+        print(f"{quantity}, {leverage}, {value}")
 
         self.market_order_manager._add_order_to_existing_position(
             existing_position=position,
@@ -527,7 +529,7 @@ class TestMarketOrderManager(TestBase):
         self.assertNotIn(cache_key, self.market_order_manager.last_order_time_cache)
 
         # Calculate order size from leverage
-        signal = {"leverage": 1.0}
+        signal = {"leverage": 0.3}
         quantity, leverage, value = self.market_order_manager.parse_order_size(
             signal, 1.0, self.DEFAULT_TRADE_PAIR, self.DEFAULT_ACCOUNT_SIZE
         )
@@ -559,7 +561,7 @@ class TestMarketOrderManager(TestBase):
         price_sources = [self.create_test_price_source(50000.0, start_ms=now_ms)]
 
         # Calculate order size from leverage
-        signal = {"leverage": 1.0}
+        signal = {"leverage": 0.3}
         quantity, leverage, value = self.market_order_manager.parse_order_size(
             signal, 1.0, self.DEFAULT_TRADE_PAIR, self.DEFAULT_ACCOUNT_SIZE
         )
@@ -593,7 +595,7 @@ class TestMarketOrderManager(TestBase):
         price_sources = [self.create_test_price_source(50000.0, start_ms=now_ms)]
 
         # Calculate order size from leverage
-        signal = {"leverage": 1.0}
+        signal = {"leverage": 0.3}
         quantity, leverage, value = self.market_order_manager.parse_order_size(
             signal, 1.0, self.DEFAULT_TRADE_PAIR, self.DEFAULT_ACCOUNT_SIZE
         )
@@ -624,7 +626,7 @@ class TestMarketOrderManager(TestBase):
     def test_process_market_order_creates_new_position(self):
         """Test processing market order creates new position"""
         now_ms = TimeUtil.now_in_millis()
-        signal = self.create_test_signal(order_type=OrderType.LONG, leverage=1.0)
+        signal = self.create_test_signal(order_type=OrderType.LONG, leverage=0.3)
         price_sources = [self.create_test_price_source(50000.0, start_ms=now_ms)]
 
         err_msg, position, created_order = self.market_order_manager._process_market_order(
@@ -689,7 +691,7 @@ class TestMarketOrderManager(TestBase):
     def test_process_market_order_no_price_sources_fails(self):
         """Test processing market order fails when no price sources available"""
         now_ms = TimeUtil.now_in_millis()
-        signal = self.create_test_signal(order_type=OrderType.LONG, leverage=1.0)
+        signal = self.create_test_signal(order_type=OrderType.LONG, leverage=0.3)
 
         # Pass empty list (not None) to simulate no prices available
         # None would cause the code to fetch prices from live_price_fetcher
@@ -715,7 +717,7 @@ class TestMarketOrderManager(TestBase):
         self.market_order_manager.last_order_time_cache[cache_key] = now_ms
 
         # Try second order too soon
-        signal = self.create_test_signal(order_type=OrderType.LONG, leverage=1.0)
+        signal = self.create_test_signal(order_type=OrderType.LONG, leverage=0.3)
         price_sources = [self.create_test_price_source(50000.0, start_ms=now_ms + 1000)]
 
         err_msg, position, created_order = self.market_order_manager._process_market_order(
@@ -757,7 +759,7 @@ class TestMarketOrderManager(TestBase):
     def test_process_market_order_gets_account_size(self):
         """Test that processing order retrieves account size"""
         now_ms = TimeUtil.now_in_millis()
-        signal = self.create_test_signal(order_type=OrderType.LONG, leverage=1.0)
+        signal = self.create_test_signal(order_type=OrderType.LONG, leverage=0.3)
         price_sources = [self.create_test_price_source(50000.0, start_ms=now_ms)]
 
         # Should not raise any errors (contract_client handles account size)
@@ -779,7 +781,7 @@ class TestMarketOrderManager(TestBase):
         now_ms = TimeUtil.now_in_millis()
         signal = self.create_test_signal(
             order_type=OrderType.LONG,
-            leverage=1.0,
+            leverage=0.3,
             execution_type=ExecutionType.LIMIT
         )
         price_sources = [self.create_test_price_source(50000.0, start_ms=now_ms)]
@@ -806,7 +808,7 @@ class TestMarketOrderManager(TestBase):
         now_ms = TimeUtil.now_in_millis()
         signal = self.create_test_signal(
             order_type=OrderType.LONG,
-            leverage=1.0,
+            leverage=0.3,
             execution_type=ExecutionType.MARKET
         )
         price_sources = [self.create_test_price_source(50000.0, start_ms=now_ms)]
@@ -840,7 +842,7 @@ class TestMarketOrderManager(TestBase):
         mock_synapse.order_json = None
 
         now_ms = TimeUtil.now_in_millis()
-        signal = self.create_test_signal(order_type=OrderType.LONG, leverage=1.0)
+        signal = self.create_test_signal(order_type=OrderType.LONG, leverage=0.3)
         price_sources = [self.create_test_price_source(50000.0, start_ms=now_ms)]
 
         created_order = self.market_order_manager.process_market_order(
@@ -865,7 +867,7 @@ class TestMarketOrderManager(TestBase):
         mock_synapse.error_message = None
 
         now_ms = TimeUtil.now_in_millis()
-        signal = self.create_test_signal(order_type=OrderType.LONG, leverage=1.0)
+        signal = self.create_test_signal(order_type=OrderType.LONG, leverage=0.3)
 
         # Pass empty list for price_sources to trigger error
         # process_market_order should raise SignalException
@@ -891,7 +893,7 @@ class TestMarketOrderManager(TestBase):
         self.metagraph_client.set_hotkeys([self.DEFAULT_MINER_HOTKEY, miner2])
 
         now_ms = TimeUtil.now_in_millis()
-        signal = self.create_test_signal(order_type=OrderType.LONG, leverage=1.0)
+        signal = self.create_test_signal(order_type=OrderType.LONG, leverage=0.3)
         price_sources = [self.create_test_price_source(50000.0, start_ms=now_ms)]
 
         # Process order for miner 1
@@ -923,7 +925,7 @@ class TestMarketOrderManager(TestBase):
     def test_process_market_order_multiple_trade_pairs(self):
         """Test single miner can have positions in multiple trade pairs"""
         now_ms = TimeUtil.now_in_millis()
-        signal = self.create_test_signal(order_type=OrderType.LONG, leverage=1.0)
+        signal = self.create_test_signal(order_type=OrderType.LONG, leverage=0.3)
 
         btc_price_sources = [self.create_test_price_source(50000.0, start_ms=now_ms)]
         eth_price_sources = [self.create_test_price_source(3000.0, start_ms=now_ms)]
@@ -961,7 +963,7 @@ class TestMarketOrderManager(TestBase):
     def test_process_market_order_missing_signal_keys(self):
         """Test error handling when signal dict is missing required keys"""
         now_ms = TimeUtil.now_in_millis()
-        invalid_signal = {"leverage": 1.0}  # Missing order_type
+        invalid_signal = {"leverage": 0.3}  # Missing order_type
         price_sources = [self.create_test_price_source(50000.0, start_ms=now_ms)]
 
         with self.assertRaises(KeyError):
@@ -984,7 +986,7 @@ class TestMarketOrderManager(TestBase):
         price_sources = [self.create_test_price_source(50000.0, start_ms=now_ms)]
 
         # Calculate order size from leverage
-        signal = {"leverage": 1.0}
+        signal = {"leverage": 0.3}
         quantity, leverage, value = self.market_order_manager.parse_order_size(
             signal, 1.0, self.DEFAULT_TRADE_PAIR, self.DEFAULT_ACCOUNT_SIZE
         )
@@ -1008,3 +1010,66 @@ class TestMarketOrderManager(TestBase):
         # Verify cache key format
         expected_key = (self.DEFAULT_MINER_HOTKEY, self.DEFAULT_TRADE_PAIR.trade_pair_id)
         self.assertIn(expected_key, self.market_order_manager.last_order_time_cache)
+
+    # ============================================================================
+    # Test: process_flat_all_order
+    # ============================================================================
+
+    def test_process_flat_all_order_closes_multiple_positions(self):
+        """Test FLAT_ALL closes all open positions for a miner"""
+        now_ms = TimeUtil.now_in_millis()
+
+        # Create multiple positions for the miner
+        # Use low leverage to avoid hitting portfolio max
+        trade_pairs = [TradePair.BTCUSD, TradePair.ETHUSD, TradePair.SOLUSD]
+
+        for i, trade_pair in enumerate(trade_pairs):
+            signal = self.create_test_signal(order_type=OrderType.LONG, leverage=0.1)
+            price_sources = [self.create_test_price_source(50000.0 + i * 1000, start_ms=now_ms + i * 1000)]
+
+            err_msg, position, created_order = self.market_order_manager._process_market_order(
+                miner_order_uuid=f"position_{i}",
+                miner_repo_version="1.0.0",
+                trade_pair=trade_pair,
+                now_ms=now_ms + i * 1000,
+                signal=signal,
+                miner_hotkey=self.DEFAULT_MINER_HOTKEY,
+                price_sources=price_sources,
+                enforce_market_cooldown=False
+            )
+
+            self.assertIsNone(err_msg)
+            self.assertIsNotNone(position)
+            self.assertFalse(position.is_closed_position)
+
+        # Verify all positions are open
+        open_positions_before = self.position_client.get_positions_for_hotkeys(
+            [self.DEFAULT_MINER_HOTKEY],
+            only_open_positions=True
+        ).get(self.DEFAULT_MINER_HOTKEY)
+
+        self.assertEqual(len(open_positions_before), 3)
+
+        # Close all positions with FLAT_ALL
+        close_time_ms = now_ms + 10000
+        result = self.market_order_manager.process_flat_all_order(
+            order_uuid="flat_all_uuid",
+            miner_repo_version="1.0.0",
+            miner_hotkey=self.DEFAULT_MINER_HOTKEY,
+            now_ms=close_time_ms
+        )
+
+        # Verify result
+        self.assertEqual(result["positions_closed"], 3)
+        self.assertEqual(result["positions_failed"], 0)
+        self.assertEqual(len(result["failed_trade_pairs"]), 0)
+
+        # Verify all positions are now closed
+        all_positions = self.position_client.get_positions_for_one_hotkey(self.DEFAULT_MINER_HOTKEY)
+
+        for position in all_positions:
+            self.assertTrue(position.is_closed_position)
+            # Verify the last order is FLAT with correct source
+            last_order = position.orders[-1]
+            self.assertEqual(last_order.order_type, OrderType.FLAT)
+            self.assertEqual(last_order.src, OrderSource.FLAT_ALL_CLOSE)

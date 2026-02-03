@@ -274,6 +274,12 @@ class ServerOrchestrator:
             required_in_validator=True,  # Auto-started with other servers
             spawn_kwargs={'start_daemon': False}  # Daemon started later via orchestrator.start_server_daemons()
         ),
+        'miner_account': ServerConfig(
+            server_class=None,
+            client_class=None,
+            required_in_testing=True,
+            spawn_kwargs={'start_daemon': False}
+        ),
     }
 
     @classmethod
@@ -360,6 +366,8 @@ class ServerOrchestrator:
         from vali_objects.utils.mdd_checker.mdd_checker_client import MDDCheckerClient
         from vali_objects.scoring.weight_calculator_server import WeightCalculatorServer
         from vali_objects.scoring.weight_calculator_client import WeightCalculatorClient
+        from vali_objects.miner_account.miner_account_server import MinerAccountServer
+        from vali_objects.miner_account.miner_account_client import MinerAccountClient
 
         # Update registry with classes
         self.SERVERS['common_data'].server_class = CommonDataServer
@@ -412,6 +420,9 @@ class ServerOrchestrator:
 
         self.SERVERS['weight_calculator'].server_class = WeightCalculatorServer
         self.SERVERS['weight_calculator'].client_class = WeightCalculatorClient
+
+        self.SERVERS['miner_account'].server_class = MinerAccountServer
+        self.SERVERS['miner_account'].client_class = MinerAccountClient
 
         self._classes_loaded = True
 
@@ -578,6 +589,7 @@ class ServerOrchestrator:
             'perf_ledger',
             'live_price_fetcher',
             'asset_selection',
+            'miner_account',
             'challenge_period',
             'elimination',
             'position_manager',
@@ -860,14 +872,20 @@ class ServerOrchestrator:
                 live_price_client.clear_test_market_open()
             safe_clear('live_price_fetcher', clear_live_price)
 
-        # Clear contract data (collateral balances and account sizes)
+        # Clear contract data (collateral balances)
         contract_client = get_client_safe('contract')
         if contract_client:
             def clear_contract():
                 contract_client.clear_test_collateral_balances()
-                contract_client.sync_miner_account_sizes_data({})  # Empty dict = clear all
-                contract_client.re_init_account_sizes()  # Reload from disk
             safe_clear('contract', clear_contract)
+
+        # Clear miner account data (account sizes)
+        miner_account_client = get_client_safe('miner_account')
+        if miner_account_client:
+            def clear_miner_account():
+                miner_account_client.sync_miner_account_sizes_data({})  # Empty dict = clear all
+                miner_account_client.re_init_account_sizes()  # Reload from disk
+            safe_clear('miner_account', clear_miner_account)
 
         bt.logging.debug("All test data cleared")
 

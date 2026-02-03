@@ -198,6 +198,7 @@ class Validator(ValidatorBase):
         # Cache warmup happens automatically inside start_server_daemons() to eliminate race conditions
         orchestrator.start_server_daemons([
             'perf_ledger',
+            'miner_account',
             'challenge_period',
             'elimination',
             'position_manager',
@@ -495,7 +496,7 @@ class Validator(ValidatorBase):
             else:
                 is_market_open = self.price_fetcher_client.is_market_open(tp, now_ms)
                 execution_type = ExecutionType.from_string(signal.get("execution_type", "MARKET").upper())
-                if execution_type == ExecutionType.MARKET and not is_market_open:
+                if execution_type in [ExecutionType.MARKET, ExecutionType.FLAT_ALL] and not is_market_open:
                     msg = (f"Market for trade pair [{tp.trade_pair_id}] is likely closed or this validator is"
                            f" having issues fetching live price. Please try again later.")
                     synapse.error_message = msg

@@ -90,7 +90,8 @@ class ChallengePeriodServer(RPCServerBase):
             start_daemon=False,  # We'll start daemon after full initialization
             daemon_interval_s=daemon_interval_s,
             hang_timeout_s=hang_timeout_s,
-            connection_mode=connection_mode
+            connection_mode=connection_mode,
+            daemon_stagger_s=10
         )
 
         # Start daemon if requested (deferred until all initialization complete)

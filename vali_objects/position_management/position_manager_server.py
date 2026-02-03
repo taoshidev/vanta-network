@@ -244,14 +244,5 @@ class PositionManagerServer(RPCServerBase):
         """
         return self._manager.get_split_stats(hotkey)
 
-    def position_needs_splitting_rpc(self, position: Position) -> bool:
-        """
-        Check if a position would actually be split by split_position_on_flat - delegates to manager.
-
-        Args:
-            position: The position to check
-
-        Returns:
-            True if the position would be split, False otherwise
-        """
-        return self._manager._position_needs_splitting(position)
+    def apply_stock_split_rpc(self, trade_pair_id: str, stock_split_ratio: float, execution_date: str):
+        return self._manager.apply_stock_split(trade_pair_id, stock_split_ratio, execution_date)

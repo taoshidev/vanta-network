@@ -15,7 +15,7 @@ from vali_objects.exceptions.corrupt_data_exception import ValiBkpCorruptDataExc
 from vali_objects.exceptions.vali_bkp_file_missing_exception import ValiFileMissingException
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
-from vali_objects.vali_config import ValiConfig, TradePair, RPCConnectionMode
+from vali_objects.vali_config import TradePairCategory, ValiConfig, TradePair, RPCConnectionMode
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.enums.misc import OrderStatus
 from vali_objects.enums.order_source_enum import OrderSource
@@ -574,14 +574,14 @@ class PositionManager:
 
     def calculate_net_portfolio_leverage(self, hotkey: str) -> float:
         """
-        Calculate leverage across all open positions for a hotkey.
-        Normalize each asset class with a multiplier.
+        Calculate total leverage across all open positions for a hotkey.
+        Since miners only trade one asset class at a time, this returns the raw leverage sum.
 
         Args:
             hotkey: The miner hotkey
 
         Returns:
-            Total portfolio leverage (sum of abs(leverage) * multiplier for each open position)
+            Total portfolio leverage (sum of abs(leverage) for each open position)
         """
         # Use O(1) open positions index for fast lookup
         if hotkey not in self.hotkey_to_open_positions:
@@ -589,7 +589,7 @@ class PositionManager:
 
         portfolio_leverage = 0.0
         for position in self.hotkey_to_open_positions[hotkey].values():
-            portfolio_leverage += abs(position.get_net_leverage()) * position.trade_pair.leverage_multiplier
+            portfolio_leverage += abs(position.get_net_leverage())
 
         return portfolio_leverage
 
@@ -1224,7 +1224,7 @@ class PositionManager:
             for position in positions_dict.values():  # Iterate over dict values
                 try:
                     # Split the position
-                    new_positions, split_info = self._split_position_on_flat(position, live_price_fetcher)
+                    new_positions, split_info = PositionSplitter.split_position_on_flat(position, live_price_fetcher)
 
                     # Add all resulting positions to the dict by UUID
                     for new_pos in new_positions:
@@ -1255,22 +1255,6 @@ class PositionManager:
 
         # Rebuild the open positions index after splitting
         self._rebuild_open_index()
-
-    def _find_split_points(self, position: Position) -> list[int]:
-        """
-        Find all valid split points in a position where splitting should occur.
-        Delegates to PositionSplitter utility (single source of truth).
-        """
-        return PositionSplitter.find_split_points(position)
-
-    def _split_position_on_flat(self, position: Position, live_price_fetcher) -> tuple[list[Position], dict]:
-        """
-        Split a position into multiple positions based on FLAT orders or implicit flats.
-        Delegates to PositionSplitter utility (single source of truth).
-        Returns tuple of (list of positions, split_info dict).
-        """
-        # Delegate to PositionSplitter for all splitting logic
-        return PositionSplitter.split_position_on_flat(position, live_price_fetcher, track_stats=False)
 
     # ==================== Public Splitting Methods ====================
 
@@ -1324,18 +1308,15 @@ class PositionManager:
         """
         return dict(self.split_stats.get(hotkey, self._default_split_stats()))
 
-    def _position_needs_splitting(self, position: Position) -> bool:
-        """
-        Check if a position would actually be split by split_position_on_flat.
-        Delegates to PositionSplitter utility (single source of truth).
+    def apply_stock_split(self, trade_pair_id: str, stock_split_ratio: float, execution_date: str):
+        _cnt = 0
+        for _, positions_dict in self.hotkey_to_open_positions.items():
+            open_position = positions_dict.get(trade_pair_id, None)
+            if open_position and open_position.apply_stock_split(stock_split_ratio, execution_date):
+                self._write_position_to_disk(open_position)
+                _cnt += 1
 
-        Args:
-            position: The position to check
-
-        Returns:
-            True if the position would be split, False otherwise
-        """
-        return PositionSplitter.position_needs_splitting(position)
+        bt.logging.info(f"Applied {trade_pair_id} stock split (ratio: {stock_split_ratio}, date: {execution_date}) to {_cnt} positions")
 
     def _write_position_to_disk(self, position: Position):
         """Write a single position to disk."""
