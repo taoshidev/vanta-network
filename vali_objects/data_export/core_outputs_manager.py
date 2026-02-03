@@ -78,6 +78,7 @@ class CoreOutputsManager:
         from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
         from vali_objects.contract.contract_client import ContractClient
         from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
+        from vali_objects.miner_account.miner_account_client import MinerAccountClient
         from entity_management.entity_client import EntityClient
 
         self._position_client = PositionManagerClient(

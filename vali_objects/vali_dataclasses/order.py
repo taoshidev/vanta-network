@@ -200,8 +200,11 @@ class Order(Signal):
         return TimeUtil.now_in_millis() - order.processed_ms
 
     def to_python_dict(self):
-        trade_pair_id = self.trade_pair.trade_pair_id if hasattr(self.trade_pair, 'trade_pair_id') else 'unknown'
-        trade_pair_name = self.trade_pair.trade_pair if hasattr(self.trade_pair, 'trade_pair') else 'unknown'
+        trade_pair_id = None
+        trade_pair_name = None
+        if self.trade_pair is not None:
+            trade_pair_id = self.trade_pair.trade_pair_id if hasattr(self.trade_pair, 'trade_pair_id') else 'unknown'
+            trade_pair_name = self.trade_pair.trade_pair if hasattr(self.trade_pair, 'trade_pair') else 'unknown'
         return {'trade_pair_id': trade_pair_id,
                 'trade_pair': [trade_pair_id, trade_pair_name],
                 'order_type': self.order_type.name,
@@ -222,6 +225,7 @@ class Order(Signal):
                 'limit_price': self.limit_price,
                 'stop_loss': self.stop_loss,
                 'take_profit': self.take_profit,
+                'margin_loan': self.margin_loan,
                 'bracket_orders': self.bracket_orders}
 
     def __str__(self):

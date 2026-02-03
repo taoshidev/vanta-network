@@ -332,6 +332,10 @@ class OrderProcessor:
         return order
 
     @staticmethod
+    def process_flat_all_order(order_uuid: str, now_ms: int, miner_hotkey: str, miner_repo_version: str, market_order_manager):
+        return market_order_manager.process_flat_all_order(order_uuid, miner_repo_version, miner_hotkey, now_ms)
+
+    @staticmethod
     def process_limit_edit(signal: dict, order_uuid: str, now_ms: int,
                           miner_hotkey: str, limit_order_client) -> Order:
         """
@@ -572,6 +576,18 @@ class OrderProcessor:
                 execution_type=ExecutionType.LIMIT_EDIT,
                 order=order,
                 should_track_uuid=False  # No UUID tracking for edits (keeps same UUID)
+            )
+
+        elif execution_type == ExecutionType.FLAT_ALL:
+            result = OrderProcessor.process_flat_all_order(
+                order_uuid, now_ms, miner_hotkey,
+                miner_repo_version, market_order_manager
+            )
+
+            return OrderProcessingResult(
+                execution_type=ExecutionType.FLAT_ALL,
+                result_dict=result,
+                should_track_uuid=True
             )
 
         else:  # ExecutionType.MARKET

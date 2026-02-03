@@ -64,6 +64,10 @@ class AssetSelectionManager(ValidatorBroadcastBase):
         self.is_testnet = is_testnet
         bt.logging.info("[ASSET_MGR] Wallet initialized")
 
+        # Create MinerAccountClient to update cash balances when asset selection changes
+        from vali_objects.miner_account.miner_account_client import MinerAccountClient
+        self._miner_account_client = MinerAccountClient(connection_mode=connection_mode)
+
 
         # SOURCE OF TRUTH: Normal Python dict
         # Structure: miner_hotkey -> TradePairCategory

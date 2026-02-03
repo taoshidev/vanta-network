@@ -257,6 +257,12 @@ class ServerOrchestrator:
             required_in_testing=True,
             spawn_kwargs={'start_daemon': False}  # Daemon started later via orchestrator (not currently used)
         ),
+        'plagiarism_detector': ServerConfig(
+            server_class=None,
+            client_class=None,
+            required_in_testing=True,
+            spawn_kwargs={'start_daemon': False}  # Daemon started later via orchestrator (overrides default=True)
+        ),
         'limit_order': ServerConfig(
             server_class=None,
             client_class=None,
@@ -304,6 +310,12 @@ class ServerOrchestrator:
             required_in_miner=False,
             required_in_validator=True,  # Auto-started with other servers
             spawn_kwargs={'start_daemon': False}  # Daemon started later via orchestrator.start_server_daemons()
+        ),
+        'miner_account': ServerConfig(
+            server_class=None,
+            client_class=None,
+            required_in_testing=True,
+            spawn_kwargs={'start_daemon': False}
         ),
     }
 
@@ -394,6 +406,8 @@ class ServerOrchestrator:
         from vali_objects.utils.mdd_checker.mdd_checker_client import MDDCheckerClient
         from vali_objects.scoring.weight_calculator_server import WeightCalculatorServer
         from vali_objects.scoring.weight_calculator_client import WeightCalculatorClient
+        from vali_objects.miner_account.miner_account_server import MinerAccountServer
+        from vali_objects.miner_account.miner_account_client import MinerAccountClient
         from entity_management.entity_server import EntityServer
         from entity_management.entity_client import EntityClient
 
@@ -451,6 +465,9 @@ class ServerOrchestrator:
 
         self.SERVERS['weight_calculator'].server_class = WeightCalculatorServer
         self.SERVERS['weight_calculator'].client_class = WeightCalculatorClient
+
+        self.SERVERS['miner_account'].server_class = MinerAccountServer
+        self.SERVERS['miner_account'].client_class = MinerAccountClient
 
         self.SERVERS['entity'].server_class = EntityServer
         self.SERVERS['entity'].client_class = EntityClient
@@ -1047,6 +1064,14 @@ class ServerOrchestrator:
             def clear_contract():
                 contract_client.clear_test_collateral_balances()
             safe_clear('contract', clear_contract)
+
+        # Clear miner account data (account sizes)
+        miner_account_client = get_client_safe('miner_account')
+        if miner_account_client:
+            def clear_miner_account():
+                miner_account_client.sync_miner_account_sizes_data({})  # Empty dict = clear all
+                miner_account_client.re_init_account_sizes()  # Reload from disk
+            safe_clear('miner_account', clear_miner_account)
 
         # Clear entity data (entities and subaccounts)
         self.get_client('entity').clear_all_entities()

@@ -128,6 +128,7 @@ class Signal(BaseModel):
                 raise ValueError("stop_loss and take_profit must be unique")
 
         return values
+
     @staticmethod
     def parse_trade_pair_from_signal(signal) -> TradePair | None:
         if not signal or not isinstance(signal, dict):

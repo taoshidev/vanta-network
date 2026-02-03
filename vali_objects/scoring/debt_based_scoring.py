@@ -46,7 +46,7 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Tuple
 
 from time_util.time_util import TimeUtil
-from vali_objects.contract.contract_client import ContractClient
+from vali_objects.miner_account.miner_account_client import MinerAccountClient
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger import DebtLedger, DebtCheckpoint
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.vali_config import ValiConfig
@@ -276,42 +276,10 @@ class DebtBasedScoring:
                 f"({len(ledger_dict)} miners)"
             )
 
-        # Step 2: Check if previous month is before November 2025
-        # Calculate previous month
-        if current_month == 1:
-            prev_month = 12
-            prev_year = current_year - 1
-        else:
-            prev_month = current_month - 1
-            prev_year = current_year
-
-        if verbose:
-            bt.logging.info(f"Previous month: {prev_year}-{prev_month:02d}")
-
-        # Check activation date: prev_month must be >= November 2025 for debt-based payouts
-        # This means first debt-based payouts occur in December 2025 (for Nov 2025 performance)
-        if (prev_year < DebtBasedScoring.ACTIVATION_YEAR or
-            (prev_year == DebtBasedScoring.ACTIVATION_YEAR and
-             prev_month < DebtBasedScoring.ACTIVATION_MONTH)):
-            bt.logging.info(
-                f"Previous month ({prev_year}-{prev_month:02d}) is before activation "
-                f"({DebtBasedScoring.ACTIVATION_YEAR}-{DebtBasedScoring.ACTIVATION_MONTH:02d}). "
-                f"Applying only minimum dust weights, excess goes to burn address."
-            )
-            # Before activation: apply minimum dust weights only, burn the rest
-            return DebtBasedScoring._apply_pre_activation_weights(
-                ledger_dict=ledger_dict,
-                metagraph_client=metagraph_client,
-                challengeperiod_client=challengeperiod_client,
-                contract_client=contract_client,
-                current_time_ms=current_time_ms,
-                is_testnet=is_testnet,
-                verbose=verbose
-            )
-
-        # Step 3: Calculate month boundaries
-        # Needed payout calculation: Sum from November 1st, 2025 through end of previous month
-        # This allows negative PnL to carry across months and offset future gains
+        # Calculate boundaries
+        # Needed payout calculation: Sum from activation through end of previous
+        # week (considered midnight on Sunday 00:00:00)
+        # This allows negative PnL to carry across weeks and offset future gains
         payout_calc_start_dt = datetime(
             DebtBasedScoring.ACTIVATION_YEAR,
             DebtBasedScoring.ACTIVATION_MONTH,
@@ -360,15 +328,13 @@ class DebtBasedScoring:
                 if cp.challenge_period_status in (MinerBucket.MAINCOMP.value, MinerBucket.PROBATION.value)
             ]
 
-            # Extract checkpoints for current month (up to now)
-            # Only include checkpoints where status is MAINCOMP or PROBATION (earning periods)
-            current_month_checkpoints = [
-                cp for cp in debt_ledger.checkpoints
-                if current_month_start_ms <= cp.timestamp_ms <= current_time_ms
-                and cp.challenge_period_status in (MinerBucket.MAINCOMP.value, MinerBucket.PROBATION.value)
-            ]
-
-            # Step 4: Calculate needed payout from November 1st through end of previous month (in USD)
+            # Calculate needed payout from activation through end of previous pay period (in USD)
+            # "needed payout" = sum of (realized_pnl * total_penalty) across all earning checkpoints
+            #                   and (unrealized_pnl * total_penalty) of the last checkpoint
+            # NOTE:
+            # realized_pnl and unrealized_pnl are both in USD. unrealized_pnl is cumulative.
+            # realized_pnl is a per-checkpoint value (NOT cumulative).
+            # This cumulative approach allows negative PnL to carry forward and offset future gains.
             needed_payout_usd = 0.0
             penalty_loss_usd = 0.0
             if earning_checkpoints:
@@ -424,7 +390,7 @@ class DebtBasedScoring:
             verbose=verbose
         )
 
-        if total_remaining_payout_usd > 0 and days_until_target > 0:
+        if total_remaining_payout_usd > 0:
             DebtBasedScoring.log_projections(metagraph_client, days_until_target, verbose, total_remaining_payout_usd)
         else:
             bt.logging.info(
@@ -451,7 +417,7 @@ class DebtBasedScoring:
             ledger_dict=ledger_dict,
             miner_remaining_payouts_usd=miner_daily_target_payouts_usd,
             challengeperiod_client=challengeperiod_client,
-            contract_client=contract_client,
+            contract_client=miner_account_client,
             current_time_ms=current_time_ms,
             projected_daily_emissions_usd=projected_daily_usd,
             verbose=verbose
@@ -490,12 +456,8 @@ class DebtBasedScoring:
             Estimated total ALPHA emissions available (float)
         """
         try:
-            # Get total TAO emission per block for the subnet (sum across all miners)
-            # metagraph.emission is already in TAO (not RAO), but per tempo (360 blocks)
-            # Need to convert: per-tempo → per-block (÷360)
-            total_tao_per_tempo = sum(metagraph_client.get_emission())
-            total_tao_per_block = total_tao_per_tempo / 360
-
+            total_alpha_per_tempo = sum(metagraph_client.get_emission())
+            total_alpha_per_block = total_alpha_per_tempo / 360
             if verbose:
                 bt.logging.info(f"Current subnet emission rate: {total_alpha_per_block:.6f} alpha/block")
 
@@ -504,50 +466,7 @@ class DebtBasedScoring:
             blocks_until_target = days_until_target * DebtBasedScoring.BLOCKS_PER_DAY_FALLBACK
 
             # Calculate total TAO emissions until target
-            total_tao_until_target = total_tao_per_block * blocks_until_target
-
-            if verbose:
-                bt.logging.info(
-                    f"Estimated blocks until day {DebtBasedScoring.PAYOUT_TARGET_DAY}: {blocks_until_target}, "
-                    f"total TAO: {total_tao_until_target:.2f}"
-                )
-
-            # Get substrate reserves from shared metagraph (refreshed by SubtensorOpsManager)
-            # Use safe helper to extract values from manager.Value() objects or plain numerics
-            tao_reserve_obj = getattr(metagraph_client, 'tao_reserve_rao', None)
-            alpha_reserve_obj = getattr(metagraph_client, 'alpha_reserve_rao', None)
-
-            tao_reserve_rao = DebtBasedScoring._safe_get_reserve_value(tao_reserve_obj)
-            alpha_reserve_rao = DebtBasedScoring._safe_get_reserve_value(alpha_reserve_obj)
-
-            if tao_reserve_rao == 0 or alpha_reserve_rao == 0:
-                bt.logging.warning(
-                    "Substrate reserve data not available in shared metagraph "
-                    f"(TAO={tao_reserve_rao} RAO, ALPHA={alpha_reserve_rao} RAO). "
-                    "Cannot calculate ALPHA conversion rate."
-                )
-                return 0.0
-
-            # Calculate ALPHA-to-TAO conversion rate from reserve data
-            # alpha_to_tao_rate = tao_reserve / alpha_reserve (both in RAO, ratio is unitless)
-            # (How much TAO per ALPHA)
-            alpha_to_tao_rate = tao_reserve_rao / alpha_reserve_rao
-
-            if verbose:
-                bt.logging.info(
-                    f"Substrate reserves: TAO={tao_reserve_rao / 1e9:.2f} TAO ({tao_reserve_rao:.0f} RAO), "
-                    f"ALPHA={alpha_reserve_rao / 1e9:.2f} ALPHA ({alpha_reserve_rao:.0f} RAO), "
-                    f"rate={alpha_to_tao_rate:.6f} TAO/ALPHA"
-                )
-
-            # Convert TAO to ALPHA
-            # If ALPHA costs X TAO per ALPHA, then Y TAO buys Y/X ALPHA
-            if alpha_to_tao_rate > 0:
-                total_alpha_until_target = total_tao_until_target / alpha_to_tao_rate
-            else:
-                bt.logging.warning("ALPHA-to-TAO rate is zero, cannot convert")
-                return 0.0
-
+            total_alpha_until_target = total_alpha_per_block * blocks_until_target
             if verbose:
                 bt.logging.info(f"Projected ALPHA available until target: {total_alpha_until_target:.2f}")
             return total_alpha_until_target
@@ -555,7 +474,7 @@ class DebtBasedScoring:
             # # Get total TAO emission per block for the subnet (sum across all miners)
             # # metagraph.emission is already in TAO (not RAO), but per tempo (360 blocks)
             # # Need to convert: per-tempo → per-block (÷360)
-            # total_tao_per_tempo = sum(metagraph.get_emission())
+            # total_tao_per_tempo = sum(metagraph_client.get_emission())
             # total_tao_per_block = total_tao_per_tempo / 360
             #
             # if verbose:
@@ -574,10 +493,10 @@ class DebtBasedScoring:
             #         f"total TAO: {total_tao_until_target:.2f}"
             #     )
             #
-            # # Get substrate reserves from shared metagraph (refreshed by MetagraphUpdater)
+            # # Get substrate reserves from shared metagraph (refreshed by SubtensorOpsManager)
             # # Use safe helper to extract values from manager.Value() objects or plain numerics
-            # tao_reserve_obj = getattr(metagraph, 'tao_reserve_rao', None)
-            # alpha_reserve_obj = getattr(metagraph, 'alpha_reserve_rao', None)
+            # tao_reserve_obj = getattr(metagraph_client, 'tao_reserve_rao', None)
+            # alpha_reserve_obj = getattr(metagraph_client, 'alpha_reserve_rao', None)
             #
             # tao_reserve_rao = DebtBasedScoring._safe_get_reserve_value(tao_reserve_obj)
             # alpha_reserve_rao = DebtBasedScoring._safe_get_reserve_value(alpha_reserve_obj)
@@ -1204,7 +1123,7 @@ class DebtBasedScoring:
         ledger_dict: dict[str, DebtLedger],
         miner_remaining_payouts_usd: dict[str, float],
         challengeperiod_client: 'ChallengePeriodClient',
-        contract_client: 'ContractClient',
+        miner_account_client: 'MinerAccountClient',
         current_time_ms: int = None,
         projected_daily_emissions_usd: float = None,
         verbose: bool = False
@@ -1231,7 +1150,7 @@ class DebtBasedScoring:
             ledger_dict: Dict of {hotkey: DebtLedger}
             miner_remaining_payouts_usd: Dict of {hotkey: remaining_payout_usd} in USD (daily targets)
             challengeperiod_client: Client for querying current challenge period status (required)
-            contract_client: Client for querying miner collateral balances (required)
+            miner_account_client: Client for querying miner account sizes (required)
             current_time_ms: Current timestamp (required for performance scaling)
             projected_daily_emissions_usd: Projected daily emissions in USD (for normalization)
             verbose: Enable detailed logging
@@ -1485,7 +1404,7 @@ class DebtBasedScoring:
             ledger_dict=ledger_dict,
             miner_remaining_payouts_usd={hotkey: 0.0 for hotkey in ledger_dict.keys()},  # No debt earnings
             challengeperiod_client=challengeperiod_client,
-            contract_client=contract_client,
+            miner_account_client=miner_account_client,
             current_time_ms=current_time_ms,
             verbose=verbose
         )

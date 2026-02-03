@@ -59,6 +59,7 @@ class Position(BaseModel):
     unrealized_pnl: float = 0.0             # USD
     position_type: Optional[OrderType] = None
     is_closed_position: bool = False
+    last_stock_split_date: Optional[str] = None  # Only set for equities
     unfilled_orders: list = Field(default=[], exclude=True)
 
     @model_validator(mode='before')

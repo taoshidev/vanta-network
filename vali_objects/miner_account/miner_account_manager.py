@@ -22,6 +22,7 @@ from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.exceptions.signal_exception import SignalException
 from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
+from vali_objects.validator_broadcast_base import ValidatorBroadcastBase
 
 
 # ==================== Data Classes ====================
@@ -37,13 +38,17 @@ class CollateralRecord:
         self.valid_date_timestamp = CollateralRecord.valid_from_ms(update_time_ms)
 
     @staticmethod
-    def valid_from_ms(update_time_ms: int) -> int:
+    def valid_from_ms(update_time_ms: int, is_first_record: bool = False) -> int:
         """Returns timestamp of start of next day (00:00:00 UTC) when this record is valid"""
         dt = datetime.fromtimestamp(update_time_ms / 1000, tz=timezone.utc)
         start_of_day = dt.replace(hour=0, minute=0, second=0, microsecond=0)
-        # Record is valid from the start of the next day
-        start_of_next_day = start_of_day + timedelta(days=1)
-        return int(start_of_next_day.timestamp() * 1000)
+        if is_first_record:
+            # First record: valid immediately from start of current day
+            return int(start_of_day.timestamp() * 1000)
+        else:
+            # Subsequent records: valid from start of next day
+            start_of_next_day = start_of_day + timedelta(days=1)
+            return int(start_of_next_day.timestamp() * 1000)
 
     @property
     def valid_date_str(self) -> str:
@@ -191,7 +196,7 @@ class MinerAccount:
 # ==================== Manager Implementation ====================
 
 
-class MinerAccountManager:
+class MinerAccountManager(ValidatorBroadcastBase):
     """
     Manages all miner accounts and account size tracking.
 
@@ -507,19 +512,20 @@ class MinerAccountManager:
                     all_miner_account_sizes[hotkey] = account_size
             return all_miner_account_sizes
 
-    def receive_collateral_record_update(self, collateral_record_data: dict, is_mothership: bool = False) -> bool:
+    def receive_collateral_record_update(self, collateral_record_data: dict, sender_hotkey: str = None) -> bool:
         """
         Process an incoming CollateralRecord synapse and update accounts.
 
         Args:
             collateral_record_data: Dictionary containing hotkey, account_size, update_time_ms, valid_date_timestamp
-            is_mothership: Whether this validator is the mothership (should not receive updates)
+            sender_hotkey: The hotkey of the validator that sent this broadcast
 
         Returns:
             bool: True if successful, False otherwise
         """
         try:
-            if is_mothership:
+            # SECURITY: Verify sender using shared base class method
+            if not self.verify_broadcast_sender(sender_hotkey, "CollateralRecord"):
                 return False
             with self._accounts_lock:
                 # Extract data from the synapse
@@ -534,7 +540,8 @@ class MinerAccountManager:
                     return False
 
                 # Create a CollateralRecord object
-                collateral_record = CollateralRecord(account_size, account_size_theta, update_time_ms)
+                is_first_record = hotkey not in self.miner_account_sizes or not self.miner_account_sizes[hotkey]
+                collateral_record = CollateralRecord(account_size, account_size_theta, update_time_ms, is_first_record)
 
                 # Get or create account
                 account = self.get_or_create(hotkey)

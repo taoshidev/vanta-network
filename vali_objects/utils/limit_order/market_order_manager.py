@@ -204,8 +204,9 @@ class MarketOrderManager():
             limit_price=limit_price,
             stop_loss=stop_loss,
             take_profit=take_profit,
+            execution_type=execution_type,
+            usd_base_rate=usd_base_price,
             bracket_orders=bracket_orders,
-            execution_type=execution_type
         )
         bt.logging.info(f"[ORDER DETAIL] Using price source {price_sources}")
 

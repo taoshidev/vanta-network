@@ -30,7 +30,7 @@ from vali_objects.price_fetcher.live_price_client import LivePriceFetcherClient
 from vali_objects.utils.elimination.elimination_client import EliminationClient
 from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
 
-TARGET_MS = 1768507200000 + (1000 * 60 * 60 * 6)  # + 6 hours
+TARGET_MS = 1769068800000 + (1000 * 60 * 60 * 6)  # + 6 hours
 
 
 class PositionManager:
@@ -769,7 +769,7 @@ class PositionManager:
         miners_to_promote = []
         position_uuids_to_delete = []
         wipe_positions = False
-        reopen_force_closed_orders = True
+        reopen_force_closed_orders = False
         miners_to_wipe_perf_ledger = []
 
         current_eliminations = self._elimination_client.get_eliminations_from_memory() if self._elimination_client else []
@@ -798,7 +798,7 @@ class PositionManager:
             # bt.logging.info(f"Applied {n_slippage_corrections} forex slippage corrections")
 
             # All miners that wanted their challenge period restarted
-            miners_to_wipe = ["5GCUMqFigwvKh62LdJXYYr3pHhCvpAhWbF83DqB2ZUDZRKwM_4"]
+            miners_to_wipe = []
             position_uuids_to_delete = []
             miners_to_promote = []
 

@@ -115,12 +115,13 @@ class TestValidatorContractManager(TestBase):
         self.miner_account_client.set_miner_account_size(self.MINER_1, collateral_theta_1, current_time)
 
         # First record should be available SAME day!
-        account_size = self.contract_client.get_miner_account_size(self.MINER_1, current_time)
+        account_size = self.miner_account_client.get_miner_account_size(self.MINER_1, current_time)
         self.assertIsNotNone(account_size)
 
-        # Set for second miner (balance already injected in setUp())
-        self.contract_client.set_miner_account_size(self.MINER_2, current_time)
-        account_size_2 = self.contract_client.get_miner_account_size(self.MINER_2, current_time)
+        # Set for second miner (500K rao = 0.0005 theta)
+        collateral_theta_2 = 500000 / 10**9
+        self.miner_account_client.set_miner_account_size(self.MINER_2, collateral_theta_2, current_time)
+        account_size_2 = self.miner_account_client.get_miner_account_size(self.MINER_2, current_time)
         self.assertIsNotNone(account_size_2)
 
     def test_account_size_persistence(self):
@@ -132,7 +133,7 @@ class TestValidatorContractManager(TestBase):
         self.miner_account_client.set_miner_account_size(self.MINER_1, collateral_theta, current_time)
 
         # Verify it was set (first record should be available same day)
-        account_size = self.contract_client.get_miner_account_size(self.MINER_1, current_time)
+        account_size = self.miner_account_client.get_miner_account_size(self.MINER_1, current_time)
         self.assertIsNotNone(account_size)
 
         # Test the disk persistence by checking via accounts_dict
@@ -312,7 +313,7 @@ class TestValidatorContractManager(TestBase):
         self.miner_account_client.set_miner_account_size(self.MINER_2, collateral_theta_2, current_time)
 
         # Get all account sizes (first records should be available same day)
-        all_sizes = self.contract_client.get_all_miner_account_sizes(timestamp_ms=current_time)
+        all_sizes = self.miner_account_client.get_all_miner_account_sizes(timestamp_ms=current_time)
 
         # Verify both miners are present
         self.assertIn(self.MINER_1, all_sizes)
@@ -325,23 +326,23 @@ class TestValidatorContractManager(TestBase):
         base_time = int(time.time() * 1000)
 
         # Create first record
-        self.contract_client.set_test_collateral_balance(self.MINER_1, 1_000_000)
-        self.contract_client.set_miner_account_size(self.MINER_1, base_time)
+        self.miner_account_client.set_test_collateral_balance(self.MINER_1, 1_000_000)
+        self.miner_account_client.set_miner_account_size(self.MINER_1, base_time)
 
         # First record should be available SAME day
-        account_size_day0 = self.contract_client.get_miner_account_size(self.MINER_1, base_time)
+        account_size_day0 = self.miner_account_client.get_miner_account_size(self.MINER_1, base_time)
         self.assertIsNotNone(account_size_day0)
 
         # Create second record next day
         day1_time = base_time + self.DAY_MS
-        self.contract_client.set_test_collateral_balance(self.MINER_1, 2_000_000)
-        self.contract_client.set_miner_account_size(self.MINER_1, day1_time)
+        self.miner_account_client.set_test_collateral_balance(self.MINER_1, 2_000_000)
+        self.miner_account_client.set_miner_account_size(self.MINER_1, day1_time)
 
         # Second record should NOT be available on day 1 (still uses day 0 value)
-        account_size_day1 = self.contract_client.get_miner_account_size(self.MINER_1, day1_time)
+        account_size_day1 = self.miner_account_client.get_miner_account_size(self.MINER_1, day1_time)
         self.assertEqual(account_size_day1, account_size_day0)  # Still old value
 
         # Second record should be available on day 2
         day2_time = day1_time + self.DAY_MS
-        account_size_day2 = self.contract_client.get_miner_account_size(self.MINER_1, day2_time)
+        account_size_day2 = self.miner_account_client.get_miner_account_size(self.MINER_1, day2_time)
         self.assertNotEqual(account_size_day2, account_size_day0)  # New value
