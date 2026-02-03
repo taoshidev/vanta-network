@@ -409,34 +409,21 @@ class ChallengePeriodManager(CacheController):
     def _evaluate_synthetic_challenge(
         self,
         inspection_hotkeys: dict[str, int],
-        portfolio_only_ledgers: dict[str, PerfLedger],
-        current_time: int
+        portfolio_only_ledgers: dict[str, PerfLedger]
     ) -> tuple[list[str], dict[str, tuple[str, float]]]:
         """
         Evaluate synthetic hotkeys in CHALLENGE bucket with instantaneous pass criteria.
 
         Pass criteria (checked continuously):
-        - Returns >= 3% (SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD)
-        - Drawdown <= 6% (SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD)
-        - Within 90 days (SUBACCOUNT_CHALLENGE_PERIOD_DAYS)
+        - Returns >= 6% (SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD)
+        - Drawdown <= 4% (SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD)
 
-        Returns immediately promoted as soon as they hit 3% returns.
+        Returns immediately promoted as soon as they hit 6% returns.
         """
         hotkeys_to_promote = []
         miners_to_eliminate = {}
 
         for hotkey, bucket_start_time in inspection_hotkeys.items():
-            # Unified check: Time limit
-            should_eliminate, reason = self._check_time_limit(
-                hotkey=hotkey,
-                bucket_start_time=bucket_start_time,
-                current_time=current_time,
-                time_limit_ms=ValiConfig.SUBACCOUNT_CHALLENGE_PERIOD_DAYS * 24 * 60 * 60 * 1000
-            )
-            if should_eliminate:
-                miners_to_eliminate[hotkey] = reason
-                continue
-
             # Unified check: Minimum ledger
             has_minimum_ledger, ledger = self._check_minimum_ledger(
                 portfolio_only_ledgers, hotkey
@@ -444,7 +431,7 @@ class ChallengePeriodManager(CacheController):
             if not has_minimum_ledger:
                 continue
 
-            # Unified check: Drawdown (2.5% threshold in 0-100 scale)
+            # Unified check: Drawdown (4% threshold in 0-100 scale)
             should_eliminate, reason = self._check_drawdown_limit(
                 hotkey=hotkey,
                 ledger=ledger,
@@ -645,8 +632,7 @@ class ChallengePeriodManager(CacheController):
         if synthetic_challenge_hotkeys:
             synthetic_promotions, synthetic_eliminations = self._evaluate_synthetic_challenge(
                 synthetic_challenge_hotkeys,
-                portfolio_only_ledgers,
-                current_time
+                portfolio_only_ledgers
             )
             bt.logging.info("DRYRUN: skipping actual challenge period promotion and elimination")
             # hotkeys_to_promote.extend(synthetic_promotions)
