@@ -350,7 +350,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             existing_positions: list[Position] = self.position_manager.get_positions_for_one_hotkey(minerid,
                                                                                                     sort_positions=True)
             if not existing_positions:
-                return jsonify({'error': f'Miner ID {minerid} not found'}), 404
+                return jsonify({'error': f'Miner ID {minerid} not found', 'positions':[]}), 404
             filtered_data = self._position_client.positions_to_dashboard_dict(existing_positions,
                                                                               TimeUtil.now_in_millis())
         else:
@@ -364,7 +364,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             filtered_data = data.get(minerid, None)
 
         if not filtered_data:
-            return jsonify({'error': f'Miner ID {minerid} not found'}), 404
+            return jsonify({'error': f'Miner ID {minerid} not found', 'positions':[]}), 404
 
         return jsonify(filtered_data)
 
