@@ -431,19 +431,33 @@ class ChallengePeriodManager(CacheController):
             if not has_minimum_ledger:
                 continue
 
-            # Unified check: Drawdown (5% threshold in 0-100 scale)
-            should_eliminate, reason = self._check_drawdown_limit(
-                hotkey=hotkey,
-                ledger=ledger,
-                drawdown_threshold_percentage=ValiConfig.SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD * 100  # Convert 0.05 to 5
-            )
+            # TODO: temp code - using ledger realized pnl directly. replace with equity curve
+            pnl = self._perf_ledger_client.get_returns(hotkey)
+            subaccount_account_size = self._miner_account_client.get_miner_account_size(hotkey, use_account_floor=True)
+            should_eliminate = pnl < -1 * ValiConfig.SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD * subaccount_account_size
             if should_eliminate:
+                bt.logging.info(f"Eliminating {hotkey}, pnl: {pnl}, account size: {subaccount_account_size}")
+                reason = (EliminationReason.FAILED_CHALLENGE_PERIOD_DRAWDOWN.value, abs(pnl/subaccount_account_size) * 100)
                 miners_to_eliminate[hotkey] = reason
                 continue
-
-            # Synthetic-specific: Instantaneous pass on returns threshold
-            if self._check_returns_threshold(hotkey, ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD):
+            should_promote = pnl > ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD * subaccount_account_size
+            if should_promote:
+                bt.logging.info(f"Promoting {hotkey}, pnl: {pnl}, account size: {subaccount_account_size}")
                 hotkeys_to_promote.append(hotkey)
+
+            # Unified check: Drawdown (5% threshold in 0-100 scale)
+            # should_eliminate, reason = self._check_drawdown_limit(
+            #     hotkey=hotkey,
+            #     ledger=ledger,
+            #     drawdown_threshold_percentage=ValiConfig.SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD * 100  # Convert 0.05 to 5
+            # )
+            # if should_eliminate:
+            #     miners_to_eliminate[hotkey] = reason
+            #     continue
+            #
+            # # Synthetic-specific: Instantaneous pass on returns threshold
+            # if self._check_returns_threshold(hotkey, ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD):
+            #     hotkeys_to_promote.append(hotkey)
 
         bt.logging.info(
             f"[SYNTHETIC_CHALLENGE] {len(inspection_hotkeys)} evaluated: "

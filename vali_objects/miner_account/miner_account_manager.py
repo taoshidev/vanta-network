@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from datetime import timezone, datetime, timedelta
 from typing import Dict, Optional, List, Any
 import bittensor as bt
+
+from entity_management.entity_utils import is_synthetic_hotkey
 from time_util.time_util import TimeUtil
 from vali_objects.vali_config import TradePairCategory, ValiConfig, RPCConnectionMode
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
@@ -97,6 +99,9 @@ class MinerAccount:
         """Get account size at a given timestamp. Returns MIN_CAPITAL if no collateral records."""
         if not self.collateral_records:
             return ValiConfig.MIN_CAPITAL
+
+        if is_synthetic_hotkey(self.miner_hotkey):
+            return self.collateral_records[-1].account_size
 
         if timestamp_ms is None:
             theta = min(self.collateral_records[-1].account_size_theta, ValiConfig.MAX_COLLATERAL_BALANCE_THETA)

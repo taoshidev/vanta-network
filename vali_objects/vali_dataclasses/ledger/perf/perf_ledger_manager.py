@@ -311,7 +311,7 @@ class PerfLedgerManager(CacheController):
 
         # TODO: updated perf ledger logic and compute returns from flow adjusted equity curve of checkpoints
         # Returns = current portfolio value - initial value (1.0)
-        returns = portfolio_ledger.cps[-1].prev_portfolio_ret - 1.0
+        returns = sum([cp.realized_pnl for cp in portfolio_ledger.cps]) + portfolio_ledger.cps[-1].unrealized_pnl   # portfolio_ledger.cps[-1].prev_portfolio_ret - 1.0
         return returns
 
     def filtered_ledger_for_scoring(
