@@ -259,16 +259,22 @@ class MarketOrderManager():
             # Sell: receive sale proceeds minus slippage cost
             processed_qty = existing_position.net_quantity if order.order_type == OrderType.FLAT else quantity
             current_value = abs(processed_qty) * trade_pair.lot_size / order.usd_base_rate
-
             if existing_position.position_type == OrderType.SHORT:
                 # For SHORT positions: proceeds = entry_value + (entry_value - current_value)
                 entry_value = abs(processed_qty) * trade_pair.lot_size * existing_position.average_entry_price * order.quote_usd_rate
                 sale_proceeds = 2 * entry_value - current_value
+                exit_price = order.price * (1 + order.slippage)
             else:
                 # For LONG positions: proceeds = current_value
                 sale_proceeds = current_value
+                exit_price = order.price * (1 - order.slippage)
 
-            loan_repaid = self._miner_account_client.process_order_sell(miner_hotkey, abs(sale_proceeds) * (1 - order.slippage), existing_position.margin_loan)
+            order_realized_pnl = (exit_price - existing_position.average_entry_price) * (processed_qty * trade_pair.lot_size) * order.quote_usd_rate
+            cash_multiplier = ValiConfig.CASH_BALANCE_MULTIPLIER.get(trade_pair.trade_pair_category, 1.0)
+            sale_proceeds = (sale_proceeds + order_realized_pnl * (cash_multiplier - 1)) * (1 - order.slippage)
+            bt.logging.info(f"[ORDER] realized_pnl=${order_realized_pnl:.2f} sale_proceeds=${sale_proceeds:.2f} multiplier={cash_multiplier}")
+
+            loan_repaid = self._miner_account_client.process_order_sell(miner_hotkey, abs(sale_proceeds), existing_position.margin_loan)
             # Store loan repayment as negative margin_loan so position.margin_loan sums correctly
             order.margin_loan = -loan_repaid
 
