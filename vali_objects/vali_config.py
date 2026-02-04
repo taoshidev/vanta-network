@@ -441,8 +441,8 @@ class ValiConfig:
     SUBACCOUNT_COLLATERAL_AMOUNT = 1000.0  # Placeholder collateral amount per subaccount
 
     # Challenge Period Configuration
-    SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD = 0.06  # 6% returns required to pass challenge period
-    SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD = 0.04  # 4% max drawdown allowed during challenge period
+    SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD = 0.08  # 8% returns required to pass challenge period
+    SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD = 0.05  # 5% max drawdown allowed during challenge period
 
     # Distributional statistics
     SOFTMAX_TEMPERATURE = 0.15

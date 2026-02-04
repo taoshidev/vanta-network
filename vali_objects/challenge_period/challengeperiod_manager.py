@@ -346,7 +346,7 @@ class ChallengePeriodManager(CacheController):
         Args:
             hotkey: Miner hotkey
             ledger: Performance ledger
-            drawdown_threshold_percentage: Threshold in 0-100 scale (e.g., 6.0 for 6%)
+            drawdown_threshold_percentage: Threshold in 0-100 scale (e.g., 5.0 for 5%)
 
         Returns:
             (should_eliminate, elimination_reason_tuple)
@@ -415,10 +415,10 @@ class ChallengePeriodManager(CacheController):
         Evaluate synthetic hotkeys in CHALLENGE bucket with instantaneous pass criteria.
 
         Pass criteria (checked continuously):
-        - Returns >= 6% (SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD)
-        - Drawdown <= 4% (SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD)
+        - Returns >= 8% (SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD)
+        - Drawdown <= 5% (SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD)
 
-        Returns immediately promoted as soon as they hit 6% returns.
+        Returns immediately promoted as soon as they hit 8% returns.
         """
         hotkeys_to_promote = []
         miners_to_eliminate = {}
@@ -431,11 +431,11 @@ class ChallengePeriodManager(CacheController):
             if not has_minimum_ledger:
                 continue
 
-            # Unified check: Drawdown (4% threshold in 0-100 scale)
+            # Unified check: Drawdown (5% threshold in 0-100 scale)
             should_eliminate, reason = self._check_drawdown_limit(
                 hotkey=hotkey,
                 ledger=ledger,
-                drawdown_threshold_percentage=ValiConfig.SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD * 100  # Convert 0.025 to 2.5
+                drawdown_threshold_percentage=ValiConfig.SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD * 100  # Convert 0.05 to 5
             )
             if should_eliminate:
                 miners_to_eliminate[hotkey] = reason
