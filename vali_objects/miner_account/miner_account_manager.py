@@ -69,20 +69,44 @@ class MinerAccount:
         if self.collateral_records is None:
             self.collateral_records = []
 
-    def add_collateral_record(self, record: 'CollateralRecord', multiplier: float = 1.0):
-        """Add a new collateral record and update account_size.
-
-        Args:
-            record: The CollateralRecord to add
-            multiplier: Cash balance multiplier based on asset selection (default 1.0)
-        """
+    def add_collateral_record(self, record: 'CollateralRecord'):
+        """Add a new collateral record and update account_size."""
         previous_size = self.get_account_size()
-        new_size = record.account_size
         self.collateral_records.append(record)
 
         if previous_size:
-            size_increase = new_size - previous_size
-            self.cash_balance += size_increase * multiplier
+            multiplier = ValiConfig.CASH_BALANCE_MULTIPLIER.get(self.asset_class, 1.0) if self.asset_class else 1.0
+            self.cash_balance += (record.account_size - previous_size) * multiplier
+
+    def rebuild_cash_balance(self) -> float:
+        """
+        Detect and fix account_size drift (e.g. from COST_PER_THETA change).
+        """
+        if not self.collateral_records:
+            return 0.0
+
+        multiplier = ValiConfig.CASH_BALANCE_MULTIPLIER.get(self.asset_class, 1.0) if self.asset_class else 1.0
+
+        # Check latest record for drift
+        last_record = self.collateral_records[-1]
+        theta = min(last_record.account_size_theta, ValiConfig.MAX_COLLATERAL_BALANCE_THETA)
+        updated_size = max(theta * ValiConfig.COST_PER_THETA, ValiConfig.MIN_CAPITAL)
+
+        if last_record.account_size == updated_size:
+            return 0.0  # no drift
+
+        # Adjust cash
+        delta = (updated_size - last_record.account_size) * multiplier
+        self.cash_balance += delta
+
+        # Update all stored record values to prevent re-detection
+        for record in self.collateral_records:
+            rec_theta = min(record.account_size_theta, ValiConfig.MAX_COLLATERAL_BALANCE_THETA)
+            record.account_size = max(rec_theta * ValiConfig.COST_PER_THETA, ValiConfig.MIN_CAPITAL)
+
+        bt.logging.info(f"[{self.miner_hotkey[:8]}] Rebuilt cash: delta ${delta:,.2f}")
+
+        return delta
 
     def get_account_size(self, timestamp_ms: Optional[int] = None) -> float:
         """Get account size at a given timestamp. Returns MIN_CAPITAL if no collateral records."""
@@ -272,9 +296,11 @@ class MinerAccountManager:
 
     def _load_accounts_from_disk(self):
         """Load miner accounts from disk during initialization - protected by locks"""
+        needs_save = False
         with self._disk_lock:
             try:
                 accounts_data = ValiUtils.get_vali_json_file_dict(self.MINER_ACCOUNTS_FILE)
+                stored_cost_per_theta = accounts_data.pop("_cost_per_theta", None)
                 asset_selection_data = dict(ValiUtils.get_vali_json_file(self.ASSET_SELECTIONS_FILE))
                 parsed_accounts = self._parse_accounts_dict(accounts_data, asset_selection_data)
 
@@ -282,9 +308,22 @@ class MinerAccountManager:
                     self.accounts.clear()
                     self.accounts.update(parsed_accounts)
 
+                    needs_save = stored_cost_per_theta is None
+
+                    if stored_cost_per_theta and stored_cost_per_theta != ValiConfig.COST_PER_THETA:
+                        bt.logging.info(
+                            f"COST_PER_THETA changed: {stored_cost_per_theta} -> {ValiConfig.COST_PER_THETA}, rebuilding accounts"
+                        )
+                        for hotkey, account in self.accounts.items():
+                            account.rebuild_cash_balance()
+                        needs_save = True
+
                 bt.logging.info(f"Loaded {len(self.accounts)} miner accounts from disk")
             except Exception as e:
                 bt.logging.warning(f"Failed to load miner accounts from disk: {e}")
+
+        if needs_save:
+            self._save_accounts_to_disk()
 
     def re_init_account_sizes(self):
         """Public method to reload accounts from disk (useful for tests)"""
@@ -295,6 +334,7 @@ class MinerAccountManager:
         with self._disk_lock:
             try:
                 data_dict = self.accounts_dict()
+                data_dict["_cost_per_theta"] = ValiConfig.COST_PER_THETA
                 ValiBkpUtils.write_file(self.MINER_ACCOUNTS_FILE, data_dict)
             except Exception as e:
                 bt.logging.error(f"Failed to save miner accounts to disk: {e}")
@@ -472,16 +512,8 @@ class MinerAccountManager:
                     bt.logging.info(f"Skipping save for {hotkey} - new record matches last record")
                     return collateral_record
 
-            # Get asset selection multiplier for cash balance scaling
-            asset_selection = self._asset_selection_client.get_asset_selection(hotkey)
-            multiplier = ValiConfig.CASH_BALANCE_MULTIPLIER.get(asset_selection, 1.0)
-
-            # Update asset_class if not already set
-            if account.asset_class is None:
-                account.asset_class = asset_selection
-
             # Add the new record and update account size
-            account.add_collateral_record(collateral_record, multiplier=multiplier)
+            account.add_collateral_record(collateral_record)
 
             # Save to disk
             self._save_accounts_to_disk()
@@ -568,16 +600,8 @@ class MinerAccountManager:
                         bt.logging.debug(f"Most recent collateral record for {hotkey} already exists")
                         return True
 
-                # Get asset selection multiplier for cash balance scaling
-                asset_selection = self._asset_selection_client.get_asset_selection(hotkey)
-                multiplier = ValiConfig.CASH_BALANCE_MULTIPLIER.get(asset_selection, 1.0)
-
-                # Update asset_class if not already set
-                if account.asset_class is None:
-                    account.asset_class = asset_selection
-
                 # Add the new record and update account size
-                account.add_collateral_record(collateral_record, multiplier=multiplier)
+                account.add_collateral_record(collateral_record)
 
                 # Save to disk
                 self._save_accounts_to_disk()
@@ -599,7 +623,7 @@ class MinerAccountManager:
         if hotkey not in self.accounts:
             # Get asset selection for initial cash balance and asset_class
             asset_selection = self._asset_selection_client.get_asset_selection(hotkey)
-            multiplier = ValiConfig.CASH_BALANCE_MULTIPLIER.get(asset_selection, 1.0)
+            multiplier = ValiConfig.CASH_BALANCE_MULTIPLIER.get(asset_selection, 1.0) if asset_selection else 1.0
             self.accounts[hotkey] = MinerAccount(
                 miner_hotkey=hotkey,
                 cash_balance=ValiConfig.MIN_CAPITAL * multiplier,
@@ -916,21 +940,7 @@ class MinerAccountManager:
 
     def recalculate_cash_balance_for_asset_selection(self, hotkey: str, asset_selection: TradePairCategory) -> bool:
         """
-        Recalculate cash balance when a miner selects an asset class.
-
-        This handles the case where a miner deposits collateral before selecting an asset class.
-        When they later select an asset class, the cash balance needs to be recalculated
-        based on the new multiplier.
-
-        Formula:
-            new_cash_balance = account_size * multiplier
-
-        Args:
-            hotkey: Miner's hotkey
-            asset_selection: The TradePairCategory the miner selected
-
-        Returns:
-            True if cash balance was updated, False otherwise
+        Set a miner's asset class and recalculate cash balance
         """
         with self._accounts_lock:
             account = self.accounts.get(hotkey)
@@ -941,12 +951,8 @@ class MinerAccountManager:
             account_size = account.get_account_size()
             multiplier = ValiConfig.CASH_BALANCE_MULTIPLIER.get(asset_selection, 1.0)
 
-            # Calculate new cash balance based on account size and multiplier
-            new_cash_balance = account_size * multiplier
-            old_cash_balance = account.cash_balance
-
             # Update cash balance and asset_class
-            account.cash_balance = new_cash_balance
+            account.cash_balance = account_size * multiplier
             account.asset_class = asset_selection
 
             # Save to disk
@@ -954,6 +960,6 @@ class MinerAccountManager:
 
             bt.logging.info(
                 f"[{hotkey[:8]}] Recalculated cash balance for {asset_selection.value}: "
-                f"${old_cash_balance:,.2f} -> ${new_cash_balance:,.2f} (multiplier: {multiplier}x)"
+                f"account_size: {account.get_account_size()} cash balance: ${account.cash_balance}"
             )
             return True
