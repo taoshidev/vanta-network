@@ -652,8 +652,8 @@ class ValidatorContractManager(ValidatorBroadcastBase):
                     amount=int(slash_amount * 10 ** 9),
                     owner_address=owner_address,
                     owner_private_key=owner_private_key,
-                    vault_stake=self.vault_wallet.hotkey.ss58_address,
-                    vault_wallet=self.vault_wallet,
+                    vault_stake=self.wallet.hotkey.ss58_address,
+                    vault_wallet=self.wallet,
                     wallet_password=vault_password
                 )
             finally:

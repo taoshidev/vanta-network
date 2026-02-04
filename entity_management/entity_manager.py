@@ -435,6 +435,7 @@ class EntityManager(ValidatorBroadcastBase):
                 t0 = time.time()
                 set_size_success = self._miner_account_client.set_miner_account_size(
                     synthetic_hotkey,
+                    collateral_balance_theta=account_size / ValiConfig.ENTITY_COST_PER_THETA,
                     timestamp_ms=TimeUtil.now_in_millis(),
                     account_size=account_size
                 )
@@ -460,9 +461,10 @@ class EntityManager(ValidatorBroadcastBase):
 
                     if not slash_success:
                         bt.logging.error(f"[ENTITY_MANAGER] Failed to slash subaccount collateral for {entity_hotkey}")
-                        # Rollback subaccount ID increment
+                        # Rollback subaccount ID increment and clean up asset selection/account size
                         entity_data.next_subaccount_id -= 1
                         self._asset_selection_client.delete_asset_selection(synthetic_hotkey)
+                        self._miner_account_client.delete_miner_account_size(synthetic_hotkey)
                         return False, None, "Failed to slash subaccount collateral"
                     bt.logging.info(
                         f"[ENTITY_MANAGER] Slashed {required_theta} theta for subaccount {synthetic_hotkey} "
@@ -470,8 +472,12 @@ class EntityManager(ValidatorBroadcastBase):
                     )
 
             except Exception as e:
-                bt.logging.error(f"[ENTITY_MANAGER] Error verifying/slashing collateral for subaccount: {e}")
-                return False, None, f"Error verifying collateral: {str(e)}"
+                bt.logging.error(f"[ENTITY_MANAGER] Error creating subaccount: {e}")
+                # Rollback subaccount ID increment and clean up asset selection/account size
+                entity_data.next_subaccount_id -= 1
+                self._asset_selection_client.delete_asset_selection(synthetic_hotkey)
+                self._miner_account_client.delete_miner_account_size(synthetic_hotkey)
+                return False, None, f"Error creating subaccount: {str(e)}"
 
             # Create subaccount info
             now_ms = TimeUtil.now_in_millis()

@@ -136,6 +136,10 @@ class MinerAccountServer(RPCServerBase):
             return None
         return vars(collateral_record)
 
+    def delete_miner_account_size(self, hotkey: str) -> bool:
+        """Delete the account size for a miner. Returns True if successful."""
+        return self._manager.delete_miner_account_size(hotkey)
+
     def get_miner_account_size(
         self,
         hotkey: str,

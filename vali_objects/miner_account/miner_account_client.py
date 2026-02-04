@@ -91,6 +91,20 @@ class MinerAccountClient(RPCClientBase):
         """
         return self._server.set_miner_account_size(hotkey, collateral_balance_theta, timestamp_ms, account_size)
 
+    def delete_miner_account_size(self, hotkey: str) -> bool:
+        """
+        Delete the account size for a miner.
+
+        This allows rollback when subaccount creation fails.
+
+        Args:
+            hotkey: Miner's hotkey (SS58 address)
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        return self._server.delete_miner_account_size(hotkey)
+
     def get_miner_account_size(
         self,
         hotkey: str,

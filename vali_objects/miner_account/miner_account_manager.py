@@ -483,6 +483,28 @@ class MinerAccountManager(ValidatorBroadcastBase):
 
         return collateral_record
 
+    def delete_miner_account_size(self, hotkey: str) -> bool:
+        """
+        Delete the account size for a miner. Used for rollback when operations fail.
+
+        Args:
+            hotkey: Miner's hotkey (SS58 address)
+
+        Returns:
+            bool: True if deleted (or didn't exist), False on error
+        """
+        with self._accounts_lock:
+            if hotkey in self.accounts:
+                del self.accounts[hotkey]
+                bt.logging.info(f"Deleted account size for {hotkey}")
+
+                # Save to disk
+                self._save_accounts_to_disk()
+                return True
+            else:
+                bt.logging.debug(f"No account size to delete for {hotkey}")
+                return True  # Return True - idempotent behavior
+
     def get_miner_account_size(self, hotkey: str, timestamp_ms: Optional[int] = None, most_recent: bool = False,
                                use_account_floor: bool = False) -> float | None:
         """
