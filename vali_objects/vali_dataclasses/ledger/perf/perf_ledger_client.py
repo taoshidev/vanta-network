@@ -145,6 +145,18 @@ class PerfLedgerClient(RPCClientBase):
         """
         return self._server.get_perf_ledger_for_hotkey_rpc(hotkey)
 
+    def get_returns(self, hotkey: str) -> float | None:
+        """
+        Get returns for a specific hotkey's portfolio.
+
+        Args:
+            hotkey: Miner hotkey
+
+        Returns:
+            Returns as float (e.g., 0.08 for 8%), or None if no data exists
+        """
+        return self._server.get_returns_rpc(hotkey)
+
     def set_hotkey_perf_bundle(self, hotkey: str, bundle: dict) -> None:
         """Set perf bundle for a specific hotkey."""
         self._server.set_hotkey_perf_bundle_rpc(hotkey, bundle)

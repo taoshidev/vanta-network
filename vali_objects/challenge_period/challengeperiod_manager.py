@@ -381,7 +381,7 @@ class ChallengePeriodManager(CacheController):
     def _check_returns_threshold(self, hotkey: str, threshold: float) -> bool:
         """Check if returns meet threshold (for synthetic instantaneous pass)."""
         try:
-            returns = self._perf_ledger_client.get_returns_rpc(hotkey)
+            returns = self._perf_ledger_client.get_returns(hotkey)
 
             if returns is None:
                 bt.logging.debug(f"[SYNTHETIC_CP] {hotkey} has no returns data yet")

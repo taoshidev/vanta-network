@@ -288,7 +288,31 @@ class PerfLedgerManager(CacheController):
         else:
             return dict(self.hotkey_to_perf_bundle)
 
+    def get_returns(self, hotkey: str) -> float | None:
+        """
+        Calculate returns for a specific hotkey's portfolio.
 
+        Args:
+            hotkey: Miner hotkey
+
+        Returns:
+            Returns as float (e.g., 0.08 for 8%), or None if no data exists
+        """
+        if hotkey not in self.hotkey_to_perf_bundle:
+            return None
+
+        bundle = self.hotkey_to_perf_bundle[hotkey]
+        if TP_ID_PORTFOLIO not in bundle:
+            return None
+
+        portfolio_ledger = bundle[TP_ID_PORTFOLIO]
+        if not portfolio_ledger.cps:
+            return None
+
+        # TODO: updated perf ledger logic and compute returns from flow adjusted equity curve of checkpoints
+        # Returns = current portfolio value - initial value (1.0)
+        returns = portfolio_ledger.cps[-1].prev_portfolio_ret - 1.0
+        return returns
 
     def filtered_ledger_for_scoring(
             self,
