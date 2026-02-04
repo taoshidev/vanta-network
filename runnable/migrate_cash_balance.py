@@ -1,11 +1,12 @@
 """
-Migration script to track cash balance for open positions.
+Migration script to reset account state for open positions.
 
-This script migrates miner accounts to track cash balance by:
+This script migrates miner accounts to the new balance/capital_used model by:
 - Clearing all existing transaction JSONL files
-- Setting initial cash balance based on account size and asset class multiplier
-- Subtracting the net value of each open position from cash balance
+- Resetting account state (total_realized_pnl=0, capital_used=0, etc.)
+- Setting capital_used to the sum of open position net values
 - Only processes currently OPEN positions
+- Skips eliminated hotkeys (loaded from eliminations.json)
 
 Usage:
     python runnable/migrate_cash_balance.py [--dry-run]
@@ -77,7 +78,7 @@ def migrate_hotkey(
     asset_selections: dict[str, TradePairCategory],
     dry_run: bool
 ) -> dict:
-    """Migrate cash balance for a single hotkey."""
+    """Migrate account state for a single hotkey to new balance/capital_used model."""
     stats = {
         'positions_processed': 0,
         'errors': []
@@ -88,34 +89,30 @@ def migrate_hotkey(
     if not account:
         # Create account manually
         asset_class = asset_selections.get(hotkey)
-        multiplier = ValiConfig.PORTFOLIO_LEVERAGE_CAP.get(asset_class, 1.0) if asset_class else 1.0
         from vali_objects.miner_account.miner_account_manager import MinerAccount
         account = MinerAccount(
             miner_hotkey=hotkey,
-            cash_balance=ValiConfig.MIN_CAPITAL * multiplier,
             asset_class=asset_class,
         )
         manager.accounts[hotkey] = account
 
-    account_size = account.get_account_size()
-
-    # Get asset class multiplier
+    # Get asset class from asset selections or existing account
     asset_class = asset_selections.get(hotkey) or account.asset_class
     account.asset_class = asset_class
-    multiplier = ValiConfig.PORTFOLIO_LEVERAGE_CAP.get(asset_class, 1.0) if asset_class else 1.0
 
-    # Reset cash balance and borrowed amount for migration
-    initial_cash = account_size * multiplier
-    account.cash_balance = initial_cash
+    # Reset account state for migration
+    account.total_realized_pnl = 0.0
+    account.capital_used = 0.0
     account.total_borrowed_amount = 0.0
+    account.total_interest_paid = 0.0
 
-    # Subtract net value of each open position from cash balance
+    # Set capital_used to sum of open position values
     for position in positions:
         try:
             # Skip positions that don't belong to this asset class
             if asset_class and position.trade_pair.trade_pair_category != asset_class:
                 continue
-            account.cash_balance -= abs(position.net_value)
+            account.capital_used += abs(position.net_value)
             stats['positions_processed'] += 1
         except Exception as e:
             stats['errors'].append(f"Position {position.position_uuid}: {e}")
@@ -134,6 +131,14 @@ def load_asset_selections() -> dict[str, TradePairCategory]:
         except ValueError:
             pass
     return result
+
+
+def load_eliminations() -> set[str]:
+    """Load eliminated hotkeys from disk."""
+    eliminations_file = ValiBkpUtils.get_eliminations_dir(running_unit_tests=False)
+    eliminations_data = dict(ValiUtils.get_vali_json_file(eliminations_file))
+    eliminations_list = eliminations_data.get("eliminations", [])
+    return {elim["hotkey"] for elim in eliminations_list if "hotkey" in elim}
 
 
 def clear_all_transactions(dry_run: bool) -> int:
@@ -170,14 +175,19 @@ def main():
     asset_selections = load_asset_selections()
     print(f"Loaded {len(asset_selections)} asset selections from disk")
 
+    # Load eliminations from disk
+    eliminated_hotkeys = load_eliminations()
+    print(f"Loaded {len(eliminated_hotkeys)} eliminated hotkeys from disk")
+
     all_positions = load_open_positions()
 
-    # Get all hotkeys that need processing (from accounts + positions)
-    all_hotkeys = set(asset_selections.keys() | manager.accounts.keys())
-    print(f"Total hotkeys to process: {len(all_hotkeys)}")
+    # Get all hotkeys that need processing (from accounts + positions), excluding eliminated
+    all_hotkeys = set(asset_selections.keys() | manager.accounts.keys()) - eliminated_hotkeys
+    print(f"Total hotkeys to process: {len(all_hotkeys)} (excluded {len(eliminated_hotkeys)} eliminated)")
 
     total_stats = {
         'hotkeys_processed': 0,
+        'hotkeys_skipped': len(eliminated_hotkeys),
         'positions_processed': 0,
         'errors': []
     }
@@ -191,7 +201,7 @@ def main():
         # Print account status
         account = manager.get_account(hotkey)
         if account:
-            print(f"[{hotkey[:8]}] cash: ${account.cash_balance:,.2f}, borrowed: ${account.total_borrowed_amount:,.2f}, positions: {stats['positions_processed']}")
+            print(f"[{hotkey[:8]}] balance: ${account.balance:,.2f}, capital_used: ${account.capital_used:,.2f}, buying_power: ${account.buying_power:,.2f}, positions: {stats['positions_processed']}")
 
         total_stats['hotkeys_processed'] += 1
         total_stats['positions_processed'] += stats['positions_processed']
@@ -205,6 +215,7 @@ def main():
     print("MIGRATION SUMMARY")
     print("=" * 60)
     print(f"Hotkeys processed:    {total_stats['hotkeys_processed']}")
+    print(f"Hotkeys skipped:      {total_stats['hotkeys_skipped']} (eliminated)")
     print(f"Positions processed:  {total_stats['positions_processed']}")
 
     if total_stats['errors']:
