@@ -185,20 +185,19 @@ class MinerAccountServer(RPCServerBase):
         """Get all hotkeys with accounts."""
         return self._manager.get_all_hotkeys()
 
-    def get_cash_balance(self, hotkey: str) -> Optional[float]:
-        """Get cash balance for a miner."""
+    def get_buying_power(self, hotkey: str) -> Optional[float]:
+        """Get buying power for a miner."""
         account = self._manager.get_account(hotkey)
         if account is None:
             return None
-        return account.cash_balance
+        return account.buying_power
 
-    def set_cash_balance(self, hotkey: str, cash_balance: float) -> bool:
-        """Set cash balance for a miner."""
+    def get_balance(self, hotkey: str) -> Optional[float]:
+        """Get balance for a miner."""
         account = self._manager.get_account(hotkey)
         if account is None:
-            return False
-        account.cash_balance = cash_balance
-        return True
+            return None
+        return account.balance
 
     def health_check(self) -> dict:
         """Health check for monitoring."""
@@ -210,9 +209,9 @@ class MinerAccountServer(RPCServerBase):
         """Process buy order cash/margin. Returns borrowed amount."""
         return self._manager.process_order_buy(hotkey, order_value_usd)
 
-    def process_order_sell(self, hotkey: str, sale_proceeds_usd: float, position_margin_loan: float) -> float:
+    def process_order_sell(self, hotkey: str, entry_value_usd: float, realized_pnl: float, position_margin_loan: float) -> float:
         """Process sell/close order."""
-        return self._manager.process_order_sell(hotkey, sale_proceeds_usd, position_margin_loan)
+        return self._manager.process_order_sell(hotkey, entry_value_usd, realized_pnl, position_margin_loan)
 
     def get_total_borrowed_amount(self, hotkey: str) -> float:
         """Get total borrowed amount for a miner."""
@@ -222,31 +221,15 @@ class MinerAccountServer(RPCServerBase):
         """Check if miner can withdraw the specified amount of collateral."""
         return self._manager.can_withdraw_collateral(hotkey, amount_theta)
 
-    def recalculate_cash_balance_for_asset_selection(
+    def update_asset_selection(
         self, hotkey: str, asset_selection: TradePairCategory
     ) -> bool:
         """
-        Recalculate cash balance when a miner selects an asset class.
-
-        Args:
-            hotkey: Miner's hotkey
-            asset_selection: The TradePairCategory the miner selected
-
         Returns:
             True if cash balance was updated, False otherwise
         """
-        return self._manager.recalculate_cash_balance_for_asset_selection(hotkey, asset_selection)
+        return self._manager.update_asset_selection(hotkey, asset_selection)
 
     def apply_daily_interest(self) -> int:
         """Apply daily interest to accounts with outstanding margin loans."""
         return self._manager.apply_daily_interest()
-
-    def reconstruct_account_from_transactions(self, hotkey: str) -> Optional[dict]:
-        """
-        Reconstruct a MinerAccount from collateral records and transaction history.
-        Returns None if account doesn't exist.
-        """
-        account = self._manager.reconstruct_account_from_transactions(hotkey)
-        if account is None:
-            return None
-        return account.to_dict()

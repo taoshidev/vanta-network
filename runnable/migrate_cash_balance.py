@@ -88,7 +88,7 @@ def migrate_hotkey(
     if not account:
         # Create account manually
         asset_class = asset_selections.get(hotkey)
-        multiplier = ValiConfig.CASH_BALANCE_MULTIPLIER.get(asset_class, 1.0) if asset_class else 1.0
+        multiplier = ValiConfig.PORTFOLIO_LEVERAGE_CAP.get(asset_class, 1.0) if asset_class else 1.0
         from vali_objects.miner_account.miner_account_manager import MinerAccount
         account = MinerAccount(
             miner_hotkey=hotkey,
@@ -102,7 +102,7 @@ def migrate_hotkey(
     # Get asset class multiplier
     asset_class = asset_selections.get(hotkey) or account.asset_class
     account.asset_class = asset_class
-    multiplier = ValiConfig.CASH_BALANCE_MULTIPLIER.get(asset_class, 1.0) if asset_class else 1.0
+    multiplier = ValiConfig.PORTFOLIO_LEVERAGE_CAP.get(asset_class, 1.0) if asset_class else 1.0
 
     # Reset cash balance and borrowed amount for migration
     initial_cash = account_size * multiplier

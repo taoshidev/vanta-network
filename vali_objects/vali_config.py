@@ -450,15 +450,6 @@ class ValiConfig:
         TradePairCategory.EQUITIES: 2,
     }
 
-    # Cash balance multiplier: cash_balance = account_size * multiplier
-    # Equities is 1x because it uses margin loans instead of virtual cash
-    CASH_BALANCE_MULTIPLIER = {
-        TradePairCategory.CRYPTO: 5,
-        TradePairCategory.FOREX: 20,
-        TradePairCategory.INDICES: 10,
-        TradePairCategory.EQUITIES: 1,
-    }
-
     # Collateral limits
     MIN_COLLATERAL_BALANCE_THETA = 300  # Required minimum total collateral balance per miner in Theta. Approx $150k capital account size
     MAX_COLLATERAL_BALANCE_THETA = 1000  # Approx $500k capital account size

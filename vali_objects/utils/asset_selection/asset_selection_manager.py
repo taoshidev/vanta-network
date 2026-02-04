@@ -502,7 +502,7 @@ class AssetSelectionManager:
             asset_selection: The TradePairCategory the miner selected
         """
         try:
-            success = self._miner_account_client.recalculate_cash_balance_for_asset_selection(
+            success = self._miner_account_client.update_asset_selection(
                 hotkey, asset_selection
             )
             if success:
