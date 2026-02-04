@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field
 
 import template.protocol
 from entity_management.entity_utils import is_synthetic_hotkey, parse_synthetic_hotkey
+from vali_objects.miner_account import MinerAccountClient
 from vali_objects.scoring.debt_based_scoring import DebtBasedScoring
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
@@ -192,6 +193,12 @@ class EntityManager(ValidatorBroadcastBase):
             connection_mode=connection_mode,
             connect_immediately=False,
             running_unit_tests=running_unit_tests
+        )
+
+        # Create MinerAccountClient for setting subaccount miner account size
+        self._miner_account_client = MinerAccountClient(
+            connection_mode=connection_mode,
+            connect_immediately=False
         )
 
         # Create AssetSelectionClient for asset class selection
@@ -426,7 +433,7 @@ class EntityManager(ValidatorBroadcastBase):
                 # Set account size for synthetic hotkey with explicit account_size parameter
                 # This records the account size in the contract manager's miner_account_sizes
                 t0 = time.time()
-                set_size_success = self._contract_client.set_miner_account_size(
+                set_size_success = self._miner_account_client.set_miner_account_size(
                     synthetic_hotkey,
                     timestamp_ms=TimeUtil.now_in_millis(),
                     account_size=account_size

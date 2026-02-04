@@ -33,11 +33,11 @@ from vali_objects.validator_broadcast_base import ValidatorBroadcastBase
 class CollateralRecord:
     """Record of a collateral/account size update at a specific timestamp."""
 
-    def __init__(self, account_size: float, account_size_theta: float, update_time_ms: int):
+    def __init__(self, account_size: float, account_size_theta: float, update_time_ms: int, is_first_record: bool = False):
         self.account_size = account_size
         self.account_size_theta = account_size_theta
         self.update_time_ms = update_time_ms
-        self.valid_date_timestamp = CollateralRecord.valid_from_ms(update_time_ms)
+        self.valid_date_timestamp = CollateralRecord.valid_from_ms(update_time_ms, is_first_record)
 
     @staticmethod
     def valid_from_ms(update_time_ms: int, is_first_record: bool = False) -> int:
@@ -428,7 +428,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
 
     # ==================== Account Size Methods ====================
 
-    def set_miner_account_size(self, hotkey: str, collateral_balance_theta: float, timestamp_ms: Optional[int] = None) -> Optional[CollateralRecord]:
+    def set_miner_account_size(self, hotkey: str, collateral_balance_theta: float, timestamp_ms: Optional[int] = None, account_size: float = None) -> Optional[CollateralRecord]:
         """
         Set the account size for a miner. Saves to memory and disk.
         Records are kept in chronological order.
@@ -437,6 +437,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
             hotkey: Miner's hotkey (SS58 address)
             collateral_balance_theta: Collateral balance in theta tokens
             timestamp_ms: Timestamp for the record (defaults to now)
+            account_size: Optional USD account size. If not provided, calculated from collateral balance
 
         Returns:
             CollateralRecord if successful, None otherwise
@@ -453,8 +454,12 @@ class MinerAccountManager(ValidatorBroadcastBase):
             if timestamp_ms is None:
                 timestamp_ms = TimeUtil.now_in_millis()
 
-            account_size = min(ValiConfig.MAX_COLLATERAL_BALANCE_THETA, collateral_balance_theta) * ValiConfig.COST_PER_THETA
-            collateral_record = CollateralRecord(account_size, collateral_balance_theta, timestamp_ms)
+            if account_size is None:
+                account_size = min(ValiConfig.MAX_COLLATERAL_BALANCE_THETA, collateral_balance_theta) * ValiConfig.COST_PER_THETA
+
+            # Check if this is the first record for this miner
+            is_first_record = hotkey not in self.accounts or not self.accounts[hotkey]
+            collateral_record = CollateralRecord(account_size, collateral_balance_theta, timestamp_ms, is_first_record)
 
             # Get or create account
             account = self.get_or_create(hotkey)

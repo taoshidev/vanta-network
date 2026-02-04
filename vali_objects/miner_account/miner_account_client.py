@@ -73,7 +73,8 @@ class MinerAccountClient(RPCClientBase):
         self,
         hotkey: str,
         collateral_balance_theta: float,
-        timestamp_ms: Optional[int] = None
+        timestamp_ms: Optional[int] = None,
+        account_size: float = None
     ) -> Optional[Dict[str, Any]]:
         """
         Set the account size for a miner.
@@ -82,12 +83,13 @@ class MinerAccountClient(RPCClientBase):
             hotkey: Miner's hotkey (SS58 address)
             collateral_balance_theta: Collateral balance in theta tokens
             timestamp_ms: Timestamp for the record (defaults to now)
+            account_size: Optional USD account size. If not provided, calculated from collateral balance
 
         Returns:
             CollateralRecord as dict if successful, None otherwise.
             Dict contains: account_size, account_size_theta, update_time_ms, valid_date_timestamp
         """
-        return self._server.set_miner_account_size(hotkey, collateral_balance_theta, timestamp_ms)
+        return self._server.set_miner_account_size(hotkey, collateral_balance_theta, timestamp_ms, account_size)
 
     def get_miner_account_size(
         self,

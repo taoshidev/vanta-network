@@ -127,10 +127,11 @@ class MinerAccountServer(RPCServerBase):
         self,
         hotkey: str,
         collateral_balance_theta: float,
-        timestamp_ms: Optional[int] = None
+        timestamp_ms: Optional[int] = None,
+        account_size: float = None
     ) -> Optional[dict]:
         """Set the account size for a miner. Returns CollateralRecord as dict if successful."""
-        collateral_record = self._manager.set_miner_account_size(hotkey, collateral_balance_theta, timestamp_ms)
+        collateral_record = self._manager.set_miner_account_size(hotkey, collateral_balance_theta, timestamp_ms, account_size)
         if collateral_record is None:
             return None
         return vars(collateral_record)
