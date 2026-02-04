@@ -1187,8 +1187,31 @@ class ChallengePeriodManager(CacheController):
         prev_bucket: MinerBucket = None,
         prev_time: int = None
     ) -> bool:
-        """Set or update a miner's bucket information."""
+        """
+        Set or update a miner's bucket information.
+
+        Automatically preserves previous bucket state on transitions unless explicitly overridden.
+
+        Args:
+            hotkey: Miner's hotkey
+            bucket: New bucket to assign
+            start_time: Start time for new bucket
+            prev_bucket: Optional explicit previous bucket (if None and miner exists, auto-captures current)
+            prev_time: Optional explicit previous time (if None and miner exists, auto-captures current)
+
+        Returns:
+            True if this is a new miner, False if updating existing
+        """
         is_new = hotkey not in self.active_miners
+
+        # Auto-capture previous state if not explicitly provided and miner exists
+        if not is_new and prev_bucket is None and prev_time is None:
+            current_bucket, current_time, _, _ = self.active_miners[hotkey]
+            # Only capture previous state if the bucket is actually changing
+            if current_bucket != bucket:
+                prev_bucket = current_bucket
+                prev_time = current_time
+
         self.active_miners[hotkey] = (bucket, start_time, prev_bucket, prev_time)
         return is_new
 
