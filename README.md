@@ -83,7 +83,7 @@ most complete trading signals across a variety of asset classes.
 # Features
 
 🛠️&nbsp;Open Source Strategy Building Techniques (In Our Taoshi Community)<br>
-🫰&nbsp;Signals From a <a href="https://github.com/taoshidev/vanta-network/blob/main/vali_objects/vali_config.py#L19"> Variety of Asset Classes</a> - Forex and Crypto<br>
+🫰&nbsp;Signals From a <a href="https://github.com/taoshidev/vanta-network/blob/main/vali_objects/vali_config.py#L19"> Variety of Asset Classes</a> - Forex, Crypto, and Equities<br>
 📈&nbsp;<a href="https://taomarketcap.com/subnet/8?subpage=miners&metagraph_type=miners">Millions of $ Payouts</a> to Top Traders<br>
 💪&nbsp;Innovative Trader Performance Metrics that Identify the Best Traders<br>
 🔎&nbsp;<a href="https://dashboard.taoshi.io/">Trading + Metrics Visualization Dashboard</a>
@@ -91,14 +91,14 @@ most complete trading signals across a variety of asset classes.
 ## How does it work?
 
 Vanta is the most challenging & competitive network in the world. Our miners need to provide futures based signals (long/short)
-that are highly efficient and effective across various markets to compete (forex, crypto). The top miners are
+that are highly efficient and effective across various markets to compete (forex, crypto, equities). The top miners are
 those that provide the most returns, while never exceeding certain drawdown limits.
 
 ### Rules
 
-1. Miners can submit LONG, SHORT, or FLAT signal for Forex and Crypto trade pairs into the network during market hours. <a href="https://github.com/taoshidev/vanta-network/blob/main/vali_objects/vali_config.py#L173">Currently supported trade pairs</a>
+1. Miners can submit LONG, SHORT, or FLAT signal for Forex, Crypto, or Equities trade pairs into the network during market hours. <a href="https://github.com/taoshidev/vanta-network/blob/main/vali_objects/vali_config.py#L173">Currently supported trade pairs</a>
 2. Miners are eliminated if they are detected as plagiarising other miners, or if they exceed 10% max drawdown (more info in  the "Eliminations" section).
-3. There is a fee for leaving positions open "carry fee". The fee is equal to 10.95/3% per year for a 1x leverage position (crypto/forex) <a href="https://docs.taoshi.io/tips/p4/">More info</a>
+3. There is a fee for leaving positions open "carry fee". The fee is equal to 10.95/3%/5.25% per year for a 1x leverage position (crypto/forex/equities) <a href="https://docs.taoshi.io/tips/p4/">More info</a>
 4. There is a spread (transaction) fee applied to crypto pairs only, calculated as 0.1% multiplied by the leverage of each order. This simulates a transaction cost that a normal exchange would add.
 5. There is a slippage assessed per order. The slippage cost is is greater for orders with higher leverages, and in assets with lower liquidity.
 6. Miners are rewarded using a debt-based scoring system that tracks their emissions, performance, and penalties. Weights are set based on previous week's performance (PnL scaled by penalties), with payouts targeting completion by midnight on Sunday of each week <a href="https://github.com/taoshidev/vanta-network/blob/main/docs/miner.md">More info</a>
