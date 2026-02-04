@@ -1,6 +1,5 @@
 from vali_objects.utils.elimination.elimination_server import EliminationServer
 from vali_objects.utils.logger_utils import LoggerUtils
-from vali_objects.plagiarism.plagiarism_detector import PlagiarismDetector
 from vali_objects.position_management.position_manager import PositionManager
 from vali_objects.scoring.weight_calculator_manager import WeightCalculatorManager
 from time_util.time_util import TimeUtil
@@ -31,7 +30,6 @@ if __name__ == "__main__":
         is_backtesting=True,
         is_mainnet=False
     )
-    plagiarism_detector = PlagiarismDetector(None, None, position_manager=position_manager)
 
     ## Collect the ledger
     ledger = subtensor_weight_setter.perf_ledger_manager.get_perf_ledgers()

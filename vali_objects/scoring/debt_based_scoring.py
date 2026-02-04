@@ -419,7 +419,7 @@ class DebtBasedScoring:
             ledger_dict=ledger_dict,
             miner_remaining_payouts_usd=miner_daily_target_payouts_usd,
             challengeperiod_client=challengeperiod_client,
-            contract_client=miner_account_client,
+            miner_account_client=miner_account_client,
             current_time_ms=current_time_ms,
             projected_daily_emissions_usd=projected_daily_usd,
             verbose=verbose

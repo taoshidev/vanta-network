@@ -257,12 +257,6 @@ class ServerOrchestrator:
             required_in_testing=True,
             spawn_kwargs={'start_daemon': False}  # Daemon started later via orchestrator (not currently used)
         ),
-        'plagiarism_detector': ServerConfig(
-            server_class=None,
-            client_class=None,
-            required_in_testing=True,
-            spawn_kwargs={'start_daemon': False}  # Daemon started later via orchestrator (overrides default=True)
-        ),
         'limit_order': ServerConfig(
             server_class=None,
             client_class=None,
