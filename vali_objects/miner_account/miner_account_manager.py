@@ -605,7 +605,7 @@ class MinerAccountManager:
 
         All asset classes: check buying_power >= order_value, then capital_used += order_value.
         For equities: only borrow when the order exceeds available cash (balance - capital_used).
-        When borrowing is needed, borrowed_amount = order_value / multiplier.
+        When borrowing is needed, borrowed_amount = order_value * 0.5.
 
         Args:
             hotkey: Miner's hotkey

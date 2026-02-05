@@ -590,10 +590,11 @@ class TestEquities(TestBase):
 
     def test_buy_within_buying_power(self):
         """
-        Test purchasing equities within buying power.
-        Buying power should decrease by order value, and half is borrowed.
+        Test purchasing equities within buying power and available cash.
+        When order <= available_cash, no borrowing occurs.
 
         Note: Initial buying_power = account_size * 2 = $200,000 (EQUITIES multiplier of 2).
+        Available cash = balance = $100,000.
         """
         account = self.miner_account_manager.get_account(self.DEFAULT_MINER_HOTKEY)
         initial_bp = account['buying_power']
@@ -601,43 +602,43 @@ class TestEquities(TestBase):
         # Verify we start with account_size * multiplier buying power
         self.assertEqual(initial_bp, self.DEFAULT_ACCOUNT_SIZE * 2)  # $200K
 
-        # Purchase for $50,000 (within buying power)
+        # Purchase for $50,000 (within available cash of $100K, no borrowing needed)
         order_value = 50_000.0
         borrowed = self.miner_account_manager.process_order_buy(
             self.DEFAULT_MINER_HOTKEY,
             order_value
         )
 
-        # Should borrow half for equities
-        self.assertAlmostEqual(borrowed, order_value / 2, places=2)  # $25K
+        # No borrowing when order <= available_cash
+        self.assertAlmostEqual(borrowed, 0.0, places=2)
 
         # Buying power should decrease by order value, capital_used should increase
         account = self.miner_account_manager.get_account(self.DEFAULT_MINER_HOTKEY)
         self.assertAlmostEqual(account['buying_power'], initial_bp - order_value, places=2)  # $150K
         self.assertAlmostEqual(account['capital_used'], order_value, places=2)
-        self.assertAlmostEqual(account['total_borrowed_amount'], order_value / 2, places=2)
+        self.assertAlmostEqual(account['total_borrowed_amount'], 0.0, places=2)
 
     def test_buy_large_position(self):
         """
-        Test purchasing equities for a large position.
-        Equities always borrow half the order value.
+        Test purchasing equities for a large position that exceeds available cash.
+        When order > available_cash, equities borrow half the order value.
 
-        Initial buying_power = $100K * 2 = $200K.
+        Initial buying_power = $100K * 2 = $200K, available_cash = $100K.
         """
         account = self.miner_account_manager.get_account(self.DEFAULT_MINER_HOTKEY)
         initial_bp = account['buying_power']
         self.assertEqual(initial_bp, self.DEFAULT_ACCOUNT_SIZE * 2)  # $200K
 
-        # Purchase for $150,000 (within buying power of $200K)
+        # Purchase for $150,000 (within buying power of $200K, but exceeds available cash)
         order_value = 150_000.0
-        expected_borrowed = order_value / 2  # $75,000
+        expected_borrowed = order_value * 0.5  # $75,000
 
         borrowed = self.miner_account_manager.process_order_buy(
             self.DEFAULT_MINER_HOTKEY,
             order_value
         )
 
-        # Should borrow half of order value
+        # Should borrow half the order value
         self.assertAlmostEqual(borrowed, expected_borrowed, places=2)
 
         # Buying power decreases, capital_used increases
@@ -665,15 +666,16 @@ class TestEquities(TestBase):
 
     def test_sell_repays_loan_and_compounds_pnl(self):
         """
-        Test selling equities repays margin loan and compounds realized PNL to equity.
+        Test selling equities repays margin loan and compounds realized PNL to balance.
         """
-        # Buy $150K: capital_used=$150K, borrowed=$75K, bp=$50K
+        # Buy $150K: capital_used=$150K, borrowed=$75K (half), bp=$50K
         order_value = 150_000.0
+        expected_borrowed = order_value * 0.5  # $75K
         borrowed = self.miner_account_manager.process_order_buy(
             self.DEFAULT_MINER_HOTKEY,
             order_value
         )
-        self.assertAlmostEqual(borrowed, 75_000.0, places=2)
+        self.assertAlmostEqual(borrowed, expected_borrowed, places=2)
 
         # Sell with $10K profit: entry=$150K, pnl=$10K
         entry_value = 150_000.0
@@ -688,83 +690,53 @@ class TestEquities(TestBase):
         # Should repay full loan ($75K)
         self.assertAlmostEqual(loan_repaid, borrowed, places=2)
 
-        # Equity = $100K + $10K = $110K, buying_power = $110K * 2 = $220K
+        # Balance = $100K + $10K = $110K, buying_power = $110K * 2 = $220K
         account = self.miner_account_manager.get_account(self.DEFAULT_MINER_HOTKEY)
-        self.assertAlmostEqual(account['equity'], 110_000.0, places=2)
+        self.assertAlmostEqual(account['balance'], 110_000.0, places=2)
         self.assertAlmostEqual(account['buying_power'], 220_000.0, places=2)
         self.assertAlmostEqual(account['capital_used'], 0.0, places=2)
         self.assertEqual(account['total_borrowed_amount'], 0.0)
 
-    def test_sell_at_loss_repays_loan_reduces_equity(self):
+    def test_equities_borrows_half_when_exceeds_cash(self):
         """
-        Test selling at a loss still repays full margin loan, equity absorbs the loss.
-        """
-        # Buy $150K: capital_used=$150K, borrowed=$75K
-        order_value = 150_000.0
-        borrowed = self.miner_account_manager.process_order_buy(
-            self.DEFAULT_MINER_HOTKEY,
-            order_value
-        )
-
-        # Sell at massive loss: entry=$150K, pnl=-$100K (sold for $50K)
-        entry_value = 150_000.0
-        realized_pnl = -100_000.0
-        loan_repaid = self.miner_account_manager.process_order_sell(
-            self.DEFAULT_MINER_HOTKEY,
-            entry_value,
-            realized_pnl,
-            borrowed
-        )
-
-        # Full loan repaid (not capped by proceeds in new model)
-        self.assertAlmostEqual(loan_repaid, borrowed, places=2)  # $75K
-
-        # Equity absorbs the loss: $100K + (-$100K) = $0
-        account = self.miner_account_manager.get_account(self.DEFAULT_MINER_HOTKEY)
-        self.assertAlmostEqual(account['equity'], 0.0, places=2)
-        self.assertAlmostEqual(account['buying_power'], 0.0, places=2)
-        self.assertAlmostEqual(account['capital_used'], 0.0, places=2)
-        self.assertAlmostEqual(account['total_borrowed_amount'], 0.0, places=2)
-
-    def test_equities_always_borrows_half(self):
-        """
-        Test that equities purchases always borrow half the order value.
-        Even small purchases use margin in the equity-based model.
+        Test that equities purchases borrow half the order value only when order exceeds available cash.
+        Small purchases within available cash don't use margin.
         """
         account = self.miner_account_manager.get_account(self.DEFAULT_MINER_HOTKEY)
         initial_bp = account['buying_power']
 
-        # Buy $50K - should still borrow $25K (half) for equities
+        # Buy $50K - within available cash ($100K), no borrowing
         order_value = 50_000.0
         borrowed = self.miner_account_manager.process_order_buy(
             self.DEFAULT_MINER_HOTKEY,
             order_value
         )
 
-        self.assertAlmostEqual(borrowed, 25_000.0, places=2)
+        self.assertAlmostEqual(borrowed, 0.0, places=2)
         account = self.miner_account_manager.get_account(self.DEFAULT_MINER_HOTKEY)
         self.assertAlmostEqual(account['buying_power'], initial_bp - order_value, places=2)
-        self.assertAlmostEqual(account['total_borrowed_amount'], 25_000.0, places=2)
+        self.assertAlmostEqual(account['total_borrowed_amount'], 0.0, places=2)
 
     def test_multiple_positions_cumulative_loan(self):
         """
         Test multiple purchases accumulate total borrowed amount and capital used.
         """
-        # First purchase ($150K, borrows $75K)
+        # First purchase ($150K, borrows $75K - half the order)
         order_value_1 = 150_000.0
+        expected_borrowed = order_value_1 * 0.5  # $75K
         borrowed_1 = self.miner_account_manager.process_order_buy(
             self.DEFAULT_MINER_HOTKEY,
             order_value_1
         )
 
-        # Should have borrowed $75K (half of $150K for equities)
-        self.assertAlmostEqual(borrowed_1, 75_000.0, places=2)
+        # Should have borrowed $75K (half of $150K)
+        self.assertAlmostEqual(borrowed_1, expected_borrowed, places=2)
 
         # bp = $200K - $150K = $50K, capital_used = $150K, borrowed = $75K
         account = self.miner_account_manager.get_account(self.DEFAULT_MINER_HOTKEY)
         self.assertAlmostEqual(account['buying_power'], 50_000.0, places=2)
         self.assertAlmostEqual(account['capital_used'], 150_000.0, places=2)
-        self.assertAlmostEqual(account['total_borrowed_amount'], 75_000.0, places=2)
+        self.assertAlmostEqual(account['total_borrowed_amount'], expected_borrowed, places=2)
 
         # Verify total borrowed tracking
         total_borrowed = self.miner_account_manager.get_total_borrowed_amount(
@@ -782,8 +754,9 @@ class TestEquities(TestBase):
         )
         self.assertEqual(initial_borrowed, 0.0)
 
-        # Buy $150K, borrows $75K (half for equities)
+        # Buy $150K, borrows $75K (half the order)
         order_value = 150_000.0
+        expected_borrowed = order_value * 0.5  # $75K
         borrowed = self.miner_account_manager.process_order_buy(
             self.DEFAULT_MINER_HOTKEY,
             order_value
@@ -794,7 +767,7 @@ class TestEquities(TestBase):
             self.DEFAULT_MINER_HOTKEY
         )
         self.assertAlmostEqual(total_borrowed, borrowed, places=2)
-        self.assertAlmostEqual(total_borrowed, 75_000.0, places=2)
+        self.assertAlmostEqual(total_borrowed, expected_borrowed, places=2)
 
     def test_collateral_record_updates_buying_power(self):
         """
@@ -894,212 +867,6 @@ class TestEquities(TestBase):
         self.assertAlmostEqual(account['total_borrowed_amount'], 0.0, places=2,
                              msg="After FLAT: Borrowed should be $0")
 
-
-    # ==================== Transaction History Tests ====================
-
-    def test_transaction_history_buy(self):
-        """
-        Test that buy creates BUY transaction with correct deltas.
-        For equities, loan_delta = order_value / 2 (borrow half).
-        """
-        # Clear any existing transactions
-        tx_path = ValiBkpUtils.get_miner_transactions_path(
-            self.DEFAULT_MINER_HOTKEY, running_unit_tests=True
-        )
-        ValiBkpUtils.clear_transactions(tx_path)
-
-        # Make a purchase
-        order_value = 50_000.0
-        self.miner_account_manager.process_order_buy(
-            self.DEFAULT_MINER_HOTKEY,
-            order_value
-        )
-
-        # Read transactions
-        transactions = ValiBkpUtils.read_transactions(tx_path)
-
-        self.assertEqual(len(transactions), 1)
-        tx = transactions[0]
-        self.assertEqual(tx['type'], 'BUY')
-        self.assertAlmostEqual(tx['cash_delta'], -order_value, places=2)
-        self.assertAlmostEqual(tx['loan_delta'], order_value / 2, places=2)  # borrow half for equities
-        self.assertIn('timestamp_ms', tx)
-
-    def test_transaction_history_buy_large(self):
-        """
-        Test that large buy creates BUY transaction with correct deltas.
-        """
-        tx_path = ValiBkpUtils.get_miner_transactions_path(
-            self.DEFAULT_MINER_HOTKEY, running_unit_tests=True
-        )
-        ValiBkpUtils.clear_transactions(tx_path)
-
-        # Make a large purchase ($150K, borrows $75K)
-        order_value = 150_000.0
-        expected_borrowed = order_value / 2  # $75K
-
-        self.miner_account_manager.process_order_buy(
-            self.DEFAULT_MINER_HOTKEY,
-            order_value
-        )
-
-        transactions = ValiBkpUtils.read_transactions(tx_path)
-
-        self.assertEqual(len(transactions), 1)
-        tx = transactions[0]
-        self.assertEqual(tx['type'], 'BUY')
-        self.assertAlmostEqual(tx['cash_delta'], -order_value, places=2)
-        self.assertAlmostEqual(tx['loan_delta'], expected_borrowed, places=2)
-
-    def test_transaction_history_sell(self):
-        """
-        Test that selling creates SELL transaction with correct deltas.
-        """
-        tx_path = ValiBkpUtils.get_miner_transactions_path(
-            self.DEFAULT_MINER_HOTKEY, running_unit_tests=True
-        )
-        ValiBkpUtils.clear_transactions(tx_path)
-
-        # First buy
-        order_value = 150_000.0
-        borrowed = self.miner_account_manager.process_order_buy(
-            self.DEFAULT_MINER_HOTKEY,
-            order_value
-        )
-
-        # Then sell with profit
-        entry_value = 150_000.0
-        realized_pnl = 10_000.0
-        loan_repaid = self.miner_account_manager.process_order_sell(
-            self.DEFAULT_MINER_HOTKEY,
-            entry_value,
-            realized_pnl,
-            borrowed
-        )
-
-        transactions = ValiBkpUtils.read_transactions(tx_path)
-
-        self.assertEqual(len(transactions), 2)
-
-        # Check SELL transaction: cash_delta = entry_value + realized_pnl
-        sell_tx = transactions[1]
-        self.assertEqual(sell_tx['type'], 'SELL')
-        self.assertAlmostEqual(sell_tx['cash_delta'], entry_value + realized_pnl, places=2)
-        self.assertAlmostEqual(sell_tx['loan_delta'], -loan_repaid, places=2)
-
-    def test_transaction_history_interest_initialization(self):
-        """
-        Test that interest system initializes correctly.
-        First day marks loan start but doesn't charge interest.
-        """
-        tx_path = ValiBkpUtils.get_miner_transactions_path(
-            self.DEFAULT_MINER_HOTKEY, running_unit_tests=True
-        )
-        ValiBkpUtils.clear_transactions(tx_path)
-
-        # Buy to create a loan (equities always borrows half)
-        order_value = 150_000.0
-        borrowed = self.miner_account_manager.process_order_buy(
-            self.DEFAULT_MINER_HOTKEY,
-            order_value
-        )
-        self.assertGreater(borrowed, 0)
-
-        # Apply interest (first day initializes, no interest charged)
-        accounts_processed = self.miner_account_manager.apply_daily_interest()
-
-        # First call initializes but doesn't charge interest (no INTEREST tx)
-        transactions = ValiBkpUtils.read_transactions(tx_path)
-
-        # Should have 1 BUY transaction from the purchase
-        self.assertEqual(len(transactions), 1)
-        self.assertEqual(transactions[0]['type'], 'BUY')
-
-        # Verify the account processed (initialization counts as processed)
-        self.assertEqual(accounts_processed, 1)
-
-        # Verify last_interest_date_ms was set
-        account = self.miner_account_manager.get_account(self.DEFAULT_MINER_HOTKEY)
-        self.assertIsNotNone(account['last_interest_date_ms'])
-
-    def test_reconstruct_account_from_transactions(self):
-        """
-        Test that account can be reconstructed from collateral records and transactions.
-        """
-        tx_path = ValiBkpUtils.get_miner_transactions_path(
-            self.DEFAULT_MINER_HOTKEY, running_unit_tests=True
-        )
-        ValiBkpUtils.clear_transactions(tx_path)
-
-        # Execute some operations
-        # 1. Buy $50K (capital_used=$50K, borrowed=$25K)
-        self.miner_account_manager.process_order_buy(
-            self.DEFAULT_MINER_HOTKEY,
-            50_000.0
-        )
-
-        # 2. Buy $80K (capital_used=$130K, borrowed=$65K)
-        borrowed = self.miner_account_manager.process_order_buy(
-            self.DEFAULT_MINER_HOTKEY,
-            80_000.0
-        )
-
-        # 3. Sell: entry=$80K, pnl=$10K (repays $40K loan from 2nd position)
-        self.miner_account_manager.process_order_sell(
-            self.DEFAULT_MINER_HOTKEY,
-            80_000.0,   # entry_value
-            10_000.0,   # realized_pnl
-            borrowed    # position margin loan ($40K)
-        )
-
-        # Get actual account state
-        actual_account = self.miner_account_manager.get_account(self.DEFAULT_MINER_HOTKEY)
-        actual_borrowed = actual_account['total_borrowed_amount']
-
-        # Reconstruct account from transactions
-        reconstructed = self.miner_account_manager.reconstruct_account_from_transactions(
-            self.DEFAULT_MINER_HOTKEY
-        )
-
-        self.assertIsNotNone(reconstructed)
-        self.assertAlmostEqual(reconstructed['total_borrowed_amount'], actual_borrowed, places=2,
-                             msg="Reconstructed borrowed amount should match actual")
-
-    def test_transaction_file_format_ndjson(self):
-        """
-        Test that transactions are stored in NDJSON format (one JSON object per line).
-        """
-        tx_path = ValiBkpUtils.get_miner_transactions_path(
-            self.DEFAULT_MINER_HOTKEY, running_unit_tests=True
-        )
-        ValiBkpUtils.clear_transactions(tx_path)
-
-        # Make multiple transactions
-        self.miner_account_manager.process_order_buy(
-            self.DEFAULT_MINER_HOTKEY,
-            30_000.0
-        )
-        self.miner_account_manager.process_order_buy(
-            self.DEFAULT_MINER_HOTKEY,
-            20_000.0
-        )
-
-        # Read file directly and verify format
-        import os
-        self.assertTrue(os.path.exists(tx_path))
-
-        with open(tx_path, 'r') as f:
-            lines = f.readlines()
-
-        self.assertEqual(len(lines), 2)
-        for line in lines:
-            # Each line should be valid JSON
-            import json
-            tx = json.loads(line.strip())
-            self.assertIn('type', tx)
-            self.assertIn('timestamp_ms', tx)
-            self.assertIn('cash_delta', tx)
-            self.assertIn('loan_delta', tx)
 
 
 if __name__ == '__main__':

@@ -139,9 +139,10 @@ class TestValidatorContractManager(TestBase):
         self.assertIsNotNone(account_size)
 
         # Test the disk persistence by checking via accounts_dict
+        # accounts_dict returns [collateral_records..., account_summary_dict]
         account_sizes_dict = self.miner_account_client.accounts_dict()
         self.assertIn(self.MINER_1, account_sizes_dict)
-        self.assertEqual(len(account_sizes_dict[self.MINER_1]), 1)
+        self.assertEqual(len(account_sizes_dict[self.MINER_1]), 2)  # 1 collateral record + 1 account summary
 
     def test_multiple_account_size_records(self):
         """Test that multiple records are stored and sorted correctly"""
@@ -158,13 +159,15 @@ class TestValidatorContractManager(TestBase):
         self.miner_account_client.set_miner_account_size(self.MINER_1, collateral_theta_3, base_time + 2000)
 
         # Verify records are stored
+        # accounts_dict returns [collateral_records..., account_summary_dict]
         account_sizes_dict = self.miner_account_client.accounts_dict()
         records = account_sizes_dict[self.MINER_1]
-        self.assertEqual(len(records), 3)
+        self.assertEqual(len(records), 4)  # 3 collateral records + 1 account summary
 
-        # Verify records are sorted by update_time_ms
-        for i in range(1, len(records)):
-            self.assertGreaterEqual(records[i]['update_time_ms'], records[i-1]['update_time_ms'])
+        # Verify collateral records are sorted by update_time_ms (exclude account summary at end)
+        collateral_records = records[:-1]
+        for i in range(1, len(collateral_records)):
+            self.assertGreaterEqual(collateral_records[i]['update_time_ms'], collateral_records[i-1]['update_time_ms'])
 
     def test_no_duplicate_account_size_records(self):
         """Test that duplicate records are ignored"""
@@ -178,9 +181,10 @@ class TestValidatorContractManager(TestBase):
         self.miner_account_client.set_miner_account_size(self.MINER_1, collateral_theta, base_time + 2000)
 
         # Verify only one record is stored (duplicates are skipped)
+        # accounts_dict returns [collateral_records..., account_summary_dict]
         account_sizes_dict = self.miner_account_client.accounts_dict()
         records = account_sizes_dict[self.MINER_1]
-        self.assertEqual(len(records), 1)
+        self.assertEqual(len(records), 2)  # 1 collateral record + 1 account summary
 
     def test_sync_miner_account_sizes_data(self):
         """Test syncing miner account sizes from external data"""
@@ -213,11 +217,12 @@ class TestValidatorContractManager(TestBase):
         self.assertIn(self.MINER_2, account_sizes_dict)
 
         # Check the records
+        # accounts_dict returns [collateral_records..., account_summary_dict]
         miner1_records = account_sizes_dict[self.MINER_1]
         miner2_records = account_sizes_dict[self.MINER_2]
 
-        self.assertEqual(len(miner1_records), 1)
-        self.assertEqual(len(miner2_records), 1)
+        self.assertEqual(len(miner1_records), 2)  # 1 collateral record + 1 account summary
+        self.assertEqual(len(miner2_records), 2)  # 1 collateral record + 1 account summary
         self.assertEqual(miner1_records[0]['account_size'], 15000.0)
         self.assertEqual(miner2_records[0]['account_size'], 25000.0)
 
@@ -240,12 +245,19 @@ class TestValidatorContractManager(TestBase):
         self.assertIn(self.MINER_2, checkpoint_dict)
 
         # Verify record structure
+        # accounts_dict returns [collateral_records..., account_summary_dict]
+        # Only collateral records have update_time_ms, account summary (last item) doesn't
         for hotkey, records in checkpoint_dict.items():
             self.assertIsInstance(records, list)
-            for record in records:
+            # Check collateral records (all but last)
+            for record in records[:-1]:
                 self.assertIn('account_size', record)
                 self.assertIn('update_time_ms', record)
                 self.assertIn('valid_date_timestamp', record)
+            # Check account summary (last record)
+            account_summary = records[-1]
+            self.assertIn('account_size', account_summary)
+            self.assertIn('miner_hotkey', account_summary)
 
     def test_collateral_balance_retrieval(self):
         """Test getting collateral balance for miners"""
