@@ -343,15 +343,12 @@ class MinerAccountManager:
                     total_borrowed = last_record.get("total_borrowed_amount", 0.0)
                     total_interest_paid = last_record.get("total_interest_paid", 0.0)
                     last_interest_date_ms = last_record.get("last_interest_date_ms")
-                    # Backwards compat: old format had cash_balance
-                    old_cash_balance = last_record.get("cash_balance")
                 else:
                     total_realized_pnl = None
                     capital_used = None
                     total_borrowed = 0.0
                     total_interest_paid = 0.0
                     last_interest_date_ms = None
-                    old_cash_balance = None
 
                 # Parse collateral records
                 for record_data in records_list:
@@ -378,12 +375,6 @@ class MinerAccountManager:
                             asset_class = TradePairCategory(asset_class_str)
                         except ValueError:
                             bt.logging.warning(f"Unknown asset_class '{asset_class_str}' for {hotkey}")
-
-                # Handle backwards compat: migrate old cash_balance to new fields
-                if total_realized_pnl is None and old_cash_balance is not None:
-                    multiplier = ValiConfig.PORTFOLIO_LEVERAGE_CAP.get(asset_class, 1.0) if asset_class else 1.0
-                    total_realized_pnl = (old_cash_balance / multiplier) - account_size
-                    capital_used = 0.0
 
                 parsed_accounts[hotkey] = MinerAccount(
                     miner_hotkey=hotkey,
