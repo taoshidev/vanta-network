@@ -220,20 +220,26 @@ def main():
 
     print(f"\nProcessing {len(all_hotkeys)} hotkeys...")
 
+    results = []
     for hotkey in all_hotkeys:
         hotkey_open = open_positions.get(hotkey, [])
         hotkey_closed = closed_positions.get(hotkey, [])
         stats = migrate_hotkey(manager, hotkey, hotkey_open, hotkey_closed, asset_selections, DRY_RUN)
 
-        # Print account status
         account = manager.get_account(hotkey)
         if account:
-            print(f"[{hotkey[:8]}] balance: ${account.balance:,.2f}, realized_pnl: ${account.total_realized_pnl:,.2f}, capital_used: ${account.capital_used:,.2f}, open: {stats['open_processed']}, closed: {stats['closed_processed']}")
+            results.append((hotkey, account, stats))
 
         total_stats['hotkeys_processed'] += 1
         total_stats['open_processed'] += stats['open_processed']
         total_stats['closed_processed'] += stats['closed_processed']
         total_stats['errors'].extend(stats['errors'])
+
+    # Print results sorted by realized_pnl (descending)
+    results.sort(key=lambda x: x[1].total_realized_pnl, reverse=True)
+    for hotkey, account, stats in results:
+        asset_class = account.asset_class.value if account.asset_class else "None"
+        print(f"[{hotkey[:8]}] [{asset_class}] balance: ${account.balance:,.2f}, realized_pnl: ${account.total_realized_pnl:,.2f}, capital_used: ${account.capital_used:,.2f}, open: {stats['open_processed']}, closed: {stats['closed_processed']}")
 
     # Save accounts to disk
     if not DRY_RUN:
