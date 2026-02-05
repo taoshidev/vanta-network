@@ -187,7 +187,8 @@ def clear_all_transactions(dry_run: bool) -> int:
     return cleared_count
 
 
-def main():
+def main() -> bool:
+    """Run the migration. Returns True on success, False on failure."""
     print("Initializing MinerAccountManager...")
     manager = MinerAccountManager(running_unit_tests=False, connection_mode=RPCConnectionMode.LOCAL)
 
@@ -265,6 +266,9 @@ def main():
     else:
         print("\nMigration completed.")
 
+    return True
+
 
 if __name__ == "__main__":
-    main()
+    success = main()
+    exit(0 if success else 1)

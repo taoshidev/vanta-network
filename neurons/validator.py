@@ -39,6 +39,7 @@ from vali_objects.vali_dataclasses.order import Order
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.utils.limit_order.order_processor import OrderProcessor
 from shared_objects.rpc.shutdown_coordinator import ShutdownCoordinator
+from runnable.run_migrations import main as run_migrations
 
 def is_shutdown() -> bool:
     """Check if shutdown is in progress via ShutdownCoordinator."""
@@ -81,6 +82,13 @@ class Validator(ValidatorBase):
                 bt.logging.info(f"Found meta.json file {f.read()}")
         except Exception as e:
             bt.logging.error(f"Error reading meta/meta.json: {e}")
+
+        # Run any pending migrations before initializing validator state
+        print("Checking for pending migrations...")
+        if not run_migrations():
+            print("ERROR: Migration failed. Aborting validator startup.")
+            sys.exit(1)
+        print("Migrations completed successfully.")
 
         ValiBkpUtils.clear_tmp_dir()
         self.uuid_tracker = UUIDTracker()
