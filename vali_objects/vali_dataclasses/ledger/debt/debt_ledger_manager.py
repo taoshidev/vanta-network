@@ -718,10 +718,11 @@ class DebtLedgerManager():
         - Store aggregated ledger under entity_hotkey
 
         Aggregation rules:
-        - Sum: emissions, PnL, fees, open_ms, n_updates, balances
+        - Sum: emissions, realized PnL, fees, open_ms, n_updates, balances
         - Weighted average: portfolio_return (weighted by max_portfolio_value)
-        - Worst case: max_drawdown (take minimum), penalties (take minimum)
+        - Worst case: max_drawdown (take minimum)
         - Max: max_portfolio_value (sum across subaccounts)
+        - Ignore: penalties, unrealized pnl
 
         Args:
             target_cp_duration_ms: Target checkpoint duration in milliseconds
@@ -807,8 +808,8 @@ class DebtLedgerManager():
                     tao_to_usd_rate = getattr(entity_emissions_cp, "avg_tao_to_usd_rate", 0.0)
                     tao_balance = getattr(entity_emissions_cp, "tao_balance_snapshot", 0.0)
                     alpha_balance = getattr(entity_emissions_cp, "alpha_balance_snapshot", 0.0)
-                    agg_realized_pnl = sum(cp.realized_pnl for cp in checkpoints_at_time)
-                    agg_unrealized_pnl = sum(cp.unrealized_pnl for cp in checkpoints_at_time)
+                    agg_realized_pnl = sum(max(cp.realized_pnl, 0.0) for cp in checkpoints_at_time)     # sum positive realized pnl
+                    agg_unrealized_pnl = 0.0    # ignore unrealized pnl
                     agg_spread_fee = sum(cp.spread_fee_loss for cp in checkpoints_at_time)
                     agg_carry_fee = sum(cp.carry_fee_loss for cp in checkpoints_at_time)
                     agg_max_portfolio_value = sum(cp.max_portfolio_value for cp in checkpoints_at_time)
@@ -828,13 +829,6 @@ class DebtLedgerManager():
 
                     # Worst case for max_drawdown (minimum = worst drawdown)
                     agg_max_drawdown = min(cp.max_drawdown for cp in checkpoints_at_time)
-
-                    # Worst case for penalties (minimum = most restrictive)
-                    agg_drawdown_penalty = min(cp.drawdown_penalty for cp in checkpoints_at_time)
-                    agg_risk_profile_penalty = min(cp.risk_profile_penalty for cp in checkpoints_at_time)
-                    agg_min_collateral_penalty = min(cp.min_collateral_penalty for cp in checkpoints_at_time)
-                    agg_risk_adjusted_perf_penalty = min(cp.risk_adjusted_performance_penalty for cp in checkpoints_at_time)
-                    agg_total_penalty = min(cp.total_penalty for cp in checkpoints_at_time)
 
                     # Take the most restrictive challenge period status
                     # Priority: PLAGIARISM > CHALLENGE > PROBATION > MAINCOMP > UNKNOWN
@@ -875,12 +869,12 @@ class DebtLedgerManager():
                         open_ms=agg_open_ms,
                         accum_ms=agg_accum_ms,
                         n_updates=agg_n_updates,
-                        # Penalties
-                        drawdown_penalty=agg_drawdown_penalty,
-                        risk_profile_penalty=agg_risk_profile_penalty,
-                        min_collateral_penalty=agg_min_collateral_penalty,
-                        risk_adjusted_performance_penalty=agg_risk_adjusted_perf_penalty,
-                        total_penalty=agg_total_penalty,
+                        # Penalties (Ignored for entity miner)
+                        drawdown_penalty=1.0,
+                        risk_profile_penalty=1.0,
+                        min_collateral_penalty=1.0,
+                        risk_adjusted_performance_penalty=1.0,
+                        total_penalty=1.0,
                         challenge_period_status=agg_challenge_status,
                     )
 
