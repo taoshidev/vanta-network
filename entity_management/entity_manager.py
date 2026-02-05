@@ -282,6 +282,10 @@ class EntityManager(ValidatorBroadcastBase):
             if entity_hotkey in self.entities:
                 return False, f"Entity {entity_hotkey} already registered"
 
+            # Check if max entities limit is reached
+            if len(self.entities) >= ValiConfig.MAX_REGISTERED_ENTITIES:
+                return False, f"Maximum number of entities ({ValiConfig.MAX_REGISTERED_ENTITIES}) already registered. No new registrations allowed."
+
             positions = self._position_client.get_positions_for_one_hotkey(entity_hotkey)
             if positions and len(positions) > 0:
                 return False, f"Entity {entity_hotkey} is already used as a miner. Choose a new hotkey."
@@ -843,6 +847,8 @@ class EntityManager(ValidatorBroadcastBase):
                 'synthetic_hotkey': synthetic_hotkey,
                 'entity_hotkey': entity_hotkey,
                 'subaccount_id': subaccount_id,
+                'asset_class': subaccount.asset_class,
+                'account_size': subaccount.account_size,
                 'status': subaccount.status,
                 'created_at_ms': subaccount.created_at_ms,
                 'eliminated_at_ms': subaccount.eliminated_at_ms,

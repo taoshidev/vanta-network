@@ -435,7 +435,8 @@ class ValiConfig:
 
     # Entity Miners Configuration
     ENTITY_ELIMINATION_CHECK_INTERVAL = 300  # 5 minutes (in seconds) - for challenge period + elimination checks
-    ENTITY_MAX_SUBACCOUNTS = 500  # Default maximum subaccounts per entity (Phase 1)
+    MAX_REGISTERED_ENTITIES = 5  # Maximum number of entities that can register
+    ENTITY_MAX_SUBACCOUNTS = 10_000  # Default maximum subaccounts per entity (Phase 1)
     ENTITY_DATA_DIR = "validation/entities/"  # Entity data persistence directory
     FIXED_SUBACCOUNT_SIZE = 10000.0  # Fixed account size for subaccounts (USD) - placeholder
     SUBACCOUNT_COLLATERAL_AMOUNT = 1000.0  # Placeholder collateral amount per subaccount
