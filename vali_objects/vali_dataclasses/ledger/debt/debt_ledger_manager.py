@@ -76,8 +76,7 @@ class DebtLedgerManager():
         from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
         self._challengeperiod_client = ChallengePeriodClient(
             running_unit_tests=running_unit_tests,
-            connection_mode=connection_mode,
-            connect_immediately=False
+            connection_mode=connection_mode
         )
 
         # IMPORTANT: PenaltyLedgerManager runs WITHOUT its own daemon process (run_daemon=False)
