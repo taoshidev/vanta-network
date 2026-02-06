@@ -334,7 +334,7 @@ class EntityManager(ValidatorBroadcastBase):
             self._write_entities_from_memory_to_disk()
 
             # Add entity hotkey to ENTITY bucket (4x dust weight)
-            self._challengeperiod_client.set_miner_bucket(
+            self._challenge_period_client.set_miner_bucket(
                 entity_hotkey,
                 MinerBucket.ENTITY,
                 TimeUtil.now_in_millis()
@@ -985,6 +985,14 @@ class EntityManager(ValidatorBroadcastBase):
                     self.entities[entity_hotkey] = incoming_entity
                     # Create lock for new entity
                     self._entity_locks[entity_hotkey] = threading.RLock()
+
+                    # Register entity with challenge period system (ENTITY bucket - 4x dust weight)
+                    self._challenge_period_client.set_miner_bucket(
+                        entity_hotkey,
+                        MinerBucket.ENTITY,
+                        incoming_entity.registered_at_ms
+                    )
+
                     stats['entities_added'] += 1
                     stats['subaccounts_added'] += len(incoming_entity.subaccounts)
                     bt.logging.info(f"[ENTITY_MANAGER] Added new entity {entity_hotkey} with {len(incoming_entity.subaccounts)} subaccounts from sync")
