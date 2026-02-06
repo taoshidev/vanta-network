@@ -284,7 +284,7 @@ class TimeUtil:
 
     @staticmethod
     def generate_start_timestamp(days: int) -> datetime:
-        return datetime.utcnow().replace(tzinfo=timezone.utc) - timedelta(days=days)
+        return datetime.now(timezone.utc) - timedelta(days=days)
 
     @staticmethod
     def convert_range_timestamps_to_millis(timestamps: List[Tuple[datetime, datetime]]) -> List[Tuple[int, int]]:
@@ -292,7 +292,7 @@ class TimeUtil:
 
     @staticmethod
     def now_in_millis() -> int:
-        return int(datetime.utcnow().replace(tzinfo=timezone.utc).timestamp() * 1000)
+        return int(datetime.now(timezone.utc).timestamp() * 1000)
 
     @staticmethod
     def millis_to_datetime(millis: int) -> datetime:
@@ -399,14 +399,14 @@ class TimeUtil:
 
     @staticmethod
     def seconds_to_timestamp(seconds: int) -> datetime:
-        return datetime.utcfromtimestamp(seconds).replace(tzinfo=timezone.utc)
+        return datetime.fromtimestamp(seconds, tz=timezone.utc)
 
     @staticmethod
     def millis_to_timestamp(millis: int, tzone=timezone.utc, change_timezone=True) -> datetime:
         if change_timezone:
-            return datetime.utcfromtimestamp(millis / 1000).replace(tzinfo=tzone)
+            return datetime.fromtimestamp(millis / 1000, tz=tzone)
         else:
-            return datetime.utcfromtimestamp(millis / 1000)
+            return datetime.fromtimestamp(millis / 1000, tz=timezone.utc).replace(tzinfo=None)
 
     @staticmethod
     def minute_in_millis(minutes: int) -> int:

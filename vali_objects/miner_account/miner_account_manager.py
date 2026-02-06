@@ -3,7 +3,9 @@ MinerAccountManager - Manages per-miner account state and account size tracking.
 
 This manager is the source of truth for miner account state including:
 - Account size (via CollateralRecord tracking)
-- Cash balance (for equities margin)
+- balance-based buying power model (balance = account_size + total_realized_pnl,
+  buying_power = balance * multiplier - capital_used)
+- Margin loans (equities only)
 - Disk persistence of account sizes
 
 This module contains ALL account size functionality, previously split across
@@ -58,8 +60,10 @@ class CollateralRecord:
 class MinerAccount:
     """Per-miner account state. Unified source of truth for account data."""
     miner_hotkey: str
-    cash_balance: float              # Available cash (for equities margin)
-    total_borrowed_amount: float = 0.0  # Total margin loans outstanding
+    total_realized_pnl: float = 0.0     # Cumulative realized PNL from closed trades
+    capital_used: float = 0.0            # Total leveraged USD value of open positions
+    total_borrowed_amount: float = 0.0   # Total margin loans outstanding (equities only)
+    total_interest_paid: float = 0.0     # Cumulative interest paid on margin loans
     asset_class: Optional[TradePairCategory] = None  # EQUITIES, CRYPTO, FOREX
     collateral_records: List[CollateralRecord] = None  # Historical CollateralRecords (List[CollateralRecord])
     last_interest_date_ms: Optional[int] = None  # Last date interest was applied
@@ -69,20 +73,20 @@ class MinerAccount:
         if self.collateral_records is None:
             self.collateral_records = []
 
-    def add_collateral_record(self, record: 'CollateralRecord', multiplier: float = 1.0):
-        """Add a new collateral record and update account_size.
+    @property
+    def balance(self) -> float:
+        """Current balance = account_size + total_realized_pnl - total_interest_paid."""
+        return self.get_account_size() + self.total_realized_pnl - self.total_interest_paid
 
-        Args:
-            record: The CollateralRecord to add
-            multiplier: Cash balance multiplier based on asset selection (default 1.0)
-        """
-        previous_size = self.get_account_size()
-        new_size = record.account_size
+    @property
+    def buying_power(self) -> float:
+        """Available buying power = balance * multiplier - capital_used."""
+        multiplier = ValiConfig.PORTFOLIO_LEVERAGE_CAP.get(self.asset_class, 1.0) if self.asset_class else 1.0
+        return self.balance * multiplier - self.capital_used
+
+    def add_collateral_record(self, record: 'CollateralRecord'):
+        """Add a new collateral record. Account size flows through balance property."""
         self.collateral_records.append(record)
-
-        if previous_size:
-            size_increase = new_size - previous_size
-            self.cash_balance += size_increase * multiplier
 
     def get_account_size(self, timestamp_ms: Optional[int] = None) -> float:
         """Get account size at a given timestamp. Returns MIN_CAPITAL if no collateral records."""
@@ -142,38 +146,16 @@ class MinerAccount:
 
         # Calculate daily interest
         daily_interest = self.total_borrowed_amount * daily_interest_rate
-        unpaid_interest = 0.0
 
-        if self.cash_balance >= daily_interest:
-            # Full interest paid from cash
-            self.cash_balance -= daily_interest
-            bt.logging.info(
-                f"[{self.miner_hotkey[:8]}] Interest charged: ${daily_interest:.4f} (paid from cash), "
-                f"remaining cash: ${self.cash_balance:.2f}, total borrowed: ${self.total_borrowed_amount:.2f}"
-            )
-        else:
-            # Partial/no cash available: use all cash, add remainder to loan
-            unpaid_interest = daily_interest - self.cash_balance
-            self.total_borrowed_amount += unpaid_interest
-            self.cash_balance = 0.0
-            bt.logging.warning(
-                f"[{self.miner_hotkey[:8]}] Interest charged: ${daily_interest:.4f} "
-                f"(${unpaid_interest:.4f} added to loan - compounding), "
-                f"total borrowed: ${self.total_borrowed_amount:.2f}"
-            )
+        # Track interest separately (reduces balance without affecting realized PnL)
+        self.total_interest_paid += daily_interest
+        bt.logging.info(
+            f"[{self.miner_hotkey[:8]}] Interest charged: ${daily_interest:.4f} (deducted from balance), "
+            f"balance: ${self.balance:.2f}, buying_power: ${self.buying_power:.2f}, total borrowed: ${self.total_borrowed_amount:.2f}"
+        )
 
         # Update last interest date
         self.last_interest_date_ms = current_time_ms
-
-        # Record interest transaction
-        MinerAccountManager.record_transaction(
-            self.miner_hotkey,
-            timestamp_ms=current_time_ms,
-            tx_type="INTEREST",
-            cash_delta=-(daily_interest - unpaid_interest),
-            loan_delta=unpaid_interest,
-            running_unit_tests=running_unit_tests
-        )
 
         return True
 
@@ -190,9 +172,13 @@ class MinerAccount:
         result = {
             'miner_hotkey': self.miner_hotkey,
             'account_size': self.get_account_size(),
-            'cash_balance': self.cash_balance,
+            'total_realized_pnl': self.total_realized_pnl,
+            'capital_used': self.capital_used,
+            'balance': self.balance,
+            'buying_power': self.buying_power,
             'asset_class': self.asset_class.value if self.asset_class else None,
             'total_borrowed_amount': self.total_borrowed_amount,
+            'total_interest_paid': self.total_interest_paid,
             'last_interest_date_ms': self.last_interest_date_ms
         }
 
@@ -211,8 +197,9 @@ class MinerAccountManager:
 
     This is the unified source of truth for:
     - Account sizes (via CollateralRecord history in MinerAccount)
-    - Cash balances (for equities margin)
-    - Margin loans (total_borrowed_amount)
+    - balance and buying power (derived from account_size + total_realized_pnl)
+    - Capital used (leveraged value of open positions)
+    - Margin loans (total_borrowed_amount, equities only)
     - Disk persistence of account data
 
     The ValidatorContractManager delegates all account size operations here.
@@ -275,6 +262,7 @@ class MinerAccountManager:
         with self._disk_lock:
             try:
                 accounts_data = ValiUtils.get_vali_json_file_dict(self.MINER_ACCOUNTS_FILE)
+                accounts_data.pop("_cost_per_theta", None)  # ignore legacy field
                 asset_selection_data = dict(ValiUtils.get_vali_json_file(self.ASSET_SELECTIONS_FILE))
                 parsed_accounts = self._parse_accounts_dict(accounts_data, asset_selection_data)
 
@@ -320,16 +308,7 @@ class MinerAccountManager:
                     records = account.collateral_records
 
                 records_list = [vars(record).copy() for record in records]
-
-                # If no collateral records, create empty record for account-level fields
-                if not records_list:
-                    records_list.append({})
-
-                # Add account-level fields to the last record
-                records_list[-1]["cash_balance"] = account.cash_balance
-                records_list[-1]["asset_class"] = account.asset_class.value if account.asset_class else None
-                records_list[-1]["total_borrowed_amount"] = account.total_borrowed_amount
-                records_list[-1]["last_interest_date_ms"] = account.last_interest_date_ms
+                records_list.append(account.to_dict(include_collateral_records=False))
 
                 json_dict[hotkey] = records_list
             return json_dict
@@ -359,12 +338,16 @@ class MinerAccountManager:
                 # Extract account-level fields from the last record in the list
                 if records_list and isinstance(records_list[-1], dict):
                     last_record = records_list[-1]
-                    cash_balance = last_record.get("cash_balance")
+                    total_realized_pnl = last_record.get("total_realized_pnl")
+                    capital_used = last_record.get("capital_used")
                     total_borrowed = last_record.get("total_borrowed_amount", 0.0)
+                    total_interest_paid = last_record.get("total_interest_paid", 0.0)
                     last_interest_date_ms = last_record.get("last_interest_date_ms")
                 else:
-                    cash_balance = None  # Will default to account_size
+                    total_realized_pnl = None
+                    capital_used = None
                     total_borrowed = 0.0
+                    total_interest_paid = 0.0
                     last_interest_date_ms = None
 
                 # Parse collateral records
@@ -395,8 +378,10 @@ class MinerAccountManager:
 
                 parsed_accounts[hotkey] = MinerAccount(
                     miner_hotkey=hotkey,
-                    cash_balance=cash_balance if cash_balance is not None else account_size,
+                    total_realized_pnl=total_realized_pnl if total_realized_pnl is not None else 0.0,
+                    capital_used=capital_used if capital_used is not None else 0.0,
                     total_borrowed_amount=total_borrowed,
+                    total_interest_paid=total_interest_paid,
                     asset_class=asset_class,
                     collateral_records=collateral_records,
                     last_interest_date_ms=last_interest_date_ms
@@ -472,16 +457,8 @@ class MinerAccountManager:
                     bt.logging.info(f"Skipping save for {hotkey} - new record matches last record")
                     return collateral_record
 
-            # Get asset selection multiplier for cash balance scaling
-            asset_selection = self._asset_selection_client.get_asset_selection(hotkey)
-            multiplier = ValiConfig.CASH_BALANCE_MULTIPLIER.get(asset_selection, 1.0)
-
-            # Update asset_class if not already set
-            if account.asset_class is None:
-                account.asset_class = asset_selection
-
             # Add the new record and update account size
-            account.add_collateral_record(collateral_record, multiplier=multiplier)
+            account.add_collateral_record(collateral_record)
 
             # Save to disk
             self._save_accounts_to_disk()
@@ -568,16 +545,8 @@ class MinerAccountManager:
                         bt.logging.debug(f"Most recent collateral record for {hotkey} already exists")
                         return True
 
-                # Get asset selection multiplier for cash balance scaling
-                asset_selection = self._asset_selection_client.get_asset_selection(hotkey)
-                multiplier = ValiConfig.CASH_BALANCE_MULTIPLIER.get(asset_selection, 1.0)
-
-                # Update asset_class if not already set
-                if account.asset_class is None:
-                    account.asset_class = asset_selection
-
                 # Add the new record and update account size
-                account.add_collateral_record(collateral_record, multiplier=multiplier)
+                account.add_collateral_record(collateral_record)
 
                 # Save to disk
                 self._save_accounts_to_disk()
@@ -595,14 +564,13 @@ class MinerAccountManager:
     # ==================== MinerAccount Cache Methods ====================
 
     def get_or_create(self, hotkey: str) -> MinerAccount:
-        """Get existing account or create new one with MIN_CAPITAL scaled by asset selection multiplier."""
+        """Get existing account or create new one with zero realized PNL and zero capital used."""
         if hotkey not in self.accounts:
-            # Get asset selection for initial cash balance and asset_class
             asset_selection = self._asset_selection_client.get_asset_selection(hotkey)
-            multiplier = ValiConfig.CASH_BALANCE_MULTIPLIER.get(asset_selection, 1.0)
             self.accounts[hotkey] = MinerAccount(
                 miner_hotkey=hotkey,
-                cash_balance=ValiConfig.MIN_CAPITAL * multiplier,
+                total_realized_pnl=0.0,
+                capital_used=0.0,
                 asset_class=asset_selection,
             )
         return self.accounts[hotkey]
@@ -631,145 +599,80 @@ class MinerAccountManager:
 
     # ==================== Margin/Cash Processing Methods ====================
 
-    @staticmethod
-    def record_transaction(
-        hotkey: str,
-        timestamp_ms: int,
-        tx_type: str,
-        cash_delta: float = 0.0,
-        loan_delta: float = 0.0,
-        running_unit_tests: bool = False
-    ) -> None:
-        """Record a transaction to the miner's transaction history."""
-        try:
-            tx_path = ValiBkpUtils.get_miner_transactions_path(
-                hotkey, running_unit_tests=running_unit_tests
-            )
-            transaction = {
-                "timestamp_ms": timestamp_ms,
-                "type": tx_type,
-                "cash_delta": cash_delta,
-                "loan_delta": loan_delta
-            }
-            ValiBkpUtils.append_transaction(tx_path, transaction)
-        except Exception as e:
-            bt.logging.error(f"Failed to record transaction for {hotkey}: {e}")
-
     def process_order_buy(self, hotkey: str, order_value_usd: float) -> float:
         """
-        Process buy order cash/margin.
+        Process buy order. Check buying_power and track capital_used.
+
+        All asset classes: check buying_power >= order_value, then capital_used += order_value.
+        For equities: only borrow when the order exceeds available cash (balance - capital_used).
+        When borrowing is needed, borrowed_amount = order_value * 0.5.
 
         Args:
             hotkey: Miner's hotkey
-            order_value_usd: Order value in USD
+            order_value_usd: Order value in USD (full leveraged value)
 
-        Returns: borrowed_amount
-        Raises: SignalException if insufficient funds for margin
+        Returns: borrowed_amount (equities only, 0.0 for others)
+        Raises: SignalException if insufficient buying power
         """
         account = self.get_or_create(hotkey)
         order_value_usd = abs(order_value_usd)
 
         with self._accounts_lock:
-            if account.asset_class != TradePairCategory.EQUITIES:
-                # Crypto/Forex: cash only, no margin
-                if order_value_usd > account.cash_balance:
-                    raise SignalException(
-                        f"Insufficient cash. Need ${order_value_usd:.2f}, have ${account.cash_balance:.2f}"
-                    )
-                account.cash_balance -= order_value_usd
-                self._save_accounts_to_disk()
-                MinerAccountManager.record_transaction(
-                    hotkey, TimeUtil.now_in_millis(), "BUY",
-                    cash_delta=-order_value_usd,
-                    running_unit_tests=self.running_unit_tests
-                )
-                bt.logging.info(f"[{hotkey[:8]}] Cash purchase: ${order_value_usd:.2f}, remaining cash: ${account.cash_balance:.2f}")
-                return 0.0
-
-            # Equities: cash or margin
-            if order_value_usd <= account.cash_balance:
-                # Pure cash purchase - no margin needed
-                account.cash_balance -= order_value_usd
-                self._save_accounts_to_disk()
-                MinerAccountManager.record_transaction(
-                    hotkey, TimeUtil.now_in_millis(), "BUY",
-                    cash_delta=-order_value_usd,
-                    running_unit_tests=self.running_unit_tests
-                )
-                bt.logging.info(f"[{hotkey[:8]}] Cash purchase: ${order_value_usd:.2f}, remaining cash: ${account.cash_balance:.2f}")
-                return 0.0
-
-            # Margin purchase (50% initial margin requirement)
-            initial_margin = order_value_usd * 0.5
-            if account.cash_balance < initial_margin:
+            if order_value_usd > account.buying_power:
                 raise SignalException(
-                    f"Insufficient funds. Need ${initial_margin:.2f} (50% margin), have ${account.cash_balance:.2f}"
+                    f"Insufficient buying power. Need ${order_value_usd:.2f}, have ${account.buying_power:.2f}"
                 )
 
-            borrowed_amount = order_value_usd - initial_margin
-            account.cash_balance -= initial_margin
-            account.total_borrowed_amount += borrowed_amount
+            borrowed_amount = 0.0
+            # Equities: only borrow if order exceeds available cash
+            if account.asset_class == TradePairCategory.EQUITIES:
+                available_cash = account.balance - account.capital_used
+                if order_value_usd > available_cash:
+                    borrowed_amount = order_value_usd * 0.5
+                    account.total_borrowed_amount += borrowed_amount
+
+            account.capital_used += order_value_usd
 
             self._save_accounts_to_disk()
-            MinerAccountManager.record_transaction(
-                hotkey, TimeUtil.now_in_millis(), "BUY",
-                cash_delta=-initial_margin,
-                loan_delta=borrowed_amount,
-                running_unit_tests=self.running_unit_tests
-            )
+
             bt.logging.info(
-                f"[{hotkey[:8]}] Margin purchase: ${order_value_usd:.2f}, margin used: ${initial_margin:.2f}, "
-                f"borrowed: ${borrowed_amount:.2f}, total borrowed: ${account.total_borrowed_amount:.2f}"
+                f"[{hotkey[:8]}] Buy: ${order_value_usd:.2f}, capital_used: ${account.capital_used:.2f}, "
+                f"buying_power: ${account.buying_power:.2f}, borrowed: ${borrowed_amount:.2f}"
             )
             return borrowed_amount
 
-    def process_order_sell(self, hotkey: str, sale_proceeds_usd: float, position_margin_loan: float) -> float:
+    def process_order_sell(self, hotkey: str, entry_value_usd: float, realized_pnl: float, position_margin_loan: float) -> float:
         """
-        Process sell/close order. Pay off loan first, return rest to cash.
+        Process sell/close order. Free capital_used, compound realized PNL to balance.
 
         Args:
             hotkey: Miner's hotkey
-            sale_proceeds_usd: Proceeds from sale in USD
-            position_margin_loan: Margin loan amount for this position
-            trade_pair_category: TradePairCategory enum value
+            entry_value_usd: Original entry value of the position being closed (full leveraged value)
+            realized_pnl: Realized PNL from this sale (raw, unmultiplied)
+            position_margin_loan: Margin loan amount for this position (equities only)
 
         Returns: loan_repaid
         """
         account = self.get_or_create(hotkey)
-        sale_proceeds_usd = abs(sale_proceeds_usd)
+        entry_value_usd = abs(entry_value_usd)
         position_margin_loan = abs(position_margin_loan)
 
         with self._accounts_lock:
-            if account.asset_class != TradePairCategory.EQUITIES:
-                # Crypto/Forex: no margin loans, all proceeds return to cash
-                account.cash_balance += sale_proceeds_usd
-                self._save_accounts_to_disk()
-                MinerAccountManager.record_transaction(
-                    hotkey, TimeUtil.now_in_millis(), "SELL",
-                    cash_delta=sale_proceeds_usd,
-                    running_unit_tests=self.running_unit_tests
-                )
-                bt.logging.info(f"[{hotkey[:8]}] Sell processed: ${sale_proceeds_usd:.2f}, cash: ${account.cash_balance:.2f}")
-                return 0.0
+            # All asset classes: free capital and compound realized PNL
+            account.capital_used = max(0.0, account.capital_used - entry_value_usd)
+            account.total_realized_pnl += realized_pnl
 
-            # Equities: pay off loan first, return rest to cash
-            # Floor by total_borrowed_amount to prevent negative balance
-            loan_repaid = min(position_margin_loan, sale_proceeds_usd, account.total_borrowed_amount)
-            cash_returned = sale_proceeds_usd - loan_repaid
-
-            account.total_borrowed_amount -= loan_repaid
-            account.cash_balance += cash_returned
+            loan_repaid = 0.0
+            if account.asset_class == TradePairCategory.EQUITIES and position_margin_loan > 0:
+                # Repay position loan from sale proceeds
+                loan_repaid = min(position_margin_loan, account.total_borrowed_amount, entry_value_usd + realized_pnl)
+                account.total_borrowed_amount -= loan_repaid
 
             self._save_accounts_to_disk()
-            MinerAccountManager.record_transaction(
-                hotkey, TimeUtil.now_in_millis(), "SELL",
-                cash_delta=cash_returned,
-                loan_delta=-loan_repaid,
-                running_unit_tests=self.running_unit_tests
-            )
+
             bt.logging.info(
-                f"[{hotkey[:8]}] Sell processed: proceeds ${sale_proceeds_usd:.2f}, loan repaid: ${loan_repaid:.2f}, "
-                f"cash returned: ${cash_returned:.2f}, remaining borrowed: ${account.total_borrowed_amount:.2f}"
+                f"[{hotkey[:8]}] Sell: entry_value=${entry_value_usd:.2f}, pnl=${realized_pnl:.2f}, "
+                f"loan_repaid=${loan_repaid:.2f}, balance=${account.balance:.2f}, buying_power=${account.buying_power:.2f}"
             )
             return loan_repaid
 
@@ -802,59 +705,6 @@ class MinerAccountManager:
 
         return accounts_processed
 
-    def reconstruct_account_from_transactions(self, hotkey: str) -> Optional[MinerAccount]:
-        """
-        Reconstruct a MinerAccount from collateral records and transaction history.
-        Returns None if account doesn't exist.
-        """
-        account = self.get_account(hotkey)
-        if not account or not account.collateral_records:
-            return None
-
-        multiplier = ValiConfig.CASH_BALANCE_MULTIPLIER.get(account.asset_class, 1.0) if account.asset_class else 1.0
-
-        # Start with first collateral record
-        initial_size = account.collateral_records[0].account_size
-        cash_balance = initial_size * multiplier
-        total_borrowed = 0.0
-
-        # Read transactions
-        tx_path = ValiBkpUtils.get_miner_transactions_path(hotkey, running_unit_tests=self.running_unit_tests)
-        transactions = ValiBkpUtils.read_transactions(tx_path)
-
-        # Track collateral changes
-        cr_idx = 1
-        for tx in sorted(transactions, key=lambda x: x['timestamp_ms']):
-            tx_time = tx['timestamp_ms']
-
-            # Apply collateral changes before this transaction
-            while cr_idx < len(account.collateral_records):
-                cr = account.collateral_records[cr_idx]
-                if cr.valid_date_timestamp <= tx_time:
-                    prev_size = account.collateral_records[cr_idx - 1].account_size
-                    cash_balance += (cr.account_size - prev_size) * multiplier
-                    cr_idx += 1
-                else:
-                    break
-
-            cash_balance += tx['cash_delta']
-            total_borrowed += tx['loan_delta']
-
-        # Apply remaining collateral records
-        while cr_idx < len(account.collateral_records):
-            cr = account.collateral_records[cr_idx]
-            prev_size = account.collateral_records[cr_idx - 1].account_size
-            cash_balance += (cr.account_size - prev_size) * multiplier
-            cr_idx += 1
-
-        return MinerAccount(
-            miner_hotkey=hotkey,
-            cash_balance=cash_balance,
-            total_borrowed_amount=total_borrowed,
-            asset_class=account.asset_class,
-            collateral_records=account.collateral_records
-        )
-
     # ==================== Asset Selection / Withdrawal Methods ====================
 
     def set_asset_selection_client(self, client: AssetSelectionClient) -> None:
@@ -865,15 +715,10 @@ class MinerAccountManager:
         """
         Check if miner can withdraw the specified amount of collateral.
 
-        The cash balance represents available trading capacity. If positions are open,
-        some collateral must be withheld to support those positions.
-
+        Uses buying_power to determine how much collateral can be freed.
         Formula:
-            total_cash_capacity = account_size * multiplier
-            cash_used = total_cash_capacity - cash_balance
-            collateral_needed_usd = cash_used / multiplier
-            max_withdrawable_usd = account_size - collateral_needed_usd
-            max_withdrawable_theta = max_withdrawable_usd / COST_PER_THETA
+            collateral_freeable_usd = buying_power / multiplier
+            max_withdrawable_theta = collateral_freeable_usd / COST_PER_THETA
 
         Args:
             hotkey: Miner's hotkey
@@ -893,67 +738,25 @@ class MinerAccountManager:
             if account is None:
                 return True
 
-            account_size = account.get_account_size()
-            cash_balance = account.cash_balance
-            multiplier = ValiConfig.CASH_BALANCE_MULTIPLIER.get(asset_selection, 1.0)
+            multiplier = ValiConfig.PORTFOLIO_LEVERAGE_CAP.get(asset_selection, 1.0)
 
-            # Total virtual cash capacity based on account size and multiplier
-            total_cash_capacity = account_size * multiplier
-
-            # Cash used in positions = total capacity - available cash
-            cash_used = total_cash_capacity - cash_balance
-
-            # Collateral needed to back the used cash (inverse of multiplier)
-            collateral_needed_usd = cash_used / multiplier
-
-            # Max withdrawable is current account size minus what's needed
-            max_withdrawable_usd = account_size - collateral_needed_usd
-
-            # Convert to theta
+            # Max collateral freeable = buying_power / multiplier
+            max_withdrawable_usd = account.buying_power / multiplier
             max_withdrawable_theta = max_withdrawable_usd / ValiConfig.COST_PER_THETA
 
             return amount_theta <= max(0.0, max_withdrawable_theta)
 
-    def recalculate_cash_balance_for_asset_selection(self, hotkey: str, asset_selection: TradePairCategory) -> bool:
-        """
-        Recalculate cash balance when a miner selects an asset class.
+    def update_asset_selection(self, hotkey: str, asset_selection: TradePairCategory) -> bool:
 
-        This handles the case where a miner deposits collateral before selecting an asset class.
-        When they later select an asset class, the cash balance needs to be recalculated
-        based on the new multiplier.
-
-        Formula:
-            new_cash_balance = account_size * multiplier
-
-        Args:
-            hotkey: Miner's hotkey
-            asset_selection: The TradePairCategory the miner selected
-
-        Returns:
-            True if cash balance was updated, False otherwise
-        """
         with self._accounts_lock:
-            account = self.accounts.get(hotkey)
-            if account is None:
-                bt.logging.debug(f"[{hotkey[:8]}] No account found for asset selection recalculation")
-                return False
-
-            account_size = account.get_account_size()
-            multiplier = ValiConfig.CASH_BALANCE_MULTIPLIER.get(asset_selection, 1.0)
-
-            # Calculate new cash balance based on account size and multiplier
-            new_cash_balance = account_size * multiplier
-            old_cash_balance = account.cash_balance
-
-            # Update cash balance and asset_class
-            account.cash_balance = new_cash_balance
+            account = self.get_or_create(hotkey)
             account.asset_class = asset_selection
 
             # Save to disk
             self._save_accounts_to_disk()
 
             bt.logging.info(
-                f"[{hotkey[:8]}] Recalculated cash balance for {asset_selection.value}: "
-                f"${old_cash_balance:,.2f} -> ${new_cash_balance:,.2f} (multiplier: {multiplier}x)"
+                f"[{hotkey[:8]}] Set asset class to {asset_selection.value}: "
+                f"balance: ${account.balance:.2f}, buying_power: ${account.buying_power:.2f}"
             )
             return True

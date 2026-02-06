@@ -560,8 +560,6 @@ class MinerStatisticsManager:
             account_records = account_size_object.get(hotkey, [])
             # cash_balance and total_borrowed_amount are stored on the last record
             last_record = account_records[-1] if account_records else {}
-            cash_balance = last_record.get("cash_balance")
-            total_borrowed_amount = last_record.get("total_borrowed_amount")
 
             result[hotkey] = {
                 "account_size_statistics": {
@@ -569,8 +567,8 @@ class MinerStatisticsManager:
                     "rank": account_size_ranks.get(hotkey),
                     "percentile": account_size_percentiles.get(hotkey),
                     "account_sizes": account_records,
-                    "cash_balance": cash_balance,
-                    "total_borrowed_amount": total_borrowed_amount
+                    "cash_balance": last_record.get("buying_power"),
+                    **last_record
                 }
             }
 

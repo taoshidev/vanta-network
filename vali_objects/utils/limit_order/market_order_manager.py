@@ -256,19 +256,20 @@ class MarketOrderManager():
             # Buy: pay value plus slippage cost (raises SignalException if invalid)
             order.margin_loan = self._miner_account_client.process_order_buy(miner_hotkey, abs(value) * (1 + order.slippage))
         else:
-            # Sell: receive sale proceeds minus slippage cost
+            # Sell: free capital_used and compound realized PNL to equity
             processed_qty = existing_position.net_quantity if order.order_type == OrderType.FLAT else quantity
-            current_value = abs(processed_qty) * trade_pair.lot_size / order.usd_base_rate
+            entry_value = abs(processed_qty) * trade_pair.lot_size * existing_position.average_entry_price * order.quote_usd_rate
 
             if existing_position.position_type == OrderType.SHORT:
-                # For SHORT positions: proceeds = entry_value + (entry_value - current_value)
-                entry_value = abs(processed_qty) * trade_pair.lot_size * existing_position.average_entry_price * order.quote_usd_rate
-                sale_proceeds = 2 * entry_value - current_value
+                exit_price = order.price * (1 + order.slippage)
+                order_realized_pnl = (existing_position.average_entry_price - exit_price) * abs(processed_qty) * trade_pair.lot_size * order.quote_usd_rate
             else:
-                # For LONG positions: proceeds = current_value
-                sale_proceeds = current_value
+                exit_price = order.price * (1 - order.slippage)
+                order_realized_pnl = (exit_price - existing_position.average_entry_price) * abs(processed_qty) * trade_pair.lot_size * order.quote_usd_rate
 
-            loan_repaid = self._miner_account_client.process_order_sell(miner_hotkey, abs(sale_proceeds) * (1 - order.slippage), existing_position.margin_loan)
+            bt.logging.info(f"[ORDER] entry_value=${entry_value:.2f} realized_pnl=${order_realized_pnl:.2f}")
+
+            loan_repaid = self._miner_account_client.process_order_sell(miner_hotkey, entry_value, order_realized_pnl, existing_position.margin_loan)
             # Store loan repayment as negative margin_loan so position.margin_loan sums correctly
             order.margin_loan = -loan_repaid
 

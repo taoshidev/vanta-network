@@ -181,6 +181,9 @@ validation/tmp/
 tests/validation/miners/
 tests/validation/plagiarism/
 
+# Migration tracking
+runnable/migrations/migrations_completed.txt
+
 # Miner build files
 miner_objects/miner_dashboard/*.tsbuildinfo
 
