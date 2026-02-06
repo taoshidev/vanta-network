@@ -608,7 +608,7 @@ class TestChallengePeriodUnit(TestBase):
         base_positions = deepcopy(self.DEFAULT_POSITIONS)
 
         # Return True if there are enough trading days
-        self.assertEqual(ChallengePeriodManager.screen_minimum_interaction(base_ledger_portfolio), True)
+        self.assertEqual(ChallengePeriodManager.screen_minimum_interaction(base_ledger_portfolio, ValiConfig.CHALLENGE_PERIOD_MINIMUM_DAYS), True)
 
         inspection_positions, hk_to_first_order_time = self.save_and_get_positions(base_positions, ["miner"])
         inspection_ledger = {"miner": base_ledger}
@@ -641,10 +641,10 @@ class TestChallengePeriodUnit(TestBase):
 
         base_ledger_portfolio.cps = []
         # Return False if there are no checkpoints
-        self.assertEqual(ChallengePeriodManager.screen_minimum_interaction(base_ledger_portfolio), False)
+        self.assertEqual(ChallengePeriodManager.screen_minimum_interaction(base_ledger_portfolio, ValiConfig.CHALLENGE_PERIOD_MINIMUM_DAYS), False)
 
         # Return False if ledger is none
-        self.assertEqual(ChallengePeriodManager.screen_minimum_interaction(None), False)
+        self.assertEqual(ChallengePeriodManager.screen_minimum_interaction(None, ValiConfig.CHALLENGE_PERIOD_MINIMUM_DAYS), False)
 
     def test_not_enough_days(self):
         """A miner with a passing score but not enough trading days shouldn't be promoted"""

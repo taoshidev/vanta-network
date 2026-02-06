@@ -445,6 +445,9 @@ class ValiConfig:
     SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD = 0.08  # 8% returns required to pass challenge period
     SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD = 0.05  # 5% max drawdown allowed during challenge period
 
+    # Subaccount promotion requirements
+    SUBACCOUNT_FUNDED_MINIMUM_DAYS = 90  # Minimum days in FUNDED before promoting to ALPHA
+
     # Distributional statistics
     SOFTMAX_TEMPERATURE = 0.15
 

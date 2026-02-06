@@ -333,6 +333,13 @@ class EntityManager(ValidatorBroadcastBase):
             self._entity_locks[entity_hotkey] = threading.RLock()
             self._write_entities_from_memory_to_disk()
 
+            # Add entity hotkey to ENTITY bucket (4x dust weight)
+            self._challengeperiod_client.set_miner_bucket(
+                entity_hotkey,
+                MinerBucket.ENTITY,
+                TimeUtil.now_in_millis()
+            )
+
             bt.logging.info(
                 f"[ENTITY_MANAGER] Registered entity {entity_hotkey} with max_subaccounts={max_subaccounts}, "
                 f"slashed {ValiConfig.ENTITY_REGISTRATION_FEE} theta"
@@ -656,7 +663,10 @@ class EntityManager(ValidatorBroadcastBase):
             earning_checkpoints = [
                 cp for cp in debt_ledger.checkpoints
                 if start_time_ms <= cp.timestamp_ms <= end_time_ms
-                   and cp.challenge_period_status in (MinerBucket.MAINCOMP.value, MinerBucket.PROBATION.value)
+                   and cp.challenge_period_status in (
+                       MinerBucket.SUBACCOUNT_FUNDED.value,
+                       MinerBucket.SUBACCOUNT_ALPHA.value
+                   )
             ]
 
             # Calculate payout

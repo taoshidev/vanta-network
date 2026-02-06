@@ -327,7 +327,12 @@ class DebtBasedScoring:
             # Only include checkpoints where status is MAINCOMP or PROBATION (earning periods)
             earning_checkpoints = [
                 cp for cp in cumulative_checkpoints
-                if cp.challenge_period_status in (MinerBucket.MAINCOMP.value, MinerBucket.PROBATION.value)
+                if cp.challenge_period_status in (
+                    MinerBucket.MAINCOMP.value,
+                    MinerBucket.PROBATION.value,
+                    MinerBucket.SUBACCOUNT_FUNDED.value,
+                    MinerBucket.SUBACCOUNT_ALPHA.value
+                )
             ]
 
             # Calculate needed payout from activation through end of previous pay period (in USD)
@@ -358,7 +363,12 @@ class DebtBasedScoring:
             cumulative_payout_checkpoints = [
                 cp for cp in debt_ledger.checkpoints
                 if payout_calc_start_ms <= cp.timestamp_ms <= current_time_ms
-                and cp.challenge_period_status in (MinerBucket.MAINCOMP.value, MinerBucket.PROBATION.value)
+                and cp.challenge_period_status in (
+                    MinerBucket.MAINCOMP.value,
+                    MinerBucket.PROBATION.value,
+                    MinerBucket.SUBACCOUNT_FUNDED.value,
+                    MinerBucket.SUBACCOUNT_ALPHA.value
+                )
             ]
             actual_payout_usd = sum(cp.chunk_emissions_usd for cp in cumulative_payout_checkpoints)
 
@@ -649,7 +659,9 @@ class DebtBasedScoring:
         if earning_statuses is None:
             earning_statuses = {
                 MinerBucket.MAINCOMP.value,
-                MinerBucket.PROBATION.value
+                MinerBucket.PROBATION.value,
+                MinerBucket.SUBACCOUNT_FUNDED.value,
+                MinerBucket.SUBACCOUNT_ALPHA.value
             }
 
         if not ledger.checkpoints:
@@ -1041,6 +1053,8 @@ class DebtBasedScoring:
             MinerBucket.MAINCOMP.value: 3,  # 3x dust floor
             MinerBucket.UNKNOWN.value: 0,  # 0x dust (no weight for unknown status)
             MinerBucket.PLAGIARISM.value: 1,  # 1x dust floor
+            # Entity bucket (synthetic hotkeys don't need dust - not in metagraph)
+            MinerBucket.ENTITY.value: 4,  # 4x dust floor
         }
 
         dynamic_weights = {}
@@ -1192,6 +1206,8 @@ class DebtBasedScoring:
             MinerBucket.UNKNOWN.value: 0 * DUST,  # 0x dust (no weight for unknown status)
             MinerBucket.PROBATION.value: 2 * DUST,
             MinerBucket.MAINCOMP.value: 3 * DUST,
+            # Entity bucket (synthetic hotkeys don't need dust - not in metagraph)
+            MinerBucket.ENTITY.value: 4 * DUST,
         }
 
         # Batch read all statuses in one IPC call to minimize overhead

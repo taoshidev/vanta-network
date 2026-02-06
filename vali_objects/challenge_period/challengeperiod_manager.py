@@ -187,7 +187,11 @@ class ChallengePeriodManager(CacheController):
             default_time=current_time
         )
 
-        challengeperiod_success_hotkeys = self.get_hotkeys_by_bucket(MinerBucket.MAINCOMP)
+        challengeperiod_success_hotkeys = (
+            self.get_hotkeys_by_bucket(MinerBucket.MAINCOMP) +
+            self.get_hotkeys_by_bucket(MinerBucket.SUBACCOUNT_FUNDED) +
+            self.get_hotkeys_by_bucket(MinerBucket.SUBACCOUNT_ALPHA)
+        )
         challengeperiod_testing_hotkeys = self.get_hotkeys_by_bucket(MinerBucket.CHALLENGE)
         challengeperiod_probation_hotkeys = self.get_hotkeys_by_bucket(MinerBucket.PROBATION)
         all_miners = challengeperiod_success_hotkeys + challengeperiod_testing_hotkeys + challengeperiod_probation_hotkeys
@@ -297,7 +301,8 @@ class ChallengePeriodManager(CacheController):
             return ValiConfig.CHALLENGE_PERIOD_MAXIMUM_MS  # 61-90 days
         elif bucket == MinerBucket.PROBATION:
             return ValiConfig.PROBATION_MAXIMUM_MS  # 60 days
-        return 0  # MAINCOMP has no time limit
+        # MAINCOMP, SUBACCOUNT_CHALLENGE, SUBACCOUNT_FUNDED, SUBACCOUNT_ALPHA, ENTITY have no max time limit
+        return 0
 
     def _check_time_limit(
         self,
@@ -483,7 +488,7 @@ class ChallengePeriodManager(CacheController):
 
         Applied to:
         - All regular hotkeys (CHALLENGE, PROBATION)
-        - Synthetic hotkeys in PROBATION (demoted from MAINCOMP)
+        - Synthetic hotkeys in (FUNDED, ALPHA)
 
         Note: Synthetic hotkeys in MAINCOMP aren't in inspection_hotkeys,
         but can be in success_hotkeys for demotion evaluation.
@@ -551,7 +556,8 @@ class ChallengePeriodManager(CacheController):
             rank_eligible_hotkeys.append(hotkey)
 
             # Additional check for promotion: minimum trading days
-            if self.screen_minimum_interaction(inspection_ledger):
+            min_trading_days = ValiConfig.SUBACCOUNT_FUNDED_MINIMUM_DAYS if bucket == MinerBucket.SUBACCOUNT_FUNDED else ValiConfig.CHALLENGE_PERIOD_MINIMUM_DAYS
+            if self.screen_minimum_interaction(inspection_ledger, min_trading_days):
                 promotion_eligible_hotkeys.append(hotkey)
 
         # Calculate dynamic minimum participation days for asset classes
@@ -631,10 +637,11 @@ class ChallengePeriodManager(CacheController):
         for hotkey, bucket_start_time in inspection_hotkeys.items():
             bucket = self.get_miner_bucket(hotkey)
 
-            if is_synthetic_hotkey(hotkey) and bucket == MinerBucket.CHALLENGE:
+            if is_synthetic_hotkey(hotkey) and bucket == MinerBucket.SUBACCOUNT_CHALLENGE:
+                # Synthetic hotkeys in SUBACCOUNT_CHALLENGE use instantaneous pass
                 synthetic_challenge_hotkeys[hotkey] = bucket_start_time
             else:
-                # Regular miners + synthetic miners in PROBATION/MAINCOMP
+                # Regular miners + synthetic miners in SUBACCOUNT_FUNDED/SUBACCOUNT_ALPHA
                 rank_based_hotkeys[hotkey] = bucket_start_time
 
         bt.logging.info(
@@ -810,14 +817,14 @@ class ChallengePeriodManager(CacheController):
         return self._cached_asset_softmaxed_scores, self._cached_asset_competitiveness
 
     @staticmethod
-    def screen_minimum_interaction(ledger_element) -> bool:
+    def screen_minimum_interaction(ledger_element, min_trading_days) -> bool:
         """Check if miner has minimum number of trading days."""
         if ledger_element is None:
             bt.logging.warning("Ledger element is None. Returning False.")
             return False
 
         miner_returns = LedgerUtils.daily_return_log(ledger_element)
-        return len(miner_returns) >= ValiConfig.CHALLENGE_PERIOD_MINIMUM_DAYS
+        return len(miner_returns) >= min_trading_days
 
     def meets_time_criteria(self, current_time, bucket_start_time, bucket):
         if bucket == MinerBucket.MAINCOMP:
@@ -938,17 +945,31 @@ class ChallengePeriodManager(CacheController):
         return elim_miners_to_return
 
     def _promote_challengeperiod_in_memory(self, hotkeys: list[str], current_time: int):
-        """Promote miners to main competition."""
+        """Promote miners to next tier."""
         if len(hotkeys) > 0:
-            bt.logging.info(f"Promoting {len(hotkeys)} miners to main competition.")
+            bt.logging.info(f"Promoting {len(hotkeys)} miners.")
 
         for hotkey in hotkeys:
             bucket_value = self.get_miner_bucket(hotkey)
             if bucket_value is None:
                 bt.logging.error(f"Hotkey {hotkey} is not an active miner. Skipping promotion")
                 continue
-            bt.logging.info(f"Promoting {hotkey} from {self.get_miner_bucket(hotkey).value} to MAINCOMP")
-            self.set_miner_bucket(hotkey, MinerBucket.MAINCOMP, current_time)
+
+            # Determine target bucket based on current bucket
+            if bucket_value == MinerBucket.CHALLENGE:
+                target_bucket = MinerBucket.MAINCOMP
+            elif bucket_value == MinerBucket.PROBATION:
+                target_bucket = MinerBucket.MAINCOMP
+            elif bucket_value == MinerBucket.SUBACCOUNT_CHALLENGE:
+                target_bucket = MinerBucket.SUBACCOUNT_FUNDED
+            elif bucket_value == MinerBucket.SUBACCOUNT_FUNDED:
+                target_bucket = MinerBucket.SUBACCOUNT_ALPHA
+            else:
+                bt.logging.error(f"Cannot promote {hotkey} from bucket {bucket_value.value}")
+                continue
+
+            bt.logging.info(f"Promoting {hotkey} from {bucket_value.value} to {target_bucket.value}")
+            self.set_miner_bucket(hotkey, target_bucket, current_time)
 
     def _promote_plagiarism_to_previous_bucket_in_memory(self, hotkeys: list[str], current_time):
         """Promote plagiarism miners to their previous bucket."""
@@ -1081,7 +1102,10 @@ class ChallengePeriodManager(CacheController):
             first_order_time = hk_to_first_order_time.get(hotkey)
             if first_order_time is None:
                 if not self.has_miner(hotkey):
-                    self.set_miner_bucket(hotkey, MinerBucket.CHALLENGE, default_time)
+                    if is_synthetic_hotkey(hotkey):
+                        self.set_miner_bucket(hotkey, MinerBucket.SUBACCOUNT_CHALLENGE, default_time)
+                    else:
+                        self.set_miner_bucket(hotkey, MinerBucket.CHALLENGE, default_time)
                     bt.logging.info(f"Adding {hotkey} to challenge period with start time {default_time}")
                     any_changes = True
                 continue
@@ -1089,7 +1113,10 @@ class ChallengePeriodManager(CacheController):
             # Has a first order time but not yet stored in memory or start time is set as default
             start_time = self.get_miner_start_time(hotkey)
             if not self.has_miner(hotkey) or start_time != first_order_time:
-                self.set_miner_bucket(hotkey, MinerBucket.CHALLENGE, first_order_time)
+                if is_synthetic_hotkey(hotkey):
+                    self.set_miner_bucket(hotkey, MinerBucket.SUBACCOUNT_CHALLENGE, default_time)
+                else:
+                    self.set_miner_bucket(hotkey, MinerBucket.CHALLENGE, first_order_time)
                 bt.logging.info(f"Adding {hotkey} to challenge period with first order time {first_order_time}")
                 any_changes = True
 

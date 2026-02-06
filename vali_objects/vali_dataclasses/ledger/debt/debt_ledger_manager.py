@@ -72,6 +72,14 @@ class DebtLedgerManager():
             connect_immediately=False
         )
 
+        # Create ChallengePeriodClient for getting entity bucket status
+        from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
+        self._challengeperiod_client = ChallengePeriodClient(
+            running_unit_tests=running_unit_tests,
+            connection_mode=connection_mode,
+            connect_immediately=False
+        )
+
         # IMPORTANT: PenaltyLedgerManager runs WITHOUT its own daemon process (run_daemon=False)
         # because DebtLedgerServer itself is already a daemon process, and daemon processes
         # cannot spawn child processes. The DebtLedgerServer daemon thread calls
@@ -830,19 +838,8 @@ class DebtLedgerManager():
                     # Worst case for max_drawdown (minimum = worst drawdown)
                     agg_max_drawdown = min(cp.max_drawdown for cp in checkpoints_at_time)
 
-                    # Take the most restrictive challenge period status
-                    # Priority: PLAGIARISM > CHALLENGE > PROBATION > MAINCOMP > UNKNOWN
-                    status_priority = {
-                        'PLAGIARISM': 0,
-                        'CHALLENGE': 1,
-                        'PROBATION': 2,
-                        'MAINCOMP': 3,
-                        'UNKNOWN': 4
-                    }
-                    agg_challenge_status = min(
-                        (cp.challenge_period_status for cp in checkpoints_at_time),
-                        key=lambda s: status_priority.get(s, 999)
-                    )
+                    # Use entity's actual challenge period bucket status, not aggregate of subaccounts
+                    entity_bucket = str(self._challengeperiod_client.get_miner_bucket(entity_hotkey).value)
 
                     # Use accum_ms from first checkpoint (should be same for all at this timestamp)
                     agg_accum_ms = checkpoints_at_time[0].accum_ms
@@ -875,7 +872,7 @@ class DebtLedgerManager():
                         min_collateral_penalty=1.0,
                         risk_adjusted_performance_penalty=1.0,
                         total_penalty=1.0,
-                        challenge_period_status=agg_challenge_status,
+                        challenge_period_status=entity_bucket,
                     )
 
                     aggregated_checkpoints.append(aggregated_checkpoint)
