@@ -483,6 +483,13 @@ class ValidatorContractManager:
         try:
             bt.logging.info("Received withdrawal request")
 
+            # All positions must be closed before a miner can withdraw
+            if len(self._position_client.get_positions_for_one_hotkey(miner_hotkey, only_open_positions=True)) > 0:
+                return {
+                    "successfully_processed": False,
+                    "error_message": "Miner has open positions, please close all positions before withdrawing collateral"
+                }
+
             # Check collateral balance
             theta_current_balance = self.get_miner_collateral_balance(miner_hotkey)
             if theta_current_balance is None:
