@@ -105,7 +105,6 @@ class TestValidatorContractManager(TestBase):
     def test_set_and_get_miner_account_size(self):
         """Test setting and getting miner account sizes"""
         current_time = int(time.time() * 1000)
-        day_after_current_time = self.DAY_MS + current_time
 
         # Initially should return None for non-existent miner
         self.assertIsNone(self.miner_account_client.get_miner_account_size(self.MINER_1))
@@ -115,27 +114,26 @@ class TestValidatorContractManager(TestBase):
         collateral_theta_1 = 1000000 / 10**9
         self.miner_account_client.set_miner_account_size(self.MINER_1, collateral_theta_1, current_time)
 
-        # Verify retrieval - should return the calculated account size
-        account_size = self.miner_account_client.get_miner_account_size(self.MINER_1, day_after_current_time)
+        # Verify retrieval - should return the calculated account size immediately
+        account_size = self.miner_account_client.get_miner_account_size(self.MINER_1, current_time)
         self.assertIsNotNone(account_size)
 
         # Set for second miner (500K rao = 0.0005 theta)
         collateral_theta_2 = 500000 / 10**9
         self.miner_account_client.set_miner_account_size(self.MINER_2, collateral_theta_2, current_time)
-        account_size_2 = self.miner_account_client.get_miner_account_size(self.MINER_2, day_after_current_time)
+        account_size_2 = self.miner_account_client.get_miner_account_size(self.MINER_2, current_time)
         self.assertIsNotNone(account_size_2)
 
     def test_account_size_persistence(self):
         """Test that account sizes are saved to and loaded from disk"""
         current_time = int(time.time() * 1000)
-        day_after_current_time = self.DAY_MS + current_time
 
         # Set account size via MinerAccountClient (1M rao = 0.001 theta)
         collateral_theta = 1000000 / 10**9
         self.miner_account_client.set_miner_account_size(self.MINER_1, collateral_theta, current_time)
 
-        # Verify it was set
-        account_size = self.miner_account_client.get_miner_account_size(self.MINER_1, day_after_current_time)
+        # Verify it was set immediately
+        account_size = self.miner_account_client.get_miner_account_size(self.MINER_1, current_time)
         self.assertIsNotNone(account_size)
 
         # Test the disk persistence by checking via accounts_dict

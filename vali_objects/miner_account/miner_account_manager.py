@@ -97,16 +97,9 @@ class MinerAccount:
             theta = min(self.collateral_records[-1].account_size_theta, ValiConfig.MAX_COLLATERAL_BALANCE_THETA)
             return max(theta * ValiConfig.COST_PER_THETA, ValiConfig.MIN_CAPITAL)
 
-        # Get start of the requested day
-        start_of_day_ms = int(
-            datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc)
-            .replace(hour=0, minute=0, second=0, microsecond=0)
-            .timestamp() * 1000
-        )
-
-        # Iterate in reversed order, return first record valid for or before the requested day
+        # Iterate in reversed order, return first record with update_time at or before the requested timestamp
         for record in reversed(self.collateral_records):
-            if record.valid_date_timestamp <= start_of_day_ms:
+            if record.update_time_ms <= timestamp_ms:
                 theta = min(record.account_size_theta, ValiConfig.MAX_COLLATERAL_BALANCE_THETA)
                 return max(theta * ValiConfig.COST_PER_THETA, ValiConfig.MIN_CAPITAL)
 
@@ -464,7 +457,7 @@ class MinerAccountManager:
             self._save_accounts_to_disk()
 
         bt.logging.info(
-            f"Updated account size for {hotkey}: ${account_size:,.2f} (valid from {collateral_record.valid_date_str})")
+            f"Updated account size for {hotkey}: ${account_size:,.2f} (valid from {collateral_record.update_time_ms})")
 
         return collateral_record
 
@@ -552,7 +545,7 @@ class MinerAccountManager:
                 self._save_accounts_to_disk()
 
                 bt.logging.info(
-                    f"Updated miner account size for {hotkey}: ${account_size} (valid from {collateral_record.valid_date_str})")
+                    f"Updated miner account size for {hotkey}: ${account_size} (valid from {collateral_record.update_time_ms})")
                 return True
 
         except Exception as e:
