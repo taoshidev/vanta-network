@@ -7,7 +7,7 @@ This script migrates miner accounts to the new balance/capital_used model by:
 - Setting capital_used from open positions (net_value)
 - Setting total_realized_pnl from closed positions + partial closes in open positions
 - Only processes positions opened/closed after 2026-01-01 (1767225600000 ms)
-- Skips eliminated hotkeys (loaded from eliminations.json)
+- Includes eliminated hotkeys (their collateral records may be important)
 
 Usage:
     python runnable/migrate_cash_balance.py [--dry-run]
@@ -157,14 +157,6 @@ def load_asset_selections() -> dict[str, TradePairCategory]:
     return result
 
 
-def load_eliminations() -> set[str]:
-    """Load eliminated hotkeys from disk."""
-    eliminations_file = ValiBkpUtils.get_eliminations_dir(running_unit_tests=False)
-    eliminations_data = dict(ValiUtils.get_vali_json_file(eliminations_file))
-    eliminations_list = eliminations_data.get("eliminations", [])
-    return {elim["hotkey"] for elim in eliminations_list if "hotkey" in elim}
-
-
 def clear_all_transactions(dry_run: bool) -> int:
     """Clear all transaction JSONL files for all miners."""
     base_dir = ValiBkpUtils.get_miner_dir(running_unit_tests=False)
@@ -200,20 +192,15 @@ def main() -> bool:
     asset_selections = load_asset_selections()
     print(f"Loaded {len(asset_selections)} asset selections from disk")
 
-    # Load eliminations from disk
-    eliminated_hotkeys = load_eliminations()
-    print(f"Loaded {len(eliminated_hotkeys)} eliminated hotkeys from disk")
-
     open_positions = load_positions(OrderStatus.OPEN)
     closed_positions = load_positions(OrderStatus.CLOSED)
 
-    # Get all hotkeys that need processing (from accounts + positions), excluding eliminated
-    all_hotkeys = set(asset_selections.keys() | manager.accounts.keys()) - eliminated_hotkeys
-    print(f"Total hotkeys to process: {len(all_hotkeys)} (excluded {len(eliminated_hotkeys)} eliminated)")
+    # Get all hotkeys that need processing (from accounts + positions)
+    all_hotkeys = set(asset_selections.keys() | manager.accounts.keys())
+    print(f"Total hotkeys to process: {len(all_hotkeys)}")
 
     total_stats = {
         'hotkeys_processed': 0,
-        'hotkeys_skipped': len(eliminated_hotkeys),
         'open_processed': 0,
         'closed_processed': 0,
         'errors': []
@@ -250,7 +237,6 @@ def main() -> bool:
     print("MIGRATION SUMMARY")
     print("=" * 60)
     print(f"Hotkeys processed:    {total_stats['hotkeys_processed']}")
-    print(f"Hotkeys skipped:      {total_stats['hotkeys_skipped']} (eliminated)")
     print(f"Open positions:       {total_stats['open_processed']}")
     print(f"Closed positions:     {total_stats['closed_processed']}")
 
