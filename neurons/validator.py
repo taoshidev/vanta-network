@@ -652,16 +652,14 @@ class Validator(ValidatorBase):
                 # For logging (used in line 691)
                 order = result.order_for_logging
 
-            except SignalException as e:
-                exception_time = TimeUtil.now_in_millis()
-                error_message = f"Error processing order for [{miner_hotkey}] with error [{e}]"
-                bt.logging.error(traceback.format_exc())
-                bt.logging.info(f"[TIMING] SignalException caught at {exception_time - now_ms}ms from start")
             except Exception as e:
                 exception_time = TimeUtil.now_in_millis()
-                error_message = f"Error processing order for [{miner_hotkey}] with error [{e}]"
+                if is_synthetic_hotkey(miner_hotkey):
+                    error_message = str(e)
+                else:
+                    error_message = f"Error processing order for [{miner_hotkey}] with error [{e}]"
                 bt.logging.error(traceback.format_exc())
-                bt.logging.info(f"[TIMING] General Exception caught at {exception_time - now_ms}ms from start")
+                bt.logging.info(f"[TIMING] Exception caught at {exception_time - now_ms}ms from start")
             finally:
                 # TIMING: Final processing
                 final_processing_start = TimeUtil.now_in_millis()
