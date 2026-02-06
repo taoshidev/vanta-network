@@ -970,6 +970,9 @@ class ChallengePeriodManager(CacheController):
                     close_time_ms=current_time,
                     order_source=OrderSource.SUBACCOUNT_PROMOTION
                 )
+                # Reset account fields (PnL, capital used, borrowed amount, interest)
+                self._miner_account_client.reset_account_fields(hotkey)
+
             elif bucket_value == MinerBucket.SUBACCOUNT_FUNDED:
                 target_bucket = MinerBucket.SUBACCOUNT_ALPHA
             else:

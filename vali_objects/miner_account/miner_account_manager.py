@@ -123,6 +123,14 @@ class MinerAccount:
         # No valid record for the timestamp, return MIN_CAPITAL
         return ValiConfig.MIN_CAPITAL
 
+    def reset_account_fields(self):
+        self.total_realized_pnl = 0
+        self.capital_used = 0
+        self.total_borrowed_amount = 0
+        self.total_interest_paid = 0
+        self.last_interest_date_ms = None
+
+
     def apply_interest(self, current_time_ms: int, running_unit_tests: bool = False) -> bool:
         """
         Apply daily interest to this account if needed.
@@ -482,6 +490,19 @@ class MinerAccountManager(ValidatorBroadcastBase):
             f"Updated account size for {hotkey}: ${account_size:,.2f} (valid from {collateral_record.valid_date_str})")
 
         return collateral_record
+
+    def reset_account_fields(self, hotkey: str) -> bool:
+        with self._accounts_lock:
+            account = self.accounts.get(hotkey)
+            if not account:
+                return False
+
+            account.reset_account_fields()
+
+            self._save_accounts_to_disk()
+
+        return True
+
 
     def delete_miner_account_size(self, hotkey: str) -> bool:
         """

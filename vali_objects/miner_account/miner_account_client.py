@@ -105,6 +105,21 @@ class MinerAccountClient(RPCClientBase):
         """
         return self._server.delete_miner_account_size(hotkey)
 
+    def reset_account_fields(self, hotkey: str) -> bool:
+        """
+        Reset account fields for a miner.
+
+        Resets: total_realized_pnl, capital_used, total_borrowed_amount,
+        total_interest_paid, and last_interest_date_ms to zero/None.
+
+        Args:
+            hotkey: Miner's hotkey (SS58 address)
+
+        Returns:
+            bool: True if successful, False if account doesn't exist
+        """
+        return self._server.reset_account_fields(hotkey)
+
     def get_miner_account_size(
         self,
         hotkey: str,
