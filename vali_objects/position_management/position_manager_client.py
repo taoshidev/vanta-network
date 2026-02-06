@@ -28,6 +28,7 @@ from typing import Dict, List, Optional
 from shared_objects.rpc.rpc_client_base import RPCClientBase
 from time_util.time_util import TimeUtil
 from vali_objects.decoders.generalized_json_decoder import GeneralizedJSONDecoder
+from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.position_management.position_utils.position_filtering import PositionFiltering
 from vali_objects.position_management.position_manager import PositionManager
@@ -466,6 +467,32 @@ class PositionManagerClient(RPCClientBase):
             Number of positions closed
         """
         return self._server.close_open_orders_for_suspended_trade_pairs_rpc(live_price_fetcher)
+
+    def close_all_positions(
+        self,
+        hotkey: str,
+        close_time_ms: int,
+        order_source: "OrderSource",
+        live_price_fetcher=None
+    ) -> int:
+        """
+        Close all open positions for a specific hotkey.
+
+        Args:
+            hotkey: Hotkey whose positions should be closed
+            close_time_ms: Timestamp for closing positions
+            order_source: OrderSource enum value (e.g., SUBACCOUNT_PROMOTION)
+            live_price_fetcher: Optional price fetcher for accurate closing prices
+
+        Returns:
+            int: Number of positions successfully closed
+        """
+        return self._server.close_all_positions_rpc(
+            hotkey=hotkey,
+            close_time_ms=close_time_ms,
+            order_source=order_source,  # Pass as int for RPC
+            live_price_fetcher=live_price_fetcher
+        )
 
     # ==================== Pre-run Setup Methods ====================
 

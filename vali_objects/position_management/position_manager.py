@@ -712,6 +712,74 @@ class PositionManager:
 
         return n_positions_closed
 
+    def close_all_positions(
+        self,
+        hotkey: str,
+        close_time_ms: int,
+        order_source: OrderSource,
+        live_price_fetcher=None
+    ) -> int:
+        """
+        Close all open positions for a specific hotkey.
+
+        Args:
+            hotkey: Hotkey whose positions should be closed
+            close_time_ms: Timestamp for closing positions
+            order_source: OrderSource enum value (e.g., SUBACCOUNT_PROMOTION, ELIMINATION_FLAT)
+            live_price_fetcher: Optional price fetcher for accurate closing prices
+
+        Returns:
+            int: Number of positions successfully closed
+        """
+        # Get all positions for this hotkey
+        open_positions = self.get_positions_for_one_hotkey(hotkey, only_open_positions=True, sort_positions=True)
+
+        if not open_positions:
+            bt.logging.info(f"No open positions to close for {hotkey}")
+            return 0
+
+        # Use provided price fetcher or internal client
+        price_fetcher = live_price_fetcher or self._live_price_client
+        if not price_fetcher:
+            bt.logging.warning(f"No price fetcher available for closing positions for {hotkey}")
+            return 0
+
+        bt.logging.info(
+            f"Closing {len(open_positions)} positions for {hotkey} "
+            f"with order source {order_source.name}"
+        )
+
+        closed_count = 0
+        for position in open_positions:
+            try:
+                # Generate FLAT order using existing pattern
+                flat_order = Position.generate_fake_flat_order(
+                    position=position,
+                    elimination_time_ms=close_time_ms,
+                    price_fetcher_client=price_fetcher,
+                    src=order_source
+                )
+
+                # Add order to position (automatically marks as closed)
+                position.add_order(flat_order, price_fetcher)
+
+                # Save updated position
+                self.save_miner_position(position)
+
+                bt.logging.info(f"Closed open {position.trade_pair.trade_pair_id} position {position.position_uuid} for {hotkey}")
+                closed_count += 1
+
+            except Exception as e:
+                bt.logging.error(
+                    f"Failed to close position {position.position_uuid} for {hotkey}: {e}"
+                )
+                bt.logging.error(traceback.format_exc())
+
+        bt.logging.info(
+            f"Closed {closed_count}/{len(open_positions)} positions for {hotkey}"
+        )
+        return closed_count
+
     # ==================== Pre-run Setup Methods ====================
 
     @timeme

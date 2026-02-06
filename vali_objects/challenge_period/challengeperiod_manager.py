@@ -16,6 +16,7 @@ import copy
 from typing import Dict, Optional, Tuple
 from datetime import datetime
 
+from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.utils.elimination.elimination_client import EliminationClient
 from vali_objects.position_management.position_manager_client import PositionManagerClient
 from vali_objects.utils.asset_segmentation import AssetSegmentation
@@ -962,6 +963,13 @@ class ChallengePeriodManager(CacheController):
                 target_bucket = MinerBucket.MAINCOMP
             elif bucket_value == MinerBucket.SUBACCOUNT_CHALLENGE:
                 target_bucket = MinerBucket.SUBACCOUNT_FUNDED
+
+                # Close all existing positions
+                self._position_client.close_all_positions(
+                    hotkey=hotkey,
+                    close_time_ms=current_time,
+                    order_source=OrderSource.SUBACCOUNT_PROMOTION
+                )
             elif bucket_value == MinerBucket.SUBACCOUNT_FUNDED:
                 target_bucket = MinerBucket.SUBACCOUNT_ALPHA
             else:

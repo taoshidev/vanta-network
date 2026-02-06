@@ -517,7 +517,7 @@ class Position(BaseModel):
             self.close_out_position(time_ms)
 
     @staticmethod
-    def generate_fake_flat_order(position, elimination_time_ms, price_fetcher_client, extra_price_source=None):
+    def generate_fake_flat_order(position, elimination_time_ms, price_fetcher_client, extra_price_source=None, src=None):
         fake_flat_order_time = elimination_time_ms
         price_source = price_fetcher_client.get_close_at_date(
             trade_pair=position.trade_pair,
@@ -533,13 +533,17 @@ class Position(BaseModel):
                 order_type=OrderType.FLAT,
                 position=position
             )
-            src = OrderSource.PRICE_FILLED_ELIMINATION_FLAT
+            # Use provided src or default to PRICE_FILLED_ELIMINATION_FLAT
+            if src is None:
+                src = OrderSource.PRICE_FILLED_ELIMINATION_FLAT
         else:
             bt.logging.warning(f'Unexpectedly unable to fetch price for trade pair {position.trade_pair.trade_pair_id}'
                                f' at time {TimeUtil.millis_to_formatted_date_str(elimination_time_ms)} during fake flat order'
                                f'creation. Setting price to 0. and src to OrderSource.ELIMINATION_FLAT')
             price = 0
-            src = OrderSource.ELIMINATION_FLAT
+            # Use provided src or default to ELIMINATION_FLAT
+            if src is None:
+                src = OrderSource.ELIMINATION_FLAT
 
 
         flat_order = Order(price=price,

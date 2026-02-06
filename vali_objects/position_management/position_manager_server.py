@@ -28,6 +28,7 @@ from typing import List, Dict, Optional
 
 from shared_objects.rpc.rpc_server_base import RPCServerBase
 from time_util.time_util import timeme
+from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 
@@ -209,6 +210,32 @@ class PositionManagerServer(RPCServerBase):
     def close_open_orders_for_suspended_trade_pairs_rpc(self, live_price_fetcher=None) -> int:
         """Close positions for suspended trade pairs - delegates to manager."""
         return self._manager.close_open_orders_for_suspended_trade_pairs(live_price_fetcher)
+
+    def close_all_positions_rpc(
+        self,
+        hotkey: str,
+        close_time_ms: int,
+        order_source: OrderSource,
+        live_price_fetcher=None
+    ) -> int:
+        """
+        RPC wrapper for close_all_positions.
+
+        Args:
+            hotkey: Hotkey whose positions should be closed
+            close_time_ms: Timestamp for closing positions
+            order_source: OrderSource enum value (as int)
+            live_price_fetcher: Optional price fetcher
+
+        Returns:
+            int: Number of positions closed
+        """
+        return self._manager.close_all_positions(
+            hotkey=hotkey,
+            close_time_ms=close_time_ms,
+            order_source=order_source,
+            live_price_fetcher=live_price_fetcher
+        )
 
     # ==================== Pre-run Setup RPC Methods ====================
 
