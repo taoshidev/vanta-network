@@ -85,7 +85,7 @@ class ForexHolidayCalendar(USFederalHolidayCalendar):
         elif ny_timestamp.weekday() == 6:
             if ny_timestamp.hour < 17:  # Market opens at 5 PM Sunday NY time
                 ans = False
-                self.cache_valid_max_ms = ny_timestamp.replace(hour=16, minute=59, second=59).timestamp() * 100
+                self.cache_valid_max_ms = ny_timestamp.replace(hour=16, minute=59, second=59).timestamp() * 1000
             else:
                 ans = True
                 self.cache_valid_max_ms = ny_timestamp.replace(hour=23, minute=59, second=59).timestamp() * 1000
