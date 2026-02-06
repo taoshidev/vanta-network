@@ -477,7 +477,7 @@ class TiingoDataService(BaseDataService):
             if verbose:
                 print(f'hitting url for batch of {len(batch)} tickers: {url}')
             requestResponse = requests.get(url, headers={'Content-Type': 'application/json'}, timeout=5)
-            # TODO re-enable after tiingo badwidth
+            # TODO re-enable after tiingo bandwidth
             if requestResponse.status_code == 429:
                 continue
             if requestResponse.status_code == 200:
@@ -555,7 +555,7 @@ class TiingoDataService(BaseDataService):
             if verbose:
                 print(f'hitting url for batch of {len(batch)} tickers: {url}')
             requestResponse = requests.get(url, headers={'Content-Type': 'application/json'}, timeout=5)
-            # TODO re-enable after tiingo badwidth
+            # TODO re-enable after tiingo bandwidth
             if requestResponse.status_code == 429:
                 continue
             if requestResponse.status_code == 200:
@@ -661,7 +661,7 @@ class TiingoDataService(BaseDataService):
                 print(f'hitting url for batch of {len(batch)} tickers: {url}')
 
             requestResponse = requests.get(url, headers={'Content-Type': 'application/json'}, timeout=5)
-            # TODO re-enable after tiingo badwidth
+            # TODO re-enable after tiingo bandwidth
             if requestResponse.status_code == 429:
                 continue
             if requestResponse.status_code != 200:
