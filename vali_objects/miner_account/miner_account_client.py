@@ -159,9 +159,9 @@ class MinerAccountClient(RPCClientBase):
         """Reload account sizes from disk."""
         self._server.re_init_account_sizes()
 
-    def receive_collateral_record_update(self, collateral_record_data: dict) -> bool:
+    def receive_collateral_record_update(self, collateral_record_data: dict, sender_hotkey: str=None) -> bool:
         """Process an incoming CollateralRecord synapse."""
-        return self._server.receive_collateral_record_update(collateral_record_data)
+        return self._server.receive_collateral_record_update(collateral_record_data, sender_hotkey)
 
     # ==================== MinerAccount Cache Methods ====================
 

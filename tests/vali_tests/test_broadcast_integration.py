@@ -22,7 +22,7 @@ from vali_objects.vali_config import ValiConfig, TradePairCategory
 from vali_objects.utils.vali_utils import ValiUtils
 from entity_management.entity_manager import EntityManager, EntityData, SubaccountInfo
 from vali_objects.utils.asset_selection.asset_selection_manager import AssetSelectionManager
-from vali_objects.contract.validator_contract_manager import ValidatorContractManager, CollateralRecord
+from vali_objects.contract.validator_contract_manager import ValidatorContractManager
 
 
 class TestBroadcastIntegration(TestBase):
