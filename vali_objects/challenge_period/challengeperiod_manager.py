@@ -1321,13 +1321,20 @@ class ChallengePeriodManager(CacheController):
         """Get the bucket of a miner."""
         return self.active_miners.get(hotkey, [None])[0]
 
+    # TODO: revisit to separate regular and subaccount miners
     def get_testing_miners(self):
-        """Get all CHALLENGE bucket miners."""
-        return copy.deepcopy(self._bucket_view(MinerBucket.CHALLENGE))
+        """Get all testing bucket miners (CHALLENGE + SUBACCOUNT_CHALLENGE)."""
+        challenge = self._bucket_view(MinerBucket.CHALLENGE)
+        subaccount_challenge = self._bucket_view(MinerBucket.SUBACCOUNT_CHALLENGE)
+        return copy.deepcopy({**challenge, **subaccount_challenge})
 
+    # TODO: revisit to separate regular and subaccount miners
     def get_success_miners(self):
-        """Get all MAINCOMP bucket miners."""
-        return copy.deepcopy(self._bucket_view(MinerBucket.MAINCOMP))
+        """Get all success bucket miners (MAINCOMP + SUBACCOUNT_FUNDED + SUBACCOUNT_ALPHA)."""
+        maincomp = self._bucket_view(MinerBucket.MAINCOMP)
+        funded = self._bucket_view(MinerBucket.SUBACCOUNT_FUNDED)
+        alpha = self._bucket_view(MinerBucket.SUBACCOUNT_ALPHA)
+        return copy.deepcopy({**maincomp, **funded, **alpha})
 
     def get_probation_miners(self):
         """Get all PROBATION bucket miners."""
