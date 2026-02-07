@@ -66,7 +66,7 @@ Miners run machine learning models. They send signals to the Validators.
 
 ### Validators
 
-Validators recieve trade signals from Miners. Validators ensure trades are valid, store them, and track portfolio returns. 
+Validators receive trade signals from Miners. Validators ensure trades are valid, store them, and track portfolio returns. 
 
 </details>
 

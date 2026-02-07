@@ -118,7 +118,7 @@ class ValidatorSyncBase():
             positions = data['positions']
             candidate_hk_to_positions[hk] = [Position(**p) for p in positions]
 
-        # The candidate dataset is time lagged. We only delete non-matching data if they occured during the window of the candidate data.
+        # The candidate dataset is time lagged. We only delete non-matching data if they occurred during the window of the candidate data.
         # We want to account for a few minutes difference of possible orders that came in after a retry.
         if 'hard_snap_cutoff_ms' in candidate_data:
             hard_snap_cutoff_ms = candidate_data['hard_snap_cutoff_ms']
