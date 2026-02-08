@@ -1129,9 +1129,19 @@ class ChallengePeriodManager(CacheController):
         with self.eliminations_lock:
             local_elimination_hotkeys = set(self.eliminations_with_reasons.keys())
 
+        # Get all buckets that should NOT be re-added to challenge period
         maincomp_hotkeys = self.get_hotkeys_by_bucket(MinerBucket.MAINCOMP)
         probation_hotkeys = self.get_hotkeys_by_bucket(MinerBucket.PROBATION)
         plagiarism_hotkeys = self.get_hotkeys_by_bucket(MinerBucket.PLAGIARISM)
+        subaccount_funded_hotkeys = self.get_hotkeys_by_bucket(MinerBucket.SUBACCOUNT_FUNDED)
+        subaccount_alpha_hotkeys = self.get_hotkeys_by_bucket(MinerBucket.SUBACCOUNT_ALPHA)
+        subaccount_challenge_hotkeys = self.get_hotkeys_by_bucket(MinerBucket.SUBACCOUNT_CHALLENGE)
+
+        # Combine all buckets that should skip re-adding
+        skip_buckets = (
+            set(maincomp_hotkeys) | set(probation_hotkeys) | set(plagiarism_hotkeys) |
+            set(subaccount_funded_hotkeys) | set(subaccount_alpha_hotkeys) | set(subaccount_challenge_hotkeys)
+        )
 
         any_changes = False
         for hotkey in new_hotkeys:
@@ -1144,7 +1154,8 @@ class ChallengePeriodManager(CacheController):
                 bt.logging.info(f"[CP_DEBUG] Skipping {hotkey[:16]}...{hotkey[-8:]} - in eliminations_with_reasons (not yet persisted)")
                 continue
 
-            if hotkey in maincomp_hotkeys or hotkey in probation_hotkeys or hotkey in plagiarism_hotkeys:
+            # Skip if miner is already in a bucket (success, probation, plagiarism, or subaccount buckets)
+            if hotkey in skip_buckets:
                 continue
 
             first_order_time = hk_to_first_order_time.get(hotkey)
