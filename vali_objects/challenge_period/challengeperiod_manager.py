@@ -193,7 +193,10 @@ class ChallengePeriodManager(CacheController):
             self.get_hotkeys_by_bucket(MinerBucket.SUBACCOUNT_FUNDED) +
             self.get_hotkeys_by_bucket(MinerBucket.SUBACCOUNT_ALPHA)
         )
-        challengeperiod_testing_hotkeys = self.get_hotkeys_by_bucket(MinerBucket.CHALLENGE)
+        challengeperiod_testing_hotkeys = (
+            self.get_hotkeys_by_bucket(MinerBucket.CHALLENGE) +
+            self.get_hotkeys_by_bucket(MinerBucket.SUBACCOUNT_CHALLENGE)
+        )
         challengeperiod_probation_hotkeys = self.get_hotkeys_by_bucket(MinerBucket.PROBATION)
         all_miners = challengeperiod_success_hotkeys + challengeperiod_testing_hotkeys + challengeperiod_probation_hotkeys
 
