@@ -429,46 +429,80 @@ class ChallengePeriodManager(CacheController):
         hotkeys_to_promote = []
         miners_to_eliminate = {}
 
+        bt.logging.info(
+            f"[SYNTH_EVAL] Starting evaluation of {len(inspection_hotkeys)} synthetic hotkeys. "
+            f"Thresholds: promote>{ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD:.1%}, "
+            f"eliminate<-{ValiConfig.SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD:.1%}"
+        )
+        bt.logging.info(f"[SYNTH_EVAL] Portfolio ledgers available for: {list(portfolio_only_ledgers.keys())}")
+
         for hotkey, bucket_start_time in inspection_hotkeys.items():
+            hotkey_short = f"{hotkey[-4:]}"
+            bt.logging.info(f"[SYNTH_EVAL] [{hotkey_short}] Evaluating (bucket_start_time={bucket_start_time})")
+
             # Unified check: Minimum ledger
             has_minimum_ledger, ledger = self._check_minimum_ledger(
                 portfolio_only_ledgers, hotkey
             )
             if not has_minimum_ledger:
+                bt.logging.info(f"[SYNTH_EVAL] [{hotkey_short}] SKIPPED - no minimum ledger (ledger={ledger})")
                 continue
+            bt.logging.info(f"[SYNTH_EVAL] [{hotkey_short}] Has minimum ledger, cps_count={len(ledger.cps) if ledger else 0}")
 
             # TODO: temp code - using ledger realized pnl directly. replace with equity curve
             pnl = self._perf_ledger_client.get_returns(hotkey)
+            bt.logging.info(f"[SYNTH_EVAL] [{hotkey_short}] PnL from perf_ledger_client.get_returns(): {pnl}")
+
+            if pnl is None:
+                bt.logging.warning(f"[SYNTH_EVAL] [{hotkey_short}] SKIPPED - pnl is None")
+                continue
+
             subaccount_account_size = self._miner_account_client.get_miner_account_size(hotkey, use_account_floor=True)
-            should_eliminate = pnl < -1 * ValiConfig.SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD * subaccount_account_size
+            bt.logging.info(f"[SYNTH_EVAL] [{hotkey_short}] Account size: ${subaccount_account_size:,.2f}")
+
+            if subaccount_account_size is None or subaccount_account_size <= 0:
+                bt.logging.warning(f"[SYNTH_EVAL] [{hotkey_short}] SKIPPED - invalid account size: {subaccount_account_size}")
+                continue
+
+            # Calculate thresholds
+            eliminate_threshold = -1 * ValiConfig.SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD * subaccount_account_size
+            promote_threshold = ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD * subaccount_account_size
+            pnl_pct = (pnl / subaccount_account_size) * 100 if subaccount_account_size else 0
+
+            bt.logging.info(
+                f"[SYNTH_EVAL] [{hotkey_short}] Comparing: pnl=${pnl:,.2f} ({pnl_pct:+.2f}%) | "
+                f"eliminate_threshold=${eliminate_threshold:,.2f} | promote_threshold=${promote_threshold:,.2f}"
+            )
+
+            should_eliminate = pnl < eliminate_threshold
             if should_eliminate:
-                bt.logging.info(f"Eliminating {hotkey}, pnl: {pnl}, account size: {subaccount_account_size}")
+                bt.logging.info(
+                    f"[SYNTH_EVAL] [{hotkey_short}] ELIMINATING - pnl ${pnl:,.2f} < threshold ${eliminate_threshold:,.2f}"
+                )
                 reason = (EliminationReason.FAILED_CHALLENGE_PERIOD_DRAWDOWN.value, abs(pnl/subaccount_account_size) * 100)
                 miners_to_eliminate[hotkey] = reason
                 continue
-            should_promote = pnl > ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD * subaccount_account_size
-            if should_promote:
-                bt.logging.info(f"Promoting {hotkey}, pnl: {pnl}, account size: {subaccount_account_size}")
-                hotkeys_to_promote.append(hotkey)
 
-            # Unified check: Drawdown (5% threshold in 0-100 scale)
-            # should_eliminate, reason = self._check_drawdown_limit(
-            #     hotkey=hotkey,
-            #     ledger=ledger,
-            #     drawdown_threshold_percentage=ValiConfig.SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD * 100  # Convert 0.05 to 5
-            # )
-            # if should_eliminate:
-            #     miners_to_eliminate[hotkey] = reason
-            #     continue
-            #
-            # # Synthetic-specific: Instantaneous pass on returns threshold
-            # if self._check_returns_threshold(hotkey, ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD):
-            #     hotkeys_to_promote.append(hotkey)
+            should_promote = pnl > promote_threshold
+            if should_promote:
+                bt.logging.info(
+                    f"[SYNTH_EVAL] [{hotkey_short}] PROMOTING - pnl ${pnl:,.2f} > threshold ${promote_threshold:,.2f}"
+                )
+                hotkeys_to_promote.append(hotkey)
+            else:
+                bt.logging.info(
+                    f"[SYNTH_EVAL] [{hotkey_short}] HOLDING - pnl ${pnl:,.2f} within range "
+                    f"[${eliminate_threshold:,.2f}, ${promote_threshold:,.2f}]"
+                )
 
         bt.logging.info(
-            f"[SYNTHETIC_CHALLENGE] {len(inspection_hotkeys)} evaluated: "
-            f"{len(hotkeys_to_promote)} promoted, {len(miners_to_eliminate)} eliminated"
+            f"[SYNTH_EVAL] Evaluation complete: {len(inspection_hotkeys)} evaluated, "
+            f"{len(hotkeys_to_promote)} to promote, {len(miners_to_eliminate)} to eliminate"
         )
+        if hotkeys_to_promote:
+            bt.logging.info(f"[SYNTH_EVAL] Hotkeys to promote: {hotkeys_to_promote}")
+        if miners_to_eliminate:
+            bt.logging.info(f"[SYNTH_EVAL] Hotkeys to eliminate: {list(miners_to_eliminate.keys())}")
 
         return hotkeys_to_promote, miners_to_eliminate
 
