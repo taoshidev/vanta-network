@@ -384,7 +384,7 @@ class MinerRestServer(BaseRestServer):
                 f"{validator_url}/entity/create-subaccount",
                 json=payload,
                 headers={"Content-Type": "application/json"},
-                timeout=30
+                timeout=45
             )
 
             # Parse response
