@@ -837,6 +837,13 @@ class EntityManager(ValidatorBroadcastBase):
         except Exception as e:
             bt.logging.debug(f"[ENTITY_MANAGER] Limit orders data unavailable for {synthetic_hotkey}: {e}")
 
+        account_size_data = None
+        try:
+            account_size_data = self._miner_account_client.get_account(synthetic_hotkey)
+        except Exception as e:
+            bt.logging.debug(f"[ENTITY_MANAGER] Account size data unavailable for {synthetic_hotkey}: {e}")
+
+
         # Statistics data (from cached miner statistics - refreshed every 5 minutes)
         statistics_data = None
         try:
@@ -867,6 +874,7 @@ class EntityManager(ValidatorBroadcastBase):
             'ledger': ledger_data,
             'positions': positions_data,
             'limit_orders': limit_orders_data,
+            'account_size_data': account_size_data,
             'statistics': statistics_data,
             'elimination': elimination_data,
         }
