@@ -75,20 +75,18 @@ class EntityClient(RPCClientBase):
 
     def register_entity(
         self,
-        entity_hotkey: str,
-        max_subaccounts: int = None
+        entity_hotkey: str
     ) -> Tuple[bool, str]:
         """
         Register a new entity.
 
         Args:
             entity_hotkey: The VANTA_ENTITY_HOTKEY
-            max_subaccounts: Maximum allowed subaccounts
 
         Returns:
             (success: bool, message: str)
         """
-        return self._server.register_entity_rpc(entity_hotkey, max_subaccounts)
+        return self._server.register_entity_rpc(entity_hotkey)
 
     def create_subaccount(
         self,

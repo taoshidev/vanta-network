@@ -67,7 +67,6 @@ class EntityData(BaseModel):
     entity_hotkey: str = Field(description="The VANTA_ENTITY_HOTKEY")
     subaccounts: Dict[int, SubaccountInfo] = Field(default_factory=dict, description="Map subaccount_id -> SubaccountInfo")
     next_subaccount_id: int = Field(default=0, description="Next subaccount ID to assign (monotonic)")
-    max_subaccounts: int = Field(default=10, description="Maximum allowed subaccounts")
     registered_at_ms: int = Field(description="Timestamp when entity was registered")
 
     class Config:
@@ -258,8 +257,7 @@ class EntityManager(ValidatorBroadcastBase):
 
     def register_entity(
         self,
-        entity_hotkey: str,
-        max_subaccounts: int = None
+        entity_hotkey: str
     ) -> Tuple[bool, str]:
         """
         Register a new entity.
@@ -269,14 +267,10 @@ class EntityManager(ValidatorBroadcastBase):
 
         Args:
             entity_hotkey: The VANTA_ENTITY_HOTKEY
-            max_subaccounts: Maximum allowed subaccounts (default from ValiConfig)
 
         Returns:
             (success: bool, message: str)
         """
-        if max_subaccounts is None:
-            max_subaccounts = ValiConfig.ENTITY_MAX_SUBACCOUNTS
-
         # Use master lock: adding new entity to dict
         with self._entities_lock:
             if entity_hotkey in self.entities:
@@ -324,7 +318,6 @@ class EntityManager(ValidatorBroadcastBase):
                 entity_hotkey=entity_hotkey,
                 subaccounts={},
                 next_subaccount_id=0,
-                max_subaccounts=max_subaccounts,
                 registered_at_ms=TimeUtil.now_in_millis()
             )
 
@@ -341,7 +334,7 @@ class EntityManager(ValidatorBroadcastBase):
             )
 
             bt.logging.info(
-                f"[ENTITY_MANAGER] Registered entity {entity_hotkey} with max_subaccounts={max_subaccounts}, "
+                f"[ENTITY_MANAGER] Registered entity {entity_hotkey}, "
                 f"slashed {ValiConfig.ENTITY_REGISTRATION_FEE} theta"
             )
             return True, f"Entity registered successfully - {ValiConfig.ENTITY_REGISTRATION_FEE} theta registration fee slashed"
@@ -386,8 +379,8 @@ class EntityManager(ValidatorBroadcastBase):
 
             # Check slot allowance
             active_count = len(entity_data.get_active_subaccounts())
-            if active_count >= entity_data.max_subaccounts:
-                return False, None, f"Entity {entity_hotkey} has reached maximum subaccounts ({entity_data.max_subaccounts})"
+            if active_count >= ValiConfig.ENTITY_MAX_SUBACCOUNTS:
+                return False, None, f"Entity {entity_hotkey} has reached maximum subaccounts ({ValiConfig.ENTITY_MAX_SUBACCOUNTS})"
 
             # Calculate required collateral: account_size / ENTITY_COST_PER_THETA
             required_theta = account_size / ValiConfig.ENTITY_COST_PER_THETA

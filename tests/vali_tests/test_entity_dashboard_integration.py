@@ -85,8 +85,7 @@ class TestEntityDashboardIntegration(TestBase):
 
         # Register entity
         self.entity_client.register_entity(
-            entity_hotkey=self.ENTITY_HOTKEY,
-            max_subaccounts=10
+            entity_hotkey=self.ENTITY_HOTKEY
         )
 
         # Create test subaccount
@@ -221,7 +220,7 @@ class TestEntityDashboardIntegration(TestBase):
         self.challenge_period_client.update_miners(miners_dict)
 
         # 5. Inject account sizes (REQUIRED - must be >= $150k to avoid penalty)
-        contract_client = self.orchestrator.get_client('contract')
+        miner_account_client = self.orchestrator.get_client('miner_account')
         account_sizes_data = {
             hotkey: [
                 {
@@ -236,8 +235,8 @@ class TestEntityDashboardIntegration(TestBase):
                 }
             ]
         }
-        contract_client.sync_miner_account_sizes_data(account_sizes_data)
-        contract_client.re_init_account_sizes()  # Force reload
+        miner_account_client.sync_miner_account_sizes_data(account_sizes_data)
+        miner_account_client.re_init_account_sizes()  # Force reload
 
     def _populate_miner_statistics_cache(self):
         """Populate the miner statistics cache by generating statistics."""

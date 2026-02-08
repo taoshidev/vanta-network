@@ -89,8 +89,7 @@ class TestEntityManagement(TestBase):
     def test_register_entity_success(self):
         """Test successful entity registration."""
         success, message = self.entity_client.register_entity(
-            entity_hotkey=self.ENTITY_HOTKEY_1,
-            max_subaccounts=5
+            entity_hotkey=self.ENTITY_HOTKEY_1
         )
 
         self.assertTrue(success, f"Entity registration failed: {message}")
@@ -99,7 +98,6 @@ class TestEntityManagement(TestBase):
         entity_data = self.entity_client.get_entity_data(self.ENTITY_HOTKEY_1)
         self.assertIsNotNone(entity_data)
         self.assertEqual(entity_data['entity_hotkey'], self.ENTITY_HOTKEY_1)
-        self.assertEqual(entity_data['max_subaccounts'], 5)
         self.assertEqual(len(entity_data['subaccounts']), 0)
 
     def test_register_entity_duplicate(self):
@@ -125,7 +123,6 @@ class TestEntityManagement(TestBase):
         self.assertTrue(success)
 
         entity_data = self.entity_client.get_entity_data(self.ENTITY_HOTKEY_1)
-        self.assertEqual(entity_data['max_subaccounts'], 500)  # ValiConfig.ENTITY_MAX_SUBACCOUNTS default
 
     # ==================== Subaccount Creation Tests ====================
 
@@ -175,10 +172,10 @@ class TestEntityManagement(TestBase):
 
     def test_create_subaccount_max_limit(self):
         """Test that subaccount creation fails when max limit is reached."""
-        # Register entity with max_subaccounts=2
+        # TODO: mock override max_subaccounts
+        # Register entity
         self.entity_client.register_entity(
-            entity_hotkey=self.ENTITY_HOTKEY_1,
-            max_subaccounts=2
+            entity_hotkey=self.ENTITY_HOTKEY_1
         )
 
         # Create 2 subaccounts (should succeed)
@@ -535,7 +532,6 @@ class TestEntityManagement(TestBase):
                     }
                 },
                 'next_subaccount_id': 1,
-                'max_subaccounts': 10,
                 'registered_at_ms': TimeUtil.now_in_millis()
             }
         }
@@ -597,7 +593,6 @@ class TestEntityManagement(TestBase):
                     }
                 },
                 'next_subaccount_id': 3,
-                'max_subaccounts': 500,
                 'registered_at_ms': TimeUtil.now_in_millis()
             }
         }
@@ -642,7 +637,6 @@ class TestEntityManagement(TestBase):
                     }
                 },
                 'next_subaccount_id': 1,
-                'max_subaccounts': 500,
                 'registered_at_ms': TimeUtil.now_in_millis()
             }
         }
@@ -685,7 +679,6 @@ class TestEntityManagement(TestBase):
                     }
                 },
                 'next_subaccount_id': 5,
-                'max_subaccounts': 500,
                 'registered_at_ms': TimeUtil.now_in_millis()
             }
         }
@@ -734,7 +727,6 @@ class TestEntityManagement(TestBase):
                     }
                 },
                 'next_subaccount_id': 1,
-                'max_subaccounts': 10,
                 'registered_at_ms': now_ms
             },
             self.ENTITY_HOTKEY_2: {
@@ -752,14 +744,12 @@ class TestEntityManagement(TestBase):
                     }
                 },
                 'next_subaccount_id': 1,
-                'max_subaccounts': 20,
                 'registered_at_ms': now_ms
             },
             self.ENTITY_HOTKEY_3: {
                 'entity_hotkey': self.ENTITY_HOTKEY_3,
                 'subaccounts': {},
                 'next_subaccount_id': 0,
-                'max_subaccounts': 5,
                 'registered_at_ms': now_ms
             }
         }

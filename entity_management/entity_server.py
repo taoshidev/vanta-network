@@ -130,20 +130,18 @@ class EntityServer(RPCServerBase):
 
     def register_entity_rpc(
         self,
-        entity_hotkey: str,
-        max_subaccounts: int = None
+        entity_hotkey: str
     ) -> Tuple[bool, str]:
         """
         Register a new entity.
 
         Args:
             entity_hotkey: The VANTA_ENTITY_HOTKEY
-            max_subaccounts: Maximum allowed subaccounts
 
         Returns:
             (success: bool, message: str)
         """
-        return self._manager.register_entity(entity_hotkey, max_subaccounts)
+        return self._manager.register_entity(entity_hotkey)
 
     def create_subaccount_rpc(
         self,

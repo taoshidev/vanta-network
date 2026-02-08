@@ -1263,14 +1263,12 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
             entity_coldkey = data['entity_coldkey']
             entity_hotkey = data['entity_hotkey']
-            max_subaccounts = data.get('max_subaccounts', ValiConfig.ENTITY_MAX_SUBACCOUNTS)
 
             # Verify signature
             keypair = Keypair(ss58_address=entity_coldkey)
             message = json.dumps({
                 "entity_coldkey": entity_coldkey,
-                "entity_hotkey": entity_hotkey,
-                "max_subaccounts": max_subaccounts
+                "entity_hotkey": entity_hotkey
             }, sort_keys=True).encode('utf-8')
 
             is_valid = keypair.verify(message, bytes.fromhex(data['signature']))
@@ -1284,16 +1282,14 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
             # Register entity via RPC
             success, message = self._entity_client.register_entity(
-                entity_hotkey=entity_hotkey,
-                max_subaccounts=max_subaccounts
+                entity_hotkey=entity_hotkey
             )
 
             if success:
                 return jsonify({
                     'status': 'success',
                     'message': message,
-                    'entity_hotkey': entity_hotkey,
-                    'max_subaccounts': max_subaccounts
+                    'entity_hotkey': entity_hotkey
                 }), 200
             else:
                 return jsonify({'error': message}), 400
