@@ -13,11 +13,13 @@ Much simpler than validator's APIManager:
 - No health monitoring (no RPC)
 - Single REST server (no WebSocket)
 """
-
+import json
+import os
 import time
 import bittensor as bt
 
 from miner_config import MinerConfig
+from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vanta_api.miner_rest_server import MinerRestServer
 
 
@@ -42,8 +44,21 @@ class MinerAPIManager:
         self.api_rest_port = api_rest_port
         self.refresh_interval = refresh_interval
 
-        # Get API keys file path
-        self.secrets_file = MinerConfig.get_secrets_file_path()
+        # Get default API keys file path
+        self.api_keys_file = ValiBkpUtils.get_api_keys_file_path()
+
+        # Verify API keys file exists
+        if not os.path.exists(self.api_keys_file):
+            print(f"WARNING: API keys file '{self.api_keys_file}' not found!")
+        else:
+            print(f"API keys file found at: {self.api_keys_file}")
+            # Check if it's a valid JSON file
+            try:
+                with open(self.api_keys_file, "r") as f:
+                    keys = json.load(f)
+                print(f"API keys file contains {len(keys)} keys")
+            except Exception as e:
+                print(f"ERROR reading API keys file: {e}")
 
         # REST server instance (created in run())
         self.rest_server = None
@@ -61,7 +76,7 @@ class MinerAPIManager:
         try:
             self.rest_server = MinerRestServer(
                 prop_net_order_placer=self.prop_net_order_placer,
-                api_keys_file=self.secrets_file,
+                api_keys_file=self.api_keys_file,
                 refresh_interval=self.refresh_interval,
                 flask_host=self.api_host,
                 flask_port=self.api_rest_port

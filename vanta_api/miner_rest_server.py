@@ -24,6 +24,7 @@ from typing import Optional
 from flask import jsonify, request
 from bittensor_wallet import Wallet
 
+from vali_objects.utils.vali_utils import ValiUtils
 from vanta_api.base_rest_server import BaseRestServer
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from miner_config import MinerConfig
@@ -327,16 +328,15 @@ class MinerRestServer(BaseRestServer):
 
         # 3. Load wallet secrets
         try:
-            secrets_file = MinerConfig.get_secrets_file_path()
-            with open(secrets_file, 'r') as f:
-                secrets = json.load(f)
+            secrets = ValiUtils.get_secrets(secrets_path=MinerConfig.get_secrets_file_path())
 
             wallet_name = secrets.get('wallet_name')
             wallet_hotkey = secrets.get('wallet_hotkey')
-            wallet_password = secrets.get('wallet_password')
+            wallet_password = ValiUtils.get_secret('wallet_password', secrets_path=MinerConfig.get_secrets_file_path())
             validator_url = secrets.get('validator_url')
 
             if not all([wallet_name, wallet_hotkey, wallet_password, validator_url]):
+                del wallet_password
                 return jsonify({
                     'status': 'error',
                     'message': 'Missing wallet configuration in secrets file'
@@ -363,10 +363,11 @@ class MinerRestServer(BaseRestServer):
 
             # Sign with coldkey
             signature = coldkey.sign(message).hex()
-
         except Exception as e:
             bt.logging.error(f"Error signing message: {e}")
             return jsonify({'status': 'error', 'message': f'Wallet error: {str(e)}'}), 500
+        finally:
+            del wallet_password
 
         # 5. Send request to validator
         try:
