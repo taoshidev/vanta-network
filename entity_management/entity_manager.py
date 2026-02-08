@@ -436,6 +436,7 @@ class EntityManager(ValidatorBroadcastBase):
                         f"{asset_selection_result.get('error_message', 'Unknown error')}"
                     )
                     entity_data.next_subaccount_id -= 1
+                    self._asset_selection_client.delete_asset_selection(synthetic_hotkey)
                     return False, None, f"Failed to set asset selection {asset_class}"
                 bt.logging.info(
                     f"[ENTITY_MANAGER] Asset selection '{asset_class}' set for {synthetic_hotkey}"
@@ -454,11 +455,11 @@ class EntityManager(ValidatorBroadcastBase):
 
                 if not set_size_success:
                     bt.logging.warning(
-                        f"[ENTITY_MANAGER] Failed to set account size for {synthetic_hotkey}, "
-                        f"but collateral was slashed - continuing with subaccount creation"
+                        f"[ENTITY_MANAGER] Failed to set account size for {synthetic_hotkey}"
                     )
                     entity_data.next_subaccount_id -= 1
                     self._asset_selection_client.delete_asset_selection(synthetic_hotkey)
+                    self._miner_account_client.delete_miner_account_size(synthetic_hotkey)
                     return False, None, "Failed to set account size for subaccount creation"
                 bt.logging.info(
                     f"[ENTITY_MANAGER] Set account size {account_size} for {synthetic_hotkey}"
