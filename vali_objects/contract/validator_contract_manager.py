@@ -77,7 +77,6 @@ class ValidatorContractManager(ValidatorBroadcastBase):
         self.config = config
         self.is_backtesting = is_backtesting
         self.connection_mode = connection_mode
-        self.secrets = ValiUtils.get_secrets(running_unit_tests=running_unit_tests)
 
         # Create RPC clients (forward compatibility - no parameter passing)
         self._position_client = PositionManagerClient(
@@ -205,54 +204,6 @@ class ValidatorContractManager(ValidatorBroadcastBase):
             "timestamp_ms": TimeUtil.now_in_millis(),
         }
 
-    def get_secret(self, secret_name: str) -> Optional[str]:
-        """
-        Get secret with fallback to local secrets
-
-        Args:
-            secret_name (str): name of secret
-        """
-        secret = self._get_gcp_secret(secret_name)
-        if secret is not None:
-            return secret
-
-        secret = self.secrets.get(secret_name)
-        if secret is not None:
-            bt.logging.info(f"{secret_name} retrieved from local secrets file")
-        return secret
-
-    def _get_gcp_secret(self, secret_name: str) -> Optional[str]:
-        """
-        Get vault password from Google Cloud Secret Manager.
-
-        Args:
-            secret_name (str): name of secret
-
-        Returns:
-            str: Vault password or None if not found
-        """
-        try:
-            if self._gcp_secret_manager_client is None:
-                # noinspection PyPackageRequirements
-                from google.cloud import secretmanager
-
-                self._gcp_secret_manager_client = secretmanager.SecretManagerServiceClient()
-
-            secret_path = self._gcp_secret_manager_client.secret_version_path(
-                self.secrets.get('gcp_project_name'), self.secrets.get(secret_name), "latest"
-            )
-            response = self._gcp_secret_manager_client.access_secret_version(name=secret_path)
-            secret = response.payload.data.decode()
-
-            if secret:
-                bt.logging.info(f"{secret_name} retrieved from Google Cloud Secret Manager")
-                return secret
-            else:
-                bt.logging.debug(f"{secret_name} not found in Google Cloud Secret Manager")
-                return None
-        except Exception as e:
-            bt.logging.debug(f"Failed to retrieve {secret_name} from Google Cloud: {e}")
-
     def to_theta(self, rao_amount: int) -> float:
         """
         Convert rao_theta amount to theta tokens.
@@ -331,9 +282,9 @@ class ValidatorContractManager(ValidatorBroadcastBase):
                 #     }
 
                 bt.logging.info(f"Processing deposit for: {deposit_amount_theta} Theta to miner: {miner_hotkey}")
-                owner_address = self.get_secret("collateral_owner_address")
-                owner_private_key = self.get_secret("collateral_owner_private_key")
-                vault_password = self.get_secret("gcp_vali_pw_name")
+                owner_address = ValiUtils.get_secret("collateral_owner_address")
+                owner_private_key = ValiUtils.get_secret("collateral_owner_private_key")
+                vault_password = ValiUtils.get_secret("gcp_vali_pw_name")
                 try:
                     deposited_balance = self.collateral_manager.deposit(
                         extrinsic=extrinsic,
@@ -384,8 +335,8 @@ class ValidatorContractManager(ValidatorBroadcastBase):
         """
         try:
             bt.logging.info(f"Processing force deposit to {miner_hotkey} for {amount} Theta")
-            owner_address = self.get_secret("collateral_owner_address")
-            owner_private_key = self.get_secret("collateral_owner_private_key")
+            owner_address = ValiUtils.get_secret("collateral_owner_address")
+            owner_private_key = ValiUtils.get_secret("collateral_owner_private_key")
             try:
                 self.collateral_manager.force_deposit(
                     address=miner_hotkey,
@@ -514,9 +465,9 @@ class ValidatorContractManager(ValidatorBroadcastBase):
                 f"Processing withdrawal request from {miner_hotkey} for {amount} Theta. Current drawdown: {(1 - drawdown) * 100}%. {slashed_amount} Theta will be slashed. {withdrawal_amount} Theta will be withdrawn.")
             self.slash_miner_collateral(miner_hotkey, slashed_amount)
 
-            owner_address = self.get_secret("collateral_owner_address")
-            owner_private_key = self.get_secret("collateral_owner_private_key")
-            vault_password = self.get_secret("gcp_vali_pw_name")
+            owner_address = ValiUtils.get_secret("collateral_owner_address")
+            owner_private_key = ValiUtils.get_secret("collateral_owner_private_key")
+            vault_password = ValiUtils.get_secret("gcp_vali_pw_name")
             try:
                 withdrawn_balance = self.collateral_manager.withdraw(
                     amount=int(withdrawal_amount * 10 ** 9),  # convert theta to rao_theta
@@ -643,9 +594,9 @@ class ValidatorContractManager(ValidatorBroadcastBase):
         # Call collateral SDK slash method
         try:
             bt.logging.info(f"Processing slash of {slash_amount} Theta from {miner_hotkey}")
-            owner_address = self.get_secret("collateral_owner_address")
-            owner_private_key = self.get_secret("collateral_owner_private_key")
-            vault_password = self.get_secret("gcp_vali_pw_name")
+            owner_address = ValiUtils.get_secret("collateral_owner_address")
+            owner_private_key = ValiUtils.get_secret("collateral_owner_private_key")
+            vault_password = ValiUtils.get_secret("gcp_vali_pw_name")
             try:
                 self.collateral_manager.slash_with_burn(
                     address=miner_hotkey,
