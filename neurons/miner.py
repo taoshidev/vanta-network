@@ -128,7 +128,8 @@ class Miner:
                 prop_net_order_placer=self.prop_net_order_placer,
                 miner_hotkey=self.wallet.hotkey.ss58_address,
                 api_host=getattr(self.config, 'api_host', '0.0.0.0'),
-                api_rest_port=getattr(self.config, 'api_rest_port', 8088)
+                api_rest_port=getattr(self.config, 'api_rest_port', 8088),
+                slack_notifier=self.slack_notifier
             )
 
             self.api_thread = threading.Thread(target=self.api_manager.run, daemon=True)

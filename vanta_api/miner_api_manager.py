@@ -27,7 +27,8 @@ class MinerAPIManager:
     """Manages miner REST API server lifecycle."""
 
     def __init__(self, prop_net_order_placer, miner_hotkey=None,
-                 refresh_interval=15, api_host="0.0.0.0", api_rest_port=8088):
+                 refresh_interval=15, api_host="0.0.0.0", api_rest_port=8088,
+                 slack_notifier=None):
         """
         Initialize miner API manager.
 
@@ -37,12 +38,14 @@ class MinerAPIManager:
             refresh_interval: How often to check for API key changes (seconds)
             api_host: REST server host address
             api_rest_port: REST server port
+            slack_notifier: Optional SlackNotifier for notifications
         """
         self.prop_net_order_placer = prop_net_order_placer
         self.miner_hotkey = miner_hotkey
         self.api_host = api_host
         self.api_rest_port = api_rest_port
         self.refresh_interval = refresh_interval
+        self.slack_notifier = slack_notifier
 
         # Get default API keys file path
         self.api_keys_file = ValiBkpUtils.get_api_keys_file_path()
@@ -79,7 +82,8 @@ class MinerAPIManager:
                 api_keys_file=self.api_keys_file,
                 refresh_interval=self.refresh_interval,
                 flask_host=self.api_host,
-                flask_port=self.api_rest_port
+                flask_port=self.api_rest_port,
+                slack_notifier=self.slack_notifier
             )
             # BaseRestServer.__init__ already started Flask in background thread
 

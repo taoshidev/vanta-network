@@ -53,7 +53,7 @@ class MinerRestServer(BaseRestServer):
 
     def __init__(self, prop_net_order_placer, api_keys_file,
                  refresh_interval=15, metrics_interval_minutes=5,
-                 flask_host=None, flask_port=None, **kwargs):
+                 flask_host=None, flask_port=None, slack_notifier=None, **kwargs):
         """
         Initialize miner REST server with direct PropNetOrderPlacer reference.
 
@@ -64,9 +64,11 @@ class MinerRestServer(BaseRestServer):
             metrics_interval_minutes: How often to log API metrics (minutes)
             flask_host: Host address for Flask server (default: "0.0.0.0")
             flask_port: Port for Flask server (default: 8088)
+            slack_notifier: Optional SlackNotifier for notifications
         """
         # Store direct reference to order placer (no IPC, no RPC!)
         self.order_placer = prop_net_order_placer
+        self.slack_notifier = slack_notifier
 
         print(f"[MINER-REST-INIT] Initializing MinerRestServer...")
 
@@ -398,22 +400,68 @@ class MinerRestServer(BaseRestServer):
 
             # Return validator response
             if response.status_code == 200:
+                if self.slack_notifier:
+                    subaccount = response_data.get('subaccount', {})
+                    from datetime import datetime, timezone
+                    timestamp = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
+                    self.slack_notifier.send_message(
+                        f"✅ Subaccount created successfully!\n"
+                        f"ID: {subaccount.get('subaccount_id')}\n"
+                        f"UUID: {subaccount.get('subaccount_uuid')}\n"
+                        f"Synthetic Hotkey: {subaccount.get('synthetic_hotkey')}\n"
+                        f"Asset Class: {subaccount.get('asset_class')}\n"
+                        f"Account Size: ${subaccount.get('account_size'):,.2f}\n"
+                        f"Created: {timestamp}",
+                        level="success"
+                    )
                 return jsonify(response_data), 200
             else:
                 error_message = response_data.get('message', 'Unknown error from validator')
+                if self.slack_notifier:
+                    self.slack_notifier.send_message(
+                        f"❌ Subaccount creation failed\n"
+                        f"Asset Class: {asset_class}\n"
+                        f"Account Size: ${account_size:,.2f}\n"
+                        f"Error: {error_message}",
+                        level="error"
+                    )
                 return jsonify({
                     'status': 'error',
                     'message': error_message
                 }), response.status_code
 
         except requests.exceptions.Timeout:
+            if self.slack_notifier:
+                self.slack_notifier.send_message(
+                    f"❌ Subaccount creation failed\n"
+                    f"Asset Class: {asset_class}\n"
+                    f"Account Size: ${account_size:,.2f}\n"
+                    f"Error: Request to validator timed out",
+                    level="error"
+                )
             return jsonify({'status': 'error', 'message': 'Request to validator timed out'}), 504
 
         except requests.exceptions.ConnectionError:
+            if self.slack_notifier:
+                self.slack_notifier.send_message(
+                    f"❌ Subaccount creation failed\n"
+                    f"Asset Class: {asset_class}\n"
+                    f"Account Size: ${account_size:,.2f}\n"
+                    f"Error: Could not connect to validator",
+                    level="error"
+                )
             return jsonify({'status': 'error', 'message': 'Could not connect to validator'}), 503
 
         except Exception as e:
             bt.logging.error(f"Error communicating with validator: {e}")
+            if self.slack_notifier:
+                self.slack_notifier.send_message(
+                    f"❌ Subaccount creation failed\n"
+                    f"Asset Class: {asset_class}\n"
+                    f"Account Size: ${account_size:,.2f}\n"
+                    f"Error: {str(e)}",
+                    level="error"
+                )
             return jsonify({'status': 'error', 'message': f'Validator communication error: {str(e)}'}), 500
 
     def order_status_endpoint(self, order_uuid):
