@@ -1196,7 +1196,10 @@ class ChallengePeriodManager(CacheController):
             if start_time_ms != first_order_time_ms:
                 bt.logging.info(f"Challengeperiod start time for {hotkey} updated from: {datetime.fromtimestamp(start_time_ms/1000)} "
                                 f"to: {datetime.fromtimestamp(first_order_time_ms/1000)}, {(start_time_ms-first_order_time_ms)/1000}s delta")
-                self.set_miner_bucket(hotkey, MinerBucket.CHALLENGE, first_order_time_ms)
+                if is_synthetic_hotkey(hotkey):
+                    self.set_miner_bucket(hotkey, MinerBucket.SUBACCOUNT_CHALLENGE, first_order_time_ms)
+                else:
+                    self.set_miner_bucket(hotkey, MinerBucket.CHALLENGE, first_order_time_ms)
                 any_changes = True
 
         if any_changes:
