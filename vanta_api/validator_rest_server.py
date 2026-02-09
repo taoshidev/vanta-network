@@ -1602,11 +1602,27 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             dashboard_data = self._entity_client.get_subaccount_dashboard_data(synthetic_hotkey)
 
             if dashboard_data:
-                return jsonify({
+                # Serialize the dashboard payload (excluding the timestamp wrapper which changes every call)
+                dashboard_json = json.dumps(dashboard_data, cls=CustomEncoder, sort_keys=True)
+
+                # Compute ETag from dashboard content
+                etag = '"' + hashlib.md5(dashboard_json.encode()).hexdigest() + '"'
+
+                # Check If-None-Match
+                if_none_match = request.headers.get('If-None-Match')
+                if if_none_match == etag:
+                    return Response(status=304, headers={'ETag': etag})
+
+                # Build full response with ETag
+                response_data = json.dumps({
                     'status': 'success',
                     'dashboard': dashboard_data,
                     'timestamp': TimeUtil.now_in_millis()
-                }), 200
+                }, cls=CustomEncoder)
+
+                response = Response(response_data, content_type='application/json')
+                response.headers['ETag'] = etag
+                return response, 200
             else:
                 return jsonify({'error': f'Subaccount {synthetic_hotkey} not found'}), 404
 
