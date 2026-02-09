@@ -210,7 +210,8 @@ class Validator(ValidatorBase):
             'mdd_checker',
             'core_outputs',
             'miner_statistics',
-            'weight_calculator'
+            'weight_calculator',
+            'entity'
         ])
         bt.logging.success("[INIT] All daemons started, caches warmed")
         # ============================================================================
