@@ -1,5 +1,6 @@
 import statistics
 from string import hexdigits
+import uuid as uuid_lib
 
 import bittensor as bt
 import threading
@@ -11,6 +12,7 @@ import os
 import time
 import json
 import gzip
+import hashlib
 import traceback
 from setproctitle import setproctitle
 from waitress import serve
@@ -96,6 +98,10 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
         # Store connection_mode for use in _initialize_clients
         self._connection_mode = connection_mode
+
+        # In-memory job store for async subaccount creation
+        self._subaccount_creation_jobs = {}  # request_id -> {status, result, error, created_at}
+        self._subaccount_creation_lock = threading.Lock()
 
         print(f"[REST-INIT] Initializing VantaRestServer with multiple inheritance...")
 
@@ -295,13 +301,14 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         # Entity management endpoints
         self.app.route("/entity/register", methods=["POST"])(self.register_entity)
         self.app.route("/entity/create-subaccount", methods=["POST"])(self.create_subaccount)
+        self.app.route("/entity/create-subaccount/status/<request_id>", methods=["GET"])(self.get_subaccount_creation_status)
         self.app.route("/entity/<entity_hotkey>", methods=["GET"])(self.get_entity)
         self.app.route("/entities", methods=["GET"])(self.get_all_entities)
         self.app.route("/entity/subaccount/eliminate", methods=["POST"])(self.eliminate_subaccount)
         self.app.route("/entity/subaccount/<synthetic_hotkey>", methods=["GET"])(self.get_subaccount_dashboard)
         self.app.route("/entity/subaccount/payout", methods=["POST"])(self.calculate_subaccount_payout)
 
-        print(f"[REST-INIT] 29 validator endpoints registered ✓")
+        print(f"[REST-INIT] 30 validator endpoints registered ✓")
 
     # ============================================================================
     # MINER POSITION ENDPOINTS
@@ -1298,9 +1305,41 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             bt.logging.error(f"Error registering entity: {e}")
             return jsonify({'error': 'Internal server error registering entity'}), 500
 
+    # TODO: Add periodic cleanup of _subaccount_creation_jobs (e.g. remove entries older than N hours)
+    # and log/alert when the dict grows beyond a reasonable size. For now, validator restarts clear it.
+
+    def _complete_creation_job(self, request_id, success, result=None, error=None):
+        """Mark a subaccount creation job as completed or failed."""
+        with self._subaccount_creation_lock:
+            if request_id in self._subaccount_creation_jobs:
+                self._subaccount_creation_jobs[request_id] = {
+                    'status': 'completed' if success else 'failed',
+                    'result': result,
+                    'error': error,
+                    'completed_at': time.time()
+                }
+
+    def get_subaccount_creation_status(self, request_id):
+        """Get the status of an async subaccount creation request."""
+        with self._subaccount_creation_lock:
+            job = self._subaccount_creation_jobs.get(request_id)
+
+        if not job:
+            return jsonify({'error': 'Request not found'}), 404
+
+        if job['status'] == 'accepted':
+            return jsonify({'status': 'pending'}), 200
+        elif job['status'] == 'completed':
+            return jsonify({**job['result'], 'status': 'success'}), 200
+        elif job['status'] == 'failed':
+            return jsonify({'status': 'failed', 'error': job['error']}), 200
+
     def create_subaccount(self):
         """
-        Create a new subaccount for an entity.
+        Create a new subaccount for an entity (async).
+
+        Returns 202 Accepted immediately with a request_id. The caller should
+        poll GET /entity/create-subaccount/status/<request_id> for the result.
 
         Requires account_size (USD) and asset_class in request payload.
         These values are immutable once the subaccount is created.
@@ -1316,9 +1355,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             "signature": "0x..."
           }'
         """
-        import time
         t_start = time.time()
-        timings = {}
 
         # Check if entity client is available
         if not self._entity_client:
@@ -1368,7 +1405,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
             asset_class = asset_class.strip()
 
-            # Verify signature
+            # Verify signature (fast — synchronous)
             t0 = time.time()
             keypair = Keypair(ss58_address=entity_coldkey)
             message = json.dumps({
@@ -1379,52 +1416,83 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             }, sort_keys=True).encode('utf-8')
 
             is_valid = keypair.verify(message, bytes.fromhex(data['signature']))
-            timings['verify_signature'] = int((time.time() - t0) * 1000)
             if not is_valid:
                 return jsonify({'error': 'Invalid signature. Subaccount creation unauthorized'}), 401
 
-            # Verify coldkey-hotkey ownership using subtensor
-            t0 = time.time()
-            owns_hotkey = self._verify_coldkey_owns_hotkey(entity_coldkey, entity_hotkey)
-            timings['verify_coldkey_ownership'] = int((time.time() - t0) * 1000)
-            if not owns_hotkey:
-                return jsonify({'error': 'Coldkey does not own the specified hotkey'}), 403
+            # Generate request ID and enqueue
+            request_id = str(uuid_lib.uuid4())
+            with self._subaccount_creation_lock:
+                self._subaccount_creation_jobs[request_id] = {
+                    'status': 'accepted',
+                    'result': None,
+                    'error': None,
+                    'created_at': time.time()
+                }
 
-            # Create subaccount via RPC
-            t0 = time.time()
-            success, subaccount_info, message = self._entity_client.create_subaccount(
-                entity_hotkey, account_size, asset_class
-            )
-            timings['create_subaccount_rpc'] = int((time.time() - t0) * 1000)
-
-            if success:
-                # Broadcast subaccount registration to other validators
+            # Spawn background thread for slow operations
+            def _process_creation():
                 try:
+                    timings = {}
+
+                    # Verify coldkey-hotkey ownership (can be slow first time)
                     t0 = time.time()
-                    self._entity_client.broadcast_subaccount_registration(
-                        entity_hotkey=entity_hotkey,
-                        subaccount_id=subaccount_info['subaccount_id'],
-                        subaccount_uuid=subaccount_info['subaccount_uuid'],
-                        synthetic_hotkey=subaccount_info['synthetic_hotkey'],
-                        account_size=subaccount_info['account_size'],
-                        asset_class=subaccount_info['asset_class']
+                    owns_hotkey = self._verify_coldkey_owns_hotkey(entity_coldkey, entity_hotkey)
+                    timings['verify_coldkey_ownership'] = int((time.time() - t0) * 1000)
+                    if not owns_hotkey:
+                        self._complete_creation_job(request_id, success=False,
+                            error='Coldkey does not own the specified hotkey')
+                        return
+
+                    # Create subaccount via RPC (slow blockchain operations)
+                    t0 = time.time()
+                    success, subaccount_info, msg = self._entity_client.create_subaccount(
+                        entity_hotkey, account_size, asset_class
                     )
-                    timings['broadcast_rpc'] = int((time.time() - t0) * 1000)
-                    bt.logging.info(f"[REST_API] Broadcasted subaccount registration for {subaccount_info['synthetic_hotkey']}")
+                    timings['create_subaccount_rpc'] = int((time.time() - t0) * 1000)
+
+                    if success:
+                        # Broadcast subaccount registration to other validators (threaded, non-blocking)
+                        try:
+                            t0 = time.time()
+                            self._entity_client.broadcast_subaccount_registration(
+                                entity_hotkey=entity_hotkey,
+                                subaccount_id=subaccount_info['subaccount_id'],
+                                subaccount_uuid=subaccount_info['subaccount_uuid'],
+                                synthetic_hotkey=subaccount_info['synthetic_hotkey'],
+                                account_size=subaccount_info['account_size'],
+                                asset_class=subaccount_info['asset_class']
+                            )
+                            timings['broadcast_rpc'] = int((time.time() - t0) * 1000)
+                            bt.logging.info(f"[REST_API] Broadcasted subaccount registration for {subaccount_info['synthetic_hotkey']}")
+                        except Exception as e:
+                            bt.logging.warning(f"[REST_API] Failed to broadcast subaccount registration: {e}")
+
+                        total_ms = int((time.time() - t_start) * 1000)
+                        bt.logging.info(f"[REST_API] create_subaccount completed ({total_ms} ms) | timings: {timings}")
+
+                        self._complete_creation_job(request_id, success=True, result={
+                            'status': 'success',
+                            'message': msg,
+                            'subaccount': subaccount_info
+                        })
+                    else:
+                        self._complete_creation_job(request_id, success=False, error=msg)
+
                 except Exception as e:
-                    # Don't fail the request if broadcast fails - it's a background operation
-                    bt.logging.warning(f"[REST_API] Failed to broadcast subaccount registration: {e}")
+                    bt.logging.error(f"[REST_API] Background create_subaccount failed: {e}")
+                    # TODO: Send failure notification to error tracking channel (Slack, PagerDuty, etc.)
+                    bt.logging.error(f"[REST_API] Subaccount creation failed for {entity_hotkey}: {e}")
+                    self._complete_creation_job(request_id, success=False,
+                        error=f'Internal error: {str(e)}')
 
-                total_ms = int((time.time() - t_start) * 1000)
-                bt.logging.info(f"[REST_API] create_subaccount completed ({total_ms} ms) | timings: {timings}")
+            thread = threading.Thread(target=_process_creation, daemon=True)
+            thread.start()
 
-                return jsonify({
-                    'status': 'success',
-                    'message': message,
-                    'subaccount': subaccount_info
-                }), 200
-            else:
-                return jsonify({'error': message}), 400
+            return jsonify({
+                'status': 'accepted',
+                'request_id': request_id,
+                'message': 'Subaccount creation in progress'
+            }), 202
 
         except Exception as e:
             bt.logging.error(f"Error creating subaccount: {e}")
@@ -1602,11 +1670,27 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             dashboard_data = self._entity_client.get_subaccount_dashboard_data(synthetic_hotkey)
 
             if dashboard_data:
-                return jsonify({
+                # Serialize the dashboard payload (excluding the timestamp wrapper which changes every call)
+                dashboard_json = json.dumps(dashboard_data, cls=CustomEncoder, sort_keys=True)
+
+                # Compute ETag from dashboard content
+                etag = '"' + hashlib.md5(dashboard_json.encode()).hexdigest() + '"'
+
+                # Check If-None-Match
+                if_none_match = request.headers.get('If-None-Match')
+                if if_none_match == etag:
+                    return Response(status=304, headers={'ETag': etag})
+
+                # Build full response with ETag
+                response_data = json.dumps({
                     'status': 'success',
                     'dashboard': dashboard_data,
                     'timestamp': TimeUtil.now_in_millis()
-                }), 200
+                }, cls=CustomEncoder)
+
+                response = Response(response_data, content_type='application/json')
+                response.headers['ETag'] = etag
+                return response, 200
             else:
                 return jsonify({'error': f'Subaccount {synthetic_hotkey} not found'}), 404
 

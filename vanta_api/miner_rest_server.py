@@ -384,7 +384,7 @@ class MinerRestServer(BaseRestServer):
                 f"{validator_url}/entity/create-subaccount",
                 json=payload,
                 headers={"Content-Type": "application/json"},
-                timeout=60
+                timeout=30  # Reduced — validator now returns 202 quickly
             )
 
             # Parse response
@@ -396,11 +396,46 @@ class MinerRestServer(BaseRestServer):
                     'message': 'Invalid JSON response from validator'
                 }), 500
 
-            # Return validator response
-            if response.status_code == 200:
+            if response.status_code == 202:
+                # Async mode: poll for completion
+                request_id = response_data.get('request_id')
+                if not request_id:
+                    return jsonify({'status': 'error', 'message': 'No request_id in 202 response'}), 500
+
+                # Poll status endpoint with backoff
+                max_wait = 120  # 2 minutes total
+                poll_interval = 2  # Start at 2s
+                elapsed = 0
+
+                while elapsed < max_wait:
+                    time.sleep(poll_interval)
+                    elapsed += poll_interval
+
+                    try:
+                        status_response = requests.get(
+                            f"{validator_url}/entity/create-subaccount/status/{request_id}",
+                            headers={"Content-Type": "application/json"},
+                            timeout=10
+                        )
+                        status_data = status_response.json()
+
+                        if status_data.get('status') == 'success':
+                            return jsonify(status_data), 200
+                        elif status_data.get('status') == 'failed':
+                            return jsonify({'status': 'error', 'message': status_data.get('error', 'Creation failed')}), 400
+                        # else 'pending' — continue polling
+                    except Exception:
+                        pass  # Retry on next iteration
+
+                    poll_interval = min(poll_interval * 1.5, 10)  # Backoff up to 10s
+
+                return jsonify({'status': 'error', 'message': 'Subaccount creation timed out'}), 504
+
+            elif response.status_code == 200:
+                # Legacy sync mode (backwards compatible)
                 return jsonify(response_data), 200
             else:
-                error_message = response_data.get('message', 'Unknown error from validator')
+                error_message = response_data.get('error', response_data.get('message', 'Unknown error from validator'))
                 return jsonify({
                     'status': 'error',
                     'message': error_message
