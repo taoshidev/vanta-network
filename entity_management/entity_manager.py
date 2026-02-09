@@ -363,6 +363,11 @@ class EntityManager(ValidatorBroadcastBase):
         t_start = time.time()
         timings = {}
 
+        bt.logging.info(
+            f"[ENTITY_MANAGER] create_subaccount START: entity={entity_hotkey}, "
+            f"account_size=${account_size}, asset_class={asset_class}"
+        )
+
         # Validate account size (must be <= MAX_SUBACCOUNT_ACCOUNT_SIZE)
         if account_size > ValiConfig.MAX_SUBACCOUNT_ACCOUNT_SIZE:
             return False, None, (
@@ -371,8 +376,10 @@ class EntityManager(ValidatorBroadcastBase):
             )
 
         # Use per-entity lock: only operates on single entity
+        bt.logging.debug(f"[ENTITY_MANAGER] create_subaccount: acquiring entity lock for {entity_hotkey}")
         entity_lock = self._get_entity_lock(entity_hotkey)
         with entity_lock:
+            bt.logging.debug(f"[ENTITY_MANAGER] create_subaccount: entity lock acquired for {entity_hotkey}")
             entity_data = self.entities.get(entity_hotkey)
             if not entity_data:
                 return False, None, f"Entity {entity_hotkey} not registered"
@@ -388,9 +395,11 @@ class EntityManager(ValidatorBroadcastBase):
             # Verify collateral balance
             try:
                 if not self.running_unit_tests:
+                    bt.logging.info(f"[ENTITY_MANAGER] create_subaccount: checking collateral balance for {entity_hotkey}")
                     t0 = time.time()
                     current_balance = self._contract_client.get_miner_collateral_balance(entity_hotkey)
                     timings['get_collateral_balance'] = int((time.time() - t0) * 1000)
+                    bt.logging.info(f"[ENTITY_MANAGER] create_subaccount: collateral balance={current_balance} ({timings['get_collateral_balance']}ms)")
 
                     if current_balance is None:
                         bt.logging.warning(f"[ENTITY_MANAGER] Unable to verify collateral for {entity_hotkey} - balance check returned None")
@@ -416,12 +425,14 @@ class EntityManager(ValidatorBroadcastBase):
                 synthetic_hotkey = f"{entity_hotkey}_{subaccount_id}"
 
                 # Process asset selection for synthetic hotkey
+                bt.logging.info(f"[ENTITY_MANAGER] create_subaccount: setting asset selection for {synthetic_hotkey}")
                 t0 = time.time()
                 asset_selection_result = self._asset_selection_client.process_asset_selection_request(
                     asset_selection=asset_class,
                     miner=synthetic_hotkey
                 )
                 timings['asset_selection_rpc'] = int((time.time() - t0) * 1000)
+                bt.logging.info(f"[ENTITY_MANAGER] create_subaccount: asset selection done ({timings['asset_selection_rpc']}ms)")
 
                 if not asset_selection_result.get('successfully_processed', False):
                     bt.logging.warning(
@@ -437,6 +448,7 @@ class EntityManager(ValidatorBroadcastBase):
 
                 # Set account size for synthetic hotkey with explicit account_size parameter
                 # This records the account size in the contract manager's miner_account_sizes
+                bt.logging.info(f"[ENTITY_MANAGER] create_subaccount: setting account size for {synthetic_hotkey}")
                 t0 = time.time()
                 set_size_success = self._miner_account_client.set_miner_account_size(
                     synthetic_hotkey,
@@ -445,6 +457,7 @@ class EntityManager(ValidatorBroadcastBase):
                     account_size=account_size
                 )
                 timings['set_account_size'] = int((time.time() - t0) * 1000)
+                bt.logging.info(f"[ENTITY_MANAGER] create_subaccount: account size done, success={set_size_success} ({timings['set_account_size']}ms)")
 
                 if not set_size_success:
                     bt.logging.warning(
@@ -484,9 +497,11 @@ class EntityManager(ValidatorBroadcastBase):
             with self._entities_lock:
                 self._uuid_to_hotkey[subaccount_uuid] = synthetic_hotkey
 
+            bt.logging.info(f"[ENTITY_MANAGER] create_subaccount: writing to disk for {synthetic_hotkey}")
             t0 = time.time()
             self._write_entities_from_memory_to_disk()
             timings['write_to_disk'] = int((time.time() - t0) * 1000)
+            bt.logging.info(f"[ENTITY_MANAGER] create_subaccount: disk write done ({timings['write_to_disk']}ms)")
 
             # Start background slashing thread (not in unit tests)
             if not self.running_unit_tests:
@@ -517,17 +532,24 @@ class EntityManager(ValidatorBroadcastBase):
         required_theta: float
     ) -> None:
         """Background thread to complete collateral slashing."""
+        bt.logging.info(f"[ENTITY_MANAGER] _complete_subaccount_slashing START: {synthetic_hotkey}, theta={required_theta}")
         try:
+            bt.logging.info(f"[ENTITY_MANAGER] _complete_subaccount_slashing: calling slash_miner_collateral for {entity_hotkey}")
             slash_success = self._contract_client.slash_miner_collateral(entity_hotkey, required_theta)
+            bt.logging.info(f"[ENTITY_MANAGER] _complete_subaccount_slashing: slash_miner_collateral returned {slash_success}")
 
+            bt.logging.debug(f"[ENTITY_MANAGER] _complete_subaccount_slashing: acquiring lock for {entity_hotkey}")
             entity_lock = self._get_entity_lock(entity_hotkey)
             with entity_lock:
+                bt.logging.debug(f"[ENTITY_MANAGER] _complete_subaccount_slashing: lock acquired for {entity_hotkey}")
                 entity_data = self.entities.get(entity_hotkey)
                 if not entity_data:
+                    bt.logging.warning(f"[ENTITY_MANAGER] _complete_subaccount_slashing: entity {entity_hotkey} not found")
                     return
 
                 subaccount = entity_data.subaccounts.get(subaccount_id)
                 if not subaccount:
+                    bt.logging.warning(f"[ENTITY_MANAGER] _complete_subaccount_slashing: subaccount {subaccount_id} not found")
                     return
 
                 if slash_success:
@@ -537,6 +559,7 @@ class EntityManager(ValidatorBroadcastBase):
                     subaccount.status = "failed"
                     bt.logging.error(f"[ENTITY_MANAGER] Slashing failed for {synthetic_hotkey}")
                 self._write_entities_from_memory_to_disk()
+            bt.logging.info(f"[ENTITY_MANAGER] _complete_subaccount_slashing END: {synthetic_hotkey}")
         except Exception as e:
             bt.logging.error(f"[ENTITY_MANAGER] Slashing error for {synthetic_hotkey}: {e}")
             # Mark as failed
