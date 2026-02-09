@@ -458,24 +458,6 @@ class EntityManager(ValidatorBroadcastBase):
                     f"[ENTITY_MANAGER] Set account size {account_size} for {synthetic_hotkey}"
                 )
 
-                if not self.running_unit_tests:
-                    # Slash required collateral
-                    t0 = time.time()
-                    slash_success = self._contract_client.slash_miner_collateral(entity_hotkey, required_theta)
-                    timings['slash_collateral'] = int((time.time() - t0) * 1000)
-
-                    if not slash_success:
-                        bt.logging.error(f"[ENTITY_MANAGER] Failed to slash subaccount collateral for {entity_hotkey}")
-                        # Rollback subaccount ID increment and clean up asset selection/account size
-                        entity_data.next_subaccount_id -= 1
-                        self._asset_selection_client.delete_asset_selection(synthetic_hotkey)
-                        self._miner_account_client.delete_miner_account_size(synthetic_hotkey)
-                        return False, None, "Failed to slash subaccount collateral"
-                    bt.logging.info(
-                        f"[ENTITY_MANAGER] Slashed {required_theta} theta for subaccount {synthetic_hotkey} "
-                        f"(${account_size} account size)"
-                    )
-
             except Exception as e:
                 bt.logging.error(f"[ENTITY_MANAGER] Error creating subaccount: {e}")
                 # Rollback subaccount ID increment and clean up asset selection/account size
@@ -484,13 +466,13 @@ class EntityManager(ValidatorBroadcastBase):
                 self._miner_account_client.delete_miner_account_size(synthetic_hotkey)
                 return False, None, f"Error creating subaccount: {str(e)}"
 
-            # Create subaccount info
+            # Create subaccount info with "pending" status (slashing happens async)
             now_ms = TimeUtil.now_in_millis()
             subaccount_info = SubaccountInfo(
                 subaccount_id=subaccount_id,
                 subaccount_uuid=subaccount_uuid,
                 synthetic_hotkey=synthetic_hotkey,
-                status="active",
+                status="pending",
                 created_at_ms=now_ms,
                 account_size=account_size,
                 asset_class=asset_class
@@ -506,17 +488,66 @@ class EntityManager(ValidatorBroadcastBase):
             self._write_entities_from_memory_to_disk()
             timings['write_to_disk'] = int((time.time() - t0) * 1000)
 
+            # Start background slashing thread (not in unit tests)
+            if not self.running_unit_tests:
+                thread = threading.Thread(
+                    target=self._complete_subaccount_slashing,
+                    args=(subaccount_id, entity_hotkey, synthetic_hotkey, required_theta),
+                    daemon=True
+                )
+                thread.start()
+            else:
+                # In tests, mark as active immediately (skip slashing)
+                subaccount_info.status = "active"
+                self._write_entities_from_memory_to_disk()
+
             total_ms = int((time.time() - t_start) * 1000)
             bt.logging.info(
                 f"[ENTITY_MANAGER] Created subaccount {subaccount_id} for entity {entity_hotkey}: "
                 f"{synthetic_hotkey}, account_size=${account_size}, asset_class={asset_class}, "
-                f"slashed {required_theta} theta ({total_ms} ms) | timings: {timings}"
+                f"status=pending, slashing {required_theta} theta in background ({total_ms} ms) | timings: {timings}"
             )
-            return True, subaccount_info, (
-                f"Subaccount {subaccount_id} created successfully - "
-                f"${account_size} account size, {asset_class} asset class, "
-                f"{required_theta} theta slashed"
-            )
+            return True, subaccount_info, "Subaccount creation initiated - slashing in progress"
+
+    def _complete_subaccount_slashing(
+        self,
+        subaccount_id: int,
+        entity_hotkey: str,
+        synthetic_hotkey: str,
+        required_theta: float
+    ) -> None:
+        """Background thread to complete collateral slashing."""
+        try:
+            slash_success = self._contract_client.slash_miner_collateral(entity_hotkey, required_theta)
+
+            entity_lock = self._get_entity_lock(entity_hotkey)
+            with entity_lock:
+                entity_data = self.entities.get(entity_hotkey)
+                if not entity_data:
+                    return
+
+                subaccount = entity_data.subaccounts.get(subaccount_id)
+                if not subaccount:
+                    return
+
+                if slash_success:
+                    subaccount.status = "active"
+                    bt.logging.info(f"[ENTITY_MANAGER] Slashing complete for {synthetic_hotkey}")
+                else:
+                    subaccount.status = "failed"
+                    bt.logging.error(f"[ENTITY_MANAGER] Slashing failed for {synthetic_hotkey}")
+                self._write_entities_from_memory_to_disk()
+        except Exception as e:
+            bt.logging.error(f"[ENTITY_MANAGER] Slashing error for {synthetic_hotkey}: {e}")
+            # Mark as failed
+            entity_lock = self._get_entity_lock(entity_hotkey)
+            with entity_lock:
+                entity_data = self.entities.get(entity_hotkey)
+                if entity_data:
+                    subaccount = entity_data.subaccounts.get(subaccount_id)
+                    if subaccount:
+                        subaccount.status = "failed"
+                        self._write_entities_from_memory_to_disk()
 
     def eliminate_subaccount(
         self,
