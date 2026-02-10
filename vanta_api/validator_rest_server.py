@@ -1,3 +1,4 @@
+import hashlib
 import statistics
 from string import hexdigits
 
