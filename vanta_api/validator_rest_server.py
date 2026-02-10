@@ -15,7 +15,6 @@ import gzip
 import traceback
 from setproctitle import setproctitle
 from waitress import serve
-# from flask_compress import Compress  # Removed: causes double-compression of pre-compressed data
 from bittensor_wallet import Keypair
 
 from time_util.time_util import TimeUtil
