@@ -16,12 +16,15 @@ from dataclasses import dataclass
 from datetime import timezone, datetime, timedelta
 from typing import Dict, Optional, List, Any
 import bittensor as bt
+
+from entity_management.entity_utils import is_synthetic_hotkey
 from time_util.time_util import TimeUtil
 from vali_objects.vali_config import TradePairCategory, ValiConfig, RPCConnectionMode
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.exceptions.signal_exception import SignalException
 from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
+from vali_objects.validator_broadcast_base import ValidatorBroadcastBase
 
 
 # ==================== Data Classes ====================
@@ -30,20 +33,24 @@ from vali_objects.utils.asset_selection.asset_selection_client import AssetSelec
 class CollateralRecord:
     """Record of a collateral/account size update at a specific timestamp."""
 
-    def __init__(self, account_size: float, account_size_theta: float, update_time_ms: int):
+    def __init__(self, account_size: float, account_size_theta: float, update_time_ms: int, is_first_record: bool = False):
         self.account_size = account_size
         self.account_size_theta = account_size_theta
         self.update_time_ms = update_time_ms
-        self.valid_date_timestamp = CollateralRecord.valid_from_ms(update_time_ms)
+        self.valid_date_timestamp = CollateralRecord.valid_from_ms(update_time_ms, is_first_record)
 
     @staticmethod
-    def valid_from_ms(update_time_ms: int) -> int:
+    def valid_from_ms(update_time_ms: int, is_first_record: bool = False) -> int:
         """Returns timestamp of start of next day (00:00:00 UTC) when this record is valid"""
         dt = datetime.fromtimestamp(update_time_ms / 1000, tz=timezone.utc)
         start_of_day = dt.replace(hour=0, minute=0, second=0, microsecond=0)
-        # Record is valid from the start of the next day
-        start_of_next_day = start_of_day + timedelta(days=1)
-        return int(start_of_next_day.timestamp() * 1000)
+        if is_first_record:
+            # First record: valid immediately from start of current day
+            return int(start_of_day.timestamp() * 1000)
+        else:
+            # Subsequent records: valid from start of next day
+            start_of_next_day = start_of_day + timedelta(days=1)
+            return int(start_of_next_day.timestamp() * 1000)
 
     @property
     def valid_date_str(self) -> str:
@@ -93,6 +100,9 @@ class MinerAccount:
         if not self.collateral_records:
             return ValiConfig.MIN_CAPITAL
 
+        if is_synthetic_hotkey(self.miner_hotkey):
+            return self.collateral_records[-1].account_size
+
         if timestamp_ms is None:
             theta = min(self.collateral_records[-1].account_size_theta, ValiConfig.MAX_COLLATERAL_BALANCE_THETA)
             return max(theta * ValiConfig.COST_PER_THETA, ValiConfig.MIN_CAPITAL)
@@ -112,6 +122,14 @@ class MinerAccount:
 
         # No valid record for the timestamp, return MIN_CAPITAL
         return ValiConfig.MIN_CAPITAL
+
+    def reset_account_fields(self):
+        self.total_realized_pnl = 0
+        self.capital_used = 0
+        self.total_borrowed_amount = 0
+        self.total_interest_paid = 0
+        self.last_interest_date_ms = None
+
 
     def apply_interest(self, current_time_ms: int, running_unit_tests: bool = False) -> bool:
         """
@@ -191,7 +209,7 @@ class MinerAccount:
 # ==================== Manager Implementation ====================
 
 
-class MinerAccountManager:
+class MinerAccountManager(ValidatorBroadcastBase):
     """
     Manages all miner accounts and account size tracking.
 
@@ -418,7 +436,7 @@ class MinerAccountManager:
 
     # ==================== Account Size Methods ====================
 
-    def set_miner_account_size(self, hotkey: str, collateral_balance_theta: float, timestamp_ms: Optional[int] = None) -> Optional[CollateralRecord]:
+    def set_miner_account_size(self, hotkey: str, collateral_balance_theta: float, timestamp_ms: Optional[int] = None, account_size: float = None) -> Optional[CollateralRecord]:
         """
         Set the account size for a miner. Saves to memory and disk.
         Records are kept in chronological order.
@@ -427,6 +445,7 @@ class MinerAccountManager:
             hotkey: Miner's hotkey (SS58 address)
             collateral_balance_theta: Collateral balance in theta tokens
             timestamp_ms: Timestamp for the record (defaults to now)
+            account_size: Optional USD account size. If not provided, calculated from collateral balance
 
         Returns:
             CollateralRecord if successful, None otherwise
@@ -443,8 +462,12 @@ class MinerAccountManager:
             if timestamp_ms is None:
                 timestamp_ms = TimeUtil.now_in_millis()
 
-            account_size = min(ValiConfig.MAX_COLLATERAL_BALANCE_THETA, collateral_balance_theta) * ValiConfig.COST_PER_THETA
-            collateral_record = CollateralRecord(account_size, collateral_balance_theta, timestamp_ms)
+            if account_size is None:
+                account_size = min(ValiConfig.MAX_COLLATERAL_BALANCE_THETA, collateral_balance_theta) * ValiConfig.COST_PER_THETA
+
+            # Check if this is the first record for this miner
+            is_first_record = hotkey not in self.accounts or not self.accounts[hotkey]
+            collateral_record = CollateralRecord(account_size, collateral_balance_theta, timestamp_ms, is_first_record)
 
             # Get or create account
             account = self.get_or_create(hotkey)
@@ -467,6 +490,41 @@ class MinerAccountManager:
             f"Updated account size for {hotkey}: ${account_size:,.2f} (valid from {collateral_record.valid_date_str})")
 
         return collateral_record
+
+    def reset_account_fields(self, hotkey: str) -> bool:
+        with self._accounts_lock:
+            account = self.accounts.get(hotkey)
+            if not account:
+                return False
+
+            account.reset_account_fields()
+
+            self._save_accounts_to_disk()
+
+        return True
+
+
+    def delete_miner_account_size(self, hotkey: str) -> bool:
+        """
+        Delete the account size for a miner. Used for rollback when operations fail.
+
+        Args:
+            hotkey: Miner's hotkey (SS58 address)
+
+        Returns:
+            bool: True if deleted (or didn't exist), False on error
+        """
+        with self._accounts_lock:
+            if hotkey in self.accounts:
+                del self.accounts[hotkey]
+                bt.logging.info(f"Deleted account size for {hotkey}")
+
+                # Save to disk
+                self._save_accounts_to_disk()
+                return True
+            else:
+                bt.logging.debug(f"No account size to delete for {hotkey}")
+                return True  # Return True - idempotent behavior
 
     def get_miner_account_size(self, hotkey: str, timestamp_ms: Optional[int] = None, most_recent: bool = False,
                                use_account_floor: bool = False) -> float | None:
@@ -507,19 +565,20 @@ class MinerAccountManager:
                     all_miner_account_sizes[hotkey] = account_size
             return all_miner_account_sizes
 
-    def receive_collateral_record_update(self, collateral_record_data: dict, is_mothership: bool = False) -> bool:
+    def receive_collateral_record_update(self, collateral_record_data: dict, sender_hotkey: str = None) -> bool:
         """
         Process an incoming CollateralRecord synapse and update accounts.
 
         Args:
             collateral_record_data: Dictionary containing hotkey, account_size, update_time_ms, valid_date_timestamp
-            is_mothership: Whether this validator is the mothership (should not receive updates)
+            sender_hotkey: The hotkey of the validator that sent this broadcast
 
         Returns:
             bool: True if successful, False otherwise
         """
         try:
-            if is_mothership:
+            # SECURITY: Verify sender using shared base class method
+            if not self.verify_broadcast_sender(sender_hotkey, "CollateralRecord"):
                 return False
             with self._accounts_lock:
                 # Extract data from the synapse
@@ -534,7 +593,8 @@ class MinerAccountManager:
                     return False
 
                 # Create a CollateralRecord object
-                collateral_record = CollateralRecord(account_size, account_size_theta, update_time_ms)
+                is_first_record = hotkey not in self.miner_account_sizes or not self.miner_account_sizes[hotkey]
+                collateral_record = CollateralRecord(account_size, account_size_theta, update_time_ms, is_first_record)
 
                 # Get or create account
                 account = self.get_or_create(hotkey)

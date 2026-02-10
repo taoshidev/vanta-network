@@ -73,6 +73,7 @@ class LimitOrderManager(CacheController):
         # Internal data structure: {TradePair: {hotkey: [Order]}}
         # Regular Python dict - NO IPC!
         self._limit_orders = {}
+        self._closed_orders = {}
         self._last_fill_time = {}
         self._last_print_time_ms = 0
 
@@ -142,16 +143,169 @@ class LimitOrderManager(CacheController):
             "num_trade_pairs": len(self._limit_orders)
         }
 
-    def process_limit_order(self, miner_hotkey, order):
+    # ==================== Validation Helper Methods ====================
+
+    def _validate_sltp_against_price(self, order_type, stop_loss, take_profit, reference_price, order_uuid=None):
+        """
+        Validate stop loss and take profit values against a reference price.
+
+        Args:
+            order_type: OrderType.LONG or OrderType.SHORT
+            stop_loss: Stop loss price (or None)
+            take_profit: Take profit price (or None)
+            reference_price: The price to validate against (fill price or limit price)
+            order_uuid: Optional order UUID for error messages
+
+        Raises:
+            SignalException: If validation fails
+        """
+        order_id = f"[{order_uuid}]" if order_uuid else ""
+
+        if order_type == OrderType.LONG:
+            # For LONG: SL must be below reference, TP must be above reference
+            if stop_loss is not None and stop_loss >= reference_price:
+                raise SignalException(
+                    f"Invalid LONG bracket order {order_id}: "
+                    f"stop_loss ({stop_loss}) must be < reference_price ({reference_price})"
+                )
+            if take_profit is not None and take_profit <= reference_price:
+                raise SignalException(
+                    f"Invalid LONG bracket order {order_id}: "
+                    f"take_profit ({take_profit}) must be > reference_price ({reference_price})"
+                )
+        elif order_type == OrderType.SHORT:
+            # For SHORT: SL must be above reference, TP must be below reference
+            if stop_loss is not None and stop_loss <= reference_price:
+                raise SignalException(
+                    f"Invalid SHORT bracket order {order_id}: "
+                    f"stop_loss ({stop_loss}) must be > reference_price ({reference_price})"
+                )
+            if take_profit is not None and take_profit >= reference_price:
+                raise SignalException(
+                    f"Invalid SHORT bracket order {order_id}: "
+                    f"take_profit ({take_profit}) must be < reference_price ({reference_price})"
+                )
+        else:
+            raise SignalException(
+                f"Invalid order type for bracket order {order_id}: {order_type}. Must be LONG or SHORT"
+            )
+
+    def _validate_bracket_order(self, order, open_position, unfilled_orders, reference_price=None):
+        """
+        Validate a BRACKET order and apply position-derived values.
+
+        Args:
+            order: Order object to validate (will be modified in place)
+            open_position: Position object (optional)
+            unfilled_orders: List of unfilled limit orders (optional)
+            reference_price: Optional price to validate SL/TP against (e.g., limit_price, fill_price)
+
+        Raises:
+            SignalException: If validation fails
+        """
+        if not open_position and not unfilled_orders:
+            raise SignalException(
+                f"Invalid bracket order: no open position or previous unfilled limit orders found for {order.trade_pair.trade_pair_id}"
+            )
+
+        # Validate that at least one of SL or TP is set
+        if order.stop_loss is None and order.take_profit is None:
+            raise SignalException(
+                f"BRACKET orders must have at least one of stop_loss or take_profit set"
+            )
+
+        # Set order type based on open position, skip validation if there is no position.
+        if open_position:
+            order.order_type = open_position.position_type
+        else:
+            return
+
+        # Validate SL/TP against reference price if provided
+        if reference_price is not None:
+            self._validate_sltp_against_price(
+                order.order_type, order.stop_loss, order.take_profit, reference_price, order.order_uuid
+            )
+
+        # Use position quantity if not specified
+        if open_position and order.leverage is None and order.value is None and order.quantity is None:
+            order.quantity = open_position.net_quantity
+
+    def _validate_limit_order(self, order):
+        """
+        Validate a LIMIT order.
+
+        Args:
+            order: Order object to validate
+
+        Raises:
+            SignalException: If validation fails
+        """
+        if order.limit_price is None or order.limit_price <= 0:
+            raise SignalException(
+                f"LIMIT orders must have a valid limit_price > 0 (got {order.limit_price})"
+            )
+
+        if order.order_type == OrderType.FLAT:
+            raise SignalException(f"FLAT order is not supported for LIMIT orders")
+
+        # Validate bracket_orders if provided
+        if order.bracket_orders:
+            for i, bracket in enumerate(order.bracket_orders):
+                stop_loss = bracket.get('stop_loss')
+                take_profit = bracket.get('take_profit')
+
+                # Validate SL/TP are positive if provided
+                if stop_loss is not None and stop_loss <= 0:
+                    raise SignalException(f"bracket_orders[{i}]: stop_loss must be greater than 0")
+                if take_profit is not None and take_profit <= 0:
+                    raise SignalException(f"bracket_orders[{i}]: take_profit must be greater than 0")
+
+                # Validate SL/TP against limit price
+                self._validate_sltp_against_price(
+                    order.order_type, stop_loss, take_profit, order.limit_price, f"{order.order_uuid}-bracket-{i}"
+                )
+
+    # ==================== Public API Methods ====================
+
+    def get_limit_order_by_uuid(self, miner_hotkey, order_uuid):
+        """
+        Get an unfilled limit order by UUID.
+
+        Args:
+            miner_hotkey: The miner's hotkey
+            order_uuid: UUID of the order to find
+
+        Returns:
+            Order dict if found, None if not found
+        """
+        for trade_pair, hotkey_dict in self._limit_orders.items():
+            if miner_hotkey in hotkey_dict:
+                for order in hotkey_dict[miner_hotkey]:
+                    if order.order_uuid == order_uuid:
+                        if order.src in [OrderSource.LIMIT_UNFILLED, OrderSource.BRACKET_UNFILLED]:
+                            return order.to_python_dict()
+        return None
+
+    def process_limit_order(self, miner_hotkey, order, is_edit=False):
         """
         RPC method to process a limit order or bracket order.
+        Handles both new orders and edits (replacing existing order with same UUID).
+
+        Validation responsibilities:
+        - OrderProcessor (for edits): Order exists, is unfilled, trade pair matches
+        - LimitOrderManager: Business rules (SL/TP relationships), max orders, immediate fill
+
         Args:
             miner_hotkey: The miner's hotkey
             order: Order object (pickled automatically by RPC)
+                   For edits: fully-formed Order with execution_type/src already set
+            is_edit: If True, this is an edit operation (replaces existing order)
+
         Returns:
             dict with status and order_uuid
         """
         trade_pair = order.trade_pair
+        order_uuid = order.order_uuid
 
         # Variables to track whether to fill immediately
         should_fill_immediately = False
@@ -159,7 +313,6 @@ class LimitOrderManager(CacheController):
         price_sources = None
 
         with self.limit_order_locks.get_lock(miner_hotkey, trade_pair.trade_pair_id):
-            order_uuid = order.order_uuid
             # Ensure trade_pair exists in structure
             if trade_pair not in self._limit_orders:
                 self._limit_orders[trade_pair] = {}
@@ -169,74 +322,42 @@ class LimitOrderManager(CacheController):
                 self._limit_orders[trade_pair][miner_hotkey] = []
                 self._last_fill_time[trade_pair][miner_hotkey] = 0
 
-            # Check max unfilled orders for this miner across ALL trade pairs
-            total_unfilled = self._count_unfilled_orders_for_hotkey(miner_hotkey)
-            if total_unfilled >= ValiConfig.MAX_UNFILLED_LIMIT_ORDERS:
-                raise SignalException(
-                    f"miner has too many unfilled limit orders "
-                    f"[{total_unfilled}] >= [{ValiConfig.MAX_UNFILLED_LIMIT_ORDERS}]"
-                )
+            if is_edit:
+                # EDIT PATH: OrderProcessor already validated existence, unfilled status, and trade pair match.
+                # Re-verify under lock for race condition protection.
+                existing_order = self._find_existing_order_under_lock(miner_hotkey, order_uuid)
+                if not existing_order:
+                    raise SignalException(f"Cannot edit order {order_uuid}: order not found (race condition)")
+                if existing_order.src not in [OrderSource.LIMIT_UNFILLED, OrderSource.BRACKET_UNFILLED]:
+                    raise SignalException(f"Cannot edit order {order_uuid}: order is no longer unfilled (race condition)")
+            else:
+                # NEW ORDER PATH: Check max unfilled orders limit
+                total_unfilled = self._count_unfilled_orders_for_hotkey(miner_hotkey)
+                if total_unfilled >= ValiConfig.MAX_UNFILLED_LIMIT_ORDERS:
+                    raise SignalException(
+                        f"miner has too many unfilled limit orders "
+                        f"[{total_unfilled}] >= [{ValiConfig.MAX_UNFILLED_LIMIT_ORDERS}]"
+                    )
 
             # Get position for validation
-            position = self._get_position_for(miner_hotkey, order)
+            open_position = self._get_open_position(miner_hotkey, order)
+            unfilled_orders = self._get_unfilled_orders(miner_hotkey, trade_pair)
 
-            # Special handling for BRACKET orders
+            # Validate order using shared validation logic (business rules)
             if order.execution_type == ExecutionType.BRACKET:
-                if not position:
-                    raise SignalException(
-                        f"Cannot create bracket order: no open position found for {trade_pair.trade_pair_id}"
-                    )
+                self._validate_bracket_order(order, open_position, unfilled_orders)
+            elif order.execution_type == ExecutionType.LIMIT:
+                self._validate_limit_order(order)
 
-                # Validate that at least one of SL or TP is set
-                if order.stop_loss is None and order.take_profit is None:
-                    raise SignalException(
-                        f"BRACKET orders must have at least one of stop_loss or take_profit set"
-                    )
-
-                order.order_type = position.position_type
-
-                if order.stop_loss and order.take_profit:
-                    if order.order_type == OrderType.LONG and order.stop_loss >= order.take_profit:
-                        raise SignalException(
-                            f"BRACKET orders for LONG positions must satisfy: stop_loss < take_profit. "
-                            f"Got stop_loss={order.stop_loss}, take_profit={order.take_profit}"
-                        )
-                    if order.order_type == OrderType.SHORT and order.stop_loss <= order.take_profit:
-                        raise SignalException(
-                            f"BRACKET orders for SHORT positions must satisfy: take_profit < stop_loss. "
-                            f"Got take_profit={order.take_profit}, stop_loss={order.stop_loss}"
-                        )
-
-                # Use miner-provided leverage if specified, otherwise use position leverage
-                if order.leverage is None and order.value is None and order.quantity is None:
-                    order.quantity = position.net_quantity
-
-            # Validation for LIMIT orders
-            if order.execution_type == ExecutionType.LIMIT:
-                if order.limit_price is None or order.limit_price <= 0:
-                    raise SignalException(
-                        f"LIMIT orders must have a valid limit_price > 0 (got {order.limit_price})"
-                    )
-
-            # Validation for FLAT orders
-            if order.order_type == OrderType.FLAT:
-                raise SignalException(f"FLAT order is not supported for LIMIT orders")
-
-            if order.execution_type == ExecutionType.BRACKET:
-                bt.logging.info(
-                    f"INCOMING BRACKET ORDER | {trade_pair.trade_pair_id} | "
-                    f"{order.order_type.name} | SL={order.stop_loss} TP={order.take_profit}"
-                )
-            else:
-                bt.logging.info(
-                    f"INCOMING LIMIT ORDER | {trade_pair.trade_pair_id} | "
-                    f"{order.order_type.name} @ {order.limit_price}"
-                )
+            bt.logging.info(
+                f"{'EDIT' if is_edit else 'INCOMING'} {order.execution_type} ORDER | {trade_pair.trade_pair_id} | "
+                f"{order.order_type.name} | bracket_orders={order.bracket_orders}"
+            )
 
             # Check if order can be filled immediately (only if market is open)
             price_sources = self.live_price_fetcher.get_sorted_price_sources_for_trade_pair(trade_pair, order.processed_ms)
             if price_sources and self.live_price_fetcher.is_market_open(trade_pair, order.processed_ms):
-                trigger_price = self._evaluate_trigger_price(order, position, price_sources[0])
+                trigger_price = self._evaluate_trigger_price(order, open_position, price_sources[0])
 
                 if trigger_price:
                     should_fill_immediately = True
@@ -244,6 +365,14 @@ class LimitOrderManager(CacheController):
         # Fill outside the lock to avoid reentrant lock issue
         # Treat order that fills immediately as market order
         if should_fill_immediately:
+            # If replacing, remove the old order first
+            if is_edit:
+                orders_list = self._limit_orders[trade_pair][miner_hotkey]
+                for i, o in enumerate(orders_list):
+                    if o.order_uuid == order_uuid:
+                        orders_list.pop(i)
+                        break
+
             order.execution_type = ExecutionType.MARKET
             order.src = OrderSource.ORGANIC
             fill_error = self._fill_limit_order_with_price_source(miner_hotkey, order, price_sources[0], None, enforce_market_cooldown=True)
@@ -253,9 +382,45 @@ class LimitOrderManager(CacheController):
 
         else:
             self._write_to_disk(miner_hotkey, order)
-            self._limit_orders[trade_pair][miner_hotkey].append(order)
+            if is_edit:
+                # Replace existing order in list
+                orders_list = self._limit_orders[trade_pair][miner_hotkey]
+                for i, o in enumerate(orders_list):
+                    if o.order_uuid == order_uuid:
+                        orders_list[i] = order
+                        break
+                # Update bracket order on position for edits
+                if order.execution_type == ExecutionType.BRACKET:
+                    self.position_manager.remove_bracket_order_from_position(
+                        miner_hotkey, trade_pair.trade_pair_id, order_uuid
+                    )
+                    self.position_manager.attach_bracket_order_to_position(
+                        miner_hotkey, trade_pair.trade_pair_id, order.to_python_dict()
+                    )
+            else:
+                # Append new order
+                self._limit_orders[trade_pair][miner_hotkey].append(order)
+                # Attach bracket order to position for new orders
+                if order.execution_type == ExecutionType.BRACKET:
+                    self.position_manager.attach_bracket_order_to_position(
+                        miner_hotkey, trade_pair.trade_pair_id, order.to_python_dict()
+                    )
 
         return {"status": "success", "order_uuid": order_uuid}
+
+    def _find_existing_order_under_lock(self, miner_hotkey, order_uuid):
+        """
+        Find an existing order by UUID. Must be called while holding the lock.
+
+        Returns:
+            Order if found, None otherwise
+        """
+        for tp, hotkey_dict in self._limit_orders.items():
+            if miner_hotkey in hotkey_dict:
+                for o in hotkey_dict[miner_hotkey]:
+                    if o.order_uuid == order_uuid:
+                        return o
+        return None
 
 
     def cancel_limit_order(self, miner_hotkey, trade_pair_id, order_uuid, now_ms):
@@ -263,7 +428,7 @@ class LimitOrderManager(CacheController):
         RPC method to cancel limit order(s).
         Args:
             miner_hotkey: The miner's hotkey
-            order_uuid: UUID of specific order to cancel, or None/empty for all
+            order_uuid: UUID of specific order to cancel, comma-separated for multiple, or None/empty for all
             now_ms: Current timestamp
         Returns:
             dict with cancellation details
@@ -273,8 +438,13 @@ class LimitOrderManager(CacheController):
             # Parse trade_pair only if trade_pair_id is provided
             # trade_pair = TradePair.from_trade_pair_id(trade_pair_id) if trade_pair_id else None
 
-            # Try to find orders by UUID first
-            orders_to_cancel = self._find_orders_to_cancel_by_uuid(miner_hotkey, order_uuid)
+            # Split order_uuid by commas to support multiple cancellations
+            order_uuids = [uuid.strip() for uuid in order_uuid.split(',')] if order_uuid else []
+
+            # Find orders for each UUID
+            orders_to_cancel = []
+            for uuid in order_uuids:
+                orders_to_cancel.extend(self._find_orders_to_cancel_by_uuid(miner_hotkey, uuid))
 
             # Only cancel one order at a time with order_uuid
             # if not orders_to_cancel and trade_pair:
@@ -338,35 +508,55 @@ class LimitOrderManager(CacheController):
             bt.logging.error(f"Error getting limit orders for trade pair: {e}")
             return {}
 
-    def to_dashboard_dict_rpc(self, miner_hotkey):
+    def to_dashboard_dict_rpc(self, miner_hotkey, status_filter=None):
         """
         RPC method to get dashboard representation of limit orders.
+
+        Args:
+            miner_hotkey: The miner's hotkey
+            status_filter: Optional list of status strings ['unfilled', 'filled', 'cancelled']
+
+        Returns:
+            If status_filter is None: list of order dicts (backward compatible)
+            If status_filter provided: dict of {status: [order dicts]}
         """
         try:
-            order_list = []
-            for trade_pair, hotkey_dict in self._limit_orders.items():
-                if miner_hotkey in hotkey_dict:
-                    for order in hotkey_dict[miner_hotkey]:
-                        data = {
-                            "trade_pair": [order.trade_pair.trade_pair_id, order.trade_pair.trade_pair],
-                            "order_type": str(order.order_type),
-                            "processed_ms": order.processed_ms,
-                            "limit_price": order.limit_price,
-                            "price": order.price,
-                            "leverage": order.leverage,
-                            'value': order.value,
-                            'quantity': order.quantity,
-                            "src": order.src,
-                            "execution_type": order.execution_type.name,
-                            "order_uuid": order.order_uuid,
-                            "stop_loss": order.stop_loss,
-                            "take_profit": order.take_profit
-                        }
-                        order_list.append(data)
-            return order_list if order_list else None
+            filtered_orders = []
+
+            if not status_filter or "unfilled" in status_filter:
+                # Get unfilled from memory
+                for _, hotkey_dict in self._limit_orders.items():
+                    if miner_hotkey in hotkey_dict:
+                        for order in hotkey_dict[miner_hotkey]:
+                            filtered_orders.append(order)
+
+            # No filter - return flat list (backward compatible)
+            if not status_filter:
+                return_data = [self._order_to_dict(o) for o in filtered_orders]
+                return return_data if return_data else None
+
+            # Get closed from cache (only when filtering)
+            for closed_order in self._closed_orders.get(miner_hotkey, []):
+                filtered_orders.append(closed_order)
+
+            # With filter - return dict grouped by status
+            status_set = set(s.upper() for s in status_filter)
+            result = {s.lower(): [] for s in status_set}
+
+            for order in filtered_orders:
+                status = OrderSource.status(order.src)  # "UNFILLED", "FILLED", "CANCELLED"
+                if status in status_set:
+                    result[status.lower()].append(self._order_to_dict(order))
+
+            return result if any(result.values()) else None
+
         except Exception as e:
             bt.logging.error(f"Error creating dashboard dict: {e}")
             return None
+
+    def _order_to_dict(self, order):
+        """Convert order to dict for dashboard response."""
+        return order.to_python_dict()
 
     def get_all_limit_orders_rpc(self):
         """
@@ -497,25 +687,24 @@ class LimitOrderManager(CacheController):
                 time_since_last_fill = now_ms - last_fill_time
 
                 if time_since_last_fill < ValiConfig.LIMIT_ORDER_FILL_INTERVAL_MS:
-                    if self.running_unit_tests:
-                        print(f"[CHECK_ORDERS DEBUG] Fill interval not met: {time_since_last_fill}ms < {ValiConfig.LIMIT_ORDER_FILL_INTERVAL_MS}ms")
-                    bt.logging.debug(f"Skipping {trade_pair.trade_pair_id} for {miner_hotkey}: {time_since_last_fill}ms since last fill")
+                    bt.logging.info(f"Skipping {trade_pair.trade_pair_id} for {miner_hotkey}: {time_since_last_fill}ms since last fill")
                     continue
-
-                if self.running_unit_tests:
-                    print(f"[CHECK_ORDERS DEBUG] Checking {len(orders)} orders for {miner_hotkey}")
 
                 for order in orders:
                     # Check both regular limit orders and SL/TP Bracket orders
                     if order.src not in [OrderSource.LIMIT_UNFILLED, OrderSource.BRACKET_UNFILLED]:
-                        if self.running_unit_tests:
-                            print(f"[CHECK_ORDERS DEBUG] Skipping order {order.order_uuid} with src={order.src}")
                         continue
 
-                    if self.running_unit_tests:
-                        print(f"[CHECK_ORDERS DEBUG] Attempting to fill order {order.order_uuid} type={order.execution_type}")
-
                     total_checked += 1
+
+                    # Cancel bracket orders with no position and no unfilled limit orders created before it
+                    if order.src == OrderSource.BRACKET_UNFILLED:
+                        position = self._get_open_position(miner_hotkey, order)
+                        unfilled_orders = self._get_unfilled_orders(miner_hotkey, trade_pair, before_ms=order.processed_ms)
+                        if not position and not unfilled_orders:
+                            bt.logging.info(f"[BRACKET CANCELLED] No position found for bracket order {order.order_uuid}, cancelling")
+                            self._close_limit_order(miner_hotkey, order, OrderSource.BRACKET_CANCELLED, now_ms)
+                            continue
 
                     # Attempt to fill
                     if self._attempt_fill_limit_order(miner_hotkey, order, price_sources, now_ms):
@@ -537,6 +726,35 @@ class LimitOrderManager(CacheController):
     # ============================================================================
     # Internal Helper Methods
     # ============================================================================
+
+    def _get_unfilled_orders(self, miner_hotkey: str, trade_pair: TradePair, before_ms: int = None) -> list:
+        """
+        Get unfilled limit orders for a miner and trade pair.
+
+        Args:
+            miner_hotkey: The miner's hotkey
+            trade_pair: The trade pair to filter by
+            before_ms: If provided, only return orders created before this timestamp
+
+        Returns:
+            List of unfilled limit orders
+        """
+        if trade_pair not in self._limit_orders:
+            return []
+
+        if miner_hotkey not in self._limit_orders[trade_pair]:
+            return []
+
+        orders = [
+            order for order in self._limit_orders[trade_pair][miner_hotkey]
+            if order.src == OrderSource.LIMIT_UNFILLED
+        ]
+
+        if before_ms is not None:
+            orders = [order for order in orders if order.processed_ms < before_ms]
+
+        return orders
+
 
     def _count_unfilled_orders_for_hotkey(self, miner_hotkey):
         """Count total unfilled orders across all trade pairs for a hotkey."""
@@ -575,6 +793,27 @@ class LimitOrderManager(CacheController):
                         orders_to_cancel.append(order)
 
         return orders_to_cancel
+
+    def _find_order_by_uuid(self, miner_hotkey, order_uuid):
+        """
+        Find a single unfilled order by UUID across all trade pairs.
+
+        Args:
+            miner_hotkey: The miner's hotkey
+            order_uuid: UUID of the order to find
+
+        Returns:
+            Tuple of (order, trade_pair) if found, raises SignalException if not found
+        """
+        for trade_pair, hotkey_dict in self._limit_orders.items():
+            if miner_hotkey in hotkey_dict:
+                for order in hotkey_dict[miner_hotkey]:
+                    if order.order_uuid == order_uuid:
+                        return order, trade_pair
+
+        raise SignalException(
+            f"No unfilled limit order found for {miner_hotkey} with uuid={order_uuid}"
+        )
 
     def _find_orders_to_cancel_by_trade_pair(self, miner_hotkey, trade_pair):
         """Find all unfilled orders for a specific trade pair."""
@@ -632,19 +871,12 @@ class LimitOrderManager(CacheController):
 
                 # Check if limit price triggered
                 best_price_source = price_sources[0]
-                position = self._get_position_for(miner_hotkey, order)
+                position = self._get_open_position(miner_hotkey, order)
+                unfilled_orders = self._get_unfilled_orders(miner_hotkey, trade_pair)
                 trigger_price = self._evaluate_trigger_price(order, position, best_price_source)
-
-                if self.running_unit_tests and order.execution_type == ExecutionType.BRACKET:
-                    print(f"[BRACKET DEBUG] position={position is not None}, trigger_price={trigger_price}, ps.bid={best_price_source.bid}, ps.ask={best_price_source.ask}, order={order.order_uuid}")
 
                 if trigger_price is not None:
                     should_fill = True
-
-            if order.execution_type == ExecutionType.BRACKET and not position:
-                print(f"[BRACKET CANCELLED] No position found for bracket order {order.order_uuid}, cancelling")
-                self._close_limit_order(miner_hotkey, order, OrderSource.BRACKET_CANCELLED, now_ms)
-                return False
 
             # Fill OUTSIDE the lock to avoid deadlock with _close_limit_order
             # Note: There's a small window where order could be cancelled between check and fill,
@@ -722,8 +954,14 @@ class LimitOrderManager(CacheController):
                 self._last_fill_time[trade_pair] = {}
             self._last_fill_time[trade_pair][miner_hotkey] = fill_time
 
-            if order.execution_type == ExecutionType.LIMIT and (order.stop_loss is not None or order.take_profit is not None):
-                self.create_sltp_order(miner_hotkey, order)
+
+            if order.execution_type == ExecutionType.LIMIT:
+                if updated_position.is_open_position and len(updated_position.orders) == 1:
+                    # New position created - sync any pending bracket orders with the position
+                    self._sync_pending_bracket_orders(miner_hotkey, updated_position)
+
+                if order.bracket_orders is not None:
+                    self.create_sltp_order(miner_hotkey, order)
 
         except BracketOrderException as e:
             error_msg = f"Limit order [{order.order_uuid}] filled successfully, but bracket order creation failed: {e}"
@@ -774,88 +1012,66 @@ class LimitOrderManager(CacheController):
                     o for o in orders if o.order_uuid != order_uuid
                 ]
 
+            # Remove from position if bracket order
+            if order.execution_type == ExecutionType.BRACKET:
+                self.position_manager.remove_bracket_order_from_position(
+                    miner_hotkey, trade_pair_id, order_uuid
+                )
+
+            if miner_hotkey not in self._closed_orders:
+                self._closed_orders[miner_hotkey] = []
+            self._closed_orders[miner_hotkey].append(order)
+
             bt.logging.info(f"Successfully closed limit order [{order_uuid}] [{trade_pair_id}] for [{miner_hotkey}]")
 
     def create_sltp_order(self, miner_hotkey, parent_order):
         """
-        Create a single bracket order with both stop loss and take profit.
-        Replaces the previous two-order SLTP system.
+        Create bracket order(s) from parent_order.bracket_orders list.
 
-        DESIGN: Bracket order UUID format is "{parent_uuid}-bracket"
-        This allows miners to cancel the bracket order by providing the parent order UUID.
+        Note: Order's normalize_bracket_orders validator converts stop_loss/take_profit
+        to bracket_orders format, so this method only needs to process bracket_orders.
+
+        DESIGN: Bracket order UUID format is "{parent_uuid}-bracket-{i}"
+        This allows miners to cancel bracket orders by providing the parent order UUID.
         See _find_orders_to_cancel_by_uuid() for the cancellation logic.
         """
         trade_pair = parent_order.trade_pair
         now_ms = TimeUtil.now_in_millis()
 
-        # Require at least one of SL or TP to be set
-        if parent_order.stop_loss is None and parent_order.take_profit is None:
-            raise BracketOrderException(f"No SL/TP specified for order [{parent_order.order_uuid}]")
-
-        # Validate SL/TP against fill price before creating bracket order
+        # Validate fill price exists
         fill_price = parent_order.price
-        order_type = parent_order.order_type
-
         if not fill_price:
             raise BracketOrderException(f"Unexpected: no fill price from order [{parent_order.order_uuid}]")
 
-        # Validate stop loss and take profit based on order type
-        if order_type == OrderType.LONG:
-            # For LONG positions:
-            # - Stop loss must be BELOW fill price (selling at a loss)
-            # - Take profit must be ABOVE fill price (selling at a gain)
-            if parent_order.stop_loss is not None and parent_order.stop_loss >= fill_price:
-                raise BracketOrderException(
-                    f"Invalid LONG bracket order [{parent_order.order_uuid}]: "
-                    f"stop_loss ({parent_order.stop_loss}) must be < fill_price ({fill_price})"
-                )
+        if not parent_order.bracket_orders:
+            raise SignalException(f"No bracket_orders specified for order [{parent_order.order_uuid}]")
 
-            if parent_order.take_profit is not None and parent_order.take_profit <= fill_price:
-                raise BracketOrderException(
-                    f"Invalid LONG bracket order [{parent_order.order_uuid}]: "
-                    f"take_profit ({parent_order.take_profit}) must be > fill_price ({fill_price})"
-                )
+        # Build brackets to create
+        brackets_to_create = []
+        for i, bracket in enumerate(parent_order.bracket_orders):
+            stop_loss = float(bracket['stop_loss']) if bracket.get('stop_loss') is not None else None
+            take_profit = float(bracket['take_profit']) if bracket.get('take_profit') is not None else None
+            leverage = float(bracket['leverage']) if bracket.get('leverage') is not None else None
+            value = float(bracket['value']) if bracket.get('value') is not None else None
+            quantity = float(bracket['quantity']) if bracket.get('quantity') is not None else None
 
-        elif order_type == OrderType.SHORT:
-            # For SHORT positions:
-            # - Stop loss must be ABOVE fill price (buying back at a loss)
-            # - Take profit must be BELOW fill price (buying back at a gain)
-            if parent_order.stop_loss is not None and parent_order.stop_loss <= fill_price:
-                raise BracketOrderException(
-                    f"Invalid SHORT bracket order [{parent_order.order_uuid}]: "
-                    f"stop_loss ({parent_order.stop_loss}) must be > fill_price ({fill_price})"
-                )
+            bracket_uuid = f"{parent_order.order_uuid}-bracket-{i}"
 
-            if parent_order.take_profit is not None and parent_order.take_profit >= fill_price:
-                raise BracketOrderException(
-                    f"Invalid SHORT bracket order [{parent_order.order_uuid}]: "
-                    f"take_profit ({parent_order.take_profit}) must be < fill_price ({fill_price})"
-                )
-        else:
-            raise BracketOrderException(
-                f"Invalid order type for bracket order [{parent_order.order_uuid}]: {order_type}. "
-                f"Must be LONG or SHORT"
+            self._validate_sltp_against_price(
+                parent_order.order_type, stop_loss, take_profit,
+                fill_price, bracket_uuid
             )
+
+            brackets_to_create.append({
+                'uuid': bracket_uuid,
+                'stop_loss': stop_loss,
+                'take_profit': take_profit,
+                'leverage': leverage,
+                'value': value,
+                'quantity': quantity,
+            })
 
         try:
-            # Create single bracket order with both SL and TP
-            # UUID format: "{parent_uuid}-bracket" enables cancellation via parent UUID
-            bracket_order = Order(
-                trade_pair=trade_pair,
-                order_uuid=f"{parent_order.order_uuid}-bracket",
-                processed_ms=now_ms,
-                price=0.0,
-                order_type=parent_order.order_type,
-                leverage=None,
-                value=None,
-                quantity=parent_order.quantity,  # Unify to quantity
-                execution_type=ExecutionType.BRACKET,
-                limit_price=None,  # Not used for bracket orders
-                stop_loss=parent_order.stop_loss,
-                take_profit=parent_order.take_profit,
-                src=OrderSource.BRACKET_UNFILLED
-            )
-
             with self.limit_order_locks.get_lock(miner_hotkey, trade_pair.trade_pair_id):
                 if trade_pair not in self._limit_orders:
                     self._limit_orders[trade_pair] = {}
@@ -864,20 +1080,42 @@ class LimitOrderManager(CacheController):
                     self._limit_orders[trade_pair][miner_hotkey] = []
                     self._last_fill_time[trade_pair][miner_hotkey] = 0
 
-                self._write_to_disk(miner_hotkey, bracket_order)
-                self._limit_orders[trade_pair][miner_hotkey].append(bracket_order)
+                for bracket_data in brackets_to_create:
+                    bracket_order = Order(
+                        trade_pair=trade_pair,
+                        order_uuid=bracket_data['uuid'],
+                        processed_ms=now_ms,
+                        price=0.0,
+                        order_type=parent_order.order_type,
+                        leverage=bracket_data['leverage'],
+                        value=bracket_data['value'],
+                        quantity=bracket_data['quantity'],
+                        execution_type=ExecutionType.BRACKET,
+                        limit_price=None,
+                        stop_loss=bracket_data['stop_loss'],
+                        take_profit=bracket_data['take_profit'],
+                        src=OrderSource.BRACKET_UNFILLED
+                    )
 
-                bt.logging.success(
-                    f"Created bracket order [{bracket_order.order_uuid}] "
-                    f"with SL={parent_order.stop_loss}, TP={parent_order.take_profit}"
-                )
+                    self._write_to_disk(miner_hotkey, bracket_order)
+                    self._limit_orders[trade_pair][miner_hotkey].append(bracket_order)
+
+                    # Attach bracket order to position via RPC
+                    self.position_manager.attach_bracket_order_to_position(
+                        miner_hotkey, trade_pair.trade_pair_id, bracket_order.to_python_dict()
+                    )
+
+                    bt.logging.success(
+                        f"Created bracket order [{bracket_order.order_uuid}] "
+                        f"with SL={bracket_data['stop_loss']}, TP={bracket_data['take_profit']}"
+                    )
 
         except Exception as e:
             bt.logging.error(f"Error creating bracket order: {e}")
             bt.logging.error(traceback.format_exc())
             raise BracketOrderException(f"Error creating bracket order: {e}")
 
-    def _get_position_for(self, hotkey, order):
+    def _get_open_position(self, hotkey, order):
         """Get open position for hotkey and trade pair."""
         trade_pair_id = order.trade_pair.trade_pair_id
         return self.position_manager.get_open_position_for_trade_pair(hotkey, trade_pair_id)
@@ -916,10 +1154,14 @@ class LimitOrderManager(CacheController):
         - LONG order: SL triggers when price < SL, TP triggers when price > TP
         - SHORT order: SL triggers when price > SL, TP triggers when price < TP
         """
+        if not position:
+            return None
+
         bid_price = ps.bid if ps.bid > 0 else ps.open
         ask_price = ps.ask if ps.ask > 0 else ps.open
 
-        order_type = order.order_type
+        order_type = position.position_type
+        order.order_type = order_type
 
         # For LONG orders:
         # - Stop loss: triggers when market price < SL (use bid for selling)
@@ -958,11 +1200,17 @@ class LimitOrderManager(CacheController):
 
         eliminated_hotkeys = self.elimination_manager.get_eliminated_hotkeys()
 
+        total_orders_read = 0
+        total_bracket_orders = 0
+        total_bracket_attached = 0
+
+        bt.logging.info(f"[LIMIT ORDER DISK] Reading limit orders from disk for {len(hotkeys)} hotkeys...")
+
         for hotkey in hotkeys:
             if hotkey in eliminated_hotkeys:
                 continue
 
-            miner_order_dicts = ValiBkpUtils.get_limit_orders(hotkey, True, running_unit_tests=self.running_unit_tests)
+            miner_order_dicts = ValiBkpUtils.get_limit_orders(hotkey, False, running_unit_tests=self.running_unit_tests)
             for order_dict in miner_order_dicts:
                 try:
                     order = Order.from_dict(order_dict)
@@ -975,7 +1223,21 @@ class LimitOrderManager(CacheController):
                     if hotkey not in self._limit_orders[trade_pair]:
                         self._limit_orders[trade_pair][hotkey] = []
 
-                    self._limit_orders[trade_pair][hotkey].append(order)
+                    if OrderSource.is_open(order.src):
+                        self._limit_orders[trade_pair][hotkey].append(order)
+                        total_orders_read += 1
+                        # Attach bracket orders to position
+                        if order.src == OrderSource.BRACKET_UNFILLED:
+                            total_bracket_orders += 1
+                            attached = self.position_manager.attach_bracket_order_to_position(
+                                hotkey, trade_pair.trade_pair_id, order.to_python_dict()
+                            )
+                            if attached:
+                                total_bracket_attached += 1
+                    else:
+                        if hotkey not in self._closed_orders:
+                            self._closed_orders[hotkey] = []
+                        self._closed_orders[hotkey].append(order)
                     self._last_fill_time[trade_pair][hotkey] = 0
 
                 except Exception as e:
@@ -986,6 +1248,60 @@ class LimitOrderManager(CacheController):
         for trade_pair in self._limit_orders:
             for hotkey in self._limit_orders[trade_pair]:
                 self._limit_orders[trade_pair][hotkey].sort(key=lambda o: o.processed_ms)
+
+        bt.logging.info(f"[LIMIT ORDER DISK] Finished reading limit orders: {total_orders_read} open orders, {total_bracket_orders} bracket orders, {total_bracket_attached} attached to positions")
+
+    def _sync_pending_bracket_orders(self, miner_hotkey: str, position):
+        """
+        Sync pending bracket orders with a position.
+        Sets the bracket order's order_type to match the position's position_type
+        and attaches the bracket order to the position.
+
+        Args:
+            miner_hotkey: The miner's hotkey
+            position: The position to sync bracket orders with
+        """
+        if not position:
+            return
+
+        trade_pair = position.trade_pair
+        orders_to_sync = []
+
+        # Collect bracket orders that need syncing for this position
+        if trade_pair in self._limit_orders and miner_hotkey in self._limit_orders[trade_pair]:
+            for order in self._limit_orders[trade_pair][miner_hotkey]:
+                if order.src == OrderSource.BRACKET_UNFILLED:
+                    orders_to_sync.append(order)
+
+        now_ms = TimeUtil.now_in_millis()
+        for order in orders_to_sync:
+            # Check if already attached (idempotent)
+            existing_uuids = {o.get('order_uuid') for o in position.unfilled_orders}
+            if order.order_uuid in existing_uuids:
+                continue
+
+            # Validate bracket order now that we have a position
+            # This handles bracket orders submitted on pending limit orders (no position at submission)
+            try:
+                self._validate_bracket_order(order, position, [], reference_price=position.initial_entry_price)
+            except SignalException as e:
+                bt.logging.warning(f"[BRACKET SYNC] Validation failed for {order.order_uuid}: {e}")
+                self._close_limit_order(miner_hotkey, order, OrderSource.BRACKET_CANCELLED, now_ms)
+                continue
+
+            # Persist updated order to disk (order_type was set by _validate_bracket_order)
+            self._write_to_disk(miner_hotkey, order)
+
+            # Attach to position
+            attached = self.position_manager.attach_bracket_order_to_position(
+                miner_hotkey, trade_pair.trade_pair_id, order.to_python_dict()
+            )
+            if attached:
+                bt.logging.info(
+                    f"[BRACKET SYNC] Synced bracket order {order.order_uuid} "
+                    f"with position {miner_hotkey}/{trade_pair.trade_pair_id} "
+                    f"(order_type={order.order_type})"
+                )
 
     def _write_to_disk(self, miner_hotkey, order):
         """Write order to disk."""

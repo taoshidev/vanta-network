@@ -47,13 +47,14 @@ class LimitOrderClient(RPCClientBase):
 
     # ==================== Order Processing Methods ====================
 
-    def process_limit_order(self, miner_hotkey: str, order: Order) -> dict:
+    def process_limit_order(self, miner_hotkey: str, order: Order, is_edit: bool = False) -> dict:
         """
         Process a limit order via RPC.
 
         Args:
             miner_hotkey: Miner's hotkey
             order: Order object to save
+            is_edit: If True, this is an edit operation (replaces existing order)
 
         Returns:
             dict with status and order_uuid
@@ -62,7 +63,7 @@ class LimitOrderClient(RPCClientBase):
             SignalException: Validation errors (pickled from server)
             Exception: RPC or server errors
         """
-        return self._server.process_limit_order_rpc(miner_hotkey, order)
+        return self._server.process_limit_order_rpc(miner_hotkey, order, is_edit)
 
     def cancel_limit_order(self, miner_hotkey: str, trade_pair_id: str,
                           order_uuid: str, now_ms: int) -> dict:
@@ -85,6 +86,19 @@ class LimitOrderClient(RPCClientBase):
         return self._server.cancel_limit_order(miner_hotkey, trade_pair_id, order_uuid, now_ms)
 
     # ==================== Query Methods ====================
+
+    def get_limit_order_by_uuid(self, miner_hotkey: str, order_uuid: str) -> dict:
+        """
+        Get an unfilled limit order by UUID via RPC.
+
+        Args:
+            miner_hotkey: Miner's hotkey
+            order_uuid: UUID of the order to find
+
+        Returns:
+            Order dict if found, None if not found
+        """
+        return self._server.get_limit_order_by_uuid_rpc(miner_hotkey, order_uuid)
 
     def get_limit_orders(self, miner_hotkey: str) -> list:
         """
@@ -119,17 +133,19 @@ class LimitOrderClient(RPCClientBase):
         """
         return self._server.get_all_limit_orders_rpc()
 
-    def to_dashboard_dict(self, miner_hotkey: str):
+    def to_dashboard_dict(self, miner_hotkey: str, status_filter: list = None):
         """
         Get dashboard representation via RPC.
 
         Args:
             miner_hotkey: Miner's hotkey
+            status_filter: Optional list of status strings ['unfilled', 'filled', 'cancelled']
 
         Returns:
-            List of order data for dashboard or None
+            If status_filter is None: list of order dicts (backward compatible)
+            If status_filter provided: dict of {status: [order dicts]}
         """
-        return self._server.to_dashboard_dict_rpc(miner_hotkey)
+        return self._server.to_dashboard_dict_rpc(miner_hotkey, status_filter)
 
     # ==================== Mutation Methods ====================
 

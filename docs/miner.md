@@ -20,8 +20,8 @@ A long position is a bet that the trade pair will increase, while a short positi
 5. Positions are uni-directional. Meaning, if a position starts LONG (the first order it receives is LONG),
    it can't flip SHORT. If you try and have it flip SHORT (using more leverage SHORT than exists LONG) it will close out
    the position. You'll then need to open a second position which is SHORT with the difference.
-6. Position leverage is bound per trade pair. If an order would cause the position's leverage to exceed the upper boundary, the position leverage will be clamped. Minimum order leverage is 0.001. Crypto positional leverage limit is [0.01, 0.5]. Forex positional leverage limit is [0.1, 5].
-7. Leverage is capped at 10 across all open positions in a miner's portfolio. Crypto position leverages are scaled by 10x when contributing
+6. Position leverage is bound per trade pair. If an order would cause the position's leverage to exceed the upper boundary, the position leverage will be clamped. Minimum order leverage is 0.001. Crypto positional leverage limit is [0.01, 2.5]. Forex positional leverage limit is [0.1, 10]. Equities positional leverage limit is [0.1, 2].
+7. Leverage is capped across all open positions in a miner's portfolio. Crypto portfolio leverage is capped at 5x. Forex portfolio leverage is capped at 20x. Equities portfolio leverage is capped at 2x.
    to the leverage cap. <a href="https://docs.taoshi.io/tips/p10/">View for more details and examples.</a>
 8. You can take profit on an open position using LONG and SHORT. Say you have an open LONG position with .5x
    leverage and you want to reduce it to a .25x leverage position to start taking profit on it. You would send in a SHORT signal
@@ -38,7 +38,7 @@ A long position is a bet that the trade pair will increase, while a short positi
 15. **CRITICAL**: Never reuse hotkeys that have been previously eliminated or deregistered. Once a hotkey is eliminated or deregistered, it is **permanently blacklisted** by the network. Validators internally track all departed hotkeys (both eliminated miners and voluntary deregistrations) and will reject orders from re-registered hotkeys. **Each registration must use a completely new, unused hotkey**. This policy ensures network integrity and prevents circumventing elimination penalties.
 
 ## Asset Class Selection
-Each miner selects a single asset class to compete in (crypto or forex), and competes only against other miners with the same asset class selection. Miners who do not select an asset class are restricted from placing orders.
+Each miner selects a single asset class to compete in (crypto, forex, or equities), and competes only against other miners with the same asset class selection. Miners who do not select an asset class are restricted from placing orders.
 
 ## Scoring Details
 
@@ -149,34 +149,38 @@ Spread fee is applied to crypto pairs only and is calculated as 0.1% multiplied 
 **Carry Fees:**
 
 | Market   | Fee Period | Times                   | Rates Applied   | Triple Wednesday |
-| -------- | ---------- | ----------------------- | --------------- | ---------------- |
+|----------| ---------- | ----------------------- | --------------- | ---------------- |
 | Forex    | 24h        | 21:00 UTC               | Mon-Fri         | ✓                |
 | Crypto   | 8h         | 04:00, 12:00, 20:00 UTC | Daily (Mon-Sun) |                  |
+| Equities | 24h        | 21:00 UTC               | Mon-Fri         | ✓                |
 
 The magnitude of the carry fees will reflect the following distribution:
 
 | Market   | Base Rate (Annual) | Daily Rate Calculation      |
-| -------- | ------------------ | --------------------------- |
+|----------|--------------------|-----------------------------|
 | Forex    | 3%                 | 0.008% \* Max Seen Leverage |
 | Crypto   | 10.95%             | 0.03% \* Max Seen Leverage  |
+| Equities | 5.25%              | 0.014% \* Max Seen Leverage |
 
 **Spread Fee (Transaction Fee):**
 
 | Market   | Spread Fee Rate    | Applied To           |
-| -------- | ------------------ | -------------------- |
+|----------| ------------------ | -------------------- |
 | Forex    | None               | N/A                  |
 | Crypto   | 0.1% \* Leverage   | Each order placed    |
+| Equities | None               | N/A                  |
 
 ### Leverage Limits
 
 We also set limits on leverage usage, to ensure that the network has a level of risk protection and mitigation of naive strategies. The [positional leverage limits](https://docs.taoshi.io/tips/p5/) are as follows:
 
 | Market   | Leverage Limit |
-| -------- | -------------- |
-| Forex    | 0.1x - 5x      |
-| Crypto   | 0.01x - 0.5x   |
+|----------|-------------|
+| Forex    | 0.1x - 10x  |
+| Crypto   | 0.01x - 2.5x |
+| Equities | 0.1x - 2x   |
 
-We also implement a [portfolio level leverage limit](https://docs.taoshi.io/tips/p10/), which is the sum of all the leverages from each open position. This limit is set at 10x a "typical" position, where a typical position would be 1x leverage for forex and 0.1x leverage for crypto. You can therefore open 10 forex positions at 1x leverage each, 5 forex positions at 2x leverage each, 5 forex positions at 1x and 5 crypto positions at 0.1x, etc.
+We also implement a [portfolio level leverage limit](https://docs.taoshi.io/tips/p10/), which is the sum of all the leverages from each open position. This limit is set at 5x for crypto, 20x for forex, and 2x for equities. You can therefore open 20 forex positions at 1x leverage each, 10 forex positions at 2x leverage each, 5 crypto positions at 1x, 2 equities positions at 1x, etc.
 
 ## Incentive Distribution
 

@@ -127,13 +127,22 @@ class MinerAccountServer(RPCServerBase):
         self,
         hotkey: str,
         collateral_balance_theta: float,
-        timestamp_ms: Optional[int] = None
+        timestamp_ms: Optional[int] = None,
+        account_size: float = None
     ) -> Optional[dict]:
         """Set the account size for a miner. Returns CollateralRecord as dict if successful."""
-        collateral_record = self._manager.set_miner_account_size(hotkey, collateral_balance_theta, timestamp_ms)
+        collateral_record = self._manager.set_miner_account_size(hotkey, collateral_balance_theta, timestamp_ms, account_size)
         if collateral_record is None:
             return None
         return vars(collateral_record)
+
+    def delete_miner_account_size(self, hotkey: str) -> bool:
+        """Delete the account size for a miner. Returns True if successful."""
+        return self._manager.delete_miner_account_size(hotkey)
+
+    def reset_account_fields(self, hotkey: str) -> bool:
+        """Reset account fields (PnL, capital used, borrowed amount, interest) for a miner."""
+        return self._manager.reset_account_fields(hotkey)
 
     def get_miner_account_size(
         self,
@@ -163,9 +172,9 @@ class MinerAccountServer(RPCServerBase):
         """Reload account sizes from disk."""
         self._manager.re_init_account_sizes()
 
-    def receive_collateral_record_update(self, collateral_record_data: dict) -> bool:
+    def receive_collateral_record_update(self, collateral_record_data: dict, sender_hotkey: str=None) -> bool:
         """Process an incoming CollateralRecord synapse."""
-        return self._manager.receive_collateral_record_update(collateral_record_data, self._is_mothership)
+        return self._manager.receive_collateral_record_update(collateral_record_data, sender_hotkey)
 
     # ==================== MinerAccount Cache Methods ====================
 

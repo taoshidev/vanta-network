@@ -23,15 +23,15 @@ class CacheController:
         self._last_update_time_ms = 0
         self.DD_V2_TIME = TimeUtil.millis_to_datetime(1715359820000 + 1000 * 60 * 60 * 2)  # 5/10/24 TODO: Update before mainnet release
 
-        # Create metagraph client internally (forward compatibility pattern)
-        # connection_mode controls RPC behavior, running_unit_tests only controls file paths
-        # Default to RPC mode - use LOCAL only when explicitly requested
-        self._connection_mode = connection_mode
-
-        # Create MetagraphClient - in LOCAL mode it won't connect via RPC
-        # Tests can call set_direct_metagraph_server() to inject a server reference
+        # Create metagraph client with connect_immediately=False to defer connection
+        # Client objects are instantiated where needed, not passed around
         from shared_objects.rpc.metagraph_client import MetagraphClient
-        self._metagraph_client : MetagraphClient = MetagraphClient(connection_mode=connection_mode, running_unit_tests=running_unit_tests)
+        self._metagraph_client = MetagraphClient(
+            connection_mode=connection_mode,
+            running_unit_tests=running_unit_tests,
+            connect_immediately=False
+        )
+
 
     def get_last_update_time_ms(self):
         return self._last_update_time_ms

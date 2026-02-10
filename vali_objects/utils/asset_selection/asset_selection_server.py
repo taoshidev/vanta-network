@@ -65,6 +65,11 @@ class AssetSelectionServer(RPCServerBase):
             start_daemon: Whether to start daemon immediately (typically False for asset selection)
             connection_mode: RPCConnectionMode.LOCAL for tests, RPCConnectionMode.RPC for production
         """
+        # Create mock config if running tests and config not provided
+        if running_unit_tests:
+            from shared_objects.rpc.test_mock_factory import TestMockFactory
+            config = TestMockFactory.create_mock_config_if_needed(config, netuid=116, network="test")
+
         self._config = config
         self.running_unit_tests = running_unit_tests
 
@@ -211,6 +216,18 @@ class AssetSelectionServer(RPCServerBase):
 
         return result
 
+    def delete_asset_selection_rpc(self, hotkey: str) -> Dict[str, str]:
+        """
+        Delete an asset selection for a miner (RPC method).
+
+        Args:
+            hotkey: The miner's hotkey to delete
+
+        Returns:
+            Dict containing success status and message
+        """
+        return self._manager.delete_asset_selection(hotkey)
+
     def sync_miner_asset_selection_data_rpc(self, asset_selection_data: Dict[str, str]) -> None:
         """
         Sync miner asset selection data from external source (RPC method).
@@ -220,17 +237,18 @@ class AssetSelectionServer(RPCServerBase):
         """
         self._manager.sync_miner_asset_selection_data(asset_selection_data)
 
-    def receive_asset_selection_update_rpc(self, asset_selection_data: dict) -> bool:
+    def receive_asset_selection_update_rpc(self, asset_selection_data: dict, sender_hotkey: str = None) -> bool:
         """
         Process an incoming AssetSelection synapse and update miner asset selection (RPC method).
 
         Args:
             asset_selection_data: Dictionary containing hotkey, asset selection
+            sender_hotkey: The hotkey of the validator that sent this broadcast
 
         Returns:
             bool: True if successful, False otherwise
         """
-        return self._manager.receive_asset_selection_update(asset_selection_data)
+        return self._manager.receive_asset_selection_update(asset_selection_data, sender_hotkey)
 
     def to_dict_rpc(self) -> Dict:
         """
@@ -263,7 +281,7 @@ class AssetSelectionServer(RPCServerBase):
         try:
             sender_hotkey = synapse.dendrite.hotkey
             bt.logging.info(f"[ASSET_SERVER] Received AssetSelection synapse from validator hotkey [{sender_hotkey}]")
-            success = self._manager.receive_asset_selection_update(synapse.asset_selection)
+            success = self._manager.receive_asset_selection_update(synapse.asset_selection, sender_hotkey)
 
             if success:
                 synapse.successfully_processed = True
@@ -320,6 +338,10 @@ class AssetSelectionServer(RPCServerBase):
     def process_asset_selection_request(self, asset_selection: str, miner: str) -> Dict[str, str]:
         """Process asset selection request (forward-compatible alias)."""
         return self.process_asset_selection_request_rpc(asset_selection, miner)
+
+    def delete_asset_selection(self, hotkey: str) -> Dict[str, str]:
+        """Delete asset selection (forward-compatible alias)."""
+        return self.delete_asset_selection_rpc(hotkey)
 
     def sync_miner_asset_selection_data(self, asset_selection_data: Dict[str, str]) -> None:
         """Sync asset selection data (forward-compatible alias)."""

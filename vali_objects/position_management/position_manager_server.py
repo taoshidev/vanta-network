@@ -28,6 +28,7 @@ from typing import List, Dict, Optional
 
 from shared_objects.rpc.rpc_server_base import RPCServerBase
 from time_util.time_util import timeme
+from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 
@@ -210,6 +211,32 @@ class PositionManagerServer(RPCServerBase):
         """Close positions for suspended trade pairs - delegates to manager."""
         return self._manager.close_open_orders_for_suspended_trade_pairs(live_price_fetcher)
 
+    def close_all_positions_rpc(
+        self,
+        hotkey: str,
+        close_time_ms: int,
+        order_source: OrderSource,
+        live_price_fetcher=None
+    ) -> int:
+        """
+        RPC wrapper for close_all_positions.
+
+        Args:
+            hotkey: Hotkey whose positions should be closed
+            close_time_ms: Timestamp for closing positions
+            order_source: OrderSource enum value (as int)
+            live_price_fetcher: Optional price fetcher
+
+        Returns:
+            int: Number of positions closed
+        """
+        return self._manager.close_all_positions(
+            hotkey=hotkey,
+            close_time_ms=close_time_ms,
+            order_source=order_source,
+            live_price_fetcher=live_price_fetcher
+        )
+
     # ==================== Pre-run Setup RPC Methods ====================
 
     @timeme
@@ -246,3 +273,33 @@ class PositionManagerServer(RPCServerBase):
 
     def apply_stock_split_rpc(self, trade_pair_id: str, stock_split_ratio: float, execution_date: str):
         return self._manager.apply_stock_split(trade_pair_id, stock_split_ratio, execution_date)
+
+    # ==================== Bracket Order Attachment RPC Methods ====================
+
+    def attach_bracket_order_to_position_rpc(self, miner_hotkey: str, trade_pair_id: str, order_dict: dict) -> bool:
+        """
+        Attach a bracket order to a position - delegates to manager.
+
+        Args:
+            miner_hotkey: The miner's hotkey
+            trade_pair_id: The trade pair ID
+            order_dict: The order as a dictionary
+
+        Returns:
+            True if successfully attached, False if no open position found
+        """
+        return self._manager.attach_bracket_order_to_position(miner_hotkey, trade_pair_id, order_dict)
+
+    def remove_bracket_order_from_position_rpc(self, miner_hotkey: str, trade_pair_id: str, order_uuid: str) -> bool:
+        """
+        Remove a bracket order from a position - delegates to manager.
+
+        Args:
+            miner_hotkey: The miner's hotkey
+            trade_pair_id: The trade pair ID
+            order_uuid: The UUID of the order to remove
+
+        Returns:
+            True if found and removed, False otherwise
+        """
+        return self._manager.remove_bracket_order_from_position(miner_hotkey, trade_pair_id, order_uuid)

@@ -17,6 +17,21 @@ class Signal(BaseModel):
     limit_price: Optional[float] = None
     stop_loss: Optional[float] = None
     take_profit: Optional[float] = None
+    bracket_orders: Optional[list[dict]] = None
+
+    @model_validator(mode='before')
+    @classmethod
+    def check_bracket_orders(cls, values):
+        """
+        Validate mutual exclusivity: bracket_orders vs stop_loss/take_profit.
+        """
+        bracket_orders = values.get('bracket_orders')
+        has_sl_tp = values.get('stop_loss') is not None or values.get('take_profit') is not None
+
+        if bracket_orders and has_sl_tp:
+            raise ValueError("Cannot set both bracket_orders and stop_loss/take_profit on Signal")
+
+        return values
 
     @model_validator(mode='before')
     def validate_order_type(cls, values):
@@ -87,12 +102,33 @@ class Signal(BaseModel):
         elif execution_type == ExecutionType.BRACKET:
             sl = values.get('stop_loss')
             tp = values.get('take_profit')
-            if not sl and not tp:
-                raise ValueError("Either stop_loss or take_profit must be set for BRACKET orders")
-            if sl and tp and sl == tp:
+            bracket_orders = values.get('bracket_orders')
+
+            # If top-level SL/TP empty but bracket_orders provided, extract from first entry
+            if sl is None and tp is None and bracket_orders:
+                if len(bracket_orders) != 1:
+                    raise ValueError("bracket_orders must contain exactly one entry when used for BRACKET orders")
+                sl = bracket_orders[0].get('stop_loss')
+                tp = bracket_orders[0].get('take_profit')
+
+            # Validate at least one of SL or TP is set
+            if sl is None and tp is None:
+                raise ValueError("Bracket order must specify at least one of stop_loss or take_profit")
+
+            # Validate stop_loss > 0 if present
+            if sl is not None and float(sl) <= 0:
+                raise ValueError("stop_loss must be greater than 0")
+
+            # Validate take_profit > 0 if present
+            if tp is not None and float(tp) <= 0:
+                raise ValueError("take_profit must be greater than 0")
+
+            # Validate SL and TP are unique if both set
+            if sl is not None and tp is not None and float(sl) == float(tp):
                 raise ValueError("stop_loss and take_profit must be unique")
 
         return values
+
     @staticmethod
     def parse_trade_pair_from_signal(signal) -> TradePair | None:
         if not signal or not isinstance(signal, dict):
@@ -100,11 +136,16 @@ class Signal(BaseModel):
         if 'trade_pair' not in signal:
             return None
         temp = signal["trade_pair"]
-        if 'trade_pair_id' not in temp:
-            return None
-        string_trade_pair = signal["trade_pair"]["trade_pair_id"]
-        trade_pair = TradePair.from_trade_pair_id(string_trade_pair)
-        return trade_pair
+        # Handle list format from model_dump(mode='json'): ['BTCUSD', 'BTC/USD', ...]
+        if isinstance(temp, list) and len(temp) >= 1:
+            return TradePair.from_trade_pair_id(temp[0])
+        # Handle dict format: {'trade_pair_id': 'BTCUSD', ...}
+        if isinstance(temp, dict) and 'trade_pair_id' in temp:
+            return TradePair.from_trade_pair_id(temp['trade_pair_id'])
+        # Handle string format: 'BTCUSD'
+        if isinstance(temp, str):
+            return TradePair.from_trade_pair_id(temp)
+        return None
 
     def __str__(self):
         base = {
@@ -113,7 +154,8 @@ class Signal(BaseModel):
             'leverage': self.leverage,
             'value': self.value,
             'quantity': self.quantity,
-            'execution_type': str(self.execution_type)
+            'execution_type': str(self.execution_type),
+            'bracket_orders': self.bracket_orders
         }
         if self.execution_type == ExecutionType.MARKET:
             return str(base)

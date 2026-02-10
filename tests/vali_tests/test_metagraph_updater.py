@@ -1,16 +1,16 @@
 # developer: jbonilla
 # Copyright (c) 2024 Taoshi Inc
 """
-Test suite for MetagraphUpdater that verifies both miner and validator modes.
+Test suite for SubtensorOpsManager that verifies both miner and validator modes.
 
 Tests metagraph syncing, caching, and validator-specific weight setting with
-mocked network connections (handled internally by MetagraphUpdater when running_unit_tests=True).
+mocked network connections (handled internally by SubtensorOpsManager when running_unit_tests=True).
 """
 import unittest
 from unittest.mock import Mock
 from dataclasses import dataclass
 
-from shared_objects.subtensor_ops.subtensor_ops import MetagraphUpdater
+from shared_objects.subtensor_ops.subtensor_ops import SubtensorOpsManager
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
 
@@ -36,9 +36,9 @@ class SimpleNeuron:
     axon_info: SimpleAxonInfo
 
 
-class TestMetagraphUpdater(TestBase):
+class TestSubtensorOpsManager(TestBase):
     """
-    Integration tests for MetagraphUpdater using ServerOrchestrator.
+    Integration tests for SubtensorOpsManager using ServerOrchestrator.
 
     Servers start once (via singleton orchestrator) and are shared across:
     - All test methods in this class
@@ -100,7 +100,7 @@ class TestMetagraphUpdater(TestBase):
     # ==================== Helper Methods ====================
 
     def _create_mock_config(self, netuid=8, network="finney"):
-        """Create a mock config for MetagraphUpdater tests."""
+        """Create a mock config for SubtensorOpsManager tests."""
         config = Mock()
         config.netuid = netuid
         config.subtensor = Mock()
@@ -135,7 +135,7 @@ class TestMetagraphUpdater(TestBase):
     def _create_mock_metagraph(self, hotkeys_list):
         """Create a mock metagraph with specified hotkeys."""
         # NOTE: This is only used for helper methods now - the actual mocking
-        # is done inside MetagraphUpdater via set_mock_metagraph_data()
+        # is done inside SubtensorOpsManager via set_mock_metagraph_data()
         mock_metagraph = Mock()
         mock_metagraph.hotkeys = hotkeys_list
         mock_metagraph.uids = list(range(len(hotkeys_list)))
@@ -180,24 +180,27 @@ class TestMetagraphUpdater(TestBase):
         mock_wallet.hotkey.ss58_address = hotkey
         return mock_wallet
 
-    def _create_mock_position_inspector(self):
-        """Create a mock position inspector for miner tests."""
-        mock_inspector = Mock()
-        mock_inspector.get_recently_acked_validators = Mock(return_value=[])
-        return mock_inspector
+    def _create_mock_position_manager(self):
+        """Create a mock position manager for miner tests."""
+        mock_manager = Mock()
+        mock_manager.get_recently_acked_validators = Mock(return_value=[])
+        return mock_manager
 
     # ==================== Validator Mode Tests ====================
 
     def test_validator_initialization(self):
-        """Test MetagraphUpdater initialization in validator mode."""
-        # Create validator MetagraphUpdater (mocking is handled internally)
+        """Test SubtensorOpsManager initialization in validator mode."""
+        # Create validator SubtensorOpsManager (mocking is handled internally)
         config = self._create_mock_config()
-        updater = MetagraphUpdater(
+        updater = SubtensorOpsManager(
             config=config,
             hotkey=self.TEST_VALIDATOR_HOTKEY,
             is_miner=False,
             running_unit_tests=True
         )
+
+        # Wire metagraph client (normally done by orchestrator)
+        updater._metagraph_client = self.metagraph_client
 
         # Verify validator-specific initialization
         self.assertFalse(updater.is_miner)
@@ -217,13 +220,16 @@ class TestMetagraphUpdater(TestBase):
         hotkeys = [self.TEST_VALIDATOR_HOTKEY, self.TEST_MINER_HOTKEY]
         config = self._create_mock_config()
 
-        # Create validator MetagraphUpdater (mocking handled internally)
-        updater = MetagraphUpdater(
+        # Create validator SubtensorOpsManager (mocking handled internally)
+        updater = SubtensorOpsManager(
             config=config,
             hotkey=self.TEST_VALIDATOR_HOTKEY,
             is_miner=False,
             running_unit_tests=True
         )
+
+        # Wire metagraph client (normally done by orchestrator)
+        updater._metagraph_client = self.metagraph_client
 
         # Set mock metagraph data
         updater.set_mock_metagraph_data(hotkeys)
@@ -244,13 +250,16 @@ class TestMetagraphUpdater(TestBase):
         initial_hotkeys = [self.TEST_VALIDATOR_HOTKEY, self.TEST_MINER_HOTKEY]
         config = self._create_mock_config()
 
-        # Create validator MetagraphUpdater (mocking handled internally)
-        updater = MetagraphUpdater(
+        # Create validator SubtensorOpsManager (mocking handled internally)
+        updater = SubtensorOpsManager(
             config=config,
             hotkey=self.TEST_VALIDATOR_HOTKEY,
             is_miner=False,
             running_unit_tests=True
         )
+
+        # Wire metagraph client (normally done by orchestrator)
+        updater._metagraph_client = self.metagraph_client
 
         # Set mock metagraph data before updating
         updater.set_mock_metagraph_data(initial_hotkeys)
@@ -279,13 +288,17 @@ class TestMetagraphUpdater(TestBase):
         hotkeys = [self.TEST_VALIDATOR_HOTKEY, self.TEST_MINER_HOTKEY]
         config = self._create_mock_config()
 
-        # Create validator MetagraphUpdater (mocking handled internally)
-        updater = MetagraphUpdater(
+        # Create validator SubtensorOpsManager (mocking handled internally)
+        updater = SubtensorOpsManager(
             config=config,
             hotkey=self.TEST_VALIDATOR_HOTKEY,
             is_miner=False,
             running_unit_tests=True
         )
+
+        # Wire metagraph client (normally done by orchestrator)
+        updater._metagraph_client = self.metagraph_client
+
         updater.set_mock_metagraph_data(hotkeys)
 
         # Call set_weights_rpc directly (simulating SubtensorWeightCalculator)
@@ -305,13 +318,17 @@ class TestMetagraphUpdater(TestBase):
         hotkeys = [self.TEST_VALIDATOR_HOTKEY, self.TEST_MINER_HOTKEY]
         config = self._create_mock_config()
 
-        # Create validator MetagraphUpdater (mocking handled internally)
-        updater = MetagraphUpdater(
+        # Create validator SubtensorOpsManager (mocking handled internally)
+        updater = SubtensorOpsManager(
             config=config,
             hotkey=self.TEST_VALIDATOR_HOTKEY,
             is_miner=False,
             running_unit_tests=True
         )
+
+        # Wire metagraph client (normally done by orchestrator)
+        updater._metagraph_client = self.metagraph_client
+
         updater.set_mock_metagraph_data(hotkeys)
 
         # Mock set_weights to fail
@@ -333,19 +350,22 @@ class TestMetagraphUpdater(TestBase):
     # ==================== Miner Mode Tests ====================
 
     def test_miner_initialization(self):
-        """Test MetagraphUpdater initialization in miner mode."""
+        """Test SubtensorOpsManager initialization in miner mode."""
         # Setup test data
         config = self._create_mock_config()
-        mock_position_inspector = self._create_mock_position_inspector()
+        mock_position_manager = self._create_mock_position_manager()
 
-        # Create miner MetagraphUpdater (mocking handled internally)
-        updater = MetagraphUpdater(
+        # Create miner SubtensorOpsManager (mocking handled internally)
+        updater = SubtensorOpsManager(
             config=config,
             hotkey=self.TEST_MINER_HOTKEY,
             is_miner=True,
-            position_inspector=mock_position_inspector,
+            position_manager=mock_position_manager,
             running_unit_tests=True
         )
+
+        # Wire metagraph client (normally done by orchestrator)
+        updater._metagraph_client = self.metagraph_client
 
         # Verify miner-specific initialization
         self.assertTrue(updater.is_miner)
@@ -364,16 +384,20 @@ class TestMetagraphUpdater(TestBase):
         # Setup test data
         hotkeys = [self.TEST_VALIDATOR_HOTKEY, self.TEST_MINER_HOTKEY]
         config = self._create_mock_config()
-        mock_position_inspector = self._create_mock_position_inspector()
+        mock_position_manager = self._create_mock_position_manager()
 
-        # Create miner MetagraphUpdater (mocking handled internally)
-        updater = MetagraphUpdater(
+        # Create miner SubtensorOpsManager (mocking handled internally)
+        updater = SubtensorOpsManager(
             config=config,
             hotkey=self.TEST_MINER_HOTKEY,
             is_miner=True,
-            position_inspector=mock_position_inspector,
+            position_manager=mock_position_manager,
             running_unit_tests=True
         )
+
+        # Wire metagraph client (normally done by orchestrator)
+        updater._metagraph_client = self.metagraph_client
+
         updater.set_mock_metagraph_data(hotkeys)
 
         # Perform metagraph update
@@ -390,16 +414,20 @@ class TestMetagraphUpdater(TestBase):
         # Setup test data
         initial_hotkeys = [self.TEST_VALIDATOR_HOTKEY, self.TEST_MINER_HOTKEY]
         config = self._create_mock_config()
-        mock_position_inspector = self._create_mock_position_inspector()
+        mock_position_manager = self._create_mock_position_manager()
 
-        # Create miner MetagraphUpdater (mocking handled internally)
-        updater = MetagraphUpdater(
+        # Create miner SubtensorOpsManager (mocking handled internally)
+        updater = SubtensorOpsManager(
             config=config,
             hotkey=self.TEST_MINER_HOTKEY,
             is_miner=True,
-            position_inspector=mock_position_inspector,
+            position_manager=mock_position_manager,
             running_unit_tests=True
         )
+
+        # Wire metagraph client (normally done by orchestrator)
+        updater._metagraph_client = self.metagraph_client
+
         updater.set_mock_metagraph_data(initial_hotkeys)
 
         # Perform initial update
@@ -418,21 +446,25 @@ class TestMetagraphUpdater(TestBase):
         # Setup test data with different validator_trust values
         hotkeys = [self.TEST_VALIDATOR_HOTKEY, self.TEST_MINER_HOTKEY]
         config = self._create_mock_config()
-        mock_position_inspector = self._create_mock_position_inspector()
+        mock_position_manager = self._create_mock_position_manager()
 
         # Create neurons with different validator_trust values
         validator_neuron = self._create_mock_neuron(0, self.TEST_VALIDATOR_HOTKEY, incentive=0.1, validator_trust=0.8)
         miner_neuron = self._create_mock_neuron(1, self.TEST_MINER_HOTKEY, incentive=0.1, validator_trust=0.0)
         neurons = [validator_neuron, miner_neuron]
 
-        # Create miner MetagraphUpdater (mocking handled internally)
-        updater = MetagraphUpdater(
+        # Create miner SubtensorOpsManager (mocking handled internally)
+        updater = SubtensorOpsManager(
             config=config,
             hotkey=self.TEST_MINER_HOTKEY,
             is_miner=True,
-            position_inspector=mock_position_inspector,
+            position_manager=mock_position_manager,
             running_unit_tests=True
         )
+
+        # Wire metagraph client (normally done by orchestrator)
+        updater._metagraph_client = self.metagraph_client
+
         updater.set_mock_metagraph_data(hotkeys, neurons=neurons)
 
         # Perform metagraph update
@@ -449,16 +481,20 @@ class TestMetagraphUpdater(TestBase):
         # Setup test data with many hotkeys
         initial_hotkeys = [f"5Hotkey{i:04d}" for i in range(100)]
         config = self._create_mock_config()
-        mock_position_inspector = self._create_mock_position_inspector()
+        mock_position_manager = self._create_mock_position_manager()
 
-        # Create miner MetagraphUpdater (mocking handled internally)
-        updater = MetagraphUpdater(
+        # Create miner SubtensorOpsManager (mocking handled internally)
+        updater = SubtensorOpsManager(
             config=config,
             hotkey=self.TEST_MINER_HOTKEY,
             is_miner=True,
-            position_inspector=mock_position_inspector,
+            position_manager=mock_position_manager,
             running_unit_tests=True
         )
+
+        # Wire metagraph client (normally done by orchestrator)
+        updater._metagraph_client = self.metagraph_client
+
         updater.set_mock_metagraph_data(initial_hotkeys)
 
         # Perform initial update
@@ -482,16 +518,20 @@ class TestMetagraphUpdater(TestBase):
         # Setup test data
         initial_hotkeys = [self.TEST_VALIDATOR_HOTKEY, self.TEST_MINER_HOTKEY]
         config = self._create_mock_config()
-        mock_position_inspector = self._create_mock_position_inspector()
+        mock_position_manager = self._create_mock_position_manager()
 
-        # Create miner MetagraphUpdater (mocking handled internally)
-        updater = MetagraphUpdater(
+        # Create miner SubtensorOpsManager (mocking handled internally)
+        updater = SubtensorOpsManager(
             config=config,
             hotkey=self.TEST_MINER_HOTKEY,
             is_miner=True,
-            position_inspector=mock_position_inspector,
+            position_manager=mock_position_manager,
             running_unit_tests=True
         )
+
+        # Wire metagraph client (normally done by orchestrator)
+        updater._metagraph_client = self.metagraph_client
+
         updater.set_mock_metagraph_data(initial_hotkeys)
 
         # Perform initial update
@@ -515,16 +555,20 @@ class TestMetagraphUpdater(TestBase):
         # Setup test data with round-robin enabled
         hotkeys = [self.TEST_VALIDATOR_HOTKEY, self.TEST_MINER_HOTKEY]
         config = self._create_mock_config(network="finney")  # Enable round-robin
-        mock_position_inspector = self._create_mock_position_inspector()
+        mock_position_manager = self._create_mock_position_manager()
 
-        # Create miner MetagraphUpdater (mocking handled internally)
-        updater = MetagraphUpdater(
+        # Create miner SubtensorOpsManager (mocking handled internally)
+        updater = SubtensorOpsManager(
             config=config,
             hotkey=self.TEST_MINER_HOTKEY,
             is_miner=True,
-            position_inspector=mock_position_inspector,
+            position_manager=mock_position_manager,
             running_unit_tests=True
         )
+
+        # Wire metagraph client (normally done by orchestrator)
+        updater._metagraph_client = self.metagraph_client
+
         updater.set_mock_metagraph_data(hotkeys)
 
         # Verify round-robin is enabled

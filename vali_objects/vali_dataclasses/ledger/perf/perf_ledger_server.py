@@ -248,6 +248,18 @@ class PerfLedgerServer(RPCServerBase):
             return {hotkey: self._manager.hotkey_to_perf_bundle[hotkey]}
         return None
 
+    def get_returns_rpc(self, hotkey: str) -> float | None:
+        """
+        Get returns for a specific hotkey's portfolio via RPC.
+
+        Args:
+            hotkey: Miner hotkey
+
+        Returns:
+            Returns as float (e.g., 0.08 for 8%), or None if no data exists
+        """
+        return self._manager.get_returns(hotkey)
+
     def set_hotkey_perf_bundle_rpc(self, hotkey: str, bundle: dict) -> None:
         """Set perf bundle for a specific hotkey via RPC."""
         # Accept PerfLedger objects directly - BaseManager's pickle handles serialization

@@ -14,11 +14,10 @@ This is pure business logic that can be tested independently.
 import threading
 import bittensor as bt
 from collateral_sdk import CollateralManager, Network
-from typing import Dict, Any, Optional
-import asyncio
+from typing import Dict, Any, Optional, List
 import time
 from time_util.time_util import TimeUtil
-from shared_objects.rpc.metagraph_client import MetagraphClient
+from vali_objects.validator_broadcast_base import ValidatorBroadcastBase
 from vali_objects.position_management.position_manager_client import PositionManagerClient
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
@@ -35,7 +34,7 @@ NOV_1_MS = 1761951599000
 
 # ==================== Manager Implementation ====================
 
-class ValidatorContractManager:
+class ValidatorContractManager(ValidatorBroadcastBase):
     """
     Business logic for contract/collateral management.
 
@@ -48,6 +47,8 @@ class ValidatorContractManager:
 
     NO RPC infrastructure here - pure business logic only.
     ContractServer wraps this manager and exposes methods via RPC.
+
+    Inherits from ValidatorBroadcastBase for shared broadcast functionality.
     """
 
     def __init__(
@@ -76,8 +77,6 @@ class ValidatorContractManager:
         self.config = config
         self.is_backtesting = is_backtesting
         self.connection_mode = connection_mode
-        self.secrets = ValiUtils.get_secrets(running_unit_tests=running_unit_tests)
-        self.is_mothership = 'ms' in self.secrets
 
         # Create RPC clients (forward compatibility - no parameter passing)
         self._position_client = PositionManagerClient(
@@ -85,21 +84,28 @@ class ValidatorContractManager:
             connection_mode=connection_mode
         )
         self._perf_ledger_client = PerfLedgerClient(connection_mode=connection_mode)
-        self._metagraph_client = MetagraphClient(connection_mode=connection_mode)
+
+        # Store network type for dynamic max_theta property (before initializing base class)
+        self.is_testnet = config.subtensor.network == "test"
+
+        # Initialize ValidatorBroadcastBase with broadcast configuration (derives is_mothership internally)
+        ValidatorBroadcastBase.__init__(
+            self,
+            running_unit_tests=running_unit_tests,
+            is_testnet=self.is_testnet,
+            config=config,
+            connection_mode=connection_mode
+        )
 
         # MinerAccountClient for account size operations
         self._miner_account_client = MinerAccountClient(connection_mode=connection_mode)
 
         # Lock for test collateral balances dict (prevents concurrent modifications in tests)
         self._test_balances_lock = threading.Lock()
+        # Lock for coldkey-hotkey ownership cache (prevents concurrent modifications)
+        self._coldkey_hotkey_cache_lock = threading.Lock()
 
-        # Store network type for dynamic max_theta property
-        if config is not None:
-            self.is_testnet = config.subtensor.network == "test"
-        else:
-            bt.logging.info("Config in contract manager is None")
-            self.is_testnet = False
-
+        # Initialize collateral manager based on network type
         if self.is_testnet:
             bt.logging.info("Using testnet collateral manager")
             self.collateral_manager = CollateralManager(Network.TESTNET)
@@ -109,9 +115,6 @@ class ValidatorContractManager:
 
         # GCP secret manager
         self._gcp_secret_manager_client = None
-
-        # Initialize vault wallet as None for all validators
-        self.vault_wallet = None
 
         # Test collateral balance registry (only used when running_unit_tests=True)
         # Allows tests to inject specific collateral balances instead of making blockchain calls
@@ -123,6 +126,11 @@ class ValidatorContractManager:
         # Key: miner_hotkey -> Value: list of balances (FIFO queue)
         # This is needed for race condition tests that simulate multiple concurrent balance changes
         self._test_collateral_balance_queues: Dict[str, list] = {}
+
+        # Coldkey-hotkey ownership cache
+        # Key: (coldkey_ss58, hotkey_ss58) -> Value: is_owner (bool)
+        # Cached permanently in memory (cleared only on restart)
+        self._coldkey_hotkey_cache: Dict[tuple[str, str], bool] = {}
 
         self.setup()
 
@@ -189,74 +197,12 @@ class ValidatorContractManager:
                 bt.logging.error(f"Failed to update account size for {hotkey}: {e}")
         bt.logging.info(f"COST_PER_THETA update completed for {update_count} miners")
 
-    def load_contract_owner(self):
-        """
-        Load EVM contract owner secrets and vault wallet.
-        This validator must be authorized to execute collateral operations.
-        """
-        if not self.is_mothership:
-            return
-        try:
-            # Load from secrets.json using ValiUtils
-            self.vault_wallet = bt.wallet(config=self.config)
-            bt.logging.info(f"Vault wallet loaded: {self.vault_wallet}")
-        except Exception as e:
-            bt.logging.warning(f"Failed to load vault wallet: {e}")
-
     def health_check(self) -> dict:
         """Health check for monitoring."""
         return {
             "status": "ok",
             "timestamp_ms": TimeUtil.now_in_millis(),
         }
-
-    def get_secret(self, secret_name: str) -> Optional[str]:
-        """
-        Get secret with fallback to local secrets
-
-        Args:
-            secret_name (str): name of secret
-        """
-        secret = self._get_gcp_secret(secret_name)
-        if secret is not None:
-            return secret
-
-        secret = self.secrets.get(secret_name)
-        if secret is not None:
-            bt.logging.info(f"{secret_name} retrieved from local secrets file")
-        return secret
-
-    def _get_gcp_secret(self, secret_name: str) -> Optional[str]:
-        """
-        Get vault password from Google Cloud Secret Manager.
-
-        Args:
-            secret_name (str): name of secret
-
-        Returns:
-            str: Vault password or None if not found
-        """
-        try:
-            if self._gcp_secret_manager_client is None:
-                # noinspection PyPackageRequirements
-                from google.cloud import secretmanager
-
-                self._gcp_secret_manager_client = secretmanager.SecretManagerServiceClient()
-
-            secret_path = self._gcp_secret_manager_client.secret_version_path(
-                self.secrets.get('gcp_project_name'), self.secrets.get(secret_name), "latest"
-            )
-            response = self._gcp_secret_manager_client.access_secret_version(name=secret_path)
-            secret = response.payload.data.decode()
-
-            if secret:
-                bt.logging.info(f"{secret_name} retrieved from Google Cloud Secret Manager")
-                return secret
-            else:
-                bt.logging.debug(f"{secret_name} not found in Google Cloud Secret Manager")
-                return None
-        except Exception as e:
-            bt.logging.debug(f"Failed to retrieve {secret_name} from Google Cloud: {e}")
 
     def to_theta(self, rao_amount: int) -> float:
         """
@@ -306,27 +252,27 @@ class ValidatorContractManager:
                     arg["value"] for arg in extrinsic.value["call"]["call_args"] if arg["name"] == "alpha_amount")
                 deposit_amount_theta = self.to_theta(deposit_amount)
 
-                # Check collateral balance limit before processing
-                try:
-                    current_balance_theta = self.to_theta(self.collateral_manager.balance_of(miner_hotkey))
-
-                    if current_balance_theta + deposit_amount_theta > self.max_theta:
-                        error_msg = (f"Deposit would exceed maximum balance limit. "
-                                     f"Current: {current_balance_theta:.2f} Theta, "
-                                     f"Deposit: {deposit_amount_theta:.2f} Theta, "
-                                     f"Limit: {self.max_theta} Theta")
-                        bt.logging.warning(error_msg)
-                        return {
-                            "successfully_processed": False,
-                            "error_message": error_msg
-                        }
-
-                except Exception as e:
-                    bt.logging.error(f"Failed to check balance limit: {e}")
-                    return {
-                        "successfully_processed": False,
-                        "error_message": e
-                    }
+                # # Check collateral balance limit before processing
+                # try:
+                #     current_balance_theta = self.to_theta(self.collateral_manager.balance_of(miner_hotkey))
+                #
+                #     if current_balance_theta + deposit_amount_theta > self.max_theta:
+                #         error_msg = (f"Deposit would exceed maximum balance limit. "
+                #                      f"Current: {current_balance_theta:.2f} Theta, "
+                #                      f"Deposit: {deposit_amount_theta:.2f} Theta, "
+                #                      f"Limit: {self.max_theta} Theta")
+                #         bt.logging.warning(error_msg)
+                #         return {
+                #             "successfully_processed": False,
+                #             "error_message": error_msg
+                #         }
+                #
+                # except Exception as e:
+                #     bt.logging.error(f"Failed to check balance limit: {e}")
+                #     return {
+                #         "successfully_processed": False,
+                #         "error_message": e
+                #     }
 
                 # # All positions must be closed before a miner can deposit or withdraw
                 # if len(self.position_manager.get_positions_for_one_hotkey(miner_hotkey, only_open_positions=True)) > 0:
@@ -336,15 +282,15 @@ class ValidatorContractManager:
                 #     }
 
                 bt.logging.info(f"Processing deposit for: {deposit_amount_theta} Theta to miner: {miner_hotkey}")
-                owner_address = self.get_secret("collateral_owner_address")
-                owner_private_key = self.get_secret("collateral_owner_private_key")
-                vault_password = self.get_secret("gcp_vali_pw_name")
+                owner_address = ValiUtils.get_secret("collateral_owner_address")
+                owner_private_key = ValiUtils.get_secret("collateral_owner_private_key")
+                vault_password = ValiUtils.get_secret("gcp_vali_pw_name")
                 try:
                     deposited_balance = self.collateral_manager.deposit(
                         extrinsic=extrinsic,
                         source_hotkey=miner_hotkey,
-                        vault_stake=self.vault_wallet.hotkey.ss58_address,
-                        vault_wallet=self.vault_wallet,
+                        vault_stake=self.wallet.hotkey.ss58_address,
+                        vault_wallet=self.wallet,
                         owner_address=owner_address,
                         owner_private_key=owner_private_key,
                         wallet_password=vault_password
@@ -389,8 +335,8 @@ class ValidatorContractManager:
         """
         try:
             bt.logging.info(f"Processing force deposit to {miner_hotkey} for {amount} Theta")
-            owner_address = self.get_secret("collateral_owner_address")
-            owner_private_key = self.get_secret("collateral_owner_private_key")
+            owner_address = ValiUtils.get_secret("collateral_owner_address")
+            owner_private_key = ValiUtils.get_secret("collateral_owner_private_key")
             try:
                 self.collateral_manager.force_deposit(
                     address=miner_hotkey,
@@ -519,16 +465,16 @@ class ValidatorContractManager:
                 f"Processing withdrawal request from {miner_hotkey} for {amount} Theta. Current drawdown: {(1 - drawdown) * 100}%. {slashed_amount} Theta will be slashed. {withdrawal_amount} Theta will be withdrawn.")
             self.slash_miner_collateral(miner_hotkey, slashed_amount)
 
-            owner_address = self.get_secret("collateral_owner_address")
-            owner_private_key = self.get_secret("collateral_owner_private_key")
-            vault_password = self.get_secret("gcp_vali_pw_name")
+            owner_address = ValiUtils.get_secret("collateral_owner_address")
+            owner_private_key = ValiUtils.get_secret("collateral_owner_private_key")
+            vault_password = ValiUtils.get_secret("gcp_vali_pw_name")
             try:
                 withdrawn_balance = self.collateral_manager.withdraw(
                     amount=int(withdrawal_amount * 10 ** 9),  # convert theta to rao_theta
                     source_coldkey=miner_coldkey,
                     source_hotkey=miner_hotkey,
-                    vault_stake=self.vault_wallet.hotkey.ss58_address,
-                    vault_wallet=self.vault_wallet,
+                    vault_stake=self.wallet.hotkey.ss58_address,
+                    vault_wallet=self.wallet,
                     owner_address=owner_address,
                     owner_private_key=owner_private_key,
                     wallet_password=vault_password
@@ -648,17 +594,17 @@ class ValidatorContractManager:
         # Call collateral SDK slash method
         try:
             bt.logging.info(f"Processing slash of {slash_amount} Theta from {miner_hotkey}")
-            owner_address = self.get_secret("collateral_owner_address")
-            owner_private_key = self.get_secret("collateral_owner_private_key")
-            vault_password = self.get_secret("gcp_vali_pw_name")
+            owner_address = ValiUtils.get_secret("collateral_owner_address")
+            owner_private_key = ValiUtils.get_secret("collateral_owner_private_key")
+            vault_password = ValiUtils.get_secret("gcp_vali_pw_name")
             try:
                 self.collateral_manager.slash_with_burn(
                     address=miner_hotkey,
                     amount=int(slash_amount * 10 ** 9),
                     owner_address=owner_address,
                     owner_private_key=owner_private_key,
-                    vault_stake=self.vault_wallet.hotkey.ss58_address,
-                    vault_wallet=self.vault_wallet,
+                    vault_stake=self.wallet.hotkey.ss58_address,
+                    vault_wallet=self.wallet,
                     wallet_password=vault_password
                 )
             finally:
@@ -720,25 +666,33 @@ class ValidatorContractManager:
             bt.logging.error(f"Failed to get slashed collateral: {e}")
             return 0
 
-    def _set_miner_account_size(self, hotkey: str, timestamp_ms: int = None) -> bool:
+    def _set_miner_account_size(self, hotkey: str, timestamp_ms: int = None, account_size: float = None) -> bool:
         """
         Set the account size for a miner by fetching collateral balance and updating via MinerAccountClient.
 
         Args:
             hotkey: Miner's hotkey (SS58 address)
             timestamp_ms: Timestamp for the record (defaults to now)
+            account_size: Optional explicit account size in USD. If not provided, calculated from collateral balance.
 
         Returns:
             bool: True if successful, False otherwise
         """
-        # Get collateral balance
-        collateral_balance = self.get_miner_collateral_balance(hotkey)
-        if collateral_balance is None:
-            bt.logging.warning(f"Could not retrieve collateral balance for {hotkey}")
-            return False
+        if account_size is None:
+            # Get collateral balance outside lock (external RPC call)
+            collateral_balance = self.get_miner_collateral_balance(hotkey)
+            if collateral_balance is None:
+                bt.logging.warning(f"Could not retrieve collateral balance for {hotkey}")
+                return False
+        else:
+            # Subaccount miner
+            collateral_balance = account_size / ValiConfig.ENTITY_COST_PER_THETA
+
+        if account_size is None:
+            account_size = min(ValiConfig.MAX_COLLATERAL_BALANCE_THETA, collateral_balance) * ValiConfig.COST_PER_THETA
 
         # Update account size via MinerAccountClient - returns CollateralRecord dict if successful
-        collateral_record_dict = self._miner_account_client.set_miner_account_size(hotkey, collateral_balance, timestamp_ms)
+        collateral_record_dict = self._miner_account_client.set_miner_account_size(hotkey, collateral_balance, timestamp_ms, account_size)
 
         # Broadcast to other validators if mothership
         if collateral_record_dict and self.is_mothership:
@@ -757,84 +711,37 @@ class ValidatorContractManager:
 
     def _broadcast_collateral_record_update_to_validators(self, hotkey: str, collateral_record_dict: dict):
         """
-        Broadcast CollateralRecord synapse to other validators.
-        Runs in a separate thread to avoid blocking the main process.
+        Broadcast CollateralRecord synapse to other validators using shared broadcast base.
 
         Args:
             hotkey: Miner's hotkey
             collateral_record_dict: CollateralRecord as dict with keys:
                 account_size, account_size_theta, update_time_ms, valid_date_timestamp
         """
-
-        def run_broadcast():
-            try:
-                asyncio.run(self._async_broadcast_collateral_record(hotkey, collateral_record_dict))
-            except Exception as e:
-                bt.logging.error(f"Failed to broadcast collateral record for {hotkey}: {e}")
-
-        thread = threading.Thread(target=run_broadcast, daemon=True)
-        thread.start()
-
-    async def _async_broadcast_collateral_record(self, hotkey: str, collateral_record_dict: dict):
-        """
-        Asynchronously broadcast CollateralRecord synapse to other validators.
-
-        Args:
-            hotkey: Miner's hotkey
-            collateral_record_dict: CollateralRecord as dict with keys:
-                account_size, account_size_theta, update_time_ms, valid_date_timestamp
-        """
-        try:
-            # Get other validators to broadcast to
-            if self.is_testnet:
-                validator_axons = [n.axon_info for n in self._metagraph_client.neurons if
-                                   n.axon_info.ip != ValiConfig.AXON_NO_IP and n.axon_info.hotkey != self.vault_wallet.hotkey.ss58_address]
-            else:
-                validator_axons = [n.axon_info for n in self._metagraph_client.neurons if n.stake > bt.Balance(
-                    ValiConfig.STAKE_MIN) and n.axon_info.ip != ValiConfig.AXON_NO_IP and n.axon_info.hotkey != self.vault_wallet.hotkey.ss58_address]
-
-            if not validator_axons:
-                bt.logging.debug("No other validators to broadcast CollateralRecord to")
-                return
-
-            # Create CollateralRecord synapse with the data (dict already has the right format)
-            collateral_synapse_data = {
+        def create_collateral_synapse():
+            """Factory function to create the CollateralRecord synapse."""
+            collateral_record_data = {
                 "hotkey": hotkey,
                 "account_size": collateral_record_dict["account_size"],
                 "account_size_theta": collateral_record_dict["account_size_theta"],
                 "update_time_ms": collateral_record_dict["update_time_ms"]
             }
-
-            collateral_synapse = template.protocol.CollateralRecord(
-                collateral_record=collateral_synapse_data
+            return template.protocol.CollateralRecord(
+                collateral_record=collateral_record_data
             )
 
-            bt.logging.info(f"Broadcasting CollateralRecord for {hotkey} to {len(validator_axons)} validators")
-
-            # Send to other validators using dendrite
-            async with bt.dendrite(wallet=self.vault_wallet) as dendrite:
-                responses = await dendrite.aquery(validator_axons, collateral_synapse)
-
-                # Log results
-                success_count = 0
-                for response in responses:
-                    if response.successfully_processed:
-                        success_count += 1
-                    elif response.error_message:
-                        bt.logging.warning(
-                            f"Failed to send CollateralRecord to {response.axon.hotkey}: {response.error_message}")
-
-                bt.logging.info(
-                    f"CollateralRecord broadcast completed: {success_count}/{len(responses)} validators updated")
-
-        except Exception as e:
-            bt.logging.error(f"Error in async broadcast collateral record: {e}")
-            import traceback
-            bt.logging.error(traceback.format_exc())
+        # Use shared broadcast method from base class
+        self._broadcast_to_validators(
+            synapse_factory=create_collateral_synapse,
+            broadcast_name="CollateralRecord",
+            context={"hotkey": hotkey}
+        )
 
     def verify_coldkey_owns_hotkey(self, coldkey_ss58: str, hotkey_ss58: str) -> bool:
         """
-        Verify that a coldkey owns a specific hotkey using subtensor.
+        Verify that a coldkey owns a specific hotkey.
+        Uses metagraph first (fast), falls back to subtensor query (cached).
+        Results are cached in memory for the lifetime of the validator process.
 
         Args:
             coldkey_ss58: The coldkey SS58 address
@@ -843,10 +750,40 @@ class ValidatorContractManager:
         Returns:
             bool: True if coldkey owns the hotkey, False otherwise
         """
+        cache_key = (coldkey_ss58, hotkey_ss58)
+
+        # 1. Check in-memory cache first
+        with self._coldkey_hotkey_cache_lock:
+            if cache_key in self._coldkey_hotkey_cache:
+                bt.logging.info(f"Using cached ownership result for {hotkey_ss58}")
+                return self._coldkey_hotkey_cache[cache_key]
+
+        # 2. Try metagraph (fast - already in memory, no blockchain query)
         try:
+            neurons = self._metagraph_client.get_neurons()
+            for neuron in neurons:
+                if neuron.hotkey == hotkey_ss58 and neuron.coldkey == coldkey_ss58:
+                    # Cache the result
+                    with self._coldkey_hotkey_cache_lock:
+                        self._coldkey_hotkey_cache[cache_key] = True
+                    bt.logging.info(f"Verified ownership via metagraph for {coldkey_ss58} and {hotkey_ss58}")
+                    return True
+        except Exception as e:
+            bt.logging.warning(f"Failed to check metagraph for {hotkey_ss58}: {e}")
+
+        # 3. Fallback to subtensor for non-registered hotkeys
+        try:
+            bt.logging.info(f"Hotkey {hotkey_ss58} not in metagraph, querying subtensor")
             subtensor_api = self.collateral_manager.subtensor_api
             coldkey_owner = subtensor_api.queries.query_subtensor("Owner", None, [hotkey_ss58])
-            return coldkey_owner == coldkey_ss58
+            is_owner = coldkey_owner == coldkey_ss58
+
+            # Cache the result
+            with self._coldkey_hotkey_cache_lock:
+                self._coldkey_hotkey_cache[cache_key] = is_owner
+
+            bt.logging.info(f"Verified ownership via subtensor for {coldkey_ss58} and {hotkey_ss58}")
+            return is_owner
         except Exception as e:
             bt.logging.error(f"Error verifying coldkey-hotkey ownership: {e}")
             return False

@@ -712,6 +712,74 @@ class PositionManager:
 
         return n_positions_closed
 
+    def close_all_positions(
+        self,
+        hotkey: str,
+        close_time_ms: int,
+        order_source: OrderSource,
+        live_price_fetcher=None
+    ) -> int:
+        """
+        Close all open positions for a specific hotkey.
+
+        Args:
+            hotkey: Hotkey whose positions should be closed
+            close_time_ms: Timestamp for closing positions
+            order_source: OrderSource enum value (e.g., SUBACCOUNT_PROMOTION, ELIMINATION_FLAT)
+            live_price_fetcher: Optional price fetcher for accurate closing prices
+
+        Returns:
+            int: Number of positions successfully closed
+        """
+        # Get all positions for this hotkey
+        open_positions = self.get_positions_for_one_hotkey(hotkey, only_open_positions=True, sort_positions=True)
+
+        if not open_positions:
+            bt.logging.info(f"No open positions to close for {hotkey}")
+            return 0
+
+        # Use provided price fetcher or internal client
+        price_fetcher = live_price_fetcher or self._live_price_client
+        if not price_fetcher:
+            bt.logging.warning(f"No price fetcher available for closing positions for {hotkey}")
+            return 0
+
+        bt.logging.info(
+            f"Closing {len(open_positions)} positions for {hotkey} "
+            f"with order source {order_source.name}"
+        )
+
+        closed_count = 0
+        for position in open_positions:
+            try:
+                # Generate FLAT order using existing pattern
+                flat_order = Position.generate_fake_flat_order(
+                    position=position,
+                    elimination_time_ms=close_time_ms,
+                    price_fetcher_client=price_fetcher,
+                    src=order_source
+                )
+
+                # Add order to position (automatically marks as closed)
+                position.add_order(flat_order, price_fetcher)
+
+                # Save updated position
+                self.save_miner_position(position)
+
+                bt.logging.info(f"Closed open {position.trade_pair.trade_pair_id} position {position.position_uuid} for {hotkey}")
+                closed_count += 1
+
+            except Exception as e:
+                bt.logging.error(
+                    f"Failed to close position {position.position_uuid} for {hotkey}: {e}"
+                )
+                bt.logging.error(traceback.format_exc())
+
+        bt.logging.info(
+            f"Closed {closed_count}/{len(open_positions)} positions for {hotkey}"
+        )
+        return closed_count
+
     # ==================== Pre-run Setup Methods ====================
 
     @timeme
@@ -775,27 +843,27 @@ class PositionManager:
         current_eliminations = self._elimination_client.get_eliminations_from_memory() if self._elimination_client else []
 
         if now_ms < TARGET_MS:
-            # temp slippage correction
-            SLIPPAGE_V2_TIME_MS = 1759431540000
-            n_slippage_corrections = 0
-            for hotkey, positions in hotkey_to_positions.items():
-                for position in positions:
-                    needs_save = False
-                    for order in position.orders:
-                        if (order.trade_pair.is_forex and SLIPPAGE_V2_TIME_MS < order.processed_ms):
-                            old_slippage = order.slippage
-                            order.slippage = PriceSlippageModel.calculate_slippage(order.bid, order.ask, order)
-                            if old_slippage != order.slippage:
-                                needs_save = True
-                                n_slippage_corrections += 1
-                                bt.logging.info(
-                                    f"Updated forex slippage for order {order}: "
-                                    f"{old_slippage:.6f} -> {order.slippage:.6f}")
-
-                    if needs_save:
-                        position.rebuild_position_with_updated_orders(self._live_price_client)
-                        self.save_miner_position(position, validate=False)
-            bt.logging.info(f"Applied {n_slippage_corrections} forex slippage corrections")
+            # # temp slippage correction
+            # SLIPPAGE_V2_TIME_MS = 1759431540000
+            # n_slippage_corrections = 0
+            # for hotkey, positions in hotkey_to_positions.items():
+            #     for position in positions:
+            #         needs_save = False
+            #         for order in position.orders:
+            #             if (order.trade_pair.is_forex and SLIPPAGE_V2_TIME_MS < order.processed_ms):
+            #                 old_slippage = order.slippage
+            #                 order.slippage = PriceSlippageModel.calculate_slippage(order.bid, order.ask, order)
+            #                 if old_slippage != order.slippage:
+            #                     needs_save = True
+            #                     n_slippage_corrections += 1
+            #                     bt.logging.info(
+            #                         f"Updated forex slippage for order {order}: "
+            #                         f"{old_slippage:.6f} -> {order.slippage:.6f}")
+            #
+            #         if needs_save:
+            #             position.rebuild_position_with_updated_orders(self._live_price_client)
+            #             self.save_miner_position(position, validate=False)
+            # bt.logging.info(f"Applied {n_slippage_corrections} forex slippage corrections")
 
             # All miners that wanted their challenge period restarted
             miners_to_wipe = []
@@ -861,8 +929,8 @@ class PositionManager:
                         print(f'Deleting position {pos.position_uuid} for trade pair {pos.trade_pair.trade_pair_id} for hk {pos.miner_hotkey}')
                         self.delete_position(pos.miner_hotkey, pos.position_uuid)
                     elif reopen_force_closed_orders:
-                        if any(o.src == 1 for o in pos.orders):
-                            pos.orders = [o for o in pos.orders if o.src != 1]
+                        if any((o.src in (1, 3)) for o in pos.orders):
+                            pos.orders = [o for o in pos.orders if (o.src not in (1, 3))]
                             pos.rebuild_position_with_updated_orders(self._live_price_client)
                             self.save_miner_position(pos, validate=False)
                             print(f'Removed eliminated orders from position {pos}')
@@ -1317,6 +1385,45 @@ class PositionManager:
                 _cnt += 1
 
         bt.logging.info(f"Applied {trade_pair_id} stock split (ratio: {stock_split_ratio}, date: {execution_date}) to {_cnt} positions")
+
+    # ==================== Bracket Order Attachment Methods ====================
+
+    def attach_bracket_order_to_position(self, miner_hotkey: str, trade_pair_id: str, order_dict: dict) -> bool:
+        """
+        Attach a bracket order to a position. Called by LimitOrderManager.
+
+        Args:
+            miner_hotkey: The miner's hotkey
+            trade_pair_id: The trade pair ID
+            order_dict: The order as a dictionary
+
+        Returns:
+            True if successfully attached, False if no open position found
+        """
+        position = self.get_open_position_for_trade_pair(miner_hotkey, trade_pair_id)
+        if not position:
+            return False
+        position.add_unfilled_order(order_dict)
+        return True
+
+    def remove_bracket_order_from_position(self, miner_hotkey: str, trade_pair_id: str, order_uuid: str) -> bool:
+        """
+        Remove a bracket order from a position. Called by LimitOrderManager.
+
+        Args:
+            miner_hotkey: The miner's hotkey
+            trade_pair_id: The trade pair ID
+            order_uuid: The UUID of the order to remove
+
+        Returns:
+            True if found and removed, False otherwise
+        """
+        position = self.get_open_position_for_trade_pair(miner_hotkey, trade_pair_id)
+        if not position:
+            return False
+        return position.remove_unfilled_order(order_uuid)
+
+    # ==================== Disk I/O Methods ====================
 
     def _write_position_to_disk(self, position: Position):
         """Write a single position to disk."""

@@ -46,18 +46,36 @@ class ShutdownCoordinator:
             bt.logging.info("[ShutdownCoordinator] Created shared-memory shutdown flag.")
         except FileExistsError:
             # Already exists (another process created it or stale from previous run)
-            cls._shm = shared_memory.SharedMemory(name=cls._SHM_NAME)
+            try:
+                cls._shm = shared_memory.SharedMemory(name=cls._SHM_NAME)
 
-            if reset_on_attach:
-                # Reset flag to 0 (clear stale shutdown state from crashed/killed processes)
-                struct.pack_into("q", cls._shm.buf, 0, 0)
-                bt.logging.info("[ShutdownCoordinator] Attached to existing shutdown flag and reset to 0.")
-            else:
-                # Read current state for logging
-                current_value = struct.unpack_from("q", cls._shm.buf, 0)[0]
-                bt.logging.info(
-                    f"[ShutdownCoordinator] Attached to existing shutdown flag (current value: {current_value})."
+                if reset_on_attach:
+                    # Reset flag to 0 (clear stale shutdown state from crashed/killed processes)
+                    struct.pack_into("q", cls._shm.buf, 0, 0)
+                    bt.logging.info("[ShutdownCoordinator] Attached to existing shutdown flag and reset to 0.")
+                else:
+                    # Read current state for logging
+                    current_value = struct.unpack_from("q", cls._shm.buf, 0)[0]
+                    bt.logging.info(
+                        f"[ShutdownCoordinator] Attached to existing shutdown flag (current value: {current_value})."
+                    )
+            except OSError as e:
+                # Corrupted shared memory - clean up and recreate
+                bt.logging.warning(
+                    f"[ShutdownCoordinator] Found corrupted shared memory ({e}). Cleaning up and recreating..."
                 )
+                try:
+                    # Try to unlink the stale segment
+                    shared_memory.SharedMemory(name=cls._SHM_NAME).unlink()
+                except Exception:
+                    pass  # Ignore errors during cleanup
+
+                # Recreate
+                cls._shm = shared_memory.SharedMemory(
+                    name=cls._SHM_NAME, create=True, size=cls._SHM_SIZE
+                )
+                struct.pack_into("q", cls._shm.buf, 0, 0)
+                bt.logging.info("[ShutdownCoordinator] Recreated shared-memory shutdown flag after cleanup.")
 
         cls._initialized = True
 
@@ -142,6 +160,33 @@ class ShutdownCoordinator:
         except Exception as e:
             # Log but don't fail - initialize() will handle it
             bt.logging.warning(f"[ShutdownCoordinator] Error cleaning up shared memory: {e}")
+
+    @classmethod
+    def cleanup(cls):
+        """
+        Cleanup shared memory during graceful shutdown.
+
+        Closes and unlinks the shared memory segment. This should be called
+        by the main process during shutdown to prevent stale segments.
+
+        Safe to call even if not initialized or already cleaned up.
+        """
+        if not cls._initialized:
+            return
+
+        try:
+            if cls._shm:
+                cls._shm.close()
+                cls._shm.unlink()
+                bt.logging.info("[ShutdownCoordinator] Cleaned up shared memory on shutdown")
+                cls._shm = None
+                cls._initialized = False
+        except FileNotFoundError:
+            # Already unlinked (another process cleaned up)
+            bt.logging.debug("[ShutdownCoordinator] Shared memory already unlinked")
+        except Exception as e:
+            # Log but don't fail shutdown
+            bt.logging.warning(f"[ShutdownCoordinator] Error during cleanup: {e}")
 
     @classmethod
     def get_shutdown_info(cls) -> dict:

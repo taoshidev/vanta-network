@@ -160,7 +160,7 @@ class MarketOrderManager():
                                         quantity: float, leverage: float, value: float, order_time_ms: int, miner_hotkey: str,
                                         price_sources, miner_order_uuid: str, miner_repo_version: str, src:OrderSource,
                                         account_size=None, usd_base_price=None, execution_type=ExecutionType.MARKET,
-                                        fill_price=None, limit_price=None, stop_loss=None, take_profit=None) -> Order:
+                                        fill_price=None, limit_price=None, stop_loss=None, take_profit=None, bracket_orders=None) -> Order:
         # Must be locked by caller
         step_start = TimeUtil.now_in_millis()
 
@@ -206,6 +206,7 @@ class MarketOrderManager():
             take_profit=take_profit,
             execution_type=execution_type,
             usd_base_rate=usd_base_price,
+            bracket_orders=bracket_orders,
         )
         bt.logging.info(f"[ORDER DETAIL] Using price source {price_sources}")
 
@@ -458,6 +459,7 @@ class MarketOrderManager():
         extract_start = TimeUtil.now_in_millis()
         signal_order_type = OrderType.from_string(signal["order_type"])
         execution_type = ExecutionType.from_string(signal.get("execution_type"))
+        bracket_orders = signal.get("bracket_orders")
         extract_ms = TimeUtil.now_in_millis() - extract_start
         bt.logging.info(f"[TIMING] Extract signal data took {extract_ms}ms")
 
@@ -535,7 +537,7 @@ class MarketOrderManager():
                                                      quantity, leverage, value, now_ms, miner_hotkey,
                                                      price_sources, miner_order_uuid, miner_repo_version,
                                                      new_src, account_size, usd_base_price, execution_type,
-                                                     fill_price, limit_price, stop_loss, take_profit)
+                                                     fill_price, limit_price, stop_loss, take_profit, bracket_orders)
                 add_order_ms = TimeUtil.now_in_millis() - add_order_start
                 bt.logging.info(f"[LOCK_WORK] Add order to position took {add_order_ms}ms")
             else:

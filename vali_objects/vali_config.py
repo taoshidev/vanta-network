@@ -229,6 +229,9 @@ class ValiConfig:
     RPC_MINERACCOUNT_PORT = 50023
     RPC_MINERACCOUNT_SERVICE_NAME = "MinerAccountServer"
 
+    RPC_ENTITY_PORT = 50024
+    RPC_ENTITY_SERVICE_NAME = "EntityServer"
+
     # Public API Configuration (well-known network endpoints)
     REST_API_HOST = "127.0.0.1"
     REST_API_PORT = 48888
@@ -430,6 +433,21 @@ class ValiConfig:
     ELIMINATION_CACHE_REFRESH_INTERVAL_S = 5  # Elimination cache refresh interval in seconds
     ELIMINATION_FILE_DELETION_DELAY_MS = 7 * 24 * 60 * 60 * 1000  # 7 days
 
+    # Entity Miners Configuration
+    ENTITY_ELIMINATION_CHECK_INTERVAL = 300  # 5 minutes (in seconds) - for challenge period + elimination checks
+    MAX_REGISTERED_ENTITIES = 5  # Maximum number of entities that can register
+    ENTITY_MAX_SUBACCOUNTS = 10_000  # Default maximum subaccounts per entity (Phase 1)
+    ENTITY_DATA_DIR = "validation/entities/"  # Entity data persistence directory
+    FIXED_SUBACCOUNT_SIZE = 10000.0  # Fixed account size for subaccounts (USD) - placeholder
+    SUBACCOUNT_COLLATERAL_AMOUNT = 1000.0  # Placeholder collateral amount per subaccount
+
+    # Challenge Period Configuration
+    SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD = 0.08  # 8% returns required to pass challenge period
+    SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD = 0.05  # 5% max drawdown allowed during challenge period
+
+    # Subaccount promotion requirements
+    SUBACCOUNT_FUNDED_MINIMUM_DAYS = 90  # Minimum days in FUNDED before promoting to ALPHA
+
     # Distributional statistics
     SOFTMAX_TEMPERATURE = 0.15
 
@@ -439,6 +457,11 @@ class ValiConfig:
     STAKE_MIN = 1000.0
     AXON_NO_IP = "0.0.0.0"
 
+    # Authorized mothership hotkey for state broadcasts
+    # This is the ONLY validator authorized to broadcast CollateralRecord, AssetSelection, and SubaccountRegistration updates
+    # TODO: Replace with actual mothership hotkey SS58 address
+    MOTHERSHIP_HOTKEY = "5FeNwZ5oAqcJMitNqGx71vxGRWJhsdTqxFGVwPRfg8h2UZmo"
+    MOTHERSHIP_HOTKEY_TESTNET = "5GTNzNkJiQWK4NpEErQohqZC8EzzeqrckgLgrQPwuvu8bHLN"
     # Require at least this many successful checkpoints before building golden
     MIN_CHECKPOINTS_RECEIVED = 5
 
@@ -455,6 +478,11 @@ class ValiConfig:
     MAX_COLLATERAL_BALANCE_THETA = 1000  # Approx $500k capital account size
     MIN_COLLATERAL_BALANCE_TESTNET = 100
     MAX_COLLATERAL_BALANCE_TESTNET = 10000.0
+
+    # Entity Miner Collateral
+    ENTITY_REGISTRATION_FEE = 5000  # Theta required to register an entity
+    ENTITY_COST_PER_THETA = 5000  # USD account size per theta of collateral for entity subaccounts
+    MAX_SUBACCOUNT_ACCOUNT_SIZE = 100_000  # Maximum account size in USD for entity subaccounts
 
     # Account Size
     COST_PER_THETA = 500  # Account size USD value per theta of collateral

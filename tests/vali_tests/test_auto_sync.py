@@ -1674,30 +1674,28 @@ class TestAutoSync(TestBase):
 
     def test_mothership_mode(self):
         """Test behavior when running as mothership"""
-        # Mock mothership mode
-        with patch('vali_objects.data_sync.validator_sync_base.ValiUtils.get_secrets') as mock_secrets:
-            mock_secrets.return_value = {'ms': 'mothership_secret', 'polygon_apikey': "", 'tiingo_apikey': ""}
-            
-            # Create new syncer in mothership mode
-            mothership_syncer = PositionSyncer(
-                running_unit_tests=True
-            )
-            
-            assert mothership_syncer.is_mothership
-            
-            # Test that mothership doesn't write modifications
-            candidate_data = self.positions_to_candidate_data([self.default_position])
-            disk_positions = self.positions_to_disk_data([])
-            
-            # Mock position client methods to track calls
-            with patch.object(self.position_client, 'delete_position') as mock_delete:
-                with patch.object(self.position_client, 'save_miner_position') as mock_overwrite:
-                    mothership_syncer.sync_positions(shadow_mode=False, candidate_data=candidate_data,
-                                                     disk_positions=disk_positions)
-                    
-                    # Mothership should not modify positions
-                    mock_delete.assert_not_called()
-                    mock_overwrite.assert_not_called()
+        # Create new syncer in mothership mode
+        # Note: is_mothership is now an explicit parameter rather than derived from secrets
+        mothership_syncer = PositionSyncer(
+            running_unit_tests=True,
+            is_mothership=True  # Explicitly set mothership mode
+        )
+
+        assert mothership_syncer.is_mothership
+
+        # Test that mothership doesn't write modifications
+        candidate_data = self.positions_to_candidate_data([self.default_position])
+        disk_positions = self.positions_to_disk_data([])
+
+        # Mock position client methods to track calls
+        with patch.object(self.position_client, 'delete_position') as mock_delete:
+            with patch.object(self.position_client, 'save_miner_position') as mock_overwrite:
+                mothership_syncer.sync_positions(shadow_mode=False, candidate_data=candidate_data,
+                                                 disk_positions=disk_positions)
+
+                # Mothership should not modify positions
+                mock_delete.assert_not_called()
+                mock_overwrite.assert_not_called()
 
     def test_position_dedupe_before_sync(self):
         """Test that position deduplication happens before sync"""

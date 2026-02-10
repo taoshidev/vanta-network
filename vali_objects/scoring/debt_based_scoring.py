@@ -45,9 +45,11 @@ import bittensor as bt
 from datetime import datetime, timedelta, timezone
 from typing import List, Tuple
 
+from shared_objects.rpc.metagraph_client import MetagraphClient
 from time_util.time_util import TimeUtil
+from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
 from vali_objects.miner_account.miner_account_client import MinerAccountClient
-from vali_objects.vali_dataclasses.ledger.debt.debt_ledger import DebtLedger
+from vali_objects.vali_dataclasses.ledger.debt.debt_ledger import DebtLedger, DebtCheckpoint
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.vali_config import ValiConfig
 from vali_objects.scoring.scoring import Scoring
@@ -120,217 +122,12 @@ class DebtBasedScoring:
             return 0.0
 
     @staticmethod
-    def calculate_dynamic_dust(
-            metagraph: 'bt.metagraph_handle',
-            target_daily_usd: float = 0.01,
-            verbose: bool = False
-    ) -> float:
-        """
-        DEPRECATED: This function is no longer used. Dust is now a static value.
-
-        Dust weight is set to ValiConfig.CHALLENGE_PERIOD_MIN_WEIGHT (static value).
-        This function remains for reference but is not called in the scoring system.
-
-        Historical Purpose:
-        This function previously calculated dynamic dust weight that yielded target daily USD earnings.
-        The calculation ensured that a miner receiving only dust weight would earn
-        approximately target_daily_usd per day in ALPHA emissions, providing market-responsive
-        minimum rewards that automatically adjusted as TAO/USD price, ALPHA/TAO conversion rate,
-        and total subnet emission rate changed.
-
-        Args:
-            metagraph: Shared IPC metagraph with emission data and substrate reserves
-            target_daily_usd: Target daily USD earnings for dust weight (default: $0.01)
-            verbose: Enable detailed logging
-
-        Returns:
-            Static dust weight from ValiConfig.CHALLENGE_PERIOD_MIN_WEIGHT
-            (This function always returns the static fallback value)
-
-        Note:
-            This function always falls back to ValiConfig.CHALLENGE_PERIOD_MIN_WEIGHT.
-            For the current static dust value, use ValiConfig.CHALLENGE_PERIOD_MIN_WEIGHT directly.
-        """
-        try:
-            # Fallback detection: Check if metagraph has emission data
-            emission = metagraph.get_emission()
-            if emission is None:
-                bt.logging.warning(
-                    "Metagraph missing 'emission' attribute. "
-                    f"Falling back to static dust: {ValiConfig.CHALLENGE_PERIOD_MIN_WEIGHT}"
-                )
-                return ValiConfig.CHALLENGE_PERIOD_MIN_WEIGHT
-
-            # Step 1: Calculate total ALPHA emissions per day
-            try:
-                total_tao_per_tempo = sum(emission)  # TAO per tempo (360 blocks)
-            except (TypeError, AttributeError) as e:
-                bt.logging.warning(
-                    f"Failed to sum metagraph.emission: {e}. "
-                    f"Falling back to static dust: {ValiConfig.CHALLENGE_PERIOD_MIN_WEIGHT}"
-                )
-                return ValiConfig.CHALLENGE_PERIOD_MIN_WEIGHT
-
-            # Fallback detection: Check for zero/negative emissions
-            if total_tao_per_tempo <= 0:
-                bt.logging.warning(
-                    f"Total TAO per tempo is non-positive: {total_tao_per_tempo}. "
-                    f"Falling back to static dust: {ValiConfig.CHALLENGE_PERIOD_MIN_WEIGHT}"
-                )
-                return ValiConfig.CHALLENGE_PERIOD_MIN_WEIGHT
-
-            total_tao_per_block = total_tao_per_tempo / 360
-            total_tao_per_day = total_tao_per_block * DebtBasedScoring.BLOCKS_PER_DAY_FALLBACK
-
-            if verbose:
-                bt.logging.info(f"Total subnet emissions: {total_tao_per_day:.6f} TAO/day")
-
-            # Step 2: Get conversion rates from metagraph with comprehensive fallback detection
-            tao_reserve_obj = getattr(metagraph, 'tao_reserve_rao', None)
-            alpha_reserve_obj = getattr(metagraph, 'alpha_reserve_rao', None)
-
-            # Fallback detection: Check for missing reserve attributes
-            if tao_reserve_obj is None or alpha_reserve_obj is None:
-                bt.logging.warning(
-                    f"Substrate reserve attributes not found in metagraph "
-                    f"(tao_reserve_rao={tao_reserve_obj is not None}, "
-                    f"alpha_reserve_rao={alpha_reserve_obj is not None}). "
-                    f"Falling back to static dust: {ValiConfig.CHALLENGE_PERIOD_MIN_WEIGHT}"
-                )
-                return ValiConfig.CHALLENGE_PERIOD_MIN_WEIGHT
-
-            # Extract values using safe helper function
-            tao_reserve_rao = DebtBasedScoring._safe_get_reserve_value(tao_reserve_obj)
-            alpha_reserve_rao = DebtBasedScoring._safe_get_reserve_value(alpha_reserve_obj)
-
-            # Fallback detection: Check for zero/negative reserves
-            if tao_reserve_rao <= 0 or alpha_reserve_rao <= 0:
-                bt.logging.warning(
-                    f"Substrate reserve data not available or invalid for dynamic dust calculation "
-                    f"(TAO={tao_reserve_rao} RAO, ALPHA={alpha_reserve_rao} RAO). "
-                    f"Falling back to static dust: {ValiConfig.CHALLENGE_PERIOD_MIN_WEIGHT}"
-                )
-                return ValiConfig.CHALLENGE_PERIOD_MIN_WEIGHT
-
-            # Calculate ALPHA-to-TAO rate
-            alpha_to_tao_rate = tao_reserve_rao / alpha_reserve_rao
-
-            # Fallback detection: Sanity check on conversion rate
-            if alpha_to_tao_rate <= 0 or alpha_to_tao_rate > 1.0:
-                bt.logging.warning(
-                    f"ALPHA-to-TAO rate outside expected range (0, 1.0]: {alpha_to_tao_rate}. "
-                    f"Falling back to static dust: {ValiConfig.CHALLENGE_PERIOD_MIN_WEIGHT}"
-                )
-                return ValiConfig.CHALLENGE_PERIOD_MIN_WEIGHT
-
-            # Convert TAO/day to ALPHA/day
-            total_alpha_per_day = total_tao_per_day / alpha_to_tao_rate
-
-            if verbose:
-                bt.logging.info(
-                    f"Total subnet emissions: {total_alpha_per_day:.2f} ALPHA/day "
-                    f"(conversion rate: {alpha_to_tao_rate:.6f} TAO/ALPHA)"
-                )
-
-            # Step 3: Get TAO/USD price with fallback detection
-            tao_to_usd_rate_raw = getattr(metagraph, 'tao_to_usd_rate', None)
-
-            # Fallback detection: Check for missing TAO/USD price
-            if tao_to_usd_rate_raw is None:
-                bt.logging.warning(
-                    "TAO/USD price not available in metagraph for dynamic dust calculation. "
-                    f"Falling back to static dust: {ValiConfig.CHALLENGE_PERIOD_MIN_WEIGHT}"
-                )
-                return ValiConfig.CHALLENGE_PERIOD_MIN_WEIGHT
-
-            # Fallback detection: Validate TAO/USD price type and value
-            try:
-                tao_to_usd_rate = float(tao_to_usd_rate_raw)
-            except (TypeError, ValueError) as e:
-                bt.logging.warning(
-                    f"TAO/USD price has invalid type: {type(tao_to_usd_rate_raw).__name__}, error: {e}. "
-                    f"Falling back to static dust: {ValiConfig.CHALLENGE_PERIOD_MIN_WEIGHT}"
-                )
-                return ValiConfig.CHALLENGE_PERIOD_MIN_WEIGHT
-
-            if tao_to_usd_rate <= 0:
-                bt.logging.warning(
-                    f"TAO/USD price is non-positive: {tao_to_usd_rate}. "
-                    f"Falling back to static dust: {ValiConfig.CHALLENGE_PERIOD_MIN_WEIGHT}"
-                )
-                return ValiConfig.CHALLENGE_PERIOD_MIN_WEIGHT
-
-            # Fallback detection: Sanity check on TAO price (should be between $1 and $10,000)
-            if tao_to_usd_rate < 1.0 or tao_to_usd_rate > 10000.0:
-                bt.logging.warning(
-                    f"TAO/USD price outside reasonable range [$1, $10,000]: ${tao_to_usd_rate}. "
-                    f"Falling back to static dust: {ValiConfig.CHALLENGE_PERIOD_MIN_WEIGHT}"
-                )
-                return ValiConfig.CHALLENGE_PERIOD_MIN_WEIGHT
-
-            # Step 4: Calculate ALPHA equivalent of target USD amount
-            target_in_tao = target_daily_usd / tao_to_usd_rate
-            target_in_alpha = target_in_tao / alpha_to_tao_rate
-
-            if verbose:
-                bt.logging.info(
-                    f"${target_daily_usd:.2f} USD = {target_in_tao:.6f} TAO = "
-                    f"{target_in_alpha:.6f} ALPHA"
-                )
-
-            # Step 5: Calculate dust weight as proportion of daily emissions
-            # Fallback detection: Check for zero/negative total emissions
-            if total_alpha_per_day <= 0:
-                bt.logging.warning(
-                    f"Total ALPHA per day is non-positive: {total_alpha_per_day}. "
-                    f"Falling back to static dust: {ValiConfig.CHALLENGE_PERIOD_MIN_WEIGHT}"
-                )
-                return ValiConfig.CHALLENGE_PERIOD_MIN_WEIGHT
-
-            dust_weight = target_in_alpha / total_alpha_per_day
-
-            if verbose:
-                bt.logging.info(
-                    f"Dynamic dust weight: {dust_weight:.8f} "
-                    f"(yields ${target_daily_usd:.2f}/day at current emission rates)"
-                )
-
-            # Fallback detection: Sanity check on dust weight range
-            # Should be small but not zero (typical range: 1e-8 to 1e-3)
-            if dust_weight <= 0:
-                bt.logging.warning(
-                    f"Dynamic dust weight is non-positive: {dust_weight}. "
-                    f"Falling back to static dust: {ValiConfig.CHALLENGE_PERIOD_MIN_WEIGHT}"
-                )
-                return ValiConfig.CHALLENGE_PERIOD_MIN_WEIGHT
-
-            if dust_weight > 0.001:
-                bt.logging.warning(
-                    f"Dynamic dust weight ({dust_weight:.8f}) exceeds reasonable maximum (0.001). "
-                    f"This suggests anomalous market conditions. "
-                    f"Falling back to static dust: {ValiConfig.CHALLENGE_PERIOD_MIN_WEIGHT}"
-                )
-                return ValiConfig.CHALLENGE_PERIOD_MIN_WEIGHT
-
-            # Success! Return dynamic dust weight
-            return dust_weight
-
-        except Exception as e:
-            # Fallback detection: Catch-all for any unexpected errors
-            bt.logging.error(
-                f"Unexpected error calculating dynamic dust: {e}. "
-                f"Falling back to static dust: {ValiConfig.CHALLENGE_PERIOD_MIN_WEIGHT}",
-                exc_info=True
-            )
-            return ValiConfig.CHALLENGE_PERIOD_MIN_WEIGHT
-
-    @staticmethod
-    def log_projections(metagraph, days_until_target, verbose, total_remaining_payout_usd):
+    def log_projections(metagraph_client, days_until_target, verbose, total_remaining_payout_usd):
         """
         Log emission projections and compare to remaining payout needs.
 
         Args:
-            metagraph: Bittensor metagraph with emission data
+            metagraph_client: Bittensor metagraph with emission data
             days_until_target: Number of days until payout deadline
             verbose: Enable detailed logging
             total_remaining_payout_usd: Total remaining payout needed (must be > 0)
@@ -346,7 +143,7 @@ class DebtBasedScoring:
         # Query current emission rate and project availability
         # Get projected ALPHA emissions
         projected_alpha_available = DebtBasedScoring._estimate_alpha_emissions_until_target(
-            metagraph=metagraph,
+            metagraph_client=metagraph_client,
             days_until_target=days_until_target,
             verbose=verbose
         )
@@ -354,7 +151,7 @@ class DebtBasedScoring:
         # Convert projected ALPHA to USD for comparison
         projected_usd_available = DebtBasedScoring._convert_alpha_to_usd(
             alpha_amount=projected_alpha_available,
-            metagraph=metagraph,
+            metagraph_client=metagraph_client,
             verbose=verbose
         )
 
@@ -382,9 +179,47 @@ class DebtBasedScoring:
             )
 
     @staticmethod
+    def calculate_payout_from_checkpoints(
+        checkpoints: List[DebtCheckpoint]
+    ) -> float:
+        """
+        Calculate payout from a list of debt checkpoints using the debt-based scoring formula.
+
+        NOTE: realized_pnl and unrealized_pnl are in USD, per-checkpoint values (NOT cumulative)
+        This cumulative approach allows negative PnL to carry forward and offset future gains
+
+        Formula:
+        - realized_component = sum(cp.realized_pnl * cp.total_penalty for all checkpoints)
+        - unrealized_component = min(0.0, last_cp.unrealized_pnl) * last_cp.total_penalty
+        - payout = realized_component + unrealized_component
+
+        Args:
+            checkpoints: List of DebtCheckpoint objects (should be in chronological order)
+
+        Returns:
+            Calculated payout in USD (can be negative if losses exceed gains)
+        """
+        if not checkpoints:
+            return 0.0
+
+        # Realized component: sum(realized_pnl * penalty) across all checkpoints
+        realized_component = sum(
+            cp.realized_pnl * cp.total_penalty
+            for cp in checkpoints
+        )
+
+        # Unrealized component: min(0, unrealized_pnl) * penalty of last checkpoint
+        # (only count unrealized losses, not gains)
+        last_checkpoint = checkpoints[-1]
+        unrealized_component = min(0.0, last_checkpoint.unrealized_pnl) * last_checkpoint.total_penalty
+
+        payout = realized_component + unrealized_component
+        return payout
+
+    @staticmethod
     def compute_results(
         ledger_dict: dict[str, DebtLedger],
-        metagraph: 'MetagraphClient',
+        metagraph_client: 'MetagraphClient',
         challengeperiod_client: 'ChallengePeriodClient',
         miner_account_client: 'MinerAccountClient',
         current_time_ms: int = None,
@@ -408,7 +243,7 @@ class DebtBasedScoring:
 
         Args:
             ledger_dict: Dict of {hotkey: DebtLedger} containing debt ledger data
-            metagraph: Shared IPC metagraph with emission data and substrate reserves
+            metagraph_client: Shared IPC metagraph with emission data and substrate reserves
             challengeperiod_client: Client for querying current challenge period status (required)
             miner_account_client: Client for querying miner account sizes (required)
             current_time_ms: Current timestamp in milliseconds (defaults to now)
@@ -431,7 +266,7 @@ class DebtBasedScoring:
         # Handle edge cases
         if not ledger_dict:
             bt.logging.info("No debt ledgers provided, setting burn address weight to 1.0")
-            burn_hotkey = DebtBasedScoring._get_burn_address_hotkey(metagraph, is_testnet)
+            burn_hotkey = DebtBasedScoring._get_burn_address_hotkey(metagraph_client, is_testnet)
             return [(burn_hotkey, 1.0)]
 
         # Get current datetime
@@ -492,7 +327,12 @@ class DebtBasedScoring:
             # Only include checkpoints where status is MAINCOMP or PROBATION (earning periods)
             earning_checkpoints = [
                 cp for cp in cumulative_checkpoints
-                if cp.challenge_period_status in (MinerBucket.MAINCOMP.value, MinerBucket.PROBATION.value)
+                if cp.challenge_period_status in (
+                    MinerBucket.MAINCOMP.value,
+                    MinerBucket.PROBATION.value,
+                    MinerBucket.SUBACCOUNT_FUNDED.value,
+                    MinerBucket.SUBACCOUNT_ALPHA.value
+                )
             ]
 
             # Calculate needed payout from activation through end of previous pay period (in USD)
@@ -507,11 +347,11 @@ class DebtBasedScoring:
             if earning_checkpoints:
                 # Sum penalty-adjusted PnL across all checkpoints from activation to end of prev pay period
                 # Each checkpoint has its own PnL (for that 12-hour period) and its own penalty
-                last_checkpoint = earning_checkpoints[-1]
-                realized_component = sum(cp.realized_pnl * cp.total_penalty for cp in earning_checkpoints)
-                unrealized_component = min(0.0, last_checkpoint.unrealized_pnl) * last_checkpoint.total_penalty
-                needed_payout_usd = realized_component + unrealized_component
+                needed_payout_usd = DebtBasedScoring.calculate_payout_from_checkpoints(
+                    earning_checkpoints
+                )
 
+                last_checkpoint = earning_checkpoints[-1]
                 # Calculate penalty loss: what would have been earned WITHOUT penalties
                 payout_without_penalties = sum(cp.realized_pnl for cp in earning_checkpoints)
                 payout_without_penalties += min(0.0, last_checkpoint.unrealized_pnl)
@@ -523,7 +363,12 @@ class DebtBasedScoring:
             cumulative_payout_checkpoints = [
                 cp for cp in debt_ledger.checkpoints
                 if payout_calc_start_ms <= cp.timestamp_ms <= current_time_ms
-                and cp.challenge_period_status in (MinerBucket.MAINCOMP.value, MinerBucket.PROBATION.value)
+                and cp.challenge_period_status in (
+                    MinerBucket.MAINCOMP.value,
+                    MinerBucket.PROBATION.value,
+                    MinerBucket.SUBACCOUNT_FUNDED.value,
+                    MinerBucket.SUBACCOUNT_ALPHA.value
+                )
             ]
             actual_payout_usd = sum(cp.chunk_emissions_usd for cp in cumulative_payout_checkpoints)
 
@@ -545,7 +390,7 @@ class DebtBasedScoring:
         # Calculate projected emissions (needed for weight normalization)
         # Get projected ALPHA emissions
         projected_alpha_available = DebtBasedScoring._estimate_alpha_emissions_until_target(
-            metagraph=metagraph,
+            metagraph_client=metagraph_client,
             days_until_target=days_until_target,
             verbose=verbose
         )
@@ -553,12 +398,12 @@ class DebtBasedScoring:
         # Convert projected ALPHA to USD for comparison
         projected_usd_available = DebtBasedScoring._convert_alpha_to_usd(
             alpha_amount=projected_alpha_available,
-            metagraph=metagraph,
+            metagraph_client=metagraph_client,
             verbose=verbose
         )
 
         if total_remaining_payout_usd > 0:
-            DebtBasedScoring.log_projections(metagraph, days_until_target, verbose, total_remaining_payout_usd)
+            DebtBasedScoring.log_projections(metagraph_client, days_until_target, verbose, total_remaining_payout_usd)
         else:
             bt.logging.info(
                 f"No remaining payouts needed {total_remaining_payout_usd} or no days until target "
@@ -585,7 +430,6 @@ class DebtBasedScoring:
             miner_remaining_payouts_usd=miner_daily_target_payouts_usd,
             challengeperiod_client=challengeperiod_client,
             miner_account_client=miner_account_client,
-            metagraph=metagraph,
             current_time_ms=current_time_ms,
             projected_daily_emissions_usd=projected_daily_usd,
             verbose=verbose
@@ -596,7 +440,7 @@ class DebtBasedScoring:
         # If sum >= 1.0: normalize to 1.0, burn address gets 0
         result = DebtBasedScoring._normalize_with_burn_address(
             weights=miner_weights_with_minimums,
-            metagraph=metagraph,
+            metagraph_client=metagraph_client,
             is_testnet=is_testnet,
             verbose=verbose
         )
@@ -605,9 +449,9 @@ class DebtBasedScoring:
 
     @staticmethod
     def _estimate_alpha_emissions_until_target(
-            metagraph: 'MetagraphClient',
-            days_until_target: int,
-            verbose: bool = False
+        metagraph_client: 'MetagraphClient',
+        days_until_target: int,
+        verbose: bool = False
     ) -> float:
         """
         Estimate total ALPHA emissions available from now until target day.
@@ -616,7 +460,7 @@ class DebtBasedScoring:
         then converts to ALPHA using reserve data from shared metagraph.
 
         Args:
-            metagraph: Shared IPC metagraph with emission data and substrate reserves
+            metagraph_client: Shared IPC metagraph with emission data and substrate reserves
             days_until_target: Number of days until target payout day
             verbose: Enable detailed logging
 
@@ -624,7 +468,7 @@ class DebtBasedScoring:
             Estimated total ALPHA emissions available (float)
         """
         try:
-            total_alpha_per_tempo = sum(metagraph.get_emission())
+            total_alpha_per_tempo = sum(metagraph_client.get_emission())
             total_alpha_per_block = total_alpha_per_tempo / 360
             if verbose:
                 bt.logging.info(f"Current subnet emission rate: {total_alpha_per_block:.6f} alpha/block")
@@ -642,7 +486,7 @@ class DebtBasedScoring:
             # # Get total TAO emission per block for the subnet (sum across all miners)
             # # metagraph.emission is already in TAO (not RAO), but per tempo (360 blocks)
             # # Need to convert: per-tempo → per-block (÷360)
-            # total_tao_per_tempo = sum(metagraph.get_emission())
+            # total_tao_per_tempo = sum(metagraph_client.get_emission())
             # total_tao_per_block = total_tao_per_tempo / 360
             #
             # if verbose:
@@ -661,10 +505,10 @@ class DebtBasedScoring:
             #         f"total TAO: {total_tao_until_target:.2f}"
             #     )
             #
-            # # Get substrate reserves from shared metagraph (refreshed by MetagraphUpdater)
+            # # Get substrate reserves from shared metagraph (refreshed by SubtensorOpsManager)
             # # Use safe helper to extract values from manager.Value() objects or plain numerics
-            # tao_reserve_obj = getattr(metagraph, 'tao_reserve_rao', None)
-            # alpha_reserve_obj = getattr(metagraph, 'alpha_reserve_rao', None)
+            # tao_reserve_obj = getattr(metagraph_client, 'tao_reserve_rao', None)
+            # alpha_reserve_obj = getattr(metagraph_client, 'alpha_reserve_rao', None)
             #
             # tao_reserve_rao = DebtBasedScoring._safe_get_reserve_value(tao_reserve_obj)
             # alpha_reserve_rao = DebtBasedScoring._safe_get_reserve_value(alpha_reserve_obj)
@@ -708,9 +552,9 @@ class DebtBasedScoring:
 
     @staticmethod
     def _convert_alpha_to_usd(
-            alpha_amount: float,
-            metagraph: 'bt.metagraph_handle',
-            verbose: bool = False
+        alpha_amount: float,
+        metagraph_client: 'MetagraphClient',
+        verbose: bool = False
     ) -> float:
         """
         Convert ALPHA amount to USD value using current market rates.
@@ -720,7 +564,7 @@ class DebtBasedScoring:
 
         Args:
             alpha_amount: Amount of ALPHA tokens to convert
-            metagraph: Shared IPC metagraph with substrate reserves
+            metagraph_client: Shared IPC metagraph with substrate reserves
             verbose: Enable detailed logging
 
         Returns:
@@ -731,8 +575,8 @@ class DebtBasedScoring:
 
         # Get substrate reserves from shared metagraph
         # Use safe helper to extract values from manager.Value() objects or plain numerics
-        tao_reserve_obj = getattr(metagraph, 'tao_reserve_rao', None)
-        alpha_reserve_obj = getattr(metagraph, 'alpha_reserve_rao', None)
+        tao_reserve_obj = getattr(metagraph_client, 'tao_reserve_rao', None)
+        alpha_reserve_obj = getattr(metagraph_client, 'alpha_reserve_rao', None)
 
         tao_reserve_rao = DebtBasedScoring._safe_get_reserve_value(tao_reserve_obj)
         alpha_reserve_rao = DebtBasedScoring._safe_get_reserve_value(alpha_reserve_obj)
@@ -752,14 +596,14 @@ class DebtBasedScoring:
         tao_amount = alpha_amount * alpha_to_tao_rate
 
         # Get TAO→USD price from metagraph
-        # This is set by MetagraphUpdater via live_price_fetcher.get_close_at_date(TradePair.TAOUSD)
-        tao_to_usd_rate_raw = getattr(metagraph, 'tao_to_usd_rate', None)
+        # This is set by SubtensorOpsManager via live_price_fetcher.get_close_at_date(TradePair.TAOUSD)
+        tao_to_usd_rate_raw = getattr(metagraph_client, 'tao_to_usd_rate', None)
 
         # Validate that we have a valid TAO/USD rate
         if tao_to_usd_rate_raw is None:
             raise ValueError(
                 "TAO/USD price not available in metagraph. "
-                "MetagraphUpdater must set metagraph.tao_to_usd_rate via live_price_fetcher."
+                "SubtensorOpsManager must set metagraph.tao_to_usd_rate via live_price_fetcher."
             )
 
         if not isinstance(tao_to_usd_rate_raw, (int, float)) or tao_to_usd_rate_raw <= 0:
@@ -815,7 +659,9 @@ class DebtBasedScoring:
         if earning_statuses is None:
             earning_statuses = {
                 MinerBucket.MAINCOMP.value,
-                MinerBucket.PROBATION.value
+                MinerBucket.PROBATION.value,
+                MinerBucket.SUBACCOUNT_FUNDED.value,
+                MinerBucket.SUBACCOUNT_ALPHA.value
             }
 
         if not ledger.checkpoints:
@@ -1009,9 +855,9 @@ class DebtBasedScoring:
 
     @staticmethod
     def _calculate_challenge_percentile_threshold(
-            pnl_scores: dict[str, float],
-            percentile: float = 0.25,
-            max_zero_weight_miners: int = 10
+        pnl_scores: dict[str, float],
+        percentile: float = 0.25,
+        max_zero_weight_miners: int = 10
     ) -> float | None:
         """
         DEPRECATED: Use _calculate_challenge_zero_weight_miners instead for collateral-aware selection.
@@ -1207,6 +1053,8 @@ class DebtBasedScoring:
             MinerBucket.MAINCOMP.value: 3,  # 3x dust floor
             MinerBucket.UNKNOWN.value: 0,  # 0x dust (no weight for unknown status)
             MinerBucket.PLAGIARISM.value: 1,  # 1x dust floor
+            # Entity bucket (synthetic hotkeys don't need dust - not in metagraph)
+            MinerBucket.ENTITY.value: 4,  # 4x dust floor
         }
 
         dynamic_weights = {}
@@ -1292,7 +1140,6 @@ class DebtBasedScoring:
         miner_remaining_payouts_usd: dict[str, float],
         challengeperiod_client: 'ChallengePeriodClient',
         miner_account_client: 'MinerAccountClient',
-        metagraph: 'bt.metagraph_handle',
         current_time_ms: int = None,
         projected_daily_emissions_usd: float = None,
         verbose: bool = False
@@ -1320,7 +1167,6 @@ class DebtBasedScoring:
             miner_remaining_payouts_usd: Dict of {hotkey: remaining_payout_usd} in USD (daily targets)
             challengeperiod_client: Client for querying current challenge period status (required)
             miner_account_client: Client for querying miner account sizes (required)
-            metagraph: Shared IPC metagraph (not used for dust calculation)
             current_time_ms: Current timestamp (required for performance scaling)
             projected_daily_emissions_usd: Projected daily emissions in USD (for normalization)
             verbose: Enable detailed logging
@@ -1360,6 +1206,8 @@ class DebtBasedScoring:
             MinerBucket.UNKNOWN.value: 0 * DUST,  # 0x dust (no weight for unknown status)
             MinerBucket.PROBATION.value: 2 * DUST,
             MinerBucket.MAINCOMP.value: 3 * DUST,
+            # Entity bucket (synthetic hotkeys don't need dust - not in metagraph)
+            MinerBucket.ENTITY.value: 4 * DUST,
         }
 
         # Batch read all statuses in one IPC call to minimize overhead
@@ -1446,14 +1294,14 @@ class DebtBasedScoring:
 
     @staticmethod
     def _get_burn_address_hotkey(
-            metagraph: 'bt.metagraph_handle',
-            is_testnet: bool = False
+        metagraph_client: 'MetagraphClient',
+        is_testnet: bool = False
     ) -> str:
         """
         Get the hotkey for the burn address.
 
         Args:
-            metagraph: Bittensor metagraph for accessing hotkeys
+            metagraph_client: Metagraph client for accessing hotkeys
             is_testnet: True for testnet (uid 220), False for mainnet (uid 229)
 
         Returns:
@@ -1462,7 +1310,7 @@ class DebtBasedScoring:
         burn_uid = DebtBasedScoring.get_burn_uid(is_testnet)
 
         # Get hotkey for burn UID
-        hotkeys = metagraph.get_hotkeys()
+        hotkeys = metagraph_client.get_hotkeys()
         if burn_uid < len(hotkeys):
             return hotkeys[burn_uid]
         else:
@@ -1474,10 +1322,10 @@ class DebtBasedScoring:
 
     @staticmethod
     def _normalize_with_burn_address(
-            weights: dict[str, float],
-            metagraph: 'bt.metagraph_handle',
-            is_testnet: bool = False,
-            verbose: bool = False
+        weights: dict[str, float],
+        metagraph_client: 'MetagraphClient',
+        is_testnet: bool = False,
+        verbose: bool = False
     ) -> List[Tuple[str, float]]:
         """
         Normalize weights with special burn address logic.
@@ -1490,7 +1338,7 @@ class DebtBasedScoring:
 
         Args:
             weights: Dict of {hotkey: weight}
-            metagraph: Bittensor metagraph for accessing hotkeys
+            metagraph_client: Client for accessing hotkeys
             is_testnet: True for testnet (uid 220), False for mainnet (uid 229)
             verbose: Enable detailed logging
 
@@ -1513,7 +1361,7 @@ class DebtBasedScoring:
             burn_weight = 1.0 - sum_weights
 
             # Get burn address hotkey
-            burn_hotkey = DebtBasedScoring._get_burn_address_hotkey(metagraph, is_testnet)
+            burn_hotkey = DebtBasedScoring._get_burn_address_hotkey(metagraph_client, is_testnet)
 
             bt.logging.info(
                 f"Sum of weights ({sum_weights:.6f}) < 1.0. "
@@ -1543,7 +1391,7 @@ class DebtBasedScoring:
     @staticmethod
     def _apply_pre_activation_weights(
         ledger_dict: dict[str, DebtLedger],
-        metagraph: 'bt.metagraph_handle',
+        metagraph_client: 'MetagraphClient',
         challengeperiod_client: 'ChallengePeriodClient',
         miner_account_client: 'MinerAccountClient',
         current_time_ms: int = None,
@@ -1559,7 +1407,7 @@ class DebtBasedScoring:
 
         Args:
             ledger_dict: Dict of {hotkey: DebtLedger}
-            metagraph: Bittensor metagraph for accessing hotkeys
+            metagraph_client: Bittensor metagraph for accessing hotkeys
             challengeperiod_client: Client for querying current challenge period status (required)
             miner_account_client: Client for querying miner account sizes (required)
             current_time_ms: Current timestamp (required for performance-scaled dust calculation)
@@ -1575,7 +1423,6 @@ class DebtBasedScoring:
             miner_remaining_payouts_usd={hotkey: 0.0 for hotkey in ledger_dict.keys()},  # No debt earnings
             challengeperiod_client=challengeperiod_client,
             miner_account_client=miner_account_client,
-            metagraph=metagraph,
             current_time_ms=current_time_ms,
             verbose=verbose
         )
@@ -1583,7 +1430,7 @@ class DebtBasedScoring:
         # Apply burn address normalization
         result = DebtBasedScoring._normalize_with_burn_address(
             weights=miner_dust_weights,
-            metagraph=metagraph,
+            metagraph_client=metagraph_client,
             is_testnet=is_testnet,
             verbose=verbose
         )

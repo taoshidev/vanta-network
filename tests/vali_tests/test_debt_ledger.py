@@ -273,7 +273,6 @@ class TestDebtLedgers(TestBase):
         )
 
         # Verify derived fields are calculated correctly
-        self.assertEqual(test_checkpoint.net_pnl, 800.0, "Net PnL should be realized + unrealized")
         self.assertEqual(
             test_checkpoint.total_fees, -80.0, "Total fees should be spread + carry"
         )

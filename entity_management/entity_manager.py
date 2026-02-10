@@ -1,0 +1,1260 @@
+# developer: jbonilla
+# Copyright � 2024 Taoshi Inc
+"""
+EntityManager - Core business logic for entity miner management.
+
+This manager handles all business logic for entity operations including:
+- Entity registration and tracking
+- Subaccount creation with monotonic IDs
+- Subaccount status management (active/eliminated)
+- Collateral verification (placeholder)
+- Slot allowance checking
+- Thread-safe operations with proper locking
+
+Pattern follows ChallengePeriodManager:
+- Manager holds all business logic
+- Server wraps this and exposes via RPC
+- Local dicts (NOT IPC) for performance
+- Disk persistence via JSON
+"""
+import uuid
+import time
+import threading
+import asyncio
+import bittensor as bt
+from typing import Dict, Optional, Tuple, List
+from collections import defaultdict
+from pydantic import BaseModel, Field
+
+import template.protocol
+from entity_management.entity_utils import is_synthetic_hotkey, parse_synthetic_hotkey
+from vali_objects.miner_account import MinerAccountClient
+from vali_objects.scoring.debt_based_scoring import DebtBasedScoring
+from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
+from vali_objects.utils.vali_utils import ValiUtils
+from vali_objects.vali_config import ValiConfig, RPCConnectionMode
+from shared_objects.cache_controller import CacheController
+from vali_objects.validator_broadcast_base import ValidatorBroadcastBase
+from vali_objects.utils.elimination.elimination_client import EliminationClient
+from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
+from vali_objects.statistics.miner_statistics_client import MinerStatisticsClient
+from vali_objects.position_management.position_manager_client import PositionManagerClient
+from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_client import DebtLedgerClient
+from vali_objects.contract.contract_client import ContractClient
+from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
+from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
+from vali_objects.enums.miner_bucket_enum import MinerBucket
+from time_util.time_util import TimeUtil
+
+
+class SubaccountInfo(BaseModel):
+    """Data structure for a single subaccount."""
+    subaccount_id: int = Field(description="Monotonically increasing ID")
+    subaccount_uuid: str = Field(description="Unique UUID for this subaccount")
+    synthetic_hotkey: str = Field(description="Synthetic hotkey: {entity_hotkey}_{subaccount_id}")
+    status: str = Field(default="active", description="Status: active, eliminated, or unknown")
+    created_at_ms: int = Field(description="Timestamp when subaccount was created")
+    eliminated_at_ms: Optional[int] = Field(default=None, description="Timestamp when subaccount was eliminated")
+    account_size: float = Field(description="Account size in USD (immutable once set)")
+    asset_class: str = Field(description="Asset class selection (immutable once set)")
+
+    # Note: Challenge period tracking has been migrated to ChallengePeriodManager
+    # Synthetic hotkeys are added to challenge period bucket and evaluated via inspect()
+
+
+class EntityData(BaseModel):
+    """Data structure for an entity."""
+    entity_hotkey: str = Field(description="The VANTA_ENTITY_HOTKEY")
+    subaccounts: Dict[int, SubaccountInfo] = Field(default_factory=dict, description="Map subaccount_id -> SubaccountInfo")
+    next_subaccount_id: int = Field(default=0, description="Next subaccount ID to assign (monotonic)")
+    registered_at_ms: int = Field(description="Timestamp when entity was registered")
+
+    class Config:
+        arbitrary_types_allowed = True
+
+    def get_active_subaccounts(self) -> List[SubaccountInfo]:
+        """Get all active subaccounts."""
+        return [sa for sa in self.subaccounts.values() if sa.status == "active"]
+
+    def get_eliminated_subaccounts(self) -> List[SubaccountInfo]:
+        """Get all eliminated subaccounts."""
+        return [sa for sa in self.subaccounts.values() if sa.status == "eliminated"]
+
+    def get_synthetic_hotkey(self, subaccount_id: int) -> Optional[str]:
+        """Get synthetic hotkey for a subaccount ID."""
+        sa = self.subaccounts.get(subaccount_id)
+        return sa.synthetic_hotkey if sa else None
+
+
+class EntityManager(ValidatorBroadcastBase):
+    """
+    Entity Manager - Contains all business logic for entity miner management.
+
+    This manager is wrapped by EntityServer which exposes methods via RPC.
+    All heavy logic resides here - server delegates to this manager.
+
+    Pattern:
+    - Server holds a `self._manager` instance
+    - Server delegates all RPC methods to manager methods
+    - Manager creates its own clients internally (forward compatibility)
+    - Local dicts (NOT IPC) for fast access
+    - Thread-safe operations with locks
+    """
+
+    def __init__(
+        self,
+        *,
+        is_backtesting=False,
+        running_unit_tests: bool = False,
+        connection_mode: RPCConnectionMode = RPCConnectionMode.RPC,
+        config=None
+    ):
+        """
+        Initialize EntityManager.
+
+        Args:
+            is_backtesting: Whether running in backtesting mode
+            running_unit_tests: Whether running in test mode
+            connection_mode: RPCConnectionMode.LOCAL for tests, RPCConnectionMode.RPC for production
+            config: Validator config (for netuid, wallet) - optional, used for broadcasting
+        """
+        self.is_backtesting = is_backtesting
+        self.running_unit_tests = running_unit_tests
+        self.connection_mode = connection_mode
+
+        # Determine is_testnet before calling ValidatorBroadcastBase.__init__
+        # This prevents wallet creation blocking in ValidatorBroadcastBase
+        is_testnet = (config.netuid == 116) if (config and hasattr(config, 'netuid')) else False
+
+        # ValidatorBroadcastBase derives is_mothership internally
+        # CRITICAL: Pass running_unit_tests AND is_testnet to prevent blocking wallet creation
+        super().__init__(
+            running_unit_tests=running_unit_tests,
+            is_testnet=is_testnet,
+            connection_mode=connection_mode,
+            config=config
+        )
+
+        # Local dicts (NOT IPC managerized) - much faster!
+        self.entities: Dict[str, EntityData] = {}
+
+        # Reverse index: UUID -> synthetic hotkey for O(1) lookups
+        self._uuid_to_hotkey: Dict[str, str] = {}
+
+        # Per-entity locking strategy for better concurrency
+        # Master lock protects the entities dict structure and the entity_locks dict
+        # Use RLock (reentrant) to allow methods to call each other within locked contexts
+        self._entities_lock = threading.RLock()
+
+        # Per-entity locks: only serialize operations on the same entity
+        # Operations on different entities can run concurrently
+        self._entity_locks: Dict[str, threading.RLock] = {}
+
+        # Store testnet flag (redundant with ValidatorBroadcastBase but kept for clarity)
+        self.is_testnet = is_testnet
+
+        # Create DebtLedgerClient with connect_immediately=False to defer connection
+        self._debt_ledger_client = DebtLedgerClient(
+            connection_mode=connection_mode,
+            connect_immediately=False,
+            running_unit_tests=running_unit_tests
+        )
+
+        # Create EliminationClient with connect_immediately=False to defer connection
+        self._elimination_client = EliminationClient(
+            connection_mode=connection_mode,
+            connect_immediately=False,
+            running_unit_tests=running_unit_tests
+        )
+
+        # Create ChallengePeriodClient with connect_immediately=False to defer connection
+        self._challenge_period_client = ChallengePeriodClient(
+            connection_mode=connection_mode,
+            running_unit_tests=running_unit_tests
+        )
+
+        # Create MinerStatisticsClient with connect_immediately=False to defer connection
+        self._statistics_client = MinerStatisticsClient(
+            connection_mode=connection_mode,
+            connect_immediately=False,
+            running_unit_tests=running_unit_tests
+        )
+
+        # Create PositionManagerClient with connect_immediately=False to defer connection
+        self._position_client = PositionManagerClient(
+            connection_mode=connection_mode,
+            connect_immediately=False,
+            running_unit_tests=running_unit_tests
+        )
+
+        # Create ContractClient for collateral verification and slashing
+        self._contract_client = ContractClient(
+            connection_mode=connection_mode,
+            connect_immediately=False,
+            running_unit_tests=running_unit_tests
+        )
+
+        # Create MinerAccountClient for setting subaccount miner account size
+        self._miner_account_client = MinerAccountClient(
+            connection_mode=connection_mode,
+            connect_immediately=False
+        )
+
+        # Create AssetSelectionClient for asset class selection
+        self._asset_selection_client = AssetSelectionClient(
+            connection_mode=connection_mode,
+            connect_immediately=False,
+            running_unit_tests=running_unit_tests
+        )
+
+        # Create LimitOrderClient for unfilled limit orders
+        self._limit_order_client = LimitOrderClient(
+            connection_mode=connection_mode,
+            connect_immediately=False,
+            running_unit_tests=running_unit_tests
+        )
+
+        self.ENTITY_FILE = ValiBkpUtils.get_entity_file_location(running_unit_tests=running_unit_tests)
+
+        # Load initial entities from disk
+        if not self.is_backtesting:
+            disk_data = ValiUtils.get_vali_json_file_dict(self.ENTITY_FILE)
+            self.entities = self.parse_checkpoint_dict(disk_data)
+
+            # Build UUID -> hotkey reverse index
+            for entity_data in self.entities.values():
+                for subaccount in entity_data.subaccounts.values():
+                    self._uuid_to_hotkey[subaccount.subaccount_uuid] = subaccount.synthetic_hotkey
+
+            # Recreate locks for all loaded entities
+            for entity_hotkey in self.entities.keys():
+                self._entity_locks[entity_hotkey] = threading.RLock()
+            bt.logging.info(f"[ENTITY_MANAGER] Loaded {len(self.entities)} entities from disk with per-entity locks")
+
+        bt.logging.info("[ENTITY_MANAGER] EntityManager initialized")
+
+    # ==================== Lock Management ====================
+
+    def _get_entity_lock(self, entity_hotkey: str) -> threading.RLock:
+        """
+        Get or create a lock for a specific entity.
+
+        This method is thread-safe and ensures each entity has its own lock.
+        The master lock protects the entity_locks dict.
+
+        Args:
+            entity_hotkey: The entity hotkey
+
+        Returns:
+            RLock for this entity
+        """
+        with self._entities_lock:
+            if entity_hotkey not in self._entity_locks:
+                self._entity_locks[entity_hotkey] = threading.RLock()
+            return self._entity_locks[entity_hotkey]
+
+    # ==================== Core Business Logic ====================
+
+    def register_entity(
+        self,
+        entity_hotkey: str
+    ) -> Tuple[bool, str]:
+        """
+        Register a new entity.
+
+        Verifies entity has sufficient collateral balance (ENTITY_REGISTRATION_FEE)
+        and slashes this amount as a registration fee.
+
+        Args:
+            entity_hotkey: The VANTA_ENTITY_HOTKEY
+
+        Returns:
+            (success: bool, message: str)
+        """
+        # Use master lock: adding new entity to dict
+        with self._entities_lock:
+            if entity_hotkey in self.entities:
+                return False, f"Entity {entity_hotkey} already registered"
+
+            # Check if max entities limit is reached
+            if len(self.entities) >= ValiConfig.MAX_REGISTERED_ENTITIES:
+                return False, f"Maximum number of entities ({ValiConfig.MAX_REGISTERED_ENTITIES}) already registered. No new registrations allowed."
+
+            positions = self._position_client.get_positions_for_one_hotkey(entity_hotkey)
+            if positions and len(positions) > 0:
+                return False, f"Entity {entity_hotkey} is already used as a miner. Choose a new hotkey."
+
+            if not self.running_unit_tests:
+                # Verify collateral balance
+                try:
+                    current_balance = self._contract_client.get_miner_collateral_balance(entity_hotkey)
+                    if current_balance is None:
+                        bt.logging.warning(f"[ENTITY_MANAGER] Unable to verify collateral for {entity_hotkey} - balance check returned None")
+                        return False, "Unable to verify collateral balance"
+
+                    if current_balance < ValiConfig.ENTITY_REGISTRATION_FEE:
+                        bt.logging.warning(
+                            f"[ENTITY_MANAGER] Insufficient collateral for entity {entity_hotkey}: "
+                            f"has {current_balance} theta, needs {ValiConfig.ENTITY_REGISTRATION_FEE} theta"
+                        )
+                        return False, f"Insufficient collateral: has {current_balance} theta, needs {ValiConfig.ENTITY_REGISTRATION_FEE} theta"
+
+                    # Slash registration fee
+                    slash_success = self._contract_client.slash_miner_collateral(entity_hotkey, ValiConfig.ENTITY_REGISTRATION_FEE)
+                    if not slash_success:
+                        bt.logging.error(f"[ENTITY_MANAGER] Failed to slash registration fee for {entity_hotkey}")
+                        return False, "Failed to slash registration fee"
+
+                    bt.logging.info(
+                        f"[ENTITY_MANAGER] Slashed {ValiConfig.ENTITY_REGISTRATION_FEE} theta registration fee for entity {entity_hotkey}"
+                    )
+
+                except Exception as e:
+                    bt.logging.error(f"[ENTITY_MANAGER] Error verifying/slashing collateral for {entity_hotkey}: {e}")
+                    return False, f"Error verifying collateral: {str(e)}"
+
+            # Registration fee slashed - proceed with registration
+            entity_data = EntityData(
+                entity_hotkey=entity_hotkey,
+                subaccounts={},
+                next_subaccount_id=0,
+                registered_at_ms=TimeUtil.now_in_millis()
+            )
+
+            self.entities[entity_hotkey] = entity_data
+            # Create lock for this entity
+            self._entity_locks[entity_hotkey] = threading.RLock()
+            self._write_entities_from_memory_to_disk()
+
+            # Add entity hotkey to ENTITY bucket (4x dust weight)
+            self._challenge_period_client.set_miner_bucket(
+                entity_hotkey,
+                MinerBucket.ENTITY,
+                TimeUtil.now_in_millis()
+            )
+
+            bt.logging.info(
+                f"[ENTITY_MANAGER] Registered entity {entity_hotkey}, "
+                f"slashed {ValiConfig.ENTITY_REGISTRATION_FEE} theta"
+            )
+            return True, f"Entity registered successfully - {ValiConfig.ENTITY_REGISTRATION_FEE} theta registration fee slashed"
+
+    def create_subaccount(
+        self,
+        entity_hotkey: str,
+        account_size: float,
+        asset_class: str
+    ) -> Tuple[bool, Optional[SubaccountInfo], str]:
+        """
+        Create a new subaccount for an entity.
+
+        Verifies entity has sufficient collateral for the requested account size
+        and slashes the required amount as a subaccount registration fee.
+
+        Args:
+            entity_hotkey: The VANTA_ENTITY_HOTKEY
+            account_size: Account size in USD (immutable once set, max 100k)
+            asset_class: Asset class selection (immutable once set)
+
+        Returns:
+            (success: bool, subaccount_info: Optional[SubaccountInfo], message: str)
+        """
+        import time
+        t_start = time.time()
+        timings = {}
+
+        # Validate account size (must be <= MAX_SUBACCOUNT_ACCOUNT_SIZE)
+        if account_size > ValiConfig.MAX_SUBACCOUNT_ACCOUNT_SIZE:
+            return False, None, (
+                f"Account size ${account_size} exceeds maximum allowed "
+                f"${ValiConfig.MAX_SUBACCOUNT_ACCOUNT_SIZE}"
+            )
+
+        # Use per-entity lock: only operates on single entity
+        entity_lock = self._get_entity_lock(entity_hotkey)
+        with entity_lock:
+            entity_data = self.entities.get(entity_hotkey)
+            if not entity_data:
+                return False, None, f"Entity {entity_hotkey} not registered"
+
+            # Check slot allowance
+            active_count = len(entity_data.get_active_subaccounts())
+            if active_count >= ValiConfig.ENTITY_MAX_SUBACCOUNTS:
+                return False, None, f"Entity {entity_hotkey} has reached maximum subaccounts ({ValiConfig.ENTITY_MAX_SUBACCOUNTS})"
+
+            # Calculate required collateral: account_size / ENTITY_COST_PER_THETA
+            required_theta = account_size / ValiConfig.ENTITY_COST_PER_THETA
+
+            # Verify collateral balance
+            try:
+                if not self.running_unit_tests:
+                    t0 = time.time()
+                    current_balance = self._contract_client.get_miner_collateral_balance(entity_hotkey)
+                    timings['get_collateral_balance'] = int((time.time() - t0) * 1000)
+
+                    if current_balance is None:
+                        bt.logging.warning(f"[ENTITY_MANAGER] Unable to verify collateral for {entity_hotkey} - balance check returned None")
+                        return False, None, "Unable to verify collateral balance"
+
+                    if current_balance < required_theta:
+                        bt.logging.warning(
+                            f"[ENTITY_MANAGER] Insufficient collateral for subaccount creation: "
+                            f"entity {entity_hotkey} has {current_balance} theta, needs {required_theta} theta "
+                            f"to create new subaccount with ${account_size} account size"
+                        )
+                        return False, None, (
+                            f"Insufficient collateral: has {current_balance} theta, needs {required_theta} theta "
+                            f"to create new subaccount with ${account_size} account size"
+                        )
+
+                # Generate monotonic ID
+                subaccount_id = entity_data.next_subaccount_id
+                entity_data.next_subaccount_id += 1
+
+                # Generate UUID and synthetic hotkey
+                subaccount_uuid = str(uuid.uuid4())
+                synthetic_hotkey = f"{entity_hotkey}_{subaccount_id}"
+
+                # Process asset selection for synthetic hotkey
+                t0 = time.time()
+                asset_selection_result = self._asset_selection_client.process_asset_selection_request(
+                    asset_selection=asset_class,
+                    miner=synthetic_hotkey
+                )
+                timings['asset_selection_rpc'] = int((time.time() - t0) * 1000)
+
+                if not asset_selection_result.get('successfully_processed', False):
+                    bt.logging.warning(
+                        f"[ENTITY_MANAGER] Failed to process asset selection for {synthetic_hotkey}: "
+                        f"{asset_selection_result.get('error_message', 'Unknown error')}"
+                    )
+                    entity_data.next_subaccount_id -= 1
+                    self._asset_selection_client.delete_asset_selection(synthetic_hotkey)
+                    return False, None, f"Failed to set asset selection {asset_class}"
+                bt.logging.info(
+                    f"[ENTITY_MANAGER] Asset selection '{asset_class}' set for {synthetic_hotkey}"
+                )
+
+                # Set account size for synthetic hotkey with explicit account_size parameter
+                # This records the account size in the contract manager's miner_account_sizes
+                t0 = time.time()
+                set_size_success = self._miner_account_client.set_miner_account_size(
+                    synthetic_hotkey,
+                    collateral_balance_theta=account_size / ValiConfig.ENTITY_COST_PER_THETA,
+                    timestamp_ms=TimeUtil.now_in_millis(),
+                    account_size=account_size
+                )
+                timings['set_account_size'] = int((time.time() - t0) * 1000)
+
+                if not set_size_success:
+                    bt.logging.warning(
+                        f"[ENTITY_MANAGER] Failed to set account size for {synthetic_hotkey}"
+                    )
+                    entity_data.next_subaccount_id -= 1
+                    self._asset_selection_client.delete_asset_selection(synthetic_hotkey)
+                    self._miner_account_client.delete_miner_account_size(synthetic_hotkey)
+                    return False, None, "Failed to set account size for subaccount creation"
+                bt.logging.info(
+                    f"[ENTITY_MANAGER] Set account size {account_size} for {synthetic_hotkey}"
+                )
+
+            except Exception as e:
+                bt.logging.error(f"[ENTITY_MANAGER] Error creating subaccount: {e}")
+                # Rollback subaccount ID increment and clean up asset selection/account size
+                entity_data.next_subaccount_id -= 1
+                self._asset_selection_client.delete_asset_selection(synthetic_hotkey)
+                self._miner_account_client.delete_miner_account_size(synthetic_hotkey)
+                return False, None, f"Error creating subaccount: {str(e)}"
+
+            # Create subaccount info with "pending" status (slashing happens async)
+            now_ms = TimeUtil.now_in_millis()
+            subaccount_info = SubaccountInfo(
+                subaccount_id=subaccount_id,
+                subaccount_uuid=subaccount_uuid,
+                synthetic_hotkey=synthetic_hotkey,
+                status="pending",
+                created_at_ms=now_ms,
+                account_size=account_size,
+                asset_class=asset_class
+            )
+
+            entity_data.subaccounts[subaccount_id] = subaccount_info
+
+            # Update reverse index
+            with self._entities_lock:
+                self._uuid_to_hotkey[subaccount_uuid] = synthetic_hotkey
+
+            t0 = time.time()
+            self._write_entities_from_memory_to_disk()
+            timings['write_to_disk'] = int((time.time() - t0) * 1000)
+
+            # Start background slashing thread (not in unit tests)
+            if not self.running_unit_tests:
+                thread = threading.Thread(
+                    target=self._complete_subaccount_slashing,
+                    args=(subaccount_id, entity_hotkey, synthetic_hotkey, required_theta),
+                    daemon=True
+                )
+                thread.start()
+            else:
+                # In tests, mark as active immediately (skip slashing)
+                subaccount_info.status = "active"
+                self._write_entities_from_memory_to_disk()
+
+            total_ms = int((time.time() - t_start) * 1000)
+            bt.logging.info(
+                f"[ENTITY_MANAGER] Created subaccount {subaccount_id} for entity {entity_hotkey}: "
+                f"{synthetic_hotkey}, account_size=${account_size}, asset_class={asset_class}, "
+                f"status=pending, slashing {required_theta} theta in background ({total_ms} ms) | timings: {timings}"
+            )
+            return True, subaccount_info, "Subaccount creation initiated - slashing in progress"
+
+    def _complete_subaccount_slashing(
+        self,
+        subaccount_id: int,
+        entity_hotkey: str,
+        synthetic_hotkey: str,
+        required_theta: float
+    ) -> None:
+        """Background thread to complete collateral slashing."""
+        try:
+            slash_success = self._contract_client.slash_miner_collateral(entity_hotkey, required_theta)
+
+            entity_lock = self._get_entity_lock(entity_hotkey)
+            with entity_lock:
+                entity_data = self.entities.get(entity_hotkey)
+                if not entity_data:
+                    return
+
+                subaccount = entity_data.subaccounts.get(subaccount_id)
+                if not subaccount:
+                    return
+
+                if slash_success:
+                    subaccount.status = "active"
+                    bt.logging.info(f"[ENTITY_MANAGER] Slashing complete for {synthetic_hotkey}")
+                else:
+                    subaccount.status = "failed"
+                    bt.logging.error(f"[ENTITY_MANAGER] Slashing failed for {synthetic_hotkey}")
+                self._write_entities_from_memory_to_disk()
+        except Exception as e:
+            bt.logging.error(f"[ENTITY_MANAGER] Slashing error for {synthetic_hotkey}: {e}")
+            # Mark as failed
+            entity_lock = self._get_entity_lock(entity_hotkey)
+            with entity_lock:
+                entity_data = self.entities.get(entity_hotkey)
+                if entity_data:
+                    subaccount = entity_data.subaccounts.get(subaccount_id)
+                    if subaccount:
+                        subaccount.status = "failed"
+                        self._write_entities_from_memory_to_disk()
+
+    def eliminate_subaccount(
+        self,
+        entity_hotkey: str,
+        subaccount_id: int,
+        reason: str = "unknown"
+    ) -> Tuple[bool, str]:
+        """
+        Eliminate a subaccount.
+
+        Args:
+            entity_hotkey: The VANTA_ENTITY_HOTKEY
+            subaccount_id: The subaccount ID to eliminate
+            reason: Elimination reason
+
+        Returns:
+            (success: bool, message: str)
+        """
+        # Use per-entity lock: only operates on single entity
+        entity_lock = self._get_entity_lock(entity_hotkey)
+        with entity_lock:
+            entity_data = self.entities.get(entity_hotkey)
+            if not entity_data:
+                return False, f"Entity {entity_hotkey} not found"
+
+            subaccount = entity_data.subaccounts.get(subaccount_id)
+            if not subaccount:
+                return False, f"Subaccount {subaccount_id} not found for entity {entity_hotkey}"
+
+            if subaccount.status == "eliminated":
+                return True, f"Subaccount {subaccount_id} already eliminated"
+
+            subaccount.status = "eliminated"
+            subaccount.eliminated_at_ms = TimeUtil.now_in_millis()
+            self._write_entities_from_memory_to_disk()
+
+            bt.logging.info(
+                f"[ENTITY_MANAGER] Eliminated subaccount {subaccount_id} for entity {entity_hotkey}. Reason: {reason}"
+            )
+            return True, f"Subaccount {subaccount_id} eliminated successfully"
+
+    def get_subaccount_status(self, synthetic_hotkey: str) -> Tuple[bool, Optional[str], str]:
+        """
+        Get the status of a subaccount by synthetic hotkey.
+
+        Args:
+            synthetic_hotkey: The synthetic hotkey ({entity_hotkey}_{subaccount_id})
+
+        Returns:
+            (found: bool, status: Optional[str], synthetic_hotkey: str)
+        """
+        if not is_synthetic_hotkey(synthetic_hotkey):
+            return False, None, synthetic_hotkey
+
+        entity_hotkey, subaccount_id = parse_synthetic_hotkey(synthetic_hotkey)
+
+        # Use per-entity lock: only reads from single entity
+        entity_lock = self._get_entity_lock(entity_hotkey)
+        with entity_lock:
+            entity_data = self.entities.get(entity_hotkey)
+            if not entity_data:
+                return False, None, synthetic_hotkey
+
+            subaccount = entity_data.subaccounts.get(subaccount_id)
+            if not subaccount:
+                return False, None, synthetic_hotkey
+
+            return True, subaccount.status, synthetic_hotkey
+
+    def get_entity_data(self, entity_hotkey: str) -> Optional[EntityData]:
+        """
+        Get full entity data.
+
+        Args:
+            entity_hotkey: The VANTA_ENTITY_HOTKEY
+
+        Returns:
+            EntityData or None
+        """
+        # Use per-entity lock: only reads from single entity
+        entity_lock = self._get_entity_lock(entity_hotkey)
+        with entity_lock:
+            return self.entities.get(entity_hotkey)
+
+    def get_synthetic_hotkey_from_uuid(self, subaccount_uuid: str) -> Optional[str]:
+        """
+        Translate subaccount UUID to synthetic hotkey using O(1) reverse index.
+
+        Args:
+            subaccount_uuid: The subaccount UUID
+
+        Returns:
+            Synthetic hotkey if found, None otherwise
+        """
+        with self._entities_lock:
+            return self._uuid_to_hotkey.get(subaccount_uuid)
+
+    def calculate_subaccount_payout(
+        self,
+        subaccount_uuid: str,
+        start_time_ms: int,
+        end_time_ms: int
+    ) -> Optional[dict]:
+        """
+        Calculate payout for a subaccount based on debt ledger checkpoints in time range.
+
+        Orchestrates:
+        1. UUID -> hotkey translation
+        2. Debt ledger retrieval
+        3. Checkpoint filtering by time range
+        4. Payout calculation via DebtBasedScoring.calculate_payout_from_checkpoints()
+
+        Args:
+            subaccount_uuid: The subaccount UUID
+            start_time_ms: Start timestamp (inclusive)
+            end_time_ms: End timestamp (inclusive)
+
+        Returns:
+            Dict with {
+                'hotkey': str,
+                'total_checkpoints': int,
+                'checkpoints': List[dict],
+                'payout': float
+            } or None if subaccount not found
+        """
+        # Translate UUID to hotkey
+        synthetic_hotkey = self.get_synthetic_hotkey_from_uuid(subaccount_uuid)
+        if not synthetic_hotkey:
+            return None
+
+        # Get debt ledger for this hotkey
+        try:
+            debt_ledger = self._debt_ledger_client.get_ledger(synthetic_hotkey)
+            if not debt_ledger:
+                return None
+
+            # Filter checkpoints by time range
+            earning_checkpoints = [
+                cp for cp in debt_ledger.checkpoints
+                if start_time_ms <= cp.timestamp_ms <= end_time_ms
+                   and cp.challenge_period_status in (
+                       MinerBucket.SUBACCOUNT_FUNDED.value,
+                       MinerBucket.SUBACCOUNT_ALPHA.value
+                   )
+            ]
+
+            # Calculate payout
+            payout = DebtBasedScoring.calculate_payout_from_checkpoints(
+                earning_checkpoints
+            )
+
+            # Convert checkpoints to dict for JSON serialization
+            checkpoints_dict = [cp.to_dict() for cp in earning_checkpoints]
+
+            return {
+                'hotkey': synthetic_hotkey,
+                'total_checkpoints': len(earning_checkpoints),
+                'checkpoints': checkpoints_dict,
+                'payout': payout
+            }
+
+        except Exception as e:
+            bt.logging.error(f"[ENTITY_MANAGER] Error calculating payout for {subaccount_uuid}: {e}")
+            return None
+
+    def validate_hotkey_for_orders(self, hotkey: str) -> dict:
+        """
+        Validate a hotkey for order placement in a single check.
+
+        This consolidates multiple checks into one RPC call:
+        1. Is it a synthetic hotkey (subaccount)?
+        2. If synthetic, is it active?
+        3. If not synthetic, is it an entity hotkey (not allowed to trade)?
+
+        Args:
+            hotkey: The hotkey to validate
+
+        Returns:
+            dict with:
+                - is_valid (bool): Whether hotkey can place orders
+                - error_message (str): Error message if not valid, empty if valid
+                - hotkey_type (str): 'synthetic', 'entity', or 'regular'
+                - status (str|None): Status if synthetic hotkey, None otherwise
+        """
+        # Check if synthetic (no lock needed - just string parsing)
+        if is_synthetic_hotkey(hotkey):
+            # Synthetic hotkey - check if active
+            found, status, _ = self.get_subaccount_status(hotkey)
+
+            if not found:
+                return {
+                    'is_valid': False,
+                    'error_message': (f"Synthetic hotkey {hotkey} not found. "
+                                    f"Please ensure your subaccount is properly registered."),
+                    'hotkey_type': 'synthetic',
+                    'status': None
+                }
+
+            if status != 'active':
+                return {
+                    'is_valid': False,
+                    'error_message': (f"Synthetic hotkey {hotkey} is not active (status: {status}). "
+                                    f"Please ensure your subaccount is properly registered."),
+                    'hotkey_type': 'synthetic',
+                    'status': status
+                }
+
+            # Valid synthetic hotkey
+            return {
+                'is_valid': True,
+                'error_message': '',
+                'hotkey_type': 'synthetic',
+                'status': status
+            }
+
+        # Not synthetic - check if it's an entity hotkey
+        # Use per-entity lock: only reads from single entity
+        entity_lock = self._get_entity_lock(hotkey)
+        with entity_lock:
+            entity_data = self.entities.get(hotkey)
+
+        if entity_data:
+            # Entity hotkey cannot place orders directly
+            return {
+                'is_valid': False,
+                'error_message': (f"Entity hotkey {hotkey} cannot place orders directly. "
+                                f"Please use a subaccount (synthetic hotkey) to place orders."),
+                'hotkey_type': 'entity',
+                'status': None
+            }
+
+        # Regular hotkey (not synthetic, not entity)
+        return {
+            'is_valid': True,
+            'error_message': '',
+            'hotkey_type': 'regular',
+            'status': None
+        }
+
+    def get_subaccount_dashboard_data(self, synthetic_hotkey: str) -> Optional[dict]:
+        """
+        Get comprehensive dashboard data for a subaccount by aggregating data from multiple RPC services.
+
+        This method pulls existing data from:
+        - ChallengePeriodClient: Challenge period status and bucket
+        - DebtLedgerClient: Debt ledger data
+        - PositionManagerClient: Open positions and leverage
+        - LimitOrderClient: Unfilled limit orders
+        - MinerStatisticsClient: Cached statistics (metrics, scores, rankings, etc.)
+        - EliminationClient: Elimination status
+
+        Args:
+            synthetic_hotkey: The synthetic hotkey ({entity_hotkey}_{subaccount_id})
+
+        Returns:
+            Dict with aggregated dashboard data, or None if subaccount not found
+        """
+        # 1. Validate subaccount exists
+        entity_hotkey, subaccount_id = parse_synthetic_hotkey(synthetic_hotkey)
+        if not entity_hotkey:
+            return None
+
+        entity_data = self.get_entity_data(entity_hotkey)
+        if not entity_data:
+            return None
+
+        subaccount = entity_data.subaccounts.get(subaccount_id)
+        if not subaccount:
+            return None
+
+        # 2. Query each client (with graceful degradation on errors)
+        time_now_ms = TimeUtil.now_in_millis()
+
+        # Challenge period data
+        challenge_data = None
+        try:
+            if self._challenge_period_client.has_miner(synthetic_hotkey):
+                bucket = self._challenge_period_client.get_miner_bucket(synthetic_hotkey)
+                start_time = self._challenge_period_client.get_miner_start_time(synthetic_hotkey)
+                challenge_data = {
+                    'bucket': bucket.value if bucket else None,
+                    'start_time_ms': start_time
+                }
+        except Exception as e:
+            bt.logging.debug(f"[ENTITY_MANAGER] Challenge period data unavailable for {synthetic_hotkey}: {e}")
+
+        # Debt ledger data
+        ledger_data = None
+        try:
+            ledger = self._debt_ledger_client.get_ledger(synthetic_hotkey)
+            if ledger:
+                ledger_data = ledger.to_dict()  # Convert DebtLedger to dict for JSON serialization
+        except Exception as e:
+            bt.logging.debug(f"[ENTITY_MANAGER] Ledger data unavailable for {synthetic_hotkey}: {e}")
+
+        # Position data
+        positions_data = None
+        try:
+            positions = self._position_client.get_positions_for_one_hotkey(synthetic_hotkey, sort_positions=True)
+            if positions:
+                positions_data = PositionManagerClient.positions_to_dashboard_dict(positions, time_now_ms)
+                # Add total leverage
+                leverage = self._position_client.calculate_net_portfolio_leverage(synthetic_hotkey)
+                positions_data['total_leverage'] = leverage
+        except Exception as e:
+            bt.logging.debug(f"[ENTITY_MANAGER] Position data unavailable for {synthetic_hotkey}: {e}")
+
+        # Limit orders data (unfilled orders)
+        limit_orders_data = None
+        try:
+            limit_orders_data = self._limit_order_client.to_dashboard_dict(synthetic_hotkey)
+        except Exception as e:
+            bt.logging.debug(f"[ENTITY_MANAGER] Limit orders data unavailable for {synthetic_hotkey}: {e}")
+
+        account_size_data = None
+        try:
+            account_size_data = self._miner_account_client.get_account(synthetic_hotkey)
+        except Exception as e:
+            bt.logging.debug(f"[ENTITY_MANAGER] Account size data unavailable for {synthetic_hotkey}: {e}")
+
+
+        # Statistics data (from cached miner statistics - refreshed every 5 minutes)
+        statistics_data = None
+        try:
+            statistics_data = self._statistics_client.get_miner_statistics_for_hotkey(synthetic_hotkey)
+        except Exception as e:
+            bt.logging.debug(f"[ENTITY_MANAGER] Statistics data unavailable for {synthetic_hotkey}: {e}")
+
+        # Elimination data
+        elimination_data = None
+        try:
+            elimination_data = self._elimination_client.get_elimination(synthetic_hotkey)
+        except Exception as e:
+            bt.logging.debug(f"[ENTITY_MANAGER] Elimination data unavailable for {synthetic_hotkey}: {e}")
+
+        # 3. Build aggregated response
+        return {
+            'subaccount_info': {
+                'synthetic_hotkey': synthetic_hotkey,
+                'entity_hotkey': entity_hotkey,
+                'subaccount_id': subaccount_id,
+                'asset_class': subaccount.asset_class,
+                'account_size': subaccount.account_size,
+                'status': subaccount.status,
+                'created_at_ms': subaccount.created_at_ms,
+                'eliminated_at_ms': subaccount.eliminated_at_ms,
+            },
+            'challenge_period': challenge_data,
+            'ledger': ledger_data,
+            'positions': positions_data,
+            'limit_orders': limit_orders_data,
+            'account_size_data': account_size_data,
+            'statistics': statistics_data,
+            'elimination': elimination_data,
+        }
+
+    def get_all_entities(self) -> Dict[str, EntityData]:
+        """Get all entities."""
+        # Use master lock: copying entire dict
+        with self._entities_lock:
+            return dict(self.entities)
+
+    # ==================== Challenge Period & Elimination Assessment ====================
+
+    def assess_eliminations(self) -> int:
+        """
+        Check all active subaccounts against the elimination registry and mark eliminated ones.
+
+        This runs periodically (every 5 minutes via daemon) to sync subaccount status
+        with the central elimination registry managed by EliminationManager.
+
+        Returns:
+            int: Number of subaccounts newly marked as eliminated
+        """
+        eliminated_count = 0
+        now_ms = TimeUtil.now_in_millis()
+
+        # Get all eliminated hotkeys from the central registry
+        eliminated_hotkeys = self._elimination_client.get_eliminated_hotkeys()
+
+        # Use master lock: iterating over all entities
+        with self._entities_lock:
+            for entity_hotkey, entity_data in self.entities.items():
+                for subaccount_id, subaccount in entity_data.subaccounts.items():
+                    # Skip if already eliminated
+                    if subaccount.status == "eliminated":
+                        continue
+
+                    synthetic_hotkey = subaccount.synthetic_hotkey
+
+                    # Check if this synthetic hotkey is in eliminations
+                    if synthetic_hotkey in eliminated_hotkeys:
+                        # Get elimination details for logging
+                        elimination_info = self._elimination_client.get_elimination(synthetic_hotkey)
+                        reason = elimination_info.get('reason', 'unknown') if elimination_info else 'unknown'
+
+                        bt.logging.info(
+                            f"[ENTITY_MANAGER] Subaccount {synthetic_hotkey} found in eliminations. "
+                            f"Reason: {reason}. Marking as eliminated."
+                        )
+
+                        # Mark subaccount as eliminated
+                        subaccount.status = "eliminated"
+                        subaccount.eliminated_at_ms = now_ms
+                        eliminated_count += 1
+
+            # Persist changes if any subaccounts were eliminated
+            if eliminated_count > 0:
+                self._write_entities_from_memory_to_disk()
+
+        if eliminated_count > 0:
+            bt.logging.info(
+                f"[ENTITY_MANAGER] Elimination assessment complete: "
+                f"{eliminated_count} subaccounts newly marked as eliminated"
+            )
+
+        return eliminated_count
+
+    def sync_entity_data(self, entities_checkpoint_dict: dict) -> dict:
+        """
+        Sync entity data from a checkpoint dict (from auto-sync or mothership).
+
+        This merges incoming entity data with existing data:
+        - Creates new entities if they don't exist
+        - Adds new subaccounts to existing entities
+        - Updates subaccount status (active/eliminated)
+        - Preserves local-only data (e.g., newer subaccounts)
+
+        Args:
+            entities_checkpoint_dict: Dict from checkpoint (entity_hotkey -> EntityData dict)
+
+        Returns:
+            dict: Sync statistics (entities_added, subaccounts_added, subaccounts_updated)
+        """
+        stats = {
+            'entities_added': 0,
+            'subaccounts_added': 0,
+            'subaccounts_updated': 0,
+            'entities_skipped': 0
+        }
+
+        # Validate input
+        if not isinstance(entities_checkpoint_dict, dict):
+            bt.logging.warning(f"[ENTITY_MANAGER] Invalid entities_checkpoint_dict type: {type(entities_checkpoint_dict)}. Expected dict.")
+            return stats
+
+        if not entities_checkpoint_dict:
+            bt.logging.debug("[ENTITY_MANAGER] Empty entities_checkpoint_dict provided, nothing to sync")
+            return stats
+
+        # Parse checkpoint dict to EntityData objects (with error handling)
+        try:
+            incoming_entities = EntityManager.parse_checkpoint_dict(entities_checkpoint_dict)
+        except Exception as e:
+            bt.logging.error(f"[ENTITY_MANAGER] Failed to parse entity checkpoint dict: {e}")
+            import traceback
+            bt.logging.error(traceback.format_exc())
+            return stats
+
+        # Use master lock: modifying entities dict
+        with self._entities_lock:
+            for entity_hotkey, incoming_entity in incoming_entities.items():
+                # Check if entity exists locally
+                local_entity = self.entities.get(entity_hotkey)
+
+                if not local_entity:
+                    # New entity - add it
+                    self.entities[entity_hotkey] = incoming_entity
+                    # Create lock for new entity
+                    self._entity_locks[entity_hotkey] = threading.RLock()
+
+                    # Register entity with challenge period system (ENTITY bucket - 4x dust weight)
+                    self._challenge_period_client.set_miner_bucket(
+                        entity_hotkey,
+                        MinerBucket.ENTITY,
+                        incoming_entity.registered_at_ms
+                    )
+
+                    stats['entities_added'] += 1
+                    stats['subaccounts_added'] += len(incoming_entity.subaccounts)
+                    bt.logging.info(f"[ENTITY_MANAGER] Added new entity {entity_hotkey} with {len(incoming_entity.subaccounts)} subaccounts from sync")
+                else:
+                    # Entity exists - merge subaccounts
+                    # Use per-entity lock for updates
+                    entity_lock = self._get_entity_lock(entity_hotkey)
+                    with entity_lock:
+                        for sub_id, incoming_sub in incoming_entity.subaccounts.items():
+                            local_sub = local_entity.subaccounts.get(sub_id)
+
+                            if not local_sub:
+                                # New subaccount - add it
+                                local_entity.subaccounts[sub_id] = incoming_sub
+
+                                # Update reverse index
+                                with self._entities_lock:
+                                    self._uuid_to_hotkey[incoming_sub.subaccount_uuid] = incoming_sub.synthetic_hotkey
+
+                                stats['subaccounts_added'] += 1
+                                bt.logging.info(f"[ENTITY_MANAGER] Added subaccount {incoming_sub.synthetic_hotkey} from sync")
+                            else:
+                                # Subaccount exists - update status if changed
+                                if local_sub.status != incoming_sub.status:
+                                    old_status = local_sub.status
+                                    local_sub.status = incoming_sub.status
+                                    local_sub.eliminated_at_ms = incoming_sub.eliminated_at_ms
+                                    stats['subaccounts_updated'] += 1
+                                    bt.logging.info(f"[ENTITY_MANAGER] Updated subaccount {incoming_sub.synthetic_hotkey} status: {old_status} -> {incoming_sub.status}")
+
+                        # Update next_subaccount_id to prevent ID collisions
+                        if incoming_entity.next_subaccount_id > local_entity.next_subaccount_id:
+                            local_entity.next_subaccount_id = incoming_entity.next_subaccount_id
+
+            # Persist changes to disk
+            self._write_entities_from_memory_to_disk()
+
+        bt.logging.info(f"[ENTITY_MANAGER] Entity sync complete: {stats}")
+        return stats
+
+    # ==================== Persistence ====================
+
+    def _write_entities_from_memory_to_disk(self):
+        """Write entity data from memory to disk."""
+        if self.is_backtesting:
+            return
+
+        entity_data = self.to_checkpoint_dict()
+        ValiBkpUtils.write_file(self.ENTITY_FILE, entity_data)
+
+    def to_checkpoint_dict(self) -> dict:
+        """Get entity data as a checkpoint dict for serialization."""
+        # Use master lock: iterating over all entities
+        with self._entities_lock:
+            checkpoint = {}
+            for entity_hotkey, entity_data in self.entities.items():
+                checkpoint[entity_hotkey] = entity_data.model_dump()
+            return checkpoint
+
+    @staticmethod
+    def parse_checkpoint_dict(json_dict: dict) -> Dict[str, EntityData]:
+        """Parse checkpoint dict from disk."""
+        entities = {}
+        for entity_hotkey, entity_dict in json_dict.items():
+            # Convert subaccount dicts back to SubaccountInfo objects
+            subaccounts_dict = {}
+            for sub_id_str, sub_dict in entity_dict.get("subaccounts", {}).items():
+                subaccounts_dict[int(sub_id_str)] = SubaccountInfo(**sub_dict)
+
+            entity_dict["subaccounts"] = subaccounts_dict
+            entities[entity_hotkey] = EntityData(**entity_dict)
+
+        return entities
+
+    # ==================== Validator Broadcast Methods ====================
+
+    def broadcast_subaccount_registration(
+        self,
+        entity_hotkey: str,
+        subaccount_id: int,
+        subaccount_uuid: str,
+        synthetic_hotkey: str,
+        account_size: float,
+        asset_class: str
+    ):
+        """
+        Broadcast SubaccountRegistration synapse to other validators using shared broadcast base.
+
+        Args:
+            entity_hotkey: The VANTA_ENTITY_HOTKEY
+            subaccount_id: The subaccount ID
+            subaccount_uuid: The subaccount UUID
+            synthetic_hotkey: The synthetic hotkey
+            account_size: Account size in USD (immutable)
+            asset_class: Asset class selection (immutable)
+        """
+        def create_synapse():
+            subaccount_data = {
+                "entity_hotkey": entity_hotkey,
+                "subaccount_id": subaccount_id,
+                "subaccount_uuid": subaccount_uuid,
+                "synthetic_hotkey": synthetic_hotkey,
+                "account_size": account_size,
+                "asset_class": asset_class
+            }
+            return template.protocol.SubaccountRegistration(subaccount_data=subaccount_data)
+
+        self._broadcast_to_validators(
+            synapse_factory=create_synapse,
+            broadcast_name="SubaccountRegistration",
+            context={"synthetic_hotkey": synthetic_hotkey}
+        )
+
+    def receive_subaccount_registration_update(self, subaccount_data: dict, sender_hotkey: str = None) -> bool:
+        """
+        Process an incoming subaccount registration from another validator.
+        Ensures idempotent registration (handles duplicates gracefully).
+
+        Args:
+            subaccount_data: Dictionary containing entity_hotkey, subaccount_id, subaccount_uuid, synthetic_hotkey
+            sender_hotkey: The hotkey of the validator that sent this broadcast
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            # SECURITY: Verify sender using shared base class method
+            if not self.verify_broadcast_sender(sender_hotkey, "SubaccountRegistration"):
+                return False
+
+            # Use master lock: might create new entity, then modify it
+            with self._entities_lock:
+                # Extract data from the synapse
+                entity_hotkey = subaccount_data.get("entity_hotkey")
+                subaccount_id = subaccount_data.get("subaccount_id")
+                subaccount_uuid = subaccount_data.get("subaccount_uuid")
+                synthetic_hotkey = subaccount_data.get("synthetic_hotkey")
+                account_size = subaccount_data.get("account_size")
+                asset_class = subaccount_data.get("asset_class")
+
+                bt.logging.info(
+                    f"[ENTITY_MANAGER] Processing subaccount registration for {synthetic_hotkey}"
+                )
+
+                # Validate all required fields are present
+                if not all([entity_hotkey, subaccount_id is not None, subaccount_uuid, synthetic_hotkey,
+                            account_size, asset_class]):
+                    bt.logging.warning(
+                        f"[ENTITY_MANAGER] Invalid subaccount registration data - missing required fields: {subaccount_data}"
+                    )
+                    return False
+
+                # Get or create entity data
+                entity_data = self.entities.get(entity_hotkey)
+                if not entity_data:
+                    # Auto-create entity if doesn't exist (from broadcast)
+                    entity_data = EntityData(
+                        entity_hotkey=entity_hotkey,
+                        subaccounts={},
+                        next_subaccount_id=subaccount_id + 1,  # Ensure monotonic ID continues
+                        registered_at_ms=TimeUtil.now_in_millis()
+                    )
+                    self.entities[entity_hotkey] = entity_data
+                    # Create lock for this entity
+                    self._entity_locks[entity_hotkey] = threading.RLock()
+                    bt.logging.info(f"[ENTITY_MANAGER] Auto-created entity {entity_hotkey} from broadcast")
+
+                # Check if subaccount already exists (idempotent)
+                if subaccount_id in entity_data.subaccounts:
+                    existing_sub = entity_data.subaccounts[subaccount_id]
+                    if existing_sub.subaccount_uuid == subaccount_uuid:
+                        bt.logging.debug(
+                            f"[ENTITY_MANAGER] Subaccount {synthetic_hotkey} already exists (idempotent)"
+                        )
+                        return True
+                    else:
+                        bt.logging.warning(
+                            f"[ENTITY_MANAGER] Subaccount ID conflict for {entity_hotkey}:{subaccount_id}"
+                        )
+                        return False
+
+                # Create new subaccount info
+                now_ms = TimeUtil.now_in_millis()
+                subaccount_info = SubaccountInfo(
+                    subaccount_id=subaccount_id,
+                    subaccount_uuid=subaccount_uuid,
+                    synthetic_hotkey=synthetic_hotkey,
+                    status="active",
+                    created_at_ms=now_ms,
+                    account_size=account_size,
+                    asset_class=asset_class
+                )
+
+                # Add to entity
+                entity_data.subaccounts[subaccount_id] = subaccount_info
+
+                # Update reverse index
+                with self._entities_lock:
+                    self._uuid_to_hotkey[subaccount_uuid] = synthetic_hotkey
+
+                # Update next_subaccount_id if needed
+                if subaccount_id >= entity_data.next_subaccount_id:
+                    entity_data.next_subaccount_id = subaccount_id + 1
+
+                # Save to disk
+                self._write_entities_from_memory_to_disk()
+
+                bt.logging.info(
+                    f"[ENTITY_MANAGER] Registered subaccount {synthetic_hotkey} via broadcast"
+                )
+                return True
+
+        except Exception as e:
+            bt.logging.error(f"[ENTITY_MANAGER] Error processing subaccount registration: {e}")
+            import traceback
+            bt.logging.error(traceback.format_exc())
+            return False
+
+    # ==================== Testing/Admin Methods ====================
+
+    def clear_all_entities(self):
+        """Clear all entity data (for testing)."""
+        if not self.running_unit_tests:
+            raise Exception("Clearing entities is only allowed during unit tests.")
+
+        # Use master lock: clearing entire dict
+        with self._entities_lock:
+            self.entities.clear()
+            self._entity_locks.clear()
+            self._write_entities_from_memory_to_disk()
+
+        bt.logging.info("[ENTITY_MANAGER] Cleared all entity data")

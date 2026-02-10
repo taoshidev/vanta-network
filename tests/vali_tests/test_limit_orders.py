@@ -902,7 +902,7 @@ class TestLimitOrders(TestBase):
 
         # Verify only ONE bracket order was created
         orders = self.get_orders_from_server(self.DEFAULT_MINER_HOTKEY, self.DEFAULT_TRADE_PAIR)
-        bracket_orders = [o for o in orders if o.order_uuid.endswith('-bracket')]
+        bracket_orders = [o for o in orders if o.order_uuid.endswith('-bracket-0')]
         self.assertEqual(len(bracket_orders), 1, "Should create exactly one bracket order")
 
         # Verify bracket order properties
@@ -927,7 +927,7 @@ class TestLimitOrders(TestBase):
         self.limit_order_client.create_sltp_order(self.DEFAULT_MINER_HOTKEY, parent_order)
 
         orders = self.get_orders_from_server(self.DEFAULT_MINER_HOTKEY, self.DEFAULT_TRADE_PAIR)
-        bracket_orders = [o for o in orders if o.order_uuid.endswith('-bracket')]
+        bracket_orders = [o for o in orders if o.order_uuid.endswith('-bracket-0')]
         self.assertEqual(len(bracket_orders), 1)
 
         bracket_order = bracket_orders[0]
@@ -946,7 +946,7 @@ class TestLimitOrders(TestBase):
         self.limit_order_client.create_sltp_order(self.DEFAULT_MINER_HOTKEY, parent_order)
 
         orders = self.get_orders_from_server(self.DEFAULT_MINER_HOTKEY, self.DEFAULT_TRADE_PAIR)
-        bracket_orders = [o for o in orders if o.order_uuid.endswith('-bracket')]
+        bracket_orders = [o for o in orders if o.order_uuid.endswith('-bracket-0')]
         self.assertEqual(len(bracket_orders), 1)
 
         bracket_order = bracket_orders[0]
@@ -1356,7 +1356,7 @@ class TestLimitOrders(TestBase):
         Test DESIGN BEHAVIOR: Bracket orders can be cancelled using parent order UUID.
 
         When a limit order with SL/TP fills, it creates a bracket order with UUID:
-        "{parent_uuid}-bracket"
+        "{parent_uuid}-bracket-{i}"
 
         Miners can cancel this bracket order by providing just the parent UUID,
         which uses startswith() matching.
@@ -1378,13 +1378,13 @@ class TestLimitOrders(TestBase):
         orders = self.get_orders_from_server(self.DEFAULT_MINER_HOTKEY, self.DEFAULT_TRADE_PAIR)
         bracket_orders = [o for o in orders if o.execution_type == ExecutionType.BRACKET]
         self.assertEqual(len(bracket_orders), 1)
-        self.assertEqual(bracket_orders[0].order_uuid, "parent123-bracket")
+        self.assertEqual(bracket_orders[0].order_uuid, "parent123-bracket-0")
 
         # Cancel using PARENT UUID (not the full bracket UUID)
         result = self.limit_order_client.cancel_limit_order(
             self.DEFAULT_MINER_HOTKEY,
             self.DEFAULT_TRADE_PAIR.trade_pair_id,
-            "parent123",  # Using parent UUID, not "parent123-bracket"
+            "parent123",  # Using parent UUID, not "parent123-bracket-0"
             TimeUtil.now_in_millis()
         )
 
@@ -1395,7 +1395,7 @@ class TestLimitOrders(TestBase):
         # Verify the bracket order has been removed from memory (Issue 8 fix)
         # Cancelled orders are persisted to disk but removed from active memory
         orders = self.get_orders_from_server(self.DEFAULT_MINER_HOTKEY, self.DEFAULT_TRADE_PAIR)
-        bracket_orders = [o for o in orders if o.order_uuid == "parent123-bracket"]
+        bracket_orders = [o for o in orders if o.order_uuid == "parent123-bracket-0"]
         self.assertEqual(len(bracket_orders), 0, "Cancelled bracket order should be removed from memory")
 
     def test_cancel_bracket_order_using_full_uuid(self):
@@ -1416,7 +1416,7 @@ class TestLimitOrders(TestBase):
         result = self.limit_order_client.cancel_limit_order(
             self.DEFAULT_MINER_HOTKEY,
             self.DEFAULT_TRADE_PAIR.trade_pair_id,
-            "parent456-bracket",  # Using full bracket UUID
+            "parent456-bracket-0",  # Using full bracket UUID
             TimeUtil.now_in_millis()
         )
 
@@ -1467,14 +1467,14 @@ class TestLimitOrders(TestBase):
 
     def test_bracket_order_uuid_format(self):
         """
-        Test DESIGN BEHAVIOR: Bracket order UUID format is always "{parent_uuid}-bracket".
+        Test DESIGN BEHAVIOR: Bracket order UUID format is always "{parent_uuid}-bracket-{i}".
 
         This consistent format enables the partial UUID matching for cancellation.
         """
         test_cases = [
-            ("abc123", "abc123-bracket"),
-            ("order-xyz-789", "order-xyz-789-bracket"),
-            ("simple", "simple-bracket"),
+            ("abc123", "abc123-bracket-0"),
+            ("order-xyz-789", "order-xyz-789-bracket-0"),
+            ("simple", "simple-bracket-0"),
         ]
 
         for parent_uuid, expected_bracket_uuid in test_cases:
@@ -1723,6 +1723,156 @@ class TestLimitOrders(TestBase):
         bracket_orders = [o for o in orders if o.execution_type == ExecutionType.BRACKET]
         self.assertEqual(len(bracket_orders), 1)
         self.assertEqual(bracket_orders[0].quantity, 0.5, "Bracket should use parent's quantity")
+
+    def test_bracket_orders_field_multiple_brackets(self):
+        """Test that bracket_orders field creates multiple bracket orders with correct UUIDs and properties"""
+        # Create parent order with multiple bracket_orders
+        parent_order = Order(
+            trade_pair=self.DEFAULT_TRADE_PAIR,
+            order_uuid="parent_order_123",
+            processed_ms=TimeUtil.now_in_millis(),
+            price=50000.0,  # Fill price for SL/TP validation
+            order_type=OrderType.LONG,
+            leverage=0.1,
+            execution_type=ExecutionType.MARKET,
+            bracket_orders=[
+                {'quantity': 0.1, 'stop_loss': 49000.0, 'take_profit': 51000.0},
+                {'quantity': 0.2, 'stop_loss': 48000.0},
+                {'quantity': 0.3, 'take_profit': 52000.0},
+            ],
+            src=OrderSource.ORGANIC
+        )
+
+        # Verify bracket_orders field is set correctly on parent
+        self.assertEqual(len(parent_order.bracket_orders), 3)
+
+        # Create bracket orders via limit_order_client
+        self.limit_order_client.create_sltp_order(self.DEFAULT_MINER_HOTKEY, parent_order)
+
+        # Get created orders
+        orders = self.get_orders_from_server(self.DEFAULT_MINER_HOTKEY, self.DEFAULT_TRADE_PAIR)
+        bracket_orders = [o for o in orders if o.execution_type == ExecutionType.BRACKET]
+
+        # Verify 3 bracket orders were created
+        self.assertEqual(len(bracket_orders), 3, "Should create 3 bracket orders")
+
+        # Verify UUID format for multiple brackets: -bracket-{i}
+        uuids = sorted([o.order_uuid for o in bracket_orders])
+        self.assertEqual(uuids[0], "parent_order_123-bracket-0")
+        self.assertEqual(uuids[1], "parent_order_123-bracket-1")
+        self.assertEqual(uuids[2], "parent_order_123-bracket-2")
+
+        # Verify each bracket order has correct properties
+        bracket_0 = next(o for o in bracket_orders if o.order_uuid.endswith('-bracket-0'))
+        self.assertEqual(bracket_0.quantity, 0.1)
+        self.assertEqual(bracket_0.stop_loss, 49000.0)
+        self.assertEqual(bracket_0.take_profit, 51000.0)
+        self.assertEqual(bracket_0.order_type, OrderType.LONG)
+        self.assertEqual(bracket_0.src, OrderSource.BRACKET_UNFILLED)
+
+        bracket_1 = next(o for o in bracket_orders if o.order_uuid.endswith('-bracket-1'))
+        self.assertEqual(bracket_1.quantity, 0.2)
+        self.assertEqual(bracket_1.stop_loss, 48000.0)
+        self.assertIsNone(bracket_1.take_profit)
+
+        bracket_2 = next(o for o in bracket_orders if o.order_uuid.endswith('-bracket-2'))
+        self.assertEqual(bracket_2.quantity, 0.3)
+        self.assertIsNone(bracket_2.stop_loss)
+        self.assertEqual(bracket_2.take_profit, 52000.0)
+
+    def test_bracket_orders_normalized_from_sltp(self):
+        """Test that stop_loss/take_profit on Order are normalized to bracket_orders"""
+        # Create order with stop_loss/take_profit (not bracket_orders)
+        order = Order(
+            trade_pair=self.DEFAULT_TRADE_PAIR,
+            order_uuid="test_order",
+            processed_ms=TimeUtil.now_in_millis(),
+            price=50000.0,
+            order_type=OrderType.LONG,
+            quantity=0.5,
+            execution_type=ExecutionType.MARKET,
+            stop_loss=49000.0,
+            take_profit=51000.0,
+            src=OrderSource.ORGANIC
+        )
+
+        # Verify bracket_orders was created from stop_loss/take_profit
+        self.assertIsNotNone(order.bracket_orders)
+        self.assertEqual(len(order.bracket_orders), 1)
+
+        bracket = order.bracket_orders[0]
+        self.assertEqual(bracket['stop_loss'], 49000.0)
+        self.assertEqual(bracket['take_profit'], 51000.0)
+        self.assertEqual(bracket['quantity'], 0.5)
+
+    def test_bracket_orders_with_different_size_fields(self):
+        """Test bracket_orders work with leverage, value, and quantity size fields"""
+        # Test with leverage
+        parent_leverage = Order(
+            trade_pair=self.DEFAULT_TRADE_PAIR,
+            order_uuid="parent_leverage",
+            processed_ms=TimeUtil.now_in_millis(),
+            price=50000.0,
+            order_type=OrderType.LONG,
+            leverage=0.1,
+            execution_type=ExecutionType.MARKET,
+            bracket_orders=[
+                {'leverage': 0.05, 'stop_loss': 49000.0},
+            ],
+            src=OrderSource.ORGANIC
+        )
+        self.limit_order_client.create_sltp_order(self.DEFAULT_MINER_HOTKEY, parent_leverage)
+
+        orders = self.get_orders_from_server(self.DEFAULT_MINER_HOTKEY, self.DEFAULT_TRADE_PAIR)
+        bracket = next(o for o in orders if o.execution_type == ExecutionType.BRACKET)
+        self.assertEqual(bracket.leverage, 0.05)
+        self.assertIsNone(bracket.value)
+        self.assertIsNone(bracket.quantity)
+
+        # Clear for next test
+        self.orchestrator.clear_all_test_data()
+        self.metagraph_client.set_hotkeys([self.DEFAULT_MINER_HOTKEY])
+
+        # Test with value
+        parent_value = Order(
+            trade_pair=self.DEFAULT_TRADE_PAIR,
+            order_uuid="parent_value",
+            processed_ms=TimeUtil.now_in_millis(),
+            price=50000.0,
+            order_type=OrderType.LONG,
+            value=1000.0,
+            execution_type=ExecutionType.MARKET,
+            bracket_orders=[
+                {'value': 500.0, 'take_profit': 51000.0},
+            ],
+            src=OrderSource.ORGANIC
+        )
+        self.limit_order_client.create_sltp_order(self.DEFAULT_MINER_HOTKEY, parent_value)
+
+        orders = self.get_orders_from_server(self.DEFAULT_MINER_HOTKEY, self.DEFAULT_TRADE_PAIR)
+        bracket = next(o for o in orders if o.execution_type == ExecutionType.BRACKET)
+        self.assertIsNone(bracket.leverage)
+        self.assertEqual(bracket.value, 500.0)
+        self.assertIsNone(bracket.quantity)
+
+    def test_single_bracket_order_uuid_format(self):
+        """Test that single bracket order uses -bracket-0 UUID format"""
+        parent_order = self.create_filled_market_order(
+            order_type=OrderType.LONG,
+            fill_price=50000.0,
+            stop_loss=49000.0,
+            take_profit=51000.0,
+            quantity=0.5
+        )
+
+        self.limit_order_client.create_sltp_order(self.DEFAULT_MINER_HOTKEY, parent_order)
+
+        orders = self.get_orders_from_server(self.DEFAULT_MINER_HOTKEY, self.DEFAULT_TRADE_PAIR)
+        bracket_orders = [o for o in orders if o.execution_type == ExecutionType.BRACKET]
+
+        self.assertEqual(len(bracket_orders), 1)
+        # All bracket orders use -bracket-{i} format
+        self.assertTrue(bracket_orders[0].order_uuid.endswith('-bracket-0'))
 
 
 if __name__ == '__main__':

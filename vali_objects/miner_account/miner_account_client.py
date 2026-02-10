@@ -73,7 +73,8 @@ class MinerAccountClient(RPCClientBase):
         self,
         hotkey: str,
         collateral_balance_theta: float,
-        timestamp_ms: Optional[int] = None
+        timestamp_ms: Optional[int] = None,
+        account_size: float = None
     ) -> Optional[Dict[str, Any]]:
         """
         Set the account size for a miner.
@@ -82,12 +83,42 @@ class MinerAccountClient(RPCClientBase):
             hotkey: Miner's hotkey (SS58 address)
             collateral_balance_theta: Collateral balance in theta tokens
             timestamp_ms: Timestamp for the record (defaults to now)
+            account_size: Optional USD account size. If not provided, calculated from collateral balance
 
         Returns:
             CollateralRecord as dict if successful, None otherwise.
             Dict contains: account_size, account_size_theta, update_time_ms, valid_date_timestamp
         """
-        return self._server.set_miner_account_size(hotkey, collateral_balance_theta, timestamp_ms)
+        return self._server.set_miner_account_size(hotkey, collateral_balance_theta, timestamp_ms, account_size)
+
+    def delete_miner_account_size(self, hotkey: str) -> bool:
+        """
+        Delete the account size for a miner.
+
+        This allows rollback when subaccount creation fails.
+
+        Args:
+            hotkey: Miner's hotkey (SS58 address)
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        return self._server.delete_miner_account_size(hotkey)
+
+    def reset_account_fields(self, hotkey: str) -> bool:
+        """
+        Reset account fields for a miner.
+
+        Resets: total_realized_pnl, capital_used, total_borrowed_amount,
+        total_interest_paid, and last_interest_date_ms to zero/None.
+
+        Args:
+            hotkey: Miner's hotkey (SS58 address)
+
+        Returns:
+            bool: True if successful, False if account doesn't exist
+        """
+        return self._server.reset_account_fields(hotkey)
 
     def get_miner_account_size(
         self,
@@ -128,9 +159,9 @@ class MinerAccountClient(RPCClientBase):
         """Reload account sizes from disk."""
         self._server.re_init_account_sizes()
 
-    def receive_collateral_record_update(self, collateral_record_data: dict) -> bool:
+    def receive_collateral_record_update(self, collateral_record_data: dict, sender_hotkey: str=None) -> bool:
         """Process an incoming CollateralRecord synapse."""
-        return self._server.receive_collateral_record_update(collateral_record_data)
+        return self._server.receive_collateral_record_update(collateral_record_data, sender_hotkey)
 
     # ==================== MinerAccount Cache Methods ====================
 

@@ -60,6 +60,7 @@ class Position(BaseModel):
     position_type: Optional[OrderType] = None
     is_closed_position: bool = False
     last_stock_split_date: Optional[str] = None  # Only set for equities
+    unfilled_orders: list = Field(default=[], exclude=True)
 
     @model_validator(mode='before')
     def add_trade_pair_to_orders_and_self(cls, values):
@@ -270,6 +271,24 @@ class Position(BaseModel):
     @property
     def is_open_position(self):
         return not self.is_closed_position
+
+    def add_unfilled_order(self, order_dict: dict) -> None:
+        """Add an unfilled bracket order dict to this position."""
+        existing_uuids = {o.get('order_uuid') for o in self.unfilled_orders}
+        if order_dict.get('order_uuid') not in existing_uuids:
+            self.unfilled_orders.append(order_dict)
+
+    def remove_unfilled_order(self, order_uuid: str) -> bool:
+        """Remove an unfilled order by UUID. Returns True if found."""
+        for i, order_dict in enumerate(self.unfilled_orders):
+            if order_dict.get('order_uuid') == order_uuid:
+                self.unfilled_orders.pop(i)
+                return True
+        return False
+
+    def clear_unfilled_orders(self) -> None:
+        """Clear all unfilled orders."""
+        self.unfilled_orders = []
 
     def newest_order_age_ms(self, now_ms):
         if len(self.orders) > 0:
@@ -498,7 +517,7 @@ class Position(BaseModel):
             self.close_out_position(time_ms)
 
     @staticmethod
-    def generate_fake_flat_order(position, elimination_time_ms, price_fetcher_client, extra_price_source=None):
+    def generate_fake_flat_order(position, elimination_time_ms, price_fetcher_client, extra_price_source=None, src=None):
         fake_flat_order_time = elimination_time_ms
         price_source = price_fetcher_client.get_close_at_date(
             trade_pair=position.trade_pair,
@@ -514,13 +533,17 @@ class Position(BaseModel):
                 order_type=OrderType.FLAT,
                 position=position
             )
-            src = OrderSource.PRICE_FILLED_ELIMINATION_FLAT
+            # Use provided src or default to PRICE_FILLED_ELIMINATION_FLAT
+            if src is None:
+                src = OrderSource.PRICE_FILLED_ELIMINATION_FLAT
         else:
             bt.logging.warning(f'Unexpectedly unable to fetch price for trade pair {position.trade_pair.trade_pair_id}'
                                f' at time {TimeUtil.millis_to_formatted_date_str(elimination_time_ms)} during fake flat order'
                                f'creation. Setting price to 0. and src to OrderSource.ELIMINATION_FLAT')
             price = 0
-            src = OrderSource.ELIMINATION_FLAT
+            # Use provided src or default to ELIMINATION_FLAT
+            if src is None:
+                src = OrderSource.ELIMINATION_FLAT
 
 
         flat_order = Order(price=price,

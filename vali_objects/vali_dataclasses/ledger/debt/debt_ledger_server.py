@@ -35,7 +35,7 @@ class DebtLedgerServer(RPCServerBase):
 
     def __init__(self, slack_webhook_url=None, running_unit_tests=False,
                  validator_hotkey=None, start_server=True, start_daemon=True,
-                 is_backtesting=False, connection_mode=RPCConnectionMode.RPC):
+                 is_backtesting=False, is_mainnet=True, connection_mode=RPCConnectionMode.RPC):
         """
         Initialize the server with RPC infrastructure.
 
@@ -55,6 +55,7 @@ class DebtLedgerServer(RPCServerBase):
             slack_webhook_url=slack_webhook_url,
             running_unit_tests=running_unit_tests,
             validator_hotkey=validator_hotkey,
+            is_mainnet=is_mainnet,
             connection_mode=connection_mode
         )
 

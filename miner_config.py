@@ -12,6 +12,10 @@ class MinerConfig:
     DASHBOARD_API_PORT = 41511
     BASE_DIR = base_directory = BASE_DIR
 
+    # Miner API Server configuration
+    MINER_REST_HOST = "0.0.0.0"
+    MINER_REST_PORT = 8088
+
     @staticmethod
     def get_miner_received_signals_dir() -> str:
         return ValiConfig.BASE_DIR + "/mining/received_signals/"
@@ -27,3 +31,8 @@ class MinerConfig:
     @staticmethod
     def get_position_file_location() -> str:
         return ValiConfig.BASE_DIR + f"/mining/positions.json"
+
+    @staticmethod
+    def get_secrets_file_path() -> str:
+        """Get path to miner API keys file."""
+        return ValiConfig.BASE_DIR + "/mining/miner_secrets.json"

@@ -28,6 +28,7 @@ from typing import Dict, List, Optional
 from shared_objects.rpc.rpc_client_base import RPCClientBase
 from time_util.time_util import TimeUtil
 from vali_objects.decoders.generalized_json_decoder import GeneralizedJSONDecoder
+from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.position_management.position_utils.position_filtering import PositionFiltering
 from vali_objects.position_management.position_manager import PositionManager
@@ -113,6 +114,10 @@ class PositionManagerClient(RPCClientBase):
             # This is safe because we're only modifying the dict, not the position object
             if position_dict.get('close_ms') is None:
                 position_dict['close_ms'] = 0
+
+            # Add unfilled_orders for API response (excluded from disk serialization)
+            if p.unfilled_orders:
+                position_dict['unfilled_orders'] = p.unfilled_orders
 
             ans["positions"].append(position_dict)
         return ans
@@ -463,6 +468,32 @@ class PositionManagerClient(RPCClientBase):
         """
         return self._server.close_open_orders_for_suspended_trade_pairs_rpc(live_price_fetcher)
 
+    def close_all_positions(
+        self,
+        hotkey: str,
+        close_time_ms: int,
+        order_source: "OrderSource",
+        live_price_fetcher=None
+    ) -> int:
+        """
+        Close all open positions for a specific hotkey.
+
+        Args:
+            hotkey: Hotkey whose positions should be closed
+            close_time_ms: Timestamp for closing positions
+            order_source: OrderSource enum value (e.g., SUBACCOUNT_PROMOTION)
+            live_price_fetcher: Optional price fetcher for accurate closing prices
+
+        Returns:
+            int: Number of positions successfully closed
+        """
+        return self._server.close_all_positions_rpc(
+            hotkey=hotkey,
+            close_time_ms=close_time_ms,
+            order_source=order_source,  # Pass as int for RPC
+            live_price_fetcher=live_price_fetcher
+        )
+
     # ==================== Pre-run Setup Methods ====================
 
     def pre_run_setup(self, perform_order_corrections: bool = True) -> List[str]:
@@ -478,3 +509,33 @@ class PositionManagerClient(RPCClientBase):
             (caller is responsible for updating perf ledgers)
         """
         return self._server.pre_run_setup_rpc(perform_order_corrections)
+
+    # ==================== Bracket Order Attachment Methods ====================
+
+    def attach_bracket_order_to_position(self, miner_hotkey: str, trade_pair_id: str, order_dict: dict) -> bool:
+        """
+        Attach a bracket order to a position.
+
+        Args:
+            miner_hotkey: The miner's hotkey
+            trade_pair_id: The trade pair ID
+            order_dict: The order as a dictionary
+
+        Returns:
+            True if successfully attached, False if no open position found
+        """
+        return self._server.attach_bracket_order_to_position_rpc(miner_hotkey, trade_pair_id, order_dict)
+
+    def remove_bracket_order_from_position(self, miner_hotkey: str, trade_pair_id: str, order_uuid: str) -> bool:
+        """
+        Remove a bracket order from a position.
+
+        Args:
+            miner_hotkey: The miner's hotkey
+            trade_pair_id: The trade pair ID
+            order_uuid: The UUID of the order to remove
+
+        Returns:
+            True if found and removed, False otherwise
+        """
+        return self._server.remove_bracket_order_from_position_rpc(miner_hotkey, trade_pair_id, order_uuid)

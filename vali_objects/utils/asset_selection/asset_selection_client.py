@@ -142,6 +142,21 @@ class AssetSelectionClient(RPCClientBase):
         """
         return self._server.process_asset_selection_request_rpc(asset_selection, miner)
 
+    def delete_asset_selection(self, hotkey: str) -> Dict[str, str]:
+        """
+        Delete an asset selection for a miner.
+
+        This allows the hotkey to select a new asset class, useful for
+        rollback scenarios when operations fail.
+
+        Args:
+            hotkey: The miner's hotkey to delete
+
+        Returns:
+            Dict containing success status and message
+        """
+        return self._server.delete_asset_selection_rpc(hotkey)
+
     def sync_miner_asset_selection_data(self, asset_selection_data: Dict[str, str]) -> None:
         """
         Sync miner asset selection data from external source (backup/sync).

@@ -230,7 +230,7 @@ class TestDebtBasedScoring(TestBase):
             ledgers,
             self.metagraph_client,
             self.challengeperiod_client,
-            self.contract_client,
+            self.miner_account_client,
             current_time_ms=current_time_ms,
             is_testnet=False
         )
@@ -300,7 +300,7 @@ class TestDebtBasedScoring(TestBase):
             ledgers,
             self.metagraph_client,
             self.challengeperiod_client,
-            self.contract_client,
+            self.miner_account_client,
             current_time_ms=current_time_ms,
             is_testnet=False,
             verbose=True
@@ -368,7 +368,7 @@ class TestDebtBasedScoring(TestBase):
             {"test_hotkey_1": ledger1, "test_hotkey_2": ledger2},
             self.metagraph_client,
             self.challengeperiod_client,
-            self.contract_client,
+            self.miner_account_client,
             current_time_ms=current_time_ms,
             is_testnet=False
         )
@@ -427,7 +427,7 @@ class TestDebtBasedScoring(TestBase):
             {"test_hotkey_1": ledger1, "test_hotkey_2": ledger2},
             self.metagraph_client,
             self.challengeperiod_client,
-            self.contract_client,
+            self.miner_account_client,
             current_time_ms=current_time_ms,
             is_testnet=True  # TESTNET
         )
@@ -490,7 +490,7 @@ class TestDebtBasedScoring(TestBase):
             ledgers,
             self.metagraph_client,
             self.challengeperiod_client,
-            self.contract_client,
+            self.miner_account_client,
             current_time_ms=current_time_ms,
             is_testnet=False,
             verbose=True
@@ -548,7 +548,7 @@ class TestDebtBasedScoring(TestBase):
             ledgers,
             self.metagraph_client,
             self.challengeperiod_client,
-            self.contract_client,
+            self.miner_account_client,
             current_time_ms=current_time_ms,
             is_testnet=False
         )
@@ -569,7 +569,7 @@ class TestDebtBasedScoring(TestBase):
         days_until_target = 10
 
         projected_alpha = DebtBasedScoring._estimate_alpha_emissions_until_target(
-            metagraph=self.metagraph_client,
+            metagraph_client=self.metagraph_client,
             days_until_target=days_until_target,
             verbose=True
         )
@@ -609,7 +609,7 @@ class TestDebtBasedScoring(TestBase):
             {"test_hotkey": ledger},
             self.metagraph_client,
             self.challengeperiod_client,
-            self.contract_client,
+            self.miner_account_client,
             current_time_ms=current_time_ms_day1,
             is_testnet=False,
             verbose=True
@@ -629,7 +629,7 @@ class TestDebtBasedScoring(TestBase):
             {"test_hotkey": ledger},
             self.metagraph_client,
             self.challengeperiod_client,
-            self.contract_client,
+            self.miner_account_client,
             current_time_ms=current_time_ms_day23,
             is_testnet=False,
             verbose=True
@@ -679,7 +679,7 @@ class TestDebtBasedScoring(TestBase):
             {"test_hotkey": ledger},
             self.metagraph_client,
             self.challengeperiod_client,
-            self.contract_client,
+            self.miner_account_client,
             current_time_ms=current_time_ms,
             is_testnet=False,
             verbose=True
@@ -798,7 +798,7 @@ class TestDebtBasedScoring(TestBase):
                 ledgers,
                 self.metagraph_client,
                 self.challengeperiod_client,
-                self.contract_client,
+                self.miner_account_client,
                 current_time_ms=current_time_ms,
                 is_testnet=False,
                 verbose=False
@@ -970,7 +970,7 @@ class TestDebtBasedScoring(TestBase):
             ledgers,
             self.metagraph_client,
             self.challengeperiod_client,
-            self.contract_client,
+            self.miner_account_client,
             current_time_ms=current_time_ms,
             is_testnet=False,
             verbose=True
@@ -1117,7 +1117,7 @@ class TestDebtBasedScoring(TestBase):
             ledgers,
             self.metagraph_client,
             self.challengeperiod_client,
-            self.contract_client,
+            self.miner_account_client,
             current_time_ms=current_time_ms,
             is_testnet=False,
             verbose=True
@@ -1208,7 +1208,7 @@ class TestDebtBasedScoring(TestBase):
             ledgers,
             self.metagraph_client,
             self.challengeperiod_client,
-            self.contract_client,
+            self.miner_account_client,
             current_time_ms=current_time_ms,
             is_testnet=False,
             verbose=True
@@ -1307,7 +1307,7 @@ class TestDebtBasedScoring(TestBase):
             ledgers,
             self.metagraph_client,
             self.challengeperiod_client,
-            self.contract_client,
+            self.miner_account_client,
             current_time_ms=current_time_ms,
             is_testnet=False,
             verbose=True
@@ -1401,7 +1401,7 @@ class TestDebtBasedScoring(TestBase):
             ledgers,
             self.metagraph_client,
             self.challengeperiod_client,
-            self.contract_client,
+            self.miner_account_client,
             current_time_ms=current_time_ms,
             is_testnet=False,
             verbose=True
@@ -1465,7 +1465,7 @@ class TestDebtBasedScoring(TestBase):
             ledgers,
             self.metagraph_client,
             self.challengeperiod_client,
-            self.contract_client,
+            self.miner_account_client,
             current_time_ms=current_time_ms,
             is_testnet=False,
             verbose=True
@@ -1536,7 +1536,7 @@ class TestDebtBasedScoring(TestBase):
             ledgers,
             self.metagraph_client,
             self.challengeperiod_client,
-            self.contract_client,
+            self.miner_account_client,
             current_time_ms=current_time_ms,
             is_testnet=False,
             verbose=True
@@ -1614,7 +1614,7 @@ class TestDebtBasedScoring(TestBase):
             ledgers,
             self.metagraph_client,
             self.challengeperiod_client,
-            self.contract_client,
+            self.miner_account_client,
             current_time_ms=current_time_ms,
             is_testnet=False,
             verbose=True
@@ -1711,7 +1711,7 @@ class TestDebtBasedScoring(TestBase):
             ledgers,
             self.metagraph_client,
             self.challengeperiod_client,
-            self.contract_client,
+            self.miner_account_client,
             current_time_ms=current_time_ms,
             is_testnet=False,
             verbose=True
@@ -1728,70 +1728,6 @@ class TestDebtBasedScoring(TestBase):
 
         # Miner with no penalty should have higher weight
         self.assertGreater(weights_dict["no_penalty"], weights_dict["with_penalty"])
-
-    # ========================================================================
-    # CALCULATE_DYNAMIC_DUST UNIT TESTS
-    # ========================================================================
-
-    def test_calculate_dynamic_dust_success(self):
-        """Test successful dynamic dust calculation with valid metagraph data"""
-        dust = DebtBasedScoring.calculate_dynamic_dust(
-            metagraph=self.metagraph_client,
-            target_daily_usd=0.01,
-            verbose=True
-        )
-
-        expected_dust = 0.00004 / 144000.0  # 2.777...e-10
-        self.assertAlmostEqual(dust, expected_dust, places=12)
-
-        # Verify dust is in reasonable range
-        self.assertGreater(dust, 0)
-        self.assertLess(dust, 0.001)
-
-    def test_calculate_dynamic_dust_different_target_amounts(self):
-        """Test that dynamic dust scales linearly with target amount"""
-        # Calculate dust for $0.01
-        dust_1_cent = DebtBasedScoring.calculate_dynamic_dust(
-            metagraph=self.metagraph_client,
-            target_daily_usd=0.01,
-            verbose=False
-        )
-
-        # Calculate dust for $0.02 (should be exactly 2x)
-        dust_2_cent = DebtBasedScoring.calculate_dynamic_dust(
-            metagraph=self.metagraph_client,
-            target_daily_usd=0.02,
-            verbose=False
-        )
-
-        # Should be exactly 2x
-        self.assertAlmostEqual(dust_2_cent / dust_1_cent, 2.0, places=10)
-
-    def test_calculate_dynamic_dust_market_responsive(self):
-        """Test that dust adjusts when TAO price changes"""
-        # Calculate with $500/TAO (default)
-        dust_high_price = DebtBasedScoring.calculate_dynamic_dust(
-            metagraph=self.metagraph_client,
-            target_daily_usd=0.01,
-            verbose=False
-        )
-
-        # Change TAO price to $250 (half the price)
-        self.metagraph_client.update_metagraph(tao_to_usd_rate=250.0)
-
-        dust_low_price = DebtBasedScoring.calculate_dynamic_dust(
-            metagraph=self.metagraph_client,
-            target_daily_usd=0.01,
-            verbose=False
-        )
-
-        # Lower TAO price means need more ALPHA for same USD amount
-        # So dust weight should be higher (approximately 2x)
-        self.assertGreater(dust_low_price, dust_high_price)
-        self.assertAlmostEqual(dust_low_price / dust_high_price, 2.0, places=1)
-
-        # Restore original price for other tests
-        self.metagraph_client.update_metagraph(tao_to_usd_rate=500.0)
 
     # ========================================================================
     # CHALLENGE BUCKET TESTS (Bottom 25% get 0 weight, capped at 10 miners)
@@ -1969,7 +1905,7 @@ class TestDebtBasedScoring(TestBase):
             },
             self.metagraph_client,
             self.challengeperiod_client,
-            self.contract_client,
+            self.miner_account_client,
             current_time_ms=current_time_ms,
             is_testnet=False
         )
@@ -2268,158 +2204,3 @@ class TestDebtBasedScoring(TestBase):
                          "Miner at threshold should have non-zero weight")
         self.assertGreater(miner_weights["miner_4"], 0.0,
                          "Miner at threshold should have non-zero weight")
-
-    # ========================================================================
-    # CALCULATE_DYNAMIC_DUST ERROR/FALLBACK TESTS
-    # ========================================================================
-
-    def test_calculate_dynamic_dust_zero_reserves(self):
-        """Test fallback when reserves are zero"""
-        # Set reserves to zero
-        self.metagraph_client.update_metagraph(
-            tao_reserve_rao=0.0,
-            alpha_reserve_rao=0.0
-        )
-
-        dust = DebtBasedScoring.calculate_dynamic_dust(
-            metagraph=self.metagraph_client,
-            target_daily_usd=0.01,
-            verbose=False
-        )
-
-        self.assertEqual(dust, ValiConfig.CHALLENGE_PERIOD_MIN_WEIGHT)
-
-    def test_calculate_dynamic_dust_invalid_alpha_to_tao_rate(self):
-        """Test fallback when ALPHA-to-TAO rate is > 1.0"""
-        # Set reserves so alpha_to_tao_rate > 1.0 (invalid)
-        # alpha_to_tao_rate = tao_reserve / alpha_reserve
-        # To get > 1.0: tao_reserve > alpha_reserve
-        self.metagraph_client.update_metagraph(
-            tao_reserve_rao=2_000_000 * 1e9,  # 2M TAO
-            alpha_reserve_rao=1_000_000 * 1e9  # 1M ALPHA (rate = 2.0, invalid)
-        )
-
-        dust = DebtBasedScoring.calculate_dynamic_dust(
-            metagraph=self.metagraph_client,
-            target_daily_usd=0.01,
-            verbose=False
-        )
-
-        self.assertEqual(dust, ValiConfig.CHALLENGE_PERIOD_MIN_WEIGHT)
-
-    def test_calculate_dynamic_dust_zero_tao_usd_price(self):
-        """Test fallback when TAO/USD price is zero"""
-        # Set TAO price to zero
-        self.metagraph_client.update_metagraph(tao_to_usd_rate=0.0)
-
-        dust = DebtBasedScoring.calculate_dynamic_dust(
-            metagraph=self.metagraph_client,
-            target_daily_usd=0.01,
-            verbose=False
-        )
-
-        self.assertEqual(dust, ValiConfig.CHALLENGE_PERIOD_MIN_WEIGHT)
-
-    def test_calculate_dynamic_dust_negative_tao_usd_price(self):
-        """Test fallback when TAO/USD price is negative"""
-        # Set TAO price to negative
-        self.metagraph_client.update_metagraph(tao_to_usd_rate=-100.0)
-
-        dust = DebtBasedScoring.calculate_dynamic_dust(
-            metagraph=self.metagraph_client,
-            target_daily_usd=0.01,
-            verbose=False
-        )
-
-        self.assertEqual(dust, ValiConfig.CHALLENGE_PERIOD_MIN_WEIGHT)
-
-    def test_calculate_dynamic_dust_tao_price_out_of_range_low(self):
-        """Test fallback when TAO/USD price is below $1"""
-        # Set TAO price below $1
-        self.metagraph_client.update_metagraph(tao_to_usd_rate=0.5)
-
-        dust = DebtBasedScoring.calculate_dynamic_dust(
-            metagraph=self.metagraph_client,
-            target_daily_usd=0.01,
-            verbose=False
-        )
-
-        self.assertEqual(dust, ValiConfig.CHALLENGE_PERIOD_MIN_WEIGHT)
-
-    def test_calculate_dynamic_dust_tao_price_out_of_range_high(self):
-        """Test fallback when TAO/USD price is above $10,000"""
-        # Set TAO price above $10,000
-        self.metagraph_client.update_metagraph(tao_to_usd_rate=15000.0)
-
-        dust = DebtBasedScoring.calculate_dynamic_dust(
-            metagraph=self.metagraph_client,
-            target_daily_usd=0.01,
-            verbose=False
-        )
-
-        self.assertEqual(dust, ValiConfig.CHALLENGE_PERIOD_MIN_WEIGHT)
-
-    def test_calculate_dynamic_dust_weight_exceeds_maximum(self):
-        """Test fallback when calculated dust weight exceeds 0.001"""
-        # Set very low emissions to create high dust weight (> 0.001)
-        # With emission = [0.0005], dust will be 0.002 which exceeds 0.001
-        self.metagraph_client.update_metagraph(
-            hotkeys=["test_miner"],
-            emission=[0.0005]  # Extremely low to create dust > 0.001
-        )
-
-        dust = DebtBasedScoring.calculate_dynamic_dust(
-            metagraph=self.metagraph_client,
-            target_daily_usd=0.01,
-            verbose=False
-        )
-
-        self.assertEqual(dust, ValiConfig.CHALLENGE_PERIOD_MIN_WEIGHT)
-
-    def test_calculate_dynamic_dust_emission_none(self):
-        """Test fallback when emission is empty"""
-        # Set emission to empty list (equivalent to None/no emissions)
-        self.metagraph_client.update_metagraph(
-            hotkeys=[],
-            emission=[]
-        )
-
-        dust = DebtBasedScoring.calculate_dynamic_dust(
-            metagraph=self.metagraph_client,
-            target_daily_usd=0.01,
-            verbose=False
-        )
-
-        self.assertEqual(dust, ValiConfig.CHALLENGE_PERIOD_MIN_WEIGHT)
-
-    def test_calculate_dynamic_dust_zero_emissions(self):
-        """Test fallback when total emissions are zero"""
-        # Set all emissions to zero
-        self.metagraph_client.update_metagraph(
-            hotkeys=[f"miner_{i}" for i in range(10)],
-            emission=[0] * 10
-        )
-
-        dust = DebtBasedScoring.calculate_dynamic_dust(
-            metagraph=self.metagraph_client,
-            target_daily_usd=0.01,
-            verbose=False
-        )
-
-        self.assertEqual(dust, ValiConfig.CHALLENGE_PERIOD_MIN_WEIGHT)
-
-    def test_calculate_dynamic_dust_negative_emissions(self):
-        """Test fallback when total emissions are negative"""
-        # Set emissions to negative values (shouldn't happen but test fallback)
-        self.metagraph_client.update_metagraph(
-            hotkeys=["miner_0"],
-            emission=[-100]
-        )
-
-        dust = DebtBasedScoring.calculate_dynamic_dust(
-            metagraph=self.metagraph_client,
-            target_daily_usd=0.01,
-            verbose=False
-        )
-
-        self.assertEqual(dust, ValiConfig.CHALLENGE_PERIOD_MIN_WEIGHT)

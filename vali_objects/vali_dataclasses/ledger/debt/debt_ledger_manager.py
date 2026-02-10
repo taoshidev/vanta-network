@@ -12,6 +12,7 @@ from time_util.time_util import TimeUtil
 from vali_objects.utils.vali_bkp_utils import CustomEncoder
 from vali_objects.vali_config import RPCConnectionMode
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger import DebtLedger, DebtCheckpoint
+from entity_management import entity_utils
 
 
 class DebtLedgerManager():
@@ -28,7 +29,7 @@ class DebtLedgerManager():
     DEFAULT_CHECK_INTERVAL_SECONDS = 3600 * 12  # 12 hours
 
     def __init__(self, slack_webhook_url=None, running_unit_tests=False,
-                 validator_hotkey=None, connection_mode: RPCConnectionMode = RPCConnectionMode.RPC):
+                 validator_hotkey=None, is_mainnet=True, connection_mode: RPCConnectionMode = RPCConnectionMode.RPC):
         """
         Initialize the manager with a normal Python dict for debt ledgers.
 
@@ -63,6 +64,21 @@ class DebtLedgerManager():
         from vali_objects.contract.contract_client import ContractClient
         self._contract_client = ContractClient(running_unit_tests=running_unit_tests)
 
+        # Create EntityClient for entity miner aggregation
+        from entity_management.entity_client import EntityClient
+        self._entity_client = EntityClient(
+            connection_mode=connection_mode,
+            running_unit_tests=running_unit_tests,
+            connect_immediately=False
+        )
+
+        # Create ChallengePeriodClient for getting entity bucket status
+        from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
+        self._challengeperiod_client = ChallengePeriodClient(
+            running_unit_tests=running_unit_tests,
+            connection_mode=connection_mode
+        )
+
         # IMPORTANT: PenaltyLedgerManager runs WITHOUT its own daemon process (run_daemon=False)
         # because DebtLedgerServer itself is already a daemon process, and daemon processes
         # cannot spawn child processes. The DebtLedgerServer daemon thread calls
@@ -84,6 +100,7 @@ class DebtLedgerManager():
 
         self.slack_notifier = SlackNotifier(webhook_url=slack_webhook_url, hotkey=validator_hotkey)
         self.running_unit_tests = running_unit_tests
+        self.is_mainnet = is_mainnet
 
         # Cache for pre-compressed debt ledgers (updated on each build)
         # Stores gzip-compressed JSON bytes for instant RPC access
@@ -149,7 +166,8 @@ class DebtLedgerManager():
             'portfolio_return': ledger.get_current_portfolio_return(),
             'weighted_score': ledger.get_current_weighted_score(),
             'latest_checkpoint_ms': latest.timestamp_ms,
-            'net_pnl': latest.net_pnl,
+            'realized_pnl': latest.realized_pnl,
+            'unrealized_pnl': latest.unrealized_pnl,
             'total_fees': latest.total_fees,
         }
 
@@ -539,8 +557,17 @@ class DebtLedgerManager():
                 if emissions_ledger:
                     emissions_checkpoint = emissions_ledger.get_checkpoint_at_time(miner_perf_checkpoint.last_update_ms, target_cp_duration_ms)
 
-                # Skip if we don't have both penalty and emissions data
-                if not penalty_checkpoint or not emissions_checkpoint:
+                # Check if this is a synthetic hotkey (subaccount)
+                is_subaccount = entity_utils.is_synthetic_hotkey(hotkey)
+
+                # Skip if we don't have penalty data
+                if not penalty_checkpoint:
+                    hotkeys_missing_data.append(hotkey)
+                    continue
+
+                # For non-synthetic hotkeys (regular miners, entity hotkeys), mainnet emissions are required
+                # For synthetic hotkeys (subaccounts), emissions are optional (they don't receive on-chain emissions)
+                if self.is_mainnet and not emissions_checkpoint and not is_subaccount:
                     hotkeys_missing_data.append(hotkey)
                     continue
 
@@ -561,7 +588,8 @@ class DebtLedgerManager():
                         )
                     continue
 
-                if emissions_checkpoint.chunk_end_ms != miner_perf_checkpoint.last_update_ms:
+                # Only validate emissions timestamp if we have an emissions checkpoint
+                if emissions_checkpoint and emissions_checkpoint.chunk_end_ms != miner_perf_checkpoint.last_update_ms:
                     if verbose:
                         bt.logging.warning(
                             f"Emissions checkpoint end time mismatch for {hotkey}: "
@@ -588,16 +616,37 @@ class DebtLedgerManager():
 
                 # Create unified debt checkpoint combining all three sources
                 # CRITICAL: Use miner_perf_checkpoint (this miner's data), not perf_checkpoint (reference miner's data)
+
+                # Handle emissions data - use zero values for synthetic hotkeys (subaccounts)
+                if emissions_checkpoint and self.is_mainnet:
+                    chunk_emissions_alpha = emissions_checkpoint.chunk_emissions
+                    chunk_emissions_tao = emissions_checkpoint.chunk_emissions_tao
+                    chunk_emissions_usd = emissions_checkpoint.chunk_emissions_usd
+                    avg_alpha_to_tao_rate = emissions_checkpoint.avg_alpha_to_tao_rate
+                    avg_tao_to_usd_rate = emissions_checkpoint.avg_tao_to_usd_rate
+                    tao_balance_snapshot = emissions_checkpoint.tao_balance_snapshot
+                    alpha_balance_snapshot = emissions_checkpoint.alpha_balance_snapshot
+                else:
+                    # Synthetic hotkeys (subaccounts) and testnet have zero emissions and zero rates
+                    # Entity's real emissions will replace these during aggregation
+                    chunk_emissions_alpha = 0.0
+                    chunk_emissions_tao = 0.0
+                    chunk_emissions_usd = 0.0
+                    avg_alpha_to_tao_rate = 0.0
+                    avg_tao_to_usd_rate = 0.0
+                    tao_balance_snapshot = 0.0
+                    alpha_balance_snapshot = 0.0
+
                 debt_checkpoint = DebtCheckpoint(
                     timestamp_ms=miner_perf_checkpoint.last_update_ms,
                     # Emissions data (chunk only - cumulative calculated by summing)
-                    chunk_emissions_alpha=emissions_checkpoint.chunk_emissions,
-                    chunk_emissions_tao=emissions_checkpoint.chunk_emissions_tao,
-                    chunk_emissions_usd=emissions_checkpoint.chunk_emissions_usd,
-                    avg_alpha_to_tao_rate=emissions_checkpoint.avg_alpha_to_tao_rate,
-                    avg_tao_to_usd_rate=emissions_checkpoint.avg_tao_to_usd_rate,
-                    tao_balance_snapshot=emissions_checkpoint.tao_balance_snapshot,
-                    alpha_balance_snapshot=emissions_checkpoint.alpha_balance_snapshot,
+                    chunk_emissions_alpha=chunk_emissions_alpha,
+                    chunk_emissions_tao=chunk_emissions_tao,
+                    chunk_emissions_usd=chunk_emissions_usd,
+                    avg_alpha_to_tao_rate=avg_alpha_to_tao_rate,
+                    avg_tao_to_usd_rate=avg_tao_to_usd_rate,
+                    tao_balance_snapshot=tao_balance_snapshot,
+                    alpha_balance_snapshot=alpha_balance_snapshot,
                     # Performance data - access attributes directly from THIS MINER'S PerfCheckpoint
                     portfolio_return=miner_perf_checkpoint.gain,  # Current portfolio multiplier
                     realized_pnl=miner_perf_checkpoint.realized_pnl,  # Realized PnL during this checkpoint period
@@ -658,3 +707,196 @@ class DebtLedgerManager():
             f"{len(self.debt_ledgers)} hotkeys tracked "
             f"(target_cp_duration_ms: {target_cp_duration_ms}ms)"
         )
+
+        # Aggregate entity debt ledgers after build completes
+        bt.logging.info("Aggregating entity debt ledgers...")
+        self.aggregate_entity_debt_ledgers(target_cp_duration_ms, verbose=verbose)
+
+    def aggregate_entity_debt_ledgers(self, target_cp_duration_ms: int, verbose: bool = False):
+        """
+        Aggregate debt ledgers from all active subaccounts under their entity hotkeys.
+
+        This method should be called after build_debt_ledgers() completes to ensure
+        all subaccount ledgers are up-to-date before aggregation.
+
+        For each entity:
+        - Get all active subaccounts
+        - Aggregate their debt ledgers timestamp by timestamp
+        - Store aggregated ledger under entity_hotkey
+
+        Aggregation rules:
+        - Sum: emissions, realized PnL, fees, open_ms, n_updates, balances
+        - Weighted average: portfolio_return (weighted by max_portfolio_value)
+        - Worst case: max_drawdown (take minimum)
+        - Max: max_portfolio_value (sum across subaccounts)
+        - Ignore: penalties, unrealized pnl
+
+        Args:
+            target_cp_duration_ms: Target checkpoint duration in milliseconds
+            verbose: Enable detailed logging
+        """
+        try:
+            # Get all registered entities
+            all_entities = self._entity_client.get_all_entities()
+
+            if not all_entities:
+                bt.logging.info("No entities registered - skipping entity aggregation")
+                return
+
+            bt.logging.info(f"Aggregating debt ledgers for {len(all_entities)} entities")
+
+            entity_count = 0
+            for entity_hotkey, entity_data in all_entities.items():
+                # Get active subaccounts for this entity
+                active_subaccounts = [sa for sa in entity_data.get('subaccounts', {}).values()
+                                     if sa.get('status') == 'active']
+
+                if not active_subaccounts:
+                    if verbose:
+                        bt.logging.info(f"Entity {entity_hotkey} has no active subaccounts - skipping")
+                    continue
+
+                # Get debt ledgers for all active subaccounts
+                subaccount_ledgers = []
+                for subaccount in active_subaccounts:
+                    synthetic_hotkey = subaccount.get('synthetic_hotkey')
+                    if not synthetic_hotkey:
+                        continue
+
+                    ledger = self.debt_ledgers.get(synthetic_hotkey)
+                    if ledger and ledger.checkpoints:
+                        subaccount_ledgers.append((synthetic_hotkey, ledger))
+
+                if not subaccount_ledgers:
+                    if verbose:
+                        bt.logging.info(
+                            f"Entity {entity_hotkey} has {len(active_subaccounts)} active subaccounts "
+                            f"but no debt ledgers found - skipping"
+                        )
+                    continue
+
+                # Collect all unique timestamps across all subaccount ledgers
+                all_timestamps = set()
+                for _, ledger in subaccount_ledgers:
+                    for checkpoint in ledger.checkpoints:
+                        all_timestamps.add(checkpoint.timestamp_ms)
+
+                if not all_timestamps:
+                    continue
+
+                # Sort timestamps chronologically
+                sorted_timestamps = sorted(all_timestamps)
+
+                entity_emissions_ledger = self.emissions_ledger_manager.get_ledger(entity_hotkey)
+
+                # Create aggregated checkpoints for each timestamp
+                aggregated_checkpoints = []
+                for timestamp_ms in sorted_timestamps:
+                    # Collect checkpoints from all subaccounts at this timestamp
+                    checkpoints_at_time = []
+                    for synthetic_hotkey, ledger in subaccount_ledgers:
+                        checkpoint = ledger.get_checkpoint_at_time(timestamp_ms, target_cp_duration_ms)
+                        if checkpoint:
+                            checkpoints_at_time.append(checkpoint)
+
+                    if not checkpoints_at_time:
+                        continue
+
+                    # Get entity emissions checkpoint for this timestamp
+                    entity_emissions_cp = entity_emissions_ledger.get_checkpoint_at_time(timestamp_ms, target_cp_duration_ms) if entity_emissions_ledger else None
+
+                    # Aggregate fields across all subaccounts at this timestamp
+                    # Sum additive fields
+                    # Use entity emissions if available, otherwise zero (for newly registered entities)
+                    chunk_emissions_alpha = getattr(entity_emissions_cp, "chunk_emissions", 0.0)
+                    chunk_emissions_tao = getattr(entity_emissions_cp, "chunk_emissions_tao", 0.0)
+                    chunk_emissions_usd = getattr(entity_emissions_cp, "chunk_emissions_usd", 0.0)
+                    alpha_to_tao_rate = getattr(entity_emissions_cp, "avg_alpha_to_tao_rate", 0.0)
+                    tao_to_usd_rate = getattr(entity_emissions_cp, "avg_tao_to_usd_rate", 0.0)
+                    tao_balance = getattr(entity_emissions_cp, "tao_balance_snapshot", 0.0)
+                    alpha_balance = getattr(entity_emissions_cp, "alpha_balance_snapshot", 0.0)
+                    agg_realized_pnl = sum(max(cp.realized_pnl, 0.0) for cp in checkpoints_at_time)     # sum positive realized pnl
+                    agg_unrealized_pnl = 0.0    # ignore unrealized pnl
+                    agg_spread_fee = sum(cp.spread_fee_loss for cp in checkpoints_at_time)
+                    agg_carry_fee = sum(cp.carry_fee_loss for cp in checkpoints_at_time)
+                    agg_max_portfolio_value = sum(cp.max_portfolio_value for cp in checkpoints_at_time)
+                    agg_open_ms = sum(cp.open_ms for cp in checkpoints_at_time)
+                    agg_n_updates = sum(cp.n_updates for cp in checkpoints_at_time)
+
+                    # Weighted average for portfolio_return (weighted by max_portfolio_value)
+                    total_weight = sum(cp.max_portfolio_value for cp in checkpoints_at_time)
+                    if total_weight > 0:
+                        agg_portfolio_return = sum(
+                            cp.portfolio_return * cp.max_portfolio_value
+                            for cp in checkpoints_at_time
+                        ) / total_weight
+                    else:
+                        # If no weight, use simple average
+                        agg_portfolio_return = sum(cp.portfolio_return for cp in checkpoints_at_time) / len(checkpoints_at_time)
+
+                    # Worst case for max_drawdown (minimum = worst drawdown)
+                    agg_max_drawdown = min(cp.max_drawdown for cp in checkpoints_at_time)
+
+                    # Use entity's actual challenge period bucket status, not aggregate of subaccounts
+                    bucket = self._challengeperiod_client.get_miner_bucket(entity_hotkey)
+                    entity_bucket = str(bucket.value) if bucket else "unknown"
+
+                    # Use accum_ms from first checkpoint (should be same for all at this timestamp)
+                    agg_accum_ms = checkpoints_at_time[0].accum_ms
+
+                    # Create aggregated checkpoint
+                    aggregated_checkpoint = DebtCheckpoint(
+                        timestamp_ms=timestamp_ms,
+                        # Emissions
+                        chunk_emissions_alpha=chunk_emissions_alpha,
+                        chunk_emissions_tao=chunk_emissions_tao,
+                        chunk_emissions_usd=chunk_emissions_usd,
+                        avg_alpha_to_tao_rate=alpha_to_tao_rate,
+                        avg_tao_to_usd_rate=tao_to_usd_rate,
+                        tao_balance_snapshot=tao_balance,
+                        alpha_balance_snapshot=alpha_balance,
+                        # Performance
+                        portfolio_return=agg_portfolio_return,
+                        realized_pnl=agg_realized_pnl,
+                        unrealized_pnl=agg_unrealized_pnl,
+                        spread_fee_loss=agg_spread_fee,
+                        carry_fee_loss=agg_carry_fee,
+                        max_drawdown=agg_max_drawdown,
+                        max_portfolio_value=agg_max_portfolio_value,
+                        open_ms=agg_open_ms,
+                        accum_ms=agg_accum_ms,
+                        n_updates=agg_n_updates,
+                        # Penalties (Ignored for entity miner)
+                        drawdown_penalty=1.0,
+                        risk_profile_penalty=1.0,
+                        min_collateral_penalty=1.0,
+                        risk_adjusted_performance_penalty=1.0,
+                        total_penalty=1.0,
+                        challenge_period_status=entity_bucket,
+                    )
+
+                    aggregated_checkpoints.append(aggregated_checkpoint)
+
+                if not aggregated_checkpoints:
+                    continue
+
+                # Create aggregated debt ledger for entity
+                entity_ledger = DebtLedger(entity_hotkey, checkpoints=aggregated_checkpoints)
+
+                # Store in debt_ledgers dict
+                self.debt_ledgers[entity_hotkey] = entity_ledger
+                entity_count += 1
+
+                if verbose:
+                    bt.logging.info(
+                        f"Aggregated {len(aggregated_checkpoints)} checkpoints for entity {entity_hotkey} "
+                        f"from {len(subaccount_ledgers)} active subaccounts"
+                    )
+
+            bt.logging.info(
+                f"Entity aggregation completed: {entity_count} entities aggregated "
+                f"({len(all_entities) - entity_count} skipped with no data)"
+            )
+
+        except Exception as e:
+            bt.logging.error(f"Error aggregating entity debt ledgers: {e}", exc_info=True)

@@ -65,6 +65,11 @@ class ContractServer(RPCServerBase):
             start_server: Whether to start RPC server immediately
             connection_mode: RPC or LOCAL mode
         """
+        # Create mock config if running tests and config not provided
+        if running_unit_tests:
+            from shared_objects.rpc.test_mock_factory import TestMockFactory
+            config = TestMockFactory.create_mock_config_if_needed(config, netuid=116, network="test")
+
         # Create the manager FIRST, before RPCServerBase.__init__
         # This ensures _manager exists before RPC server starts accepting calls (if start_server=True)
         # CRITICAL: Prevents race condition where RPC calls fail with AttributeError during initialization
@@ -97,24 +102,6 @@ class ContractServer(RPCServerBase):
         """Contract server doesn't need a daemon loop."""
         pass
 
-    # ==================== Properties ====================
-
-    @property
-    def vault_wallet(self):
-        """Get vault wallet from manager."""
-        return self._manager.vault_wallet
-
-    @vault_wallet.setter
-    def vault_wallet(self, value):
-        """Set vault wallet on manager."""
-        self._manager.vault_wallet = value
-
-
-    # ==================== Setup Methods ====================
-
-    def load_contract_owner(self):
-        """Load EVM contract owner secrets and vault wallet."""
-        self._manager.load_contract_owner()
 
     # ==================== RPC Methods (exposed to client) ====================
 

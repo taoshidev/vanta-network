@@ -44,6 +44,7 @@ from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLed
 from vali_objects.position_management.position_manager_client import PositionManagerClient
 from vali_objects.vali_dataclasses.price_source import PriceSource
 from shared_objects.rpc.common_data_client import CommonDataClient
+from entity_management.entity_utils import is_synthetic_hotkey
 
 
 # ==================== Elimination Types ====================
@@ -238,7 +239,10 @@ class EliminationManager(CacheController):
         self._position_lock_client = PositionLockClient()
 
         # Create own LimitOrderClient (forward compatibility - no parameter passing)
-        self._limit_order_client = LimitOrderClient(connect_immediately=False)
+        self._limit_order_client = LimitOrderClient(
+            connect_immediately=False,
+            connection_mode=connection_mode
+        )
 
         # Local dicts (no IPC) - much faster!
         self.eliminations: Dict[str, dict] = {}
@@ -531,7 +535,7 @@ class EliminationManager(CacheController):
                 return
             self.first_refresh_ran = True
             # Get snapshot of eliminated hotkeys while holding lock
-            eliminated_hotkeys = set(self.eliminations.keys())
+            eliminated_hotkeys = list(self.eliminations.keys())
 
         # Process outside lock (I/O operations don't need lock)
         hotkey_to_positions = self._position_client.get_positions_for_hotkeys(eliminated_hotkeys,
@@ -591,7 +595,7 @@ class EliminationManager(CacheController):
 
     def is_zombie_hotkey(self, hotkey, all_hotkeys_set):
         """Check if hotkey is a zombie"""
-        if hotkey == ValiConfig.DEVELOPMENT_HOTKEY:
+        if hotkey == ValiConfig.DEVELOPMENT_HOTKEY or is_synthetic_hotkey(hotkey):
             return False
         return hotkey not in all_hotkeys_set
 
