@@ -838,7 +838,8 @@ class DebtLedgerManager():
                     agg_max_drawdown = min(cp.max_drawdown for cp in checkpoints_at_time)
 
                     # Use entity's actual challenge period bucket status, not aggregate of subaccounts
-                    entity_bucket = str(self._challengeperiod_client.get_miner_bucket(entity_hotkey).value)
+                    bucket = self._challengeperiod_client.get_miner_bucket(entity_hotkey)
+                    entity_bucket = str(bucket.value) if bucket else "unknown"
 
                     # Use accum_ms from first checkpoint (should be same for all at this timestamp)
                     agg_accum_ms = checkpoints_at_time[0].accum_ms
