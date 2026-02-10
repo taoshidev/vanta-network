@@ -1620,9 +1620,9 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                     'timestamp': TimeUtil.now_in_millis()
                 }, cls=CustomEncoder)
 
-                response = Response(response_data, content_type='application/json')
+                response = Response(response_data, status=200, content_type='application/json')
                 response.headers['ETag'] = etag
-                return response, 200
+                return response
             else:
                 return jsonify({'error': f'Subaccount {synthetic_hotkey} not found'}), 404
 
