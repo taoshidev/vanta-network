@@ -345,8 +345,8 @@ class BaseRestServer(APIKeyMixin, ABC):
 
         print(f"[REST-INIT] Step 5/9: Contract owner loaded ✓")
 
-        # Flask-Compress removed to prevent double-compression of pre-compressed endpoints
-        # Our critical endpoints (validator-checkpoint, minerstatistics) serve pre-compressed data
+        from flask_compress import Compress
+        Compress(self.app)
 
         print(f"[REST-INIT] Step 6/9: Setting up metrics tracking...")
         # Setup metrics tracking

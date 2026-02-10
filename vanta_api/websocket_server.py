@@ -821,9 +821,9 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                         self.handle_client,
                         self.host,
                         self.port,
+                        compression="deflate",
                         reuse_address=True,  # Allow reuse of the address
                         reuse_port=True  # Allow reuse of the port (on platforms that support it)
-
                     )
                     bt.logging.info(f"WebSocketServer: websockets.serve() completed successfully")
                 except Exception as serve_error:

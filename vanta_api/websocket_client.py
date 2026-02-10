@@ -459,6 +459,7 @@ class VantaWebSocketClient:
                 try:
                     websocket = await websockets.connect(
                         self.uri,
+                        compression="deflate",
                         ping_interval=30,
                         close_timeout=5,  # Give more time for graceful close
                         max_size=None  # No limit on message size
