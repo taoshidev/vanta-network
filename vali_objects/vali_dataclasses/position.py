@@ -5,6 +5,7 @@ from typing import Optional, List
 from pydantic import model_validator, BaseModel, Field
 
 from time_util.time_util import TimeUtil, MS_IN_8_HOURS, MS_IN_24_HOURS
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.enums.order_source_enum import OrderSource
@@ -679,7 +680,7 @@ class Position(BaseModel):
         self.is_closed_position = False
         self.close_ms = None
 
-    def validate_order_size(self, order: Order, net_portfolio_leverage: float) -> None:
+    def validate_order_size(self, order: Order, net_portfolio_leverage: float, bucket=None) -> None:
         """
         Validates that an order's size is within acceptable bounds.
 
@@ -750,6 +751,9 @@ class Position(BaseModel):
         # Get leverage bounds
         min_position_leverage, max_position_leverage = leverage_utils.get_position_leverage_bounds(self.trade_pair)
         max_portfolio_leverage = leverage_utils.get_portfolio_leverage_cap(self.trade_pair.trade_pair_category)
+        if bucket and bucket == MinerBucket.SUBACCOUNT_CHALLENGE:
+            max_portfolio_leverage /= 4
+            max_position_leverage /= 4
 
         # Calculate proposed portfolio leverage (raw leverage since miners only trade one asset class)
         current_leverage = abs(self.net_leverage)

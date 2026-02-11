@@ -48,6 +48,12 @@ class MarketOrderManager():
             connection_mode=connection_mode
         )
 
+        from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
+        self._challenge_period_client = ChallengePeriodClient(
+            connection_mode=connection_mode,
+            running_unit_tests=running_unit_tests
+        )
+
         # Create own PositionLockClient (forward compatibility - no parameter passing)
         from shared_objects.locks.position_lock_client import PositionLockClient
         self._position_lock_client = PositionLockClient(running_unit_tests=running_unit_tests)
@@ -249,8 +255,10 @@ class MarketOrderManager():
         slippage_calc_ms = TimeUtil.now_in_millis() - step_start
         bt.logging.info(f"[ADD_ORDER_DETAIL] Slippage calculation took {slippage_calc_ms}ms")
 
+        current_bucket = self._challenge_period_client.get_miner_bucket(miner_hotkey)
+
         # Validate order before processing cash balance (raises ValueError if invalid)
-        existing_position.validate_order_size(order, net_portfolio_leverage)
+        existing_position.validate_order_size(order, net_portfolio_leverage, bucket=current_bucket)
 
         # Process cash balance after validation passes
         if order.order_type == existing_position.position_type:
