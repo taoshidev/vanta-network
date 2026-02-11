@@ -771,12 +771,11 @@ class Position(BaseModel):
                     f"Proposed: {abs(proposed_leverage):.2f}. Ignoring order.")
 
         # Validate against min limit (when decreasing leverage below minimum)
-        # if abs(proposed_leverage) < min_position_leverage:
-        #     if is_first_order or abs(proposed_leverage) < abs(self.net_leverage):
-        #         raise ValueError(
-        #             f"Miner {self.miner_hotkey} attempted to set {self.trade_pair.trade_pair_id} "
-        #             f"position leverage below min_position_leverage {min_position_leverage}. "
-        #             f"Proposed: {abs(proposed_leverage):.2f}. Ignoring order.")
+        if is_first_order and abs(proposed_leverage) < min_position_leverage:
+            raise ValueError(
+                f"Miner {self.miner_hotkey} attempted to set {self.trade_pair.trade_pair_id} "
+                f"position leverage below min_position_leverage {min_position_leverage}. "
+                f"Proposed: {abs(proposed_leverage):.2f}. Ignoring order.")
 
     def apply_stock_split(self, stock_split_ratio: float, execution_date: str) -> bool:
         """
