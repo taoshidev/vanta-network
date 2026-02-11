@@ -485,6 +485,8 @@ class ValiConfig:
 
     SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR = 4
 
+    SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR = 4
+
     # Collateral limits
     MIN_COLLATERAL_BALANCE_THETA = 300  # Required minimum total collateral balance per miner in Theta. Approx $150k capital account size
     MAX_COLLATERAL_BALANCE_THETA = 1000  # Approx $500k capital account size
