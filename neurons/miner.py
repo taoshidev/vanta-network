@@ -121,6 +121,14 @@ class Miner:
         self.my_subnet_uid = self.metagraph_client.hotkeys.index(self.wallet.hotkey.ss58_address)
         bt.logging.info(f"Running miner on netuid {self.config.netuid} with uid: {self.my_subnet_uid}")
 
+        # Log available validators on startup
+        from vali_objects.vali_config import ValiConfig
+        validators = self.position_inspector.get_possible_validators()
+        validator_hotkeys = [v.hotkey for v in validators]
+        bt.logging.info(f"Found {len(validators)} validators on startup: {validator_hotkeys}")
+        mothership_hotkey = ValiConfig.MOTHERSHIP_HOTKEY_TESTNET if self.is_testnet else ValiConfig.MOTHERSHIP_HOTKEY
+        bt.logging.info(f"Mothership hotkey {mothership_hotkey} in validator list: {mothership_hotkey in validator_hotkeys}")
+
         # Start REST API server (for synchronous order submission)
         if not running_unit_tests:
             bt.logging.info("Starting Miner REST API server...")
