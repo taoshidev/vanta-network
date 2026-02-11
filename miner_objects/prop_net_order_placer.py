@@ -364,13 +364,19 @@ class PropNetOrderPlacer:
 
         # Determine MOTHERSHIP validator hotkey based on network
         mothership_hotkey = ValiConfig.MOTHERSHIP_HOTKEY_TESTNET if self.is_testnet else ValiConfig.MOTHERSHIP_HOTKEY
-        bt.logging.debug(f"Using MOTHERSHIP hotkey: {mothership_hotkey} (testnet={self.is_testnet})")
+        bt.logging.info(f"Using MOTHERSHIP hotkey: {mothership_hotkey} (testnet={self.is_testnet})")
 
         try:
             # Get validators sorted by trust
             hotkey_to_v_trust = {neuron.hotkey: neuron.validator_trust for neuron in self.metagraph_client.get_neurons()}
             axons_to_try = self.position_inspector.get_possible_validators()
             axons_to_try.sort(key=lambda validator: hotkey_to_v_trust[validator.hotkey], reverse=True)
+
+            # Log validators and check for mothership
+            validator_hotkeys = [axon.hotkey for axon in axons_to_try]
+            bt.logging.info(f"Found {len(axons_to_try)} validators to try: {validator_hotkeys}")
+            mothership_in_list = mothership_hotkey in validator_hotkeys
+            bt.logging.info(f"Mothership hotkey {mothership_hotkey} in validator list: {mothership_in_list}")
 
             # Update metrics
             metrics.validators_attempted = len(axons_to_try)
