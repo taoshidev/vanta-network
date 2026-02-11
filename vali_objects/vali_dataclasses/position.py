@@ -770,12 +770,29 @@ class Position(BaseModel):
                     f"{max_position_leverage} for trade pair {self.trade_pair.trade_pair_id}. "
                     f"Proposed: {abs(proposed_leverage):.2f}. Ignoring order.")
 
-        # Validate against min limit (when decreasing leverage below minimum)
-        if is_first_order and abs(proposed_leverage) < min_position_leverage:
-            raise ValueError(
-                f"Miner {self.miner_hotkey} attempted to set {self.trade_pair.trade_pair_id} "
-                f"position leverage below min_position_leverage {min_position_leverage}. "
-                f"Proposed: {abs(proposed_leverage):.2f}. Ignoring order.")
+        # Validate against min position size
+        if self.trade_pair.is_forex:
+            proposed_quantity = self.net_quantity + (order.quantity or 0)
+            proposed_lots = abs(proposed_quantity)
+            if proposed_lots > 0 and proposed_lots < ValiConfig.FOREX_MIN_POSITION_SIZE_LOTS:
+                raise ValueError(
+                    f"Miner {self.miner_hotkey} attempted to set {self.trade_pair.trade_pair_id} "
+                    f"position size below minimum of {ValiConfig.FOREX_MIN_POSITION_SIZE_LOTS} lots. "
+                    f"Proposed: {proposed_lots:.4f} lots. Ignoring order.")
+        elif self.trade_pair.is_crypto:
+            proposed_value = self.net_value + (order.value or 0)
+            if abs(proposed_value) > 0 and abs(proposed_value) < ValiConfig.CRYPTO_MIN_POSITION_SIZE_USD:
+                raise ValueError(
+                    f"Miner {self.miner_hotkey} attempted to set {self.trade_pair.trade_pair_id} "
+                    f"position size below minimum of ${ValiConfig.CRYPTO_MIN_POSITION_SIZE_USD} USD. "
+                    f"Proposed: ${abs(proposed_value):.2f} USD. Ignoring order.")
+        else: # for other asset classes
+            if abs(proposed_leverage) < min_position_leverage:
+                raise ValueError(
+                    f"Miner {self.miner_hotkey} attempted to set {self.trade_pair.trade_pair_id} "
+                    f"position size below minimum leverage of ${min_position_leverage}. "
+                    f"Proposed: ${abs(proposed_leverage)}. Ignoring order.")
+
 
     def apply_stock_split(self, stock_split_ratio: float, execution_date: str) -> bool:
         """
