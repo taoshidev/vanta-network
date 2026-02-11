@@ -239,7 +239,7 @@ class MinerRestServer(BaseRestServer):
 
         # 3. Call order_placer.process_a_signal_for_rest() directly (blocks 20-60s)
         try:
-            bt.logging.info(f"Processing order {order_uuid} synchronously...")
+            bt.logging.info(f"Processing order synchronously signal: {signal}...")
             start_time = time.time()
 
             result = self.order_placer.process_a_signal_for_rest(
