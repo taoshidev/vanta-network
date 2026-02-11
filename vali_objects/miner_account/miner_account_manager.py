@@ -24,6 +24,7 @@ from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.exceptions.signal_exception import SignalException
 from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.validator_broadcast_base import ValidatorBroadcastBase
 
 
@@ -74,6 +75,7 @@ class MinerAccount:
     asset_class: Optional[TradePairCategory] = None  # EQUITIES, CRYPTO, FOREX
     collateral_records: List[CollateralRecord] = None  # Historical CollateralRecords (List[CollateralRecord])
     last_interest_date_ms: Optional[int] = None  # Last date interest was applied
+    miner_bucket: Optional[MinerBucket] = None  # Pushed by ChallengePeriodManager
 
     def __post_init__(self):
         """Initialize collateral_records to empty list if None."""
@@ -89,6 +91,8 @@ class MinerAccount:
     def buying_power(self) -> float:
         """Available buying power = balance * multiplier - capital_used."""
         multiplier = ValiConfig.PORTFOLIO_LEVERAGE_CAP.get(self.asset_class, 1.0) if self.asset_class else 1.0
+        if self.miner_bucket == MinerBucket.SUBACCOUNT_CHALLENGE:
+            multiplier /= ValiConfig.SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR
         return self.balance * multiplier - self.capital_used
 
     def add_collateral_record(self, record: 'CollateralRecord'):
@@ -197,7 +201,8 @@ class MinerAccount:
             'asset_class': self.asset_class.value if self.asset_class else None,
             'total_borrowed_amount': self.total_borrowed_amount,
             'total_interest_paid': self.total_interest_paid,
-            'last_interest_date_ms': self.last_interest_date_ms
+            'last_interest_date_ms': self.last_interest_date_ms,
+            'miner_bucket': self.miner_bucket.value if self.miner_bucket else None
         }
 
         if include_collateral_records:
@@ -361,12 +366,14 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     total_borrowed = last_record.get("total_borrowed_amount", 0.0)
                     total_interest_paid = last_record.get("total_interest_paid", 0.0)
                     last_interest_date_ms = last_record.get("last_interest_date_ms")
+                    miner_bucket_str = last_record.get("miner_bucket")
                 else:
                     total_realized_pnl = None
                     capital_used = None
                     total_borrowed = 0.0
                     total_interest_paid = 0.0
                     last_interest_date_ms = None
+                    miner_bucket_str = None
 
                 # Parse collateral records
                 for record_data in records_list:
@@ -394,6 +401,14 @@ class MinerAccountManager(ValidatorBroadcastBase):
                         except ValueError:
                             bt.logging.warning(f"Unknown asset_class '{asset_class_str}' for {hotkey}")
 
+                # Parse miner_bucket from disk (None for legacy data, filled on first CP refresh)
+                miner_bucket = None
+                if miner_bucket_str:
+                    try:
+                        miner_bucket = MinerBucket(miner_bucket_str)
+                    except ValueError:
+                        bt.logging.warning(f"Unknown miner_bucket '{miner_bucket_str}' for {hotkey}")
+
                 parsed_accounts[hotkey] = MinerAccount(
                     miner_hotkey=hotkey,
                     total_realized_pnl=total_realized_pnl if total_realized_pnl is not None else 0.0,
@@ -402,7 +417,8 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     total_interest_paid=total_interest_paid,
                     asset_class=asset_class,
                     collateral_records=collateral_records,
-                    last_interest_date_ms=last_interest_date_ms
+                    last_interest_date_ms=last_interest_date_ms,
+                    miner_bucket=miner_bucket
                 )
 
             except Exception as e:
@@ -638,6 +654,13 @@ class MinerAccountManager(ValidatorBroadcastBase):
     def get_account(self, hotkey: str) -> Optional[MinerAccount]:
         """Get account if it exists, without creating."""
         return self.accounts.get(hotkey)
+
+    def set_miner_bucket(self, hotkey: str, bucket: Optional[MinerBucket]) -> None:
+        """Set the miner bucket on an account. Called by ChallengePeriodManager via RPC."""
+        with self._accounts_lock:
+            account = self.get_or_create(hotkey)
+            account.miner_bucket = bucket
+            self._save_accounts_to_disk()
 
     def get_all_hotkeys(self) -> list:
         """Get all hotkeys with accounts."""
