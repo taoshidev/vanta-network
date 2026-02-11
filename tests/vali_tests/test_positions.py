@@ -497,7 +497,8 @@ class TestPositions(TestBase):
             'trade_pair': self.DEFAULT_TRADE_PAIR,
             'position_uuid': self.DEFAULT_POSITION_UUID,
             'account_size': ValiConfig.DEFAULT_CAPITAL,
-            'unrealized_pnl': 0
+            'unrealized_pnl': 0,
+            'unfilled_orders': []
         })
 
         self.add_order_to_position_and_save(position, o2)
@@ -520,7 +521,8 @@ class TestPositions(TestBase):
             'trade_pair': self.DEFAULT_TRADE_PAIR,
             'position_uuid': self.DEFAULT_POSITION_UUID,
             'account_size': ValiConfig.DEFAULT_CAPITAL,
-            'unrealized_pnl': 0
+            'unrealized_pnl': 0,
+            'unfilled_orders': []
         })
 
         self.assertEqual(position.max_leverage_seen(), 1.0)
@@ -610,7 +612,8 @@ class TestPositions(TestBase):
             'trade_pair': self.DEFAULT_TRADE_PAIR,
             'position_uuid': self.DEFAULT_POSITION_UUID,
             'account_size': ValiConfig.DEFAULT_CAPITAL,
-            'unrealized_pnl': 0
+            'unrealized_pnl': 0,
+            'unfilled_orders': []
         })
 
         self.add_order_to_position_and_save(position, o2)
@@ -633,7 +636,8 @@ class TestPositions(TestBase):
             'trade_pair': self.DEFAULT_TRADE_PAIR,
             'position_uuid': self.DEFAULT_POSITION_UUID,
             'account_size': ValiConfig.DEFAULT_CAPITAL,
-            'unrealized_pnl': 0
+            'unrealized_pnl': 0,
+            'unfilled_orders': []
         })
         self.assertEqual(position.max_leverage_seen(), 1.0)
         self.assertEqual(position.get_cumulative_leverage(), 2.0)
@@ -680,7 +684,8 @@ class TestPositions(TestBase):
             'trade_pair': self.DEFAULT_TRADE_PAIR,
             'position_uuid': self.DEFAULT_POSITION_UUID,
             'account_size': ValiConfig.DEFAULT_CAPITAL,
-            'unrealized_pnl': 0
+            'unrealized_pnl': 0,
+            'unfilled_orders': []
         })
 
         self.add_order_to_position_and_save(position, o2)
@@ -703,7 +708,8 @@ class TestPositions(TestBase):
             'trade_pair': self.DEFAULT_TRADE_PAIR,
             'position_uuid': self.DEFAULT_POSITION_UUID,
             'account_size': ValiConfig.DEFAULT_CAPITAL,
-            'unrealized_pnl': 0
+            'unrealized_pnl': 0,
+            'unfilled_orders': []
         })
         self.assertEqual(position.max_leverage_seen(), 1.0)
         self.assertEqual(position.get_cumulative_leverage(), 2.0)
@@ -744,7 +750,8 @@ class TestPositions(TestBase):
             'account_size': ValiConfig.DEFAULT_CAPITAL,
             'unrealized_pnl': 0,
             'net_value': 200000.0,
-            'net_quantity': 2000.0
+            'net_quantity': 2000.0,
+            'unfilled_orders': []
         })
 
         self.add_order_to_position_and_save(position, o2)
@@ -767,7 +774,8 @@ class TestPositions(TestBase):
             'account_size': ValiConfig.DEFAULT_CAPITAL,
             'unrealized_pnl': 0,
             'net_value': 200000.0,
-            'net_quantity': 2000.0
+            'net_quantity': 2000.0,
+            'unfilled_orders': []
         })
         self.assertEqual(position.max_leverage_seen(), 2.0)
         self.assertEqual(position.get_cumulative_leverage(), 4.0)
@@ -808,7 +816,8 @@ class TestPositions(TestBase):
             'account_size': ValiConfig.DEFAULT_CAPITAL,
             'unrealized_pnl': 0,
             'net_value': -100000.0,
-            'net_quantity': -1000.0
+            'net_quantity': -1000.0,
+            'unfilled_orders': []
         })
 
         self.add_order_to_position_and_save(position, o2)
@@ -831,7 +840,8 @@ class TestPositions(TestBase):
             'account_size': ValiConfig.DEFAULT_CAPITAL,
             'unrealized_pnl': 0,
             'net_value': -100000.0,
-            'net_quantity': -1000.0
+            'net_quantity': -1000.0,
+            'unfilled_orders': []
         })
         self.assertEqual(position.max_leverage_seen(), 1.0)
         self.assertEqual(position.get_cumulative_leverage(), 2.0)
@@ -877,7 +887,8 @@ class TestPositions(TestBase):
             'account_size': ValiConfig.DEFAULT_CAPITAL,
             'unrealized_pnl': 0,
             'net_value': -100000.0,
-            'net_quantity': -1000.0
+            'net_quantity': -1000.0,
+            'unfilled_orders': []
         })
 
         self.add_order_to_position_and_save(position, o2)
@@ -907,7 +918,8 @@ class TestPositions(TestBase):
             'account_size': ValiConfig.DEFAULT_CAPITAL,
             'unrealized_pnl': -8890111.111111112,
             'net_value': -100000.0,
-            'net_quantity': -1000.0
+            'net_quantity': -1000.0,
+            'unfilled_orders': []
         })
 
         # Orders post-liquidation are ignored
@@ -932,7 +944,8 @@ class TestPositions(TestBase):
             'account_size': ValiConfig.DEFAULT_CAPITAL,
             'unrealized_pnl': -8890111.111111112,
             'net_value': -100000.0,
-            'net_quantity': -1000.0
+            'net_quantity': -1000.0,
+            'unfilled_orders': []
         })
         self.assertEqual(position.max_leverage_seen(), 1.0)
         self.assertEqual(position.get_cumulative_leverage(), 2.0)
@@ -978,7 +991,8 @@ class TestPositions(TestBase):
             'account_size': ValiConfig.DEFAULT_CAPITAL,
             'unrealized_pnl': 0,
             'net_value': 200000.0,
-            'net_quantity': 2000.0
+            'net_quantity': 2000.0,
+            'unfilled_orders': []
         })
 
         self.add_order_to_position_and_save(position, o2)
@@ -1007,7 +1021,8 @@ class TestPositions(TestBase):
             'account_size': ValiConfig.DEFAULT_CAPITAL,
             'unrealized_pnl': -90000.0,
             'net_value': 200000.0,
-            'net_quantity': 2000.0
+            'net_quantity': 2000.0,
+            'unfilled_orders': []
         })
 
         # Orders post-liquidation are ignored
@@ -1033,7 +1048,8 @@ class TestPositions(TestBase):
             'account_size': ValiConfig.DEFAULT_CAPITAL,
             'unrealized_pnl': -90000.0,
             'net_value': 200000.0,
-            'net_quantity': 2000.0
+            'net_quantity': 2000.0,
+            'unfilled_orders': []
         })
 
         self.assertEqual(position.max_leverage_seen(), 2.0)
@@ -1074,7 +1090,8 @@ class TestPositions(TestBase):
             'account_size': ValiConfig.DEFAULT_CAPITAL,
             'unrealized_pnl': 0,
             'net_value': -100000.0,
-            'net_quantity': -100.0
+            'net_quantity': -100.0,
+            'unfilled_orders': []
         })
 
         self.add_order_to_position_and_save(position, o2)
@@ -1097,7 +1114,8 @@ class TestPositions(TestBase):
             'account_size': ValiConfig.DEFAULT_CAPITAL,
             'unrealized_pnl': 0,
             'net_value': 0.0,
-            'net_quantity': 0.0
+            'net_quantity': 0.0,
+            'unfilled_orders': []
         })
         self.assertEqual(position.max_leverage_seen(), 1.0)
         self.assertEqual(position.get_cumulative_leverage(), 2.0)
@@ -1230,7 +1248,8 @@ class TestPositions(TestBase):
             'account_size': ValiConfig.DEFAULT_CAPITAL,
             'unrealized_pnl': 0,
             'net_value': 100000.0,
-            'net_quantity': 100.0
+            'net_quantity': 100.0,
+            'unfilled_orders': []
         })
 
         self.add_order_to_position_and_save(position, o2)
@@ -1253,7 +1272,8 @@ class TestPositions(TestBase):
             'account_size': ValiConfig.DEFAULT_CAPITAL,
             'unrealized_pnl': 100000.0,
             'net_value': 210000.0,
-            'net_quantity': 105.0
+            'net_quantity': 105.0,
+            'unfilled_orders': []
         })
 
         self.add_order_to_position_and_save(position, o3)
@@ -1276,7 +1296,8 @@ class TestPositions(TestBase):
             'account_size': ValiConfig.DEFAULT_CAPITAL,
             'unrealized_pnl': 0,
             'net_value': 0.0,
-            'net_quantity': 0.0
+            'net_quantity': 0.0,
+            'unfilled_orders': []
         })
         self.assertEqual(position.max_leverage_seen(), 1.1)
         self.assertEqual(position.get_cumulative_leverage(), 2.2)
@@ -1316,7 +1337,8 @@ class TestPositions(TestBase):
             'account_size': ValiConfig.DEFAULT_CAPITAL,
             'unrealized_pnl': 0,
             'net_value': 100000.0,
-            'net_quantity': 100.0
+            'net_quantity': 100.0,
+            'unfilled_orders': []
         })
 
         self.add_order_to_position_and_save(position, o2)
@@ -1339,7 +1361,8 @@ class TestPositions(TestBase):
             'account_size': ValiConfig.DEFAULT_CAPITAL,
             'unrealized_pnl': 0,
             'net_value': 0.0,
-            'net_quantity': 0.0
+            'net_quantity': 0.0,
+            'unfilled_orders': []
         })
         self.assertEqual(position.max_leverage_seen(), 1.0)
         self.assertEqual(position.get_cumulative_leverage(), 2.0)
@@ -1387,7 +1410,8 @@ class TestPositions(TestBase):
             'account_size': ValiConfig.DEFAULT_CAPITAL,
             'unrealized_pnl': 0,
             'net_value': 100000.0,
-            'net_quantity': 100.0
+            'net_quantity': 100.0,
+            'unfilled_orders': []
         })
 
         self.add_order_to_position_and_save(position, o2)
@@ -1410,7 +1434,8 @@ class TestPositions(TestBase):
             'account_size': ValiConfig.DEFAULT_CAPITAL,
             'unrealized_pnl': -50000.0,
             'net_value': 60000.0,
-            'net_quantity': 120.0
+            'net_quantity': 120.0,
+            'unfilled_orders': []
         })
 
         self.add_order_to_position_and_save(position, o3)
@@ -1433,7 +1458,8 @@ class TestPositions(TestBase):
             'account_size': ValiConfig.DEFAULT_CAPITAL,
             'unrealized_pnl': 9166.666666666672,
             'net_value': 110000.0,
-            'net_quantity': 110.0
+            'net_quantity': 110.0,
+            'unfilled_orders': []
         })
 
         self.assertEqual(position.max_leverage_seen(), 1.1)
@@ -1497,7 +1523,8 @@ class TestPositions(TestBase):
             'account_size': ValiConfig.DEFAULT_CAPITAL,
             'unrealized_pnl': 0,
             'net_value': 0.0,
-            'net_quantity': 0.0
+            'net_quantity': 0.0,
+            'unfilled_orders': []
         })
         self.assertEqual(position.max_leverage_seen(), 1.12)
         self.assertEqual(position.get_cumulative_leverage(), 2.24)
@@ -1560,7 +1587,8 @@ class TestPositions(TestBase):
             'account_size': ValiConfig.DEFAULT_CAPITAL,
             'unrealized_pnl': 0,
             'net_value': 0.0,
-            'net_quantity': 0.0
+            'net_quantity': 0.0,
+            'unfilled_orders': []
         })
         self.assertEqual(position.max_leverage_seen(), 1.12)
         self.assertEqual(position.get_cumulative_leverage(), 2.24)
@@ -1623,7 +1651,8 @@ class TestPositions(TestBase):
             'account_size': ValiConfig.DEFAULT_CAPITAL,
             'unrealized_pnl': 0,
             'net_value': 0.0,
-            'net_quantity': 0.0
+            'net_quantity': 0.0,
+            'unfilled_orders': []
         })
         self.assertEqual(position.max_leverage_seen(), 2.5)
         # -1 +.5 - 2.0 + 2.1 = 1.44 (abs 5.6) , (flat from -.4) -> 6.0
@@ -1710,7 +1739,8 @@ class TestPositions(TestBase):
             'account_size': ValiConfig.DEFAULT_CAPITAL,
             'unrealized_pnl': 0,
             'net_value': -40000.0,
-            'net_quantity': -40.0
+            'net_quantity': -40.0,
+            'unfilled_orders': []
         })
 
         self.add_order_to_position_and_save(position2, o2)
@@ -1734,7 +1764,8 @@ class TestPositions(TestBase):
             'account_size': ValiConfig.DEFAULT_CAPITAL,
             'unrealized_pnl': 0,
             'net_value': -20000000.0,
-            'net_quantity': -0.4
+            'net_quantity': -0.4,
+            'unfilled_orders': []
         })
 
         self.assertEqual(position1.max_leverage_seen(), 0.4)
@@ -1791,7 +1822,8 @@ class TestPositions(TestBase):
             'trade_pair': self.DEFAULT_TRADE_PAIR,
             'position_uuid': self.DEFAULT_POSITION_UUID,
             'account_size': ValiConfig.DEFAULT_CAPITAL,
-            'unrealized_pnl': 0
+            'unrealized_pnl': 0,
+            'unfilled_orders': []
         })
 
         self.assertEqual(position.max_leverage_seen(), TradePair.BTCUSD.max_leverage / 2)
@@ -1839,7 +1871,8 @@ class TestPositions(TestBase):
             'trade_pair': self.DEFAULT_TRADE_PAIR,
             'position_uuid': self.DEFAULT_POSITION_UUID,
             'account_size': ValiConfig.DEFAULT_CAPITAL,
-            'unrealized_pnl': 0
+            'unrealized_pnl': 0,
+            'unfilled_orders': []
         })
 
         self.assertEqual(position.max_leverage_seen(), TradePair.BTCUSD.max_leverage)
@@ -1892,7 +1925,8 @@ class TestPositions(TestBase):
             'trade_pair': self.DEFAULT_TRADE_PAIR,
             'position_uuid': self.DEFAULT_POSITION_UUID,
             'account_size': ValiConfig.DEFAULT_CAPITAL,
-            'unrealized_pnl': 0
+            'unrealized_pnl': 0,
+            'unfilled_orders': []
         })
         self.assertEqual(position.max_leverage_seen(), TradePair.BTCUSD.max_leverage * 0.80)
         self.assertEqual(position.get_cumulative_leverage(), TradePair.BTCUSD.max_leverage * 0.80)
@@ -1962,7 +1996,8 @@ class TestPositions(TestBase):
             'trade_pair': self.DEFAULT_TRADE_PAIR,
             'position_uuid': self.DEFAULT_POSITION_UUID,
             'account_size': ValiConfig.DEFAULT_CAPITAL,
-            'unrealized_pnl': 0
+            'unrealized_pnl': 0,
+            'unfilled_orders': []
         })
 
         self.assertEqual(position.max_leverage_seen(), TradePair.BTCUSD.max_leverage)
