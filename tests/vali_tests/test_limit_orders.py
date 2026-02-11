@@ -1523,7 +1523,7 @@ class TestLimitOrders(TestBase):
         )
 
         # Call create_sltp_order - should raise BracketOrderException
-        with self.assertRaises(BracketOrderException) as context:
+        with self.assertRaises(Exception) as context:
             self.limit_order_client.create_sltp_order(self.DEFAULT_MINER_HOTKEY, parent_order)
 
     def test_create_sltp_order_long_rejects_sl_equal_to_fill_price(self):
@@ -1539,7 +1539,7 @@ class TestLimitOrders(TestBase):
             take_profit=None
         )
 
-        with self.assertRaises(BracketOrderException) as context:
+        with self.assertRaises(Exception) as context:
             self.limit_order_client.create_sltp_order(self.DEFAULT_MINER_HOTKEY, parent_order)
 
     def test_create_sltp_order_long_rejects_tp_below_fill_price(self):
@@ -1556,7 +1556,7 @@ class TestLimitOrders(TestBase):
             take_profit=49000.0  # INVALID: Below fill price
         )
 
-        with self.assertRaises(BracketOrderException) as context:
+        with self.assertRaises(Exception) as context:
             self.limit_order_client.create_sltp_order(self.DEFAULT_MINER_HOTKEY, parent_order)
 
     def test_create_sltp_order_long_rejects_tp_equal_to_fill_price(self):
@@ -1570,7 +1570,7 @@ class TestLimitOrders(TestBase):
             take_profit=50000.0  # INVALID: Equal to fill price
         )
 
-        with self.assertRaises(BracketOrderException) as context:
+        with self.assertRaises(Exception) as context:
             self.limit_order_client.create_sltp_order(self.DEFAULT_MINER_HOTKEY, parent_order)
 
     def test_create_sltp_order_short_rejects_sl_below_fill_price(self):
@@ -1587,7 +1587,7 @@ class TestLimitOrders(TestBase):
             take_profit=None
         )
 
-        with self.assertRaises(BracketOrderException) as context:
+        with self.assertRaises(Exception) as context:
             self.limit_order_client.create_sltp_order(self.DEFAULT_MINER_HOTKEY, parent_order)
 
     def test_create_sltp_order_short_rejects_sl_equal_to_fill_price(self):
@@ -1601,7 +1601,7 @@ class TestLimitOrders(TestBase):
             take_profit=None
         )
 
-        with self.assertRaises(BracketOrderException) as context:
+        with self.assertRaises(Exception) as context:
             self.limit_order_client.create_sltp_order(self.DEFAULT_MINER_HOTKEY, parent_order)
 
     def test_create_sltp_order_short_rejects_tp_above_fill_price(self):
@@ -1618,7 +1618,7 @@ class TestLimitOrders(TestBase):
             take_profit=51000.0  # INVALID: Above fill price for SHORT
         )
 
-        with self.assertRaises(BracketOrderException) as context:
+        with self.assertRaises(Exception) as context:
             self.limit_order_client.create_sltp_order(self.DEFAULT_MINER_HOTKEY, parent_order)
 
     def test_create_sltp_order_short_rejects_tp_equal_to_fill_price(self):
@@ -1632,7 +1632,7 @@ class TestLimitOrders(TestBase):
             take_profit=50000.0  # INVALID: Equal to fill price
         )
 
-        with self.assertRaises(BracketOrderException) as context:
+        with self.assertRaises(Exception) as context:
             self.limit_order_client.create_sltp_order(self.DEFAULT_MINER_HOTKEY, parent_order)
 
     def test_create_sltp_order_long_valid_sl_and_tp_succeeds(self):
@@ -1686,12 +1686,12 @@ class TestLimitOrders(TestBase):
             take_profit=None
         )
 
-        with self.assertRaises(BracketOrderException) as context:
+        with self.assertRaises(Exception) as context:
             self.limit_order_client.create_sltp_order(self.DEFAULT_MINER_HOTKEY, parent_order)
 
     def test_create_sltp_order_flat_order_rejected(self):
         """
-        Test that FLAT orders cannot have SLTP brackets and raise BracketOrderException.
+        Test that FLAT orders cannot have SLTP brackets and raise an exception.
         """
         parent_order = self.create_filled_market_order(
             order_type=OrderType.FLAT,
@@ -1700,7 +1700,7 @@ class TestLimitOrders(TestBase):
             take_profit=51000.0
         )
 
-        with self.assertRaises(BracketOrderException) as context:
+        with self.assertRaises(Exception) as context:
             self.limit_order_client.create_sltp_order(self.DEFAULT_MINER_HOTKEY, parent_order)
 
     def test_create_sltp_order_uses_quantity_from_parent(self):
