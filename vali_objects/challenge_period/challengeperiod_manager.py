@@ -203,6 +203,7 @@ class ChallengePeriodManager(CacheController):
         if not self.refreshed_challengeperiod_start_time:
             self.refreshed_challengeperiod_start_time = True
             self._refresh_challengeperiod_start_time(hk_to_first_order_time)
+            self._sync_all_miner_buckets()
 
         ledger = self._perf_ledger_client.filtered_ledger_for_scoring(hotkeys=all_miners, portfolio_only=False)
 
@@ -1238,6 +1239,13 @@ class ChallengePeriodManager(CacheController):
                 prev_time = current_time
 
         self.active_miners[hotkey] = (bucket, start_time, prev_bucket, prev_time)
+
+        # Push bucket to MinerAccount
+        try:
+            self._miner_account_client.set_miner_bucket(hotkey, bucket)
+        except Exception as e:
+            bt.logging.warning(f"Failed to push miner_bucket to MinerAccount for {hotkey}: {e}")
+
         return is_new
 
     def get_miner_start_time(self, hotkey: str) -> int:
@@ -1263,8 +1271,24 @@ class ChallengePeriodManager(CacheController):
         """Remove a miner from active_miners."""
         if hotkey in self.active_miners:
             del self.active_miners[hotkey]
+            # Clear bucket on MinerAccount
+            try:
+                self._miner_account_client.set_miner_bucket(hotkey, None)
+            except Exception as e:
+                bt.logging.warning(f"Failed to clear miner_bucket on MinerAccount for {hotkey}: {e}")
             return True
         return False
+
+    def _sync_all_miner_buckets(self):
+        """Push all current miner buckets to MinerAccount on startup."""
+        synced = 0
+        for hotkey, (bucket, _, _, _) in self.active_miners.items():
+            try:
+                self._miner_account_client.set_miner_bucket(hotkey, bucket)
+                synced += 1
+            except Exception as e:
+                bt.logging.warning(f"Failed to sync miner_bucket for {hotkey}: {e}")
+        bt.logging.info(f"[CP_MANAGER] Synced {synced}/{len(self.active_miners)} miner buckets to MinerAccount")
 
     def clear_active_miners(self):
         """Clear all miners from active_miners."""

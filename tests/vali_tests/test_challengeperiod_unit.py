@@ -46,6 +46,7 @@ class TestChallengePeriodUnit(TestBase):
     challenge_period_client = None
     plagiarism_client = None
     asset_selection_client = None
+    miner_account_client = None
 
     @classmethod
     def setUpClass(cls):
@@ -69,6 +70,7 @@ class TestChallengePeriodUnit(TestBase):
         cls.position_client = cls.orchestrator.get_client('position_manager')
         cls.plagiarism_client = cls.orchestrator.get_client('plagiarism')
         cls.asset_selection_client = cls.orchestrator.get_client('asset_selection')
+        cls.miner_account_client = cls.orchestrator.get_client('miner_account')
 
     @classmethod
     def tearDownClass(cls):
@@ -676,6 +678,61 @@ class TestChallengePeriodUnit(TestBase):
 
         self.assertNotIn("miner", passing)
         self.assertNotIn("miner", list(failing.keys()))
+
+    # ==================== Miner Bucket Storage Tests ====================
+
+    def test_miner_bucket_pushed_on_set(self):
+        """Test that set_miner_bucket pushes the bucket to MinerAccount."""
+        self._populate_active_miners(challenge=["miner"])
+
+        account = self.miner_account_client.get_account("miner")
+        self.assertIsNotNone(account)
+        self.assertEqual(account['miner_bucket'], MinerBucket.CHALLENGE.value)
+
+    def test_miner_bucket_cleared_on_remove(self):
+        """Test that remove_miner clears the bucket on MinerAccount."""
+        self._populate_active_miners(challenge=["miner"])
+
+        # Verify bucket is set
+        account = self.miner_account_client.get_account("miner")
+        self.assertEqual(account['miner_bucket'], MinerBucket.CHALLENGE.value)
+
+        # Remove miner from challenge period
+        self.challenge_period_client.remove_miner("miner")
+
+        # Verify bucket is cleared
+        account = self.miner_account_client.get_account("miner")
+        self.assertIsNone(account['miner_bucket'])
+
+    def test_miner_bucket_updated_on_promotion(self):
+        """Test that bucket updates correctly when a miner is promoted between buckets."""
+        # Start as SUBACCOUNT_CHALLENGE
+        self.challenge_period_client.set_miner_bucket("miner", MinerBucket.SUBACCOUNT_CHALLENGE, self.START_TIME)
+
+        account = self.miner_account_client.get_account("miner")
+        self.assertEqual(account['miner_bucket'], MinerBucket.SUBACCOUNT_CHALLENGE.value)
+
+        # Promote to SUBACCOUNT_FUNDED
+        self.challenge_period_client.set_miner_bucket("miner", MinerBucket.SUBACCOUNT_FUNDED, self.START_TIME)
+
+        account = self.miner_account_client.get_account("miner")
+        self.assertEqual(account['miner_bucket'], MinerBucket.SUBACCOUNT_FUNDED.value)
+
+    def test_miner_bucket_persisted_to_disk(self):
+        """Test that miner_bucket survives a reload from disk."""
+        self._populate_active_miners(challenge=["miner"])
+
+        # Verify bucket is set
+        account = self.miner_account_client.get_account("miner")
+        self.assertEqual(account['miner_bucket'], MinerBucket.CHALLENGE.value)
+
+        # Reload accounts from disk
+        self.miner_account_client.re_init_account_sizes()
+
+        # Verify bucket persisted
+        account = self.miner_account_client.get_account("miner")
+        self.assertIsNotNone(account)
+        self.assertEqual(account['miner_bucket'], MinerBucket.CHALLENGE.value)
 
     # ==================== Race Condition Tests ====================
     # These tests demonstrate race conditions in the ChallengePeriod architecture.

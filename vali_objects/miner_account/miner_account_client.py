@@ -20,6 +20,7 @@ Usage:
 from typing import Optional, Dict, List, Any
 
 from shared_objects.rpc.rpc_client_base import RPCClientBase
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.miner_account.miner_account_server import MinerAccountServer
 from vali_objects.vali_config import RPCConnectionMode, ValiConfig, TradePairCategory
 
@@ -196,6 +197,11 @@ class MinerAccountClient(RPCClientBase):
         """
         return self._server.get_account(hotkey)
 
+    def set_miner_bucket(self, hotkey: str, bucket: Optional[MinerBucket]) -> None:
+        """Set the miner bucket on an account. Converts MinerBucket to string for RPC."""
+        bucket_value = bucket.value if bucket else None
+        self._server.set_miner_bucket(hotkey, bucket_value)
+
     def get_all_hotkeys(self) -> list:
         """Get all hotkeys with accounts."""
         return self._server.get_all_hotkeys()
@@ -220,7 +226,6 @@ class MinerAccountClient(RPCClientBase):
         Args:
             hotkey: Miner's hotkey
             order_value_usd: Order value in USD
-            trade_pair_category: TradePairCategory enum value
 
         Returns:
             Borrowed amount (float)

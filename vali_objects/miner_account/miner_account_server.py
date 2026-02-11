@@ -19,6 +19,7 @@ Usage:
 import bittensor as bt
 from typing import Optional, Dict, List, Any
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode, TradePairCategory
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 from shared_objects.rpc.rpc_server_base import RPCServerBase
 from vali_objects.miner_account.miner_account_manager import MinerAccountManager, MinerAccount
 
@@ -189,6 +190,11 @@ class MinerAccountServer(RPCServerBase):
         if account is None:
             return None
         return account.to_dict()
+
+    def set_miner_bucket(self, hotkey: str, bucket_value: Optional[str]) -> None:
+        """Set the miner bucket on an account. Converts string to MinerBucket enum."""
+        bucket = MinerBucket(bucket_value) if bucket_value else None
+        self._manager.set_miner_bucket(hotkey, bucket)
 
     def get_all_hotkeys(self) -> list:
         """Get all hotkeys with accounts."""

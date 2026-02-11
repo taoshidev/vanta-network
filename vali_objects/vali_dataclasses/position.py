@@ -752,8 +752,8 @@ class Position(BaseModel):
         min_position_leverage, max_position_leverage = leverage_utils.get_position_leverage_bounds(self.trade_pair)
         max_portfolio_leverage = leverage_utils.get_portfolio_leverage_cap(self.trade_pair.trade_pair_category)
         if bucket and bucket == MinerBucket.SUBACCOUNT_CHALLENGE:
-            max_portfolio_leverage /= 4
-            max_position_leverage /= 4
+            max_portfolio_leverage /= ValiConfig.SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR
+            max_position_leverage /= ValiConfig.SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR
 
         # Calculate proposed portfolio leverage (raw leverage since miners only trade one asset class)
         current_leverage = abs(self.net_leverage)

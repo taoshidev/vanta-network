@@ -22,6 +22,7 @@ from vali_objects.vali_dataclasses.order import (
     Order,
 )
 from vali_objects.enums.order_source_enum import OrderSource
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 
 
 class TestPositions(TestBase):
@@ -2304,6 +2305,95 @@ class TestPositions(TestBase):
         assert len(position.orders) == 4
         assert position.is_closed_position
         assert position.orders[-1].src == OrderSource.DEPRECATION_FLAT
+
+
+    # ==================== SUBACCOUNT_CHALLENGE Leverage Cap Tests ====================
+
+    def test_subaccount_challenge_leverage_cap_crypto(self):
+        """
+        SUBACCOUNT_CHALLENGE reduces position max leverage by divisor (4x).
+        Crypto max leverage = 2.5, reduced = 2.5/4 = 0.625.
+        Order at 0.7 should raise with SUBACCOUNT_CHALLENGE but succeed without.
+        """
+        position = deepcopy(self.default_position)
+        order = Order(
+            price=60000,
+            processed_ms=self.DEFAULT_OPEN_MS,
+            order_uuid="test_order",
+            trade_pair=TradePair.BTCUSD,
+            order_type=OrderType.LONG,
+            leverage=0.7,
+        )
+
+        # Should raise with SUBACCOUNT_CHALLENGE (reduced position max = 0.625)
+        with self.assertRaises(ValueError):
+            position.validate_order_size(order, 0.0, bucket=MinerBucket.SUBACCOUNT_CHALLENGE)
+
+        # Should NOT raise without bucket (normal position max = 2.5)
+        position.validate_order_size(order, 0.0)
+
+    def test_subaccount_challenge_portfolio_cap_crypto(self):
+        """
+        SUBACCOUNT_CHALLENGE reduces portfolio leverage cap by divisor (4x).
+        Crypto portfolio cap = 5, reduced = 5/4 = 1.25.
+        Order at 0.5 leverage with existing portfolio leverage of 1.0 → 1.5 > 1.25.
+        """
+        position = deepcopy(self.default_position)
+        order = Order(
+            price=60000,
+            processed_ms=self.DEFAULT_OPEN_MS,
+            order_uuid="test_order",
+            trade_pair=TradePair.BTCUSD,
+            order_type=OrderType.LONG,
+            leverage=0.5,
+        )
+
+        # Should raise with SUBACCOUNT_CHALLENGE (proposed portfolio = 1.0 + 0.5 = 1.5 > 1.25)
+        with self.assertRaises(ValueError):
+            position.validate_order_size(order, 1.0, bucket=MinerBucket.SUBACCOUNT_CHALLENGE)
+
+        # Should NOT raise without bucket (1.5 < 5.0 normal portfolio cap)
+        position.validate_order_size(order, 1.0)
+
+    def test_subaccount_challenge_allows_within_reduced_limit(self):
+        """
+        Orders within the reduced limits should succeed with SUBACCOUNT_CHALLENGE.
+        Leverage 0.5 is within reduced position max (0.625) and reduced portfolio cap (1.25).
+        """
+        position = deepcopy(self.default_position)
+        order = Order(
+            price=60000,
+            processed_ms=self.DEFAULT_OPEN_MS,
+            order_uuid="test_order",
+            trade_pair=TradePair.BTCUSD,
+            order_type=OrderType.LONG,
+            leverage=0.5,
+        )
+
+        # Should NOT raise (0.5 < 0.625 position max, 0.5 < 1.25 portfolio cap)
+        position.validate_order_size(order, 0.0, bucket=MinerBucket.SUBACCOUNT_CHALLENGE)
+
+    def test_non_challenge_bucket_no_leverage_reduction(self):
+        """
+        Non-SUBACCOUNT_CHALLENGE buckets should NOT reduce leverage limits.
+        MAINCOMP with order at 2.0 should succeed (within normal 2.5 position max).
+        """
+        position = deepcopy(self.default_position)
+        order = Order(
+            price=60000,
+            processed_ms=self.DEFAULT_OPEN_MS,
+            order_uuid="test_order",
+            trade_pair=TradePair.BTCUSD,
+            order_type=OrderType.LONG,
+            leverage=2.0,
+        )
+
+        # Should NOT raise with MAINCOMP (no reduction, 2.0 < 2.5 position max)
+        position.validate_order_size(order, 0.0, bucket=MinerBucket.MAINCOMP)
+
+        # Should raise with SUBACCOUNT_CHALLENGE (2.0 > 0.625 reduced max)
+        with self.assertRaises(ValueError):
+            position.validate_order_size(order, 0.0, bucket=MinerBucket.SUBACCOUNT_CHALLENGE)
 
 
 if __name__ == '__main__':
