@@ -620,8 +620,29 @@ class PropNetOrderPlacer:
                         responses = await dendrite.aquery([mothership_axon], send_signal_request)
                         if responses and responses[0]:
                             validator_responses.append(responses[0])
+                            # Check if MOTHERSHIP failed - if so, return immediately without retrying
+                            mothership_response = responses[0]
+                            if not mothership_response.successfully_processed:
+                                metrics.mark_network_end()
+                                bt.logging.warning(
+                                    f"MOTHERSHIP {mothership_hotkey} rejected signal, not retrying. "
+                                    f"Error: {mothership_response.error_message}"
+                                )
+                                # Record the error
+                                if mothership_response.error_message:
+                                    retry_status['validator_error_messages'][mothership_hotkey] = [mothership_response.error_message]
+                                    metrics.validator_errors[mothership_hotkey].append(mothership_response.error_message)
+                                # Set retry_attempts to max to exit retry loop
+                                retry_status['retry_attempts'] = self.MAX_RETRIES
+                                return
                     except Exception as e:
                         bt.logging.warning(f"Error querying MOTHERSHIP {mothership_hotkey}: {e}")
+                        metrics.mark_network_end()
+                        # Record the exception and prevent retries
+                        retry_status['validator_error_messages'][mothership_hotkey] = [str(e)]
+                        metrics.validator_errors[mothership_hotkey].append(str(e))
+                        retry_status['retry_attempts'] = self.MAX_RETRIES
+                        return
                     metrics.mark_network_end()
 
                     # 2. Fire-and-forget to other validators (don't wait for responses)
