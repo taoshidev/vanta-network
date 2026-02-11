@@ -889,6 +889,7 @@ class EntityManager(ValidatorBroadcastBase):
                 'synthetic_hotkey': synthetic_hotkey,
                 'entity_hotkey': entity_hotkey,
                 'subaccount_id': subaccount_id,
+                'subaccount_uuid': subaccount.subaccount_uuid,
                 'asset_class': subaccount.asset_class,
                 'account_size': subaccount.account_size,
                 'status': subaccount.status,
