@@ -22,6 +22,7 @@ from vali_objects.vali_dataclasses.order import (
     Order,
 )
 from vali_objects.enums.order_source_enum import OrderSource
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 
 
 class TestPositions(TestBase):
