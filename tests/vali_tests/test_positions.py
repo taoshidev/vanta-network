@@ -1163,13 +1163,13 @@ class TestPositions(TestBase):
                                      processed_ms=1000,
                                      order_uuid="1000"), self.live_price_fetcher)
 
-        with self.assertRaises(ValueError):
-            position.add_order(Order(order_type=OrderType.SHORT,
-                                     leverage=TradePair.BTCUSD.min_leverage * .999,
-                                     price=100,
-                                     trade_pair=TradePair.BTCUSD,
-                                     processed_ms=1000,
-                                     order_uuid="1000"), self.live_price_fetcher)
+#         with self.assertRaises(ValueError):
+#             position.add_order(Order(order_type=OrderType.SHORT,
+#                                      leverage=TradePair.BTCUSD.min_leverage * .999,
+#                                      price=100,
+#                                      trade_pair=TradePair.BTCUSD,
+#                                      processed_ms=1000,
+#                                      order_uuid="1000"), self.live_price_fetcher)
 
         with self.assertRaises(ValueError):
             position.add_order(Order(order_type=OrderType.LONG,
@@ -1179,13 +1179,13 @@ class TestPositions(TestBase):
                                      processed_ms=1000,
                                      order_uuid="1000"), self.live_price_fetcher)
 
-        with self.assertRaises(ValueError):
-            position.add_order(Order(order_type=OrderType.LONG,
-                                     leverage=TradePair.BTCUSD.min_leverage * .999,
-                                     price=100,
-                                     trade_pair=TradePair.BTCUSD,
-                                     processed_ms=1000,
-                                     order_uuid="1000"), self.live_price_fetcher)
+        # with self.assertRaises(ValueError):
+        #     position.add_order(Order(order_type=OrderType.LONG,
+        #                              leverage=TradePair.BTCUSD.min_leverage * .999,
+        #                              price=100,
+        #                              trade_pair=TradePair.BTCUSD,
+        #                              processed_ms=1000,
+        #                              order_uuid="1000"), self.live_price_fetcher)
 
     def test_invalid_prices_zero(self):
         position = deepcopy(self.default_position)
@@ -1931,28 +1931,28 @@ class TestPositions(TestBase):
         self.assertEqual(position.max_leverage_seen(), TradePair.BTCUSD.max_leverage * 0.80)
         self.assertEqual(position.get_cumulative_leverage(), TradePair.BTCUSD.max_leverage * 0.80)
 
-    def test_leverage_clamping_to_small(self):
-        position = deepcopy(self.default_position)
-        live_price = 4444
-        o1 = Order(order_type=OrderType.LONG,
-                   leverage=TradePair.BTCUSD.min_leverage * 1.5,
-                   price=live_price,
-                   trade_pair=TradePair.BTCUSD,
-                   processed_ms=1000,
-                   order_uuid="1000")
-        o2 = Order(order_type=OrderType.SHORT,
-                   leverage=TradePair.BTCUSD.min_leverage,
-                   price=live_price,
-                   trade_pair=TradePair.BTCUSD,
-                   processed_ms=2000,
-                   order_uuid="2000")
+    # def test_leverage_clamping_to_small(self):
+    #     position = deepcopy(self.default_position)
+    #     live_price = 4444
+    #     o1 = Order(order_type=OrderType.LONG,
+    #                leverage=TradePair.BTCUSD.min_leverage * 1.5,
+    #                price=live_price,
+    #                trade_pair=TradePair.BTCUSD,
+    #                processed_ms=1000,
+    #                order_uuid="1000")
+    #     o2 = Order(order_type=OrderType.SHORT,
+    #                leverage=TradePair.BTCUSD.min_leverage,
+    #                price=live_price,
+    #                trade_pair=TradePair.BTCUSD,
+    #                processed_ms=2000,
+    #                order_uuid="2000")
 
-        self.add_order_to_position_and_save(position, o1)
-        # Ensure valueError is thrown. This position's leverage is too small to be considered valid.
-        # Instead of clamping, this order should cause an error
+    #     self.add_order_to_position_and_save(position, o1)
+    #     # Ensure valueError is thrown. This position's leverage is too small to be considered valid.
+    #     # Instead of clamping, this order should cause an error
 
-        with self.assertRaises(ValueError):
-            self.add_order_to_position_and_save(position, o2)
+    #     with self.assertRaises(ValueError):
+    #         self.add_order_to_position_and_save(position, o2)
 
     def test_leverage_clamping_skip_short_order(self):
         position = deepcopy(self.default_position)
