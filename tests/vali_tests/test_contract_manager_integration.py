@@ -29,6 +29,7 @@ class TestContractManagerIntegration(TestBase):
     # Class-level references (set in setUpClass via ServerOrchestrator)
     orchestrator = None
     contract_client = None
+    miner_account_client = None
     position_client = None
     metagraph_client = None
     perf_ledger_client = None
@@ -53,6 +54,7 @@ class TestContractManagerIntegration(TestBase):
 
         # Get clients from orchestrator (servers guaranteed ready, no connection delays)
         cls.contract_client = cls.orchestrator.get_client('contract')
+        cls.miner_account_client = cls.orchestrator.get_client('miner_account')
         cls.position_client = cls.orchestrator.get_client('position_manager')
         cls.metagraph_client = cls.orchestrator.get_client('metagraph')
         cls.perf_ledger_client = cls.orchestrator.get_client('perf_ledger')
@@ -92,18 +94,31 @@ class TestContractManagerIntegration(TestBase):
         1. Account size can be set (requires wallet to fetch balance)
         2. Operations that would use wallet internally succeed
         """
-        # Inject test balance
+        # Inject test balance via contract_client (mocks blockchain call)
         self.contract_client.set_test_collateral_balance(self.MINER_HOTKEY, 1_000_000_000_000)
 
-        # Set account size - this internally uses the wallet to fetch balance
-        timestamp_ms = int(time.time() * 1000)
-        success = self.contract_client.set_miner_account_size(self.MINER_HOTKEY, timestamp_ms)
+        # Get collateral balance to verify test injection works
+        collateral_balance_theta = self.contract_client.get_miner_collateral_balance(self.MINER_HOTKEY)
+        self.assertEqual(collateral_balance_theta, 1000.0, "Test balance should be 1000 theta")
 
-        # Verify success - this proves wallet reference is working
-        self.assertTrue(success, "Account size should be set successfully with wallet reference")
+        # Set account size via miner_account_client (uses collateral balance)
+        timestamp_ms = int(time.time() * 1000)
+        result = self.miner_account_client.set_miner_account_size(
+            self.MINER_HOTKEY,
+            collateral_balance_theta,
+            timestamp_ms
+        )
+
+        # Verify success - result should be a CollateralRecord dict
+        self.assertIsNotNone(result, "Account size should be set successfully")
+        self.assertIn('account_size', result)
 
         # Get account size to verify it was stored
-        account_size = self.contract_client.get_miner_account_size(self.MINER_HOTKEY, timestamp_ms, most_recent=True)
+        account_size = self.miner_account_client.get_miner_account_size(
+            self.MINER_HOTKEY,
+            timestamp_ms=timestamp_ms + (24 * 60 * 60 * 1000),  # Next day
+            most_recent=False
+        )
         self.assertIsNotNone(account_size)
         self.assertGreater(account_size, 0)
 
@@ -118,11 +133,14 @@ class TestContractManagerIntegration(TestBase):
         self.assertEqual(balance, 2000.0, "Balance retrieval should work with wallet")
 
         # Test 2: Verify account size operations work
-        success = self.contract_client.set_miner_account_size(self.MINER_HOTKEY)
-        self.assertTrue(success, "Account size operations should work with wallet")
+        result = self.miner_account_client.set_miner_account_size(
+            self.MINER_HOTKEY,
+            balance  # collateral_balance_theta
+        )
+        self.assertIsNotNone(result, "Account size operations should work")
 
         # Test 3: Verify get all account sizes works
-        all_sizes = self.contract_client.get_all_miner_account_sizes()
+        all_sizes = self.miner_account_client.get_all_miner_account_sizes()
         self.assertIn(self.MINER_HOTKEY, all_sizes, "Should retrieve all account sizes")
 
     def test_deposit_max_balance_concept(self):
@@ -139,8 +157,8 @@ class TestContractManagerIntegration(TestBase):
         self.assertEqual(balance, 5000.0)
 
         # Set account size should work with valid balance
-        success = self.contract_client.set_miner_account_size(self.MINER_HOTKEY)
-        self.assertTrue(success, "Account size should work with valid balance")
+        result = self.miner_account_client.set_miner_account_size(self.MINER_HOTKEY, balance)
+        self.assertIsNotNone(result, "Account size should work with valid balance")
 
     def test_error_handling_exists(self):
         """
@@ -288,15 +306,23 @@ class TestContractManagerIntegration(TestBase):
         test_balance_rao = 2_000_000_000_000  # 2000 theta
         self.contract_client.set_test_collateral_balance(self.MINER_HOTKEY, test_balance_rao)
 
-        # Set account size
-        timestamp_ms = int(time.time() * 1000)
-        success = self.contract_client.set_miner_account_size(self.MINER_HOTKEY, timestamp_ms)
+        # Get the balance to verify injection worked
+        collateral_balance_theta = self.contract_client.get_miner_collateral_balance(self.MINER_HOTKEY)
+        self.assertEqual(collateral_balance_theta, 2000.0, "Test balance should be 2000 theta")
 
-        # Verify success
-        self.assertTrue(success)
+        # Set account size via miner_account_client
+        timestamp_ms = int(time.time() * 1000)
+        result = self.miner_account_client.set_miner_account_size(
+            self.MINER_HOTKEY,
+            collateral_balance_theta,
+            timestamp_ms
+        )
+
+        # Verify success - result should be a CollateralRecord dict
+        self.assertIsNotNone(result)
 
         # Get account size and verify it was calculated from test balance
-        account_size = self.contract_client.get_miner_account_size(
+        account_size = self.miner_account_client.get_miner_account_size(
             self.MINER_HOTKEY,
             timestamp_ms=timestamp_ms + (24 * 60 * 60 * 1000),  # Next day
             most_recent=False
