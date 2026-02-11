@@ -329,6 +329,10 @@ class ValiConfig:
     FOREX_MIN_POSITION_SIZE_LOTS = 0.01  # 0.01 standard lots
     CRYPTO_MIN_POSITION_SIZE_USD = 10.0  # $10 USD
 
+    # Minimum position size limits
+    FOREX_MIN_POSITION_SIZE_LOTS = 0.01  # 0.01 standard lots
+    CRYPTO_MIN_POSITION_SIZE_USD = 10.0  # $10 USD
+
     MAX_DAILY_DRAWDOWN = 0.95  # Portfolio should never fall below .95 x of initial value when measured day to day
     MAX_TOTAL_DRAWDOWN = 0.9  # Portfolio should never fall below .90 x of initial value when measured at any instant
     MAX_TOTAL_DRAWDOWN_V2 = 0.95
