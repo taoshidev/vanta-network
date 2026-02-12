@@ -260,6 +260,7 @@ class MarketOrderManager():
         slippage_calc_ms = TimeUtil.now_in_millis() - step_start
         bt.logging.info(f"[ADD_ORDER_DETAIL] Slippage calculation took {slippage_calc_ms}ms")
 
+
         # Get balance and leverage bounds for USD-based validation
         if not balance:
             balance = self._miner_account_client.get_balance(miner_hotkey) or 0.0
@@ -273,6 +274,9 @@ class MarketOrderManager():
         buying_power = self._miner_account_client.get_buying_power(miner_hotkey)
         if self.running_unit_tests:
             buying_power = ValiConfig.MIN_CAPITAL
+
+        # Calculate transaction fee AFTER clamping based on final order value
+        transaction_fee = ValiConfig.TRANSACTION_FEE_MULTIPLIER.get(trade_pair.trade_pair_category, 0)
 
         # Validate order before processing cash balance (raises ValueError if invalid)
         # Note: validate_order_size may clamp order.value/quantity/leverage in place
