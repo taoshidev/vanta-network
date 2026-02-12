@@ -273,7 +273,8 @@ class MarketOrderManager():
         order_resized = existing_position.validate_order_size(order, max_position_value)
         if order.order_type == existing_position.position_type:
             if abs(order.value) * (1 + transaction_fee * account_multiplier) >= buying_power:
-                order.value = buying_power / (1 + transaction_fee * account_multiplier)
+                sign = (-1 if order.order_type == OrderType.SHORT else 1)
+                order.value = buying_power / (1 + transaction_fee * account_multiplier) * sign
                 order_resized = True
 
         if order_resized:
