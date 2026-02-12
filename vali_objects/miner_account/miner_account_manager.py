@@ -202,7 +202,9 @@ class MinerAccountManager(ValidatorBroadcastBase):
         self,
         running_unit_tests: bool = False,
         collateral_balance_getter=None,
-        connection_mode: RPCConnectionMode = RPCConnectionMode.RPC
+        connection_mode: RPCConnectionMode = RPCConnectionMode.RPC,
+        config=None,
+        is_testnet: bool = False
     ):
         """
         Initialize the manager.
@@ -213,7 +215,17 @@ class MinerAccountManager(ValidatorBroadcastBase):
                                        Signature: (hotkey: str) -> Optional[float]
                                        Returns balance in theta tokens, or None.
             connection_mode: RPC or LOCAL mode for asset selection client
+            config: Bittensor config (for ValidatorBroadcastBase)
+            is_testnet: Whether running on testnet (for ValidatorBroadcastBase)
         """
+        # Initialize ValidatorBroadcastBase first
+        super().__init__(
+            running_unit_tests=running_unit_tests,
+            is_testnet=is_testnet,
+            config=config,
+            connection_mode=connection_mode
+        )
+
         self.running_unit_tests = running_unit_tests
         self._collateral_balance_getter = collateral_balance_getter
         self.connection_mode = connection_mode
@@ -579,7 +591,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     return False
 
                 # Create a CollateralRecord object
-                is_first_record = hotkey not in self.miner_account_sizes or not self.miner_account_sizes[hotkey]
+                is_first_record = hotkey not in self.accounts or not self.accounts[hotkey].collateral_records
                 collateral_record = CollateralRecord(account_size, account_size_theta, update_time_ms, is_first_record)
 
                 # Get or create account
@@ -612,12 +624,10 @@ class MinerAccountManager(ValidatorBroadcastBase):
     def get_or_create(self, hotkey: str) -> MinerAccount:
         """Get existing account or create new one with zero realized PNL and zero capital used."""
         if hotkey not in self.accounts:
-            asset_selection = self._asset_selection_client.get_asset_selection(hotkey)
             self.accounts[hotkey] = MinerAccount(
                 miner_hotkey=hotkey,
                 total_realized_pnl=0.0,
                 capital_used=0.0,
-                asset_class=asset_selection,
             )
         return self.accounts[hotkey]
 

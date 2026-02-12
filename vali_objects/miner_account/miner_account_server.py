@@ -37,37 +37,30 @@ class MinerAccountServer(RPCServerBase):
 
     def __init__(
         self,
-        config=None,
         running_unit_tests=False,
-        is_backtesting=False,
-        slack_notifier=None,
         start_server=True,
+        start_daemon=True,
         connection_mode: RPCConnectionMode = RPCConnectionMode.RPC,
-        collateral_balance_getter=None
+        collateral_balance_getter=None,
+        config=None,
+        is_testnet=False
     ):
         """
         Initialize MinerAccountServer.
 
         Args:
-            config: Bittensor config (for ValidatorBroadcastBase)
             running_unit_tests: Whether running in test mode
-            is_backtesting: Whether backtesting
-            slack_notifier: Slack notifier for health check alerts
             start_server: Whether to start RPC server immediately
+            start_daemon: Whether to start daemon immediately
             connection_mode: RPC or LOCAL mode
             collateral_balance_getter: Callable to get collateral balance for a hotkey
+            config: Bittensor config (for ValidatorBroadcastBase)
+            is_testnet: Whether running on testnet
         """
-        # Create mock config if running tests and config not provided
-        if running_unit_tests:
-            from shared_objects.rpc.test_mock_factory import TestMockFactory
-            config = TestMockFactory.create_mock_config_if_needed(config, netuid=116, network="test")
-
-        # Derive is_testnet from config
-        is_testnet = config.subtensor.network == "test" if config else False
-
         # Create the manager FIRST, before RPCServerBase.__init__
         self._manager = MinerAccountManager(
             running_unit_tests=running_unit_tests,
+            collateral_balance_getter=collateral_balance_getter,
             connection_mode=connection_mode,
             config=config,
             is_testnet=is_testnet
@@ -87,12 +80,16 @@ class MinerAccountServer(RPCServerBase):
             service_name=ValiConfig.RPC_MINERACCOUNT_SERVICE_NAME,
             port=ValiConfig.RPC_MINERACCOUNT_PORT,
             connection_mode=connection_mode,
-            slack_notifier=slack_notifier,
+            slack_notifier=None,
             start_server=start_server,
-            start_daemon=False,  # Daemon started later via orchestrator
+            start_daemon=False,  # We'll start daemon after full initialization
             daemon_interval_s=daemon_interval_s,
             hang_timeout_s=hang_timeout_s,
         )
+
+        # Start daemon if requested (deferred until all initialization complete)
+        if start_daemon:
+            self.start_daemon()
 
     # ==================== RPCServerBase Abstract Methods ====================
 
