@@ -364,7 +364,7 @@ class PropNetOrderPlacer:
 
         # Determine MOTHERSHIP validator hotkey based on network
         mothership_hotkey = ValiConfig.MOTHERSHIP_HOTKEY_TESTNET if self.is_testnet else ValiConfig.MOTHERSHIP_HOTKEY
-        bt.logging.info(f"Using MOTHERSHIP hotkey: {mothership_hotkey} (testnet={self.is_testnet})")
+        bt.logging.info(f"[PROP_NET_ORDER] process_signal_for_rest Using MOTHERSHIP hotkey: {mothership_hotkey} (testnet={self.is_testnet})")
 
         try:
             # Get validators sorted by trust
@@ -377,6 +377,7 @@ class PropNetOrderPlacer:
             bt.logging.info(f"Found {len(axons_to_try)} validators to try: {validator_hotkeys}")
             mothership_in_list = mothership_hotkey in validator_hotkeys
             bt.logging.info(f"Mothership hotkey {mothership_hotkey} in validator list: {mothership_in_list}")
+            bt.logging.info(f"[HOTKEY_TO_VTRUST] {hotkey_to_v_trust}")
 
             # Update metrics
             metrics.validators_attempted = len(axons_to_try)
@@ -397,6 +398,8 @@ class PropNetOrderPlacer:
 
             # Track the high-trust validators
             high_trust_validators = self.get_high_trust_validators(axons_to_try, hotkey_to_v_trust)
+            if mothership_hotkey not in high_trust_validators:
+                high_trust_validators.append(mothership_hotkey)
             metrics.high_trust_total = len(high_trust_validators)
 
             # Thread-safe UUID check
@@ -655,9 +658,10 @@ class PropNetOrderPlacer:
                             daemon=True
                         )
                         thread.start()
+                    retry_status['retry_attempts'] = self.MAX_RETRIES
                 else:
                     # MOTHERSHIP not in list, fall back to querying all and waiting
-                    bt.logging.warning(f"MOTHERSHIP {mothership_hotkey} not in validator list, querying all")
+                    bt.logging.warning(f"[ATTEMPT_SIGNAL] MOTHERSHIP {mothership_hotkey} not in validator list, querying all")
                     try:
                         responses = await dendrite.aquery(axons, send_signal_request)
                         validator_responses = [r for r in responses if r is not None]
