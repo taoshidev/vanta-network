@@ -18,11 +18,12 @@ import bittensor as bt
 from time_util.time_util import TimeUtil
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
-from vali_objects.vali_config import ValiConfig, TradePairCategory
+from vali_objects.vali_config import ValiConfig, TradePairCategory, RPCConnectionMode
 from vali_objects.utils.vali_utils import ValiUtils
 from entity_management.entity_manager import EntityManager, EntityData, SubaccountInfo
 from vali_objects.utils.asset_selection.asset_selection_manager import AssetSelectionManager
 from vali_objects.contract.validator_contract_manager import ValidatorContractManager
+from vali_objects.miner_account.miner_account_manager import MinerAccountManager
 
 
 class TestBroadcastIntegration(TestBase):
@@ -42,6 +43,7 @@ class TestBroadcastIntegration(TestBase):
     entity_client = None
     asset_selection_client = None
     contract_client = None
+    miner_account_client = None
     metagraph_client = None
     subtensor_ops_client = None
 
@@ -68,6 +70,7 @@ class TestBroadcastIntegration(TestBase):
         cls.entity_client = cls.orchestrator.get_client('entity')
         cls.asset_selection_client = cls.orchestrator.get_client('asset_selection')
         cls.contract_client = cls.orchestrator.get_client('contract')
+        cls.miner_account_client = cls.orchestrator.get_client('miner_account')
         cls.metagraph_client = cls.orchestrator.get_client('metagraph')
         cls.subtensor_ops_client = cls.orchestrator.get_client('subtensor_ops')
 
@@ -137,7 +140,6 @@ class TestBroadcastIntegration(TestBase):
         # 1. Mothership registers an entity
         success, msg = mothership_manager.register_entity(
             entity_hotkey=self.TEST_ENTITY_HOTKEY,
-            max_subaccounts=5
         )
         self.assertTrue(success, f"Entity registration failed: {msg}")
 
@@ -185,7 +187,7 @@ class TestBroadcastIntegration(TestBase):
             # 4. Non-mothership receives broadcast
             result = non_mothership_manager.receive_subaccount_registration_update(
                 subaccount_data=subaccount_data,
-                sender_hotkey=self.MOTHERSHIP_HOTKEY  # Sender is mothership
+                sender_hotkey=ValiConfig.MOTHERSHIP_HOTKEY_TESTNET
             )
 
             self.assertTrue(result, "Broadcast reception failed")
@@ -325,9 +327,9 @@ class TestBroadcastIntegration(TestBase):
             "asset_selection": asset_class.value
         }
 
-        # Set MOTHERSHIP_HOTKEY for verification
-        original_mothership_hotkey = ValiConfig.MOTHERSHIP_HOTKEY
-        ValiConfig.MOTHERSHIP_HOTKEY = self.MOTHERSHIP_HOTKEY
+        # Set MOTHERSHIP_HOTKEY_TESTNET for verification (netuid=116 is testnet)
+        original_mothership_hotkey = ValiConfig.MOTHERSHIP_HOTKEY_TESTNET
+        ValiConfig.MOTHERSHIP_HOTKEY_TESTNET = self.MOTHERSHIP_HOTKEY
 
         try:
             # 3. Non-mothership receives broadcast
@@ -350,7 +352,7 @@ class TestBroadcastIntegration(TestBase):
                 f"  - Miner: {self.TEST_MINER_HOTKEY}"
             )
         finally:
-            ValiConfig.MOTHERSHIP_HOTKEY = original_mothership_hotkey
+            ValiConfig.MOTHERSHIP_HOTKEY_TESTNET = original_mothership_hotkey
 
     def test_asset_selection_manager_reject_unauthorized_broadcast(self):
         """
@@ -375,9 +377,9 @@ class TestBroadcastIntegration(TestBase):
             "asset_selection": "crypto"
         }
 
-        # Set MOTHERSHIP_HOTKEY
-        original_mothership_hotkey = ValiConfig.MOTHERSHIP_HOTKEY
-        ValiConfig.MOTHERSHIP_HOTKEY = self.MOTHERSHIP_HOTKEY
+        # Set MOTHERSHIP_HOTKEY_TESTNET (netuid=116 is testnet)
+        original_mothership_hotkey = ValiConfig.MOTHERSHIP_HOTKEY_TESTNET
+        ValiConfig.MOTHERSHIP_HOTKEY_TESTNET = self.MOTHERSHIP_HOTKEY
 
         try:
             # Attempt unauthorized broadcast
@@ -395,11 +397,11 @@ class TestBroadcastIntegration(TestBase):
 
             bt.logging.success("✓ Unauthorized AssetSelection broadcast rejected")
         finally:
-            ValiConfig.MOTHERSHIP_HOTKEY = original_mothership_hotkey
+            ValiConfig.MOTHERSHIP_HOTKEY_TESTNET = original_mothership_hotkey
 
-    # ==================== ValidatorContractManager Broadcast Tests ====================
+    # ==================== MinerAccountManager Broadcast Tests ====================
 
-    def test_contract_manager_collateral_record_broadcast_mothership_to_receiver(self):
+    def test_miner_account_manager_collateral_record_broadcast_mothership_to_receiver(self):
         """
         Test CollateralRecord broadcast from mothership to other validators.
 
@@ -408,7 +410,7 @@ class TestBroadcastIntegration(TestBase):
         2. Non-mothership validator receives broadcast
         3. Non-mothership validator processes and persists the record
 
-        NOTE: Uses test collateral balance injection to avoid blockchain calls.
+        NOTE: Uses MinerAccountManager directly for collateral updates.
         """
         # Create mothership manager
         mothership_config = SimpleNamespace(
@@ -417,27 +419,24 @@ class TestBroadcastIntegration(TestBase):
             subtensor=SimpleNamespace(network="test")
         )
 
-        mothership_manager = ValidatorContractManager(
-            config=mothership_config,
+        mothership_manager = MinerAccountManager(
             running_unit_tests=True,
-            is_backtesting=False
+            connection_mode=RPCConnectionMode.LOCAL,
+            config=mothership_config,
+            is_testnet=True
         )
-        mothership_manager.is_mothership = True
-
-        # Inject test collateral balance to avoid blockchain call
-        # 1000 theta = 1000 * 10^9 rao
-        test_balance_rao = 1000 * 10**9
-        mothership_manager.set_test_collateral_balance(self.TEST_MINER_HOTKEY, test_balance_rao)
 
         # 1. Mothership sets account size
         timestamp_ms = TimeUtil.now_in_millis()
-        success = mothership_manager.set_miner_account_size(
+        test_balance_theta = 1000.0
+        collateral_record = mothership_manager.set_miner_account_size(
             hotkey=self.TEST_MINER_HOTKEY,
+            collateral_balance_theta=test_balance_theta,
             timestamp_ms=timestamp_ms
         )
-        self.assertTrue(success, "Failed to set account size")
+        self.assertIsNotNone(collateral_record, "Failed to set account size")
 
-        # Get the collateral record from mothership
+        # Get the account size from mothership
         account_size = mothership_manager.get_miner_account_size(
             hotkey=self.TEST_MINER_HOTKEY,
             most_recent=True
@@ -451,30 +450,29 @@ class TestBroadcastIntegration(TestBase):
             subtensor=SimpleNamespace(network="test")
         )
 
-        non_mothership_manager = ValidatorContractManager(
-            config=non_mothership_config,
+        non_mothership_manager = MinerAccountManager(
             running_unit_tests=True,
-            is_backtesting=False
+            connection_mode=RPCConnectionMode.LOCAL,
+            config=non_mothership_config,
+            is_testnet=True
         )
-        non_mothership_manager.is_mothership = False
 
         # Prepare broadcast data
-        collateral_balance_theta = mothership_manager.to_theta(test_balance_rao)
         expected_account_size = min(
             ValiConfig.MAX_COLLATERAL_BALANCE_THETA,
-            collateral_balance_theta
+            test_balance_theta
         ) * ValiConfig.COST_PER_THETA
 
         collateral_record_data = {
             "hotkey": self.TEST_MINER_HOTKEY,
             "account_size": expected_account_size,
-            "account_size_theta": collateral_balance_theta,
+            "account_size_theta": test_balance_theta,
             "update_time_ms": timestamp_ms
         }
 
-        # Set MOTHERSHIP_HOTKEY
-        original_mothership_hotkey = ValiConfig.MOTHERSHIP_HOTKEY
-        ValiConfig.MOTHERSHIP_HOTKEY = self.MOTHERSHIP_HOTKEY
+        # Set MOTHERSHIP_HOTKEY_TESTNET (netuid=116, network="test" is testnet)
+        original_mothership_hotkey = ValiConfig.MOTHERSHIP_HOTKEY_TESTNET
+        ValiConfig.MOTHERSHIP_HOTKEY_TESTNET = self.MOTHERSHIP_HOTKEY
 
         try:
             # 3. Non-mothership receives broadcast
@@ -500,9 +498,9 @@ class TestBroadcastIntegration(TestBase):
                 f"  - Miner: {self.TEST_MINER_HOTKEY}"
             )
         finally:
-            ValiConfig.MOTHERSHIP_HOTKEY = original_mothership_hotkey
+            ValiConfig.MOTHERSHIP_HOTKEY_TESTNET = original_mothership_hotkey
 
-    def test_contract_manager_reject_unauthorized_broadcast(self):
+    def test_miner_account_manager_reject_unauthorized_broadcast(self):
         """
         Test that non-mothership collateral record broadcasts are rejected.
         """
@@ -513,12 +511,12 @@ class TestBroadcastIntegration(TestBase):
             subtensor=SimpleNamespace(network="test")
         )
 
-        receiver_manager = ValidatorContractManager(
-            config=receiver_config,
+        receiver_manager = MinerAccountManager(
             running_unit_tests=True,
-            is_backtesting=False
+            connection_mode=RPCConnectionMode.LOCAL,
+            config=receiver_config,
+            is_testnet=True
         )
-        receiver_manager.is_mothership = False
 
         # Fake broadcast data
         timestamp_ms = TimeUtil.now_in_millis()
@@ -589,7 +587,7 @@ class TestBroadcastIntegration(TestBase):
                 is_backtesting=False
             )
             entity_mothership.is_mothership = True
-            entity_mothership.register_entity(self.TEST_ENTITY_HOTKEY, max_subaccounts=5)
+            entity_mothership.register_entity(self.TEST_ENTITY_HOTKEY)
             success, subaccount_info, msg = entity_mothership.create_subaccount(self.TEST_ENTITY_HOTKEY, account_size=100_000, asset_class="crypto")
             self.assertTrue(success)
 
@@ -608,7 +606,7 @@ class TestBroadcastIntegration(TestBase):
                     "account_size": 100_000,
                     "asset_class": "crypto"
                 },
-                sender_hotkey=self.MOTHERSHIP_HOTKEY
+                sender_hotkey=ValiConfig.MOTHERSHIP_HOTKEY_TESTNET
             )
             self.assertTrue(result)
 
@@ -631,42 +629,44 @@ class TestBroadcastIntegration(TestBase):
                     "hotkey": self.TEST_MINER_HOTKEY,
                     "asset_selection": "crypto"
                 },
-                sender_hotkey=self.MOTHERSHIP_HOTKEY
+                sender_hotkey=ValiConfig.MOTHERSHIP_HOTKEY_TESTNET
             )
             self.assertTrue(result)
 
-            # 3. ValidatorContractManager broadcast
-            contract_mothership = ValidatorContractManager(
+            # 3. MinerAccountManager broadcast
+            account_mothership = MinerAccountManager(
+                running_unit_tests=True,
+                connection_mode=RPCConnectionMode.LOCAL,
                 config=mothership_config,
-                running_unit_tests=True,
-                is_backtesting=False
+                is_testnet=True
             )
-            contract_mothership.is_mothership = True
-            test_balance_rao = 1000 * 10**9
-            contract_mothership.set_test_collateral_balance(self.TEST_MINER_HOTKEY, test_balance_rao)
+            test_balance_theta = 1000.0
             timestamp_ms = TimeUtil.now_in_millis()
-            success = contract_mothership.set_miner_account_size(self.TEST_MINER_HOTKEY, timestamp_ms)
-            self.assertTrue(success)
-
-            contract_receiver = ValidatorContractManager(
-                config=non_mothership_config,
-                running_unit_tests=True,
-                is_backtesting=False
+            collateral_record = account_mothership.set_miner_account_size(
+                self.TEST_MINER_HOTKEY,
+                test_balance_theta,
+                timestamp_ms
             )
-            contract_receiver.is_mothership = False
-            collateral_balance_theta = contract_mothership.to_theta(test_balance_rao)
+            self.assertIsNotNone(collateral_record)
+
+            account_receiver = MinerAccountManager(
+                running_unit_tests=True,
+                connection_mode=RPCConnectionMode.LOCAL,
+                config=non_mothership_config,
+                is_testnet=True
+            )
             account_size = min(
                 ValiConfig.MAX_COLLATERAL_BALANCE_THETA,
-                collateral_balance_theta
+                test_balance_theta
             ) * ValiConfig.COST_PER_THETA
-            result = contract_receiver.receive_collateral_record_update(
+            result = account_receiver.receive_collateral_record_update(
                 {
                     "hotkey": self.TEST_MINER_HOTKEY,
                     "account_size": account_size,
-                    "account_size_theta": collateral_balance_theta,
+                    "account_size_theta": test_balance_theta,
                     "update_time_ms": timestamp_ms
                 },
-                sender_hotkey=self.MOTHERSHIP_HOTKEY
+                sender_hotkey=ValiConfig.MOTHERSHIP_HOTKEY_TESTNET
             )
             self.assertTrue(result)
 
@@ -678,7 +678,7 @@ class TestBroadcastIntegration(TestBase):
             asset_selection = asset_receiver.get_asset_selection(self.TEST_MINER_HOTKEY)
             self.assertEqual(asset_selection, TradePairCategory.CRYPTO)
 
-            received_account_size = contract_receiver.get_miner_account_size(
+            received_account_size = account_receiver.get_miner_account_size(
                 self.TEST_MINER_HOTKEY,
                 most_recent=True
             )
@@ -688,7 +688,7 @@ class TestBroadcastIntegration(TestBase):
                 "✓ All managers broadcast test passed:\n"
                 "  - EntityManager: SubaccountRegistration broadcast successful\n"
                 "  - AssetSelectionManager: AssetSelection broadcast successful\n"
-                "  - ValidatorContractManager: CollateralRecord broadcast successful"
+                "  - MinerAccountManager: CollateralRecord broadcast successful"
             )
         finally:
             ValiConfig.MOTHERSHIP_HOTKEY = original_mothership_hotkey

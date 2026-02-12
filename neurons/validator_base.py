@@ -19,24 +19,19 @@ class ValidatorBase:
         self._asset_selection_client = asset_selection_client
         self.subtensor = subtensor
 
-        # Create own ContractClient (forward compatibility - no parameter passing)
-        from vali_objects.contract.contract_client import ContractClient
-        self._contract_client = ContractClient(running_unit_tests=False)
-
         # Create own EntityClient (forward compatibility - no parameter passing)
         from entity_management.entity_client import EntityClient
         self._entity_client = EntityClient(running_unit_tests=False)
+
+        # Create own MinerAccountClient for receiving collateral updates
+        from vali_objects.miner_account.miner_account_client import MinerAccountClient
+        self._miner_account_client = MinerAccountClient(running_unit_tests=False)
 
         self.wire_axon()
 
         # Each hotkey gets a unique identity (UID) in the network for differentiation.
         my_subnet_uid = self.metagraph_client.get_hotkeys().index(self.wallet.hotkey.ss58_address)
         bt.logging.info(f"Running validator on uid: {my_subnet_uid}")
-
-    @property
-    def contract_manager(self):
-        """Get contract client (forward compatibility - created internally)."""
-        return self._contract_client
 
     def receive_signal(self, synapse: template.protocol.SendSignal) -> template.protocol.SendSignal:
         """
@@ -170,7 +165,7 @@ class ValidatorBase:
             blacklist_fn=gp_blacklist_fn
         )
         self.axon.attach(
-            forward_fn=self._contract_client.receive_collateral_record,
+            forward_fn=self._miner_account_client.receive_collateral_record,
             blacklist_fn=cr_blacklist_fn
         )
         self.axon.attach(

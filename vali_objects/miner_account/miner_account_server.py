@@ -18,6 +18,8 @@ Usage:
 """
 import bittensor as bt
 from typing import Optional, Dict, List, Any
+
+import template.protocol
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode, TradePairCategory
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from shared_objects.rpc.rpc_server_base import RPCServerBase
@@ -39,7 +41,9 @@ class MinerAccountServer(RPCServerBase):
         start_server=True,
         start_daemon=True,
         connection_mode: RPCConnectionMode = RPCConnectionMode.RPC,
-        collateral_balance_getter=None
+        collateral_balance_getter=None,
+        config=None,
+        is_testnet=False
     ):
         """
         Initialize MinerAccountServer.
@@ -50,12 +54,16 @@ class MinerAccountServer(RPCServerBase):
             start_daemon: Whether to start daemon immediately
             connection_mode: RPC or LOCAL mode
             collateral_balance_getter: Callable to get collateral balance for a hotkey
+            config: Bittensor config (for ValidatorBroadcastBase)
+            is_testnet: Whether running on testnet
         """
         # Create the manager FIRST, before RPCServerBase.__init__
         self._manager = MinerAccountManager(
             running_unit_tests=running_unit_tests,
             collateral_balance_getter=collateral_balance_getter,
-            connection_mode=connection_mode
+            connection_mode=connection_mode,
+            config=config,
+            is_testnet=is_testnet
         )
 
         # Store is_mothership status (set by contract manager later)
@@ -174,9 +182,43 @@ class MinerAccountServer(RPCServerBase):
         """Reload account sizes from disk."""
         self._manager.re_init_account_sizes()
 
-    def receive_collateral_record_update(self, collateral_record_data: dict, sender_hotkey: str=None) -> bool:
-        """Process an incoming CollateralRecord synapse."""
-        return self._manager.receive_collateral_record_update(collateral_record_data, sender_hotkey)
+    def receive_collateral_record_rpc(self, synapse: template.protocol.CollateralRecord) -> template.protocol.CollateralRecord:
+        """
+        Receive collateral record update synapse (for axon attachment).
+
+        This method is called when a CollateralRecord broadcast is received from another validator.
+
+        Args:
+            synapse: CollateralRecord synapse from the sending validator
+
+        Returns:
+            Updated synapse with successfully_processed and error_message fields
+        """
+        try:
+            sender_hotkey = synapse.dendrite.hotkey
+            bt.logging.info(f"Received collateral record update from validator hotkey [{sender_hotkey}].")
+
+            # Extract collateral record data from synapse
+            collateral_record_data = synapse.collateral_record
+
+            # Process the update through the manager
+            success = self._manager.receive_collateral_record_update(collateral_record_data, sender_hotkey)
+
+            if success:
+                synapse.successfully_processed = True
+                synapse.error_message = ""
+                bt.logging.info(f"Successfully processed CollateralRecord synapse from {sender_hotkey}")
+            else:
+                synapse.successfully_processed = False
+                synapse.error_message = "Failed to process collateral record update"
+                bt.logging.warning(f"Failed to process CollateralRecord synapse from {sender_hotkey}")
+
+        except Exception as e:
+            synapse.successfully_processed = False
+            synapse.error_message = f"Error processing collateral record: {str(e)}"
+            bt.logging.error(f"Exception in receive_collateral_record: {e}")
+
+        return synapse
 
     # ==================== MinerAccount Cache Methods ====================
 

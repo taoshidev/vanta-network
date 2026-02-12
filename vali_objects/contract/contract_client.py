@@ -1,6 +1,5 @@
 from typing import Optional, Dict, Any
 
-import template.protocol
 from shared_objects.rpc.rpc_client_base import RPCClientBase
 from vali_objects.contract.contract_server import ContractServer
 from vali_objects.vali_config import RPCConnectionMode, ValiConfig
@@ -86,11 +85,7 @@ class ContractClient(RPCClientBase):
         """Query withdrawal request (preview only - no execution)."""
         return self._server.query_withdrawal_request_rpc(amount, miner_hotkey)
 
-    # ==================== CollateralRecord Methods ====================
-
-    def receive_collateral_record(self, synapse: template.protocol.CollateralRecord) -> template.protocol.CollateralRecord:
-        """Receive collateral record update synapse (for axon attachment)."""
-        return self._server.receive_collateral_record_rpc(synapse)
+    # ==================== Verification Methods ====================
 
     def verify_coldkey_owns_hotkey(self, coldkey_ss58: str, hotkey_ss58: str) -> bool:
         """Verify that a coldkey owns a specific hotkey using subtensor."""

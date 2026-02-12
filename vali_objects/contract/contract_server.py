@@ -24,8 +24,6 @@ import time
 from setproctitle import setproctitle
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 from shared_objects.rpc.rpc_server_base import RPCServerBase
-import template.protocol
-from vali_objects.miner_account.miner_account_client import MinerAccountClient
 
 
 # ==================== Server Implementation ====================
@@ -81,9 +79,6 @@ class ContractServer(RPCServerBase):
             connection_mode=connection_mode
         )
 
-        # MinerAccountClient for receive_collateral_record synapse handling
-        self._miner_account_client = MinerAccountClient(connection_mode=connection_mode)
-
         # Initialize RPCServerBase (may start RPC server immediately if start_server=True)
         # At this point, self._manager exists, so RPC calls won't fail
         RPCServerBase.__init__(
@@ -108,31 +103,6 @@ class ContractServer(RPCServerBase):
     def get_health_check_details(self) -> dict:
         """Add service-specific health check details."""
         return self._manager.health_check()
-
-    # ==================== CollateralRecord RPC Methods ====================
-
-    def receive_collateral_record_rpc(self, synapse: template.protocol.CollateralRecord) -> template.protocol.CollateralRecord:
-        """Receive collateral record update, and update miner account sizes."""
-        try:
-            sender_hotkey = synapse.dendrite.hotkey
-            bt.logging.info(f"Received collateral record update from validator hotkey [{sender_hotkey}].")
-            success = self._miner_account_client.receive_collateral_record_update(synapse.collateral_record)
-
-            if success:
-                synapse.successfully_processed = True
-                synapse.error_message = ""
-                bt.logging.info(f"Successfully processed CollateralRecord synapse from {sender_hotkey}")
-            else:
-                synapse.successfully_processed = False
-                synapse.error_message = "Failed to process collateral record update"
-                bt.logging.warning(f"Failed to process CollateralRecord synapse from {sender_hotkey}")
-
-        except Exception as e:
-            synapse.successfully_processed = False
-            synapse.error_message = f"Error processing collateral record: {str(e)}"
-            bt.logging.error(f"Exception in receive_collateral_record: {e}")
-
-        return synapse
 
     # ==================== Collateral RPC Methods (from ValidatorContractManager) ====================
 
@@ -217,9 +187,6 @@ class ContractServer(RPCServerBase):
 
     def get_slashed_collateral(self) -> int:
         return self._manager.get_slashed_collateral()
-
-    def receive_collateral_record(self, synapse: template.protocol.CollateralRecord) -> template.protocol.CollateralRecord:
-        return self.receive_collateral_record_rpc(synapse)
 
     def verify_coldkey_owns_hotkey(self, coldkey_ss58: str, hotkey_ss58: str) -> bool:
         return self._manager.verify_coldkey_owns_hotkey(coldkey_ss58, hotkey_ss58)
