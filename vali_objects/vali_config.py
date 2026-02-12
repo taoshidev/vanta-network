@@ -476,6 +476,12 @@ class ValiConfig:
         TradePairCategory.INDICES: 10,
         TradePairCategory.EQUITIES: 2,
     }
+    TRANSACTION_FEE_MULTIPLIER = {
+        TradePairCategory.CRYPTO: 0.001,
+        TradePairCategory.FOREX: 0,
+        TradePairCategory.INDICES: 0,
+        TradePairCategory.EQUITIES: 0,
+    }
 
     SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR = 4
 
