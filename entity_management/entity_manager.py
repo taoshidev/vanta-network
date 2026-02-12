@@ -384,6 +384,7 @@ class EntityManager(ValidatorBroadcastBase):
 
             # Calculate required collateral: account_size / ENTITY_COST_PER_THETA
             required_theta = account_size / ValiConfig.ENTITY_COST_PER_THETA
+            current_balance = None  # dummy init for collateral tracking on miner
 
             # Verify collateral balance
             try:
@@ -508,7 +509,8 @@ class EntityManager(ValidatorBroadcastBase):
                 f"{synthetic_hotkey}, account_size=${account_size}, asset_class={asset_class}, "
                 f"status=pending, slashing {required_theta} theta in background ({total_ms} ms) | timings: {timings}"
             )
-            return True, subaccount_info, "Subaccount creation initiated - slashing in progress"
+            remaining_theta = (current_balance - required_theta) if current_balance else 0.0
+            return True, subaccount_info, f"Subaccount creation initiated - slashing {required_theta} theta, {remaining_theta:.2f} theta remaining"
 
     def _complete_subaccount_slashing(
         self,
