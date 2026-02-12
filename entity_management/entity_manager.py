@@ -43,11 +43,8 @@ from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_client import DebtLed
 from vali_objects.contract.contract_client import ContractClient
 from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
 from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
-from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
-from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import TP_ID_PORTFOLIO
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from time_util.time_util import TimeUtil
-from vanta_api.websocket_notifier import WebSocketNotifierClient
 
 
 class SubaccountInfo(BaseModel):
@@ -217,19 +214,6 @@ class EntityManager(ValidatorBroadcastBase):
             running_unit_tests=running_unit_tests
         )
 
-        # Create PerfLedgerClient for real-time HWM data
-        self._perf_ledger_client = PerfLedgerClient(
-            connection_mode=connection_mode,
-            connect_immediately=False,
-            running_unit_tests=running_unit_tests
-        )
-
-        # Create WebSocketNotifierClient for real-time dashboard updates
-        self._websocket_client = WebSocketNotifierClient(
-            connection_mode=connection_mode,
-            connect_immediately=False
-        )
-
         self.ENTITY_FILE = ValiBkpUtils.get_entity_file_location(running_unit_tests=running_unit_tests)
 
         # Load initial entities from disk
@@ -359,8 +343,7 @@ class EntityManager(ValidatorBroadcastBase):
         self,
         entity_hotkey: str,
         account_size: float,
-        asset_class: str,
-        admin: bool = False
+        asset_class: str
     ) -> Tuple[bool, Optional[SubaccountInfo], str]:
         """
         Create a new subaccount for an entity.
@@ -372,8 +355,6 @@ class EntityManager(ValidatorBroadcastBase):
             entity_hotkey: The VANTA_ENTITY_HOTKEY
             account_size: Account size in USD (immutable once set, max 100k)
             asset_class: Asset class selection (immutable once set)
-            admin: If True, skip collateral slashing and set status to "admin".
-                   Admin subaccounts are excluded from entity aggregation and payouts.
 
         Returns:
             (success: bool, subaccount_info: Optional[SubaccountInfo], message: str)
@@ -402,7 +383,7 @@ class EntityManager(ValidatorBroadcastBase):
                 return False, None, f"Entity {entity_hotkey} has reached maximum subaccounts ({ValiConfig.ENTITY_MAX_SUBACCOUNTS})"
 
             # Calculate required collateral: account_size / ENTITY_COST_PER_THETA
-            required_theta = account_size / ValiConfig.ENTITY_COST_PER_THETA if not admin else 0
+            required_theta = account_size / ValiConfig.ENTITY_COST_PER_THETA
             current_balance = None  # dummy init for collateral tracking on miner
 
             # Verify collateral balance
@@ -487,16 +468,13 @@ class EntityManager(ValidatorBroadcastBase):
                 self._miner_account_client.delete_miner_account_size(synthetic_hotkey)
                 return False, None, f"Error creating subaccount: {str(e)}"
 
-            # Create subaccount info
-            # Admin subaccounts get "admin" status (no slashing, excluded from payouts)
-            # Regular subaccounts get "pending" status (slashing happens async)
+            # Create subaccount info with "pending" status (slashing happens async)
             now_ms = TimeUtil.now_in_millis()
-            initial_status = "admin" if admin else "pending"
             subaccount_info = SubaccountInfo(
                 subaccount_id=subaccount_id,
                 subaccount_uuid=subaccount_uuid,
                 synthetic_hotkey=synthetic_hotkey,
-                status=initial_status,
+                status="pending",
                 created_at_ms=now_ms,
                 account_size=account_size,
                 asset_class=asset_class
@@ -512,8 +490,8 @@ class EntityManager(ValidatorBroadcastBase):
             self._write_entities_from_memory_to_disk()
             timings['write_to_disk'] = int((time.time() - t0) * 1000)
 
-            # Start background slashing thread (not in unit tests, not for admin)
-            if not self.running_unit_tests and not admin:
+            # Start background slashing thread (not in unit tests)
+            if not self.running_unit_tests:
                 thread = threading.Thread(
                     target=self._complete_subaccount_slashing,
                     args=(subaccount_id, entity_hotkey, synthetic_hotkey, required_theta),
@@ -521,21 +499,18 @@ class EntityManager(ValidatorBroadcastBase):
                 )
                 thread.start()
             else:
-                # In tests or admin: mark as active immediately (skip slashing)
-                # Admin subaccounts keep "admin" status, test subaccounts become "active"
-                if not admin:
-                    subaccount_info.status = "active"
+                # In tests, mark as active immediately (skip slashing)
+                subaccount_info.status = "active"
                 self._write_entities_from_memory_to_disk()
 
             total_ms = int((time.time() - t_start) * 1000)
-
             bt.logging.info(
                 f"[ENTITY_MANAGER] Created subaccount {subaccount_id} for entity {entity_hotkey}: "
                 f"{synthetic_hotkey}, account_size=${account_size}, asset_class={asset_class}, "
-                f"status={initial_status}, slashing {required_theta} theta in background ({total_ms} ms) | timings: {timings}"
+                f"status=pending, slashing {required_theta} theta in background ({total_ms} ms) | timings: {timings}"
             )
             remaining_theta = (current_balance - required_theta) if current_balance else 0.0
-            return True, subaccount_info, f"[{initial_status}] Subaccount creation - slashing {required_theta} theta, {remaining_theta:.2f} theta remaining"
+            return True, subaccount_info, f"Subaccount creation initiated - slashing {required_theta} theta, {remaining_theta:.2f} theta remaining"
 
     def _complete_subaccount_slashing(
         self,
@@ -565,22 +540,6 @@ class EntityManager(ValidatorBroadcastBase):
                     subaccount.status = "failed"
                     bt.logging.error(f"[ENTITY_MANAGER] Slashing failed for {synthetic_hotkey}")
                 self._write_entities_from_memory_to_disk()
-
-            # Broadcast status update to other validators after slashing completes
-            if slash_success:
-                self.broadcast_subaccount_registration(
-                    entity_hotkey=entity_hotkey,
-                    subaccount_id=subaccount_id,
-                    subaccount_uuid=subaccount.subaccount_uuid,
-                    synthetic_hotkey=synthetic_hotkey,
-                    account_size=subaccount.account_size,
-                    asset_class=subaccount.asset_class,
-                    status="active"
-                )
-
-            # Broadcast dashboard update to WebSocket subscribers after slashing completes
-            self.broadcast_subaccount_dashboard(synthetic_hotkey)
-
         except Exception as e:
             bt.logging.error(f"[ENTITY_MANAGER] Slashing error for {synthetic_hotkey}: {e}")
             # Mark as failed
@@ -592,9 +551,6 @@ class EntityManager(ValidatorBroadcastBase):
                     if subaccount:
                         subaccount.status = "failed"
                         self._write_entities_from_memory_to_disk()
-
-            # Broadcast dashboard update even on failure so clients see the status change
-            self.broadcast_subaccount_dashboard(synthetic_hotkey)
 
     def eliminate_subaccount(
         self,
@@ -725,24 +681,6 @@ class EntityManager(ValidatorBroadcastBase):
         if not synthetic_hotkey:
             return None
 
-        entity_hotkey, subaccount_id = parse_synthetic_hotkey(synthetic_hotkey)
-        if not entity_hotkey or not subaccount_id:
-            return None
-        entity_data = self.get_entity_data(entity_hotkey)
-        if not entity_data:
-            return None
-        subaccount = entity_data.subaccounts.get(subaccount_id)
-        if not subaccount:
-            return None
-
-        if subaccount.status == "admin":
-            return {
-                'hotkey': synthetic_hotkey,
-                'total_checkpoints': 0,
-                'checkpoints': {},
-                'payout': 0
-            }
-
         # Get debt ledger for this hotkey
         try:
             debt_ledger = self._debt_ledger_client.get_ledger(synthetic_hotkey)
@@ -811,7 +749,7 @@ class EntityManager(ValidatorBroadcastBase):
                     'status': None
                 }
 
-            if status not in ['active', 'admin']:
+            if status != 'active':
                 return {
                     'is_valid': False,
                     'error_message': (f"Synthetic hotkey {hotkey} is not active (status: {status}). "
@@ -906,7 +844,7 @@ class EntityManager(ValidatorBroadcastBase):
             if ledger:
                 ledger_data = ledger.to_dict()  # Convert DebtLedger to dict for JSON serialization
         except Exception as e:
-            bt.logging.error(f"[ENTITY_MANAGER] Ledger data unavailable for {synthetic_hotkey}: {e}")
+            bt.logging.debug(f"[ENTITY_MANAGER] Ledger data unavailable for {synthetic_hotkey}: {e}")
 
         # Position data
         positions_data = None
@@ -918,20 +856,20 @@ class EntityManager(ValidatorBroadcastBase):
                 leverage = self._position_client.calculate_net_portfolio_leverage(synthetic_hotkey)
                 positions_data['total_leverage'] = leverage
         except Exception as e:
-            bt.logging.error(f"[ENTITY_MANAGER] Position data unavailable for {synthetic_hotkey}: {e}")
+            bt.logging.debug(f"[ENTITY_MANAGER] Position data unavailable for {synthetic_hotkey}: {e}")
 
         # Limit orders data (unfilled orders)
         limit_orders_data = None
         try:
             limit_orders_data = self._limit_order_client.to_dashboard_dict(synthetic_hotkey)
         except Exception as e:
-            bt.logging.error(f"[ENTITY_MANAGER] Limit orders data unavailable for {synthetic_hotkey}: {e}")
+            bt.logging.debug(f"[ENTITY_MANAGER] Limit orders data unavailable for {synthetic_hotkey}: {e}")
 
         account_size_data = None
         try:
             account_size_data = self._miner_account_client.get_account(synthetic_hotkey)
         except Exception as e:
-            bt.logging.error(f"[ENTITY_MANAGER] Account size data unavailable for {synthetic_hotkey}: {e}")
+            bt.logging.debug(f"[ENTITY_MANAGER] Account size data unavailable for {synthetic_hotkey}: {e}")
 
 
         # Statistics data (from cached miner statistics - refreshed every 5 minutes)
@@ -939,29 +877,14 @@ class EntityManager(ValidatorBroadcastBase):
         try:
             statistics_data = self._statistics_client.get_miner_statistics_for_hotkey(synthetic_hotkey)
         except Exception as e:
-            bt.logging.error(f"[ENTITY_MANAGER] Statistics data unavailable for {synthetic_hotkey}: {e}")
+            bt.logging.debug(f"[ENTITY_MANAGER] Statistics data unavailable for {synthetic_hotkey}: {e}")
 
         # Elimination data
         elimination_data = None
         try:
             elimination_data = self._elimination_client.get_elimination(synthetic_hotkey)
         except Exception as e:
-            bt.logging.error(f"[ENTITY_MANAGER] Elimination data unavailable for {synthetic_hotkey}: {e}")
-
-        # TODO: revisit storing hwm logic elsewhere
-        # HWM data (real-time from perf ledger)
-        try:
-            bundle = self._perf_ledger_client.get_perf_ledger_for_hotkey(synthetic_hotkey)
-            if bundle and synthetic_hotkey in bundle:
-                hotkey_bundle = bundle[synthetic_hotkey]
-                if TP_ID_PORTFOLIO in hotkey_bundle:
-                    if account_size_data is None:
-                        account_size_data = {}
-                    account_size_data['max_return'] = hotkey_bundle[TP_ID_PORTFOLIO].max_return
-            else:
-                bt.logging.error(f"[ENTITY_MANAGER] could not find perf ledger for {synthetic_hotkey}")
-        except Exception as e:
-            bt.logging.error(f"[ENTITY_MANAGER] HWM data unavailable for {synthetic_hotkey}: {e}")
+            bt.logging.debug(f"[ENTITY_MANAGER] Elimination data unavailable for {synthetic_hotkey}: {e}")
 
         # 3. Build aggregated response
         return {
@@ -984,35 +907,6 @@ class EntityManager(ValidatorBroadcastBase):
             'statistics': statistics_data,
             'elimination': elimination_data,
         }
-
-    def broadcast_subaccount_dashboard(self, synthetic_hotkey: str, error_msg: Optional[str] = None) -> bool:
-        """
-        Get dashboard data for a subaccount and broadcast it to WebSocket subscribers.
-
-        Args:
-            synthetic_hotkey: The synthetic hotkey ({entity_hotkey}_{subaccount_id})
-
-        Returns:
-            bool: True if broadcast was successful or skipped, False on error
-        """
-        if self.running_unit_tests:
-            return True
-
-        try:
-            # Skip if no subscribers
-            if not self._websocket_client.has_subaccount_subscribers(synthetic_hotkey):
-                return True
-
-            dashboard_data = self.get_subaccount_dashboard_data(synthetic_hotkey)
-
-            if dashboard_data:
-                if error_msg:
-                    dashboard_data["error_msg"] = error_msg
-                return self._websocket_client.broadcast_subaccount_dashboard(synthetic_hotkey, dashboard_data)
-            return True  # No data = nothing to broadcast, not an error
-        except Exception as e:
-            bt.logging.error(f"[ENTITY_MANAGER] Dashboard broadcast failed for {synthetic_hotkey}: {e}")
-            return False
 
     def get_all_entities(self) -> Dict[str, EntityData]:
         """Get all entities."""
@@ -1063,8 +957,6 @@ class EntityManager(ValidatorBroadcastBase):
                         subaccount.status = "eliminated"
                         subaccount.eliminated_at_ms = now_ms
                         eliminated_count += 1
-
-                        self.broadcast_subaccount_dashboard(synthetic_hotkey)
 
             # Persist changes if any subaccounts were eliminated
             if eliminated_count > 0:
@@ -1221,8 +1113,7 @@ class EntityManager(ValidatorBroadcastBase):
         subaccount_uuid: str,
         synthetic_hotkey: str,
         account_size: float,
-        asset_class: str,
-        status: str = "active"
+        asset_class: str
     ):
         """
         Broadcast SubaccountRegistration synapse to other validators using shared broadcast base.
@@ -1234,7 +1125,6 @@ class EntityManager(ValidatorBroadcastBase):
             synthetic_hotkey: The synthetic hotkey
             account_size: Account size in USD (immutable)
             asset_class: Asset class selection (immutable)
-            status: Subaccount status (active, admin, etc.)
         """
         def create_synapse():
             subaccount_data = {
@@ -1243,8 +1133,7 @@ class EntityManager(ValidatorBroadcastBase):
                 "subaccount_uuid": subaccount_uuid,
                 "synthetic_hotkey": synthetic_hotkey,
                 "account_size": account_size,
-                "asset_class": asset_class,
-                "status": status
+                "asset_class": asset_class
             }
             return template.protocol.SubaccountRegistration(subaccount_data=subaccount_data)
 
@@ -1280,7 +1169,6 @@ class EntityManager(ValidatorBroadcastBase):
                 synthetic_hotkey = subaccount_data.get("synthetic_hotkey")
                 account_size = subaccount_data.get("account_size")
                 asset_class = subaccount_data.get("asset_class")
-                status = subaccount_data.get("status", "active")  # Default to active for backwards compatibility
 
                 bt.logging.info(
                     f"[ENTITY_MANAGER] Processing subaccount registration for {synthetic_hotkey}"
@@ -1313,18 +1201,9 @@ class EntityManager(ValidatorBroadcastBase):
                 if subaccount_id in entity_data.subaccounts:
                     existing_sub = entity_data.subaccounts[subaccount_id]
                     if existing_sub.subaccount_uuid == subaccount_uuid:
-                        # Update status if changed (e.g., pending -> active after slashing)
-                        if existing_sub.status != status:
-                            bt.logging.info(
-                                f"[ENTITY_MANAGER] Updating subaccount {synthetic_hotkey} status: "
-                                f"{existing_sub.status} -> {status}"
-                            )
-                            existing_sub.status = status
-                            self._write_entities_from_memory_to_disk()
-                        else:
-                            bt.logging.debug(
-                                f"[ENTITY_MANAGER] Subaccount {synthetic_hotkey} already exists (idempotent)"
-                            )
+                        bt.logging.debug(
+                            f"[ENTITY_MANAGER] Subaccount {synthetic_hotkey} already exists (idempotent)"
+                        )
                         return True
                     else:
                         bt.logging.warning(
@@ -1338,7 +1217,7 @@ class EntityManager(ValidatorBroadcastBase):
                     subaccount_id=subaccount_id,
                     subaccount_uuid=subaccount_uuid,
                     synthetic_hotkey=synthetic_hotkey,
-                    status=status,
+                    status="active",
                     created_at_ms=now_ms,
                     account_size=account_size,
                     asset_class=asset_class
