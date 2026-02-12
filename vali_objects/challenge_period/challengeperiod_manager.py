@@ -358,7 +358,7 @@ class ChallengePeriodManager(CacheController):
         Returns:
             (should_eliminate, elimination_reason_tuple)
         """
-        _, recorded_drawdown_percentage = LedgerUtils.is_beyond_max_drawdown(ledger, drawdown_threshold_percentage)
+        exceeds_max_drawdown, recorded_drawdown_percentage = LedgerUtils.is_beyond_max_drawdown(ledger)
 
         # recorded_drawdown_percentage is in 0-100 scale (e.g., 1.0 for 1% drawdown)
         # Compare against threshold in same scale
@@ -435,13 +435,11 @@ class ChallengePeriodManager(CacheController):
         """
         Evaluate synthetic hotkeys in CHALLENGE bucket with instantaneous pass criteria.
 
-        Elimination criteria:
-        - Drawdown > 5% from peak equity (SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD)
-          Uses high water mark methodology, same as rank-based miners
-
-        Promotion criteria:
+        Pass criteria (checked continuously):
         - Returns >= 8% (SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD)
-          Returns immediately promoted as soon as they hit 8% returns.
+        - Drawdown <= 5% (SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD)
+
+        Returns immediately promoted as soon as they hit 8% returns.
         """
         hotkeys_to_promote = []
         miners_to_eliminate = {}
@@ -456,7 +454,7 @@ class ChallengePeriodManager(CacheController):
             has_minimum_ledger, ledger = self._check_minimum_ledger(
                 portfolio_only_ledgers, hotkey
             )
-            if not has_minimum_ledger or not ledger:
+            if not has_minimum_ledger:
                 continue
 
             # Compute portfolio return: (balance + unrealized_pnl) / account_size
@@ -1279,7 +1277,6 @@ class ChallengePeriodManager(CacheController):
             True if this is a new miner, False if updating existing
         """
         is_new = hotkey not in self.active_miners
-        bucket_changed = False
 
         # Auto-capture previous state if not explicitly provided and miner exists
         if not is_new and prev_bucket is None and prev_time is None:
@@ -1288,9 +1285,6 @@ class ChallengePeriodManager(CacheController):
             if current_bucket != bucket:
                 prev_bucket = current_bucket
                 prev_time = current_time
-                bucket_changed = True
-        elif is_new:
-            bucket_changed = True
 
         self.active_miners[hotkey] = (bucket, start_time, prev_bucket, prev_time)
 
