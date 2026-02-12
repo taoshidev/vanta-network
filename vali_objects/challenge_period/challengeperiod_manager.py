@@ -498,11 +498,13 @@ class ChallengePeriodManager(CacheController):
         """
         Evaluate synthetic hotkeys in CHALLENGE bucket with instantaneous pass criteria.
 
-        Pass criteria (checked continuously):
-        - Returns >= 8% (SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD)
-        - Drawdown <= 5% (SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD)
+        Elimination criteria:
+        - Drawdown > 5% from peak equity (SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD)
+          Uses high water mark methodology, same as rank-based miners
 
-        Returns immediately promoted as soon as they hit 8% returns.
+        Promotion criteria:
+        - Returns >= 8% (SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD)
+          Returns immediately promoted as soon as they hit 8% returns.
         """
         hotkeys_to_promote = []
         miners_to_eliminate = {}
@@ -517,7 +519,7 @@ class ChallengePeriodManager(CacheController):
             has_minimum_ledger, ledger = self._check_minimum_ledger(
                 portfolio_only_ledgers, hotkey
             )
-            if not has_minimum_ledger:
+            if not has_minimum_ledger or not ledger:
                 continue
 
             # Check drawdown from high water mark (same as rank-based miners)
