@@ -1,6 +1,7 @@
 # developer: trdougherty
 import math
 import statistics
+from typing import Optional
 
 import numpy as np
 import copy
@@ -526,7 +527,7 @@ class LedgerUtils:
         return final_drawdown
 
     @staticmethod
-    def is_beyond_max_drawdown(ledger_element: PerfLedger):
+    def is_beyond_max_drawdown(ledger_element: PerfLedger, maximum_drawdown_percent: Optional[float] = None):
         """Checks if the maximum drawdown percentage is surpassed"""
         if ledger_element is None:
             return False, 0
@@ -534,7 +535,8 @@ class LedgerUtils:
         if len(ledger_element.cps) == 0:
             return False, 0
 
-        maximum_drawdown_percent = ValiConfig.DRAWDOWN_MAXVALUE_PERCENTAGE
+        if maximum_drawdown_percent is None:
+            maximum_drawdown_percent = ValiConfig.DRAWDOWN_MAXVALUE_PERCENTAGE
 
         max_drawdown = LedgerUtils.instantaneous_max_drawdown(ledger_element)
         recorded_drawdown_percentage = LedgerUtils.drawdown_percentage(max_drawdown)
