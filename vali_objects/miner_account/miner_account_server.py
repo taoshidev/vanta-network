@@ -43,9 +43,7 @@ class MinerAccountServer(RPCServerBase):
         slack_notifier=None,
         start_server=True,
         connection_mode: RPCConnectionMode = RPCConnectionMode.RPC,
-        collateral_balance_getter=None,
-        config=None,
-        is_testnet=False
+        collateral_balance_getter=None
     ):
         """
         Initialize MinerAccountServer.
@@ -58,8 +56,6 @@ class MinerAccountServer(RPCServerBase):
             start_server: Whether to start RPC server immediately
             connection_mode: RPC or LOCAL mode
             collateral_balance_getter: Callable to get collateral balance for a hotkey
-            config: Bittensor config (for ValidatorBroadcastBase)
-            is_testnet: Whether running on testnet
         """
         # Create mock config if running tests and config not provided
         if running_unit_tests:
