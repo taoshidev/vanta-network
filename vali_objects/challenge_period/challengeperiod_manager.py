@@ -361,7 +361,7 @@ class ChallengePeriodManager(CacheController):
         Returns:
             (should_eliminate, elimination_reason_tuple)
         """
-        exceeds_max_drawdown, recorded_drawdown_percentage = LedgerUtils.is_beyond_max_drawdown(ledger)
+        _, recorded_drawdown_percentage = LedgerUtils.is_beyond_max_drawdown(ledger, drawdown_threshold_percentage)
 
         # recorded_drawdown_percentage is in 0-100 scale (e.g., 1.0 for 1% drawdown)
         # Compare against threshold in same scale
