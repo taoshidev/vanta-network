@@ -19,6 +19,7 @@ Usage:
 """
 from typing import Optional, Dict, List, Any
 
+import template.protocol
 from shared_objects.rpc.rpc_client_base import RPCClientBase
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.miner_account.miner_account_server import MinerAccountServer
@@ -163,9 +164,20 @@ class MinerAccountClient(RPCClientBase):
         """Reload account sizes from disk."""
         self._server.re_init_account_sizes()
 
-    def receive_collateral_record_update(self, collateral_record_data: dict, sender_hotkey: str=None) -> bool:
-        """Process an incoming CollateralRecord synapse."""
-        return self._server.receive_collateral_record_update(collateral_record_data, sender_hotkey)
+    def receive_collateral_record(self, synapse: template.protocol.CollateralRecord) -> template.protocol.CollateralRecord:
+        """
+        Receive collateral record update synapse (for axon attachment).
+
+        This method is called directly by the validator's axon when a CollateralRecord
+        broadcast is received from another validator.
+
+        Args:
+            synapse: CollateralRecord synapse from the sending validator
+
+        Returns:
+            Updated synapse with successfully_processed and error_message fields
+        """
+        return self._server.receive_collateral_record_rpc(synapse)
 
     # ==================== MinerAccount Cache Methods ====================
 
@@ -242,7 +254,7 @@ class MinerAccountClient(RPCClientBase):
 
     # ==================== Margin/Cash Processing Methods ====================
 
-    def process_order_buy(self, hotkey: str, order_value_usd: float, fee_usd: float) -> float:
+    def process_order_buy(self, hotkey: str, order_value_usd: float, fee_usd: float = 0) -> float:
         """
         Process buy order cash/margin.
 
@@ -257,7 +269,7 @@ class MinerAccountClient(RPCClientBase):
         """
         return self._server.process_order_buy(hotkey, order_value_usd, fee_usd)
 
-    def process_order_sell(self, hotkey: str, entry_value_usd: float, realized_pnl: float, position_margin_loan: float, fee_usd: float) -> float:
+    def process_order_sell(self, hotkey: str, entry_value_usd: float, realized_pnl: float, position_margin_loan: float, fee_usd: float = 0) -> float:
         """
         Process sell/close order. Free capital_used, compound realized PNL to balance.
 
