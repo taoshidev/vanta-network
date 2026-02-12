@@ -91,15 +91,10 @@ class MinerAccount:
     @property
     def buying_power(self) -> float:
         """Available buying power = balance * multiplier - capital_used."""
-        return self.balance * self.multiplier - self.capital_used
-
-    @property
-    def multiplier(self) -> float:
         multiplier = ValiConfig.PORTFOLIO_LEVERAGE_CAP.get(self.asset_class, 1.0) if self.asset_class else 1.0
         if self.miner_bucket == MinerBucket.SUBACCOUNT_CHALLENGE:
             multiplier /= ValiConfig.SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR
-        return multiplier
-
+        return self.balance * multiplier - self.capital_used
 
     def add_collateral_record(self, record: 'CollateralRecord'):
         """Add a new collateral record. Account size flows through balance property."""
@@ -140,7 +135,6 @@ class MinerAccount:
         self.total_fees_paid = 0
         self.total_interest_paid = 0
         self.last_interest_date_ms = None
-        self.miner_bucket = None
 
 
     def apply_interest(self, current_time_ms: int, running_unit_tests: bool = False) -> bool:
@@ -241,9 +235,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
         self,
         running_unit_tests: bool = False,
         collateral_balance_getter=None,
-        connection_mode: RPCConnectionMode = RPCConnectionMode.RPC,
-        config=None,
-        is_testnet: bool = False
+        connection_mode: RPCConnectionMode = RPCConnectionMode.RPC
     ):
         """
         Initialize the manager.
@@ -254,18 +246,9 @@ class MinerAccountManager(ValidatorBroadcastBase):
                                        Signature: (hotkey: str) -> Optional[float]
                                        Returns balance in theta tokens, or None.
             connection_mode: RPC or LOCAL mode for asset selection client
-            config: Bittensor config (for ValidatorBroadcastBase)
-            is_testnet: Whether running on testnet (for ValidatorBroadcastBase)
         """
-        # Initialize ValidatorBroadcastBase first
-        super().__init__(
-            running_unit_tests=running_unit_tests,
-            is_testnet=is_testnet,
-            config=config,
-            connection_mode=connection_mode
-        )
-
         self.running_unit_tests = running_unit_tests
+        self._collateral_balance_getter = collateral_balance_getter
         self.connection_mode = connection_mode
 
         # Unified MinerAccount storage - single source of truth
@@ -293,6 +276,10 @@ class MinerAccountManager(ValidatorBroadcastBase):
 
         # Load from disk
         self._load_accounts_from_disk()
+
+    def set_collateral_balance_getter(self, getter):
+        """Set the collateral balance getter (for lazy initialization)."""
+        self._collateral_balance_getter = getter
 
     # ==================== Disk Persistence ====================
 
@@ -628,7 +615,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     return False
 
                 # Create a CollateralRecord object
-                is_first_record = hotkey not in self.accounts or not self.accounts[hotkey].collateral_records
+                is_first_record = hotkey not in self.miner_account_sizes or not self.miner_account_sizes[hotkey]
                 collateral_record = CollateralRecord(account_size, account_size_theta, update_time_ms, is_first_record)
 
                 # Get or create account
@@ -661,10 +648,12 @@ class MinerAccountManager(ValidatorBroadcastBase):
     def get_or_create(self, hotkey: str) -> MinerAccount:
         """Get existing account or create new one with zero realized PNL and zero capital used."""
         if hotkey not in self.accounts:
+            asset_selection = self._asset_selection_client.get_asset_selection(hotkey)
             self.accounts[hotkey] = MinerAccount(
                 miner_hotkey=hotkey,
                 total_realized_pnl=0.0,
                 capital_used=0.0,
+                asset_class=asset_selection,
             )
         return self.accounts[hotkey]
 
@@ -718,10 +707,9 @@ class MinerAccountManager(ValidatorBroadcastBase):
         order_value_usd = abs(order_value_usd)
 
         with self._accounts_lock:
-            tolerance = 0.001  # floating point errors
-            if order_value_usd + fee_usd * account.multiplier > account.buying_power + tolerance:
+            if order_value_usd + fee_usd > account.buying_power:
                 raise SignalException(
-                    f"Insufficient buying power. Need ${order_value_usd + fee_usd:.2f}, have ${account.buying_power:.2f}"
+                    f"Insufficient buying power. Need ${order_value_usd:.2f}, have ${account.buying_power:.2f}"
                 )
 
             borrowed_amount = 0.0
@@ -738,7 +726,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
             self._save_accounts_to_disk()
 
             bt.logging.info(
-                f"[PROCESS ORDER BUY {hotkey}] ${order_value_usd:.2f}, capital_used: ${account.capital_used:.2f}, "
+                f"[{hotkey[:8]}] Buy: ${order_value_usd:.2f}, capital_used: ${account.capital_used:.2f}, "
                 f"buying_power: ${account.buying_power:.2f}, borrowed: ${borrowed_amount:.2f}"
             )
             return borrowed_amount
@@ -775,7 +763,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
             self._save_accounts_to_disk()
 
             bt.logging.info(
-                f"[PROCESS ORDER BUY {hotkey}] entry_value=${entry_value_usd:.2f}, pnl=${realized_pnl:.2f}, "
+                f"[{hotkey[:8]}] Sell: entry_value=${entry_value_usd:.2f}, pnl=${realized_pnl:.2f}, "
                 f"loan_repaid=${loan_repaid:.2f}, balance=${account.balance:.2f}, buying_power=${account.buying_power:.2f}"
             )
             return loan_repaid
