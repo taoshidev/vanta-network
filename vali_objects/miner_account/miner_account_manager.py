@@ -90,10 +90,15 @@ class MinerAccount:
     @property
     def buying_power(self) -> float:
         """Available buying power = balance * multiplier - capital_used."""
+        return self.balance * self.multiplier - self.capital_used
+
+    @property
+    def multiplier(self) -> float:
         multiplier = ValiConfig.PORTFOLIO_LEVERAGE_CAP.get(self.asset_class, 1.0) if self.asset_class else 1.0
         if self.miner_bucket == MinerBucket.SUBACCOUNT_CHALLENGE:
             multiplier /= ValiConfig.SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR
-        return self.balance * multiplier - self.capital_used
+        return multiplier
+
 
     def add_collateral_record(self, record: 'CollateralRecord'):
         """Add a new collateral record. Account size flows through balance property."""
@@ -693,7 +698,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
 
         with self._accounts_lock:
             tolerance = 0.001  # floating point errors
-            if order_value_usd + fee_usd > account.buying_power + tolerance:
+            if order_value_usd + fee_usd * account.multiplier > account.buying_power + tolerance:
                 raise SignalException(
                     f"Insufficient buying power. Need ${order_value_usd + fee_usd:.2f}, have ${account.buying_power:.2f}"
                 )
