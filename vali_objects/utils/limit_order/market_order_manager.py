@@ -285,6 +285,9 @@ class MarketOrderManager():
         if self.running_unit_tests:
             buying_power = ValiConfig.MIN_CAPITAL
 
+        # Calculate transaction fee AFTER clamping based on final order value
+        transaction_fee = ValiConfig.TRANSACTION_FEE_MULTIPLIER.get(trade_pair.trade_pair_category, 0)
+
         # Validate order before processing cash balance (raises ValueError if invalid)
         # Note: validate_order_size may clamp order.value/quantity/leverage in place
         bt.logging.info(f"[ORDER DETAIL] pre-validation quantity: {order.quantity}, value: {order.value}")
