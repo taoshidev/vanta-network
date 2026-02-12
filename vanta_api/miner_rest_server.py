@@ -411,8 +411,10 @@ class MinerRestServer(BaseRestServer):
                         f"Synthetic Hotkey: {subaccount.get('synthetic_hotkey')}\n"
                         f"Asset Class: {subaccount.get('asset_class')}\n"
                         f"Account Size: ${subaccount.get('account_size'):,.2f}\n"
+                        f"Message: {response_data.get('message', '')}\n"
                         f"Created: {timestamp}",
-                        level="success"
+                        level="success",
+                        bypass_cooldown=True
                     )
                 return jsonify(response_data), 200
             else:
