@@ -140,6 +140,7 @@ class MinerAccount:
         self.total_fees_paid = 0
         self.total_interest_paid = 0
         self.last_interest_date_ms = None
+        self.miner_bucket = None
 
 
     def apply_interest(self, current_time_ms: int, running_unit_tests: bool = False) -> bool:
