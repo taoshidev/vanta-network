@@ -447,14 +447,16 @@ class ChallengePeriodManager(CacheController):
             if pnl is None:
                 continue
 
-            subaccount_account_size = self._miner_account_client.get_miner_account_size(hotkey, use_account_floor=True)
 
+            subaccount_account_size = self._miner_account_client.get_miner_account_size(hotkey, use_account_floor=True)
             if subaccount_account_size is None or subaccount_account_size <= 0:
                 continue
 
             # Calculate thresholds
             eliminate_threshold = -1 * ValiConfig.SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD * subaccount_account_size
             promote_threshold = ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD * subaccount_account_size
+
+            bt.logging.info(f"[SYNTH_EVAL {hotkey}] {pnl} eliminate: {eliminate_threshold}, promote: {promote_threshold}")
 
             should_eliminate = pnl < eliminate_threshold
             if should_eliminate:
