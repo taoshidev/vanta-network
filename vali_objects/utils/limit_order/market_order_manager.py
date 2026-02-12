@@ -264,12 +264,13 @@ class MarketOrderManager():
         # Get balance and leverage bounds for USD-based validation
         if not balance:
             balance = self._miner_account_client.get_balance(miner_hotkey) or 0.0
+
         _, max_position_leverage = leverage_utils.get_position_leverage_bounds(trade_pair)
+        account_multiplier = ValiConfig.PORTFOLIO_LEVERAGE_CAP.get(trade_pair.trade_pair_category, 1.0)
         if self._challenge_period_client.get_miner_bucket(miner_hotkey) == MinerBucket.SUBACCOUNT_CHALLENGE:
             max_position_leverage /= ValiConfig.SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR
+            account_multiplier /= ValiConfig.SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR
         max_position_value = max_position_leverage * balance
-
-        bt.logging.info(f"[ADD_ORDER_DETAIL] max position value: {max_position_value}")
 
         # Calculate transaction fee AFTER clamping based on final order value
         transaction_fee = ValiConfig.TRANSACTION_FEE_MULTIPLIER.get(trade_pair.trade_pair_category, 0)
@@ -278,13 +279,15 @@ class MarketOrderManager():
         # Validate order before processing cash balance (raises ValueError if invalid)
         # Note: validate_order_size may clamp order.value/quantity/leverage in place
         order_resized = existing_position.validate_order_size(order, max_position_value)
-        if abs(order.value) * (1 + transaction_fee) >= buying_power:
-            order.value = buying_power / (1 + transaction_fee)
-            order_resized = True
+        if order.order_type == existing_position.position_type:
+            if abs(order.value) * (1 + transaction_fee * account_multiplier) >= buying_power:
+                order.value = buying_power / (1 + transaction_fee * account_multiplier)
+                order_resized = True
 
         if order_resized:
             order_sizes = self.parse_order_size({"value": order.value}, usd_base_price, trade_pair, existing_position.account_size)
             order.quantity, order.leverage, order.value = order_sizes
+            bt.logging.info(f"[ADD_ORDER_DETAIL] order resized to ${order.value} (max position: {max_position_value}, max_cash: {buying_power}")
 
         # Process cash balance after validation passes
         if order.order_type == existing_position.position_type:
