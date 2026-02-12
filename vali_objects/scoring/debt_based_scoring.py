@@ -183,13 +183,20 @@ class DebtBasedScoring:
         checkpoints: List[DebtCheckpoint]
     ) -> float:
         """
-        Calculate payout from a list of debt checkpoints using the debt-based scoring formula.
+        Calculate payout from a list of debt checkpoints using HWM-gated scoring.
+
+        Only pays for incremental gains above the prior realized PnL high water mark.
+        This ensures miners only earn emissions when making new cumulative highs,
+        not when recovering from drawdowns.
 
         NOTE: realized_pnl and unrealized_pnl are in USD, per-checkpoint values (NOT cumulative)
-        This cumulative approach allows negative PnL to carry forward and offset future gains
 
         Formula:
-        - realized_component = sum(cp.realized_pnl * cp.total_penalty for all checkpoints)
+        - Track cumulative_realized = running sum of realized_pnl across checkpoints
+        - Track realized_hwm = highest cumulative_realized seen so far
+        - For each checkpoint where cumulative_realized > realized_hwm:
+            realized_component += (cumulative_realized - realized_hwm) * cp.total_penalty
+            realized_hwm = cumulative_realized
         - unrealized_component = min(0.0, last_cp.unrealized_pnl) * last_cp.total_penalty
         - payout = realized_component + unrealized_component
 
@@ -197,16 +204,22 @@ class DebtBasedScoring:
             checkpoints: List of DebtCheckpoint objects (should be in chronological order)
 
         Returns:
-            Calculated payout in USD (can be negative if losses exceed gains)
+            Calculated payout in USD (can be negative if unrealized losses exceed gains)
         """
         if not checkpoints:
             return 0.0
 
-        # Realized component: sum(realized_pnl * penalty) across all checkpoints
-        realized_component = sum(
-            cp.realized_pnl * cp.total_penalty
-            for cp in checkpoints
-        )
+        # HWM-gated realized component: only pay the delta above prior cumulative peak
+        cumulative_realized = 0.0
+        realized_hwm = 0.0
+        realized_component = 0.0
+
+        for cp in checkpoints:
+            cumulative_realized += cp.realized_pnl
+            if cumulative_realized > realized_hwm:
+                delta = cumulative_realized - realized_hwm
+                realized_component += delta * cp.total_penalty
+                realized_hwm = cumulative_realized
 
         # Unrealized component: min(0, unrealized_pnl) * penalty of last checkpoint
         # (only count unrealized losses, not gains)
@@ -677,11 +690,20 @@ class DebtBasedScoring:
         if not relevant_checkpoints:
             return 0.0
 
-        # Sum penalty-adjusted PnL across all checkpoints in the time range
-        # NOTE: realized_pnl/unrealized_pnl are per-checkpoint values (NOT cumulative), so we must sum
+        # HWM-gated realized component: only pay the delta above prior cumulative peak
         # Each checkpoint has its own PnL (for that 12-hour period) and its own penalty
+        cumulative_realized = 0.0
+        realized_hwm = 0.0
+        penalty_adjusted_pnl = 0.0
+
+        for cp in relevant_checkpoints:
+            cumulative_realized += cp.realized_pnl
+            if cumulative_realized > realized_hwm:
+                delta = cumulative_realized - realized_hwm
+                penalty_adjusted_pnl += delta * cp.total_penalty
+                realized_hwm = cumulative_realized
+
         last_checkpoint = relevant_checkpoints[-1]
-        penalty_adjusted_pnl = sum(cp.realized_pnl * cp.total_penalty for cp in relevant_checkpoints)
         penalty_adjusted_pnl += min(0.0, last_checkpoint.unrealized_pnl) * last_checkpoint.total_penalty
 
         return penalty_adjusted_pnl
