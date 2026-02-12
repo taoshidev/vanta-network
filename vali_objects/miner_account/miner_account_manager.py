@@ -228,7 +228,6 @@ class MinerAccountManager(ValidatorBroadcastBase):
         )
 
         self.running_unit_tests = running_unit_tests
-        self._collateral_balance_getter = collateral_balance_getter
         self.connection_mode = connection_mode
 
         # Unified MinerAccount storage - single source of truth
@@ -256,10 +255,6 @@ class MinerAccountManager(ValidatorBroadcastBase):
 
         # Load from disk
         self._load_accounts_from_disk()
-
-    def set_collateral_balance_getter(self, getter):
-        """Set the collateral balance getter (for lazy initialization)."""
-        self._collateral_balance_getter = getter
 
     # ==================== Disk Persistence ====================
 
