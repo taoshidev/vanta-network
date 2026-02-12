@@ -75,7 +75,8 @@ class MinerAccountClient(RPCClientBase):
         hotkey: str,
         collateral_balance_theta: float,
         timestamp_ms: Optional[int] = None,
-        account_size: float = None
+        account_size: float = None,
+        bucket: Optional[MinerBucket] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         Set the account size for a miner.
@@ -90,6 +91,8 @@ class MinerAccountClient(RPCClientBase):
             CollateralRecord as dict if successful, None otherwise.
             Dict contains: account_size, account_size_theta, update_time_ms, valid_date_timestamp
         """
+        if bucket:
+            self._server.set_miner_bucket(hotkey, bucket.value)
         return self._server.set_miner_account_size(hotkey, collateral_balance_theta, timestamp_ms, account_size)
 
     def delete_miner_account_size(self, hotkey: str) -> bool:
