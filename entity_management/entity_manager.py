@@ -442,7 +442,8 @@ class EntityManager(ValidatorBroadcastBase):
                     synthetic_hotkey,
                     collateral_balance_theta=account_size / ValiConfig.ENTITY_COST_PER_THETA,
                     timestamp_ms=TimeUtil.now_in_millis(),
-                    account_size=account_size
+                    account_size=account_size,
+                    bucket=MinerBucket.SUBACCOUNT_CHALLENGE
                 )
                 timings['set_account_size'] = int((time.time() - t0) * 1000)
 
