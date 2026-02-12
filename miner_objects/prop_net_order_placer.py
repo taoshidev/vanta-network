@@ -398,8 +398,9 @@ class PropNetOrderPlacer:
 
             # Track the high-trust validators
             high_trust_validators = self.get_high_trust_validators(axons_to_try, hotkey_to_v_trust)
-            if mothership_hotkey not in high_trust_validators:
-                high_trust_validators.append(mothership_hotkey)
+            high_trust_hotkeys = set(ax.hotkey for ax in high_trust_validators)
+            if mothership_hotkey not in high_trust_hotkeys and mothership_hotkey in validator_hotkey_to_axon:
+                high_trust_validators.append(validator_hotkey_to_axon[mothership_hotkey])
             metrics.high_trust_total = len(high_trust_validators)
 
             # Thread-safe UUID check
