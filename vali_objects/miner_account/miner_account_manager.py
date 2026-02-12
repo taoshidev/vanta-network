@@ -691,9 +691,10 @@ class MinerAccountManager(ValidatorBroadcastBase):
         order_value_usd = abs(order_value_usd)
 
         with self._accounts_lock:
-            if order_value_usd + fee_usd > account.buying_power:
+            tolerance = 0.001  # floating point errors
+            if order_value_usd + fee_usd > account.buying_power + tolerance:
                 raise SignalException(
-                    f"Insufficient buying power. Need ${order_value_usd:.2f}, have ${account.buying_power:.2f}"
+                    f"Insufficient buying power. Need ${order_value_usd + fee_usd:.2f}, have ${account.buying_power:.2f}"
                 )
 
             borrowed_amount = 0.0
