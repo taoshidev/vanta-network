@@ -424,11 +424,13 @@ class ChallengePeriodManager(CacheController):
         """
         Evaluate synthetic hotkeys in CHALLENGE bucket with instantaneous pass criteria.
 
-        Pass criteria (checked continuously):
-        - Returns >= 8% (SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD)
-        - Drawdown <= 5% (SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD)
+        Elimination criteria:
+        - Drawdown > 5% from peak equity (SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD)
+          Uses high water mark methodology, same as rank-based miners
 
-        Returns immediately promoted as soon as they hit 8% returns.
+        Promotion criteria:
+        - Returns >= 8% (SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD)
+          Returns immediately promoted as soon as they hit 8% returns.
         """
         hotkeys_to_promote = []
         miners_to_eliminate = {}
@@ -439,32 +441,42 @@ class ChallengePeriodManager(CacheController):
             has_minimum_ledger, ledger = self._check_minimum_ledger(
                 portfolio_only_ledgers, hotkey
             )
-            if not has_minimum_ledger:
+            if not has_minimum_ledger or not ledger:
                 continue
 
-            # TODO: temp code - using ledger realized pnl directly. replace with equity curve
-            pnl = self._perf_ledger_client.get_returns(hotkey)
-            if pnl is None:
+            # Check drawdown from high water mark (same as rank-based miners)
+            # SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD = 0.05 (5%) -> convert to 5.0 for percentage scale
+            should_eliminate, reason = self._check_drawdown_limit(
+                hotkey=hotkey,
+                ledger=ledger,
+                drawdown_threshold_percentage=ValiConfig.SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD * 100
+            )
+            if should_eliminate:
+                miners_to_eliminate[hotkey] = reason
                 continue
 
+            # Calculate current equity from MinerAccount balance + unrealized PnL
+            balance = self._miner_account_client.get_balance(hotkey)
+            if balance is None:
+                continue
 
+            unrealized_pnl = self._position_client.get_unrealized_pnl(hotkey)
+            total_equity = balance + unrealized_pnl
+
+            # Get account size for calculating returns percentage
             subaccount_account_size = self._miner_account_client.get_miner_account_size(hotkey, use_account_floor=True)
             if subaccount_account_size is None or subaccount_account_size <= 0:
                 continue
 
-            # Calculate thresholds
-            eliminate_threshold = -1 * ValiConfig.SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD * subaccount_account_size
-            promote_threshold = ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD * subaccount_account_size
+            # Calculate returns percentage: (current_equity - starting_equity) / starting_equity
+            returns_percentage = (total_equity - subaccount_account_size) / subaccount_account_size
 
-            bt.logging.info(f"[SYNTH_EVAL {hotkey}] {pnl} eliminate: {eliminate_threshold}, promote: {promote_threshold}")
+            bt.logging.info(
+                f"[SYNTH_EVAL {hotkey}] total_equity={total_equity:.2f}, account_size={subaccount_account_size:.2f}, returns={returns_percentage:.2%}"
+            )
 
-            should_eliminate = pnl < eliminate_threshold
-            if should_eliminate:
-                reason = (EliminationReason.FAILED_CHALLENGE_PERIOD_DRAWDOWN.value, abs(pnl/subaccount_account_size) * 100)
-                miners_to_eliminate[hotkey] = reason
-                continue
-
-            should_promote = pnl > promote_threshold
+            # Promote if returns meet threshold
+            should_promote = returns_percentage >= ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD
             if should_promote:
                 hotkeys_to_promote.append(hotkey)
 
