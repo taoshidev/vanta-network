@@ -390,6 +390,7 @@ class PropNetOrderPlacer:
         try:
             mothership_axon, other_axons = self._get_mothership_and_other_axons()
 
+<<<<<<< HEAD
             if not mothership_axon and not self.running_unit_tests:
                 return {
                     "success": False,
@@ -399,6 +400,38 @@ class PropNetOrderPlacer:
                     "processing_time": time.time() - start_time,
                     "message": CONNECTION_ERROR_MSG
                 }
+=======
+            # Log validators and check for mothership
+            validator_hotkeys = [axon.hotkey for axon in axons_to_try]
+            bt.logging.info(f"Found {len(axons_to_try)} validators to try: {validator_hotkeys}")
+            mothership_in_list = mothership_hotkey in validator_hotkeys
+            bt.logging.info(f"Mothership hotkey {mothership_hotkey} in validator list: {mothership_in_list}")
+            bt.logging.info(f"[HOTKEY_TO_VTRUST] {hotkey_to_v_trust}")
+
+            # Update metrics
+            metrics.validators_attempted = len(axons_to_try)
+
+            validator_hotkey_to_axon = {}
+            for axon in axons_to_try:
+                assert axon.hotkey not in validator_hotkey_to_axon, f"Duplicate hotkey {axon.hotkey} in axons"
+                validator_hotkey_to_axon[axon.hotkey] = axon
+
+            retry_status = {
+                'retry_attempts': 0,
+                'retry_delay_seconds': self.INITIAL_RETRY_DELAY_SECONDS,
+                'validators_needing_retry': axons_to_try,
+                'validator_error_messages': {},
+                'created_orders': {},
+                'permanent_failures': {}  # Track validators with permanent errors
+            }
+
+            # Track the high-trust validators
+            high_trust_validators = self.get_high_trust_validators(axons_to_try, hotkey_to_v_trust)
+            high_trust_hotkeys = set(ax.hotkey for ax in high_trust_validators)
+            if mothership_hotkey not in high_trust_hotkeys and mothership_hotkey in validator_hotkey_to_axon:
+                high_trust_validators.append(validator_hotkey_to_axon[mothership_hotkey])
+            metrics.high_trust_total = len(high_trust_validators)
+>>>>>>> 6103aee4 (Fix axon bug)
 
             # Thread-safe UUID check
             with self._lock:
