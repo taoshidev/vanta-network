@@ -443,7 +443,7 @@ class TestMarketOrderManager(TestBase):
             miner_order_uuid="test_order",
             miner_repo_version="1.0.0",
             src=OrderSource.ORGANIC,
-            account_size=self.DEFAULT_ACCOUNT_SIZE
+            balance=self.DEFAULT_ACCOUNT_SIZE
         )
 
         # Verify order was added
@@ -485,7 +485,7 @@ class TestMarketOrderManager(TestBase):
             miner_order_uuid="test_order",
             miner_repo_version="1.0.0",
             src=OrderSource.ORGANIC,
-            account_size=self.DEFAULT_ACCOUNT_SIZE
+            balance=self.DEFAULT_ACCOUNT_SIZE
         )
 
         new_order = position.orders[-1]
@@ -512,7 +512,7 @@ class TestMarketOrderManager(TestBase):
             miner_order_uuid="flat_order",
             miner_repo_version="1.0.0",
             src=OrderSource.ORGANIC,
-            account_size=self.DEFAULT_ACCOUNT_SIZE
+            balance=self.DEFAULT_ACCOUNT_SIZE
         )
 
         new_order = position.orders[-1]
@@ -547,7 +547,7 @@ class TestMarketOrderManager(TestBase):
             miner_order_uuid="test_order",
             miner_repo_version="1.0.0",
             src=OrderSource.ORGANIC,
-            account_size=self.DEFAULT_ACCOUNT_SIZE
+            balance=self.DEFAULT_ACCOUNT_SIZE
         )
 
         # Verify cooldown cache was updated
@@ -579,7 +579,7 @@ class TestMarketOrderManager(TestBase):
             miner_order_uuid="test_order",
             miner_repo_version="1.0.0",
             src=OrderSource.ORGANIC,
-            account_size=self.DEFAULT_ACCOUNT_SIZE
+            balance=self.DEFAULT_ACCOUNT_SIZE
         )
 
         # Verify position was saved
@@ -613,7 +613,7 @@ class TestMarketOrderManager(TestBase):
             miner_order_uuid="limit_order",
             miner_repo_version="1.0.0",
             src=OrderSource.LIMIT_FILLED,
-            account_size=self.DEFAULT_ACCOUNT_SIZE
+            balance=self.DEFAULT_ACCOUNT_SIZE
         )
 
         new_order = position.orders[-1]
@@ -1004,7 +1004,7 @@ class TestMarketOrderManager(TestBase):
             miner_order_uuid="test",
             miner_repo_version="1.0.0",
             src=OrderSource.ORGANIC,
-            account_size=self.DEFAULT_ACCOUNT_SIZE
+            balance=self.DEFAULT_ACCOUNT_SIZE
         )
 
         # Verify cache key format
