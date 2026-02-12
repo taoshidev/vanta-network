@@ -18,6 +18,8 @@ from vali_objects.utils.price_slippage_model import PriceSlippageModel
 from vali_objects.vali_config import ValiConfig, TradePair, RPCConnectionMode
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.enums.order_source_enum import OrderSource
+from vali_objects.enums.miner_bucket_enum import MinerBucket
+from vali_objects.utils import leverage_utils
 
 
 class MarketOrderManager():
@@ -165,7 +167,7 @@ class MarketOrderManager():
     def _add_order_to_existing_position(self, existing_position: Position, trade_pair: TradePair, signal_order_type: OrderType,
                                         quantity: float, leverage: float, value: float, order_time_ms: int, miner_hotkey: str,
                                         price_sources, miner_order_uuid: str, miner_repo_version: str, src:OrderSource,
-                                        account_size=None, usd_base_price=None, execution_type=ExecutionType.MARKET,
+                                        balance=None, usd_base_price=None, execution_type=ExecutionType.MARKET,
                                         fill_price=None, limit_price=None, stop_loss=None, take_profit=None, bracket_orders=None) -> Order:
         # Must be locked by caller
         step_start = TimeUtil.now_in_millis()
@@ -187,11 +189,6 @@ class MarketOrderManager():
             usd_base_price = self.live_price_fetcher.get_usd_base_conversion(trade_pair, order_time_ms, price, signal_order_type, existing_position)
             usd_conversion_ms = TimeUtil.now_in_millis() - step_start
             bt.logging.info(f"[ADD_ORDER_DETAIL] USD conversion calculation took {usd_conversion_ms}ms")
-
-        step_start = TimeUtil.now_in_millis()
-        net_portfolio_leverage = self.position_manager.calculate_net_portfolio_leverage(miner_hotkey)
-        leverage_calc_ms = TimeUtil.now_in_millis() - step_start
-        bt.logging.info(f"[ADD_ORDER_DETAIL] Net portfolio leverage calc took {leverage_calc_ms}ms")
 
         # Create order (margin_loan will be set after validation)
         order = Order(
@@ -255,10 +252,22 @@ class MarketOrderManager():
         slippage_calc_ms = TimeUtil.now_in_millis() - step_start
         bt.logging.info(f"[ADD_ORDER_DETAIL] Slippage calculation took {slippage_calc_ms}ms")
 
-        current_bucket = self._challenge_period_client.get_miner_bucket(miner_hotkey)
+        # Get balance and leverage bounds for USD-based validation
+        if not balance:
+            balance = self._miner_account_client.get_balance(miner_hotkey) or 0.0
+        _, max_position_leverage = leverage_utils.get_position_leverage_bounds(trade_pair)
+        if self._challenge_period_client.get_miner_bucket(miner_hotkey) == MinerBucket.SUBACCOUNT_CHALLENGE:
+            max_position_leverage /= ValiConfig.SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR
+        max_position_value = max_position_leverage * balance
+        bt.logging.info(f"[ADD_ORDER_DETAIL] max position value: {max_position_value}")
 
         # Validate order before processing cash balance (raises ValueError if invalid)
-        existing_position.validate_order_size(order, net_portfolio_leverage, bucket=current_bucket)
+        # Note: validate_order_size may clamp order.value/quantity/leverage in place
+        clamped = existing_position.validate_order_size(order, max_position_value)
+
+        if clamped:
+            order_sizes = self.parse_order_size({"value": order.value}, usd_base_price, trade_pair, existing_position.account_size)
+            order.quantity, order.leverage, order.value = order_sizes
 
         # Process cash balance after validation passes
         if order.order_type == existing_position.position_type:
@@ -283,7 +292,7 @@ class MarketOrderManager():
             order.margin_loan = -loan_repaid
 
         step_start = TimeUtil.now_in_millis()
-        existing_position.add_order(order, self.live_price_fetcher, net_portfolio_leverage, skip_validation=True)
+        existing_position.add_order(order)
         add_order_ms = TimeUtil.now_in_millis() - step_start
         bt.logging.info(f"[ADD_ORDER_DETAIL] Position.add_order() took {add_order_ms}ms")
 
@@ -405,8 +414,7 @@ class MarketOrderManager():
                         position, trade_pair, OrderType.FLAT,
                         0.0, 0.0, 0.0, position_close_time, miner_hotkey,
                         price_sources, position_close_uuid, miner_repo_version,
-                        OrderSource.FLAT_ALL_CLOSE,
-                        position.account_size
+                        OrderSource.FLAT_ALL_CLOSE
                     )
 
                     cnt_positions_closed += 1
@@ -504,6 +512,10 @@ class MarketOrderManager():
             account_size_ms = TimeUtil.now_in_millis() - account_size_start
             bt.logging.info(f"[LOCK_WORK] Get account size took {account_size_ms}ms")
 
+            account_balance = self._miner_account_client.get_balance(miner_hotkey)
+            if self.running_unit_tests:
+                account_balance = ValiConfig.MIN_CAPITAL
+
             # TIMING: Get or create position
             get_position_start = TimeUtil.now_in_millis()
             existing_position = self._get_or_create_open_position_from_new_order(trade_pair, signal_order_type,
@@ -544,7 +556,7 @@ class MarketOrderManager():
                 created_order = self._add_order_to_existing_position(existing_position, trade_pair, signal_order_type,
                                                      quantity, leverage, value, now_ms, miner_hotkey,
                                                      price_sources, miner_order_uuid, miner_repo_version,
-                                                     new_src, account_size, usd_base_price, execution_type,
+                                                     new_src, account_balance, usd_base_price, execution_type,
                                                      fill_price, limit_price, stop_loss, take_profit, bracket_orders)
                 add_order_ms = TimeUtil.now_in_millis() - add_order_start
                 bt.logging.info(f"[LOCK_WORK] Add order to position took {add_order_ms}ms")
