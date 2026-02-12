@@ -20,8 +20,6 @@ from vali_objects.vali_dataclasses.order import Order
 from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.utils import leverage_utils
-from entity_management.entity_client import EntityClient
-from entity_management.entity_utils import is_synthetic_hotkey
 
 
 class MarketOrderManager():
@@ -43,9 +41,6 @@ class MarketOrderManager():
         # Create own LivePriceFetcherClient (forward compatibility - no parameter passing)
         from vali_objects.price_fetcher import LivePriceFetcherClient
         self._live_price_client = LivePriceFetcherClient(running_unit_tests=running_unit_tests, connection_mode=connection_mode)
-
-        # Create EntityClient for subaccount dashboard broadcasts
-        self._entity_client = EntityClient(connection_mode=connection_mode, connect_immediately=False)
 
         # Create own PositionManagerClient (forward compatibility - no parameter passing)
         from vali_objects.position_management.position_manager_client import PositionManagerClient
@@ -257,16 +252,12 @@ class MarketOrderManager():
         slippage_calc_ms = TimeUtil.now_in_millis() - step_start
         bt.logging.info(f"[ADD_ORDER_DETAIL] Slippage calculation took {slippage_calc_ms}ms")
 
-
         # Get balance and leverage bounds for USD-based validation
         if not balance:
             balance = self._miner_account_client.get_balance(miner_hotkey) or 0.0
-
         _, max_position_leverage = leverage_utils.get_position_leverage_bounds(trade_pair)
-        account_multiplier = ValiConfig.PORTFOLIO_LEVERAGE_CAP.get(trade_pair.trade_pair_category, 1.0)
         if self._challenge_period_client.get_miner_bucket(miner_hotkey) == MinerBucket.SUBACCOUNT_CHALLENGE:
             max_position_leverage /= ValiConfig.SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR
-            account_multiplier /= ValiConfig.SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR
         max_position_value = max_position_leverage * balance
 
         # Calculate transaction fee AFTER clamping based on final order value
@@ -288,10 +279,9 @@ class MarketOrderManager():
                 order.value = buying_power / (1 + transaction_fee_rate * account_multiplier) * sign
                 order_resized = True
 
-        if order_resized:
+        if clamped:
             order_sizes = self.parse_order_size({"value": order.value}, usd_base_price, trade_pair, existing_position.account_size)
             order.quantity, order.leverage, order.value = order_sizes
-            bt.logging.info(f"[ADD_ORDER_DETAIL] order resized to ${order.value} (max position: {max_position_value}, max_cash: {buying_power}")
 
         # Process cash balance after validation passes
         if order.order_type == existing_position.position_type:
@@ -300,7 +290,7 @@ class MarketOrderManager():
             order.margin_loan = self._miner_account_client.process_order_buy(miner_hotkey, abs(order.value), transaction_fee)
         else:
             # Sell: free capital_used and compound realized PNL to equity
-            processed_qty = existing_position.net_quantity if order.order_type == OrderType.FLAT else order.quantity
+            processed_qty = existing_position.net_quantity if order.order_type == OrderType.FLAT else quantity
             entry_value = abs(processed_qty) * trade_pair.lot_size * existing_position.average_entry_price * order.quote_usd_rate
 
             if existing_position.position_type == OrderType.SHORT:
@@ -342,10 +332,6 @@ class MarketOrderManager():
             )
             websocket_ms = TimeUtil.now_in_millis() - step_start
             bt.logging.info(f"[ADD_ORDER_DETAIL] Websocket RPC broadcast took {websocket_ms}ms (success={success})")
-
-            # Broadcast subaccount dashboard update for synthetic hotkeys
-            if is_synthetic_hotkey(miner_hotkey):
-                self._entity_client.broadcast_subaccount_dashboard(miner_hotkey)
 
         return order
 

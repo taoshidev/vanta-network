@@ -596,7 +596,7 @@ class Position(BaseModel):
 
         if interval_data['max_leverage'] == -float('inf'):
             raise ValueError('Unable to find max leverage in interval')
-        assert interval_data['max_leverage'] >= 0, (interval_data, self.orders, str(self))
+        assert interval_data['max_leverage'] > 0, (interval_data, self.orders, str(self))
         return interval_data['max_leverage']
 
     def max_leverage_seen(self, interval_data=None):
@@ -831,10 +831,7 @@ class Position(BaseModel):
 
         proposed_leverage = self.net_leverage + (order.leverage or 0)
         proposed_quantity = self.net_quantity + (order.quantity or 0)
-        proposed_value = self.net_value + self.unrealized_pnl + (order.value or 0)
-
-        bt.logging.info(f"[POSITION VALIDATION] unrealized pnl: {self.unrealized_pnl}")
-        bt.logging.info(f"[POSITION VALIDATION] proposed quantity: {proposed_quantity}, proposed_value: {proposed_value}")
+        proposed_value = self.net_value + (order.value or 0)
 
         # Flatten order
         flatten = False
@@ -923,9 +920,19 @@ class Position(BaseModel):
                 self.initialize_position_from_first_order(order)
 
             # Check if the new order flattens the position, explicitly or implicitly
-            if self.position_type == OrderType.LONG and self.net_quantity + order.quantity <= 0 or \
-               self.position_type == OrderType.SHORT and self.net_quantity + order.quantity >= 0 or \
-               order.order_type == OrderType.FLAT:
+            if (
+                (
+                    self.position_type == OrderType.LONG
+                    and
+                    (self.net_leverage + order.leverage <= 0 or self.net_quantity + order.quantity <= 0)
+                )
+                or (
+                    self.position_type == OrderType.SHORT
+                    and
+                    (self.net_leverage + order.leverage >= 0 or self.net_quantity + order.quantity >= 0)
+                )
+                or order.order_type == OrderType.FLAT
+            ):
                 #self._position_log(
                 #    f"Flattening {self.position_type.value} position from order {order}"
                 #)
