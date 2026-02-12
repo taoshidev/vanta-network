@@ -298,7 +298,7 @@ class MarketOrderManager():
             order.margin_loan = self._miner_account_client.process_order_buy(miner_hotkey, abs(order.value), fee_usd)
         else:
             # Sell: free capital_used and compound realized PNL to equity
-            processed_qty = existing_position.net_quantity if order.order_type == OrderType.FLAT else quantity
+            processed_qty = existing_position.net_quantity if order.order_type == OrderType.FLAT else order.quantity
             entry_value = abs(processed_qty) * trade_pair.lot_size * existing_position.average_entry_price * order.quote_usd_rate
 
             if existing_position.position_type == OrderType.SHORT:
