@@ -82,7 +82,7 @@ class MinerRestServer(BaseRestServer):
             **kwargs
         )
 
-        print(f"[MINER-REST-INIT] {service_name} initialized on {self.flask_host}:{self.flask_port}")
+        print(f"[MINER-REST-INIT] MinerRestServer initialized on {self.flask_host}:{self.flask_port}")
 
     # ============================================================================
     # ABSTRACT METHOD IMPLEMENTATIONS (from BaseRestServer)
@@ -120,8 +120,7 @@ class MinerRestServer(BaseRestServer):
         Synchronous order submission with direct call to PropNetOrderPlacer.
 
         This runs in a Flask worker thread. Multiple concurrent requests
-        are handled by Flask's thread pool (default 10 threads). Each thread
-        submits async work to the shared event loop in PropNetOrderPlacer.
+        are handled by Flask's thread pool (default 10 threads).
 
         Request body (JSON):
         {
@@ -133,17 +132,22 @@ class MinerRestServer(BaseRestServer):
             "quantity": 0.5,  // Exactly one of leverage, value, or quantity required
             "execution_type": "MARKET" | "LIMIT",
             "price": 50000.0,  // Required for LIMIT orders
-            "subaccount_id": "optional-subaccount-id"
+            "subaccount_id": "optional-subaccount-id",
+            "verbose": false  // If true, return all validators; if false, return only MOTHERSHIP (default: false)
         }
 
         Response (200 OK):
         {
-            "success": true,
+            "success": true,  // MOTHERSHIP validator success if verbose=false
             "order_uuid": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
-            "order_json": "...",
-            "error_message": "",
-            "processing_time": 1.23,
-            "message": "Order successfully processed by Taoshi validator"
+            "validators_processed": 5,
+            "validators_succeeded": 5,
+            "high_trust_total": 5,
+            "high_trust_succeeded": 5,
+            "created_orders": {...},  // Filtered to MOTHERSHIP only if verbose=false
+            "error_messages": {...},  // Filtered to MOTHERSHIP only if verbose=false
+            "processing_time": 23.456,
+            "message": "Order successfully processed"
         }
 
         Response (400 Bad Request):
@@ -171,7 +175,13 @@ class MinerRestServer(BaseRestServer):
             # Generate order_uuid if not provided
             order_uuid = signal_data.get('order_uuid', str(uuid.uuid4()))
 
-            bt.logging.debug(f"Processing order {order_uuid}")
+            # Extract verbose flag (default to false)
+            verbose = signal_data.get('verbose', False)
+            if not isinstance(verbose, bool):
+                # Handle string values for flexibility
+                verbose = str(verbose).lower() in ('true', '1', 'yes')
+
+            bt.logging.debug(f"Processing order {order_uuid} with verbose={verbose}")
 
         except Exception as e:
             bt.logging.error(f"Error parsing request body: {e}")
@@ -219,17 +229,20 @@ class MinerRestServer(BaseRestServer):
                 'error': f'Signal validation error: {str(e)}'
             }), 400
 
-        # 3. Call order_placer.process_a_signal_for_rest() directly
+        # 3. Call order_placer.process_a_signal_for_rest() directly (blocks 20-60s)
         try:
-            bt.logging.info(f"Processing order: {signal}...")
+            bt.logging.info(f"Processing order synchronously signal: {signal}...")
+            start_time = time.time()
 
             result = self.order_placer.process_a_signal_for_rest(
                 order_uuid=order_uuid,
                 signal=signal,
-                subaccount_id=signal_data.get('subaccount_id', None)
+                subaccount_id=signal_data.get('subaccount_id'),
+                verbose=verbose
             )
 
-            bt.logging.info(f"Order {order_uuid} processed in {result.get('processing_time', 0):.2f}s: success={result.get('success')}")
+            elapsed = time.time() - start_time
+            bt.logging.info(f"Order {order_uuid} processed in {elapsed:.2f}s: success={result.get('success')}")
 
             # 4. Return formatted response
             status_code = 200 if result.get('success') else 400
@@ -242,6 +255,208 @@ class MinerRestServer(BaseRestServer):
                 'order_uuid': order_uuid,
                 'error': f'Internal error processing order: {str(e)}'
             }), 500
+
+    def create_subaccount_endpoint(self):
+        """
+        Entity miner subaccount creation.
+
+        Request body (JSON):
+        {
+            "asset_class": "crypto" | "forex",  // Required
+            "account_size": float                // Required, must be > 0
+        }
+
+        Response (200 OK):
+        {
+            "status": "success",
+            "message": "...",
+            "subaccount": {
+                "subaccount_id": 0,
+                "subaccount_uuid": "uuid-string",
+                "synthetic_hotkey": "5xxx_0",
+                "account_size": 10000.0,
+                "asset_class": "crypto"
+            }
+        }
+        """
+        # 1. Validate API key
+        api_key = self._get_api_key_safe()
+        if not self.is_valid_api_key(api_key):
+            return jsonify({'error': 'Unauthorized access'}), 401
+
+        # 2. Parse request body
+        try:
+            request_data = request.get_json()
+            if not request_data:
+                return jsonify({'status': 'error', 'message': 'Invalid request: missing JSON body'}), 400
+
+            # Validate required fields
+            if "asset_class" not in request_data:
+                return jsonify({'status': 'error', 'message': 'Missing required field: asset_class'}), 400
+
+            if "account_size" not in request_data:
+                return jsonify({'status': 'error', 'message': 'Missing required field: account_size'}), 400
+
+            asset_class = request_data["asset_class"]
+
+            # Type conversion with error handling
+            try:
+                account_size = float(request_data["account_size"])
+            except (ValueError, TypeError):
+                return jsonify({'status': 'error', 'message': 'account_size must be a number'}), 400
+
+            # Asset class validation
+            if asset_class not in ["crypto", "forex", "equities"]:
+                return jsonify({
+                    'status': 'error',
+                    'message': f"Invalid asset_class: {asset_class}. Must be 'crypto', 'forex', or 'equities'"
+                }), 400
+
+            # Account size validation
+            if account_size <= 0:
+                return jsonify({'status': 'error', 'message': 'account_size must be positive'}), 400
+
+        except Exception as e:
+            bt.logging.error(f"Error parsing request body: {e}")
+            return jsonify({'status': 'error', 'message': f'Invalid request: {str(e)}'}), 400
+
+        # 3. Load wallet secrets
+        try:
+            secrets = ValiUtils.get_secrets(secrets_path=MinerConfig.get_secrets_file_path())
+
+            wallet_name = secrets.get('wallet_name')
+            wallet_hotkey = secrets.get('wallet_hotkey')
+            wallet_password = ValiUtils.get_secret('wallet_password', secrets_path=MinerConfig.get_secrets_file_path())
+            validator_url = secrets.get('validator_url')
+
+            if not all([wallet_name, wallet_hotkey, wallet_password, validator_url]):
+                del wallet_password
+                return jsonify({
+                    'status': 'error',
+                    'message': 'Missing wallet configuration in secrets file'
+                }), 500
+
+        except Exception as e:
+            bt.logging.error(f"Error loading wallet secrets: {e}")
+            return jsonify({'status': 'error', 'message': 'Failed to load wallet configuration'}), 500
+
+        # 4. Initialize wallet and sign message
+        try:
+            wallet = Wallet(name=wallet_name, hotkey=wallet_hotkey)
+            coldkey = wallet.get_coldkey(password=wallet_password)
+            hotkey = wallet.hotkey
+
+            # Build message dict - CRITICAL: must use sort_keys=True for deterministic ordering
+            message_dict = {
+                "account_size": account_size,
+                "asset_class": asset_class,
+                "entity_coldkey": coldkey.ss58_address,
+                "entity_hotkey": hotkey.ss58_address
+            }
+            message = json.dumps(message_dict, sort_keys=True).encode('utf-8')
+
+            # Sign with coldkey
+            signature = coldkey.sign(message).hex()
+        except Exception as e:
+            bt.logging.error(f"Error signing message: {e}")
+            return jsonify({'status': 'error', 'message': f'Wallet error: {str(e)}'}), 500
+        finally:
+            del wallet_password
+
+        # 5. Send request to validator
+        try:
+            payload = {
+                "entity_hotkey": hotkey.ss58_address,
+                "entity_coldkey": coldkey.ss58_address,
+                "account_size": account_size,
+                "asset_class": asset_class,
+                "signature": signature,
+                "version": "2.0.0"
+            }
+
+            response = requests.post(
+                f"{validator_url}/entity/create-subaccount",
+                json=payload,
+                headers={"Content-Type": "application/json"},
+                timeout=60
+            )
+
+            # Parse response
+            try:
+                response_data = response.json()
+            except json.JSONDecodeError:
+                return jsonify({
+                    'status': 'error',
+                    'message': 'Invalid JSON response from validator'
+                }), 500
+
+            # Return validator response
+            if response.status_code == 200:
+                if self.slack_notifier:
+                    subaccount = response_data.get('subaccount', {})
+                    from datetime import datetime, timezone
+                    timestamp = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
+                    self.slack_notifier.send_message(
+                        f"✅ Subaccount created successfully!\n"
+                        f"ID: {subaccount.get('subaccount_id')}\n"
+                        f"UUID: {subaccount.get('subaccount_uuid')}\n"
+                        f"Synthetic Hotkey: {subaccount.get('synthetic_hotkey')}\n"
+                        f"Asset Class: {subaccount.get('asset_class')}\n"
+                        f"Account Size: ${subaccount.get('account_size'):,.2f}\n"
+                        f"Message: {response_data.get('message', '')}\n"
+                        f"Created: {timestamp}",
+                        level="success",
+                        bypass_cooldown=True
+                    )
+                return jsonify(response_data), 200
+            else:
+                error_message = response_data.get('message', 'Unknown error from validator')
+                if self.slack_notifier:
+                    self.slack_notifier.send_message(
+                        f"❌ Subaccount creation failed\n"
+                        f"Asset Class: {asset_class}\n"
+                        f"Account Size: ${account_size:,.2f}\n"
+                        f"Error: {error_message}",
+                        level="error"
+                    )
+                return jsonify({
+                    'status': 'error',
+                    'message': error_message
+                }), response.status_code
+
+        except requests.exceptions.Timeout:
+            if self.slack_notifier:
+                self.slack_notifier.send_message(
+                    f"❌ Subaccount creation failed\n"
+                    f"Asset Class: {asset_class}\n"
+                    f"Account Size: ${account_size:,.2f}\n"
+                    f"Error: Request to validator timed out",
+                    level="error"
+                )
+            return jsonify({'status': 'error', 'message': 'Request to validator timed out'}), 504
+
+        except requests.exceptions.ConnectionError:
+            if self.slack_notifier:
+                self.slack_notifier.send_message(
+                    f"❌ Subaccount creation failed\n"
+                    f"Asset Class: {asset_class}\n"
+                    f"Account Size: ${account_size:,.2f}\n"
+                    f"Error: Could not connect to validator",
+                    level="error"
+                )
+            return jsonify({'status': 'error', 'message': 'Could not connect to validator'}), 503
+
+        except Exception as e:
+            bt.logging.error(f"Error communicating with validator: {e}")
+            if self.slack_notifier:
+                self.slack_notifier.send_message(
+                    f"❌ Subaccount creation failed\n"
+                    f"Asset Class: {asset_class}\n"
+                    f"Account Size: ${account_size:,.2f}\n"
+                    f"Error: {str(e)}",
+                    level="error"
+                )
+            return jsonify({'status': 'error', 'message': f'Validator communication error: {str(e)}'}), 500
 
     def order_status_endpoint(self, order_uuid):
         """
