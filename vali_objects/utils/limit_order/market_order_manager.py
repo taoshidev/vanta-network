@@ -265,13 +265,16 @@ class MarketOrderManager():
 
         # Calculate transaction fee AFTER clamping based on final order value
         transaction_fee = ValiConfig.TRANSACTION_FEE_MULTIPLIER.get(trade_pair.trade_pair_category, 0)
+        buying_power = self._miner_account_client.get_buying_power(miner_hotkey)
 
         # Validate order before processing cash balance (raises ValueError if invalid)
         # Note: validate_order_size may clamp order.value/quantity/leverage in place
-        if existing_position.validate_order_size(order, max_position_value):
-            buying_power = self._miner_account_client.get_buying_power(miner_hotkey)
-            if order.value and buying_power and order.value * (1 + transaction_fee) >= buying_power:
-                order.value = buying_power / (1 + transaction_fee)
+        order_resized = existing_position.validate_order_size(order, max_position_value)
+        if abs(order.value) * (1 + transaction_fee) >= buying_power:
+            order.value = buying_power / (1 + transaction_fee)
+            order_resized = True
+
+        if order_resized:
             order_sizes = self.parse_order_size({"value": order.value}, usd_base_price, trade_pair, existing_position.account_size)
             order.quantity, order.leverage, order.value = order_sizes
 
