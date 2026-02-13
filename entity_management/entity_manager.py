@@ -63,7 +63,7 @@ class SubaccountInfo(BaseModel):
     account_size: float = Field(description="Account size in USD (immutable once set)")
     asset_class: str = Field(description="Asset class selection (immutable once set)")
     hl_address: Optional[str] = Field(default=None, description="Hyperliquid address for HL tracking subaccounts")
-    payout_address: Optional[str] = Field(default=None, description="EVM address (0x + 40 hex) for USDC payouts")
+    payout_address: Optional[str] = Field(default=None, description="EVM payout address for HL subaccounts")
 
     # Note: Challenge period tracking has been migrated to ChallengePeriodManager
     # Synthetic hotkeys are added to challenge period bucket and evaluated via inspect()
@@ -606,6 +606,13 @@ class EntityManager(ValidatorBroadcastBase):
             # Broadcast dashboard update to WebSocket subscribers after slashing completes
             self.broadcast_subaccount_dashboard(synthetic_hotkey)
 
+            # Notify WebSocket server so connected entity clients auto-subscribe
+            if slash_success:
+                try:
+                    self._websocket_client.notify_new_subaccount(entity_hotkey, synthetic_hotkey)
+                except Exception as notify_err:
+                    bt.logging.debug(f"[ENTITY_MANAGER] New subaccount WS notification failed: {notify_err}")
+
         except Exception as e:
             bt.logging.error(f"[ENTITY_MANAGER] Slashing error for {synthetic_hotkey}: {e}")
             # Mark as failed
@@ -620,6 +627,30 @@ class EntityManager(ValidatorBroadcastBase):
 
             # Broadcast dashboard update even on failure so clients see the status change
             self.broadcast_subaccount_dashboard(synthetic_hotkey)
+
+    def _get_hl_max_addresses(self) -> int:
+        """
+        Return the max number of HL addresses we can track.
+
+        If proxy ports are configured in secrets.json, returns PER_IP * num_ports.
+        Otherwise returns PER_IP (10).
+        """
+        try:
+            secrets = ValiUtils.get_secrets(running_unit_tests=self.running_unit_tests)
+        except Exception:
+            return ValiConfig.HL_MAX_TRACKED_ADDRESSES_PER_IP
+
+        proxy_url = secrets.get(ValiConfig.HL_PROXY_SECRET_KEY)
+        ports_str = secrets.get(ValiConfig.HL_PROXY_PORTS_SECRET_KEY)
+
+        if not proxy_url or not ports_str:
+            return ValiConfig.HL_MAX_TRACKED_ADDRESSES_PER_IP
+
+        # Parse ports to count them
+        from entity_management.hyperliquid_tracker import HyperliquidTracker
+        ports = HyperliquidTracker._parse_ports(ports_str)
+        num_ports = min(len(ports), ValiConfig.HL_MAX_PROXY_SHARDS)
+        return num_ports * ValiConfig.HL_MAX_TRACKED_ADDRESSES_PER_IP
 
     def create_hl_subaccount(
         self,
@@ -640,7 +671,7 @@ class EntityManager(ValidatorBroadcastBase):
             account_size: Account size in USD
             hl_address: Hyperliquid address (0x-prefixed, 40 hex chars)
             admin: If True, skip collateral slashing
-            payout_address: Optional EVM address (0x + 40 hex) for USDC payouts
+            payout_address: Optional EVM address for payouts (0x-prefixed, 40 hex chars)
 
         Returns:
             (success: bool, subaccount_info: Optional[SubaccountInfo], message: str)
@@ -650,9 +681,8 @@ class EntityManager(ValidatorBroadcastBase):
             return False, None, f"Invalid Hyperliquid address format: {hl_address}. Must be 0x followed by 40 hex characters."
 
         # Validate payout_address format if provided
-        if payout_address is not None:
-            if not isinstance(payout_address, str) or not re.match(ValiConfig.HL_ADDRESS_REGEX, payout_address):
-                return False, None, f"Invalid payout_address format: {payout_address}. Must be a valid EVM address (0x followed by 40 hex characters)."
+        if payout_address and not re.match(ValiConfig.HL_ADDRESS_REGEX, payout_address):
+            return False, None, f"Invalid payout address format: {payout_address}. Must be 0x followed by 40 hex characters."
 
         # Check for duplicate HL address across all entities
         with self._entities_lock:
@@ -662,9 +692,10 @@ class EntityManager(ValidatorBroadcastBase):
 
             # Check total active HL subaccounts < max limit
             active_hl_count = len(self._hl_address_to_synthetic)
-            if active_hl_count >= ValiConfig.HL_MAX_TRACKED_ADDRESSES:
+            max_addresses = self._get_hl_max_addresses()
+            if active_hl_count >= max_addresses:
                 return False, None, (
-                    f"Maximum number of tracked Hyperliquid addresses ({ValiConfig.HL_MAX_TRACKED_ADDRESSES}) reached. "
+                    f"Maximum number of tracked Hyperliquid addresses ({max_addresses}) reached. "
                     f"Cannot register more HL subaccounts."
                 )
 
@@ -741,40 +772,6 @@ class EntityManager(ValidatorBroadcastBase):
             if not entity_data:
                 return None
             return entity_data.subaccounts.get(subaccount_id)
-
-    def get_hl_subaccount_limits_data(self, hl_address: str) -> Optional[dict]:
-        """
-        Get lightweight limits data for an HL subaccount.
-
-        Only fetches subaccount info (O(1) dict lookup) and challenge bucket
-        (1 lightweight RPC call), avoiding the 7+ RPC calls of the full dashboard.
-
-        Args:
-            hl_address: The Hyperliquid address
-
-        Returns:
-            Dict with {account_size, asset_class, challenge_bucket} or None
-        """
-        synthetic_hotkey = self.get_synthetic_hotkey_for_hl_address(hl_address)
-        if not synthetic_hotkey:
-            return None
-
-        subaccount_info = self.get_subaccount_info_for_synthetic(synthetic_hotkey)
-        if not subaccount_info:
-            return None
-
-        # Get challenge bucket (1 lightweight RPC call)
-        challenge_bucket = None
-        if self._challenge_period_client.has_miner(synthetic_hotkey):
-            bucket = self._challenge_period_client.get_miner_bucket(synthetic_hotkey)
-            if bucket:
-                challenge_bucket = bucket.value
-
-        return {
-            'account_size': subaccount_info.account_size,
-            'asset_class': subaccount_info.asset_class,
-            'challenge_bucket': challenge_bucket,
-        }
 
     def eliminate_subaccount(
         self,
@@ -894,33 +891,6 @@ class EntityManager(ValidatorBroadcastBase):
         entity_lock = self._get_entity_lock(entity_hotkey)
         with entity_lock:
             return self.entities.get(entity_hotkey)
-
-    def get_subaccount_dashboard(self, synthetic_hotkey: str) -> dict | None:
-        entity_hotkey, subaccount_id = parse_synthetic_hotkey(synthetic_hotkey)
-        if not entity_hotkey:
-            return None
-
-        entity_lock = self._get_entity_lock(entity_hotkey)
-        with entity_lock:
-            entity_data = self.entities.get(entity_hotkey)
-
-            if entity_data is None:
-                return None
-
-            subaccount = entity_data.subaccounts.get(subaccount_id)
-            if subaccount is None:
-                return None
-
-            return {
-                "synthetic_hotkey": synthetic_hotkey,
-                "subaccount_uuid": subaccount.subaccount_uuid,
-                "subaccount_id": subaccount.subaccount_id,
-                "asset_class": subaccount.asset_class,
-                "account_size": subaccount.account_size,
-                "status": subaccount.status,
-                "created_at_ms": subaccount.created_at_ms,
-                "eliminated_at_ms": subaccount.eliminated_at_ms,
-            }
 
     def get_synthetic_hotkey_from_uuid(self, subaccount_uuid: str) -> Optional[str]:
         """
@@ -1224,18 +1194,7 @@ class EntityManager(ValidatorBroadcastBase):
             subaccount_info_dict['payout_address'] = subaccount.payout_address
 
         return {
-            'subaccount_info': {
-                'synthetic_hotkey': synthetic_hotkey,
-                'entity_hotkey': entity_hotkey,
-                'subaccount_id': subaccount_id,
-                'subaccount_uuid': subaccount.subaccount_uuid,
-                'asset_class': subaccount.asset_class,
-                'account_size': subaccount.account_size,
-                'status': subaccount.status,
-                'created_at_ms': subaccount.created_at_ms,
-                'eliminated_at_ms': subaccount.eliminated_at_ms,
-                'payout_address': subaccount.payout_address,
-            },
+            'subaccount_info': subaccount_info_dict,
             'challenge_period': challenge_data,
             'ledger': ledger_data,
             'positions': positions_data,
@@ -1573,11 +1532,6 @@ class EntityManager(ValidatorBroadcastBase):
                         incoming_entity.registered_at_ms
                     )
 
-                    # Update HL address reverse index for all subaccounts
-                    for sub in incoming_entity.subaccounts.values():
-                        if sub.hl_address:
-                            self._hl_address_to_synthetic[sub.hl_address] = sub.synthetic_hotkey
-
                     stats['entities_added'] += 1
                     stats['subaccounts_added'] += len(incoming_entity.subaccounts)
                     bt.logging.info(f"[ENTITY_MANAGER] Added new entity {entity_hotkey} with {len(incoming_entity.subaccounts)} subaccounts from sync")
@@ -1597,10 +1551,6 @@ class EntityManager(ValidatorBroadcastBase):
                                 with self._entities_lock:
                                     self._uuid_to_hotkey[incoming_sub.subaccount_uuid] = incoming_sub.synthetic_hotkey
 
-                                # Update HL address reverse index
-                                if incoming_sub.hl_address:
-                                    self._hl_address_to_synthetic[incoming_sub.hl_address] = incoming_sub.synthetic_hotkey
-
                                 stats['subaccounts_added'] += 1
                                 bt.logging.info(f"[ENTITY_MANAGER] Added subaccount {incoming_sub.synthetic_hotkey} from sync")
                             else:
@@ -1611,17 +1561,6 @@ class EntityManager(ValidatorBroadcastBase):
                                     local_sub.eliminated_at_ms = incoming_sub.eliminated_at_ms
                                     stats['subaccounts_updated'] += 1
                                     bt.logging.info(f"[ENTITY_MANAGER] Updated subaccount {incoming_sub.synthetic_hotkey} status: {old_status} -> {incoming_sub.status}")
-
-                                # Update HL address if added
-                                if incoming_sub.hl_address and not local_sub.hl_address:
-                                    local_sub.hl_address = incoming_sub.hl_address
-                                    self._hl_address_to_synthetic[incoming_sub.hl_address] = incoming_sub.synthetic_hotkey
-                                    stats['subaccounts_updated'] += 1
-
-                                # Update payout_address if added
-                                if incoming_sub.payout_address and not local_sub.payout_address:
-                                    local_sub.payout_address = incoming_sub.payout_address
-                                    stats['subaccounts_updated'] += 1
 
                         # Update next_subaccount_id to prevent ID collisions
                         if incoming_entity.next_subaccount_id > local_entity.next_subaccount_id:
@@ -1692,8 +1631,8 @@ class EntityManager(ValidatorBroadcastBase):
             account_size: Account size in USD (immutable)
             asset_class: Asset class selection (immutable)
             status: Subaccount status (active, admin, etc.)
-            hl_address: Optional Hyperliquid address for HL-linked subaccounts
-            payout_address: Optional EVM address for USDC payouts
+            hl_address: Optional Hyperliquid address for HL subaccounts
+            payout_address: Optional EVM payout address for HL subaccounts
         """
         def create_synapse():
             subaccount_data = {
@@ -1703,9 +1642,7 @@ class EntityManager(ValidatorBroadcastBase):
                 "synthetic_hotkey": synthetic_hotkey,
                 "account_size": account_size,
                 "asset_class": asset_class,
-                "status": status,
-                "hl_address": hl_address,
-                "payout_address": payout_address
+                "status": status
             }
             if hl_address:
                 subaccount_data["hl_address"] = hl_address
@@ -1746,8 +1683,6 @@ class EntityManager(ValidatorBroadcastBase):
                 account_size = subaccount_data.get("account_size")
                 asset_class = subaccount_data.get("asset_class")
                 status = subaccount_data.get("status", "active")  # Default to active for backwards compatibility
-                hl_address = subaccount_data.get("hl_address")
-                payout_address = subaccount_data.get("payout_address")
 
                 bt.logging.info(
                     f"[ENTITY_MANAGER] Processing subaccount registration for {synthetic_hotkey}"
@@ -1780,7 +1715,6 @@ class EntityManager(ValidatorBroadcastBase):
                 if subaccount_id in entity_data.subaccounts:
                     existing_sub = entity_data.subaccounts[subaccount_id]
                     if existing_sub.subaccount_uuid == subaccount_uuid:
-                        changed = False
                         # Update status if changed (e.g., pending -> active after slashing)
                         if existing_sub.status != status:
                             bt.logging.info(
@@ -1788,23 +1722,6 @@ class EntityManager(ValidatorBroadcastBase):
                                 f"{existing_sub.status} -> {status}"
                             )
                             existing_sub.status = status
-                            changed = True
-                        # Update hl_address if previously None and now provided
-                        if hl_address and not existing_sub.hl_address:
-                            existing_sub.hl_address = hl_address
-                            self._hl_address_to_synthetic[hl_address] = synthetic_hotkey
-                            bt.logging.info(
-                                f"[ENTITY_MANAGER] Set hl_address {hl_address} for subaccount {synthetic_hotkey}"
-                            )
-                            changed = True
-                        # Update payout_address if previously None and now provided
-                        if payout_address and not existing_sub.payout_address:
-                            existing_sub.payout_address = payout_address
-                            bt.logging.info(
-                                f"[ENTITY_MANAGER] Set payout_address {payout_address} for subaccount {synthetic_hotkey}"
-                            )
-                            changed = True
-                        if changed:
                             self._write_entities_from_memory_to_disk()
                         else:
                             bt.logging.debug(
@@ -1913,9 +1830,8 @@ class EntityManager(ValidatorBroadcastBase):
 
         if hl_address:
             # HL address -> synthetic hotkey -> entity_hotkey
-            normalized_hl = self._normalize_hl_address(hl_address)
             with self._entities_lock:
-                synthetic = self._hl_address_to_synthetic.get(normalized_hl) if normalized_hl else None
+                synthetic = self._hl_address_to_synthetic.get(hl_address)
             if synthetic:
                 parsed = parse_synthetic_hotkey(synthetic)
                 if parsed[0]:
