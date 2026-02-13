@@ -149,8 +149,7 @@ class EntityServer(RPCServerBase):
         self,
         entity_hotkey: str,
         account_size: float,
-        asset_class: str,
-        admin: bool = False
+        asset_class: str
     ) -> Tuple[bool, Optional[dict], str]:
         """
         Create a new subaccount for an entity.
@@ -159,13 +158,12 @@ class EntityServer(RPCServerBase):
             entity_hotkey: The VANTA_ENTITY_HOTKEY
             account_size: Account size in USD
             asset_class: Asset class selection
-            admin: If True, skip collateral slashing and exclude from payouts
 
         Returns:
             (success: bool, subaccount_info_dict: Optional[dict], message: str)
         """
         success, subaccount_info, message = self._manager.create_subaccount(
-            entity_hotkey, account_size, asset_class, admin=admin
+            entity_hotkey, account_size, asset_class
         )
 
         # Convert SubaccountInfo to dict for RPC serialization
@@ -345,18 +343,17 @@ class EntityServer(RPCServerBase):
         """
         return self._manager.get_subaccount_dashboard_data(synthetic_hotkey)
 
-    def broadcast_subaccount_dashboard_rpc(self, synthetic_hotkey: str, error_msg: Optional[str] = None) -> bool:
+    def broadcast_subaccount_dashboard_rpc(self, synthetic_hotkey: str) -> bool:
         """
         Get dashboard data and broadcast to WebSocket subscribers (RPC method).
 
         Args:
             synthetic_hotkey: The synthetic hotkey ({entity_hotkey}_{subaccount_id})
-            error_msg: Optional error message to include in the broadcast
 
         Returns:
             bool: True if broadcast was successful or skipped, False on error
         """
-        return self._manager.broadcast_subaccount_dashboard(synthetic_hotkey, error_msg)
+        return self._manager.broadcast_subaccount_dashboard(synthetic_hotkey)
 
     def calculate_subaccount_payout_rpc(
         self,
@@ -390,10 +387,7 @@ class EntityServer(RPCServerBase):
         subaccount_uuid: str,
         synthetic_hotkey: str,
         account_size: float,
-        asset_class: str,
-        status: str = "active",
-        hl_address: Optional[str] = None,
-        payout_address: Optional[str] = None
+        asset_class: str
     ) -> None:
         """
         Broadcast subaccount registration to other validators.
@@ -405,13 +399,10 @@ class EntityServer(RPCServerBase):
             synthetic_hotkey: The synthetic hotkey
             account_size: Account size in USD
             asset_class: Asset class selection
-            status: Subaccount status (active, admin, etc.)
-            hl_address: Optional Hyperliquid address for HL-linked subaccounts
-            payout_address: Optional EVM address for USDC payouts
         """
         self._manager.broadcast_subaccount_registration(
             entity_hotkey, subaccount_id, subaccount_uuid, synthetic_hotkey,
-            account_size, asset_class, status, hl_address=hl_address, payout_address=payout_address
+            account_size, asset_class
         )
 
     def receive_subaccount_registration_update_rpc(self, subaccount_data: dict, sender_hotkey: str = None) -> bool:
