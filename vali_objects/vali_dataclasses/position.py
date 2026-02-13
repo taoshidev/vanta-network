@@ -885,7 +885,7 @@ class Position(BaseModel):
 
         proposed_leverage = self.net_leverage + (order.leverage or 0)
         proposed_quantity = self.net_quantity + (order.quantity or 0)
-        proposed_value = self.net_value + (order.value or 0)
+        proposed_value = self.net_value + self.unrealized_pnl + (order.value or 0)
 
         # Flatten order
         flatten = False
@@ -973,19 +973,9 @@ class Position(BaseModel):
                 self.initialize_position_from_first_order(order)
 
             # Check if the new order flattens the position, explicitly or implicitly
-            if (
-                (
-                    self.position_type == OrderType.LONG
-                    and
-                    (self.net_leverage + order.leverage <= 0 or self.net_quantity + order.quantity <= 0)
-                )
-                or (
-                    self.position_type == OrderType.SHORT
-                    and
-                    (self.net_leverage + order.leverage >= 0 or self.net_quantity + order.quantity >= 0)
-                )
-                or order.order_type == OrderType.FLAT
-            ):
+            if self.position_type == OrderType.LONG and self.net_quantity + order.quantity <= 0 or \
+               self.position_type == OrderType.SHORT and self.net_quantity + order.quantity >= 0 or \
+               order.order_type == OrderType.FLAT:
                 #self._position_log(
                 #    f"Flattening {self.position_type.value} position from order {order}"
                 #)
