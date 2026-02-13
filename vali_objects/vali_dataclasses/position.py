@@ -885,14 +885,14 @@ class Position(BaseModel):
 
         proposed_leverage = self.net_leverage + (order.leverage or 0)
         proposed_quantity = self.net_quantity + (order.quantity or 0)
-        proposed_value = self.net_value + (order.value or 0)
+        proposed_value = self.net_value + self.unrealized_pnl + (order.value or 0)
 
         # Flatten order
         flatten = False
         if self.position_type == OrderType.LONG:
-            flatten = any(x <= 0 for x in (proposed_leverage, proposed_quantity, proposed_value))
+            flatten = proposed_quantity <= 0
         elif self.position_type == OrderType.SHORT:
-            flatten = any(x >= 0 for x in (proposed_leverage, proposed_quantity, proposed_value))
+            flatten = proposed_quantity >= 0
 
         if flatten:
             order.order_type = OrderType.FLAT
@@ -903,7 +903,7 @@ class Position(BaseModel):
 
         # If order increases position size, validate max position size
         if order.order_type == self.position_type:
-            if abs(self.net_value) >= max_position_value:
+            if abs(self.net_value + self.unrealized_pnl) >= max_position_value:
                 raise ValueError(f"Position at max ${abs(self.net_value):.2f} (limit: ${max_position_value:.2f})")
 
             max_order_value = max_position_value - abs(self.net_value)
@@ -973,19 +973,9 @@ class Position(BaseModel):
                 self.initialize_position_from_first_order(order)
 
             # Check if the new order flattens the position, explicitly or implicitly
-            if (
-                (
-                    self.position_type == OrderType.LONG
-                    and
-                    (self.net_leverage + order.leverage <= 0 or self.net_quantity + order.quantity <= 0)
-                )
-                or (
-                    self.position_type == OrderType.SHORT
-                    and
-                    (self.net_leverage + order.leverage >= 0 or self.net_quantity + order.quantity >= 0)
-                )
-                or order.order_type == OrderType.FLAT
-            ):
+            if self.position_type == OrderType.LONG and self.net_quantity + order.quantity <= 0 or \
+               self.position_type == OrderType.SHORT and self.net_quantity + order.quantity >= 0 or \
+               order.order_type == OrderType.FLAT:
                 #self._position_log(
                 #    f"Flattening {self.position_type.value} position from order {order}"
                 #)
