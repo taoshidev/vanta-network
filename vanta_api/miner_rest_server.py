@@ -306,12 +306,17 @@ class MinerRestServer(BaseRestServer):
                 return jsonify({'status': 'error', 'message': 'Missing required field: account_size'}), 400
 
             asset_class = request_data["asset_class"]
+            admin = request_data.get("admin", False)
 
             # Type conversion with error handling
             try:
                 account_size = float(request_data["account_size"])
             except (ValueError, TypeError):
                 return jsonify({'status': 'error', 'message': 'account_size must be a number'}), 400
+
+            # Admin flag validation
+            if not isinstance(admin, bool):
+                return jsonify({'status': 'error', 'message': 'admin must be a boolean'}), 400
 
             # Asset class validation
             if asset_class not in ["crypto", "forex"]:
@@ -357,6 +362,7 @@ class MinerRestServer(BaseRestServer):
             # Build message dict - CRITICAL: must use sort_keys=True for deterministic ordering
             message_dict = {
                 "account_size": account_size,
+                "admin": admin,
                 "asset_class": asset_class,
                 "entity_coldkey": coldkey.ss58_address,
                 "entity_hotkey": hotkey.ss58_address
@@ -378,6 +384,7 @@ class MinerRestServer(BaseRestServer):
                 "entity_coldkey": coldkey.ss58_address,
                 "account_size": account_size,
                 "asset_class": asset_class,
+                "admin": admin,
                 "signature": signature,
                 "version": "2.0.0"
             }

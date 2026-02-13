@@ -466,7 +466,7 @@ class Validator(ValidatorBase):
         if is_synthetic_hotkey(sender_hotkey):
             # This is a synthetic hotkey - verify it's active
             found, status, _ = self.entity_client.get_subaccount_status(sender_hotkey)
-            if not found or status != 'active':
+            if not found or status not in ['active', 'admin']:
                 msg = (f"Synthetic hotkey {sender_hotkey} is not active or not found. "
                        f"Please ensure your subaccount is properly registered.")
                 bt.logging.warning(msg)

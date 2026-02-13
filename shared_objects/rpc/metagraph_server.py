@@ -174,9 +174,9 @@ class MetagraphServer(RPCServerBase):
                 if entity_hotkey not in self._hotkeys_set:
                     return False
 
-                # Verify subaccount is active via EntityClient
+                # Verify subaccount is active or admin via EntityClient
                 found, status, _ = self._entity_client.get_subaccount_status(hotkey)
-                if found and status == "active":
+                if found and status in ["active", "admin"]:
                     return True
                 else:
                     return False

@@ -1353,6 +1353,11 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             entity_hotkey = data['entity_hotkey']
             account_size = data['account_size']
             asset_class = data['asset_class']
+            admin = data.get('admin', False)
+
+            # Validate admin flag type early
+            if not isinstance(admin, bool):
+                return jsonify({'error': 'admin must be a boolean'}), 400
 
             # Validate account_size is a positive number
             try:
@@ -1372,10 +1377,11 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             t0 = time.time()
             keypair = Keypair(ss58_address=entity_coldkey)
             message = json.dumps({
-                "entity_coldkey": entity_coldkey,
-                "entity_hotkey": entity_hotkey,
                 "account_size": account_size,
-                "asset_class": asset_class
+                "admin": admin,
+                "asset_class": asset_class,
+                "entity_coldkey": entity_coldkey,
+                "entity_hotkey": entity_hotkey
             }, sort_keys=True).encode('utf-8')
 
             is_valid = keypair.verify(message, bytes.fromhex(data['signature']))
@@ -1393,27 +1399,28 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             # Create subaccount via RPC
             t0 = time.time()
             success, subaccount_info, message = self._entity_client.create_subaccount(
-                entity_hotkey, account_size, asset_class
+                entity_hotkey, account_size, asset_class, admin=admin
             )
             timings['create_subaccount_rpc'] = int((time.time() - t0) * 1000)
 
             if success:
-                # Broadcast subaccount registration to other validators
-                try:
-                    t0 = time.time()
-                    self._entity_client.broadcast_subaccount_registration(
-                        entity_hotkey=entity_hotkey,
-                        subaccount_id=subaccount_info['subaccount_id'],
-                        subaccount_uuid=subaccount_info['subaccount_uuid'],
-                        synthetic_hotkey=subaccount_info['synthetic_hotkey'],
-                        account_size=subaccount_info['account_size'],
-                        asset_class=subaccount_info['asset_class']
-                    )
-                    timings['broadcast_rpc'] = int((time.time() - t0) * 1000)
-                    bt.logging.info(f"[REST_API] Broadcasted subaccount registration for {subaccount_info['synthetic_hotkey']}")
-                except Exception as e:
-                    # Don't fail the request if broadcast fails - it's a background operation
-                    bt.logging.warning(f"[REST_API] Failed to broadcast subaccount registration: {e}")
+                # Broadcast for admin subaccounts only (regular subaccounts broadcast after slashing completes)
+                if admin:
+                    try:
+                        t0 = time.time()
+                        self._entity_client.broadcast_subaccount_registration(
+                            entity_hotkey=entity_hotkey,
+                            subaccount_id=subaccount_info['subaccount_id'],
+                            subaccount_uuid=subaccount_info['subaccount_uuid'],
+                            synthetic_hotkey=subaccount_info['synthetic_hotkey'],
+                            account_size=subaccount_info['account_size'],
+                            asset_class=subaccount_info['asset_class'],
+                            status=subaccount_info['status']
+                        )
+                        timings['broadcast_rpc'] = int((time.time() - t0) * 1000)
+                        bt.logging.info(f"[REST_API] Broadcasted admin subaccount registration for {subaccount_info['synthetic_hotkey']}")
+                    except Exception as e:
+                        bt.logging.warning(f"[REST_API] Failed to broadcast subaccount registration: {e}")
 
                 total_ms = int((time.time() - t_start) * 1000)
                 bt.logging.info(f"[REST_API] create_subaccount completed ({total_ms} ms) | timings: {timings}")
