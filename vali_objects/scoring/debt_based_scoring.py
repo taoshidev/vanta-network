@@ -183,13 +183,20 @@ class DebtBasedScoring:
         checkpoints: List[DebtCheckpoint]
     ) -> float:
         """
-        Calculate payout from a list of debt checkpoints using the debt-based scoring formula.
+        Calculate payout from a list of debt checkpoints using HWM-gated scoring.
+
+        Only pays for incremental gains above the prior realized PnL high water mark.
+        This ensures miners only earn emissions when making new cumulative highs,
+        not when recovering from drawdowns.
 
         NOTE: realized_pnl and unrealized_pnl are in USD, per-checkpoint values (NOT cumulative)
-        This cumulative approach allows negative PnL to carry forward and offset future gains
 
         Formula:
-        - realized_component = sum(cp.realized_pnl * cp.total_penalty for all checkpoints)
+        - Track cumulative_realized = running sum of realized_pnl across checkpoints
+        - Track realized_hwm = highest cumulative_realized seen so far
+        - For each checkpoint where cumulative_realized > realized_hwm:
+            realized_component += (cumulative_realized - realized_hwm) * cp.total_penalty
+            realized_hwm = cumulative_realized
         - unrealized_component = min(0.0, last_cp.unrealized_pnl) * last_cp.total_penalty
         - payout = realized_component + unrealized_component
 
@@ -197,16 +204,22 @@ class DebtBasedScoring:
             checkpoints: List of DebtCheckpoint objects (should be in chronological order)
 
         Returns:
-            Calculated payout in USD (can be negative if losses exceed gains)
+            Calculated payout in USD (can be negative if unrealized losses exceed gains)
         """
         if not checkpoints:
             return 0.0
 
-        # Realized component: sum(realized_pnl * penalty) across all checkpoints
-        realized_component = sum(
-            cp.realized_pnl * cp.total_penalty
-            for cp in checkpoints
-        )
+        # HWM-gated realized component: only pay the delta above prior cumulative peak
+        cumulative_realized = 0.0
+        realized_hwm = 0.0
+        realized_component = 0.0
+
+        for cp in checkpoints:
+            cumulative_realized += cp.realized_pnl
+            if cumulative_realized > realized_hwm:
+                delta = cumulative_realized - realized_hwm
+                realized_component += delta * cp.total_penalty
+                realized_hwm = cumulative_realized
 
         # Unrealized component: min(0, unrealized_pnl) * penalty of last checkpoint
         # (only count unrealized losses, not gains)
@@ -375,6 +388,13 @@ class DebtBasedScoring:
             # Calculate remaining payout (in USD)
             remaining_payout_usd = needed_payout_usd - actual_payout_usd
 
+            # Log debt calculation details
+            bt.logging.info(
+                f"[PAYOUT_DEBUG] DEBT CALC [{hotkey}]: total_needed_payout=${needed_payout_usd:.2f}\t"
+                f"total_cumulative_emissions=${actual_payout_usd:.2f}, remaining=${remaining_payout_usd:.2f}, "
+                f"penalty_loss=${penalty_loss_usd:.2f}, earning_cps={len(earning_checkpoints)}"
+            )
+
             # Clamp to zero if negative (over-paid or negative performance)
             if remaining_payout_usd < 0:
                 remaining_payout_usd = 0.0
@@ -384,8 +404,14 @@ class DebtBasedScoring:
             miner_penalty_loss_usd[hotkey] = penalty_loss_usd
 
         # Query real-time emissions and project availability (in USD)
-        bt.logging.info(f"Remaining miner payouts: {miner_remaining_payouts_usd}")
         total_remaining_payout_usd = sum(miner_remaining_payouts_usd.values())
+        total_actual_payout_usd = sum(miner_actual_payouts_usd.values())
+        total_needed_payout_usd = total_remaining_payout_usd + total_actual_payout_usd
+
+        bt.logging.info(
+            f"[PAYOUT_DEBUG] PAYOUT TOTALS: needs=${total_needed_payout_usd:.2f}, "
+            f"paid_so_far=${total_actual_payout_usd:.2f}, remaining=${total_remaining_payout_usd:.2f}"
+        )
 
         # Calculate projected emissions (needed for weight normalization)
         # Get projected ALPHA emissions
@@ -400,6 +426,11 @@ class DebtBasedScoring:
             alpha_amount=projected_alpha_available,
             metagraph_client=metagraph_client,
             verbose=verbose
+        )
+
+        bt.logging.info(
+            f"[PAYOUT_DEBUG] PROJECTED EMISSIONS: {projected_alpha_available:.2f} ALPHA = ${projected_usd_available:.2f} USD "
+            f"over {days_until_target} days (${projected_usd_available / days_until_target:.2f}/day)"
         )
 
         if total_remaining_payout_usd > 0:
@@ -434,6 +465,19 @@ class DebtBasedScoring:
             projected_daily_emissions_usd=projected_daily_usd,
             verbose=verbose
         )
+
+        # Log weight summary before normalization
+        bt.logging.info(
+            f"[PAYOUT_DEBUG] WEIGHT SUMMARY: {len(miner_weights_with_minimums)} miners, "
+            f"total_remaining_payout=${total_remaining_payout_usd:.2f}, "
+            f"projected_daily_usd=${projected_daily_usd:.2f}, "
+            f"days_until_target={days_until_target}"
+        )
+        for hk, w in sorted(miner_weights_with_minimums.items(), key=lambda x: -x[1])[:10]:
+            daily_target = miner_daily_target_payouts_usd.get(hk, 0.0)
+            bt.logging.info(
+                f"[PAYOUT_DEBUG] TOP WEIGHT [{hk}]: weight={w:.8f}, daily_target=${daily_target:.2f}"
+            )
 
         # Normalize weights with special burn address logic
         # If sum < 1.0: assign remaining weight to burn address (uid 229 / uid 5)
@@ -677,11 +721,20 @@ class DebtBasedScoring:
         if not relevant_checkpoints:
             return 0.0
 
-        # Sum penalty-adjusted PnL across all checkpoints in the time range
-        # NOTE: realized_pnl/unrealized_pnl are per-checkpoint values (NOT cumulative), so we must sum
+        # HWM-gated realized component: only pay the delta above prior cumulative peak
         # Each checkpoint has its own PnL (for that 12-hour period) and its own penalty
+        cumulative_realized = 0.0
+        realized_hwm = 0.0
+        penalty_adjusted_pnl = 0.0
+
+        for cp in relevant_checkpoints:
+            cumulative_realized += cp.realized_pnl
+            if cumulative_realized > realized_hwm:
+                delta = cumulative_realized - realized_hwm
+                penalty_adjusted_pnl += delta * cp.total_penalty
+                realized_hwm = cumulative_realized
+
         last_checkpoint = relevant_checkpoints[-1]
-        penalty_adjusted_pnl = sum(cp.realized_pnl * cp.total_penalty for cp in relevant_checkpoints)
         penalty_adjusted_pnl += min(0.0, last_checkpoint.unrealized_pnl) * last_checkpoint.total_penalty
 
         return penalty_adjusted_pnl
