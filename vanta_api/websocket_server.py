@@ -20,7 +20,6 @@ from vali_objects.utils.vali_bkp_utils import CustomEncoder, ValiBkpUtils
 from vanta_api.api_key_refresh import APIKeyMixin
 from vali_objects.vali_config import TradePair, ValiConfig, RPCConnectionMode
 from shared_objects.rpc.rpc_server_base import RPCServerBase
-from entity_management.entity_client import EntityClient
 
 # Maximum number of websocket connections allowed per API key
 MAX_N_WS_PER_API_KEY = 20
@@ -146,12 +145,6 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
         # Subaccount dashboard subscriptions: synthetic_hotkey -> set of subscribed client_ids
         self.subaccount_subscriptions: Dict[str, Set[str]] = defaultdict(set)
         self.subaccount_last_broadcast_ms: Dict[str, int] = {}
-
-        # Subaccount polling tasks: synthetic_hotkey -> asyncio.Task
-        self._subaccount_poll_tasks: Dict[str, asyncio.Task] = {}
-
-        # Entity client for fetching dashboard data
-        self._entity_client = EntityClient(connection_mode=connection_mode)
 
         # Test order configuration
         self.send_test_positions = send_test_positions
@@ -534,13 +527,12 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
             if client_id in self.subscribed_clients:
                 self.subscribed_clients.remove(client_id)
 
-            # Remove from subaccount subscriptions and cancel poll tasks if empty
+            # Remove from subaccount subscriptions
             for synthetic_hotkey in list(self.subaccount_subscriptions.keys()):
                 if client_id in self.subaccount_subscriptions[synthetic_hotkey]:
                     self.subaccount_subscriptions[synthetic_hotkey].discard(client_id)
                     if not self.subaccount_subscriptions[synthetic_hotkey]:
                         del self.subaccount_subscriptions[synthetic_hotkey]
-                    self._cancel_subaccount_poll_task(synthetic_hotkey)
 
             bt.logging.info(f"WebSocketServer: Client {client_id} removed from all registries")
 
@@ -701,11 +693,9 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                 # Update throttle timestamp
                 self.subaccount_last_broadcast_ms[synthetic_hotkey] = now_ms
 
-            message_type = "error" if "error_msg" in data else "subaccount_dashboard"
-
             # Queue broadcast
             message = {
-                "type": message_type,
+                "type": "subaccount_dashboard",
                 "synthetic_hotkey": synthetic_hotkey,
                 "data": data
             }
@@ -768,53 +758,6 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
 
         for client_id in disconnected:
             self._remove_client(client_id)
-
-    # ==================== Subaccount Dashboard Polling ====================
-
-    def _ensure_subaccount_poll_task(self, synthetic_hotkey: str) -> None:
-        """Start a polling task for a subaccount if one isn't already running."""
-        existing = self._subaccount_poll_tasks.get(synthetic_hotkey)
-        if existing and not existing.done():
-            return
-        self._subaccount_poll_tasks[synthetic_hotkey] = asyncio.ensure_future(
-            self._poll_subaccount_dashboard(synthetic_hotkey)
-        )
-
-    async def _poll_subaccount_dashboard(self, synthetic_hotkey: str) -> None:
-        """Fetch and push dashboard data immediately, then every SUBACCOUNT_POLL_INTERVAL_S seconds.
-
-        The task exits automatically when no subscribers remain.
-        """
-        try:
-            while self.subaccount_subscriptions.get(synthetic_hotkey):
-                try:
-                    dashboard_data = self._entity_client.get_subaccount_dashboard_data(synthetic_hotkey)
-                    if dashboard_data:
-                        self.sequence_number += 1
-                        envelope = {
-                            "sequence": self.sequence_number,
-                            "timestamp": TimeUtil.now_in_millis(),
-                            "type": "subaccount_dashboard",
-                            "synthetic_hotkey": synthetic_hotkey,
-                            "data": dashboard_data
-                        }
-                        await self._broadcast_to_subaccount_subscribers(synthetic_hotkey, envelope)
-                except Exception as e:
-                    bt.logging.warning(f"WebSocketServer: Dashboard poll failed for {synthetic_hotkey}: {e}")
-
-                await asyncio.sleep(SUBACCOUNT_POLL_INTERVAL_S)
-        except asyncio.CancelledError:
-            pass
-        finally:
-            self._subaccount_poll_tasks.pop(synthetic_hotkey, None)
-
-    def _cancel_subaccount_poll_task(self, synthetic_hotkey: str) -> None:
-        """Cancel the polling task for a subaccount if no subscribers remain."""
-        if self.subaccount_subscriptions.get(synthetic_hotkey):
-            return  # still has subscribers
-        task = self._subaccount_poll_tasks.pop(synthetic_hotkey, None)
-        if task and not task.done():
-            task.cancel()
 
     # ==================== WebSocket Client Handling ====================
 
@@ -953,8 +896,6 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                                 "action": "subscribe_subaccount",
                                 "subscribed_to": synthetic_hotkey
                             }))
-                            # Start polling if not already running — sends data immediately
-                            self._ensure_subaccount_poll_task(synthetic_hotkey)
 
                     elif message_type == "unsubscribe_subaccount":
                         synthetic_hotkey = data.get("synthetic_hotkey")
@@ -962,7 +903,6 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                             self.subaccount_subscriptions[synthetic_hotkey].discard(client_id)
                             if not self.subaccount_subscriptions[synthetic_hotkey]:
                                 del self.subaccount_subscriptions[synthetic_hotkey]
-                            self._cancel_subaccount_poll_task(synthetic_hotkey)
                             bt.logging.info(f"WebSocketServer: Client {client_id} unsubscribed from subaccount {synthetic_hotkey}")
                         await websocket.send(json.dumps({
                             "type": "subscription_status",
@@ -1406,11 +1346,6 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                     except asyncio.CancelledError:
                         pass
 
-                # Cancel all subaccount poll tasks
-                for task in self._subaccount_poll_tasks.values():
-                    task.cancel()
-                self._subaccount_poll_tasks.clear()
-
                 # Final save of sequence number
                 self._save_sequence_number()
                 raise
@@ -1466,13 +1401,6 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
         if self.test_positions_task and not self.test_positions_task.done():
             self.test_positions_task.cancel()
             tasks_to_cancel.append(self.test_positions_task)
-
-        # Cancel all subaccount poll tasks
-        for task in self._subaccount_poll_tasks.values():
-            if not task.done():
-                task.cancel()
-                tasks_to_cancel.append(task)
-        self._subaccount_poll_tasks.clear()
 
         # Wait for all tasks to complete cancellation with exception handling
         if tasks_to_cancel:
