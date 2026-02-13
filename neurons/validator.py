@@ -466,7 +466,7 @@ class Validator(ValidatorBase):
         if is_synthetic_hotkey(sender_hotkey):
             # This is a synthetic hotkey - verify it's active
             found, status, _ = self.entity_client.get_subaccount_status(sender_hotkey)
-            if not found or status not in ['active', 'admin']:
+            if not found or status != 'active':
                 msg = (f"Synthetic hotkey {sender_hotkey} is not active or not found. "
                        f"Please ensure your subaccount is properly registered.")
                 bt.logging.warning(msg)
@@ -529,8 +529,9 @@ class Validator(ValidatorBase):
                 is_market_open = self.price_fetcher_client.is_market_open(tp, now_ms)
                 execution_type = ExecutionType.from_string(signal.get("execution_type", "MARKET").upper())
                 if execution_type in [ExecutionType.MARKET, ExecutionType.FLAT_ALL] and not is_market_open:
-                    synapse.error_message = f"Market for trade pair [{tp.trade_pair_id}] is closed. Please try again later."
-                    synapse.should_retry = False
+                    msg = (f"Market for trade pair [{tp.trade_pair_id}] is likely closed or this validator is"
+                           f" having issues fetching live price. Please try again later.")
+                    synapse.error_message = msg
                 else:
                     unsupported_check_start = time.perf_counter()
                     unsupported_pairs = self.price_fetcher_client.get_unsupported_trade_pairs()
@@ -674,8 +675,13 @@ class Validator(ValidatorBase):
                 final_processing_ms = TimeUtil.now_in_millis() - final_processing_start
                 bt.logging.info(f"[TIMING] Final synapse setup took {final_processing_ms}ms")
 
-                if is_synthetic_hotkey(miner_hotkey):
-                    self.entity_client.broadcast_subaccount_dashboard(miner_hotkey, synapse.error_message)
+
+                # Broadcast subaccount dashboard after entire pipeline completes
+                if synapse.successfully_processed and is_synthetic_hotkey(miner_hotkey):
+                    try:
+                        self.entity_client.broadcast_subaccount_dashboard(miner_hotkey)
+                    except Exception as e:
+                        bt.logging.debug(f"Dashboard broadcast failed: {e}")
 
                 processing_time_ms = TimeUtil.now_in_millis() - now_ms
                 bt.logging.success(f"Sending ack back to miner [{miner_hotkey}]. Synapse Message: {synapse.error_message}. "
