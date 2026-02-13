@@ -179,7 +179,7 @@ class EntityServer(RPCServerBase):
         account_size: float,
         hl_address: str,
         admin: bool = False,
-        payout_address: Optional[str] = None
+        payout_address: str = None
     ) -> Tuple[bool, Optional[dict], str]:
         """
         Create a new subaccount linked to a Hyperliquid address.
@@ -189,7 +189,7 @@ class EntityServer(RPCServerBase):
             account_size: Account size in USD
             hl_address: Hyperliquid address (0x-prefixed, 40 hex chars)
             admin: If True, skip collateral slashing
-            payout_address: Optional EVM address (0x + 40 hex) for USDC payouts
+            payout_address: Optional EVM address for payouts
 
         Returns:
             (success: bool, subaccount_info_dict: Optional[dict], message: str)
@@ -233,18 +233,6 @@ class EntityServer(RPCServerBase):
         """
         info = self._manager.get_subaccount_info_for_synthetic(synthetic_hotkey)
         return info.model_dump() if info else None
-
-    def get_hl_subaccount_limits_data_rpc(self, hl_address: str) -> Optional[dict]:
-        """
-        Get lightweight limits data for an HL subaccount.
-
-        Args:
-            hl_address: The Hyperliquid address
-
-        Returns:
-            Dict with {account_size, asset_class, challenge_bucket} or None
-        """
-        return self._manager.get_hl_subaccount_limits_data(hl_address)
 
     def eliminate_subaccount_rpc(
         self,
@@ -397,8 +385,8 @@ class EntityServer(RPCServerBase):
         account_size: float,
         asset_class: str,
         status: str = "active",
-        hl_address: Optional[str] = None,
-        payout_address: Optional[str] = None
+        hl_address: str = None,
+        payout_address: str = None
     ) -> None:
         """
         Broadcast subaccount registration to other validators.
@@ -411,12 +399,13 @@ class EntityServer(RPCServerBase):
             account_size: Account size in USD
             asset_class: Asset class selection
             status: Subaccount status (active, admin, etc.)
-            hl_address: Optional Hyperliquid address for HL-linked subaccounts
-            payout_address: Optional EVM address for USDC payouts
+            hl_address: Optional Hyperliquid address for HL subaccounts
+            payout_address: Optional EVM payout address for HL subaccounts
         """
         self._manager.broadcast_subaccount_registration(
             entity_hotkey, subaccount_id, subaccount_uuid, synthetic_hotkey,
-            account_size, asset_class, status, hl_address=hl_address, payout_address=payout_address
+            account_size, asset_class, status, hl_address=hl_address,
+            payout_address=payout_address
         )
 
     def receive_subaccount_registration_update_rpc(self, subaccount_data: dict, sender_hotkey: str = None) -> bool:
