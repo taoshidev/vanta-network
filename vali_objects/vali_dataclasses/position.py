@@ -833,6 +833,9 @@ class Position(BaseModel):
         proposed_quantity = self.net_quantity + (order.quantity or 0)
         proposed_value = self.net_value + self.unrealized_pnl + (order.value or 0)
 
+        bt.logging.info(f"[POSITION VALIDATION] unrealized pnl: {self.unrealized_pnl}")
+        bt.logging.info(f"[POSITION VALIDATION] proposed quantity: {proposed_quantity}, proposed_value: {proposed_value}")
+
         # Flatten order
         flatten = False
         if self.position_type == OrderType.LONG:
