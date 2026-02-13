@@ -47,6 +47,7 @@ from vali_objects.utils.asset_selection.asset_selection_client import AssetSelec
 from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from time_util.time_util import TimeUtil
+from vanta_api.websocket_notifier import WebSocketNotifierClient
 
 
 class SubaccountInfo(BaseModel):
@@ -220,6 +221,12 @@ class EntityManager(ValidatorBroadcastBase):
             connection_mode=connection_mode,
             connect_immediately=False,
             running_unit_tests=running_unit_tests
+        )
+
+        # Create WebSocketNotifierClient for real-time dashboard updates
+        self._websocket_client = WebSocketNotifierClient(
+            connection_mode=connection_mode,
+            connect_immediately=False
         )
 
         self.ENTITY_FILE = ValiBkpUtils.get_entity_file_location(running_unit_tests=running_unit_tests)
@@ -565,6 +572,10 @@ class EntityManager(ValidatorBroadcastBase):
                     subaccount.status = "failed"
                     bt.logging.error(f"[ENTITY_MANAGER] Slashing failed for {synthetic_hotkey}")
                 self._write_entities_from_memory_to_disk()
+
+            # Broadcast dashboard update to WebSocket subscribers after slashing completes
+            self.broadcast_subaccount_dashboard(synthetic_hotkey)
+
         except Exception as e:
             bt.logging.error(f"[ENTITY_MANAGER] Slashing error for {synthetic_hotkey}: {e}")
             # Mark as failed
@@ -576,6 +587,9 @@ class EntityManager(ValidatorBroadcastBase):
                     if subaccount:
                         subaccount.status = "failed"
                         self._write_entities_from_memory_to_disk()
+
+            # Broadcast dashboard update even on failure so clients see the status change
+            self.broadcast_subaccount_dashboard(synthetic_hotkey)
 
     def eliminate_subaccount(
         self,
@@ -1003,6 +1017,29 @@ class EntityManager(ValidatorBroadcastBase):
             'drawdown': drawdown_data,
         }
 
+    def broadcast_subaccount_dashboard(self, synthetic_hotkey: str) -> bool:
+        """
+        Get dashboard data for a subaccount and broadcast it to WebSocket subscribers.
+
+        Args:
+            synthetic_hotkey: The synthetic hotkey ({entity_hotkey}_{subaccount_id})
+
+        Returns:
+            bool: True if broadcast was successful or skipped, False on error
+        """
+        try:
+            # Skip if no subscribers
+            if not self._websocket_client.has_subaccount_subscribers(synthetic_hotkey):
+                return True
+
+            dashboard_data = self.get_subaccount_dashboard_data(synthetic_hotkey)
+            if dashboard_data:
+                return self._websocket_client.broadcast_subaccount_dashboard(synthetic_hotkey, dashboard_data)
+            return True  # No data = nothing to broadcast, not an error
+        except Exception as e:
+            bt.logging.error(f"[ENTITY_MANAGER] Dashboard broadcast failed for {synthetic_hotkey}: {e}")
+            return False
+
     def get_all_entities(self) -> Dict[str, EntityData]:
         """Get all entities."""
         # Use master lock: copying entire dict
@@ -1226,6 +1263,8 @@ class EntityManager(ValidatorBroadcastBase):
                         subaccount.status = "eliminated"
                         subaccount.eliminated_at_ms = now_ms
                         eliminated_count += 1
+
+                        self.broadcast_subaccount_dashboard(synthetic_hotkey)
 
             # Persist changes if any subaccounts were eliminated
             if eliminated_count > 0:
