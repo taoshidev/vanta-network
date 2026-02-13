@@ -519,10 +519,7 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                     if not self.subaccount_subscriptions[synthetic_hotkey]:
                         del self.subaccount_subscriptions[synthetic_hotkey]
                     self._cancel_subaccount_poll_task(synthetic_hotkey)
-
             bt.logging.info(f"WebSocketServer: Client {client_id} removed from all registries")
-
-    def send_message(self, message_data: Dict[str, Any]) -> bool:
         """Queue a message for broadcasting.
 
         Args:
