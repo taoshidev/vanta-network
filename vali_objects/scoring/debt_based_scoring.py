@@ -388,6 +388,13 @@ class DebtBasedScoring:
             # Calculate remaining payout (in USD)
             remaining_payout_usd = needed_payout_usd - actual_payout_usd
 
+            # Log debt calculation details
+            bt.logging.info(
+                f"[PAYOUT_DEBUG] DEBT CALC [{hotkey}]: total_needed_payout=${needed_payout_usd:.2f}\t"
+                f"total_cumulative_emissions=${actual_payout_usd:.2f}, remaining=${remaining_payout_usd:.2f}, "
+                f"penalty_loss=${penalty_loss_usd:.2f}, earning_cps={len(earning_checkpoints)}"
+            )
+
             # Clamp to zero if negative (over-paid or negative performance)
             if remaining_payout_usd < 0:
                 remaining_payout_usd = 0.0
@@ -397,8 +404,14 @@ class DebtBasedScoring:
             miner_penalty_loss_usd[hotkey] = penalty_loss_usd
 
         # Query real-time emissions and project availability (in USD)
-        bt.logging.info(f"Remaining miner payouts: {miner_remaining_payouts_usd}")
         total_remaining_payout_usd = sum(miner_remaining_payouts_usd.values())
+        total_actual_payout_usd = sum(miner_actual_payouts_usd.values())
+        total_needed_payout_usd = total_remaining_payout_usd + total_actual_payout_usd
+
+        bt.logging.info(
+            f"[PAYOUT_DEBUG] PAYOUT TOTALS: needs=${total_needed_payout_usd:.2f}, "
+            f"paid_so_far=${total_actual_payout_usd:.2f}, remaining=${total_remaining_payout_usd:.2f}"
+        )
 
         # Calculate projected emissions (needed for weight normalization)
         # Get projected ALPHA emissions
@@ -413,6 +426,11 @@ class DebtBasedScoring:
             alpha_amount=projected_alpha_available,
             metagraph_client=metagraph_client,
             verbose=verbose
+        )
+
+        bt.logging.info(
+            f"[PAYOUT_DEBUG] PROJECTED EMISSIONS: {projected_alpha_available:.2f} ALPHA = ${projected_usd_available:.2f} USD "
+            f"over {days_until_target} days (${projected_usd_available / days_until_target:.2f}/day)"
         )
 
         if total_remaining_payout_usd > 0:
@@ -447,6 +465,19 @@ class DebtBasedScoring:
             projected_daily_emissions_usd=projected_daily_usd,
             verbose=verbose
         )
+
+        # Log weight summary before normalization
+        bt.logging.info(
+            f"[PAYOUT_DEBUG] WEIGHT SUMMARY: {len(miner_weights_with_minimums)} miners, "
+            f"total_remaining_payout=${total_remaining_payout_usd:.2f}, "
+            f"projected_daily_usd=${projected_daily_usd:.2f}, "
+            f"days_until_target={days_until_target}"
+        )
+        for hk, w in sorted(miner_weights_with_minimums.items(), key=lambda x: -x[1])[:10]:
+            daily_target = miner_daily_target_payouts_usd.get(hk, 0.0)
+            bt.logging.info(
+                f"[PAYOUT_DEBUG] TOP WEIGHT [{hk}]: weight={w:.8f}, daily_target=${daily_target:.2f}"
+            )
 
         # Normalize weights with special burn address logic
         # If sum < 1.0: assign remaining weight to burn address (uid 229 / uid 5)
