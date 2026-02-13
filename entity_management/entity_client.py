@@ -202,6 +202,18 @@ class EntityClient(RPCClientBase):
         """
         return self._server.get_subaccount_dashboard_data_rpc(synthetic_hotkey)
 
+    def broadcast_subaccount_dashboard(self, synthetic_hotkey: str) -> bool:
+        """
+        Get dashboard data and broadcast to WebSocket subscribers.
+
+        Args:
+            synthetic_hotkey: The synthetic hotkey ({entity_hotkey}_{subaccount_id})
+
+        Returns:
+            bool: True if broadcast was successful or skipped, False on error
+        """
+        return self._server.broadcast_subaccount_dashboard_rpc(synthetic_hotkey)
+
     def calculate_subaccount_payout(
         self,
         subaccount_uuid: str,
