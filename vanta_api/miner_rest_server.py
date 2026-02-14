@@ -126,7 +126,8 @@ class MinerRestServer(BaseRestServer):
         Synchronous order submission with direct call to PropNetOrderPlacer.
 
         This runs in a Flask worker thread. Multiple concurrent requests
-        are handled by Flask's thread pool (default 10 threads).
+        are handled by Flask's thread pool (default 10 threads). Each thread
+        submits async work to the shared event loop in PropNetOrderPlacer.
 
         Request body (JSON):
         {
@@ -138,22 +139,17 @@ class MinerRestServer(BaseRestServer):
             "quantity": 0.5,  // Exactly one of leverage, value, or quantity required
             "execution_type": "MARKET" | "LIMIT",
             "price": 50000.0,  // Required for LIMIT orders
-            "subaccount_id": "optional-subaccount-id",
-            "verbose": false  // If true, return all validators; if false, return only MOTHERSHIP (default: false)
+            "subaccount_id": "optional-subaccount-id"
         }
 
         Response (200 OK):
         {
-            "success": true,  // MOTHERSHIP validator success if verbose=false
+            "success": true,
             "order_uuid": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
-            "validators_processed": 5,
-            "validators_succeeded": 5,
-            "high_trust_total": 5,
-            "high_trust_succeeded": 5,
-            "created_orders": {...},  // Filtered to MOTHERSHIP only if verbose=false
-            "error_messages": {...},  // Filtered to MOTHERSHIP only if verbose=false
-            "processing_time": 23.456,
-            "message": "Order successfully processed"
+            "order_json": "...",
+            "error_message": "",
+            "processing_time": 1.23,
+            "message": "Order successfully processed by Taoshi validator"
         }
 
         Response (400 Bad Request):
@@ -181,13 +177,7 @@ class MinerRestServer(BaseRestServer):
             # Generate order_uuid if not provided
             order_uuid = signal_data.get('order_uuid', str(uuid.uuid4()))
 
-            # Extract verbose flag (default to false)
-            verbose = signal_data.get('verbose', False)
-            if not isinstance(verbose, bool):
-                # Handle string values for flexibility
-                verbose = str(verbose).lower() in ('true', '1', 'yes')
-
-            bt.logging.debug(f"Processing order {order_uuid} with verbose={verbose}")
+            bt.logging.debug(f"Processing order {order_uuid}")
 
         except Exception as e:
             bt.logging.error(f"Error parsing request body: {e}")
@@ -235,20 +225,17 @@ class MinerRestServer(BaseRestServer):
                 'error': f'Signal validation error: {str(e)}'
             }), 400
 
-        # 3. Call order_placer.process_a_signal_for_rest() directly (blocks 20-60s)
+        # 3. Call order_placer.process_a_signal_for_rest() directly
         try:
-            bt.logging.info(f"Processing order synchronously signal: {signal}...")
-            start_time = time.time()
+            bt.logging.info(f"Processing order: {signal}...")
 
             result = self.order_placer.process_a_signal_for_rest(
                 order_uuid=order_uuid,
                 signal=signal,
-                subaccount_id=signal_data.get('subaccount_id'),
-                verbose=verbose
+                subaccount_id=signal_data.get('subaccount_id', None)
             )
 
-            elapsed = time.time() - start_time
-            bt.logging.info(f"Order {order_uuid} processed in {elapsed:.2f}s: success={result.get('success')}")
+            bt.logging.info(f"Order {order_uuid} processed in {result.get('processing_time', 0):.2f}s: success={result.get('success')}")
 
             # 4. Return formatted response
             status_code = 200 if result.get('success') else 400
