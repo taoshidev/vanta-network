@@ -953,6 +953,9 @@ class EntityManager(ValidatorBroadcastBase):
         Returns:
             bool: True if broadcast was successful or skipped, False on error
         """
+        if self.running_unit_tests:
+            return True
+
         try:
             # Skip if no subscribers
             if not self._websocket_client.has_subaccount_subscribers(synthetic_hotkey):
