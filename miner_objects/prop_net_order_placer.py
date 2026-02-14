@@ -357,11 +357,11 @@ class PropNetOrderPlacer:
 
     def process_a_signal_for_rest(self, order_uuid: str, signal: Signal, subaccount_id: Optional[int] = None) -> dict:
         """
-        Process signal from REST endpoint (synchronous, returns structured result).
+        Process signal from REST API endpoint and send to validators.
 
-        Uses the persistent event loop to run async _send_order concurrently.
-        Multiple Flask threads can call this simultaneously since they all share
-        the same event loop via run_coroutine_threadsafe.
+        This is the main entry point for REST API signal processing. It handles the complete
+        workflow: validator lookup, UUID deduplication, async order transmission, and result archiving.
+
 
         Args:
             order_uuid: UUID for this order
