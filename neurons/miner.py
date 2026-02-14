@@ -369,8 +369,7 @@ class Miner:
             try:
                 signals, signal_file_names = self.get_all_files_in_dir_no_duplicate_trade_pairs()
                 n_signals = len(signals)
-                self.prop_net_order_placer.send_signals(signals, signal_file_names, recently_acked_validators=
-                self.position_inspector.get_recently_acked_validators())
+                self.prop_net_order_placer.send_signals(signals, signal_file_names)
                 if n_signals == 0:
                     time.sleep(0.2)
             # If someone intentionally stops the miner, it'll safely terminate operations.
