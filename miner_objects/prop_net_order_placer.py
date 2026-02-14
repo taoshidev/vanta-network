@@ -474,18 +474,20 @@ class PropNetOrderPlacer:
 
     def _query_validators_sync(self, axons, send_signal_request):
         """Fire-and-forget query to validators (runs in separate thread)."""
+
+        async def _query_validators_async(axons, send_signal_request):
+            """Async helper for background validator queries."""
+            dendrite = bt.dendrite(wallet=self.wallet)
+            try:
+                await dendrite.aquery(axons, send_signal_request)
+            finally:
+                await dendrite.aclose_session()
+
         try:
-            asyncio.run(self._query_validators_async(axons, send_signal_request))
+            asyncio.run(_query_validators_async(axons, send_signal_request))
         except Exception as e:
             bt.logging.debug(f"Background validator query error (non-critical): {e}")
 
-    async def _query_validators_async(self, axons, send_signal_request):
-        """Async helper for background validator queries."""
-        dendrite = bt.dendrite(wallet=self.wallet)
-        try:
-            await dendrite.aquery(axons, send_signal_request)
-        finally:
-            await dendrite.aclose_session()
 
     def write_signal_to_processed_directory(self, signal_data, signal_file_path: str, order_json: str):
         """Moves a processed signal file to the processed directory."""

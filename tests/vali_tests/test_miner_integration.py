@@ -225,9 +225,8 @@ class TestMinerIntegration(TestBase):
             mock_config.start_dashboard = False
             mock_get_config.return_value = mock_config
 
-            # Register the test miner
-            metagraph_client = self.orchestrator.get_client('metagraph')
-            metagraph_client.set_hotkeys([self.TEST_MINER_HOTKEY])
+            # Set up metagraph with full neuron data (includes stake)
+            self._setup_metagraph_for_test()
 
             miner = Miner(running_unit_tests=True)
 
