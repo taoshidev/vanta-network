@@ -556,9 +556,8 @@ class Validator(ValidatorBase):
                 is_market_open = self.price_fetcher_client.is_market_open(tp, now_ms)
                 execution_type = ExecutionType.from_string(signal.get("execution_type", "MARKET").upper())
                 if execution_type in [ExecutionType.MARKET, ExecutionType.FLAT_ALL] and not is_market_open:
-                    msg = (f"Market for trade pair [{tp.trade_pair_id}] is likely closed or this validator is"
-                           f" having issues fetching live price. Please try again later.")
-                    synapse.error_message = msg
+                    synapse.error_message = f"Market for trade pair [{tp.trade_pair_id}] is closed. Please try again later."
+                    synapse.should_retry = False
                 else:
                     unsupported_check_start = time.perf_counter()
                     unsupported_pairs = self.price_fetcher_client.get_unsupported_trade_pairs()
