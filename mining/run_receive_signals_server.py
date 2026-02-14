@@ -1,3 +1,4 @@
+import warnings
 import json
 import os
 import traceback
@@ -15,6 +16,17 @@ from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.vali_dataclasses.order_signal import Signal
+
+print("=" * 60)
+print("DEPRECATED: run_receive_signals_server.py is deprecated.")
+print("Use the REST server running natively from miner.py instead.")
+print("New endpoint: POST /api/submit-order")
+print("=" * 60)
+warnings.warn(
+    "run_receive_signals_server.py is deprecated. Use MinerRestServer instead.",
+    DeprecationWarning,
+    stacklevel=2
+)
 
 app = Flask(__name__)
 
