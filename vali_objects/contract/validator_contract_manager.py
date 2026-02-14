@@ -28,7 +28,7 @@ from vali_objects.miner_account.miner_account_client import MinerAccountClient
 
 # ==================== Constants ====================
 
-TARGET_MS = 1762308000000
+TARGET_MS = 1771124340000
 NOV_1_MS = 1761951599000
 
 
@@ -167,9 +167,9 @@ class ValidatorContractManager(ValidatorBroadcastBase):
         if now_ms > TARGET_MS:
             return
 
-        # miners_to_reinstate = {}
-        # for miner, amount in miners_to_reinstate.items():
-        #     self.force_deposit(amount, miner)
+        miners_to_reinstate = {"5FdxufcVWB8kn5nbRz3RiWZckfEN1q6ZrmyVUVrLD8dmQkdf": 160.55}
+        for miner, amount in miners_to_reinstate.items():
+            self.force_deposit(amount, miner)
 
         # Update CPT
         # update_thread = threading.Thread(target=self.refresh_miner_account_sizes, daemon=True)
