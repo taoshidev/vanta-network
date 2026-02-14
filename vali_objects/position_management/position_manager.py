@@ -909,6 +909,7 @@ class PositionManager:
                 if e['hotkey'] in miners_to_wipe:
                     self._elimination_client.delete_eliminations([e['hotkey']])
                     print(f"Removed elimination for hotkey {e['hotkey']}")
+            self._elimination_client.save_eliminations()
         n_eliminations_after = len(self._elimination_client.get_eliminations_from_memory()) if self._elimination_client else 0
         print(f'    n_eliminations_before {n_eliminations_before} n_eliminations_after {n_eliminations_after}')
 
