@@ -634,15 +634,14 @@ class TestMinerIntegration(TestBase):
             n_signals = len(signals)
             miner.prop_net_order_placer.send_signals(
                 signals,
-                signal_file_names,
-                recently_acked_validators=miner.position_inspector.get_recently_acked_validators()
+                signal_file_names
             )
 
             # Verify signal was sent
             self.assertEqual(n_signals, 1)
 
-            # Verify signal was processed by checking recently_acked_validators was set
-            self.assertEqual(miner.prop_net_order_placer.recently_acked_validators, [])
+            # Verify signal was sent
+            self.assertTrue(n_signals > 0)
 
             # Verify file was deleted
             self.assertFalse(os.path.exists(signal_path))
@@ -685,8 +684,7 @@ class TestMinerIntegration(TestBase):
             n_signals = len(signals)
             miner.prop_net_order_placer.send_signals(
                 signals,
-                signal_file_names,
-                recently_acked_validators=miner.position_inspector.get_recently_acked_validators()
+                signal_file_names
             )
 
             # Verify all signals were sent
@@ -743,8 +741,7 @@ class TestMinerIntegration(TestBase):
             n_signals = len(signals)
             miner.prop_net_order_placer.send_signals(
                 signals,
-                signal_file_names,
-                recently_acked_validators=miner.position_inspector.get_recently_acked_validators()
+                signal_file_names
             )
 
             # Should only send 1 signal (most recent)
@@ -758,45 +755,6 @@ class TestMinerIntegration(TestBase):
             # Both files should be deleted
             self.assertFalse(os.path.exists(old_path))
             self.assertFalse(os.path.exists(new_path))
-
-    def test_signal_flow_with_recently_acked_validators(self):
-        """Test signal flow passes recently_acked_validators correctly"""
-        with patch('neurons.miner.Miner.get_config') as mock_get_config:
-            mock_config = MagicMock()
-            mock_config.netuid = 8
-            mock_config.full_path = tempfile.mkdtemp()
-            mock_config.run_position_inspector = False
-            mock_config.start_dashboard = False
-            mock_get_config.return_value = mock_config
-
-            self._setup_metagraph_for_test()
-
-            miner = Miner(running_unit_tests=True)
-
-            # Configure recently_acked_validators (set directly on the real object)
-            test_validators = ["validator1", "validator2", "validator3"]
-            miner.position_inspector.recently_acked_validators = test_validators
-
-            # Create signal
-            signal_data = {
-                "trade_pair": {"trade_pair_id": "BTCUSD"},
-                "order_type": "LONG",
-                "leverage": 0.1
-            }
-            signal_path = os.path.join(self.temp_received_dir, "signal.json")
-            with open(signal_path, 'w') as f:
-                json.dump(signal_data, f)
-
-            # Execute iteration
-            signals, signal_file_names = miner.get_all_files_in_dir_no_duplicate_trade_pairs()
-            miner.prop_net_order_placer.send_signals(
-                signals,
-                signal_file_names,
-                recently_acked_validators=miner.position_inspector.get_recently_acked_validators()
-            )
-
-            # Verify recently_acked_validators was retrieved correctly
-            self.assertEqual(miner.position_inspector.get_recently_acked_validators(), test_validators)
 
     def test_signal_flow_empty_directory_no_send(self):
         """Test signal flow with empty directory (no signals sent)"""
@@ -822,8 +780,7 @@ class TestMinerIntegration(TestBase):
             # If we call send_signals anyway (as the loop does)
             miner.prop_net_order_placer.send_signals(
                 signals,
-                signal_file_names,
-                recently_acked_validators=miner.position_inspector.get_recently_acked_validators()
+                signal_file_names
             )
 
             # Verify signals list is empty (already verified before sending)
@@ -867,8 +824,7 @@ class TestMinerIntegration(TestBase):
 
             miner.prop_net_order_placer.send_signals(
                 signals,
-                signal_file_names,
-                recently_acked_validators=miner.position_inspector.get_recently_acked_validators()
+                signal_file_names
             )
 
             # Verify only valid signal was sent (already verified in signals before sending)
@@ -910,53 +866,13 @@ class TestMinerIntegration(TestBase):
             signals, signal_file_names = miner.get_all_files_in_dir_no_duplicate_trade_pairs()
             miner.prop_net_order_placer.send_signals(
                 signals,
-                signal_file_names,
-                recently_acked_validators=miner.position_inspector.get_recently_acked_validators()
+                signal_file_names
             )
 
             # Verify signal was processed (already verified in signals before sending)
             self.assertEqual(len(signals), 1)
-            # Verify recently_acked_validators is empty (no validators in test mode)
-            self.assertEqual(miner.position_inspector.get_recently_acked_validators(), [])
-
-    def test_run_loop_passes_recently_acked_validators(self):
-        """Test that run loop passes recently_acked_validators from PositionInspector"""
-        with patch('neurons.miner.Miner.get_config') as mock_get_config:
-            mock_config = MagicMock()
-            mock_config.netuid = 8
-            mock_config.full_path = tempfile.mkdtemp()
-            mock_config.run_position_inspector = False
-            mock_config.start_dashboard = False
-            mock_get_config.return_value = mock_config
-
-            self._setup_metagraph_for_test()
-
-            miner = Miner(running_unit_tests=True)
-
-            # Set recently_acked_validators (set directly on the real object)
-            test_validators = ["validator1", "validator2"]
-            miner.position_inspector.recently_acked_validators = test_validators
-
-            # Create signal file
-            signal_data = {
-                "trade_pair": {"trade_pair_id": "BTCUSD"},
-                "order_type": "LONG",
-                "leverage": 0.1
-            }
-            signal_path = os.path.join(self.temp_received_dir, "signal.json")
-            with open(signal_path, 'w') as f:
-                json.dump(signal_data, f)
-
-            # Simulate one iteration of the run loop
-            signals, signal_file_names = miner.get_all_files_in_dir_no_duplicate_trade_pairs()
-            miner.prop_net_order_placer.send_signals(
-                signals,
-                signal_file_names,
-                recently_acked_validators=miner.position_inspector.get_recently_acked_validators()
-            )
-
-            # Verify recently_acked_validators was retrieved correctly
-            self.assertEqual(miner.position_inspector.get_recently_acked_validators(), test_validators)
+            # Verify signal count
+            self.assertTrue(len(signals) > 0)
 
     # ============================================================
     # SHUTDOWN TESTS
@@ -1286,8 +1202,7 @@ class TestMinerIntegration(TestBase):
             signals, signal_file_names = miner.get_all_files_in_dir_no_duplicate_trade_pairs()
             miner.prop_net_order_placer.send_signals(
                 signals,
-                signal_file_names,
-                recently_acked_validators=[]
+                signal_file_names
             )
 
             # Wait for async processing to complete
@@ -1333,7 +1248,7 @@ class TestMinerIntegration(TestBase):
 
             # Process signal
             signals, signal_file_names = miner.get_all_files_in_dir_no_duplicate_trade_pairs()
-            miner.prop_net_order_placer.send_signals(signals, signal_file_names, recently_acked_validators=[])
+            miner.prop_net_order_placer.send_signals(signals, signal_file_names)
 
             # Wait for processing
             time.sleep(0.5)
@@ -1345,19 +1260,16 @@ class TestMinerIntegration(TestBase):
 
             # Verify required fields exist
             self.assertIn('signal_data', processed_data)
-            self.assertIn('created_orders', processed_data)
+            self.assertIn('order_json', processed_data)
             self.assertIn('processing_timestamp', processed_data)
-            self.assertIn('retry_attempts', processed_data)
 
             # Verify signal data matches original (with trade_pair converted to string)
             self.assertEqual(processed_data['signal_data']['trade_pair'], "ETHUSD")
             self.assertEqual(processed_data['signal_data']['order_type'], "SHORT")
             self.assertEqual(processed_data['signal_data']['leverage'], 0.15)
 
-            # Verify created_orders contains mock validator response
-            self.assertIsInstance(processed_data['created_orders'], dict)
-            # In test mode with mock responses, should have orders from test validator
-            self.assertGreater(len(processed_data['created_orders']), 0)
+            # Verify order_json contains mock validator response
+            self.assertIsNotNone(processed_data['order_json'])
 
     def test_multiple_signals_routed_to_correct_directories(self):
         """Test that multiple signals are routed correctly (all succeed in test mode)"""
@@ -1390,7 +1302,7 @@ class TestMinerIntegration(TestBase):
 
             # Process all signals
             signals, signal_file_names = miner.get_all_files_in_dir_no_duplicate_trade_pairs()
-            miner.prop_net_order_placer.send_signals(signals, signal_file_names, recently_acked_validators=[])
+            miner.prop_net_order_placer.send_signals(signals, signal_file_names)
 
             # Wait for processing
             time.sleep(1)
@@ -1431,7 +1343,7 @@ class TestMinerIntegration(TestBase):
 
             # Process signal
             signals, signal_file_names = miner.get_all_files_in_dir_no_duplicate_trade_pairs()
-            miner.prop_net_order_placer.send_signals(signals, signal_file_names, recently_acked_validators=[])
+            miner.prop_net_order_placer.send_signals(signals, signal_file_names)
 
             # Wait for processing
             time.sleep(0.5)
@@ -1461,18 +1373,12 @@ class TestMinerIntegration(TestBase):
             self._setup_metagraph_for_test()
             miner = Miner(running_unit_tests=True)
 
-            # Mock PropNetOrderPlacer's attempt_to_send_signal to simulate failure
-            original_method = miner.prop_net_order_placer.attempt_to_send_signal
+            # Mock PropNetOrderPlacer's _send_order to simulate failure
+            async def mock_failed_send_order(synapse, mothership_axon, other_axons):
+                """Simulate mothership failure"""
+                return {"success": False, "order_json": "", "error_message": "Simulated network failure"}
 
-            async def mock_failed_attempt(send_signal_request, retry_status, *args, **kwargs):
-                """Simulate all validators failing"""
-                # Mark all validators as failed
-                retry_status['retry_attempts'] += 1
-                retry_status['validator_error_messages']['test_validator_hotkey'] = ["Simulated network failure"]
-                # Don't clear validators_needing_retry - they all still need retry (failure)
-                return  # Return without processing
-
-            miner.prop_net_order_placer.attempt_to_send_signal = mock_failed_attempt
+            miner.prop_net_order_placer._send_order = mock_failed_send_order
 
             # Create signal file
             signal_data = {
@@ -1487,7 +1393,7 @@ class TestMinerIntegration(TestBase):
 
             # Process signal (should fail due to mock)
             signals, signal_file_names = miner.get_all_files_in_dir_no_duplicate_trade_pairs()
-            miner.prop_net_order_placer.send_signals(signals, signal_file_names, recently_acked_validators=[])
+            miner.prop_net_order_placer.send_signals(signals, signal_file_names)
 
             # Wait for processing
             time.sleep(0.5)
@@ -1528,7 +1434,7 @@ class TestMinerIntegration(TestBase):
 
             # Process signal
             signals, signal_file_names = miner.get_all_files_in_dir_no_duplicate_trade_pairs()
-            miner.prop_net_order_placer.send_signals(signals, signal_file_names, recently_acked_validators=[])
+            miner.prop_net_order_placer.send_signals(signals, signal_file_names)
 
             # Wait for processing
             time.sleep(0.5)
@@ -1544,7 +1450,7 @@ class TestMinerIntegration(TestBase):
 
                 # Should have required fields
                 self.assertIn('signal_data', data)
-                self.assertIn('created_orders', data)
+                self.assertIn('order_json', data)
                 self.assertIn('processing_timestamp', data)
 
     # ============================================================
