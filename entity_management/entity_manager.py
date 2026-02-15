@@ -1040,10 +1040,14 @@ class EntityManager(ValidatorBroadcastBase):
         # HWM data (real-time from perf ledger)
         try:
             bundle = self._perf_ledger_client.get_perf_ledger_for_hotkey(synthetic_hotkey)
-            if bundle and TP_ID_PORTFOLIO in bundle:
-                if account_size_data is None:
-                    account_size_data = {}
-                account_size_data['hwm'] = bundle[TP_ID_PORTFOLIO].max_return
+            if bundle and synthetic_hotkey in bundle:
+                hotkey_bundle = bundle[synthetic_hotkey]
+                if TP_ID_PORTFOLIO in hotkey_bundle:
+                    if account_size_data is None:
+                        account_size_data = {}
+                    account_size_data['hwm'] = hotkey_bundle[TP_ID_PORTFOLIO].max_return
+            else:
+                bt.logging.error(f"[ENTITY_MANAGER] could not find perf ledger for {synthetic_hotkey}")
         except Exception as e:
             bt.logging.error(f"[ENTITY_MANAGER] HWM data unavailable for {synthetic_hotkey}: {e}")
 
