@@ -699,13 +699,8 @@ class Validator(ValidatorBase):
                 final_processing_ms = TimeUtil.now_in_millis() - final_processing_start
                 bt.logging.info(f"[TIMING] Final synapse setup took {final_processing_ms}ms")
 
-
-                # Broadcast subaccount dashboard after entire pipeline completes
-                if synapse.successfully_processed and is_synthetic_hotkey(miner_hotkey):
-                    try:
-                        self.entity_client.broadcast_subaccount_dashboard(miner_hotkey)
-                    except Exception as e:
-                        bt.logging.debug(f"Dashboard broadcast failed: {e}")
+                if is_synthetic_hotkey(miner_hotkey):
+                    self.entity_client.broadcast_subaccount_dashboard(miner_hotkey, synapse.error_message)
 
                 processing_time_ms = TimeUtil.now_in_millis() - now_ms
                 bt.logging.success(f"Sending ack back to miner [{miner_hotkey}]. Synapse Message: {synapse.error_message}. "
