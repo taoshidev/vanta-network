@@ -254,14 +254,13 @@ class BaseDataService():
                     bt.logging.info(f"{self.provider_name}[{category}] websocket task cancelled")
                     break  # Exit the loop if task is cancelled
                 except Exception as e:
-                    bt.logging.error(f"{self.provider_name}[{category}] websocket error: {e}")
-                    bt.logging.error(traceback.format_exc())
+                    bt.logging.error(f"{self.provider_name}[{category}] websocket error: {type(e).__name__}: {e}")
 
                 # Clean up before reconnecting
                 try:
                     await self._cleanup_websocket(category)
                     # Wait before reconnecting
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(5)
                 except Exception as e:
                     bt.logging.error(f"Error during websocket cleanup for {category}: {e}")
                     await asyncio.sleep(5)  # Back off on errors
