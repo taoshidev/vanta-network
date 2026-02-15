@@ -21,6 +21,12 @@ from vanta_api.api_key_refresh import APIKeyMixin
 from vali_objects.vali_config import TradePair, ValiConfig, RPCConnectionMode
 from shared_objects.rpc.rpc_server_base import RPCServerBase
 from entity_management.entity_client import EntityClient
+from entity_management.entity_utils import parse_synthetic_hotkey
+
+try:
+    from bittensor_wallet import Keypair
+except ImportError:
+    Keypair = None
 
 # Maximum number of websocket connections allowed per API key
 MAX_N_WS_PER_API_KEY = 20
@@ -33,9 +39,6 @@ SUBACCOUNT_BROADCAST_THROTTLE_MS = 2000
 
 # How often to poll and push subaccount dashboard data to subscribers
 SUBACCOUNT_POLL_INTERVAL_S = 15
-
-# Minimum tier required for subaccount dashboard subscriptions
-SUBACCOUNT_SUBSCRIPTION_TIER = 200
 
 # Minimum tier required for subaccount dashboard subscriptions
 SUBACCOUNT_SUBSCRIPTION_TIER = 200
@@ -152,6 +155,11 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
 
         # Entity client for fetching dashboard data
         self._entity_client = EntityClient(connection_mode=connection_mode)
+
+        # Entity auth tracking
+        self.entity_clients: Dict[str, Deque[str]] = defaultdict(deque)  # entity_hotkey -> [client_ids]
+        self._entity_auth_nonces: Dict[str, Dict[str, int]] = defaultdict(dict)  # entity_hotkey -> {nonce: ts}
+        self._entity_nonce_lock = asyncio.Lock()
 
         # Test order configuration
         self.send_test_positions = send_test_positions
@@ -541,7 +549,10 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                     if not self.subaccount_subscriptions[synthetic_hotkey]:
                         del self.subaccount_subscriptions[synthetic_hotkey]
                     self._cancel_subaccount_poll_task(synthetic_hotkey)
+
             bt.logging.info(f"WebSocketServer: Client {client_id} removed from all registries")
+
+    def send_message(self, message_data: Dict[str, Any]) -> bool:
         """Queue a message for broadcasting.
 
         Args:
@@ -950,7 +961,6 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                                 "action": "subscribe_subaccount",
                                 "subscribed_to": synthetic_hotkey
                             }))
-                            # Start polling if not already running — sends data immediately
                             self._ensure_subaccount_poll_task(synthetic_hotkey)
 
                     elif message_type == "unsubscribe_subaccount":
@@ -1118,10 +1128,7 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
 
         # 4. Entity registered check
         try:
-            loop = asyncio.get_running_loop()
-            entity_data = await loop.run_in_executor(
-                None, self._entity_client.get_entity_data, entity_hotkey
-            )
+            entity_data = self._entity_client.get_entity_data(entity_hotkey)
         except Exception as e:
             bt.logging.error(f"WebSocketServer: Entity lookup failed for {entity_hotkey}: {e}")
             await websocket.send(json.dumps({
@@ -1199,23 +1206,13 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
         # Auto-subscribe to all active subaccounts
         subscribed_count = await self._auto_subscribe_entity_subaccounts(client_id, entity_hotkey, entity_data)
 
-        # Build HL address mappings to include in auth response
-        subaccounts = entity_data.get('subaccounts', {})
-        hl_mappings = {}
-        for sub_id, sub_info in subaccounts.items():
-            hl_addr = sub_info.get('hl_address')
-            synthetic = sub_info.get('synthetic_hotkey', f"{entity_hotkey}_{sub_id}")
-            if hl_addr and synthetic:
-                hl_mappings[hl_addr] = synthetic
-
         await websocket.send(json.dumps({
             "status": "success",
             "message": "Entity authentication successful.",
             "auth_type": "entity",
             "current_sequence": self.sequence_number,
             "entity_hotkey": entity_hotkey,
-            "subscribed_subaccounts": subscribed_count,
-            "hl_mappings": hl_mappings
+            "subscribed_subaccounts": subscribed_count
         }))
 
         return True
