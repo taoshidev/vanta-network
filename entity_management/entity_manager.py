@@ -43,6 +43,8 @@ from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_client import DebtLed
 from vali_objects.contract.contract_client import ContractClient
 from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
 from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import TP_ID_PORTFOLIO
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from time_util.time_util import TimeUtil
 from vanta_api.websocket_notifier import WebSocketNotifierClient
@@ -210,6 +212,13 @@ class EntityManager(ValidatorBroadcastBase):
 
         # Create LimitOrderClient for unfilled limit orders
         self._limit_order_client = LimitOrderClient(
+            connection_mode=connection_mode,
+            connect_immediately=False,
+            running_unit_tests=running_unit_tests
+        )
+
+        # Create PerfLedgerClient for real-time HWM data
+        self._perf_ledger_client = PerfLedgerClient(
             connection_mode=connection_mode,
             connect_immediately=False,
             running_unit_tests=running_unit_tests
@@ -897,7 +906,7 @@ class EntityManager(ValidatorBroadcastBase):
             if ledger:
                 ledger_data = ledger.to_dict()  # Convert DebtLedger to dict for JSON serialization
         except Exception as e:
-            bt.logging.debug(f"[ENTITY_MANAGER] Ledger data unavailable for {synthetic_hotkey}: {e}")
+            bt.logging.error(f"[ENTITY_MANAGER] Ledger data unavailable for {synthetic_hotkey}: {e}")
 
         # Position data
         positions_data = None
@@ -909,20 +918,20 @@ class EntityManager(ValidatorBroadcastBase):
                 leverage = self._position_client.calculate_net_portfolio_leverage(synthetic_hotkey)
                 positions_data['total_leverage'] = leverage
         except Exception as e:
-            bt.logging.debug(f"[ENTITY_MANAGER] Position data unavailable for {synthetic_hotkey}: {e}")
+            bt.logging.error(f"[ENTITY_MANAGER] Position data unavailable for {synthetic_hotkey}: {e}")
 
         # Limit orders data (unfilled orders)
         limit_orders_data = None
         try:
             limit_orders_data = self._limit_order_client.to_dashboard_dict(synthetic_hotkey)
         except Exception as e:
-            bt.logging.debug(f"[ENTITY_MANAGER] Limit orders data unavailable for {synthetic_hotkey}: {e}")
+            bt.logging.error(f"[ENTITY_MANAGER] Limit orders data unavailable for {synthetic_hotkey}: {e}")
 
         account_size_data = None
         try:
             account_size_data = self._miner_account_client.get_account(synthetic_hotkey)
         except Exception as e:
-            bt.logging.debug(f"[ENTITY_MANAGER] Account size data unavailable for {synthetic_hotkey}: {e}")
+            bt.logging.error(f"[ENTITY_MANAGER] Account size data unavailable for {synthetic_hotkey}: {e}")
 
 
         # Statistics data (from cached miner statistics - refreshed every 5 minutes)
@@ -930,14 +939,25 @@ class EntityManager(ValidatorBroadcastBase):
         try:
             statistics_data = self._statistics_client.get_miner_statistics_for_hotkey(synthetic_hotkey)
         except Exception as e:
-            bt.logging.debug(f"[ENTITY_MANAGER] Statistics data unavailable for {synthetic_hotkey}: {e}")
+            bt.logging.error(f"[ENTITY_MANAGER] Statistics data unavailable for {synthetic_hotkey}: {e}")
 
         # Elimination data
         elimination_data = None
         try:
             elimination_data = self._elimination_client.get_elimination(synthetic_hotkey)
         except Exception as e:
-            bt.logging.debug(f"[ENTITY_MANAGER] Elimination data unavailable for {synthetic_hotkey}: {e}")
+            bt.logging.error(f"[ENTITY_MANAGER] Elimination data unavailable for {synthetic_hotkey}: {e}")
+
+        # TODO: revisit storing hwm logic elsewhere
+        # HWM data (real-time from perf ledger)
+        try:
+            bundle = self._perf_ledger_client.get_perf_ledger_for_hotkey(synthetic_hotkey)
+            if bundle and TP_ID_PORTFOLIO in bundle:
+                if account_size_data is None:
+                    account_size_data = {}
+                account_size_data['hwm'] = bundle[TP_ID_PORTFOLIO].max_return
+        except Exception as e:
+            bt.logging.error(f"[ENTITY_MANAGER] HWM data unavailable for {synthetic_hotkey}: {e}")
 
         # 3. Build aggregated response
         return {
