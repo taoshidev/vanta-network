@@ -1045,7 +1045,7 @@ class EntityManager(ValidatorBroadcastBase):
                 if TP_ID_PORTFOLIO in hotkey_bundle:
                     if account_size_data is None:
                         account_size_data = {}
-                    account_size_data['hwm'] = hotkey_bundle[TP_ID_PORTFOLIO].max_return
+                    account_size_data['max_return'] = hotkey_bundle[TP_ID_PORTFOLIO].max_return
             else:
                 bt.logging.error(f"[ENTITY_MANAGER] could not find perf ledger for {synthetic_hotkey}")
         except Exception as e:
