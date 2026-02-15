@@ -977,7 +977,7 @@ class EntityManager(ValidatorBroadcastBase):
             if ledger:
                 ledger_data = ledger.to_dict()  # Convert DebtLedger to dict for JSON serialization
         except Exception as e:
-            bt.logging.debug(f"[ENTITY_MANAGER] Ledger data unavailable for {synthetic_hotkey}: {e}")
+            bt.logging.error(f"[ENTITY_MANAGER] Ledger data unavailable for {synthetic_hotkey}: {e}")
 
         # Position data
         positions_data = None
@@ -989,20 +989,20 @@ class EntityManager(ValidatorBroadcastBase):
                 leverage = self._position_client.calculate_net_portfolio_leverage(synthetic_hotkey)
                 positions_data['total_leverage'] = leverage
         except Exception as e:
-            bt.logging.debug(f"[ENTITY_MANAGER] Position data unavailable for {synthetic_hotkey}: {e}")
+            bt.logging.error(f"[ENTITY_MANAGER] Position data unavailable for {synthetic_hotkey}: {e}")
 
         # Limit orders data (unfilled orders)
         limit_orders_data = None
         try:
             limit_orders_data = self._limit_order_client.to_dashboard_dict(synthetic_hotkey)
         except Exception as e:
-            bt.logging.debug(f"[ENTITY_MANAGER] Limit orders data unavailable for {synthetic_hotkey}: {e}")
+            bt.logging.error(f"[ENTITY_MANAGER] Limit orders data unavailable for {synthetic_hotkey}: {e}")
 
         account_size_data = None
         try:
             account_size_data = self._miner_account_client.get_account(synthetic_hotkey)
         except Exception as e:
-            bt.logging.debug(f"[ENTITY_MANAGER] Account size data unavailable for {synthetic_hotkey}: {e}")
+            bt.logging.error(f"[ENTITY_MANAGER] Account size data unavailable for {synthetic_hotkey}: {e}")
 
 
         # Statistics data (from cached miner statistics - refreshed every 5 minutes)
@@ -1010,7 +1010,7 @@ class EntityManager(ValidatorBroadcastBase):
         try:
             statistics_data = self._statistics_client.get_miner_statistics_for_hotkey(synthetic_hotkey)
         except Exception as e:
-            bt.logging.debug(f"[ENTITY_MANAGER] Statistics data unavailable for {synthetic_hotkey}: {e}")
+            bt.logging.error(f"[ENTITY_MANAGER] Statistics data unavailable for {synthetic_hotkey}: {e}")
 
         # Elimination data
         elimination_data = None
