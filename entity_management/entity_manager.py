@@ -1047,7 +1047,7 @@ class EntityManager(ValidatorBroadcastBase):
             'drawdown': drawdown_data,
         }
 
-    def broadcast_subaccount_dashboard(self, synthetic_hotkey: str) -> bool:
+    def broadcast_subaccount_dashboard(self, synthetic_hotkey: str, error_msg: Optional[str] = None) -> bool:
         """
         Get dashboard data for a subaccount and broadcast it to WebSocket subscribers.
 
@@ -1066,7 +1066,10 @@ class EntityManager(ValidatorBroadcastBase):
                 return True
 
             dashboard_data = self.get_subaccount_dashboard_data(synthetic_hotkey)
+
             if dashboard_data:
+                if error_msg:
+                    dashboard_data["error_msg"] = error_msg
                 return self._websocket_client.broadcast_subaccount_dashboard(synthetic_hotkey, dashboard_data)
             return True  # No data = nothing to broadcast, not an error
         except Exception as e:
