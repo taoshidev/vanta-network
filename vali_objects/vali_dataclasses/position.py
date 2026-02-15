@@ -596,7 +596,7 @@ class Position(BaseModel):
 
         if interval_data['max_leverage'] == -float('inf'):
             raise ValueError('Unable to find max leverage in interval')
-        assert interval_data['max_leverage'] > 0, (interval_data, self.orders, str(self))
+        assert interval_data['max_leverage'] >= 0, (interval_data, self.orders, str(self))
         return interval_data['max_leverage']
 
     def max_leverage_seen(self, interval_data=None):
