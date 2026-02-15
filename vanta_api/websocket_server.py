@@ -627,9 +627,11 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
             # Update throttle timestamp
             self.subaccount_last_broadcast_ms[synthetic_hotkey] = now_ms
 
+            message_type = "error" if "error_msg" in data else "subaccount_dashboard"
+
             # Queue broadcast
             message = {
-                "type": "subaccount_dashboard",
+                "type": message_type,
                 "synthetic_hotkey": synthetic_hotkey,
                 "data": data
             }
