@@ -20,6 +20,8 @@ from vali_objects.vali_dataclasses.order import Order
 from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.utils import leverage_utils
+from entity_management.entity_client import EntityClient
+from entity_management.entity_utils import is_synthetic_hotkey
 
 
 class MarketOrderManager():
@@ -41,6 +43,9 @@ class MarketOrderManager():
         # Create own LivePriceFetcherClient (forward compatibility - no parameter passing)
         from vali_objects.price_fetcher import LivePriceFetcherClient
         self._live_price_client = LivePriceFetcherClient(running_unit_tests=running_unit_tests, connection_mode=connection_mode)
+
+        # Create EntityClient for subaccount dashboard broadcasts
+        self._entity_client = EntityClient(connection_mode=connection_mode, connect_immediately=False)
 
         # Create own PositionManagerClient (forward compatibility - no parameter passing)
         from vali_objects.position_management.position_manager_client import PositionManagerClient
@@ -335,6 +340,10 @@ class MarketOrderManager():
             )
             websocket_ms = TimeUtil.now_in_millis() - step_start
             bt.logging.info(f"[ADD_ORDER_DETAIL] Websocket RPC broadcast took {websocket_ms}ms (success={success})")
+
+            # Broadcast subaccount dashboard update for synthetic hotkeys
+            if is_synthetic_hotkey(miner_hotkey):
+                self._entity_client.broadcast_subaccount_dashboard(miner_hotkey)
 
         return order
 
