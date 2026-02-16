@@ -266,6 +266,8 @@ class MinerRestServer(BaseRestServer):
             }
         }
         """
+        start_time = time.time()
+
         # 1. Validate API key
         api_key = self._get_api_key_safe()
         if not self.is_valid_api_key(api_key):
@@ -374,6 +376,7 @@ class MinerRestServer(BaseRestServer):
                 headers={"Content-Type": "application/json"},
                 timeout=60
             )
+            elapsed_s = time.time() - start_time
 
             # Parse response
             try:
@@ -398,7 +401,8 @@ class MinerRestServer(BaseRestServer):
                         f"Asset Class: {subaccount.get('asset_class')}\n"
                         f"Account Size: ${subaccount.get('account_size'):,.2f}\n"
                         f"Message: {response_data.get('message', '')}\n"
-                        f"Created: {timestamp}",
+                        f"Created: {timestamp}\n"
+                        f"Time: {elapsed_s:.2f}s",
                         level="success",
                         bypass_cooldown=True
                     )
