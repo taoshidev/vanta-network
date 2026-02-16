@@ -96,6 +96,14 @@ class TestEquities(TestBase):
             self.DEFAULT_MINER_HOTKEY_2: TradePairCategory.EQUITIES.value
         })
 
+        # Update the MinerAccount's asset_class field to apply the EQUITIES multiplier
+        self.miner_account_client.update_asset_selection(
+            self.DEFAULT_MINER_HOTKEY, TradePairCategory.EQUITIES
+        )
+        self.miner_account_client.update_asset_selection(
+            self.DEFAULT_MINER_HOTKEY_2, TradePairCategory.EQUITIES
+        )
+
         # Set account sizes for test miners
         # Use timestamp from yesterday so collateral record is valid today
         yesterday_ms = self.DEFAULT_OPEN_MS - (24 * 60 * 60 * 1000)
