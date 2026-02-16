@@ -18,7 +18,10 @@ Usage:
 """
 import bittensor as bt
 from typing import Optional, Dict, List, Any
+
+import template.protocol
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode, TradePairCategory
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 from shared_objects.rpc.rpc_server_base import RPCServerBase
 from vali_objects.miner_account.miner_account_manager import MinerAccountManager, MinerAccount
 
@@ -34,9 +37,11 @@ class MinerAccountServer(RPCServerBase):
 
     def __init__(
         self,
+        config=None,
         running_unit_tests=False,
+        is_backtesting=False,
+        slack_notifier=None,
         start_server=True,
-        start_daemon=True,
         connection_mode: RPCConnectionMode = RPCConnectionMode.RPC,
         collateral_balance_getter=None
     ):
@@ -44,17 +49,28 @@ class MinerAccountServer(RPCServerBase):
         Initialize MinerAccountServer.
 
         Args:
+            config: Bittensor config (for ValidatorBroadcastBase)
             running_unit_tests: Whether running in test mode
+            is_backtesting: Whether backtesting
+            slack_notifier: Slack notifier for health check alerts
             start_server: Whether to start RPC server immediately
-            start_daemon: Whether to start daemon immediately
             connection_mode: RPC or LOCAL mode
             collateral_balance_getter: Callable to get collateral balance for a hotkey
         """
+        # Create mock config if running tests and config not provided
+        if running_unit_tests:
+            from shared_objects.rpc.test_mock_factory import TestMockFactory
+            config = TestMockFactory.create_mock_config_if_needed(config, netuid=116, network="test")
+
+        # Derive is_testnet from config
+        is_testnet = config.subtensor.network == "test" if config else False
+
         # Create the manager FIRST, before RPCServerBase.__init__
         self._manager = MinerAccountManager(
             running_unit_tests=running_unit_tests,
-            collateral_balance_getter=collateral_balance_getter,
-            connection_mode=connection_mode
+            connection_mode=connection_mode,
+            config=config,
+            is_testnet=is_testnet
         )
 
         # Store is_mothership status (set by contract manager later)
@@ -71,16 +87,12 @@ class MinerAccountServer(RPCServerBase):
             service_name=ValiConfig.RPC_MINERACCOUNT_SERVICE_NAME,
             port=ValiConfig.RPC_MINERACCOUNT_PORT,
             connection_mode=connection_mode,
-            slack_notifier=None,
+            slack_notifier=slack_notifier,
             start_server=start_server,
-            start_daemon=False,  # We'll start daemon after full initialization
+            start_daemon=False,  # Daemon started later via orchestrator
             daemon_interval_s=daemon_interval_s,
             hang_timeout_s=hang_timeout_s,
         )
-
-        # Start daemon if requested (deferred until all initialization complete)
-        if start_daemon:
-            self.start_daemon()
 
     # ==================== RPCServerBase Abstract Methods ====================
 
@@ -128,7 +140,8 @@ class MinerAccountServer(RPCServerBase):
         hotkey: str,
         collateral_balance_theta: float,
         timestamp_ms: Optional[int] = None,
-        account_size: float = None
+        account_size: float = None,
+        bucket: Optional[MinerBucket] = None,
     ) -> Optional[dict]:
         """Set the account size for a miner. Returns CollateralRecord as dict if successful."""
         collateral_record = self._manager.set_miner_account_size(hotkey, collateral_balance_theta, timestamp_ms, account_size)
@@ -172,9 +185,43 @@ class MinerAccountServer(RPCServerBase):
         """Reload account sizes from disk."""
         self._manager.re_init_account_sizes()
 
-    def receive_collateral_record_update(self, collateral_record_data: dict, sender_hotkey: str=None) -> bool:
-        """Process an incoming CollateralRecord synapse."""
-        return self._manager.receive_collateral_record_update(collateral_record_data, sender_hotkey)
+    def receive_collateral_record_rpc(self, synapse: template.protocol.CollateralRecord) -> template.protocol.CollateralRecord:
+        """
+        Receive collateral record update synapse (for axon attachment).
+
+        This method is called when a CollateralRecord broadcast is received from another validator.
+
+        Args:
+            synapse: CollateralRecord synapse from the sending validator
+
+        Returns:
+            Updated synapse with successfully_processed and error_message fields
+        """
+        try:
+            sender_hotkey = synapse.dendrite.hotkey
+            bt.logging.info(f"Received collateral record update from validator hotkey [{sender_hotkey}].")
+
+            # Extract collateral record data from synapse
+            collateral_record_data = synapse.collateral_record
+
+            # Process the update through the manager
+            success = self._manager.receive_collateral_record_update(collateral_record_data, sender_hotkey)
+
+            if success:
+                synapse.successfully_processed = True
+                synapse.error_message = ""
+                bt.logging.info(f"Successfully processed CollateralRecord synapse from {sender_hotkey}")
+            else:
+                synapse.successfully_processed = False
+                synapse.error_message = "Failed to process collateral record update"
+                bt.logging.warning(f"Failed to process CollateralRecord synapse from {sender_hotkey}")
+
+        except Exception as e:
+            synapse.successfully_processed = False
+            synapse.error_message = f"Error processing collateral record: {str(e)}"
+            bt.logging.error(f"Exception in receive_collateral_record: {e}")
+
+        return synapse
 
     # ==================== MinerAccount Cache Methods ====================
 
@@ -189,6 +236,11 @@ class MinerAccountServer(RPCServerBase):
         if account is None:
             return None
         return account.to_dict()
+
+    def set_miner_bucket(self, hotkey: str, bucket_value: Optional[str]) -> None:
+        """Set the miner bucket on an account. Converts string to MinerBucket enum."""
+        bucket = MinerBucket(bucket_value) if bucket_value else None
+        self._manager.set_miner_bucket(hotkey, bucket)
 
     def get_all_hotkeys(self) -> list:
         """Get all hotkeys with accounts."""
@@ -214,13 +266,13 @@ class MinerAccountServer(RPCServerBase):
 
     # ==================== Margin/Cash Processing Methods ====================
 
-    def process_order_buy(self, hotkey: str, order_value_usd: float) -> float:
+    def process_order_buy(self, hotkey: str, order_value_usd: float, fee_usd: float) -> float:
         """Process buy order cash/margin. Returns borrowed amount."""
-        return self._manager.process_order_buy(hotkey, order_value_usd)
+        return self._manager.process_order_buy(hotkey, order_value_usd, fee_usd)
 
-    def process_order_sell(self, hotkey: str, entry_value_usd: float, realized_pnl: float, position_margin_loan: float) -> float:
+    def process_order_sell(self, hotkey: str, entry_value_usd: float, realized_pnl: float, position_margin_loan: float, fee_usd: float) -> float:
         """Process sell/close order."""
-        return self._manager.process_order_sell(hotkey, entry_value_usd, realized_pnl, position_margin_loan)
+        return self._manager.process_order_sell(hotkey, entry_value_usd, realized_pnl, position_margin_loan, fee_usd)
 
     def get_total_borrowed_amount(self, hotkey: str) -> float:
         """Get total borrowed amount for a miner."""

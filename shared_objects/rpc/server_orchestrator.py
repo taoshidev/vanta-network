@@ -710,7 +710,7 @@ class ServerOrchestrator:
                     spawn_kwargs['validator_hotkey'] = context.validator_hotkey
                 spawn_kwargs['is_mainnet'] = context.is_mainnet
 
-            elif server_name in ('contract', 'asset_selection', 'entity'):
+            elif server_name in ('contract', 'asset_selection', 'entity', 'miner_account'):
                 if context.config:
                     spawn_kwargs['config'] = context.config
 

@@ -84,6 +84,39 @@ class WebSocketNotifierClient(RPCClientBase):
             bt.logging.debug(f"WebSocketNotifierClient: Broadcast failed: {e}")
             return False
 
+    def has_subaccount_subscribers(self, synthetic_hotkey: str) -> bool:
+        """
+        Check if there are any WebSocket clients subscribed to a subaccount.
+
+        Args:
+            synthetic_hotkey: The synthetic hotkey to check
+
+        Returns:
+            bool: True if there are subscribers, False otherwise
+        """
+        try:
+            return self._server.has_subaccount_subscribers_rpc(synthetic_hotkey)
+        except Exception as e:
+            bt.logging.debug(f"WebSocketNotifierClient: Subscriber check failed: {e}")
+            return False
+
+    def broadcast_subaccount_dashboard(self, synthetic_hotkey: str, data: dict) -> bool:
+        """
+        Broadcast subaccount dashboard to subscribed WebSocket clients.
+
+        Args:
+            synthetic_hotkey: The synthetic hotkey to broadcast dashboard for
+            data: The dashboard data to broadcast
+
+        Returns:
+            bool: True if broadcast was successful or skipped, False on error
+        """
+        try:
+            return self._server.broadcast_subaccount_dashboard_rpc(synthetic_hotkey, data)
+        except Exception as e:
+            bt.logging.debug(f"WebSocketNotifierClient: Dashboard broadcast failed: {e}")
+            return False
+
     def health_check(self) -> Optional[dict]:
         """
         Health check endpoint for monitoring.

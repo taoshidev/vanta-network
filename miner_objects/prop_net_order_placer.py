@@ -8,11 +8,10 @@ import os
 import threading
 import time
 
-from bittensor.core.synapse import Synapse
 import bittensor as bt
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 from collections import defaultdict
 
 from miner_config import MinerConfig
@@ -26,6 +25,7 @@ with open(ValiBkpUtils.get_meta_json_path(), 'r') as f:
     REPO_VERSION = json.loads(f.read()).get("subnet_version", "unknown")
 
 
+# DEPRECATED: No longer used by simplified retry logic
 class SignalMetrics:
     def __init__(self, signal_uuid: str, trade_pair_id: str):
         self.signal_uuid = signal_uuid
@@ -89,10 +89,10 @@ class SignalMetrics:
 
 
 class PropNetOrderPlacer:
-    # Constants for retry logic with exponential backoff
-    MAX_RETRIES = 3
-    INITIAL_RETRY_DELAY_SECONDS = 20
-    # Thread pool configuration
+    # Constants for network retry logic (only retries on connection failures to mothership)
+    MAX_NETWORK_RETRIES = 3
+    NETWORK_RETRY_DELAY_SECONDS = 5
+    # DEPRECATED: Thread pool used by file-based signal processing. Use REST server instead.
     MAX_WORKERS = 10
     THREAD_POOL_TIMEOUT = 300  # 5 minutes
 
@@ -101,13 +101,12 @@ class PropNetOrderPlacer:
         self.metagraph_client = metagraph_client
         self.config = config
         self.running_unit_tests = running_unit_tests
-        self.recently_acked_validators = []
         self.is_testnet = is_testnet
         self.trade_pair_id_to_last_order_send = {tp.trade_pair_id: 0 for tp in TradePair}
         self.used_miner_uuids = set()
         self.position_inspector = position_inspector
         self.slack_notifier = slack_notifier
-        # Initialize thread pool
+        # DEPRECATED: Thread pool for file-based signal processing. Use REST server instead.
         self.executor = ThreadPoolExecutor(
             max_workers=self.MAX_WORKERS,
             thread_name_prefix="signal_sender"
@@ -121,15 +120,13 @@ class PropNetOrderPlacer:
         self._shutdown = True
         self.executor.shutdown(wait=True, cancel_futures=True)
 
-    def send_signals(self, signals, signal_file_names, recently_acked_validators: list[str]):
+    def send_signals(self, signals, signal_file_names):
         """
-        Initiates the process of sending signals to all validators using a thread pool.
+        DEPRECATED: File-based signal processing. Use REST server (process_a_signal_for_rest) instead.
         """
         if self._shutdown:
             bt.logging.warning("PropNetOrderPlacer is shutting down, not accepting new signals")
             return
-
-        self.recently_acked_validators = recently_acked_validators
 
         # Submit tasks to thread pool
         futures = []
@@ -141,7 +138,7 @@ class PropNetOrderPlacer:
                 # Create a wrapper to run async function in thread with proper closure
                 def run_async_signal(file_path, data):
                     return asyncio.run(self._safe_process_signal(file_path, data))
-                
+
                 future = self.executor.submit(run_async_signal, signal_file_path, signal_data)
                 futures.append(future)
                 self._active_futures.add(future)
@@ -155,7 +152,7 @@ class PropNetOrderPlacer:
         monitor_thread.start()
 
     async def _safe_process_signal(self, signal_file_path, signal_data):
-        """Wrapper for process_a_signal with error handling and metrics"""
+        """Wrapper for process_a_signal with error handling and Slack notifications"""
         signal_uuid = signal_file_path.split('/')[-1]
         # Support both object {"trade_pair_id": "BTCUSD"} and string "BTCUSD"
         trade_pair = signal_data.get('trade_pair', 'Unknown')
@@ -165,15 +162,24 @@ class PropNetOrderPlacer:
             trade_pair_id = trade_pair
         else:
             trade_pair_id = 'Unknown'
-        metrics = SignalMetrics(signal_uuid, trade_pair_id)
 
         try:
-            result = await self.process_a_signal(signal_file_path, signal_data, metrics)
-            metrics.complete()
+            result = await self.process_a_signal(signal_file_path, signal_data)
 
             # Send summary to Slack
-            if self.slack_notifier:
-                summary = metrics.to_summary(self.wallet.hotkey.ss58_address)
+            if self.slack_notifier and result:
+                summary = {
+                    "signal_uuid": signal_uuid,
+                    "trade_pair_id": trade_pair_id,
+                    "miner_hotkey": self.wallet.hotkey.ss58_address,
+                    "validators_attempted": 1,
+                    "validators_succeeded": 1 if result.get("success") else 0,
+                    "all_high_trust_succeeded": result.get("success", False),
+                    "average_response_time": 0,
+                    "validator_errors": {},
+                    "exception": None,
+                    "timestamp": datetime.now().isoformat()
+                }
                 self.slack_notifier.send_signal_summary(summary)
 
             return result
@@ -183,16 +189,24 @@ class PropNetOrderPlacer:
             import traceback
             bt.logging.error(traceback.format_exc())
 
-            metrics.exception = e
-            metrics.complete()
-
             # Send error notification to Slack
             if self.slack_notifier:
-                summary = metrics.to_summary(self.wallet.hotkey.ss58_address)
+                summary = {
+                    "signal_uuid": signal_uuid,
+                    "trade_pair_id": trade_pair_id,
+                    "miner_hotkey": self.wallet.hotkey.ss58_address,
+                    "validators_attempted": 1,
+                    "validators_succeeded": 0,
+                    "all_high_trust_succeeded": False,
+                    "average_response_time": 0,
+                    "validator_errors": {},
+                    "exception": str(e),
+                    "timestamp": datetime.now().isoformat()
+                }
                 self.slack_notifier.send_signal_summary(summary)
 
                 # Send additional detailed error message
-                error_details = (f"❌ Signal Processing Exception:\n"
+                error_details = (f"Signal Processing Exception:\n"
                                  f"Signal UUID: {signal_uuid}\n"
                                  f"Trade Pair: {trade_pair_id}\n"
                                  f"Error: {str(e)}\n"
@@ -200,9 +214,6 @@ class PropNetOrderPlacer:
                 self.slack_notifier.send_message(error_details, level="error")
 
             return None
-        finally:
-            # Clean up resources if needed
-            pass
 
     def _monitor_futures(self, futures):
         """Monitor futures for completion and handle results"""
@@ -230,35 +241,88 @@ class PropNetOrderPlacer:
         """Get the number of currently active signal processing tasks"""
         with self._lock:
             return len(self._active_futures)
-    
 
-    async def process_a_signal(self, signal_file_path, signal_data, metrics: SignalMetrics):
-        """
-        Processes a signal file by attempting to send it to the validators.
-        """
+    def _get_mothership_and_other_axons(self):
+        """Get mothership axon and other validator axons (filtered by v_trust)."""
+        mothership_hotkey = ValiConfig.MOTHERSHIP_HOTKEY_TESTNET if self.is_testnet else ValiConfig.MOTHERSHIP_HOTKEY
         hotkey_to_v_trust = {neuron.hotkey: neuron.validator_trust for neuron in self.metagraph_client.get_neurons()}
-        axons_to_try = self.position_inspector.get_possible_validators()
-        axons_to_try.sort(key=lambda validator: hotkey_to_v_trust[validator.hotkey], reverse=True)
+        axons = self.position_inspector.get_possible_validators()
 
-        # Update metrics
-        metrics.validators_attempted = len(axons_to_try)
+        mothership_axon = None
+        other_axons = []
+        for axon in axons:
+            if axon.hotkey == mothership_hotkey:
+                mothership_axon = axon
+            elif hotkey_to_v_trust.get(axon.hotkey, 0) >= MinerConfig.HIGH_V_TRUST_THRESHOLD:
+                other_axons.append(axon)
 
-        validator_hotkey_to_axon = {}
-        for axon in axons_to_try:
-            assert axon.hotkey not in validator_hotkey_to_axon, f"Duplicate hotkey {axon.hotkey} in axons"
-            validator_hotkey_to_axon[axon.hotkey] = axon
+        return mothership_axon, other_axons
 
-        retry_status = {
-            'retry_attempts': 0,
-            'retry_delay_seconds': self.INITIAL_RETRY_DELAY_SECONDS,
-            'validators_needing_retry': axons_to_try,
-            'validator_error_messages': {},
-            'created_orders': {}
-        }
+    async def _send_order(self, synapse, mothership_axon, other_axons) -> dict:
+        """
+        Send order to mothership (await response) and other validators (fire-and-forget).
+        Only retries on network connection failures or transient errors from mothership.
 
-        # Track the high-trust validators
-        high_trust_validators = self.get_high_trust_validators(axons_to_try, hotkey_to_v_trust)
-        metrics.high_trust_total = len(high_trust_validators)
+        Returns: {success: bool, order_json: str, error_message: str}
+        """
+        if self.running_unit_tests:
+            return self._send_order_test_mode(synapse)
+
+        dendrite = bt.dendrite(wallet=self.wallet)
+        try:
+            for attempt in range(self.MAX_NETWORK_RETRIES):
+                try:
+                    # Fire-and-forget to other validators on first attempt only
+                    if attempt == 0 and other_axons:
+                        thread = threading.Thread(
+                            target=self._query_validators_sync,
+                            args=(other_axons, synapse),
+                            daemon=True
+                        )
+                        thread.start()
+
+                    # Await mothership response only
+                    responses = await dendrite.aquery([mothership_axon], synapse)
+                    response = responses[0]
+
+                    if response.successfully_processed:
+                        return {"success": True, "order_json": response.order_json, "error_message": ""}
+
+                    # Mothership rejected -- check should_retry
+                    if not response.should_retry:
+                        return {"success": False, "order_json": "", "error_message": response.error_message}
+
+                    # should_retry=True but failed -- transient issue, retry with delay
+                    bt.logging.warning(f"Mothership retryable error (attempt {attempt + 1}): {response.error_message}")
+                    if attempt < self.MAX_NETWORK_RETRIES - 1:
+                        await asyncio.sleep(self.NETWORK_RETRY_DELAY_SECONDS)
+
+                except Exception as e:
+                    bt.logging.warning(f"Network error to mothership (attempt {attempt + 1}/{self.MAX_NETWORK_RETRIES}): {e}")
+                    if attempt < self.MAX_NETWORK_RETRIES - 1:
+                        await asyncio.sleep(self.NETWORK_RETRY_DELAY_SECONDS)
+
+            return {"success": False, "order_json": "", "error_message": "Failed to connect to mothership after retries"}
+        finally:
+            await dendrite.aclose_session()
+
+    def _send_order_test_mode(self, synapse) -> dict:
+        """Mock successful response for unit tests."""
+        return {"success": True, "order_json": json.dumps({"test": "order"}), "error_message": ""}
+
+    async def process_a_signal(self, signal_file_path, signal_data):
+        """
+        Processes a signal file by sending it to the mothership validator.
+        Other validators receive fire-and-forget copies.
+        """
+        mothership_axon, other_axons = self._get_mothership_and_other_axons()
+
+        if not mothership_axon and not self.running_unit_tests:
+            error_msg = "Mothership validator not found in validator list"
+            bt.logging.error(error_msg)
+            if self.config.write_failed_signal_logs:
+                self.write_signal_to_failure_directory(signal_data, signal_file_path, error_msg)
+            return {"success": False, "order_json": "", "error_message": error_msg}
 
         miner_order_uuid = signal_file_path.split('/')[-1]
 
@@ -278,120 +342,57 @@ class PropNetOrderPlacer:
             subaccount_id=signal_data.get('subaccount_id')
         )
 
-        # Continue retrying until max retries reached
-        while retry_status['retry_attempts'] < self.MAX_RETRIES and retry_status['validators_needing_retry']:
-            if self._shutdown:
-                bt.logging.warning("Shutting down, abandoning signal processing")
-                return None
-            await self.attempt_to_send_signal(send_signal_request, retry_status, high_trust_validators,
-                                        validator_hotkey_to_axon, metrics)
+        result = await self._send_order(send_signal_request, mothership_axon, other_axons)
 
-        # After retries, check if all high-trust validators have processed the signal successfully
-        high_trust_processed = True
-        n_high_trust_validators = len(high_trust_validators)
-        n_high_trust_validators_that_failed = 0
-        for validator in high_trust_validators:
-            if validator in retry_status['validators_needing_retry']:
-                high_trust_processed = False
-                n_high_trust_validators_that_failed += 1
-
-        if self.is_testnet and retry_status['validator_error_messages']:
-            high_trust_processed = False
-
-        # Update metrics
-        metrics.high_trust_succeeded = n_high_trust_validators - n_high_trust_validators_that_failed
-        metrics.all_high_trust_succeeded = high_trust_processed
-        metrics.validators_succeeded = len(retry_status['created_orders'])
-
-        # Copy validator errors to metrics
-        for hotkey, errors in retry_status['validator_error_messages'].items():
-            metrics.validator_errors[hotkey] = errors
-
-        # Process results
-        if high_trust_processed:
-            self.write_signal_to_processed_directory(signal_data, signal_file_path, retry_status)
+        # Archive result
+        if result["success"]:
+            self.write_signal_to_processed_directory(signal_data, signal_file_path, result["order_json"])
         elif self.config.write_failed_signal_logs:
-            v_trust_floor = min([hotkey_to_v_trust[validator.hotkey] for validator in high_trust_validators])
-            error_msg = (f"Signal file {signal_file_path} was not successfully processed by "
-                         f"{n_high_trust_validators_that_failed}/{n_high_trust_validators} high-trust validators. "
-                         f"(floor {v_trust_floor})")
-            bt.logging.error(error_msg)
-            self.write_signal_to_failure_directory(signal_data, signal_file_path, retry_status)
+            bt.logging.error(f"Signal file {signal_file_path} failed: {result['error_message']}")
+            self.write_signal_to_failure_directory(signal_data, signal_file_path, result["error_message"])
         else:
-            self.write_signal_to_processed_directory(signal_data, signal_file_path, retry_status)
+            self.write_signal_to_processed_directory(signal_data, signal_file_path, result["order_json"])
 
-        return signal_file_path
+        return result
 
-    def process_a_signal_for_rest(self, order_uuid: str, signal: Signal, subaccount_id: str = None, verbose: bool = False) -> dict:
+    def process_a_signal_for_rest(self, order_uuid: str, signal: Signal, subaccount_id: Optional[int] = None) -> dict:
         """
-        Process signal from REST endpoint (synchronous, returns structured result).
+        Process signal from REST API endpoint and send to validators.
 
-        This is called from Flask worker threads via MinerRestServer. It provides
-        synchronous feedback on validator acceptance/rejection for external traders.
+        This is the main entry point for REST API signal processing. It handles the complete
+        workflow: validator lookup, UUID deduplication, async order transmission, and result archiving.
 
-        Key differences from process_a_signal():
-        - Synchronous (blocks in Flask worker thread, not async)
-        - Takes order_uuid and Signal object directly (not file path)
-        - Returns structured dict with validator feedback
-        - Still archives to processed_signals/ or failed_signals/ for audit trail
 
         Args:
             order_uuid: UUID for this order
             signal: Validated Signal object with trade_pair, order_type, leverage, etc.
             subaccount_id: Optional subaccount ID for entity miners
-            verbose: If True, return all validator responses. If False, return only priority validator responses
 
         Returns:
             Dictionary with structure:
             {
-                "success": bool,  # True if MOTHERSHIP validator succeeded (verbose=false) or high-trust validators succeeded (verbose=true)
+                "success": bool,
                 "order_uuid": str,
-                "validators_processed": int,
-                "validators_succeeded": int,
-                "high_trust_total": int,
-                "high_trust_succeeded": int,
-                "all_high_trust_succeeded": bool,
-                "created_orders": dict,  # validator_hotkey -> order_json (filtered if verbose=false)
-                "error_messages": dict,  # validator_hotkey -> [error_msg, ...] (filtered if verbose=false)
+                "order_json": str or None,
+                "error_message": str,
                 "processing_time": float,
-                "message": str  # Human-readable result
+                "message": str
             }
         """
-        # Create metrics tracker
-        trade_pair_id = signal.trade_pair.trade_pair_id
-        metrics = SignalMetrics(order_uuid, trade_pair_id)
-        metrics.mark_network_start()
-
-        # Determine MOTHERSHIP validator hotkey based on network
-        mothership_hotkey = ValiConfig.MOTHERSHIP_HOTKEY_TESTNET if self.is_testnet else ValiConfig.MOTHERSHIP_HOTKEY
-        bt.logging.debug(f"Using MOTHERSHIP hotkey: {mothership_hotkey} (testnet={self.is_testnet})")
+        start_time = time.time()
 
         try:
-            # Get validators sorted by trust
-            hotkey_to_v_trust = {neuron.hotkey: neuron.validator_trust for neuron in self.metagraph_client.get_neurons()}
-            axons_to_try = self.position_inspector.get_possible_validators()
-            axons_to_try.sort(key=lambda validator: hotkey_to_v_trust[validator.hotkey], reverse=True)
+            mothership_axon, other_axons = self._get_mothership_and_other_axons()
 
-            # Update metrics
-            metrics.validators_attempted = len(axons_to_try)
-
-            validator_hotkey_to_axon = {}
-            for axon in axons_to_try:
-                assert axon.hotkey not in validator_hotkey_to_axon, f"Duplicate hotkey {axon.hotkey} in axons"
-                validator_hotkey_to_axon[axon.hotkey] = axon
-
-            retry_status = {
-                'retry_attempts': 0,
-                'retry_delay_seconds': self.INITIAL_RETRY_DELAY_SECONDS,
-                'validators_needing_retry': axons_to_try,
-                'validator_error_messages': {},
-                'created_orders': {},
-                'permanent_failures': {}  # Track validators with permanent errors
-            }
-
-            # Track the high-trust validators
-            high_trust_validators = self.get_high_trust_validators(axons_to_try, hotkey_to_v_trust)
-            metrics.high_trust_total = len(high_trust_validators)
+            if not mothership_axon and not self.running_unit_tests:
+                return {
+                    "success": False,
+                    "order_uuid": order_uuid,
+                    "order_json": None,
+                    "error_message": "Could not connecto to main validator",
+                    "processing_time": time.time() - start_time,
+                    "message": "Order failed: main validator not found"
+                }
 
             # Thread-safe UUID check
             with self._lock:
@@ -402,7 +403,9 @@ class PropNetOrderPlacer:
                     return {
                         "success": False,
                         "order_uuid": order_uuid,
-                        "error": "Duplicate order UUID",
+                        "order_json": None,
+                        "error_message": "Duplicate order UUID",
+                        "processing_time": time.time() - start_time,
                         "message": "Order UUID already used"
                     }
                 self.used_miner_uuids.add(order_uuid)
@@ -414,306 +417,79 @@ class PropNetOrderPlacer:
                 signal=signal_data,
                 miner_order_uuid=order_uuid,
                 repo_version=REPO_VERSION,
-                subaccount_id=subaccount_id
+                subaccount_id=subaccount_id,
+                successfully_processed=False,
+                error_message="",
+                should_retry=True,
+                validator_hotkey="",
+                order_json=""
             )
 
-            # Continue retrying until max retries reached
-            # Use asyncio.run() to execute async method synchronously
-            while retry_status['retry_attempts'] < self.MAX_RETRIES and retry_status['validators_needing_retry']:
-                if self._shutdown:
-                    bt.logging.warning("Shutting down, abandoning signal processing")
-                    return {
-                        "success": False,
-                        "order_uuid": order_uuid,
-                        "error": "Shutdown in progress",
-                        "message": "Miner shutting down"
-                    }
-                # Run async method synchronously
-                asyncio.run(self.attempt_to_send_signal(
-                    send_signal_request,
-                    retry_status,
-                    high_trust_validators,
-                    validator_hotkey_to_axon,
-                    metrics
-                ))
+            result = asyncio.run(self._send_order(send_signal_request, mothership_axon, other_axons))
 
-            # After retries, check if all high-trust validators have processed the signal successfully
-            high_trust_processed = True
-            n_high_trust_validators = len(high_trust_validators)
-            n_high_trust_validators_that_failed = 0
-            for validator in high_trust_validators:
-                if validator in retry_status['validators_needing_retry']:
-                    high_trust_processed = False
-                    n_high_trust_validators_that_failed += 1
+            processing_time = time.time() - start_time
 
-            if self.is_testnet and retry_status['validator_error_messages']:
-                high_trust_processed = False
-
-            # Update metrics
-            metrics.high_trust_succeeded = n_high_trust_validators - n_high_trust_validators_that_failed
-            metrics.all_high_trust_succeeded = high_trust_processed
-            metrics.validators_succeeded = len(retry_status['created_orders'])
-
-            # Copy validator errors to metrics
-            for hotkey, errors in retry_status['validator_error_messages'].items():
-                metrics.validator_errors[hotkey] = errors
-
-            metrics.mark_network_end()
-
-            # Archive to processed_signals/ or failed_signals/ for audit trail
-            # Use order_uuid as fake file path for archiving
+            # Archive result
             fake_signal_file_path = f"/rest-api/{order_uuid}"
-            if high_trust_processed:
-                self.write_signal_to_processed_directory(signal_data, fake_signal_file_path, retry_status)
+            if result["success"]:
+                self.write_signal_to_processed_directory(signal_data, fake_signal_file_path, result["order_json"])
+                message = "Order successfully processed by Taoshi validator"
             elif self.config.write_failed_signal_logs:
-                v_trust_floor = min([hotkey_to_v_trust[validator.hotkey] for validator in high_trust_validators])
-                error_msg = (f"REST order {order_uuid} was not successfully processed by "
-                             f"{n_high_trust_validators_that_failed}/{n_high_trust_validators} high-trust validators. "
-                             f"(floor {v_trust_floor})")
-                bt.logging.error(error_msg)
-                self.write_signal_to_failure_directory(signal_data, fake_signal_file_path, retry_status)
+                bt.logging.error(f"REST order {order_uuid} failed: {result['error_message']}")
+                self.write_signal_to_failure_directory(signal_data, fake_signal_file_path, result["error_message"])
+                message = "Order failed on Taoshi validator"
             else:
-                self.write_signal_to_processed_directory(signal_data, fake_signal_file_path, retry_status)
-
-            # Filter responses based on verbose flag
-            if not verbose:
-                # Return only MOTHERSHIP validator responses
-                bt.logging.debug(f"Filtering to MOTHERSHIP validator responses only (verbose=false)")
-                # Calculate success based on MOTHERSHIP validator only
-                mothership_success = mothership_hotkey in retry_status['created_orders']
-                created_orders = retry_status['created_orders'].get(mothership_hotkey)
-                error_messages = retry_status['validator_error_messages'].get(mothership_hotkey)
-
-                bt.logging.info(f"MOTHERSHIP validator {'succeeded' if mothership_success else 'failed'}")
-            else:
-                # Return all validator responses (current behavior)
-                mothership_success = high_trust_processed
-                created_orders = retry_status['created_orders']
-                error_messages = retry_status['validator_error_messages']
-
-            # Build structured response
-            if verbose and high_trust_processed:
-                message = f"Order successfully processed by {metrics.high_trust_succeeded}/{metrics.high_trust_total} high-trust validators"
-            elif verbose and not high_trust_processed:
-                message = f"Order failed on {n_high_trust_validators_that_failed}/{n_high_trust_validators} high-trust validators"
-            elif not verbose and mothership_success:
-                message = f"Order successfully processed by Taoshi validator"
-            else:
-                message = f"Order failed on Taoshi validator"
+                self.write_signal_to_processed_directory(signal_data, fake_signal_file_path, result["order_json"])
+                message = "Order failed on Taoshi validator"
 
             return {
-                "success": mothership_success,
+                "success": result["success"],
                 "order_uuid": order_uuid,
-                "validators_processed": metrics.validators_attempted,
-                "validators_succeeded": metrics.validators_succeeded,
-                "high_trust_total": metrics.high_trust_total,
-                "high_trust_succeeded": metrics.high_trust_succeeded,
-                "all_high_trust_succeeded": metrics.all_high_trust_succeeded,
-                "created_orders": created_orders,
-                "error_messages": error_messages,
-                "processing_time": metrics.processing_time,
+                "order_json": result["order_json"] or None,
+                "error_message": result["error_message"],
+                "processing_time": processing_time,
                 "message": message
             }
 
         except Exception as e:
-            metrics.exception = e
-            metrics.mark_network_end()
             bt.logging.error(f"Error processing REST order {order_uuid}: {e}")
 
             # Archive to failed_signals/ for audit trail
             fake_signal_file_path = f"/rest-api/{order_uuid}"
             if self.config.write_failed_signal_logs:
-                retry_status = {
-                    'validator_error_messages': {'exception': [str(e)]},
-                    'created_orders': {}
-                }
-                self.write_signal_to_failure_directory(signal_data, fake_signal_file_path, retry_status)
+                try:
+                    signal_data = signal.model_dump(mode='json')
+                    self.write_signal_to_failure_directory(signal_data, fake_signal_file_path, str(e))
+                except Exception:
+                    pass
 
             return {
                 "success": False,
                 "order_uuid": order_uuid,
-                "validators_processed": 0,
-                "validators_succeeded": 0,
-                "high_trust_total": 0,
-                "high_trust_succeeded": 0,
-                "all_high_trust_succeeded": False,
-                "created_orders": {},
-                "error_messages": {'exception': [str(e)]},
-                "processing_time": metrics.processing_time,
+                "order_json": None,
+                "error_message": str(e),
+                "processing_time": time.time() - start_time,
                 "message": f"Internal error: {str(e)}"
             }
 
-    def get_high_trust_validators(self, axons, hotkey_to_v_trust):
-        """Returns a list of high-trust validators."""
-        high_trust_validators = [ax for ax in axons if
-                                 hotkey_to_v_trust[ax.hotkey] >= MinerConfig.HIGH_V_TRUST_THRESHOLD]
-        if not high_trust_validators:
-            if not self.is_testnet:
-                bt.logging.error(
-                    "No high-trust validators found. This is unexpected in mainnet. Please report to the team ASAP.")
-            return axons
-        else:
-            return high_trust_validators
-
-    async def attempt_to_send_signal(self, send_signal_request: SendSignal, retry_status: dict,
-                               high_trust_validators: list, validator_hotkey_to_axon: dict,
-                               metrics: SignalMetrics):
-        hotkey_to_v_trust = {neuron.hotkey: neuron.validator_trust for neuron in self.metagraph_client.get_neurons()}
-
-        # trade_pair may not exist for LIMIT_CANCEL orders
-        trade_pair_info = send_signal_request.signal.get('trade_pair', {})
-        trade_pair_id = trade_pair_info.get('trade_pair_id', 'N/A') if isinstance(trade_pair_info, dict) else trade_pair_info
-        bt.logging.info(
-            f"Attempt #{retry_status['retry_attempts']} for {trade_pair_id} "
-            f"uuid {send_signal_request.miner_order_uuid}. "
-            f"Sending order to {len(retry_status['validators_needing_retry'])} hotkeys...")
-
-        if retry_status['retry_attempts'] != 0:
-            await asyncio.sleep(retry_status['retry_delay_seconds'])
-            retry_status['retry_delay_seconds'] *= 2
-
-        # In test mode, skip network calls and create mock successful responses
-        if self.running_unit_tests:
-            from bittensor.core.synapse import TerminalInfo
-
-            metrics.mark_network_start()
-            # Create mock successful responses for all validators in test mode
-            validator_responses = []
-            for axon in retry_status['validators_needing_retry']:
-                mock_response = SendSignal(signal=send_signal_request.signal, miner_order_uuid=send_signal_request.miner_order_uuid)
-                mock_response.successfully_processed = True
-                mock_response.validator_hotkey = axon.hotkey
-                mock_response.order_json = json.dumps({"test": "order"})  # Must be JSON string, not dict
-                mock_response.error_message = ""  # Empty string, not None
-                # Mock process times with proper TerminalInfo instances
-                mock_response.axon = TerminalInfo(process_time=0.001)
-                mock_response.dendrite = TerminalInfo(process_time=0.001)
-                validator_responses.append(mock_response)
-            metrics.mark_network_end()
-        else:
-            # Production mode: send to MOTHERSHIP first, then fire-and-forget to others
-            mothership_hotkey = ValiConfig.MOTHERSHIP_HOTKEY_TESTNET if self.is_testnet else ValiConfig.MOTHERSHIP_HOTKEY
-            metrics.mark_network_start()
-
-            # Separate MOTHERSHIP from other validators
-            axons = retry_status['validators_needing_retry']
-            mothership_axon = None
-            other_axons = []
-            for axon in axons:
-                if axon.hotkey == mothership_hotkey:
-                    mothership_axon = axon
-                else:
-                    other_axons.append(axon)
-
-            validator_responses = []
-
-            async with bt.dendrite(wallet=self.wallet) as dendrite:
-                # 1. Query MOTHERSHIP first (warms up connection, provides fast feedback)
-                if mothership_axon:
-                    try:
-                        responses = await dendrite.aquery([mothership_axon], send_signal_request)
-                        if responses and responses[0]:
-                            validator_responses.append(responses[0])
-                    except Exception as e:
-                        bt.logging.warning(f"Error querying MOTHERSHIP {mothership_hotkey}: {e}")
-                    metrics.mark_network_end()
-
-                    # 2. Fire-and-forget to other validators (don't wait for responses)
-                    if other_axons:
-                        bt.logging.debug(f"Sending to {len(other_axons)} other validators (fire-and-forget)")
-                        # Use thread to avoid task cancellation when asyncio.run() exits
-                        thread = threading.Thread(
-                            target=self._query_validators_sync,
-                            args=(other_axons, send_signal_request),
-                            daemon=True
-                        )
-                        thread.start()
-                else:
-                    # MOTHERSHIP not in list, fall back to querying all and waiting
-                    bt.logging.warning(f"MOTHERSHIP {mothership_hotkey} not in validator list, querying all")
-                    try:
-                        responses = await dendrite.aquery(axons, send_signal_request)
-                        validator_responses = [r for r in responses if r is not None]
-                    except Exception as e:
-                        bt.logging.warning(f"Error querying validators: {e}")
-                    metrics.mark_network_end()
-
-        all_high_trust_validators_succeeded = True
-        success_validators = set()
-
-        for response in validator_responses:
-            if response.successfully_processed and response.validator_hotkey:
-                success_validators.add(response.validator_hotkey)
-                retry_status['created_orders'][response.validator_hotkey] = response.order_json
-                metrics.retry_counts[response.validator_hotkey] = retry_status['retry_attempts'] + 1
-
-                # Extract true one way network time from response axon if available
-                process_time_axon_ms = int(1000 * response.axon.process_time)
-                process_time_dendrite_ms = int(1000 * response.dendrite.process_time)
-                print(f"Process time axon: {process_time_axon_ms}ms, dendrite: {process_time_dendrite_ms}ms")
-                metrics.validator_response_times[response.validator_hotkey] = process_time_axon_ms
-            else:
-                acked_axon = validator_hotkey_to_axon.get(response.validator_hotkey)
-                if acked_axon and acked_axon in high_trust_validators:
-                    all_high_trust_validators_succeeded = False
-
-                if response.error_message:
-                    vtrust = hotkey_to_v_trust.get(response.validator_hotkey)
-                    msg = f"Error sending to {response.validator_hotkey} (v_trust: {vtrust}): {response.error_message}"
-                    bt.logging.warning(msg)
-
-                    if response.validator_hotkey not in retry_status['validator_error_messages']:
-                        retry_status['validator_error_messages'][response.validator_hotkey] = []
-                    retry_status['validator_error_messages'][response.validator_hotkey].append(response.error_message)
-                    metrics.validator_errors[response.validator_hotkey].append(response.error_message)
-
-                    # Check validator's explicit retry guidance
-                    if not response.should_retry:
-                        retry_status['permanent_failures'][response.validator_hotkey] = response.error_message
-                        bt.logging.info(
-                            f"Validator {response.validator_hotkey} marked error as non-retryable: {response.error_message}"
-                        )
-
-        if all_high_trust_validators_succeeded:
-            v_trust_floor = min([hotkey_to_v_trust[validator.hotkey] for validator in high_trust_validators])
-            n_high_trust = len(high_trust_validators)
-            bt.logging.success(f"Signal processed by {n_high_trust}/{n_high_trust} high-trust validators "
-                               f"(min v_trust: {v_trust_floor})")
-
-        def _allow_retry(axon):
-            if axon.hotkey in retry_status['permanent_failures']:
-                return False
-            if axon.hotkey in success_validators:
-                return False
-            if axon.hotkey in self.recently_acked_validators:
-                return True
-            return hotkey_to_v_trust[axon.hotkey] > 0
-
-        new_validators_to_retry = [axon for axon in retry_status['validators_needing_retry'] if _allow_retry(axon)]
-        new_validators_to_retry.sort(key=lambda validator: hotkey_to_v_trust[validator.hotkey], reverse=True)
-
-        bt.logging.info(
-            f"Retry #{retry_status['retry_attempts']}: "
-            f"{len(new_validators_to_retry)} validators need retry, "
-            f"{len(retry_status['permanent_failures'])} have permanent errors"
-        )
-
-        retry_status['validators_needing_retry'] = new_validators_to_retry
-        retry_status['retry_attempts'] += 1
-
     def _query_validators_sync(self, axons, send_signal_request):
         """Fire-and-forget query to validators (runs in separate thread)."""
+
+        async def _query_validators_async(axons, send_signal_request):
+            """Async helper for background validator queries."""
+            dendrite = bt.dendrite(wallet=self.wallet)
+            try:
+                await dendrite.aquery(axons, send_signal_request)
+            finally:
+                await dendrite.aclose_session()
+
         try:
-            asyncio.run(self._query_validators_async(axons, send_signal_request))
+            asyncio.run(_query_validators_async(axons, send_signal_request))
         except Exception as e:
             bt.logging.debug(f"Background validator query error (non-critical): {e}")
 
-    async def _query_validators_async(self, axons, send_signal_request):
-        """Async helper for background validator queries."""
-        async with bt.dendrite(wallet=self.wallet) as dendrite:
-            await dendrite.aquery(axons, send_signal_request)
 
-    def write_signal_to_processed_directory(self, signal_data, signal_file_path: str, retry_status: dict):
+    def write_signal_to_processed_directory(self, signal_data, signal_file_path: str, order_json: str):
         """Moves a processed signal file to the processed directory."""
         signal_copy = signal_data.copy()
         # trade_pair may not exist for LIMIT_CANCEL orders
@@ -721,36 +497,18 @@ class PropNetOrderPlacer:
             signal_copy['trade_pair'] = signal_copy['trade_pair']['trade_pair_id']
         data_to_write = {
             'signal_data': signal_copy,
-            'created_orders': retry_status['created_orders'],
+            'order_json': order_json,
             'processing_timestamp': datetime.now().isoformat(),
-            'retry_attempts': retry_status['retry_attempts']
         }
         self.write_signal_to_directory(MinerConfig.get_miner_processed_signals_dir(), signal_file_path, data_to_write,
                                        True)
 
-    def write_signal_to_failure_directory(self, signal_data, signal_file_path: str, retry_status: dict):
-        """Writes failed signal with detailed failure information"""
-        validators_needing_retry = retry_status['validators_needing_retry']
-        error_messages_dict = retry_status['validator_error_messages']
-        created_orders = retry_status['created_orders']
-
-        # Prepare validator data
-        json_validator_data = [{
-            'ip': validator.ip,
-            'port': validator.port,
-            'ip_type': validator.ip_type,
-            'hotkey': validator.hotkey,
-            'coldkey': validator.coldkey,
-            'protocol': validator.protocol
-        } for validator in validators_needing_retry]
-
+    def write_signal_to_failure_directory(self, signal_data, signal_file_path: str, error_message: str):
+        """Writes failed signal with error information"""
         new_data = {
             'original_signal': signal_data,
-            'validators_needing_retry': json_validator_data,
-            'error_messages_dict': error_messages_dict,
-            'created_orders': created_orders,
+            'error_message': error_message,
             'failure_timestamp': datetime.now().isoformat(),
-            'retry_attempts': retry_status['retry_attempts']
         }
 
         # Move signal file to the failed directory

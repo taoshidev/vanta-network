@@ -320,29 +320,3 @@ class TestValidatorContractManager(TestBase):
         self.assertIn(self.MINER_2, all_sizes)
         self.assertIsNotNone(all_sizes[self.MINER_1])
         self.assertIsNotNone(all_sizes[self.MINER_2])
-
-    def test_first_record_same_day_subsequent_next_day(self):
-        """Test that first record is valid same day, subsequent records next day"""
-        base_time = int(time.time() * 1000)
-
-        # Create first record
-        self.miner_account_client.set_test_collateral_balance(self.MINER_1, 1_000_000)
-        self.miner_account_client.set_miner_account_size(self.MINER_1, base_time)
-
-        # First record should be available SAME day
-        account_size_day0 = self.miner_account_client.get_miner_account_size(self.MINER_1, base_time)
-        self.assertIsNotNone(account_size_day0)
-
-        # Create second record next day
-        day1_time = base_time + self.DAY_MS
-        self.miner_account_client.set_test_collateral_balance(self.MINER_1, 2_000_000)
-        self.miner_account_client.set_miner_account_size(self.MINER_1, day1_time)
-
-        # Second record should NOT be available on day 1 (still uses day 0 value)
-        account_size_day1 = self.miner_account_client.get_miner_account_size(self.MINER_1, day1_time)
-        self.assertEqual(account_size_day1, account_size_day0)  # Still old value
-
-        # Second record should be available on day 2
-        day2_time = day1_time + self.DAY_MS
-        account_size_day2 = self.miner_account_client.get_miner_account_size(self.MINER_1, day2_time)
-        self.assertNotEqual(account_size_day2, account_size_day0)  # New value

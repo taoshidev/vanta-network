@@ -381,20 +381,24 @@ class Position(BaseModel):
         ]
         bt.logging.debug(f"position order details: " f"close_ms [{order_info}] ")
 
-    def add_order(self, order: Order, live_price_fetcher, net_portfolio_leverage: float=0.0, skip_validation=False) -> bool:
+    def add_order(self, order: Order, live_price_fetcher=None):
         """
         Add an order to a position, and adjust its size to stay within
         the trade pair max and portfolio max.
+
+        Args:
+            order: The order to add
+            live_price_fetcher: Price fetcher for position updates
+            net_portfolio_leverage: Deprecated, no longer used
+            skip_validation: If True, skip order size validation
+            balance: Miner's balance for USD-based validation. If None, uses account_size.
+            max_position_leverage: Max leverage for trade pair. If None, uses trade pair max.
         """
         if self.is_closed_position:
             raise ValueError("Miner attempted to add order to a closed/liquidated position. Ignoring.")
         if order.trade_pair != self.trade_pair:
             raise ValueError(
                 f"Order trade pair [{order.trade_pair}] does not match position trade pair [{self.trade_pair}]")
-
-        # may raise ValueError if invalid order size
-        if not skip_validation:
-            self.validate_order_size(order, abs(net_portfolio_leverage))
 
         self.orders.append(order)
         self._update_position(live_price_fetcher)
@@ -467,7 +471,7 @@ class Position(BaseModel):
 
         if interval_data['max_leverage'] == -float('inf'):
             raise ValueError('Unable to find max leverage in interval')
-        assert interval_data['max_leverage'] > 0, (interval_data, self.orders, str(self))
+        assert interval_data['max_leverage'] >= 0, (interval_data, self.orders, str(self))
         return interval_data['max_leverage']
 
     def max_leverage_seen(self, interval_data=None):
@@ -584,7 +588,7 @@ class Position(BaseModel):
         if self.current_return == 0:
             self._handle_liquidation(TimeUtil.now_in_millis() if time_ms is None else time_ms, live_price_fetcher)
 
-    def set_returns(self, realtime_price, price_fetcher_client, time_ms=None, total_fees=None, order=None):
+    def set_returns(self, realtime_price, price_fetcher_client=None, time_ms=None, total_fees=None, order=None):
         # We used to multiple trade_pair.fees by net_leverage. Eventually we will
         # Update this calculation to approximate actual exchange fees.
         self.current_return = self.calculate_pnl(realtime_price, price_fetcher_client, t_ms=time_ms, order=order)
@@ -600,7 +604,7 @@ class Position(BaseModel):
         if self.current_return == 0:
             self._handle_liquidation(TimeUtil.now_in_millis() if time_ms is None else time_ms, price_fetcher_client)
 
-    def update_position_state_for_new_order(self, order, delta_quantity, delta_leverage, price_fetcher_client):
+    def update_position_state_for_new_order(self, order, delta_quantity, delta_leverage, price_fetcher_client=None):
         """
         Must be called after every order to maintain accurate internal state. The variable average_entry_price has
         a name that can be a little confusing. Although it claims to be the average price, it really isn't.
@@ -679,104 +683,62 @@ class Position(BaseModel):
         self.is_closed_position = False
         self.close_ms = None
 
-    def validate_order_size(self, order: Order, net_portfolio_leverage: float) -> None:
+    def validate_order_size(self, order: Order, max_position_value: float) -> bool:
         """
-        Validates that an order's size is within acceptable bounds.
-
-        Raises ValueError if the proposed order size exceeds position or portfolio leverage limits,
-        or if it would set position leverage below minimum.
-
-        Args:
-            order: The order to validate
-            net_portfolio_leverage: Current net portfolio leverage
-
-        Raises:
-            ValueError: If the proposed order size is out of bounds
+        returns True if clamped due to max position value
         """
         if order.order_type == OrderType.FLAT:
-            return
+            return False
 
-        # Check if quantity/value would result in flat position
-        if order.quantity and self.net_quantity + order.quantity == 0:
+        proposed_leverage = self.net_leverage + (order.leverage or 0)
+        proposed_quantity = self.net_quantity + (order.quantity or 0)
+        proposed_value = self.net_value + self.unrealized_pnl + (order.value or 0)
+
+        bt.logging.info(f"[POSITION VALIDATION] unrealized pnl: {self.unrealized_pnl}")
+        bt.logging.info(f"[POSITION VALIDATION] proposed quantity: {proposed_quantity}, proposed_value: {proposed_value}")
+
+        # Flatten order
+        flatten = False
+        if self.position_type == OrderType.LONG:
+            flatten = proposed_quantity <= 0
+        elif self.position_type == OrderType.SHORT:
+            flatten = proposed_quantity >= 0
+
+        if flatten:
             order.order_type = OrderType.FLAT
-            return
+            order.leverage = -self.net_leverage
+            order.quantity = -self.net_quantity
+            order.value = -self.net_value
+            return False
 
-        if order.value and self.net_value + order.value == 0:
-            order.order_type = OrderType.FLAT
-            return
+        # If order increases position size, validate max position size
+        if order.order_type == self.position_type:
+            if abs(self.net_value + self.unrealized_pnl) >= max_position_value:
+                raise ValueError(f"Position at max ${abs(self.net_value):.2f} (limit: ${max_position_value:.2f})")
 
-        if not order.leverage:
-            raise ValueError("Leverage must be specified for order size validation")
+            max_order_value = max_position_value - abs(self.net_value)
+            if abs(order.value) > max_order_value:
+                sign = 1 if self.position_type == OrderType.LONG else -1
+                order.value = sign * max_order_value
+                return True
 
-        if not (ValiConfig.ORDER_MIN_LEVERAGE <= abs(order.leverage) <= ValiConfig.ORDER_MAX_LEVERAGE):
-            raise ValueError(
-                f'Order leverage [{order.leverage}] is outside the allowed range [{ValiConfig.ORDER_MIN_LEVERAGE}, {ValiConfig.ORDER_MAX_LEVERAGE}]. Ignoring order.')
-
-        is_first_order = len(self.orders) == 0
-
-        # Only check for position closing/flipping if there are existing orders
-        # Skip for first order to avoid false positives with SHORT orders (which have negative quantity/value)
-        if not is_first_order:
-            if order.quantity:
-                proposed_quantity = self.net_quantity + order.quantity
-                # For LONG: close if proposed <= 0; For SHORT: close if proposed >= 0
-                if self.position_type == OrderType.LONG and proposed_quantity <= 0:
-                    order.leverage = -self.net_leverage
-                    order.order_type = OrderType.FLAT
-                    return True
-                elif self.position_type == OrderType.SHORT and proposed_quantity >= 0:
-                    order.leverage = -self.net_leverage
-                    order.order_type = OrderType.FLAT
-                    return True
-
-            if order.value:
-                proposed_value = self.net_value + order.value
-                # For LONG: close if proposed <= 0; For SHORT: close if proposed >= 0
-                if self.position_type == OrderType.LONG and proposed_value <= 0:
-                    order.leverage = -self.net_leverage
-                    order.order_type = OrderType.FLAT
-                    return True
-                elif self.position_type == OrderType.SHORT and proposed_value >= 0:
-                    order.leverage = -self.net_leverage
-                    order.order_type = OrderType.FLAT
-                    return True
-        proposed_leverage = self.net_leverage + order.leverage
-
-        # If sign flips, set to FLAT
-        if not is_first_order and self.net_leverage * proposed_leverage <= 0:
-            order.order_type = OrderType.FLAT
-            return
-
-        # Get leverage bounds
-        min_position_leverage, max_position_leverage = leverage_utils.get_position_leverage_bounds(self.trade_pair)
-        max_portfolio_leverage = leverage_utils.get_portfolio_leverage_cap(self.trade_pair.trade_pair_category)
-
-        # Calculate proposed portfolio leverage (raw leverage since miners only trade one asset class)
-        current_leverage = abs(self.net_leverage)
-        proposed_portfolio_leverage = net_portfolio_leverage - current_leverage + abs(proposed_leverage)
-
-        # Validate against max limits (when increasing leverage)
-        if (is_first_order or abs(proposed_leverage) >= abs(self.net_leverage) or
-            proposed_portfolio_leverage >= net_portfolio_leverage):
-
-            if proposed_portfolio_leverage > max_portfolio_leverage:
+        # Validate against min position size
+        min_position_leverage, _ = leverage_utils.get_position_leverage_bounds(self.trade_pair)
+        if self.trade_pair.is_forex:
+            proposed_lots = abs(proposed_quantity)
+            if proposed_lots > 0 and proposed_lots < ValiConfig.FOREX_MIN_POSITION_SIZE_LOTS:
                 raise ValueError(
-                    f"Miner {self.miner_hotkey} attempted to exceed max adjusted portfolio leverage of "
-                    f"{max_portfolio_leverage}. Proposed: {proposed_portfolio_leverage:.2f}. Ignoring order.")
-
-            if abs(proposed_leverage) > max_position_leverage:
+                    f"{self.trade_pair.trade_pair_id}: below min {ValiConfig.FOREX_MIN_POSITION_SIZE_LOTS} lots ({proposed_lots:.4f})")
+        elif self.trade_pair.is_crypto:
+            if abs(proposed_value) > 0 and abs(proposed_value) < ValiConfig.CRYPTO_MIN_POSITION_SIZE_USD:
                 raise ValueError(
-                    f"Miner {self.miner_hotkey} attempted to exceed max position leverage of "
-                    f"{max_position_leverage} for trade pair {self.trade_pair.trade_pair_id}. "
-                    f"Proposed: {abs(proposed_leverage):.2f}. Ignoring order.")
-
-        # Validate against min limit (when decreasing leverage below minimum)
-        if abs(proposed_leverage) < min_position_leverage:
-            if is_first_order or abs(proposed_leverage) < abs(self.net_leverage):
+                    f"{self.trade_pair.trade_pair_id}: below min ${ValiConfig.CRYPTO_MIN_POSITION_SIZE_USD} (${abs(proposed_value):.2f})")
+        else:  # for other asset classes
+            if abs(proposed_leverage) < min_position_leverage:
                 raise ValueError(
-                    f"Miner {self.miner_hotkey} attempted to set {self.trade_pair.trade_pair_id} "
-                    f"position leverage below min_position_leverage {min_position_leverage}. "
-                    f"Proposed: {abs(proposed_leverage):.2f}. Ignoring order.")
+                    f"{self.trade_pair.trade_pair_id}: below min leverage {min_position_leverage} ({abs(proposed_leverage)})")
+
+        return False
 
     def apply_stock_split(self, stock_split_ratio: float, execution_date: str) -> bool:
         """
@@ -795,10 +757,10 @@ class Position(BaseModel):
             order.price /= stock_split_ratio
 
         self.last_stock_split_date = execution_date
-        self._update_position(None)
+        self._update_position()
         return True
 
-    def _update_position(self, price_fetcher_client):
+    def _update_position(self, price_fetcher_client=None):
         self.net_leverage = 0.0
         self.net_quantity = 0.0
         self.net_value = 0.0
@@ -819,19 +781,9 @@ class Position(BaseModel):
                 self.initialize_position_from_first_order(order)
 
             # Check if the new order flattens the position, explicitly or implicitly
-            if (
-                (
-                    self.position_type == OrderType.LONG
-                    and
-                    (self.net_leverage + order.leverage <= 0 or self.net_quantity + order.quantity <= 0)
-                )
-                or (
-                    self.position_type == OrderType.SHORT
-                    and
-                    (self.net_leverage + order.leverage >= 0 or self.net_quantity + order.quantity >= 0)
-                )
-                or order.order_type == OrderType.FLAT
-            ):
+            if self.position_type == OrderType.LONG and self.net_quantity + order.quantity <= 0 or \
+               self.position_type == OrderType.SHORT and self.net_quantity + order.quantity >= 0 or \
+               order.order_type == OrderType.FLAT:
                 #self._position_log(
                 #    f"Flattening {self.position_type.value} position from order {order}"
                 #)

@@ -1,5 +1,14 @@
 #!/bin/bash
 
+echo "============================================================"
+echo "DEPRECATED: run_receive_signals_server.sh is deprecated."
+echo "Use the REST server running natively from miner.py instead."
+echo "New endpoint: POST /api/submit-order"
+echo "============================================================"
+echo ""
+echo "Continuing in 5 seconds... (Ctrl+C to cancel)"
+sleep 5
+
 while true; do
     echo "Starting Python script..."
     . venv/bin/activate

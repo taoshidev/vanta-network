@@ -549,6 +549,27 @@ class PositionManager:
 
         return portfolio_return
 
+    def get_unrealized_pnl(self, hotkey: str) -> float:
+        """
+        Calculate total unrealized PnL across all open positions for a hotkey.
+
+        Args:
+            hotkey: The miner's hotkey
+
+        Returns:
+            Total unrealized PnL in USD (sum of all open positions' unrealized_pnl)
+        """
+        if hotkey not in self.hotkey_to_open_positions:
+            return 0.0
+
+        total_unrealized_pnl = 0.0
+        open_positions_dict = self.hotkey_to_open_positions[hotkey]
+
+        for position in open_positions_dict.values():
+            total_unrealized_pnl += position.unrealized_pnl
+
+        return total_unrealized_pnl
+
     def get_all_hotkeys(self):
         """Get all hotkeys that have positions."""
         return list(self.hotkey_to_positions.keys())

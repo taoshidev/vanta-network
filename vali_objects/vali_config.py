@@ -323,12 +323,16 @@ class ValiConfig:
     EQUITIES_MIN_LEVERAGE = 0.1
     EQUITIES_MAX_LEVERAGE = 2
 
+    # Minimum position size limits
+    FOREX_MIN_POSITION_SIZE_LOTS = 0.01  # 0.01 standard lots
+    CRYPTO_MIN_POSITION_SIZE_USD = 10.0  # $10 USD
+
     MAX_DAILY_DRAWDOWN = 0.95  # Portfolio should never fall below .95 x of initial value when measured day to day
     MAX_TOTAL_DRAWDOWN = 0.9  # Portfolio should never fall below .90 x of initial value when measured at any instant
     MAX_TOTAL_DRAWDOWN_V2 = 0.95
     MAX_ORDERS_PER_POSITION = 100
-    ORDER_COOLDOWN_MS = 10000  # 10 seconds
-    ORDER_MIN_LEVERAGE = 0.001
+    ORDER_COOLDOWN_MS = 5000  # 5 seconds
+    ORDER_MIN_LEVERAGE = 0.00001
     ORDER_MAX_LEVERAGE = 500
 
     # Controls how much history to store for price data which is used in retroactive updates
@@ -472,6 +476,14 @@ class ValiConfig:
         TradePairCategory.INDICES: 10,
         TradePairCategory.EQUITIES: 2,
     }
+    TRANSACTION_FEE_MULTIPLIER = {
+        TradePairCategory.CRYPTO: 0.001,
+        TradePairCategory.FOREX: 0,
+        TradePairCategory.INDICES: 0,
+        TradePairCategory.EQUITIES: 0,
+    }
+
+    SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR = 4
 
     # Collateral limits
     MIN_COLLATERAL_BALANCE_THETA = 300  # Required minimum total collateral balance per miner in Theta. Approx $150k capital account size
@@ -508,7 +520,7 @@ class ValiConfig:
     UNSUPPORTED_TRADE_PAIRS = None  # Will be set after TradePair definition
 
     MAX_UNFILLED_LIMIT_ORDERS = 100
-    LIMIT_ORDER_CHECK_REFRESH_MS = 10 * 1000 # 10 seconds
+    LIMIT_ORDER_CHECK_REFRESH_MS = 4 * 1000 # 4 seconds
     LIMIT_ORDER_FILL_INTERVAL_MS = 30 * 1000 # 30 seconds
 
     LIMIT_ORDER_PRICE_BUFFER_TOLERANCE = 0.001 # +-0.1% tolerance
