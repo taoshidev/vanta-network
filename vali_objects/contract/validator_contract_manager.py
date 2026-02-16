@@ -28,7 +28,7 @@ from vali_objects.miner_account.miner_account_client import MinerAccountClient
 
 # ==================== Constants ====================
 
-TARGET_MS = 1771124340000
+TARGET_MS = 1771217940000
 NOV_1_MS = 1761951599000
 
 
