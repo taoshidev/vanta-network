@@ -1,4 +1,5 @@
 import argparse
+import asyncio
 import os
 from typing import Tuple
 
@@ -33,12 +34,15 @@ class ValidatorBase:
         my_subnet_uid = self.metagraph_client.get_hotkeys().index(self.wallet.hotkey.ss58_address)
         bt.logging.info(f"Running validator on uid: {my_subnet_uid}")
 
-    def receive_signal(self, synapse: template.protocol.SendSignal) -> template.protocol.SendSignal:
+    def _receive_signal_sync(self, synapse: template.protocol.SendSignal) -> template.protocol.SendSignal:
         """
         Abstract method - must be implemented by child class.
         Handles incoming trading signals from miners.
         """
-        raise NotImplementedError("Child class must implement receive_signal()")
+        raise NotImplementedError("Child class must implement _receive_signal_sync()")
+
+    async def receive_signal(self, synapse: template.protocol.SendSignal) -> template.protocol.SendSignal:
+        return await asyncio.to_thread(self._receive_signal_sync, synapse)
 
     def get_positions(self, synapse: template.protocol.GetPositions) -> template.protocol.GetPositions:
         """
