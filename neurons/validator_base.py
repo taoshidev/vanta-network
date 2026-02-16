@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import concurrent.futures
 import os
 from typing import Tuple
 
@@ -28,6 +29,9 @@ class ValidatorBase:
         from vali_objects.miner_account.miner_account_client import MinerAccountClient
         self._miner_account_client = MinerAccountClient(running_unit_tests=False)
 
+        # Dedicated thread pool for concurrent order processing via receive_signal
+        self._order_executor = concurrent.futures.ThreadPoolExecutor(max_workers=32)
+
         self.wire_axon()
 
         # Each hotkey gets a unique identity (UID) in the network for differentiation.
@@ -42,7 +46,8 @@ class ValidatorBase:
         raise NotImplementedError("Child class must implement _receive_signal_sync()")
 
     async def receive_signal(self, synapse: template.protocol.SendSignal) -> template.protocol.SendSignal:
-        return await asyncio.to_thread(self._receive_signal_sync, synapse)
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self._order_executor, self._receive_signal_sync, synapse)
 
     def get_positions(self, synapse: template.protocol.GetPositions) -> template.protocol.GetPositions:
         """
