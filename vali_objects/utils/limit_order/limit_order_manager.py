@@ -1347,16 +1347,20 @@ class LimitOrderManager(CacheController):
         if not sync_data:
             return
 
-        for miner_hotkey, orders_data in sync_data.items():
-            if not orders_data:
+        for trade_pair_id, hotkey_dict in sync_data.items():
+            if not hotkey_dict:
                 continue
 
-            try:
-                for data in orders_data:
-                    order = Order.from_dict(data)
-                    self._write_to_disk(miner_hotkey, order)
-            except Exception as e:
-                bt.logging.error(f"Could not sync limit orders: {e}")
+            for miner_hotkey, orders_data in hotkey_dict.items():
+                if not orders_data:
+                    continue
+
+                try:
+                    for data in orders_data:
+                        order = Order.from_dict(data)
+                        self._write_to_disk(miner_hotkey, order)
+                except Exception as e:
+                    bt.logging.error(f"Could not sync limit orders for {miner_hotkey} on {trade_pair_id}: {e}")
 
         self._read_limit_orders_from_disk()
 
