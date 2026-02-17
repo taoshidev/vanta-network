@@ -56,19 +56,19 @@ class ValidatorBase:
         """
         raise NotImplementedError("Child class must implement _get_positions()")
 
-    async def get_positions(self, synapse: template.protocol.SendSignal) -> template.protocol.SendSignal:
+    async def get_positions(self, synapse: template.protocol.GetPositions) -> template.protocol.GetPositions:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(self._thread_pool, self._get_positions, synapse)
 
-    async def receive_collateral_record(self, synapse: template.protocol.SendSignal) -> template.protocol.SendSignal:
+    async def receive_collateral_record(self, synapse: template.protocol.CollateralRecord) -> template.protocol.CollateralRecord:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(self._thread_pool, self._miner_account_client.receive_collateral_record, synapse)
 
-    async def receive_asset_selection(self, synapse: template.protocol.SendSignal) -> template.protocol.SendSignal:
+    async def receive_asset_selection(self, synapse: template.protocol.AssetSelection) -> template.protocol.AssetSelection:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(self._thread_pool, self._asset_selection_client.receive_asset_selection, synapse)
 
-    async def receive_subaccount_registration(self, synapse: template.protocol.SendSignal) -> template.protocol.SendSignal:
+    async def receive_subaccount_registration(self, synapse: template.protocol.SubaccountRegistration) -> template.protocol.SubaccountRegistration:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(self._thread_pool, self._entity_client.receive_subaccount_registration, synapse)
 
