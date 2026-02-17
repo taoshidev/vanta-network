@@ -520,7 +520,6 @@ class ValiConfig:
     HL_WS_HEARTBEAT_INTERVAL_S = 30.0
     HL_WS_RECONNECT_BACKOFF_MAX_S = 30.0
     HL_ADDRESS_REGEX = r"^0x[a-fA-F0-9]{40}$"
-    HL_MIN_USDC_BALANCE = 1_000  # Minimum USDC balance required to process HL trades
     HL_COIN_TO_TRADE_PAIR = {
         "BTC": "BTCUSD", "ETH": "ETHUSD", "SOL": "SOLUSD",
         "XRP": "XRPUSD", "DOGE": "DOGEUSD", "ADA": "ADAUSD",

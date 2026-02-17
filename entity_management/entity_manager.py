@@ -62,7 +62,6 @@ class SubaccountInfo(BaseModel):
     account_size: float = Field(description="Account size in USD (immutable once set)")
     asset_class: str = Field(description="Asset class selection (immutable once set)")
     hl_address: Optional[str] = Field(default=None, description="Hyperliquid address for HL tracking subaccounts")
-    payout_address: Optional[str] = Field(default=None, description="EVM address (0x + 40 hex) for USDC payouts")
 
     # Note: Challenge period tracking has been migrated to ChallengePeriodManager
     # Synthetic hotkeys are added to challenge period bucket and evaluated via inspect()
@@ -603,6 +602,118 @@ class EntityManager(ValidatorBroadcastBase):
 
             # Broadcast dashboard update even on failure so clients see the status change
             self.broadcast_subaccount_dashboard(synthetic_hotkey)
+
+    def create_hl_subaccount(
+        self,
+        entity_hotkey: str,
+        account_size: float,
+        hl_address: str,
+        admin: bool = False
+    ) -> Tuple[bool, Optional[SubaccountInfo], str]:
+        """
+        Create a new subaccount linked to a Hyperliquid address.
+
+        Validates the HL address format, checks for duplicates and the max tracked
+        addresses limit, then delegates to create_subaccount() for standard validation.
+
+        Args:
+            entity_hotkey: The VANTA_ENTITY_HOTKEY
+            account_size: Account size in USD
+            hl_address: Hyperliquid address (0x-prefixed, 40 hex chars)
+            admin: If True, skip collateral slashing
+
+        Returns:
+            (success: bool, subaccount_info: Optional[SubaccountInfo], message: str)
+        """
+        # Validate HL address format
+        if not re.match(ValiConfig.HL_ADDRESS_REGEX, hl_address):
+            return False, None, f"Invalid Hyperliquid address format: {hl_address}. Must be 0x followed by 40 hex characters."
+
+        # Check for duplicate HL address across all entities
+        with self._entities_lock:
+            if hl_address in self._hl_address_to_synthetic:
+                existing = self._hl_address_to_synthetic[hl_address]
+                return False, None, f"Hyperliquid address {hl_address} is already registered to subaccount {existing}"
+
+            # Check total active HL subaccounts < max limit
+            active_hl_count = len(self._hl_address_to_synthetic)
+            if active_hl_count >= ValiConfig.HL_MAX_TRACKED_ADDRESSES:
+                return False, None, (
+                    f"Maximum number of tracked Hyperliquid addresses ({ValiConfig.HL_MAX_TRACKED_ADDRESSES}) reached. "
+                    f"Cannot register more HL subaccounts."
+                )
+
+        # Delegate to standard create_subaccount for all existing validation
+        success, subaccount_info, message = self.create_subaccount(
+            entity_hotkey, account_size, "crypto", admin=admin
+        )
+
+        if not success:
+            return False, None, message
+
+        # Set hl_address on the subaccount and re-persist
+        entity_lock = self._get_entity_lock(entity_hotkey)
+        with entity_lock:
+            entity_data = self.entities.get(entity_hotkey)
+            if entity_data and subaccount_info:
+                subaccount = entity_data.subaccounts.get(subaccount_info.subaccount_id)
+                if subaccount:
+                    subaccount.hl_address = hl_address
+                    # Update HL reverse index
+                    with self._entities_lock:
+                        self._hl_address_to_synthetic[hl_address] = subaccount.synthetic_hotkey
+                    self._write_entities_from_memory_to_disk()
+
+        return True, subaccount_info, message
+
+    def get_all_active_hl_subaccounts(self) -> List[Tuple[str, dict]]:
+        """
+        Get all active subaccounts with HL addresses.
+
+        Returns:
+            List of (hl_address, subaccount_info_dict) tuples
+        """
+        result = []
+        with self._entities_lock:
+            for entity_data in self.entities.values():
+                for subaccount in entity_data.subaccounts.values():
+                    if subaccount.hl_address and subaccount.status in ('active', 'admin'):
+                        result.append((subaccount.hl_address, subaccount.model_dump()))
+        return result
+
+    def get_synthetic_hotkey_for_hl_address(self, hl_address: str) -> Optional[str]:
+        """
+        O(1) lookup of synthetic hotkey for a Hyperliquid address.
+
+        Args:
+            hl_address: The Hyperliquid address
+
+        Returns:
+            Synthetic hotkey if found, None otherwise
+        """
+        with self._entities_lock:
+            return self._hl_address_to_synthetic.get(hl_address)
+
+    def get_subaccount_info_for_synthetic(self, synthetic_hotkey: str) -> Optional[SubaccountInfo]:
+        """
+        Get SubaccountInfo for a synthetic hotkey.
+
+        Args:
+            synthetic_hotkey: The synthetic hotkey ({entity_hotkey}_{subaccount_id})
+
+        Returns:
+            SubaccountInfo if found, None otherwise
+        """
+        if not is_synthetic_hotkey(synthetic_hotkey):
+            return None
+
+        entity_hotkey, subaccount_id = parse_synthetic_hotkey(synthetic_hotkey)
+        entity_lock = self._get_entity_lock(entity_hotkey)
+        with entity_lock:
+            entity_data = self.entities.get(entity_hotkey)
+            if not entity_data:
+                return None
+            return entity_data.subaccounts.get(subaccount_id)
 
     def eliminate_subaccount(
         self,
