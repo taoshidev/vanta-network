@@ -109,9 +109,9 @@ class LivePriceFetcherClient(RPCClientBase):
         """Get sorted price sources for a trade pair."""
         return self._server.get_sorted_price_sources_for_trade_pair(trade_pair, time_ms, live)
 
-    def get_tp_to_sorted_price_sources(self, trade_pairs: List[TradePair], time_ms: int, live=True) -> Dict[TradePair, List[PriceSource]]:
+    def get_tp_to_sorted_price_sources(self, trade_pairs: List[TradePair], time_ms: int, live=True, websocket_only=False) -> Dict[TradePair, List[PriceSource]]:
         """Get sorted price sources for multiple trade pairs."""
-        return self._server.get_tp_to_sorted_price_sources(trade_pairs, time_ms, live)
+        return self._server.get_tp_to_sorted_price_sources(trade_pairs, time_ms, live, websocket_only=websocket_only)
 
     def time_since_last_ws_ping_s(self, trade_pair: TradePair) -> float | None:
         """Get time since last websocket ping for a trade pair."""
