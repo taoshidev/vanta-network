@@ -206,7 +206,7 @@ class MDDChecker(CacheController):
         hotkey_to_positions = self._position_client.get_positions_for_hotkeys(
             self._position_client.get_all_hotkeys(),
             only_open_positions=not do_order_correction,
-            filter_eliminations=do_order_correction,
+            filter_eliminations=True,
             sort_positions=do_order_correction
         )
         now_ms = TimeUtil.now_in_millis()
