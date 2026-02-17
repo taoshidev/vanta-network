@@ -104,17 +104,14 @@ class MDDChecker(CacheController):
             now_ms = TimeUtil.now_in_millis()
             available_trade_pairs = [
                 tp for tp in self.all_trade_pairs
-                if self._live_price_client.is_market_open(tp, now_ms)
+                if self._live_price_client.is_market_open(tp, now_ms) and not tp.is_blocked
             ]
 
             tp_to_price_sources = self._live_price_client.get_tp_to_sorted_price_sources(
                 available_trade_pairs,
-                now_ms
+                now_ms,
+                websocket_only=True
             )
-
-            for tp, sources in tp_to_price_sources.items():
-                if sources and any(x and not x.websocket for x in sources):
-                    self.n_poly_api_requests += 1
 
             self.last_price_fetch_time_ms = now_ms
             return tp_to_price_sources
