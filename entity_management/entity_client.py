@@ -23,7 +23,7 @@ Usage:
     if is_synthetic_hotkey(hotkey):
         entity_hotkey, subaccount_id = parse_synthetic_hotkey(hotkey)
 """
-from typing import Optional, Tuple, Dict
+from typing import Optional, Tuple, Dict, List
 
 import template.protocol
 from template.protocol import SubaccountRegistration
@@ -108,6 +108,60 @@ class EntityClient(RPCClientBase):
             (success: bool, subaccount_info_dict: Optional[dict], message: str)
         """
         return self._server.create_subaccount_rpc(entity_hotkey, account_size, asset_class, admin=admin)
+
+    def create_hl_subaccount(
+        self,
+        entity_hotkey: str,
+        account_size: float,
+        hl_address: str,
+        admin: bool = False
+    ) -> Tuple[bool, Optional[dict], str]:
+        """
+        Create a new subaccount linked to a Hyperliquid address.
+
+        Args:
+            entity_hotkey: The VANTA_ENTITY_HOTKEY
+            account_size: Account size in USD
+            hl_address: Hyperliquid address (0x-prefixed, 40 hex chars)
+            admin: If True, skip collateral slashing
+
+        Returns:
+            (success: bool, subaccount_info_dict: Optional[dict], message: str)
+        """
+        return self._server.create_hl_subaccount_rpc(entity_hotkey, account_size, hl_address, admin=admin)
+
+    def get_all_active_hl_subaccounts(self) -> List[Tuple[str, dict]]:
+        """
+        Get all active subaccounts with HL addresses.
+
+        Returns:
+            List of (hl_address, subaccount_info_dict) tuples
+        """
+        return self._server.get_all_active_hl_subaccounts_rpc()
+
+    def get_synthetic_hotkey_for_hl_address(self, hl_address: str) -> Optional[str]:
+        """
+        O(1) lookup of synthetic hotkey for a Hyperliquid address.
+
+        Args:
+            hl_address: The Hyperliquid address
+
+        Returns:
+            Synthetic hotkey if found, None otherwise
+        """
+        return self._server.get_synthetic_hotkey_for_hl_address_rpc(hl_address)
+
+    def get_subaccount_info_for_synthetic(self, synthetic_hotkey: str) -> Optional[dict]:
+        """
+        Get SubaccountInfo for a synthetic hotkey.
+
+        Args:
+            synthetic_hotkey: The synthetic hotkey
+
+        Returns:
+            SubaccountInfo dict if found, None otherwise
+        """
+        return self._server.get_subaccount_info_for_synthetic_rpc(synthetic_hotkey)
 
     def eliminate_subaccount(
         self,

@@ -509,6 +509,18 @@ class ValiConfig:
     ENTITY_COST_PER_THETA = 5000  # USD account size per theta of collateral for entity subaccounts
     MAX_SUBACCOUNT_ACCOUNT_SIZE = 100_000  # Maximum account size in USD for entity subaccounts
 
+    # Hyperliquid tracking configuration
+    HL_MAINNET_WS = "wss://api.hyperliquid.xyz/ws"
+    HL_MAINNET_INFO = "https://api.hyperliquid.xyz/info"
+    HL_MAX_TRACKED_ADDRESSES = 10  # HL WebSocket limit: 10 unique users per IP
+    HL_WS_HEARTBEAT_INTERVAL_S = 30.0
+    HL_WS_RECONNECT_BACKOFF_MAX_S = 30.0
+    HL_ADDRESS_REGEX = r"^0x[a-fA-F0-9]{40}$"
+    HL_COIN_TO_TRADE_PAIR = {
+        "BTC": "BTCUSD", "ETH": "ETHUSD", "SOL": "SOLUSD",
+        "XRP": "XRPUSD", "DOGE": "DOGEUSD", "ADA": "ADAUSD",
+    }
+
     # Account Size
     COST_PER_THETA = 500  # Account size USD value per theta of collateral
     MIN_COLLATERAL_VALUE = MIN_COLLATERAL_BALANCE_THETA * COST_PER_THETA   # Approx $150k
