@@ -685,7 +685,7 @@ class Validator(ValidatorBase):
 
         return synapse
 
-    def get_positions(self, synapse: template.protocol.GetPositions,
+    def _get_positions(self, synapse: template.protocol.GetPositions,
                       ) -> template.protocol.GetPositions:
         miner_hotkey = synapse.dendrite.hotkey
         if self.should_fail_early(miner_hotkey, synapse, SynapseMethod.POSITION_INSPECTOR):

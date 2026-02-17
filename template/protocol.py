@@ -11,6 +11,21 @@ from pydantic import Field
 
 from typing import List
 
+
+original_Synapse_get_required_fields = bt.Synapse.get_required_fields
+
+# Monkey patch to improve Bittensor Synapse performance
+def synapse_get_required_fields(self):
+    _REQUIRED_FIELDS_ATTR = "__required_fields"
+    required_fields = getattr(self.__class__, _REQUIRED_FIELDS_ATTR, None)
+    if required_fields is None:
+        required_fields = original_Synapse_get_required_fields(self)
+        setattr(self.__class__, _REQUIRED_FIELDS_ATTR, required_fields)
+    return required_fields
+
+bt.Synapse.get_required_fields = synapse_get_required_fields
+
+
 class SendSignal(bt.Synapse):
     signal: typing.Dict = Field(default_factory=dict, title="Signal", frozen=False, max_length=4096)
     repo_version: str = Field("N/A", title="Repo version (use the same meta.json file as validator)", frozen=False, max_length=256)
