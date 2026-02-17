@@ -27,8 +27,6 @@ import uuid
 from collections import OrderedDict
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-import requests
-
 import bittensor as bt
 
 try:
@@ -128,28 +126,6 @@ class HyperliquidTracker:
             "fills_processed": self._fills_processed,
             "last_fill_time": self._last_fill_time,
         }
-
-    # ==================== Balance Checking ====================
-
-    def _get_hl_usdc_balance(self, hl_address: str) -> Optional[float]:
-        """
-        Query Hyperliquid info API for the user's USDC balance.
-
-        Returns the USDC balance as a float, or None if the query fails.
-        """
-        try:
-            resp = requests.post(
-                ValiConfig.HL_MAINNET_INFO,
-                json={"type": "clearinghouseState", "user": hl_address},
-                timeout=5,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            # withdrawable field represents the available USDC balance
-            return float(data.get("withdrawable", 0))
-        except Exception as e:
-            bt.logging.warning(f"[HL_TRACKER] Failed to fetch USDC balance for {hl_address}: {e}")
-            return None
 
     # ==================== Thread Entry ====================
 
@@ -392,18 +368,6 @@ class HyperliquidTracker:
         is_market_open = self._price_fetcher_client.is_market_open(trade_pair, now_ms)
         if not is_market_open:
             bt.logging.debug(f"[HL_TRACKER] Market closed for {trade_pair_id}")
-            return
-
-        # USDC balance check
-        usdc_balance = self._get_hl_usdc_balance(hl_address)
-        if usdc_balance is None:
-            bt.logging.warning(f"[HL_TRACKER] Could not verify USDC balance for {hl_address}, rejecting trade")
-            return
-        if usdc_balance < ValiConfig.HL_MIN_USDC_BALANCE:
-            bt.logging.warning(
-                f"[HL_TRACKER] Insufficient USDC balance for {hl_address}: "
-                f"${usdc_balance:.2f} < ${ValiConfig.HL_MIN_USDC_BALANCE} required"
-            )
             return
 
         # === Build signal ===
