@@ -269,6 +269,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         # Entity management endpoints
         self.app.route("/entity/register", methods=["POST"])(self.register_entity)
         self.app.route("/entity/create-subaccount", methods=["POST"])(self.create_subaccount)
+        self.app.route("/entity/create-hl-subaccount", methods=["POST"])(self.create_hl_subaccount)
         self.app.route("/entity/<entity_hotkey>", methods=["GET"])(self.get_entity)
         self.app.route("/entities", methods=["GET"])(self.get_all_entities)
         self.app.route("/entity/subaccount/eliminate", methods=["POST"])(self.eliminate_subaccount)
@@ -1528,6 +1529,129 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         except Exception as e:
             bt.logging.error(f"Error creating subaccount: {e}")
             return jsonify({'error': 'Internal server error creating subaccount'}), 500
+
+    def create_hl_subaccount(self):
+        """
+        Create a new subaccount linked to a Hyperliquid address.
+
+        The HL address is tracked by the validator's HyperliquidTracker service,
+        which automatically forwards trades as Vanta signals.
+
+        Example:
+        curl -X POST http://localhost:48888/entity/create-hl-subaccount \\
+          -H "Content-Type: application/json" \\
+          -d '{
+            "entity_hotkey": "5GhDr...",
+            "entity_coldkey": "5FxY...",
+            "account_size": 25000,
+            "hl_address": "0x1234...abcd",
+            "signature": "0x..."
+          }'
+        """
+        import re
+
+        # Check if entity client is available
+        if not self._entity_client:
+            return jsonify({'error': 'Entity management not available'}), 503
+
+        try:
+            # Parse and validate request
+            if not request.is_json:
+                return jsonify({'error': 'Content-Type must be application/json'}), 400
+
+            data = request.get_json()
+            if not data:
+                return jsonify({'error': 'Invalid JSON body'}), 400
+
+            # Check vanta-cli version
+            vanta_cli_version = (
+                data.get('version')
+                or data.get('ptncli_version')
+                or '0.0.0'
+            )
+            vanta_cli_error = self.check_vanta_cli_version(vanta_cli_version)
+            if vanta_cli_error:
+                return jsonify({'error': vanta_cli_error}), 400
+
+            # Validate required fields
+            required_fields = ['entity_coldkey', 'entity_hotkey', 'account_size', 'hl_address', 'signature']
+            missing_fields = [field for field in required_fields if field not in data]
+            if missing_fields:
+                return jsonify({'error': f'Missing required fields: {", ".join(missing_fields)}'}), 400
+
+            entity_coldkey = data['entity_coldkey']
+            entity_hotkey = data['entity_hotkey']
+            account_size = data['account_size']
+            hl_address = data['hl_address']
+            admin = data.get('admin', False)
+
+            # Validate admin flag type early
+            if not isinstance(admin, bool):
+                return jsonify({'error': 'admin must be a boolean'}), 400
+
+            # Validate account_size is a positive number
+            try:
+                account_size = float(account_size)
+                if account_size <= 0:
+                    return jsonify({'error': 'account_size must be a positive number'}), 400
+            except (TypeError, ValueError):
+                return jsonify({'error': 'account_size must be a valid number'}), 400
+
+            # Validate hl_address format
+            if not isinstance(hl_address, str) or not re.match(ValiConfig.HL_ADDRESS_REGEX, hl_address):
+                return jsonify({'error': 'hl_address must be a valid Hyperliquid address (0x followed by 40 hex characters)'}), 400
+
+            # Verify signature (message includes hl_address instead of asset_class)
+            keypair = Keypair(ss58_address=entity_coldkey)
+            message = json.dumps({
+                "account_size": account_size,
+                "admin": admin,
+                "entity_coldkey": entity_coldkey,
+                "entity_hotkey": entity_hotkey,
+                "hl_address": hl_address
+            }, sort_keys=True).encode('utf-8')
+
+            is_valid = keypair.verify(message, bytes.fromhex(data['signature']))
+            if not is_valid:
+                return jsonify({'error': 'Invalid signature. HL subaccount creation unauthorized'}), 401
+
+            # Verify coldkey-hotkey ownership using subtensor
+            owns_hotkey = self._verify_coldkey_owns_hotkey(entity_coldkey, entity_hotkey)
+            if not owns_hotkey:
+                return jsonify({'error': 'Coldkey does not own the specified hotkey'}), 403
+
+            # Create HL subaccount via RPC
+            success, subaccount_info, message = self._entity_client.create_hl_subaccount(
+                entity_hotkey, account_size, hl_address, admin=admin
+            )
+
+            if success:
+                # Broadcast for admin subaccounts only (regular subaccounts broadcast after slashing completes)
+                if admin and subaccount_info:
+                    try:
+                        self._entity_client.broadcast_subaccount_registration(
+                            entity_hotkey=entity_hotkey,
+                            subaccount_id=subaccount_info['subaccount_id'],
+                            subaccount_uuid=subaccount_info['subaccount_uuid'],
+                            synthetic_hotkey=subaccount_info['synthetic_hotkey'],
+                            account_size=subaccount_info['account_size'],
+                            asset_class=subaccount_info['asset_class'],
+                            status=subaccount_info['status']
+                        )
+                    except Exception as e:
+                        bt.logging.warning(f"[REST_API] Failed to broadcast HL subaccount registration: {e}")
+
+                return jsonify({
+                    'status': 'success',
+                    'message': message,
+                    'subaccount': subaccount_info
+                }), 200
+            else:
+                return jsonify({'error': message}), 400
+
+        except Exception as e:
+            bt.logging.error(f"Error creating HL subaccount: {e}")
+            return jsonify({'error': 'Internal server error creating HL subaccount'}), 500
 
     def get_entity(self, entity_hotkey):
         """

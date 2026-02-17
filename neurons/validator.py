@@ -229,6 +229,20 @@ class Validator(ValidatorBase):
         # Initialize UUID tracker with existing positions
         self.uuid_tracker.add_initial_uuids(self.position_manager_client.get_positions_for_all_miners())
 
+        # Hyperliquid tracker (daemon thread for tracking HL trader fills)
+        from entity_management.hyperliquid_tracker import HyperliquidTracker
+        self.hl_tracker = HyperliquidTracker(
+            entity_client=self.entity_client,
+            elimination_client=self.elimination_client,
+            price_fetcher_client=self.price_fetcher_client,
+            asset_selection_client=self.asset_selection_client,
+            market_order_manager=self.market_order_manager,
+            limit_order_client=self.limit_order_client,
+            uuid_tracker=self.uuid_tracker,
+            rate_limiter=RateLimiter(),
+        )
+        self.hl_tracker.start()
+
         # Verify hotkey is registered
         bt.logging.info(f"Metagraph n_entries: {len(self.metagraph_client.get_hotkeys())}")
         if not self.metagraph_client.has_hotkey(self.wallet.hotkey.ss58_address):

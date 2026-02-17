@@ -513,21 +513,17 @@ class ValiConfig:
     ENTITY_COST_PER_THETA = 5000  # USD account size per theta of collateral for entity subaccounts
     MAX_SUBACCOUNT_ACCOUNT_SIZE = 100_000  # Maximum account size in USD for entity subaccounts
 
-    # Hyperliquid L2 orderbook precision
-    HL_L2_COARSE_SIG_FIGS = 2  # Aggregated to 2 sig figs for deep coverage on large orders (max 20 levels)
-
+    # Hyperliquid tracking configuration
+    HL_MAINNET_WS = "wss://api.hyperliquid.xyz/ws"
+    HL_MAINNET_INFO = "https://api.hyperliquid.xyz/info"
+    HL_MAX_TRACKED_ADDRESSES = 10  # HL WebSocket limit: 10 unique users per IP
+    HL_WS_HEARTBEAT_INTERVAL_S = 30.0
+    HL_WS_RECONNECT_BACKOFF_MAX_S = 30.0
+    HL_ADDRESS_REGEX = r"^0x[a-fA-F0-9]{40}$"
     HL_COIN_TO_TRADE_PAIR = {
         "BTC": "BTCUSD", "ETH": "ETHUSD", "SOL": "SOLUSD",
         "XRP": "XRPUSD", "DOGE": "DOGEUSD", "ADA": "ADAUSD",
-        "TAO": "TAOUSD", "HYPE": "HYPEUSD", "ZEC": "ZECUSD",
-        "BCH": "BCHUSD", "LINK": "LINKUSD", "XMR": "XMRUSD",
-        "LTC": "LTCUSD"
     }
-    TRADE_PAIR_ID_TO_HL_COIN = {v: k for k, v in HL_COIN_TO_TRADE_PAIR.items()}
-
-    # HL fee constants
-    HL_TAKER_FEE = 0.00045    # 0.045%
-    HL_MAKER_FEE = 0.00015    # 0.015%
 
     # Account Size
     COST_PER_THETA = 500  # Account size USD value per theta of collateral
