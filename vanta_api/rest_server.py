@@ -383,6 +383,11 @@ class VantaRestServer(RPCServerBase, APIKeyMixin):
         self._statistics_outputs_client = MinerStatisticsClient(connection_mode=connection_mode)
         print(f"[REST-INIT] Step 2f/9: StatisticsOutputsClient created ✓")
 
+        print(f"[REST-INIT] Step 2g/9: Creating HyperliquidTrackerClient...")
+        from vali_objects.tracking.hyperliquid_tracker_client import HyperliquidTrackerClient
+        self._hyperliquid_tracker_client = HyperliquidTrackerClient(connection_mode=connection_mode)
+        print(f"[REST-INIT] Step 2g/9: HyperliquidTrackerClient created ✓")
+
         print(f"[REST-INIT] Step 3/9: Setting REST server configuration...")
         # IMPORTANT: Store Flask HTTP server config separately from RPC port
         # Flask serves REST API on configurable host/port (self.flask_host/flask_port)
@@ -1493,6 +1498,113 @@ class VantaRestServer(RPCServerBase, APIKeyMixin):
                 bt.logging.error(f"Error processing development order: {e}")
                 bt.logging.error(traceback.format_exc())
                 return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+
+        # ==================== Hyperliquid Tracking Endpoints ====================
+
+        @self.app.route("/hyperliquid/register", methods=["POST"])
+        def hyperliquid_register():
+            """Register a miner's Hyperliquid wallet address for trade tracking."""
+            try:
+                if not request.is_json:
+                    return jsonify({'error': 'Content-Type must be application/json'}), 400
+
+                data = request.get_json()
+                if not data:
+                    return jsonify({'error': 'Invalid JSON body'}), 400
+
+                # Validate required fields
+                required_fields = ['hyperliquid_address', 'miner_coldkey', 'miner_hotkey', 'signature']
+                for field in required_fields:
+                    if field not in data:
+                        return jsonify({'error': f'Missing required field: {field}'}), 400
+
+                # Verify signature
+                keypair = Keypair(ss58_address=data['miner_coldkey'])
+                message = json.dumps({
+                    "hyperliquid_address": data['hyperliquid_address'],
+                    "miner_coldkey": data['miner_coldkey'],
+                    "miner_hotkey": data['miner_hotkey']
+                }, sort_keys=True).encode('utf-8')
+                is_valid = keypair.verify(message, bytes.fromhex(data['signature']))
+                if not is_valid:
+                    return jsonify({'error': 'Invalid signature'}), 401
+
+                # Verify coldkey owns hotkey
+                owns_hotkey = self._verify_coldkey_owns_hotkey(data['miner_coldkey'], data['miner_hotkey'])
+                if not owns_hotkey:
+                    return jsonify({'error': 'Coldkey does not own the specified hotkey'}), 403
+
+                # Validate Ethereum address format
+                address = data['hyperliquid_address']
+                if not isinstance(address, str) or len(address) != 42 or not address.startswith('0x'):
+                    return jsonify({'error': 'Invalid Hyperliquid address format'}), 400
+                if not all(c in hexdigits for c in address[2:]):
+                    return jsonify({'error': 'Invalid Hyperliquid address format'}), 400
+
+                result = self._hyperliquid_tracker_client.register_address(
+                    data['miner_hotkey'], address
+                )
+                return jsonify(result)
+
+            except Exception as e:
+                bt.logging.error(f"Error in hyperliquid register: {e}")
+                return jsonify({'error': 'Internal server error'}), 500
+
+        @self.app.route("/hyperliquid/unregister", methods=["POST"])
+        def hyperliquid_unregister():
+            """Unregister a miner's Hyperliquid wallet address."""
+            try:
+                if not request.is_json:
+                    return jsonify({'error': 'Content-Type must be application/json'}), 400
+
+                data = request.get_json()
+                if not data:
+                    return jsonify({'error': 'Invalid JSON body'}), 400
+
+                required_fields = ['miner_coldkey', 'miner_hotkey', 'signature']
+                for field in required_fields:
+                    if field not in data:
+                        return jsonify({'error': f'Missing required field: {field}'}), 400
+
+                # Verify signature
+                keypair = Keypair(ss58_address=data['miner_coldkey'])
+                message = json.dumps({
+                    "miner_coldkey": data['miner_coldkey'],
+                    "miner_hotkey": data['miner_hotkey']
+                }, sort_keys=True).encode('utf-8')
+                is_valid = keypair.verify(message, bytes.fromhex(data['signature']))
+                if not is_valid:
+                    return jsonify({'error': 'Invalid signature'}), 401
+
+                owns_hotkey = self._verify_coldkey_owns_hotkey(data['miner_coldkey'], data['miner_hotkey'])
+                if not owns_hotkey:
+                    return jsonify({'error': 'Coldkey does not own the specified hotkey'}), 403
+
+                result = self._hyperliquid_tracker_client.unregister_address(data['miner_hotkey'])
+                return jsonify(result)
+
+            except Exception as e:
+                bt.logging.error(f"Error in hyperliquid unregister: {e}")
+                return jsonify({'error': 'Internal server error'}), 500
+
+        @self.app.route("/hyperliquid/registrations", methods=["GET"])
+        def hyperliquid_registrations():
+            """Get all Hyperliquid registrations (API key authenticated)."""
+            try:
+                api_key = self._get_api_key_safe()
+                if not self.is_valid_api_key(api_key):
+                    return jsonify({'error': 'Unauthorized access'}), 401
+
+                registrations = self._hyperliquid_tracker_client.get_registrations()
+                return jsonify({
+                    'registrations': registrations,
+                    'total': len(registrations),
+                    'timestamp': TimeUtil.now_in_millis()
+                })
+
+            except Exception as e:
+                bt.logging.error(f"Error retrieving hyperliquid registrations: {e}")
+                return jsonify({'error': 'Internal server error'}), 500
 
     def _verify_coldkey_owns_hotkey(self, coldkey_ss58: str, hotkey_ss58: str) -> bool:
         """

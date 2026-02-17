@@ -274,6 +274,14 @@ class ServerOrchestrator:
             required_in_validator=True,  # Auto-started with other servers
             spawn_kwargs={'start_daemon': False}  # Daemon started later via orchestrator.start_server_daemons()
         ),
+        'hyperliquid_tracker': ServerConfig(
+            server_class=None,
+            client_class=None,
+            required_in_testing=False,
+            required_in_miner=False,
+            required_in_validator=True,
+            spawn_kwargs={'start_daemon': False}
+        ),
     }
 
     @classmethod
@@ -360,6 +368,8 @@ class ServerOrchestrator:
         from vali_objects.utils.mdd_checker.mdd_checker_client import MDDCheckerClient
         from vali_objects.scoring.weight_calculator_server import WeightCalculatorServer
         from vali_objects.scoring.weight_calculator_client import WeightCalculatorClient
+        from vali_objects.tracking.hyperliquid_tracker_server import HyperliquidTrackerServer
+        from vali_objects.tracking.hyperliquid_tracker_client import HyperliquidTrackerClient
 
         # Update registry with classes
         self.SERVERS['common_data'].server_class = CommonDataServer
@@ -412,6 +422,9 @@ class ServerOrchestrator:
 
         self.SERVERS['weight_calculator'].server_class = WeightCalculatorServer
         self.SERVERS['weight_calculator'].client_class = WeightCalculatorClient
+
+        self.SERVERS['hyperliquid_tracker'].server_class = HyperliquidTrackerServer
+        self.SERVERS['hyperliquid_tracker'].client_class = HyperliquidTrackerClient
 
         self._classes_loaded = True
 
@@ -586,6 +599,7 @@ class ServerOrchestrator:
             'websocket_notifier',
             'plagiarism',
             'limit_order',
+            'hyperliquid_tracker',  # Depends on position_manager, limit_order (forwards fills via OrderProcessor)
             'mdd_checker',
             'core_outputs',
             'miner_statistics',

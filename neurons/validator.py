@@ -203,6 +203,7 @@ class Validator(ValidatorBase):
             'position_manager',
             'debt_ledger',
             'limit_order',
+            'hyperliquid_tracker',
             'mdd_checker',
             'core_outputs',
             'miner_statistics',

@@ -225,6 +225,9 @@ class ValiConfig:
     RPC_REST_SERVER_PORT = 50022
     RPC_REST_SERVER_SERVICE_NAME = "VantaRestServer"
 
+    RPC_HYPERLIQUID_TRACKER_PORT = 50023
+    RPC_HYPERLIQUID_TRACKER_SERVICE_NAME = "HyperliquidTrackerServer"
+
     # Public API Configuration (well-known network endpoints)
     REST_API_HOST = "127.0.0.1"
     REST_API_PORT = 48888
