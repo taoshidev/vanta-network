@@ -1131,16 +1131,17 @@ class PositionManager:
 
         bt.logging.info(f'Removed {n_price_sources_removed} price sources from old data.')
 
-    def charge_carry_fees(self) -> None:
+    def charge_carry_fees(self, time_ms: Optional[int] = None) -> None:
         """Iterate over all open positions, compute carry fees, update positions and miner accounts."""
-        now_ms = TimeUtil.now_in_millis()
+        if not time_ms:
+            time_ms = TimeUtil.now_in_millis()
         total_fee_charged = 0.0
         positions_charged = 0
 
         for hotkey, positions_dict in self.hotkey_to_open_positions.items():
             hotkey_fee = 0.0
             for trade_pair_id, position in positions_dict.items():
-                fee = position.compute_carry_fee_usd(now_ms)
+                fee = position.compute_carry_fee_usd(time_ms)
                 if fee > 0:
                     position.fees += fee
                     hotkey_fee += fee
