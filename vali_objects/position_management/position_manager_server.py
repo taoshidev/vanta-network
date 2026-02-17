@@ -87,10 +87,10 @@ class PositionManagerServer(RPCServerBase):
 
         # Initialize RPCServerBase (may start RPC server immediately if start_server=True)
         # At this point, self._manager exists, so RPC calls won't fail
-        # daemon_interval_s: 12 hours (price source compaction is infrequent)
+        # daemon_interval_s: 8 hours (matches crypto carry fee interval, the smallest interval)
         # hang_timeout_s: Dynamically set to 2x interval to prevent false alarms during normal sleep
-        daemon_interval_s = ValiConfig.PRICE_SOURCE_COMPACTING_SLEEP_INTERVAL_SECONDS  # 12 hours (43200s)
-        hang_timeout_s = daemon_interval_s * 2.0  # 24 hours (2x interval)
+        daemon_interval_s = 8 * 3600 + 60  # 8 hours + 1 min buffer to ensure interval boundary has passed
+        hang_timeout_s = daemon_interval_s * 2.0  # 16 hours (2x interval)
 
         super().__init__(
             service_name=ValiConfig.RPC_POSITIONMANAGER_SERVICE_NAME,
@@ -109,9 +109,11 @@ class PositionManagerServer(RPCServerBase):
 
     def run_daemon_iteration(self) -> None:
         """
-        Daemon iteration that compacts price sources from old closed positions.
+        Daemon iteration that:
+        1. Compacts price sources from old closed positions
+        2. Charges carry fees on all open positions
 
-        Runs periodically (interval set by daemon_interval_s in constructor).
+        Runs every 8 hours (matches smallest carry fee interval).
         Delegates to manager for direct memory access - no RPC overhead!
         """
         try:
@@ -120,6 +122,11 @@ class PositionManagerServer(RPCServerBase):
             bt.logging.info(f'Compacted price sources in {time.time() - t0:.2f} seconds')
         except Exception as e:
             bt.logging.error(f"Error in compaction daemon iteration: {traceback.format_exc()}")
+
+        try:
+            self._manager.charge_carry_fees()
+        except Exception as e:
+            bt.logging.error(f"Error in carry fee daemon iteration: {traceback.format_exc()}")
 
 
     # ==================== RPC Methods (called by client via RPC) ====================

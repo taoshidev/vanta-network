@@ -89,12 +89,18 @@ class PositionManager:
 
         # Internal clients always use RPC mode to connect to their servers
         # The connection_mode parameter is for how OTHER components connect TO PositionManager
+        from vali_objects.miner_account.miner_account_client import MinerAccountClient
+
         self._elimination_client = EliminationClient(connection_mode=RPCConnectionMode.RPC)
         self._challenge_period_client = ChallengePeriodClient(connection_mode=RPCConnectionMode.RPC)
         self._perf_ledger_client = PerfLedgerClient(connection_mode=RPCConnectionMode.RPC)
         self._live_price_client = LivePriceFetcherClient(
             running_unit_tests=self.running_unit_tests,
             connection_mode=RPCConnectionMode.RPC
+        )
+        self._miner_account_client = MinerAccountClient(
+            connection_mode=RPCConnectionMode.RPC,
+            running_unit_tests=self.running_unit_tests
         )
 
         # Load positions from disk on startup
@@ -1124,6 +1130,34 @@ class PositionManager:
                     self._write_position_to_disk(position)
 
         bt.logging.info(f'Removed {n_price_sources_removed} price sources from old data.')
+
+    def charge_carry_fees(self) -> None:
+        """Iterate over all open positions, compute carry fees, update positions and miner accounts."""
+        now_ms = TimeUtil.now_in_millis()
+        total_fee_charged = 0.0
+        positions_charged = 0
+
+        for hotkey, positions_dict in self.hotkey_to_open_positions.items():
+            hotkey_fee = 0.0
+            for trade_pair_id, position in positions_dict.items():
+                fee = position.compute_carry_fee_usd(now_ms)
+                if fee > 0:
+                    position.fees += fee
+                    hotkey_fee += fee
+                    positions_charged += 1
+                    self._write_position_to_disk(position)
+
+            if hotkey_fee > 0:
+                try:
+                    self._miner_account_client.process_fee(hotkey, hotkey_fee)
+                except Exception as e:
+                    bt.logging.error(f"Failed to charge carry fee for {hotkey}: {e}")
+                total_fee_charged += hotkey_fee
+
+        if positions_charged > 0:
+            bt.logging.info(
+                f"Carry fees charged: ${total_fee_charged:.4f} across {positions_charged} positions"
+            )
 
     # ==================== Index Management ====================
 

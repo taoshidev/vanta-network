@@ -302,6 +302,10 @@ class MinerAccountServer(RPCServerBase):
         """
         return self._manager.update_asset_selection(hotkey, asset_selection)
 
+    def process_fee(self, hotkey: str, fee_usd: float):
+        """Add fee to total_fees_paid for a miner account."""
+        self._manager.process_fee(hotkey, fee_usd)
+
     def apply_daily_interest(self) -> int:
         """Apply daily interest to accounts with outstanding margin loans."""
         return self._manager.apply_daily_interest()

@@ -17,6 +17,11 @@ import math
 CRYPTO_CARRY_FEE_PER_INTERVAL = math.exp(math.log(1 - 0.1095) / (365.0*3.0))  # 10.95% per year for 1x leverage. Each interval is 8 hrs
 FOREX_CARRY_FEE_PER_INTERVAL = math.exp(math.log(1 - .03) / 365.0)  # 3% per year for 1x leverage. Each interval is 24 hrs
 INDICES_CARRY_FEE_PER_INTERVAL = math.exp(math.log(1 - .0525) / 365.0)  # 5.25% per year for 1x leverage. Each interval is 24 hrs
+
+# Linear USD carry fee rates (annual_rate / intervals_per_year)
+CRYPTO_USD_FEE_RATE_PER_INTERVAL = 0.1095 / (365.0 * 3.0)    # 10.95% annual / (365*3 intervals)
+FOREX_USD_FEE_RATE_PER_INTERVAL = 0.03 / 365.0                 # 3% annual / 365 intervals
+INDICES_USD_FEE_RATE_PER_INTERVAL = 0.0525 / 365.0             # 5.25% annual / 365 intervals
 FEE_V6_TIME_MS = 1720843707000  # V6 PR merged
 SLIPPAGE_V1_TIME_MS = 1739937600000  # Slippage PR merged
 ALWAYS_USE_SLIPPAGE = None  # set as either True or False to control whether slippage is always or never applied. if set as None, slippage will be applied based on SLIPPAGE_V1_TIME_MS time gate
@@ -59,6 +64,8 @@ class Position(BaseModel):
     unrealized_pnl: float = 0.0             # USD
     position_type: Optional[OrderType] = None
     is_closed_position: bool = False
+    fees: float = 0.0                          # Cumulative carry fees charged in USD
+    last_fee_ms: Optional[int] = None          # Last interval boundary where fees were charged
     last_stock_split_date: Optional[str] = None  # Only set for equities
     unfilled_orders: list = Field(default=[], exclude=True)
 
@@ -198,6 +205,45 @@ class Position(BaseModel):
 
         return carry_fee, next_update_time_ms
 
+
+    def compute_carry_fee_usd(self, current_time_ms: int) -> float:
+        """
+        Compute carry fee in USD for all new intervals since last_fee_ms.
+        Uses linear fee: fee_usd = market_value * rate_per_interval * n_new_intervals.
+        Updates last_fee_ms to current_time_ms after computation.
+
+        Returns:
+            Total USD fee for all new intervals since last_fee_ms.
+        """
+        if self.is_closed_position:
+            return 0.0
+
+        start_ms = self.last_fee_ms if self.last_fee_ms is not None else self.start_carry_fee_accrual_ms
+        if current_time_ms <= start_ms:
+            return 0.0
+
+        # Get number of new intervals
+        if self.trade_pair.is_crypto:
+            n_intervals, _ = TimeUtil.n_intervals_elapsed_crypto(start_ms, current_time_ms)
+            rate = CRYPTO_USD_FEE_RATE_PER_INTERVAL
+        elif self.trade_pair.is_forex:
+            n_intervals, _ = TimeUtil.n_intervals_elapsed_forex_indices(start_ms, current_time_ms)
+            rate = FOREX_USD_FEE_RATE_PER_INTERVAL
+        else:
+            return 0.0
+
+        if n_intervals <= 0:
+            return 0.0
+
+        # market_value = abs(net_value + unrealized_pnl)
+        market_value = abs(self.net_value + self.unrealized_pnl)
+        if market_value <= 0:
+            self.last_fee_ms = current_time_ms
+            return 0.0
+
+        total_fee = market_value * rate * n_intervals
+        self.last_fee_ms = current_time_ms
+        return total_fee
 
     @property
     def initial_entry_price(self) -> float:
