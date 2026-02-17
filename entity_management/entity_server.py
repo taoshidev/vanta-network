@@ -119,11 +119,13 @@ class EntityServer(RPCServerBase):
         all_entities = self._manager.get_all_entities()
         total_subaccounts = sum(len(entity.subaccounts) for entity in all_entities.values())
         active_subaccounts = sum(len(entity.get_active_subaccounts()) for entity in all_entities.values())
+        hl_subaccounts = len(self._manager.get_all_active_hl_subaccounts())
 
         return {
             "total_entities": len(all_entities),
             "total_subaccounts": total_subaccounts,
-            "active_subaccounts": active_subaccounts
+            "active_subaccounts": active_subaccounts,
+            "hl_subaccounts": hl_subaccounts
         }
 
     # ==================== Entity Registration RPC Methods ====================
@@ -170,6 +172,65 @@ class EntityServer(RPCServerBase):
         subaccount_dict = subaccount_info.model_dump() if subaccount_info else None
 
         return success, subaccount_dict, message
+
+    def create_hl_subaccount_rpc(
+        self,
+        entity_hotkey: str,
+        account_size: float,
+        hl_address: str,
+        admin: bool = False
+    ) -> Tuple[bool, Optional[dict], str]:
+        """
+        Create a new subaccount linked to a Hyperliquid address.
+
+        Args:
+            entity_hotkey: The VANTA_ENTITY_HOTKEY
+            account_size: Account size in USD
+            hl_address: Hyperliquid address (0x-prefixed, 40 hex chars)
+            admin: If True, skip collateral slashing
+
+        Returns:
+            (success: bool, subaccount_info_dict: Optional[dict], message: str)
+        """
+        success, subaccount_info, message = self._manager.create_hl_subaccount(
+            entity_hotkey, account_size, hl_address, admin=admin
+        )
+        subaccount_dict = subaccount_info.model_dump() if subaccount_info else None
+        return success, subaccount_dict, message
+
+    def get_all_active_hl_subaccounts_rpc(self) -> List[Tuple[str, dict]]:
+        """
+        Get all active subaccounts with HL addresses.
+
+        Returns:
+            List of (hl_address, subaccount_info_dict) tuples
+        """
+        return self._manager.get_all_active_hl_subaccounts()
+
+    def get_synthetic_hotkey_for_hl_address_rpc(self, hl_address: str) -> Optional[str]:
+        """
+        O(1) lookup of synthetic hotkey for a Hyperliquid address.
+
+        Args:
+            hl_address: The Hyperliquid address
+
+        Returns:
+            Synthetic hotkey if found, None otherwise
+        """
+        return self._manager.get_synthetic_hotkey_for_hl_address(hl_address)
+
+    def get_subaccount_info_for_synthetic_rpc(self, synthetic_hotkey: str) -> Optional[dict]:
+        """
+        Get SubaccountInfo for a synthetic hotkey.
+
+        Args:
+            synthetic_hotkey: The synthetic hotkey
+
+        Returns:
+            SubaccountInfo dict if found, None otherwise
+        """
+        info = self._manager.get_subaccount_info_for_synthetic(synthetic_hotkey)
+        return info.model_dump() if info else None
 
     def eliminate_subaccount_rpc(
         self,
