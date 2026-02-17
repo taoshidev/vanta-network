@@ -4,8 +4,8 @@
 MDDChecker - Core logic for MDD (Maximum Drawdown) checking and price corrections.
 
 This class contains the business logic for:
-- Real-time price corrections for recent orders
-- Position return updates using live prices
+- Real-time position return updates using live prices (every iteration, ~20s)
+- Price corrections for recent orders (every ~60s)
 - MDD checking for all miners
 
 The MDDCheckerServer wraps this class and exposes it via RPC.
@@ -55,7 +55,6 @@ class MDDChecker(CacheController):
         super().__init__(running_unit_tests=running_unit_tests, connection_mode=connection_mode)
 
         self.last_price_fetch_time_ms = None
-        self.last_quote_fetch_time_ms = None
         self.price_correction_enabled = True
 
         # Create RPC clients for external dependencies
@@ -69,6 +68,7 @@ class MDDChecker(CacheController):
 
         self.all_trade_pairs = [trade_pair for trade_pair in TradePair]
         self._prev_iteration_prices = {}
+        self._last_disk_write_time = 0.0
         self.reset_debug_counters()
         self.n_poly_api_requests = 0
 
@@ -96,6 +96,41 @@ class MDDChecker(CacheController):
         """Get sync_epoch value via CommonDataClient."""
         return self._common_data_client.get_sync_epoch()
 
+    # ==================== Data Fetching ====================
+
+    def fetch_prices(self) -> Dict[TradePair, List[PriceSource]]:
+        """Fetch sorted price sources for all trade pairs with open markets."""
+        try:
+            now_ms = TimeUtil.now_in_millis()
+            available_trade_pairs = [
+                tp for tp in self.all_trade_pairs
+                if self._live_price_client.is_market_open(tp, now_ms) and not tp.is_blocked
+            ]
+
+            tp_to_price_sources = self._live_price_client.get_tp_to_sorted_price_sources(
+                available_trade_pairs,
+                now_ms,
+                websocket_only=True
+            )
+
+            self.last_price_fetch_time_ms = now_ms
+            return tp_to_price_sources
+
+        except Exception as e:
+            bt.logging.error(f"Error in fetch_prices: {e}")
+            bt.logging.error(traceback.format_exc())
+            return {}
+
+    def _log_prices(self, tp_to_price_sources: Dict[TradePair, List[PriceSource]]):
+        """Log current prices."""
+        prices = {
+            tp.trade_pair_id: sources[0].close
+            for tp, sources in tp_to_price_sources.items()
+            if sources and sources[0].close
+        }
+        if prices:
+            bt.logging.info(f"[PRICES] {prices}")
+
     # ==================== Core Logic Methods ====================
 
     def reset_debug_counters(self):
@@ -103,88 +138,13 @@ class MDDChecker(CacheController):
         self.n_orders_corrected = 0
         self.miners_corrected = set()
 
-    def _position_is_candidate_for_price_correction(self, position: Position, now_ms: int) -> bool:
-        """Check if position is candidate for price correction."""
-        return (position.is_open_position or
-                position.newest_order_age_ms(now_ms) <= ValiConfig.RECENT_EVENT_TRACKER_OLDEST_ALLOWED_RECORD_MS)
-
-    def get_sorted_price_sources(self, hotkey_positions: Dict[str, List[Position]]) -> Dict[TradePair, List[PriceSource]]:
-        """Get sorted price sources for all required trade pairs."""
-        try:
-            required_trade_pairs_for_candles = set()
-            trade_pair_to_market_open = {}
-            now_ms = TimeUtil.now_in_millis()
-
-            for sorted_positions in hotkey_positions.values():
-                for position in sorted_positions:
-                    if self._position_is_candidate_for_price_correction(position, now_ms):
-                        tp = position.trade_pair
-                        if tp not in trade_pair_to_market_open:
-                            trade_pair_to_market_open[tp] = self._live_price_client.is_market_open(tp, now_ms)
-                        if trade_pair_to_market_open[tp]:
-                            required_trade_pairs_for_candles.add(tp)
-
-            now = TimeUtil.now_in_millis()
-            trade_pair_to_price_sources = self._live_price_client.get_tp_to_sorted_price_sources(
-                list(required_trade_pairs_for_candles),
-                now
-            )
-
-            for tp, sources in trade_pair_to_price_sources.items():
-                if sources and any(x and not x.websocket for x in sources):
-                    self.n_poly_api_requests += 1
-
-            self.last_price_fetch_time_ms = now
-            return trade_pair_to_price_sources
-
-        except Exception as e:
-            bt.logging.error(f"Error in get_sorted_price_sources: {e}")
-            bt.logging.error(traceback.format_exc())
-            return {}
-
-    def mdd_check(self, iteration_epoch: int = None):
-        """
-        Run MDD check with price corrections.
-
-        Args:
-            iteration_epoch: Sync epoch captured at start of iteration. Used to detect stale data.
-        """
-        self.n_poly_api_requests = 0
-        if not self.refresh_allowed(ValiConfig.MDD_CHECK_REFRESH_TIME_MS):
-            time.sleep(1)
-            return
-
-        self.reset_debug_counters()
-        self.position_refresh_sum_ms = 0.0
-        self.lock_acquisition_sum_ms = 0.0
-        self.position_refresh_count = 0
-
-        # Time the RPC read of positions
-        rpc_start = time.perf_counter()
-        hotkey_to_positions = self._position_client.get_positions_for_hotkeys(
-            self._metagraph_client.get_hotkeys(),
-            filter_eliminations=True,
-            sort_positions=True
-        )
-        rpc_ms = (time.perf_counter() - rpc_start) * 1000
-
-        total_positions = sum(len(positions) for positions in hotkey_to_positions.values())
-        bt.logging.info(
-            f"[MDD_RPC_TIMING] get_positions_for_hotkeys RPC read={rpc_ms:.2f}ms, "
-            f"total_positions={total_positions}"
-        )
-
-        # Time price source fetching
-        price_fetch_start = time.perf_counter()
-        tp_to_price_sources = self.get_sorted_price_sources(hotkey_to_positions)
-        price_fetch_ms = (time.perf_counter() - price_fetch_start) * 1000
-
+    def _check_and_apply_stock_splits(self, tp_to_price_sources: Dict[TradePair, List[PriceSource]]):
+        """Check for stock splits and apply them. Updates _prev_iteration_prices."""
         now_ms = TimeUtil.now_in_millis()
         today_date_est = TimeUtil.timestamp_ms_to_eastern_time_str(now_ms, short=True)
         last_update_date_est = TimeUtil.timestamp_ms_to_eastern_time_str(self._last_update_time_ms, short=True)
         is_new_day = today_date_est != last_update_date_est
 
-        # Fetch all stock splits once for efficiency
         stock_splits = {}
         should_check_splits = is_new_day or any(
             tp.is_equities and self._prev_iteration_prices.get(tp) and sources[0].close
@@ -199,39 +159,104 @@ class MDDChecker(CacheController):
             else:
                 bt.logging.info(f"[STOCK SPLITS] No stock splits found for {today_date_est}")
 
-        # Check and apply if a stock split occurred on new trading day (EST) or price fluctuation > 10%
         for tp, sources in tp_to_price_sources.items():
             if not tp.is_equities:
                 continue
-            new_price = sources[0].close
-            prev_price = self._prev_iteration_prices.get(tp)
-
             stock_split_ratio = stock_splits.get(tp.trade_pair_id)
             if stock_split_ratio is not None:
                 self._position_client.apply_stock_split(tp.trade_pair_id, stock_split_ratio, today_date_est)
-
             self._prev_iteration_prices[tp] = sources[0].close
 
-        for hotkey, sorted_positions in hotkey_to_positions.items():
-            self.perform_price_corrections(hotkey, sorted_positions, tp_to_price_sources, iteration_epoch)
+    def refresh_and_correct_positions(
+        self,
+        tp_to_price_sources: Dict[TradePair, List[PriceSource]],
+        iteration_epoch: int = None
+    ):
+        """
+        Unified position update: refresh returns every iteration, correct orders every ~60s.
 
-        # Log aggregate timing statistics
+        Every iteration (~20s):
+        - Fetches open positions, acquires lock per position, refreshes returns via set_returns.
+        - Persists to disk periodically (every ~60s).
+
+        When order correction is due (~60s):
+        - Also fetches recently-closed positions with recent orders.
+        - Corrects order prices using historical price sources (Polygon API).
+
+        Args:
+            tp_to_price_sources: Pre-fetched price sources keyed by trade pair.
+            iteration_epoch: Sync epoch captured at start of iteration. Used to detect stale data.
+        """
+        do_order_correction = self.refresh_allowed(ValiConfig.ORDER_REFRESH_TIME_MS)
+
+        if do_order_correction:
+            self._log_prices(tp_to_price_sources)
+            self.reset_debug_counters()
+            self.n_poly_api_requests = 0
+
+        self.position_refresh_sum_ms = 0.0
+        self.lock_acquisition_sum_ms = 0.0
+        self.position_refresh_count = 0
+
+        now = time.time()
+        write_to_disk = do_order_correction or (now - self._last_disk_write_time) >= 60.0
+
+        # When correcting orders, fetch all positions (need recently-closed with recent orders).
+        # Otherwise, only fetch open positions for lightweight returns refresh.
+        hotkey_to_positions = self._position_client.get_positions_for_hotkeys(
+            self._position_client.get_all_hotkeys(),
+            only_open_positions=not do_order_correction,
+            filter_eliminations=do_order_correction,
+            sort_positions=do_order_correction
+        )
+        now_ms = TimeUtil.now_in_millis()
+
+        for hotkey, positions in hotkey_to_positions.items():
+            for position in positions:
+                has_recent_orders = (
+                    do_order_correction
+                    and position.newest_order_age_ms(now_ms) <= ValiConfig.RECENT_EVENT_TRACKER_OLDEST_ALLOWED_RECORD_MS
+                )
+                if position.is_open_position or has_recent_orders:
+                    self._update_position_returns_and_persist_to_disk(
+                        hotkey, position, tp_to_price_sources, iteration_epoch,
+                        do_order_correction=has_recent_orders,
+                        write_to_disk=write_to_disk
+                    )
+
+        if write_to_disk:
+            self._last_disk_write_time = now
+
         if self.position_refresh_count > 0:
             avg_lock_ms = self.lock_acquisition_sum_ms / self.position_refresh_count
             avg_refresh_ms = self.position_refresh_sum_ms / self.position_refresh_count
             bt.logging.info(
-                f"[MDD_RPC_TIMING] price_sources_fetch={price_fetch_ms:.2f}ms, "
-                f"positions_refreshed={self.position_refresh_count}, "
+                f"[POSITION_REFRESH] positions_refreshed={self.position_refresh_count}, "
                 f"avg_lock_wait={avg_lock_ms:.2f}ms, avg_refresh={avg_refresh_ms:.2f}ms"
             )
-        else:
-            bt.logging.info(f"[MDD_RPC_TIMING] price_sources_fetch={price_fetch_ms:.2f}ms, positions_refreshed=0")
 
-        bt.logging.info(
-            f"mdd checker completed. n orders corrected: {self.n_orders_corrected}. "
-            f"n miners corrected: {len(self.miners_corrected)}. n_poly_api_requests: {self.n_poly_api_requests}."
-        )
-        self.set_last_update_time(skip_message=False)
+        if do_order_correction:
+            bt.logging.info(
+                f"order correction completed. n orders corrected: {self.n_orders_corrected}. "
+                f"n miners corrected: {len(self.miners_corrected)}. n_poly_api_requests: {self.n_poly_api_requests}."
+            )
+            self.set_last_update_time(skip_message=False)
+
+    def mdd_check(self, iteration_epoch: int = None):
+        """
+        Run full MDD check: fetch data, check stock splits, refresh positions, correct orders.
+
+        Convenience method for backward compatibility and tests.
+
+        Args:
+            iteration_epoch: Sync epoch captured at start of iteration. Used to detect stale data.
+        """
+        # Fetch prices for all available trade pairs
+        tp_to_price_sources = self.fetch_prices()
+        self._check_and_apply_stock_splits(tp_to_price_sources)
+
+        # Unified: refresh returns every iteration, correct orders every ~60s
+        self.refresh_and_correct_positions(tp_to_price_sources, iteration_epoch)
 
     def update_order_with_newest_price_sources(
         self,
@@ -306,16 +331,20 @@ class MDDChecker(CacheController):
         hotkey: str,
         position: Position,
         tp_to_price_sources_for_realtime_price: Dict[TradePair, List[PriceSource]],
-        iteration_epoch: int = None
+        iteration_epoch: int = None,
+        do_order_correction: bool = True,
+        write_to_disk: bool = True
     ):
         """
-        Set latest returns and persist to disk for accurate MDD calculation.
+        Set latest returns and optionally correct order prices, then persist to disk.
 
         Args:
             hotkey: Miner hotkey
             position: Position to update
             tp_to_price_sources_for_realtime_price: Price sources for realtime price
             iteration_epoch: Epoch captured at start of iteration. If changed, data is stale.
+            do_order_correction: If True, correct recent order prices (expensive, Polygon API calls).
+            write_to_disk: If True, persist changes to disk.
         """
         def _get_sources_for_order(order, trade_pair: TradePair):
             self.n_poly_api_requests += 1
@@ -366,38 +395,39 @@ class MDDChecker(CacheController):
             position = position_refreshed
             n_orders_updated = 0
 
-            for i, order in enumerate(reversed(position.orders)):
-                if not self.price_correction_enabled:
-                    break
+            if do_order_correction:
+                for i, order in enumerate(reversed(position.orders)):
+                    if not self.price_correction_enabled:
+                        break
 
-                order_age = now_ms - order.processed_ms
-                if order_age > ValiConfig.RECENT_EVENT_TRACKER_OLDEST_ALLOWED_RECORD_MS:
-                    break  # No need to check older records
+                    order_age = now_ms - order.processed_ms
+                    if order_age > ValiConfig.RECENT_EVENT_TRACKER_OLDEST_ALLOWED_RECORD_MS:
+                        break  # No need to check older records
 
-                price_sources_for_retro_fix = _get_sources_for_order(order, position.trade_pair)
-                if not price_sources_for_retro_fix:
-                    bt.logging.warning(
-                        f"Unexpectedly could not find any new price sources for order "
-                        f"{order.order_uuid} in {hotkey} {position.trade_pair.trade_pair}. "
-                        f"If this issue persists, alert the team."
+                    price_sources_for_retro_fix = _get_sources_for_order(order, position.trade_pair)
+                    if not price_sources_for_retro_fix:
+                        bt.logging.warning(
+                            f"Unexpectedly could not find any new price sources for order "
+                            f"{order.order_uuid} in {hotkey} {position.trade_pair.trade_pair}. "
+                            f"If this issue persists, alert the team."
+                        )
+                        continue
+                    else:
+                        any_order_updates = self.update_order_with_newest_price_sources(
+                            order, price_sources_for_retro_fix, hotkey, position
+                        )
+                        n_orders_updated += int(any_order_updates)
+
+                # Rebuild the position with the newest price
+                if n_orders_updated:
+                    position.rebuild_position_with_updated_orders(self._live_price_client)
+                    bt.logging.info(
+                        f"Retroactively updated {n_orders_updated} order prices for {position.miner_hotkey} "
+                        f"{position.trade_pair.trade_pair} return_at_close changed from {orig_return:.8f} to "
+                        f"{position.return_at_close:.8f} avg_price changed from {orig_avg_price:.8f} to "
+                        f"{position.average_entry_price:.8f} initial_entry_price changed from {orig_iep:.8f} to "
+                        f"{position.initial_entry_price:.8f}"
                     )
-                    continue
-                else:
-                    any_order_updates = self.update_order_with_newest_price_sources(
-                        order, price_sources_for_retro_fix, hotkey, position
-                    )
-                    n_orders_updated += int(any_order_updates)
-
-            # Rebuild the position with the newest price
-            if n_orders_updated:
-                position.rebuild_position_with_updated_orders(self._live_price_client)
-                bt.logging.info(
-                    f"Retroactively updated {n_orders_updated} order prices for {position.miner_hotkey} "
-                    f"{position.trade_pair.trade_pair} return_at_close changed from {orig_return:.8f} to "
-                    f"{position.return_at_close:.8f} avg_price changed from {orig_avg_price:.8f} to "
-                    f"{position.average_entry_price:.8f} initial_entry_price changed from {orig_iep:.8f} to "
-                    f"{position.initial_entry_price:.8f}"
-                )
 
             temp = tp_to_price_sources_for_realtime_price.get(trade_pair, [])
             realtime_price = temp[0].close if temp else None
@@ -405,7 +435,7 @@ class MDDChecker(CacheController):
 
             if position.is_open_position and realtime_price is not None:
                 orig_return = position.return_at_close
-                position.set_returns(realtime_price, self._live_price_client)
+                position.set_returns(realtime_price)
                 ret_changed = orig_return != position.return_at_close
 
             if n_orders_updated or ret_changed:
@@ -420,28 +450,8 @@ class MDDChecker(CacheController):
                         )
                         return
 
-                is_liquidated = position.current_return == 0
-                self._position_client.save_miner_position(position, delete_open_position_if_exists=is_liquidated)
+                if write_to_disk:
+                    is_liquidated = position.current_return == 0
+                    self._position_client.save_miner_position(position, delete_open_position_if_exists=is_liquidated)
                 self.n_orders_corrected += n_orders_updated
                 self.miners_corrected.add(hotkey)
-
-    def perform_price_corrections(
-        self,
-        hotkey: str,
-        sorted_positions: List[Position],
-        tp_to_price_sources: Dict[TradePair, List[PriceSource]],
-        iteration_epoch: int = None
-    ) -> bool:
-        """Perform price corrections for a miner's positions."""
-        if len(sorted_positions) == 0:
-            return False
-
-        now_ms = TimeUtil.now_in_millis()
-        for position in sorted_positions:
-            is_candidate = self._position_is_candidate_for_price_correction(position, now_ms)
-            if is_candidate:
-                self._update_position_returns_and_persist_to_disk(
-                    hotkey, position, tp_to_price_sources, iteration_epoch
-                )
-
-        return False

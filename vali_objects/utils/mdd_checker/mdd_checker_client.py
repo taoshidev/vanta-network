@@ -50,7 +50,7 @@ class MDDCheckerClient(RPCClientBase):
 
     def mdd_check(self, iteration_epoch: int = None) -> None:
         """
-        Trigger MDD check.
+        Trigger MDD check (both paths).
 
         Args:
             iteration_epoch: Sync epoch captured at start of iteration. Used to detect stale data.

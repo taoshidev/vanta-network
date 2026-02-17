@@ -71,7 +71,7 @@ class MDDCheckerServer(RPCServerBase):
             slack_notifier=slack_notifier,
             start_server=start_server,
             start_daemon=False,  # Defer until initialization complete
-            daemon_interval_s=ValiConfig.MDD_CHECK_REFRESH_TIME_MS / 1000.0,  # Convert ms to seconds
+            daemon_interval_s=ValiConfig.POSITION_REFRESH_TIME_S,
             hang_timeout_s=120.0  # MDD check can take a while
         )
 
@@ -90,17 +90,12 @@ class MDDCheckerServer(RPCServerBase):
     # ==================== RPCServerBase Abstract Methods ====================
 
     def run_daemon_iteration(self) -> None:
-        """
-        Single iteration of daemon work. Called by RPCServerBase daemon loop.
-
-        Checks for sync in progress, then runs MDD check.
-        """
+        """Single iteration of daemon work. Called by RPCServerBase daemon loop."""
         if self._checker.sync_in_progress:
             bt.logging.debug("MDDCheckerServer: Sync in progress, pausing...")
             return
 
-        iteration_epoch = self._checker.sync_epoch
-        self._checker.mdd_check(iteration_epoch=iteration_epoch)
+        self._checker.mdd_check(iteration_epoch=self._checker.sync_epoch)
 
     # ==================== Properties (forward to checker) ====================
 
@@ -126,7 +121,7 @@ class MDDCheckerServer(RPCServerBase):
 
     def mdd_check_rpc(self, iteration_epoch: int = None) -> None:
         """
-        Trigger MDD check via RPC.
+        Trigger MDD check (both paths) via RPC.
 
         Args:
             iteration_epoch: Sync epoch captured at start of iteration. Used to detect stale data.

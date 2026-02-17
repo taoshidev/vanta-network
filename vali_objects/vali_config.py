@@ -310,7 +310,8 @@ class ValiConfig:
     # Fees take into account exiting and entering a position, liquidity, and futures fees
     PERF_LEDGER_REFRESH_TIME_MS = 1000 * 60 * 5  # minutes
     CHALLENGE_PERIOD_REFRESH_TIME_MS = 1000 * 60 * 5  # minutes
-    MDD_CHECK_REFRESH_TIME_MS = 60 * 1000  # 60 seconds
+    ORDER_REFRESH_TIME_MS = 60 * 1000  # 60 seconds
+    POSITION_REFRESH_TIME_S = 20  # refresh open position returns
     PRICE_SOURCE_COMPACTING_SLEEP_INTERVAL_SECONDS = 60 * 60 * 12 # 12 hours
 
     # Positional Leverage limits
