@@ -177,6 +177,10 @@ class PositionManagerServer(RPCServerBase):
         """Get open position for trade pair - delegates to manager."""
         return self._manager.get_open_position_for_trade_pair(hotkey, trade_pair_id)
 
+    def refresh_open_position_returns_rpc(self, tp_id_to_price: Dict[str, float], write_to_disk: bool = False) -> int:
+        """Update returns for all open positions using provided prices."""
+        return self._manager.refresh_open_position_returns(tp_id_to_price, write_to_disk=write_to_disk)
+
     def get_all_hotkeys_rpc(self):
         """Get all hotkeys that have positions - delegates to manager."""
         return self._manager.get_all_hotkeys()

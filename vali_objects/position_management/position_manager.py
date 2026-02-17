@@ -570,6 +570,28 @@ class PositionManager:
 
         return total_unrealized_pnl
 
+    def refresh_open_position_returns(self, tp_id_to_price: Dict[str, float], write_to_disk: bool = False) -> int:
+        """
+        Update returns for all open positions using provided prices.
+
+        Args:
+            tp_id_to_price: Map of trade_pair_id to current price.
+            write_to_disk: If True, persist updated positions to disk.
+
+        Returns:
+            Number of positions updated.
+        """
+        count = 0
+        for tp_to_pos in self.hotkey_to_open_positions.values():
+            for tp_id, position in tp_to_pos.items():
+                price = tp_id_to_price.get(tp_id)
+                if price is not None:
+                    position.set_returns(price, self._live_price_client)
+                    if write_to_disk:
+                        self._write_position_to_disk(position)
+                    count += 1
+        return count
+
     def get_all_hotkeys(self):
         """Get all hotkeys that have positions."""
         return list(self.hotkey_to_positions.keys())
