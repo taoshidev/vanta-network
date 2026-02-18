@@ -470,10 +470,16 @@ class ChallengePeriodManager(CacheController):
             if subaccount_account_size is None or subaccount_account_size <= 0:
                 continue
 
+            subaccount_asset_class = asset_classes.get(hotkey)
+            if subaccount_asset_class is None:
+                bt.logging.error(f"[SYNTH_EVAL {hotkey}] Subaccount does not have asset class - unexpected")
+                continue
+
             # Calculate returns percentage: (current_equity - starting_equity) / starting_equity
             returns_percentage = (total_equity - subaccount_account_size) / subaccount_account_size
             returns_threshold = ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD
-            if asset_classes.get(hotkey) == TradePairCategory.CRYPTO:
+
+            if subaccount_asset_class == TradePairCategory.CRYPTO:
                 returns_threshold = ValiConfig.SUBACCOUNT_CRYPTO_CHALLENGE_RETURNS_THRESHOLD
 
             # Promote if returns meet threshold
