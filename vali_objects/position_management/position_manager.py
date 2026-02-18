@@ -1140,10 +1140,9 @@ class PositionManager:
 
         for hotkey, positions_dict in self.hotkey_to_open_positions.items():
             hotkey_fee = 0.0
-            for trade_pair_id, position in positions_dict.items():
-                fee = position.compute_carry_fee_usd(time_ms)
+            for _, position in positions_dict.items():
+                fee = position.refresh_carry_fee_usd(time_ms)
                 if fee > 0:
-                    position.fees += fee
                     hotkey_fee += fee
                     positions_charged += 1
                     self._write_position_to_disk(position)
