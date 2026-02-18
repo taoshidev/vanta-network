@@ -4,32 +4,33 @@
 HyperliquidTracker - Daemon service that tracks Hyperliquid trader fills
 and forwards them as Vanta signals through the existing pipeline.
 
-Runs as a daemon thread in the validator process, maintaining a single
-WebSocket connection to Hyperliquid mainnet and subscribing to userFills
-for each registered HL subaccount address (max 10 per HL WS limits).
+Runs as a daemon thread in the validator process. Supports sharding across
+multiple Decodo SOCKS5 proxy IPs to scale beyond the 10-address-per-IP
+Hyperliquid WebSocket limit.
 
 Architecture:
 - Own asyncio event loop in a daemon thread
-- Single WebSocket connection with heartbeat and reconnection
-- Periodic refresh of subscribed addresses (every 60s)
-- Fill dedup via bounded hash set
+- One _WebSocketShard per proxy IP (or one direct shard if no proxy configured)
+- Each shard manages up to 10 addresses, its own heartbeat, reconnect w/ backoff
+- Shared fill dedup via bounded hash set across all shards
 - Converts fills to market orders via OrderProcessor.process_order()
 """
 from __future__ import annotations
 
 import asyncio
 import json
-import re
 import threading
 import time
 import traceback
 import uuid
 from collections import OrderedDict
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set
 
 import requests
 
 import bittensor as bt
+
+import ssl
 
 try:
     import websockets
@@ -38,11 +39,17 @@ except ImportError:
     websockets = None
     WebSocketClientProtocol = None
 
+try:
+    from python_socks.async_.asyncio import Proxy as SocksProxy
+except ImportError:
+    SocksProxy = None
+
 from entity_management.entity_client import EntityClient
 from shared_objects.rate_limiter import RateLimiter
 from time_util.time_util import TimeUtil
 from vali_objects.exceptions.signal_exception import SignalException
 from vali_objects.utils.limit_order.order_processor import OrderProcessor
+from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import ValiConfig, TradePair, TRADE_PAIR_ID_TO_TRADE_PAIR
 
 
@@ -50,13 +57,211 @@ class HyperliquidTracker:
     """
     Tracks Hyperliquid trader fills via WebSocket and forwards them as Vanta signals.
 
-    Runs in a daemon thread with its own asyncio event loop.
+    Supports sharding across multiple proxy IPs. Without proxy config, behaves
+    identically to the original single-connection implementation.
     """
 
     # Max fill hashes to track for dedup (bounded to prevent memory growth)
     MAX_DEDUP_HASHES = 50_000
     # How often to refresh the list of subscribed addresses (seconds)
     ADDRESS_REFRESH_INTERVAL_S = 60.0
+
+    # ==================== Inner class: _WebSocketShard ====================
+
+    class _WebSocketShard:
+        """
+        Encapsulates a single WebSocket connection through a specific proxy port (= IP).
+        Manages up to HL_MAX_TRACKED_ADDRESSES_PER_IP addresses, its own heartbeat,
+        subscribe/unsubscribe, and reconnect with backoff.
+        """
+
+        def __init__(self, shard_id: int, proxy_url: Optional[str], tracker: 'HyperliquidTracker'):
+            self.shard_id = shard_id
+            self.proxy_url = proxy_url  # None = direct connection
+            self.tracker = tracker
+            self.addresses: Set[str] = set()
+            self.subscribed_addresses: Set[str] = set()
+            self.healthy = True
+            self.connected = False
+            self.task: Optional[asyncio.Task] = None
+            self._consecutive_failures = 0
+
+        @property
+        def port(self) -> Optional[int]:
+            """Extract port from proxy URL for logging."""
+            if not self.proxy_url:
+                return None
+            try:
+                return int(self.proxy_url.rsplit(":", 1)[-1])
+            except (ValueError, IndexError):
+                return None
+
+        @property
+        def capacity(self) -> int:
+            """Remaining address capacity for this shard."""
+            return ValiConfig.HL_MAX_TRACKED_ADDRESSES_PER_IP - len(self.addresses)
+
+        @property
+        def label(self) -> str:
+            port = self.port
+            return f"SHARD-{self.shard_id}" + (f"/port={port}" if port else "/direct")
+
+        async def _open_ws_connection(self):
+            """Open a WebSocket connection, optionally through a SOCKS5 proxy."""
+            if self.proxy_url and SocksProxy:
+                proxy = SocksProxy.from_url(self.proxy_url)
+                # HL WS is wss:// so we connect to port 443
+                sock = await asyncio.wait_for(
+                    proxy.connect(dest_host="api.hyperliquid.xyz", dest_port=443),
+                    timeout=15,
+                )
+                ssl_ctx = ssl.create_default_context()
+                return websockets.connect(
+                    ValiConfig.HL_MAINNET_WS,
+                    sock=sock,
+                    ssl=ssl_ctx,
+                    server_hostname="api.hyperliquid.xyz",
+                    ping_interval=None,
+                )
+            else:
+                return websockets.connect(
+                    ValiConfig.HL_MAINNET_WS,
+                    ping_interval=None,
+                )
+
+        async def run(self):
+            """Main loop: connect, subscribe, process messages, reconnect on failure."""
+            backoff_s = 1.0
+
+            while not self.tracker._stop_event.is_set():
+                ws: Optional[WebSocketClientProtocol] = None
+                try:
+                    ws_ctx = await self._open_ws_connection()
+                    ws = await ws_ctx
+
+                    bt.logging.info(
+                        f"[HL_{self.label}] Connected to {ValiConfig.HL_MAINNET_WS}"
+                        + (f" via {self.proxy_url}" if self.proxy_url else " (direct)")
+                    )
+                    self._consecutive_failures = 0
+                    self.healthy = True
+                    self.connected = True
+                    backoff_s = 1.0
+
+                    # Subscribe to current addresses
+                    await self._sync_subscriptions(ws)
+
+                    # Start heartbeat + periodic refresh
+                    hb_task = asyncio.create_task(self._heartbeat(ws))
+                    refresh_task = asyncio.create_task(self._periodic_refresh(ws))
+
+                    try:
+                        while not self.tracker._stop_event.is_set():
+                            try:
+                                raw = await asyncio.wait_for(ws.recv(), timeout=5.0)
+                            except asyncio.TimeoutError:
+                                continue
+                            except websockets.exceptions.ConnectionClosed:
+                                break
+                            try:
+                                msg = json.loads(raw)
+                            except json.JSONDecodeError:
+                                continue
+                            self.tracker._handle_message(msg)
+                    finally:
+                        hb_task.cancel()
+                        refresh_task.cancel()
+
+                except Exception as e:
+                    self._consecutive_failures += 1
+                    bt.logging.warning(
+                        f"[HL_{self.label}] Connection failed ({self._consecutive_failures}x): {e!r}"
+                    )
+                    if self._consecutive_failures >= ValiConfig.HL_SHARD_MAX_CONSECUTIVE_FAILURES:
+                        bt.logging.error(
+                            f"[HL_{self.label}] Marked UNHEALTHY after "
+                            f"{self._consecutive_failures} consecutive failures"
+                        )
+                        self.healthy = False
+                        self.connected = False
+                        return  # Stop this shard; orchestrator will redistribute
+                finally:
+                    self.connected = False
+                    if ws is not None:
+                        try:
+                            # Proxied sockets can stall on close handshake; bound close time.
+                            loop = asyncio.get_running_loop()
+                            if not loop.is_closed():
+                                await asyncio.wait_for(ws.close(), timeout=2.0)
+                        except RuntimeError:
+                            # Event loop is already closing/closed.
+                            pass
+                        except Exception:
+                            transport = getattr(ws, "transport", None)
+                            if transport is not None:
+                                try:
+                                    loop = asyncio.get_running_loop()
+                                    if not loop.is_closed():
+                                        transport.abort()
+                                except RuntimeError:
+                                    pass
+
+                if self.tracker._stop_event.is_set():
+                    break
+
+                bt.logging.info(f"[HL_{self.label}] Reconnecting in {backoff_s:.1f}s...")
+                await asyncio.sleep(backoff_s)
+                backoff_s = min(backoff_s * 2.0, ValiConfig.HL_WS_RECONNECT_BACKOFF_MAX_S)
+
+        async def _heartbeat(self, ws):
+            """Send ping messages to keep the connection alive."""
+            while True:
+                await asyncio.sleep(ValiConfig.HL_WS_HEARTBEAT_INTERVAL_S)
+                try:
+                    await ws.send(json.dumps({"method": "ping"}))
+                except Exception:
+                    return
+
+        async def _sync_subscriptions(self, ws):
+            """Subscribe/unsubscribe to match self.addresses."""
+            new_addresses = set(self.addresses)
+
+            # Subscribe to new
+            for addr in new_addresses - self.subscribed_addresses:
+                msg = {
+                    "method": "subscribe",
+                    "subscription": {"type": "userFills", "user": addr},
+                }
+                try:
+                    await ws.send(json.dumps(msg))
+                    bt.logging.info(f"[HL_{self.label}] Subscribed to userFills for {addr}")
+                except Exception as e:
+                    bt.logging.error(f"[HL_{self.label}] Failed to subscribe for {addr}: {e}")
+
+            # Unsubscribe from removed
+            for addr in self.subscribed_addresses - new_addresses:
+                msg = {
+                    "method": "unsubscribe",
+                    "subscription": {"type": "userFills", "user": addr},
+                }
+                try:
+                    await ws.send(json.dumps(msg))
+                    bt.logging.info(f"[HL_{self.label}] Unsubscribed from userFills for {addr}")
+                except Exception as e:
+                    bt.logging.warning(f"[HL_{self.label}] Failed to unsubscribe for {addr}: {e}")
+
+            self.subscribed_addresses = new_addresses
+
+        async def _periodic_refresh(self, ws):
+            """Periodically sync subscriptions for address changes."""
+            while True:
+                await asyncio.sleep(HyperliquidTracker.ADDRESS_REFRESH_INTERVAL_S)
+                try:
+                    await self._sync_subscriptions(ws)
+                except Exception as e:
+                    bt.logging.error(f"[HL_{self.label}] Periodic refresh error: {e}")
+
+    # ==================== HyperliquidTracker ====================
 
     def __init__(
         self,
@@ -83,14 +288,20 @@ class HyperliquidTracker:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._stop_event = threading.Event()
 
-        # Currently subscribed HL addresses (synced with entity manager)
-        self._subscribed_addresses: Set[str] = set()
-
         # Dedup: ordered dict of fill_hash -> True (bounded, oldest evicted first)
         self._processed_hashes: OrderedDict[str, bool] = OrderedDict()
 
+        # Shard state
+        self._shards: Dict[int, HyperliquidTracker._WebSocketShard] = {}
+        self._address_to_shard: Dict[str, int] = {}
+        self._next_shard_id = 0
+
+        # Proxy config (populated in _load_proxy_config)
+        self._proxy_base_url: Optional[str] = None  # e.g. "socks5://user:pass@host"
+        self._available_ports: List[int] = []
+        self._unhealthy_ports: Set[int] = set()
+
         # Metrics
-        self._connected = False
         self._fills_processed = 0
         self._last_fill_time: Optional[float] = None
 
@@ -114,19 +325,33 @@ class HyperliquidTracker:
     def stop(self):
         """Signal the tracker to stop."""
         self._stop_event.set()
-        if self._loop:
-            self._loop.call_soon_threadsafe(self._loop.stop)
+        # Let _run_stream exit naturally to allow shard tasks to clean up.
+        # Forcing loop.stop() can interrupt websocket teardown and produce
+        # "Event loop is closed" warnings on shutdown.
         if self._thread:
             self._thread.join(timeout=5.0)
         bt.logging.info("[HL_TRACKER] Stopped")
 
     def get_status(self) -> dict:
         """Get tracker status for health monitoring."""
+        shard_statuses = []
+        for sid, shard in self._shards.items():
+            shard_statuses.append({
+                "shard_id": sid,
+                "port": shard.port,
+                "healthy": shard.healthy,
+                "connected": shard.connected,
+                "address_count": len(shard.addresses),
+            })
         return {
-            "connected": self._connected,
-            "subscribed_addresses": len(self._subscribed_addresses),
+            "shards": shard_statuses,
+            "total_connected": sum(1 for s in self._shards.values() if s.connected),
+            "total_subscribed_addresses": len(self._address_to_shard),
             "fills_processed": self._fills_processed,
             "last_fill_time": self._last_fill_time,
+            "proxy_configured": self._proxy_base_url is not None,
+            "available_ports": len(self._available_ports),
+            "unhealthy_ports": len(self._unhealthy_ports),
         }
 
     # ==================== Balance Checking ====================
@@ -163,111 +388,241 @@ class HyperliquidTracker:
             bt.logging.error(f"[HL_TRACKER] Event loop crashed: {e}")
             bt.logging.error(traceback.format_exc())
         finally:
+            pending = asyncio.all_tasks(self._loop)
+            if pending:
+                for task in pending:
+                    task.cancel()
+                try:
+                    self._loop.run_until_complete(
+                        asyncio.gather(*pending, return_exceptions=True)
+                    )
+                except Exception:
+                    pass
             self._loop.close()
 
-    # ==================== WebSocket Stream ====================
+    # ==================== Proxy Config ====================
+
+    def _load_proxy_config(self):
+        """Load proxy configuration from secrets.json. No-op if not configured."""
+        try:
+            secrets = ValiUtils.get_secrets()
+        except Exception:
+            secrets = {}
+
+        proxy_url = secrets.get(ValiConfig.HL_PROXY_SECRET_KEY)
+        ports_str = secrets.get(ValiConfig.HL_PROXY_PORTS_SECRET_KEY)
+
+        if not proxy_url or not ports_str:
+            bt.logging.info("[HL_TRACKER] No proxy config found - using direct connection (max 10 addresses)")
+            self._proxy_base_url = None
+            self._available_ports = []
+            return
+
+        if SocksProxy is None:
+            bt.logging.error(
+                "[HL_TRACKER] Proxy config found but python-socks is not installed! "
+                "Run: pip install python-socks  — falling back to direct connection"
+            )
+            self._proxy_base_url = None
+            self._available_ports = []
+            return
+
+        self._proxy_base_url = proxy_url.rstrip("/")
+        self._available_ports = self._parse_ports(ports_str)
+
+        # Cap to safety limit
+        if len(self._available_ports) > ValiConfig.HL_MAX_PROXY_SHARDS:
+            bt.logging.warning(
+                f"[HL_TRACKER] Capping proxy ports from {len(self._available_ports)} to {ValiConfig.HL_MAX_PROXY_SHARDS}"
+            )
+            self._available_ports = self._available_ports[:ValiConfig.HL_MAX_PROXY_SHARDS]
+
+        bt.logging.info(
+            f"[HL_TRACKER] Proxy configured: {len(self._available_ports)} ports available "
+            f"(max {len(self._available_ports) * ValiConfig.HL_MAX_TRACKED_ADDRESSES_PER_IP} addresses)"
+        )
+
+    @staticmethod
+    def _parse_ports(ports_str: str) -> List[int]:
+        """Parse port string like '10001-10010' or '10001,10002,10005' into list of ints."""
+        ports = []
+        for part in ports_str.split(","):
+            part = part.strip()
+            if "-" in part:
+                try:
+                    start, end = part.split("-", 1)
+                    ports.extend(range(int(start.strip()), int(end.strip()) + 1))
+                except ValueError:
+                    bt.logging.warning(f"[HL_TRACKER] Invalid port range: {part}")
+            else:
+                try:
+                    ports.append(int(part))
+                except ValueError:
+                    bt.logging.warning(f"[HL_TRACKER] Invalid port: {part}")
+        return ports
+
+    def _make_shard_proxy_url(self, port: int) -> str:
+        """Build full proxy URL for a specific port."""
+        return f"{self._proxy_base_url}:{port}"
+
+    def get_max_tracked_addresses(self) -> int:
+        """Return the max number of HL addresses we can track given proxy config."""
+        if self._proxy_base_url and self._available_ports:
+            # All ports (available + already in use by shards)
+            total_ports = len(self._available_ports) + len(self._shards)
+            return total_ports * ValiConfig.HL_MAX_TRACKED_ADDRESSES_PER_IP
+        return ValiConfig.HL_MAX_TRACKED_ADDRESSES_PER_IP
+
+    # ==================== Shard Orchestration ====================
 
     async def _run_stream(self):
-        """Main WebSocket loop with reconnection and exponential backoff."""
-        backoff_s = 1.0
+        """Orchestrator: loads proxy config, then loops assigning addresses and managing shards."""
+        self._load_proxy_config()
 
         while not self._stop_event.is_set():
             try:
-                async with websockets.connect(
-                    ValiConfig.HL_MAINNET_WS, ping_interval=None
-                ) as ws:
-                    bt.logging.info(f"[HL_TRACKER] Connected to {ValiConfig.HL_MAINNET_WS}")
-                    self._connected = True
-                    backoff_s = 1.0
-
-                    # Start heartbeat and periodic refresh tasks
-                    hb_task = asyncio.create_task(self._heartbeat(ws))
-                    refresh_task = asyncio.create_task(self._periodic_refresh(ws))
-
-                    # Subscribe to all current HL addresses
-                    await self._subscribe_all(ws)
-
-                    # Process messages
-                    async for raw in ws:
-                        if self._stop_event.is_set():
-                            break
-                        try:
-                            msg = json.loads(raw)
-                        except json.JSONDecodeError:
-                            continue
-                        self._handle_message(msg)
-
-                    hb_task.cancel()
-                    refresh_task.cancel()
-
+                self._assign_addresses_to_shards()
+                self._ensure_shard_tasks()
             except Exception as e:
-                bt.logging.warning(f"[HL_TRACKER] Disconnected/error: {e!r}")
-            finally:
-                self._connected = False
+                bt.logging.error(f"[HL_TRACKER] Orchestrator error: {e}")
+                bt.logging.error(traceback.format_exc())
 
-            if self._stop_event.is_set():
-                break
+            # Wait before next refresh cycle
+            for _ in range(int(self.ADDRESS_REFRESH_INTERVAL_S)):
+                if self._stop_event.is_set():
+                    return
+                await asyncio.sleep(1.0)
 
-            bt.logging.info(f"[HL_TRACKER] Reconnecting in {backoff_s:.1f}s...")
-            await asyncio.sleep(backoff_s)
-            backoff_s = min(backoff_s * 2.0, ValiConfig.HL_WS_RECONNECT_BACKOFF_MAX_S)
-
-    async def _heartbeat(self, ws: WebSocketClientProtocol):
-        """Send ping messages to keep the connection alive."""
-        while True:
-            await asyncio.sleep(ValiConfig.HL_WS_HEARTBEAT_INTERVAL_S)
-            try:
-                await ws.send(json.dumps({"method": "ping"}))
-            except Exception:
-                return
-
-    async def _subscribe_all(self, ws: WebSocketClientProtocol):
-        """Subscribe to userFills for all active HL addresses."""
+    def _assign_addresses_to_shards(self):
+        """
+        Assign active HL addresses to shards.
+        1. Remove addresses no longer active
+        2. Redistribute addresses from unhealthy shards
+        3. Assign new addresses to shard with most capacity
+        4. Create new shards if needed and ports available
+        5. Tear down empty shards
+        """
+        # Get current active addresses
         try:
             hl_subaccounts = self._entity_client.get_all_active_hl_subaccounts()
         except Exception as e:
             bt.logging.error(f"[HL_TRACKER] Failed to get HL subaccounts: {e}")
             return
 
-        new_addresses = set()
-        for hl_address, _info in hl_subaccounts:
-            new_addresses.add(hl_address)
-            if hl_address not in self._subscribed_addresses:
-                msg = {
-                    "method": "subscribe",
-                    "subscription": {"type": "userFills", "user": hl_address}
-                }
-                try:
-                    await ws.send(json.dumps(msg))
-                    bt.logging.info(f"[HL_TRACKER] Subscribed to userFills for {hl_address}")
-                except Exception as e:
-                    bt.logging.error(f"[HL_TRACKER] Failed to subscribe for {hl_address}: {e}")
+        active_addresses = {addr for addr, _info in hl_subaccounts}
 
-        # Unsubscribe from removed addresses
-        for old_addr in self._subscribed_addresses - new_addresses:
-            msg = {
-                "method": "unsubscribe",
-                "subscription": {"type": "userFills", "user": old_addr}
-            }
-            try:
-                await ws.send(json.dumps(msg))
-                bt.logging.info(f"[HL_TRACKER] Unsubscribed from userFills for {old_addr}")
-            except Exception as e:
-                bt.logging.warning(f"[HL_TRACKER] Failed to unsubscribe for {old_addr}: {e}")
+        # 1. Remove addresses no longer active
+        stale = set(self._address_to_shard.keys()) - active_addresses
+        for addr in stale:
+            sid = self._address_to_shard.pop(addr, None)
+            if sid is not None and sid in self._shards:
+                self._shards[sid].addresses.discard(addr)
 
-        self._subscribed_addresses = new_addresses
-        bt.logging.info(f"[HL_TRACKER] Subscribed to {len(self._subscribed_addresses)} HL addresses")
+        # 2. Collect addresses from unhealthy shards for redistribution
+        orphaned: Set[str] = set()
+        unhealthy_shard_ids = [sid for sid, s in self._shards.items() if not s.healthy]
+        for sid in unhealthy_shard_ids:
+            shard = self._shards[sid]
+            orphaned.update(shard.addresses & active_addresses)
+            # Return port to unhealthy set
+            port = shard.port
+            if port is not None:
+                self._unhealthy_ports.add(port)
+            # Clean up shard
+            for addr in shard.addresses:
+                self._address_to_shard.pop(addr, None)
+            shard.addresses.clear()
+            if shard.task and not shard.task.done():
+                shard.task.cancel()
+            del self._shards[sid]
+            bt.logging.warning(f"[HL_TRACKER] Removed unhealthy shard {shard.label}, {len(orphaned)} addresses to redistribute")
 
-    async def _periodic_refresh(self, ws: WebSocketClientProtocol):
-        """Periodically refresh subscriptions for new/removed HL addresses."""
-        while True:
-            await asyncio.sleep(self.ADDRESS_REFRESH_INTERVAL_S)
-            try:
-                await self._subscribe_all(ws)
-            except Exception as e:
-                bt.logging.error(f"[HL_TRACKER] Periodic refresh error: {e}")
+        # 3. Addresses that need assignment (new + orphaned)
+        already_assigned = set(self._address_to_shard.keys())
+        to_assign = (active_addresses - already_assigned) | orphaned
 
-    # ==================== Message Handling ====================
+        if not to_assign:
+            # 5. Tear down empty shards
+            self._teardown_empty_shards()
+            return
+
+        for addr in to_assign:
+            assigned = False
+
+            # Find healthy shard with most capacity
+            best_shard = None
+            best_capacity = 0
+            for sid, shard in self._shards.items():
+                if shard.healthy and shard.capacity > best_capacity:
+                    best_shard = shard
+                    best_capacity = shard.capacity
+
+            if best_shard and best_capacity > 0:
+                best_shard.addresses.add(addr)
+                self._address_to_shard[addr] = best_shard.shard_id
+                assigned = True
+            else:
+                # 4. Need a new shard
+                new_shard = self._create_new_shard()
+                if new_shard:
+                    new_shard.addresses.add(addr)
+                    self._address_to_shard[addr] = new_shard.shard_id
+                    assigned = True
+
+            if not assigned:
+                bt.logging.warning(
+                    f"[HL_TRACKER] Cannot assign address {addr} - all ports exhausted or unhealthy"
+                )
+
+        # 5. Tear down empty shards
+        self._teardown_empty_shards()
+
+        # Log summary
+        total = len(self._address_to_shard)
+        bt.logging.info(
+            f"[HL_TRACKER] Address assignment: {total} addresses across {len(self._shards)} shard(s)"
+        )
+
+    def _create_new_shard(self) -> Optional['HyperliquidTracker._WebSocketShard']:
+        """Create a new shard. Uses a proxy port if available, or direct if no proxy configured."""
+        if self._proxy_base_url:
+            if not self._available_ports:
+                return None
+            port = self._available_ports.pop(0)
+            proxy_url = self._make_shard_proxy_url(port)
+        else:
+            # Direct (no proxy) - only one direct shard allowed
+            if self._shards:
+                return None  # Already have the single direct shard
+            proxy_url = None
+
+        sid = self._next_shard_id
+        self._next_shard_id += 1
+        shard = HyperliquidTracker._WebSocketShard(sid, proxy_url, self)
+        self._shards[sid] = shard
+        bt.logging.info(f"[HL_TRACKER] Created {shard.label}")
+        return shard
+
+    def _teardown_empty_shards(self):
+        """Remove shards with no assigned addresses and return their ports."""
+        empty_ids = [sid for sid, s in self._shards.items() if not s.addresses]
+        for sid in empty_ids:
+            shard = self._shards.pop(sid)
+            if shard.task and not shard.task.done():
+                shard.task.cancel()
+            # Return port to available pool (if proxy and port was healthy)
+            port = shard.port
+            if port is not None and port not in self._unhealthy_ports:
+                self._available_ports.append(port)
+            bt.logging.info(f"[HL_TRACKER] Tore down empty {shard.label}")
+
+    def _ensure_shard_tasks(self):
+        """Ensure all shards with addresses have a running asyncio task."""
+        for sid, shard in self._shards.items():
+            if shard.addresses and (shard.task is None or shard.task.done()):
+                shard.task = asyncio.ensure_future(shard.run())
+
+    # ==================== Message Handling (shared across all shards) ====================
 
     def _handle_message(self, msg: dict):
         """Route incoming WebSocket messages."""
