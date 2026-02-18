@@ -499,9 +499,14 @@ class ValiConfig:
     # Hyperliquid tracking configuration
     HL_MAINNET_WS = "wss://api.hyperliquid.xyz/ws"
     HL_MAINNET_INFO = "https://api.hyperliquid.xyz/info"
-    HL_MAX_TRACKED_ADDRESSES = 10  # HL WebSocket limit: 10 unique users per IP
+    HL_MAX_TRACKED_ADDRESSES_PER_IP = 10  # HL WebSocket limit: 10 unique users per IP
+    HL_MAX_TRACKED_ADDRESSES = HL_MAX_TRACKED_ADDRESSES_PER_IP  # backward compat alias
     HL_WS_HEARTBEAT_INTERVAL_S = 30.0
     HL_WS_RECONNECT_BACKOFF_MAX_S = 30.0
+    HL_PROXY_SECRET_KEY = "hl_proxy_url"  # key in secrets.json for base proxy URL (without port)
+    HL_PROXY_PORTS_SECRET_KEY = "hl_proxy_ports"  # key in secrets.json for port list/range
+    HL_MAX_PROXY_SHARDS = 20  # safety cap on proxy connections (200 addresses max)
+    HL_SHARD_MAX_CONSECUTIVE_FAILURES = 5  # failures before marking a proxy IP as unhealthy
     HL_ADDRESS_REGEX = r"^0x[a-fA-F0-9]{40}$"
     HL_COIN_TO_TRADE_PAIR = {
         "BTC": "BTCUSD", "ETH": "ETHUSD", "SOL": "SOLUSD",

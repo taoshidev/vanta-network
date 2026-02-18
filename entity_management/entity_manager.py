@@ -603,6 +603,30 @@ class EntityManager(ValidatorBroadcastBase):
             # Broadcast dashboard update even on failure so clients see the status change
             self.broadcast_subaccount_dashboard(synthetic_hotkey)
 
+    def _get_hl_max_addresses(self) -> int:
+        """
+        Return the max number of HL addresses we can track.
+
+        If proxy ports are configured in secrets.json, returns PER_IP * num_ports.
+        Otherwise returns PER_IP (10).
+        """
+        try:
+            secrets = ValiUtils.get_secrets(running_unit_tests=self.running_unit_tests)
+        except Exception:
+            return ValiConfig.HL_MAX_TRACKED_ADDRESSES_PER_IP
+
+        proxy_url = secrets.get(ValiConfig.HL_PROXY_SECRET_KEY)
+        ports_str = secrets.get(ValiConfig.HL_PROXY_PORTS_SECRET_KEY)
+
+        if not proxy_url or not ports_str:
+            return ValiConfig.HL_MAX_TRACKED_ADDRESSES_PER_IP
+
+        # Parse ports to count them
+        from entity_management.hyperliquid_tracker import HyperliquidTracker
+        ports = HyperliquidTracker._parse_ports(ports_str)
+        num_ports = min(len(ports), ValiConfig.HL_MAX_PROXY_SHARDS)
+        return num_ports * ValiConfig.HL_MAX_TRACKED_ADDRESSES_PER_IP
+
     def create_hl_subaccount(
         self,
         entity_hotkey: str,
@@ -637,9 +661,10 @@ class EntityManager(ValidatorBroadcastBase):
 
             # Check total active HL subaccounts < max limit
             active_hl_count = len(self._hl_address_to_synthetic)
-            if active_hl_count >= ValiConfig.HL_MAX_TRACKED_ADDRESSES:
+            max_addresses = self._get_hl_max_addresses()
+            if active_hl_count >= max_addresses:
                 return False, None, (
-                    f"Maximum number of tracked Hyperliquid addresses ({ValiConfig.HL_MAX_TRACKED_ADDRESSES}) reached. "
+                    f"Maximum number of tracked Hyperliquid addresses ({max_addresses}) reached. "
                     f"Cannot register more HL subaccounts."
                 )
 
