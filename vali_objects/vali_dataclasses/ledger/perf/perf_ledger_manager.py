@@ -27,6 +27,7 @@ from vali_objects.vali_config import RPCConnectionMode, ValiConfig
 from vali_objects.vali_dataclasses import position as position_file
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import FeeCache, PerfLedger, TP_ID_PORTFOLIO
 from vali_objects.vali_dataclasses.position import Position
+from entity_management.entity_utils import is_synthetic_hotkey
 
 
 class PerfLedgerManager(CacheController):
@@ -1926,7 +1927,7 @@ class PerfLedgerManager(CacheController):
                 hotkeys_to_iterate.append(k)
 
         for hotkey in hotkeys_to_iterate:
-            if hotkey not in metagraph_hotkeys:
+            if not is_synthetic_hotkey(hotkey) and hotkey not in metagraph_hotkeys:
                 hotkeys_to_delete.add(hotkey)
             elif not len(hotkey_to_positions.get(hotkey, [])):
                 hotkeys_to_delete.add(hotkey)
