@@ -339,7 +339,12 @@ class PropNetOrderPlacer:
             signal=signal_data,
             miner_order_uuid=miner_order_uuid,
             repo_version=REPO_VERSION,
-            subaccount_id=signal_data.get('subaccount_id')
+            subaccount_id=signal_data.get('subaccount_id'),
+            successfully_processed=False,
+            error_message="",
+            should_retry=True,
+            validator_hotkey="",
+            order_json=""
         )
 
         result = await self._send_order(send_signal_request, mothership_axon, other_axons)
@@ -391,7 +396,7 @@ class PropNetOrderPlacer:
                     "order_json": None,
                     "error_message": "Could not connecto to main validator",
                     "processing_time": time.time() - start_time,
-                    "message": "Order failed: main validator not found"
+                    "message": "Order failed: Vanta Network unavailable, please try again"
                 }
 
             # Thread-safe UUID check
@@ -406,7 +411,7 @@ class PropNetOrderPlacer:
                         "order_json": None,
                         "error_message": "Duplicate order UUID",
                         "processing_time": time.time() - start_time,
-                        "message": "Order UUID already used"
+                        "message": "Order failed: duplicate order uuid"
                     }
                 self.used_miner_uuids.add(order_uuid)
 
@@ -433,14 +438,14 @@ class PropNetOrderPlacer:
             fake_signal_file_path = f"/rest-api/{order_uuid}"
             if result["success"]:
                 self.write_signal_to_processed_directory(signal_data, fake_signal_file_path, result["order_json"])
-                message = "Order successfully processed by Taoshi validator"
+                message = "Order successfully processed by Vanta Network"
             elif self.config.write_failed_signal_logs:
                 bt.logging.error(f"REST order {order_uuid} failed: {result['error_message']}")
                 self.write_signal_to_failure_directory(signal_data, fake_signal_file_path, result["error_message"])
-                message = "Order failed on Taoshi validator"
+                message = f"Order failed on Vanta Network: {result['error_message']}"
             else:
                 self.write_signal_to_processed_directory(signal_data, fake_signal_file_path, result["order_json"])
-                message = "Order failed on Taoshi validator"
+                message = f"Order failed on Vanta Network: {result['error_message']}"
 
             return {
                 "success": result["success"],
