@@ -23,7 +23,7 @@ from shared_objects.rpc.rpc_server_base import RPCServerBase
 from entity_management.entity_client import EntityClient
 
 # Maximum number of websocket connections allowed per API key
-MAX_N_WS_PER_API_KEY = 20
+MAX_N_WS_PER_API_KEY = 50
 
 # Subaccount dashboard broadcast throttle (2 seconds per subaccount)
 SUBACCOUNT_BROADCAST_THROTTLE_MS = 2000
