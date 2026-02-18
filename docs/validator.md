@@ -172,12 +172,9 @@ Add the following to your `secrets.json`:
 
 Each port = 1 IP = up to 10 HL addresses. 10 ports = 100 addresses. Max 20 ports (200 addresses).
 
-Install the SOCKS5 dependencies (both are in `requirements.txt`):
-- `python-socks` – WebSocket connections through SOCKS5
-- `PySocks` – HTTP/REST requests through SOCKS5 (used by `requests`)
-
+Install the SOCKS5 dependency:
 ```bash
-pip install -r requirements.txt
+pip install python-socks>=2.7.1
 ```
 
 If no proxy keys are present in `secrets.json`, the tracker falls back to a single direct connection (max 10 addresses). Unhealthy proxy IPs are automatically detected after 5 consecutive connection failures and their addresses are redistributed to healthy IPs.
