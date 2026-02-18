@@ -213,14 +213,7 @@ class MinerRestServer(BaseRestServer):
             else:
                 trade_pair = signal_data.get('trade_pair')  # Might already be TradePair enum
 
-            if trade_pair is None:
-                bt.logging.warning(
-                    f"Signal validation failed for order {order_uuid} Invalid trade pair '{signal_data.get('trade_pair')}'")
-                return jsonify({
-                    'success': False,
-                    'error': f'Invalid trade pair: {signal_data.get("trade_pair")}'
-                }), 400
-
+            # let Signal class model validators handle validation
             signal = Signal(
                 trade_pair=trade_pair,
                 order_type=OrderType.from_string(signal_data['order_type'].upper()) if 'order_type' in signal_data else None,
