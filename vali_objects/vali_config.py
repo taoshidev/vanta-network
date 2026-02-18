@@ -446,7 +446,8 @@ class ValiConfig:
     SUBACCOUNT_COLLATERAL_AMOUNT = 1000.0  # Placeholder collateral amount per subaccount
 
     # Challenge Period Configuration
-    SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD = 0.08  # 8% returns required to pass challenge period
+    SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD = 0.08  # 8% returns required to pass evaluation
+    SUBACCOUNT_CRYPTO_CHALLENGE_RETURNS_THRESHOLD = 0.1  # 10% returns required to pass crypto evaluation
     SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD = 0.05  # 5% max drawdown allowed during challenge period
 
     # Subaccount promotion requirements
