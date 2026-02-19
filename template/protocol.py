@@ -26,6 +26,19 @@ def synapse_get_required_fields(self):
 bt.Synapse.get_required_fields = synapse_get_required_fields
 
 
+original_get_external_ip = bt.networking.get_external_ip
+external_ip = None
+
+# Monkey patch to improve Bittensor performance
+def get_external_ip() -> str:
+    global external_ip
+    if external_ip is None:
+        external_ip = original_get_external_ip()
+    return external_ip
+
+bt.networking.get_external_ip = get_external_ip
+
+
 class SendSignal(bt.Synapse):
     signal: typing.Dict = Field(default_factory=dict, title="Signal", frozen=False, max_length=4096)
     repo_version: str = Field("N/A", title="Repo version (use the same meta.json file as validator)", frozen=False, max_length=256)
