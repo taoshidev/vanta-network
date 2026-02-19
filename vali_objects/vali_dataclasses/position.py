@@ -254,7 +254,7 @@ class Position(BaseModel):
         return d
 
     def to_dict(self):
-        d = self.model_dump()
+        d = deepcopy(self.model_dump())
         return self._handle_trade_pair_encoding(d)
 
     def compact_dict_no_orders(self):
