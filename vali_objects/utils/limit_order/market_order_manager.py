@@ -402,6 +402,9 @@ class MarketOrderManager():
     def process_flat_all_order(self, order_uuid, miner_repo_version, miner_hotkey, now_ms):
         bt.logging.info(f"Processing FLAT_ALL order for miner [{miner_hotkey}]")
 
+        # Parse order_uuid by commas to support multiple UUIDs (like cancel_limit_order)
+        order_uuids = [uuid.strip() for uuid in order_uuid.split(',')] if order_uuid else []
+
         # Get all open positions for this miner
         open_positions = self._position_client.get_positions_for_hotkeys([miner_hotkey], only_open_positions=True).get(miner_hotkey)
 
@@ -413,14 +416,33 @@ class MarketOrderManager():
                 "failed_trade_pairs": []
             }
 
-        total_positions = len(open_positions)
+        # Determine which positions to close:
+        # - Single UUID that doesn't match any position UUID -> close all (treat as order-level UUID)
+        # - Multiple UUIDs or single UUID matching a position -> close only matching positions
+        open_position_uuids = {p.position_uuid for p in open_positions}
+        close_all = len(order_uuids) <= 1 and not (order_uuids and order_uuids[0] in open_position_uuids)
+
+        if close_all:
+            positions_to_close = open_positions
+        else:
+            target_uuids = set(order_uuids)
+            positions_to_close = [p for p in open_positions if p.position_uuid in target_uuids]
+            if not positions_to_close:
+                bt.logging.info(f"No matching positions found for UUIDs {order_uuids} for miner [{miner_hotkey}]")
+                return {
+                    "positions_closed": 0,
+                    "positions_failed": 0,
+                    "failed_trade_pairs": []
+                }
+
+        total_positions = len(positions_to_close)
         cnt_positions_closed = 0
         cnt_positions_failed = 0
         failed_trade_pairs = []
 
-        bt.logging.info(f"Found {total_positions} open positions for miner [{miner_hotkey}], closing all...")
+        bt.logging.info(f"Found {total_positions} positions to close for miner [{miner_hotkey}] (close_all={close_all})")
 
-        for i, position in enumerate(open_positions):
+        for i, position in enumerate(positions_to_close):
             trade_pair = position.trade_pair
 
             try:
@@ -437,7 +459,7 @@ class MarketOrderManager():
 
                 # Acquire position lock before closing
                 with self._position_lock_client.get_lock(miner_hotkey, trade_pair.trade_pair_id):
-                    position_close_uuid = position.position_uuid[::-1]
+                    position_close_uuid = order_uuids[0] if close_all and order_uuids else position.position_uuid[::-1]
                     position_close_time = now_ms - (total_positions - i - 1)
 
                     self._add_order_to_existing_position(
