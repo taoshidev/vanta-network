@@ -98,6 +98,7 @@ class PropNetOrderPlacer:
 
     def __init__(self, wallet, metagraph_client, config, is_testnet, position_inspector=None, slack_notifier=None, running_unit_tests=False):
         self.wallet = wallet
+        self.dendrite = bt.dendrite(wallet=self.wallet)
         self.metagraph_client = metagraph_client
         self.config = config
         self.running_unit_tests = running_unit_tests
@@ -268,43 +269,39 @@ class PropNetOrderPlacer:
         if self.running_unit_tests:
             return self._send_order_test_mode(synapse)
 
-        dendrite = bt.dendrite(wallet=self.wallet)
-        try:
-            for attempt in range(self.MAX_NETWORK_RETRIES):
-                try:
-                    # Fire-and-forget to other validators on first attempt only
-                    if attempt == 0 and other_axons:
-                        thread = threading.Thread(
-                            target=self._query_validators_sync,
-                            args=(other_axons, synapse),
-                            daemon=True
-                        )
-                        thread.start()
+        for attempt in range(self.MAX_NETWORK_RETRIES):
+            try:
+                # Fire-and-forget to other validators on first attempt only
+                if attempt == 0 and other_axons:
+                    thread = threading.Thread(
+                        target=self._query_validators_sync,
+                        args=(other_axons, synapse),
+                        daemon=True
+                    )
+                    thread.start()
 
-                    # Await mothership response only
-                    responses = await dendrite.aquery([mothership_axon], synapse)
-                    response = responses[0]
+                # Await mothership response only
+                responses = await self.dendrite.forward([mothership_axon], synapse)
+                response = responses[0]
 
-                    if response.successfully_processed:
-                        return {"success": True, "order_json": response.order_json, "error_message": ""}
+                if response.successfully_processed:
+                    return {"success": True, "order_json": response.order_json, "error_message": ""}
 
-                    # Mothership rejected -- check should_retry
-                    if not response.should_retry:
-                        return {"success": False, "order_json": "", "error_message": response.error_message}
+                # Mothership rejected -- check should_retry
+                if not response.should_retry:
+                    return {"success": False, "order_json": "", "error_message": response.error_message}
 
-                    # should_retry=True but failed -- transient issue, retry with delay
-                    bt.logging.warning(f"Mothership retryable error (attempt {attempt + 1}): {response.error_message}")
-                    if attempt < self.MAX_NETWORK_RETRIES - 1:
-                        await asyncio.sleep(self.NETWORK_RETRY_DELAY_SECONDS)
+                # should_retry=True but failed -- transient issue, retry with delay
+                bt.logging.warning(f"Mothership retryable error (attempt {attempt + 1}): {response.error_message}")
+                if attempt < self.MAX_NETWORK_RETRIES - 1:
+                    await asyncio.sleep(self.NETWORK_RETRY_DELAY_SECONDS)
 
-                except Exception as e:
-                    bt.logging.warning(f"Network error to mothership (attempt {attempt + 1}/{self.MAX_NETWORK_RETRIES}): {e}")
-                    if attempt < self.MAX_NETWORK_RETRIES - 1:
-                        await asyncio.sleep(self.NETWORK_RETRY_DELAY_SECONDS)
+            except Exception as e:
+                bt.logging.warning(f"Network error to mothership (attempt {attempt + 1}/{self.MAX_NETWORK_RETRIES}): {e}")
+                if attempt < self.MAX_NETWORK_RETRIES - 1:
+                    await asyncio.sleep(self.NETWORK_RETRY_DELAY_SECONDS)
 
-            return {"success": False, "order_json": "", "error_message": "Failed to connect to mothership after retries"}
-        finally:
-            await dendrite.aclose_session()
+        return {"success": False, "order_json": "", "error_message": "Failed to connect to mothership after retries"}
 
     def _send_order_test_mode(self, synapse) -> dict:
         """Mock successful response for unit tests."""
@@ -479,17 +476,8 @@ class PropNetOrderPlacer:
 
     def _query_validators_sync(self, axons, send_signal_request):
         """Fire-and-forget query to validators (runs in separate thread)."""
-
-        async def _query_validators_async(axons, send_signal_request):
-            """Async helper for background validator queries."""
-            dendrite = bt.dendrite(wallet=self.wallet)
-            try:
-                await dendrite.aquery(axons, send_signal_request)
-            finally:
-                await dendrite.aclose_session()
-
         try:
-            asyncio.run(_query_validators_async(axons, send_signal_request))
+            asyncio.run(self.dendrite.forward(axons, send_signal_request))
         except Exception as e:
             bt.logging.debug(f"Background validator query error (non-critical): {e}")
 
