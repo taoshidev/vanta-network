@@ -575,7 +575,7 @@ class Validator(ValidatorBase):
 
 
     # This is the core validator function to receive a signal
-    def receive_signal(self, synapse: template.protocol.SendSignal,
+    def _receive_signal_sync(self, synapse: template.protocol.SendSignal,
                        ) -> template.protocol.SendSignal:
         # pull miner hotkey to reference in various activities
         now_ms = TimeUtil.now_in_millis()
@@ -685,7 +685,7 @@ class Validator(ValidatorBase):
 
         return synapse
 
-    def get_positions(self, synapse: template.protocol.GetPositions,
+    def _get_positions(self, synapse: template.protocol.GetPositions,
                       ) -> template.protocol.GetPositions:
         miner_hotkey = synapse.dendrite.hotkey
         if self.should_fail_early(miner_hotkey, synapse, SynapseMethod.POSITION_INSPECTOR):

@@ -1,4 +1,6 @@
 import argparse
+import asyncio
+import concurrent.futures
 import os
 from typing import Tuple
 
@@ -27,25 +29,48 @@ class ValidatorBase:
         from vali_objects.miner_account.miner_account_client import MinerAccountClient
         self._miner_account_client = MinerAccountClient(running_unit_tests=False)
 
+        # Dedicated thread pool for concurrent synchronous requests
+        self._thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=32)
+
         self.wire_axon()
 
         # Each hotkey gets a unique identity (UID) in the network for differentiation.
         my_subnet_uid = self.metagraph_client.get_hotkeys().index(self.wallet.hotkey.ss58_address)
         bt.logging.info(f"Running validator on uid: {my_subnet_uid}")
 
-    def receive_signal(self, synapse: template.protocol.SendSignal) -> template.protocol.SendSignal:
+    def _receive_signal_sync(self, synapse: template.protocol.SendSignal) -> template.protocol.SendSignal:
         """
         Abstract method - must be implemented by child class.
         Handles incoming trading signals from miners.
         """
-        raise NotImplementedError("Child class must implement receive_signal()")
+        raise NotImplementedError("Child class must implement _receive_signal_sync()")
 
-    def get_positions(self, synapse: template.protocol.GetPositions) -> template.protocol.GetPositions:
+    async def receive_signal(self, synapse: template.protocol.SendSignal) -> template.protocol.SendSignal:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self._thread_pool, self._receive_signal_sync, synapse)
+
+    def _get_positions(self, synapse: template.protocol.GetPositions) -> template.protocol.GetPositions:
         """
         Abstract method - must be implemented by child class.
         Handles position inspection requests from miners.
         """
-        raise NotImplementedError("Child class must implement get_positions()")
+        raise NotImplementedError("Child class must implement _get_positions()")
+
+    async def get_positions(self, synapse: template.protocol.GetPositions) -> template.protocol.GetPositions:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self._thread_pool, self._get_positions, synapse)
+
+    async def receive_collateral_record(self, synapse: template.protocol.CollateralRecord) -> template.protocol.CollateralRecord:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self._thread_pool, self._miner_account_client.receive_collateral_record, synapse)
+
+    async def receive_asset_selection(self, synapse: template.protocol.AssetSelection) -> template.protocol.AssetSelection:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self._thread_pool, self._asset_selection_client.receive_asset_selection, synapse)
+
+    async def receive_subaccount_registration(self, synapse: template.protocol.SubaccountRegistration) -> template.protocol.SubaccountRegistration:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self._thread_pool, self._entity_client.receive_subaccount_registration, synapse)
 
     @timeme
     def blacklist_fn(self, synapse, metagraph) -> Tuple[bool, str]:
@@ -165,15 +190,15 @@ class ValidatorBase:
             blacklist_fn=gp_blacklist_fn
         )
         self.axon.attach(
-            forward_fn=self._miner_account_client.receive_collateral_record,
+            forward_fn=self.receive_collateral_record,
             blacklist_fn=cr_blacklist_fn
         )
         self.axon.attach(
-            forward_fn=self._asset_selection_client.receive_asset_selection,
+            forward_fn=self.receive_asset_selection,
             blacklist_fn=as_blacklist_fn
         )
         self.axon.attach(
-            forward_fn=self._entity_client.receive_subaccount_registration,
+            forward_fn=self.receive_subaccount_registration,
             blacklist_fn=sr_blacklist_fn
         )
 
