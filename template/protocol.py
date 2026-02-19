@@ -7,6 +7,7 @@ import typing
 import uuid
 
 import bittensor as bt
+import bittensor.utils.networking
 from pydantic import Field
 
 from typing import List
@@ -26,7 +27,7 @@ def synapse_get_required_fields(self):
 bt.Synapse.get_required_fields = synapse_get_required_fields
 
 
-original_get_external_ip = bt.networking.get_external_ip
+original_get_external_ip = bittensor.utils.networking.get_external_ip
 external_ip = None
 
 # Monkey patch to improve Bittensor performance
@@ -36,7 +37,7 @@ def get_external_ip() -> str:
         external_ip = original_get_external_ip()
     return external_ip
 
-bt.networking.get_external_ip = get_external_ip
+bittensor.utils.networking.get_external_ip = get_external_ip
 
 
 class SendSignal(bt.Synapse):
