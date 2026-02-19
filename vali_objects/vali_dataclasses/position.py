@@ -712,6 +712,7 @@ class Position(BaseModel):
             return False
 
         # If order increases position size, validate max position size
+        clamped = False
         if order.order_type == self.position_type:
             if abs(self.net_value + self.unrealized_pnl) >= max_position_value:
                 raise ValueError(f"Position at max ${abs(self.net_value):.2f} (limit: ${max_position_value:.2f})")
@@ -720,7 +721,9 @@ class Position(BaseModel):
             if abs(order.value) > max_order_value:
                 sign = 1 if self.position_type == OrderType.LONG else -1
                 order.value = sign * max_order_value
-                return True
+                order.quantity = (order.value * order.usd_base_rate) / order.trade_pair.lot_size
+                proposed_quantity = self.net_quantity + order.quantity
+                clamped = True
 
         # Validate against min position size
         min_position_leverage, _ = leverage_utils.get_position_leverage_bounds(self.trade_pair)
@@ -738,7 +741,7 @@ class Position(BaseModel):
                 raise ValueError(
                     f"{self.trade_pair.trade_pair_id}: below min leverage {min_position_leverage} ({abs(proposed_leverage)})")
 
-        return False
+        return clamped
 
     def apply_stock_split(self, stock_split_ratio: float, execution_date: str) -> bool:
         """
