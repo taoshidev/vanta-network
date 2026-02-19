@@ -467,7 +467,7 @@ class BaseRestServer(APIKeyMixin, ABC):
             host=self.flask_host,
             port=self.flask_port,
             connection_limit=1000,
-            threads=10,  # Increased from 6 to handle queue depth
+            threads=32,  # Increased from 6 to handle queue depth
             channel_timeout=60,  # Reduced from 120 to close stuck connections faster
             cleanup_interval=10,  # Reduced from 30 for more aggressive cleanup
             backlog=2048,  # Increased to handle bursts better
