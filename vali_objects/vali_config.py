@@ -322,6 +322,8 @@ class ValiConfig:
     INDICES_MAX_LEVERAGE = 5
     EQUITIES_MIN_LEVERAGE = 0.1
     EQUITIES_MAX_LEVERAGE = 2
+    COMMODITIES_MIN_LEVERAGE = 0.1
+    COMMODITIES_MAX_LEVERAGE = 4
 
     # Minimum position size limits
     FOREX_MIN_POSITION_SIZE_LOTS = 0.01  # 0.01 standard lots
@@ -618,9 +620,9 @@ class TradePair(Enum):
               TradePairCategory.FOREX, ForexSubcategory.G5]
 
 
-    # "Commodities" (Bundle with Forex for now) (temporariliy paused for trading)
-    XAUUSD = ["XAUUSD", "XAU/USD", 0.00007, ValiConfig.FOREX_MIN_LEVERAGE, ValiConfig.FOREX_MAX_LEVERAGE, TradePairCategory.FOREX]
-    XAGUSD = ["XAGUSD", "XAG/USD", 0.00007, ValiConfig.FOREX_MIN_LEVERAGE, ValiConfig.FOREX_MAX_LEVERAGE, TradePairCategory.FOREX]
+    # "Commodities" (Bundle with Forex for now)
+    XAUUSD = ["XAUUSD", "XAU/USD", 0.00007, ValiConfig.COMMODITIES_MIN_LEVERAGE, ValiConfig.COMMODITIES_MAX_LEVERAGE, TradePairCategory.FOREX]
+    XAGUSD = ["XAGUSD", "XAG/USD", 0.00007, ValiConfig.COMMODITIES_MIN_LEVERAGE, ValiConfig.COMMODITIES_MAX_LEVERAGE, TradePairCategory.FOREX]
 
     # Equities - Stocks
     # Technology (10)
@@ -745,6 +747,12 @@ class TradePair(Enum):
 
     @property
     def lot_size(self):
+        trade_pair_lot_size_override = {
+            'XAUUSD': 100,
+            'XAGUSD': 5_000,
+        }
+        if self.trade_pair_id in trade_pair_lot_size_override:
+            return trade_pair_lot_size_override[self.trade_pair_id]
         trade_pair_lot_size = {TradePairCategory.CRYPTO: 1,
                                TradePairCategory.FOREX: 100_000,
                                TradePairCategory.INDICES: 1,
