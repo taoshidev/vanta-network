@@ -79,6 +79,7 @@ class LimitOrderManager(CacheController):
         self._price_stats = {}
 
         self._read_limit_orders_from_disk()
+        self._needs_initial_bracket_sync = True
 
         # Create dedicated locks for protecting self._limit_orders dictionary
         # Convert limit orders structure to format expected by PositionLocks
@@ -656,6 +657,10 @@ class LimitOrderManager(CacheController):
         now_ms = TimeUtil.now_in_millis()
         total_checked = 0
         total_filled = 0
+
+        if self._needs_initial_bracket_sync:
+            self._attach_bracket_orders_to_positions()
+            self._needs_initial_bracket_sync = False
 
         if self.running_unit_tests:
             print(f"[CHECK_AND_FILL_CALLED] check_and_fill_limit_orders(call_id={call_id}) called, {len(self._limit_orders)} trade pairs")
@@ -1235,7 +1240,6 @@ class LimitOrderManager(CacheController):
 
         total_orders_read = 0
         total_bracket_orders = 0
-        total_bracket_attached = 0
 
         bt.logging.info(f"[LIMIT ORDER DISK] Reading limit orders from disk for {len(hotkeys)} hotkeys...")
 
@@ -1259,14 +1263,8 @@ class LimitOrderManager(CacheController):
                     if OrderSource.is_open(order.src):
                         self._limit_orders[trade_pair][hotkey].append(order)
                         total_orders_read += 1
-                        # Attach bracket orders to position
                         if order.src == OrderSource.BRACKET_UNFILLED:
                             total_bracket_orders += 1
-                            attached = self.position_manager.attach_bracket_order_to_position(
-                                hotkey, trade_pair.trade_pair_id, order.to_python_dict()
-                            )
-                            if attached:
-                                total_bracket_attached += 1
                     else:
                         if hotkey not in self._closed_orders:
                             self._closed_orders[hotkey] = []
@@ -1282,7 +1280,31 @@ class LimitOrderManager(CacheController):
             for hotkey in self._limit_orders[trade_pair]:
                 self._limit_orders[trade_pair][hotkey].sort(key=lambda o: o.processed_ms)
 
-        bt.logging.info(f"[LIMIT ORDER DISK] Finished reading limit orders: {total_orders_read} open orders, {total_bracket_orders} bracket orders, {total_bracket_attached} attached to positions")
+        bt.logging.info(f"[LIMIT ORDER DISK] Finished reading limit orders: {total_orders_read} open orders, {total_bracket_orders} bracket orders (attachment deferred to first daemon iteration)")
+
+    def _attach_bracket_orders_to_positions(self):
+        """
+        Attach bracket orders to their positions. Called once on the first daemon iteration
+        after startup to ensure positions are fully loaded before attaching.
+        """
+        total_bracket_orders = 0
+        total_bracket_attached = 0
+
+        for trade_pair, hotkey_dict in self._limit_orders.items():
+            for hotkey, orders in hotkey_dict.items():
+                for order in orders:
+                    if order.src == OrderSource.BRACKET_UNFILLED:
+                        total_bracket_orders += 1
+                        try:
+                            attached = self.position_manager.attach_bracket_order_to_position(
+                                hotkey, trade_pair.trade_pair_id, order.to_python_dict()
+                            )
+                            if attached:
+                                total_bracket_attached += 1
+                        except Exception as e:
+                            bt.logging.error(f"Error attaching bracket order {order.order_uuid} to position: {e}")
+
+        bt.logging.info(f"[LIMIT ORDER INIT] Attached {total_bracket_attached}/{total_bracket_orders} bracket orders to positions")
 
     def _sync_pending_bracket_orders(self, miner_hotkey: str, position):
         """
