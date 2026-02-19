@@ -329,7 +329,7 @@ class PropNetOrderPlacer:
         # Thread-safe UUID check
         with self._lock:
             execution_type = signal_data.get("execution_type", "MARKET")
-            is_uuid_reuse_allowed = execution_type in ("LIMIT_CANCEL", "LIMIT_EDIT")
+            is_uuid_reuse_allowed = execution_type in ("LIMIT_CANCEL", "LIMIT_EDIT", "FLAT_ALL")
             if miner_order_uuid in self.used_miner_uuids and not is_uuid_reuse_allowed:
                 bt.logging.warning(f"Duplicate miner order uuid {miner_order_uuid}, skipping")
                 return None

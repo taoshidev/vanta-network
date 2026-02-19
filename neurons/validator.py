@@ -492,7 +492,7 @@ class Validator(ValidatorBase):
             # Parse execution type to check if this is a cancel operation
             execution_type = ExecutionType.from_string(signal.get("execution_type", "MARKET").upper()) if signal else ExecutionType.MARKET
             # Allow duplicate UUIDs for LIMIT_CANCEL (reusing UUID to identify order to cancel)
-            if execution_type not in [ExecutionType.LIMIT_CANCEL, ExecutionType.LIMIT_EDIT]:
+            if execution_type not in [ExecutionType.LIMIT_CANCEL, ExecutionType.LIMIT_EDIT, ExecutionType.FLAT_ALL]:
                 msg = (f"Order with uuid [{order_uuid}] has already been processed. "
                        f"Please try again with a new order.")
                 bt.logging.error(msg)
