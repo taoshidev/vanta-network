@@ -30,7 +30,7 @@ from vali_objects.price_fetcher.live_price_client import LivePriceFetcherClient
 from vali_objects.utils.elimination.elimination_client import EliminationClient
 from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
 
-TARGET_MS = 1769068800000 + (1000 * 60 * 60 * 6)  # + 6 hours
+TARGET_MS = 1771217940000 + (1000 * 60 * 60 * 6)  # + 6 hours
 
 
 class PositionManager:
@@ -857,7 +857,7 @@ class PositionManager:
         miners_to_wipe = []
         miners_to_promote = []
         position_uuids_to_delete = []
-        wipe_positions = False
+        wipe_positions = True
         reopen_force_closed_orders = False
         miners_to_wipe_perf_ledger = []
 
@@ -887,7 +887,7 @@ class PositionManager:
             # bt.logging.info(f"Applied {n_slippage_corrections} forex slippage corrections")
 
             # All miners that wanted their challenge period restarted
-            miners_to_wipe = []
+            miners_to_wipe = ["5FdxufcVWB8kn5nbRz3RiWZckfEN1q6ZrmyVUVrLD8dmQkdf"]
             position_uuids_to_delete = []
             miners_to_promote = []
 
@@ -930,6 +930,7 @@ class PositionManager:
                 if e['hotkey'] in miners_to_wipe:
                     self._elimination_client.delete_eliminations([e['hotkey']])
                     print(f"Removed elimination for hotkey {e['hotkey']}")
+            self._elimination_client.save_eliminations()
         n_eliminations_after = len(self._elimination_client.get_eliminations_from_memory()) if self._elimination_client else 0
         print(f'    n_eliminations_before {n_eliminations_before} n_eliminations_after {n_eliminations_after}')
 

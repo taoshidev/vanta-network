@@ -83,6 +83,28 @@ class MinerRestServer(BaseRestServer):
             **kwargs
         )
 
+        # Pre-load wallet secrets and coldkey for subaccount creation
+        try:
+            secrets = ValiUtils.get_secrets(secrets_path=MinerConfig.get_secrets_file_path())
+            self._wallet_name = secrets.get('wallet_name')
+            self._wallet_hotkey = secrets.get('wallet_hotkey')
+            self._validator_url = secrets.get('validator_url')
+            wallet_password = ValiUtils.get_secret('wallet_password', secrets_path=MinerConfig.get_secrets_file_path())
+
+            wallet = Wallet(name=self._wallet_name, hotkey=self._wallet_hotkey)
+            self._coldkey = wallet.get_coldkey(password=wallet_password)
+            self._hotkey = wallet.hotkey
+            del wallet_password
+            print(f"[MINER-REST-INIT] Wallet and secrets loaded for subaccount creation")
+        except Exception as e:
+            bt.logging.error(f"[MINER-REST-INIT] Failed to pre-load wallet secrets: {e}. "
+                             f"Subaccount creation will fall back to per-request loading.")
+            self._coldkey = None
+            self._hotkey = None
+            self._wallet_name = None
+            self._wallet_hotkey = None
+            self._validator_url = None
+
         print(f"[MINER-REST-INIT] MinerRestServer initialized on {self.flask_host}:{self.flask_port}")
 
     # ============================================================================
@@ -274,6 +296,8 @@ class MinerRestServer(BaseRestServer):
             }
         }
         """
+        start_time = time.time()
+
         # 1. Validate API key
         api_key = self._get_api_key_safe()
         if not self.is_valid_api_key(api_key):
@@ -320,32 +344,36 @@ class MinerRestServer(BaseRestServer):
             bt.logging.error(f"Error parsing request body: {e}")
             return jsonify({'status': 'error', 'message': f'Invalid request: {str(e)}'}), 400
 
-        # 3. Load wallet secrets
-        try:
-            secrets = ValiUtils.get_secrets(secrets_path=MinerConfig.get_secrets_file_path())
+        # 3. Use cached wallet or fall back to per-request loading
+        if self._coldkey and self._hotkey and self._validator_url:
+            coldkey = self._coldkey
+            hotkey = self._hotkey
+            validator_url = self._validator_url
+        else:
+            try:
+                secrets = ValiUtils.get_secrets(secrets_path=MinerConfig.get_secrets_file_path())
+                wallet_name = secrets.get('wallet_name')
+                wallet_hotkey = secrets.get('wallet_hotkey')
+                wallet_password = ValiUtils.get_secret('wallet_password', secrets_path=MinerConfig.get_secrets_file_path())
+                validator_url = secrets.get('validator_url')
 
-            wallet_name = secrets.get('wallet_name')
-            wallet_hotkey = secrets.get('wallet_hotkey')
-            wallet_password = ValiUtils.get_secret('wallet_password', secrets_path=MinerConfig.get_secrets_file_path())
-            validator_url = secrets.get('validator_url')
+                if not all([wallet_name, wallet_hotkey, wallet_password, validator_url]):
+                    del wallet_password
+                    return jsonify({
+                        'status': 'error',
+                        'message': 'Missing wallet configuration in secrets file'
+                    }), 500
 
-            if not all([wallet_name, wallet_hotkey, wallet_password, validator_url]):
+                wallet = Wallet(name=wallet_name, hotkey=wallet_hotkey)
+                coldkey = wallet.get_coldkey(password=wallet_password)
+                hotkey = wallet.hotkey
                 del wallet_password
-                return jsonify({
-                    'status': 'error',
-                    'message': 'Missing wallet configuration in secrets file'
-                }), 500
+            except Exception as e:
+                bt.logging.error(f"Error loading wallet secrets: {e}")
+                return jsonify({'status': 'error', 'message': 'Failed to load wallet configuration'}), 500
 
-        except Exception as e:
-            bt.logging.error(f"Error loading wallet secrets: {e}")
-            return jsonify({'status': 'error', 'message': 'Failed to load wallet configuration'}), 500
-
-        # 4. Initialize wallet and sign message
+        # 4. Sign message
         try:
-            wallet = Wallet(name=wallet_name, hotkey=wallet_hotkey)
-            coldkey = wallet.get_coldkey(password=wallet_password)
-            hotkey = wallet.hotkey
-
             # Build message dict - CRITICAL: must use sort_keys=True for deterministic ordering
             message_dict = {
                 "account_size": account_size,
@@ -361,8 +389,6 @@ class MinerRestServer(BaseRestServer):
         except Exception as e:
             bt.logging.error(f"Error signing message: {e}")
             return jsonify({'status': 'error', 'message': f'Wallet error: {str(e)}'}), 500
-        finally:
-            del wallet_password
 
         # 5. Send request to validator
         try:
@@ -382,6 +408,7 @@ class MinerRestServer(BaseRestServer):
                 headers={"Content-Type": "application/json"},
                 timeout=60
             )
+            elapsed_s = time.time() - start_time
 
             # Parse response
             try:
@@ -406,7 +433,8 @@ class MinerRestServer(BaseRestServer):
                         f"Asset Class: {subaccount.get('asset_class')}\n"
                         f"Account Size: ${subaccount.get('account_size'):,.2f}\n"
                         f"Message: {response_data.get('message', '')}\n"
-                        f"Created: {timestamp}",
+                        f"Created: {timestamp}\n"
+                        f"Time: {elapsed_s:.2f}s",
                         level="success",
                         bypass_cooldown=True
                     )
