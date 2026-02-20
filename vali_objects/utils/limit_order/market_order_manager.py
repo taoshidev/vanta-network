@@ -402,29 +402,27 @@ class MarketOrderManager():
     def process_flat_all_order(self, order_uuid, miner_repo_version, miner_hotkey, now_ms):
         bt.logging.info(f"Processing FLAT_ALL order for miner [{miner_hotkey}]")
 
-        # Parse order_uuid by commas to support multiple UUIDs (like cancel_limit_order)
-        order_uuids = [uuid.strip() for uuid in order_uuid.split(',')] if order_uuid else []
+        # Determine which positions to close:
+        # - "ALL" keyword -> close all positions
+        # - Comma-separated position UUIDs -> close only matching positions
+        close_all = order_uuid and order_uuid.strip().upper() == "ALL"
 
         # Get all open positions for this miner
         open_positions = self._position_client.get_positions_for_hotkeys([miner_hotkey], only_open_positions=True).get(miner_hotkey)
 
         if not open_positions:
-            bt.logging.info(f"No open positions found for miner [{miner_hotkey}]")
+            bt.logging.warning(f"No open positions found for miner [{miner_hotkey}]")
             return {
                 "positions_closed": 0,
                 "positions_failed": 0,
                 "failed_trade_pairs": []
             }
 
-        # Determine which positions to close:
-        # - Single UUID that doesn't match any position UUID -> close all (treat as order-level UUID)
-        # - Multiple UUIDs or single UUID matching a position -> close only matching positions
-        open_position_uuids = {p.position_uuid for p in open_positions}
-        close_all = len(order_uuids) <= 1 and not (order_uuids and order_uuids[0] in open_position_uuids)
-
         if close_all:
             positions_to_close = open_positions
         else:
+            # Parse comma-separated position UUIDs
+            order_uuids = [uuid.strip() for uuid in order_uuid.split(',')] if order_uuid else []
             target_uuids = set(order_uuids)
             positions_to_close = [p for p in open_positions if p.position_uuid in target_uuids]
             if not positions_to_close:
