@@ -457,7 +457,7 @@ class MarketOrderManager():
 
                 # Acquire position lock before closing
                 with self._position_lock_client.get_lock(miner_hotkey, trade_pair.trade_pair_id):
-                    position_close_uuid = order_uuids[0] if close_all and order_uuids else position.position_uuid[::-1]
+                    position_close_uuid = f"{position.position_uuid}_flat_all"
                     position_close_time = now_ms - (total_positions - i - 1)
 
                     self._add_order_to_existing_position(
