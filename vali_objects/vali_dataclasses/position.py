@@ -670,8 +670,12 @@ class Position(BaseModel):
             self._position_log("setting new position type as SHORT. Trade pair: " + str(self.trade_pair.trade_pair_id))
             self.position_type = OrderType.SHORT
         else:
-            print(self)
-            raise ValueError("leverage of 0 provided as initial order.")
+            bt.logging.error(
+                f"Position {self.position_uuid} has zero leverage initial order for "
+                f"{self.trade_pair.trade_pair_id}. Closing with 0 realized PnL."
+            )
+            self.position_type = order.order_type if order.order_type != OrderType.FLAT else OrderType.LONG
+            self.close_out_position(order.processed_ms)
 
     def close_out_position(self, close_ms):
         self.position_type = OrderType.FLAT
