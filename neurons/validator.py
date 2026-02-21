@@ -478,9 +478,9 @@ class Validator(ValidatorBase):
         entity_check_start = time.perf_counter()
         # Fast static function call (no RPC overhead!) - saves ~5-10ms per order
         if is_synthetic_hotkey(sender_hotkey):
-            # This is a synthetic hotkey - verify it's active
-            found, status, _ = self.entity_client.get_subaccount_status(sender_hotkey)
-            if not found or status not in ['active', 'admin']:
+            # This is a synthetic hotkey - verify it's active and not HL-linked
+            subaccount_info = self.entity_client.get_subaccount_info_for_synthetic(sender_hotkey)
+            if not subaccount_info or subaccount_info.get('status') not in ['active', 'admin']:
                 msg = (f"Synthetic hotkey {sender_hotkey} is not active or not found. "
                        f"Please ensure your subaccount is properly registered.")
                 bt.logging.warning(msg)

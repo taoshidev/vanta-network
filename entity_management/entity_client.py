@@ -318,7 +318,8 @@ class EntityClient(RPCClientBase):
         synthetic_hotkey: str,
         account_size: float,
         asset_class: str,
-        status: str = "active"
+        status: str = "active",
+        hl_address: Optional[str] = None
     ) -> None:
         """
         Broadcast subaccount registration to other validators.
@@ -331,10 +332,11 @@ class EntityClient(RPCClientBase):
             account_size: Account size in USD
             asset_class: Asset class selection
             status: Subaccount status (active, admin, etc.)
+            hl_address: Optional Hyperliquid address for HL-linked subaccounts
         """
         return self._server.broadcast_subaccount_registration_rpc(
             entity_hotkey, subaccount_id, subaccount_uuid, synthetic_hotkey,
-            account_size, asset_class, status
+            account_size, asset_class, status, hl_address=hl_address
         )
 
     def receive_subaccount_registration_update(self, subaccount_data: dict, sender_hotkey: str = None) -> bool:
