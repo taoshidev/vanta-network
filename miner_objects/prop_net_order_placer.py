@@ -24,6 +24,7 @@ REPO_VERSION = 'unknown'
 with open(ValiBkpUtils.get_meta_json_path(), 'r') as f:
     REPO_VERSION = json.loads(f.read()).get("subnet_version", "unknown")
 
+CONNECTION_ERROR_MSG = "Failed to connect to Vanta Network, please try again soon"
 
 # DEPRECATED: No longer used by simplified retry logic
 class SignalMetrics:
@@ -302,7 +303,7 @@ class PropNetOrderPlacer:
                     if attempt < self.MAX_NETWORK_RETRIES - 1:
                         await asyncio.sleep(self.NETWORK_RETRY_DELAY_SECONDS)
 
-            return {"success": False, "order_json": "", "error_message": "Failed to connect to mothership after retries"}
+            return {"success": False, "order_json": "", "error_message": CONNECTION_ERROR_MSG}
         finally:
             await dendrite.aclose_session()
 
@@ -318,7 +319,7 @@ class PropNetOrderPlacer:
         mothership_axon, other_axons = self._get_mothership_and_other_axons()
 
         if not mothership_axon and not self.running_unit_tests:
-            error_msg = "Mothership validator not found in validator list"
+            error_msg = CONNECTION_ERROR_MSG
             bt.logging.error(error_msg)
             if self.config.write_failed_signal_logs:
                 self.write_signal_to_failure_directory(signal_data, signal_file_path, error_msg)
@@ -394,9 +395,9 @@ class PropNetOrderPlacer:
                     "success": False,
                     "order_uuid": order_uuid,
                     "order_json": None,
-                    "error_message": "Could not connecto to main validator",
+                    "error_message": CONNECTION_ERROR_MSG,
                     "processing_time": time.time() - start_time,
-                    "message": "Order failed: Vanta Network unavailable, please try again"
+                    "message": CONNECTION_ERROR_MSG
                 }
 
             # Thread-safe UUID check
@@ -439,12 +440,8 @@ class PropNetOrderPlacer:
             if result["success"]:
                 self.write_signal_to_processed_directory(signal_data, fake_signal_file_path, result["order_json"])
                 message = "Order successfully processed by Vanta Network"
-            elif self.config.write_failed_signal_logs:
-                bt.logging.error(f"REST order {order_uuid} failed: {result['error_message']}")
-                self.write_signal_to_failure_directory(signal_data, fake_signal_file_path, result["error_message"])
-                message = f"Order failed on Vanta Network: {result['error_message']}"
             else:
-                self.write_signal_to_processed_directory(signal_data, fake_signal_file_path, result["order_json"])
+                self.write_signal_to_failure_directory(signal_data, fake_signal_file_path, result["error_message"])
                 message = f"Order failed on Vanta Network: {result['error_message']}"
 
             return {
