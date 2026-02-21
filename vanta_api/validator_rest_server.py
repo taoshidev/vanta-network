@@ -1670,7 +1670,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                             synthetic_hotkey=subaccount_info['synthetic_hotkey'],
                             account_size=subaccount_info['account_size'],
                             asset_class=subaccount_info['asset_class'],
-                            status=subaccount_info['status']
+                            status=subaccount_info['status'],
+                            hl_address=hl_address
                         )
                     except Exception as e:
                         bt.logging.warning(f"[REST_API] Failed to broadcast HL subaccount registration: {e}")
