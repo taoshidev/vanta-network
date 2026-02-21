@@ -494,7 +494,6 @@ class MinerRestServer(BaseRestServer):
         {
             "hl_address": "0x...",          // Required, 0x + 40 hex chars
             "account_size": float,           // Required, must be > 0
-            "payout_address": "0x...",       // Optional, EVM address (0x + 40 hex) for USDC payouts
             "admin": bool                    // Optional, default false
         }
 
@@ -526,7 +525,6 @@ class MinerRestServer(BaseRestServer):
 
             hl_address = request_data["hl_address"]
             admin = request_data.get("admin", False)
-            payout_address = request_data.get("payout_address")
 
             try:
                 account_size = float(request_data["account_size"])
@@ -541,13 +539,6 @@ class MinerRestServer(BaseRestServer):
                     'status': 'error',
                     'message': 'hl_address must be a valid Hyperliquid address (0x followed by 40 hex characters)'
                 }), 400
-
-            if payout_address is not None:
-                if not isinstance(payout_address, str) or not re.match(ValiConfig.HL_ADDRESS_REGEX, payout_address):
-                    return jsonify({
-                        'status': 'error',
-                        'message': 'payout_address must be a valid EVM address (0x followed by 40 hex characters)'
-                    }), 400
 
             if account_size <= 0:
                 return jsonify({'status': 'error', 'message': 'account_size must be positive'}), 400
@@ -593,8 +584,6 @@ class MinerRestServer(BaseRestServer):
                 "entity_hotkey": hotkey.ss58_address,
                 "hl_address": hl_address
             }
-            if payout_address is not None:
-                message_dict["payout_address"] = payout_address
             message = json.dumps(message_dict, sort_keys=True).encode('utf-8')
             signature = coldkey.sign(message).hex()
         except Exception as e:
@@ -612,8 +601,6 @@ class MinerRestServer(BaseRestServer):
                 "signature": signature,
                 "version": "2.0.0"
             }
-            if payout_address is not None:
-                payload["payout_address"] = payout_address
 
             response = requests.post(
                 f"{validator_url}/entity/create-hl-subaccount",
@@ -636,14 +623,12 @@ class MinerRestServer(BaseRestServer):
                     subaccount = response_data.get('subaccount', {})
                     from datetime import datetime, timezone
                     timestamp = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
-                    payout_line = f"Payout Address: {payout_address}\n" if payout_address else ""
                     self.slack_notifier.send_message(
                         f"✅ HL Subaccount created successfully!\n"
                         f"ID: {subaccount.get('subaccount_id')}\n"
                         f"UUID: {subaccount.get('subaccount_uuid')}\n"
                         f"Synthetic Hotkey: {subaccount.get('synthetic_hotkey')}\n"
                         f"HL Address: {hl_address}\n"
-                        f"{payout_line}"
                         f"Account Size: ${subaccount.get('account_size', 0):,.2f}\n"
                         f"Message: {response_data.get('message', '')}\n"
                         f"Created: {timestamp}\n"
