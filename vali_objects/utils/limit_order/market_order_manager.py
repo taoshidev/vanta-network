@@ -281,6 +281,8 @@ class MarketOrderManager():
         existing_position.set_returns(order.price)
         order_resized = existing_position.validate_order_size(order, max_position_value)
         if order.order_type == existing_position.position_type:
+            if buying_power <= 0:
+                raise SignalException(f"Insufficient buying power (${buying_power:.2f})")
             if abs(order.value) * (1 + transaction_fee * account_multiplier) >= buying_power:
                 sign = (-1 if order.order_type == OrderType.SHORT else 1)
                 order.value = buying_power / (1 + transaction_fee * account_multiplier) * sign
@@ -402,25 +404,45 @@ class MarketOrderManager():
     def process_flat_all_order(self, order_uuid, miner_repo_version, miner_hotkey, now_ms):
         bt.logging.info(f"Processing FLAT_ALL order for miner [{miner_hotkey}]")
 
+        # Determine which positions to close:
+        # - "ALL" keyword -> close all positions
+        # - Comma-separated position UUIDs -> close only matching positions
+        close_all = order_uuid and order_uuid.strip().upper() == "ALL"
+
         # Get all open positions for this miner
         open_positions = self._position_client.get_positions_for_hotkeys([miner_hotkey], only_open_positions=True).get(miner_hotkey)
 
         if not open_positions:
-            bt.logging.info(f"No open positions found for miner [{miner_hotkey}]")
+            bt.logging.warning(f"No open positions found for miner [{miner_hotkey}]")
             return {
                 "positions_closed": 0,
                 "positions_failed": 0,
                 "failed_trade_pairs": []
             }
 
-        total_positions = len(open_positions)
+        if close_all:
+            positions_to_close = open_positions
+        else:
+            # Parse comma-separated position UUIDs
+            order_uuids = [uuid.strip() for uuid in order_uuid.split(',')] if order_uuid else []
+            target_uuids = set(order_uuids)
+            positions_to_close = [p for p in open_positions if p.position_uuid in target_uuids]
+            if not positions_to_close:
+                bt.logging.info(f"No matching positions found for UUIDs {order_uuids} for miner [{miner_hotkey}]")
+                return {
+                    "positions_closed": 0,
+                    "positions_failed": 0,
+                    "failed_trade_pairs": []
+                }
+
+        total_positions = len(positions_to_close)
         cnt_positions_closed = 0
         cnt_positions_failed = 0
         failed_trade_pairs = []
 
-        bt.logging.info(f"Found {total_positions} open positions for miner [{miner_hotkey}], closing all...")
+        bt.logging.info(f"Found {total_positions} positions to close for miner [{miner_hotkey}] (close_all={close_all})")
 
-        for i, position in enumerate(open_positions):
+        for i, position in enumerate(positions_to_close):
             trade_pair = position.trade_pair
 
             try:
@@ -437,7 +459,7 @@ class MarketOrderManager():
 
                 # Acquire position lock before closing
                 with self._position_lock_client.get_lock(miner_hotkey, trade_pair.trade_pair_id):
-                    position_close_uuid = position.position_uuid[::-1]
+                    position_close_uuid = f"{position.position_uuid}_flat_all"
                     position_close_time = now_ms - (total_positions - i - 1)
 
                     self._add_order_to_existing_position(

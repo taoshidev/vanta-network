@@ -229,6 +229,18 @@ class ServerOrchestrator:
             required_in_testing=True,
             spawn_kwargs={'start_daemon': False}  # Daemon started later via orchestrator
         ),
+        'miner_account': ServerConfig(
+            server_class=None,
+            client_class=None,
+            required_in_testing=True,
+            spawn_kwargs={'start_daemon': False}
+        ),
+        'asset_selection': ServerConfig(
+            server_class=None,
+            client_class=None,
+            required_in_testing=True,
+            spawn_kwargs={}
+        ),
 
         # Tier 3: Depends on tier 2
         'position_manager': ServerConfig(
@@ -271,24 +283,6 @@ class ServerOrchestrator:
         ),
 
         # Tier 5: Aggregation and statistics (depends on all above)
-        'core_outputs': ServerConfig(
-            server_class=None,
-            client_class=None,
-            required_in_testing=True,
-            spawn_kwargs={'start_daemon': False}  # No daemon in testing
-        ),
-        'miner_statistics': ServerConfig(
-            server_class=None,
-            client_class=None,
-            required_in_testing=True,
-            spawn_kwargs={'start_daemon': False}  # No daemon in testing
-        ),
-        'asset_selection': ServerConfig(
-            server_class=None,
-            client_class=None,
-            required_in_testing=True,
-            spawn_kwargs={}
-        ),
         'entity': ServerConfig(
             server_class=None,
             client_class=None,
@@ -305,11 +299,17 @@ class ServerOrchestrator:
             required_in_validator=True,  # Auto-started with other servers
             spawn_kwargs={'start_daemon': False}  # Daemon started later via orchestrator.start_server_daemons()
         ),
-        'miner_account': ServerConfig(
+        'core_outputs': ServerConfig(
             server_class=None,
             client_class=None,
             required_in_testing=True,
-            spawn_kwargs={'start_daemon': False}
+            spawn_kwargs={'start_daemon': False}  # No daemon in testing
+        ),
+        'miner_statistics': ServerConfig(
+            server_class=None,
+            client_class=None,
+            required_in_testing=True,
+            spawn_kwargs={'start_daemon': False}  # No daemon in testing
         ),
     }
 

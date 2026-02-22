@@ -9,7 +9,7 @@ from pydantic import BaseModel, model_validator
 
 class Signal(BaseModel):
     trade_pair: Optional[TradePair] = None  # Optional for FLAT_ALL and LIMIT_CANCEL
-    order_type: OrderType
+    order_type: Optional[OrderType] = None
     leverage: Optional[float] = None    # Multiplier of account size
     value: Optional[float] = None       # USD notional value
     quantity: Optional[float] = None    # Base currency, number of lots/coins/shares/etc.

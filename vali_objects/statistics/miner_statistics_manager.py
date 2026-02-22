@@ -217,20 +217,14 @@ class MinerStatisticsManager:
         from vali_objects.contract.contract_client import ContractClient
         from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
         from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
+        from vali_objects.miner_account.miner_account_client import MinerAccountClient
 
-        self._position_client = PositionManagerClient(
-            port=ValiConfig.RPC_POSITIONMANAGER_PORT,
-            connection_mode=connection_mode,
-            connect_immediately=not running_unit_tests
-        )
+        self._position_client = PositionManagerClient(connection_mode=connection_mode)
         self._challengeperiod_client = ChallengePeriodClient(connection_mode=connection_mode)
         self._elimination_client = EliminationClient(connection_mode=connection_mode)
         self._perf_ledger_client = PerfLedgerClient(connection_mode=connection_mode)
         self._contract_client = ContractClient(connection_mode=connection_mode)
         self._asset_selection_client = AssetSelectionClient(connection_mode=connection_mode)
-
-        # MinerAccountClient - source of truth for account sizes
-        from vali_objects.miner_account.miner_account_client import MinerAccountClient
         self._miner_account_client = MinerAccountClient(connection_mode=connection_mode)
 
         self.metrics_calculator = MetricsCalculator(metrics=metrics)

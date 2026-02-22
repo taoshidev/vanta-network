@@ -24,6 +24,7 @@ REPO_VERSION = 'unknown'
 with open(ValiBkpUtils.get_meta_json_path(), 'r') as f:
     REPO_VERSION = json.loads(f.read()).get("subnet_version", "unknown")
 
+CONNECTION_ERROR_MSG = "Failed to connect to Vanta Network, please try again soon"
 
 # DEPRECATED: No longer used by simplified retry logic
 class SignalMetrics:
@@ -302,7 +303,7 @@ class PropNetOrderPlacer:
                     if attempt < self.MAX_NETWORK_RETRIES - 1:
                         await asyncio.sleep(self.NETWORK_RETRY_DELAY_SECONDS)
 
-            return {"success": False, "order_json": "", "error_message": "Failed to connect to mothership after retries"}
+            return {"success": False, "order_json": "", "error_message": CONNECTION_ERROR_MSG}
         finally:
             await dendrite.aclose_session()
 
@@ -318,7 +319,7 @@ class PropNetOrderPlacer:
         mothership_axon, other_axons = self._get_mothership_and_other_axons()
 
         if not mothership_axon and not self.running_unit_tests:
-            error_msg = "Mothership validator not found in validator list"
+            error_msg = CONNECTION_ERROR_MSG
             bt.logging.error(error_msg)
             if self.config.write_failed_signal_logs:
                 self.write_signal_to_failure_directory(signal_data, signal_file_path, error_msg)
@@ -329,7 +330,7 @@ class PropNetOrderPlacer:
         # Thread-safe UUID check
         with self._lock:
             execution_type = signal_data.get("execution_type", "MARKET")
-            is_uuid_reuse_allowed = execution_type in ("LIMIT_CANCEL", "LIMIT_EDIT")
+            is_uuid_reuse_allowed = execution_type in ("LIMIT_CANCEL", "LIMIT_EDIT", "FLAT_ALL")
             if miner_order_uuid in self.used_miner_uuids and not is_uuid_reuse_allowed:
                 bt.logging.warning(f"Duplicate miner order uuid {miner_order_uuid}, skipping")
                 return None
@@ -339,7 +340,12 @@ class PropNetOrderPlacer:
             signal=signal_data,
             miner_order_uuid=miner_order_uuid,
             repo_version=REPO_VERSION,
-            subaccount_id=signal_data.get('subaccount_id')
+            subaccount_id=signal_data.get('subaccount_id'),
+            successfully_processed=False,
+            error_message="",
+            should_retry=True,
+            validator_hotkey="",
+            order_json=""
         )
 
         result = await self._send_order(send_signal_request, mothership_axon, other_axons)
@@ -389,15 +395,15 @@ class PropNetOrderPlacer:
                     "success": False,
                     "order_uuid": order_uuid,
                     "order_json": None,
-                    "error_message": "Could not connecto to main validator",
+                    "error_message": CONNECTION_ERROR_MSG,
                     "processing_time": time.time() - start_time,
-                    "message": "Order failed: main validator not found"
+                    "message": CONNECTION_ERROR_MSG
                 }
 
             # Thread-safe UUID check
             with self._lock:
                 execution_type = str(signal.execution_type)
-                is_uuid_reuse_allowed = execution_type in ("LIMIT_CANCEL", "LIMIT_EDIT")
+                is_uuid_reuse_allowed = execution_type in ("LIMIT_CANCEL", "LIMIT_EDIT", "FLAT_ALL")
                 if order_uuid in self.used_miner_uuids and not is_uuid_reuse_allowed:
                     bt.logging.warning(f"Duplicate miner order uuid {order_uuid}, skipping")
                     return {
@@ -406,7 +412,7 @@ class PropNetOrderPlacer:
                         "order_json": None,
                         "error_message": "Duplicate order UUID",
                         "processing_time": time.time() - start_time,
-                        "message": "Order UUID already used"
+                        "message": "Order failed: duplicate order uuid"
                     }
                 self.used_miner_uuids.add(order_uuid)
 
@@ -433,14 +439,10 @@ class PropNetOrderPlacer:
             fake_signal_file_path = f"/rest-api/{order_uuid}"
             if result["success"]:
                 self.write_signal_to_processed_directory(signal_data, fake_signal_file_path, result["order_json"])
-                message = "Order successfully processed by Taoshi validator"
-            elif self.config.write_failed_signal_logs:
-                bt.logging.error(f"REST order {order_uuid} failed: {result['error_message']}")
-                self.write_signal_to_failure_directory(signal_data, fake_signal_file_path, result["error_message"])
-                message = "Order failed on Taoshi validator"
+                message = "Order successfully processed by Vanta Network"
             else:
-                self.write_signal_to_processed_directory(signal_data, fake_signal_file_path, result["order_json"])
-                message = "Order failed on Taoshi validator"
+                self.write_signal_to_failure_directory(signal_data, fake_signal_file_path, result["error_message"])
+                message = f"Order failed on Vanta Network: {result['error_message']}"
 
             return {
                 "success": result["success"],

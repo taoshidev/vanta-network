@@ -76,8 +76,10 @@ class LimitOrderManager(CacheController):
         self._closed_orders = {}
         self._last_fill_time = {}
         self._last_print_time_ms = 0
+        self._price_stats = {}
 
         self._read_limit_orders_from_disk()
+        self._needs_initial_bracket_sync = True
 
         # Create dedicated locks for protecting self._limit_orders dictionary
         # Convert limit orders structure to format expected by PositionLocks
@@ -656,12 +658,23 @@ class LimitOrderManager(CacheController):
         total_checked = 0
         total_filled = 0
 
+        if self._needs_initial_bracket_sync:
+            self._attach_bracket_orders_to_positions()
+            self._needs_initial_bracket_sync = False
+
         if self.running_unit_tests:
             print(f"[CHECK_AND_FILL_CALLED] check_and_fill_limit_orders(call_id={call_id}) called, {len(self._limit_orders)} trade pairs")
 
         if now_ms - self._last_print_time_ms > 60 * 1000:
             total_orders = sum(len(orders) for hotkey_dict in self._limit_orders.values() for orders in hotkey_dict.values())
             bt.logging.info(f"Checking {total_orders} limit orders across {len(self._limit_orders)} trade pairs")
+            for trade_pair, stats in self._price_stats.items():
+                bt.logging.info(
+                    f"[PRICE_STATS][{trade_pair.trade_pair_id}] "
+                    f"calls={stats['calls']} no_data={stats['no_data']} "
+                    f"full_window={stats['full_window_used']}(n={stats['full_window_cnt']}) "
+                    f"recent_window={stats['recent_window_used']}(n={stats['recent_window_cnt']})"
+                )
             self._last_print_time_ms = now_ms
 
         for trade_pair, hotkey_dict in self._limit_orders.items():
@@ -836,12 +849,37 @@ class LimitOrderManager(CacheController):
         Returns:
             The median price source, or None if no price sources available
         """
+        if trade_pair not in self._price_stats:
+            self._price_stats[trade_pair] = {
+                "calls": 0,
+                "no_data": 0,
+                "full_window_used": 0,
+                "full_window_cnt": 0,
+                "recent_window_used": 0,
+                "recent_window_cnt": 0,
+            }
+        stats = self._price_stats[trade_pair]
+        stats["calls"] += 1
+
         end_ms = now_ms
         start_ms = now_ms - ValiConfig.LIMIT_ORDER_PRICE_BUFFER_MS
         price_sources = self.live_price_fetcher.get_ws_price_sources_in_window(trade_pair, start_ms, end_ms)
-
         if not price_sources:
+            stats["no_data"] += 1
             return None
+
+        self._price_stats[trade_pair]["full_window_cnt"] = len(price_sources)
+
+        recent_cutoff_ms = now_ms - ValiConfig.LIMIT_ORDER_PRICE_BUFFER_MS / 2
+        recent_price_sources = [ps for ps in price_sources if ps.start_ms > recent_cutoff_ms]
+        self._price_stats[trade_pair]["recent_window_cnt"] = len(recent_price_sources)
+
+        # Use the smaller window if there are enough price sources
+        if len(recent_price_sources) > ValiConfig.MIN_UNIQUE_PRICES_FOR_LIMIT_FILL:
+            price_sources = recent_price_sources
+            stats["recent_window_used"] += 1
+        else:
+            stats["full_window_used"] += 1
 
         # Sort price sources by close price and return median
         sorted_sources = sorted(price_sources, key=lambda ps: ps.close)
@@ -1202,7 +1240,6 @@ class LimitOrderManager(CacheController):
 
         total_orders_read = 0
         total_bracket_orders = 0
-        total_bracket_attached = 0
 
         bt.logging.info(f"[LIMIT ORDER DISK] Reading limit orders from disk for {len(hotkeys)} hotkeys...")
 
@@ -1226,14 +1263,8 @@ class LimitOrderManager(CacheController):
                     if OrderSource.is_open(order.src):
                         self._limit_orders[trade_pair][hotkey].append(order)
                         total_orders_read += 1
-                        # Attach bracket orders to position
                         if order.src == OrderSource.BRACKET_UNFILLED:
                             total_bracket_orders += 1
-                            attached = self.position_manager.attach_bracket_order_to_position(
-                                hotkey, trade_pair.trade_pair_id, order.to_python_dict()
-                            )
-                            if attached:
-                                total_bracket_attached += 1
                     else:
                         if hotkey not in self._closed_orders:
                             self._closed_orders[hotkey] = []
@@ -1249,7 +1280,31 @@ class LimitOrderManager(CacheController):
             for hotkey in self._limit_orders[trade_pair]:
                 self._limit_orders[trade_pair][hotkey].sort(key=lambda o: o.processed_ms)
 
-        bt.logging.info(f"[LIMIT ORDER DISK] Finished reading limit orders: {total_orders_read} open orders, {total_bracket_orders} bracket orders, {total_bracket_attached} attached to positions")
+        bt.logging.info(f"[LIMIT ORDER DISK] Finished reading limit orders: {total_orders_read} open orders, {total_bracket_orders} bracket orders (attachment deferred to first daemon iteration)")
+
+    def _attach_bracket_orders_to_positions(self):
+        """
+        Attach bracket orders to their positions. Called once on the first daemon iteration
+        after startup to ensure positions are fully loaded before attaching.
+        """
+        total_bracket_orders = 0
+        total_bracket_attached = 0
+
+        for trade_pair, hotkey_dict in self._limit_orders.items():
+            for hotkey, orders in hotkey_dict.items():
+                for order in orders:
+                    if order.src == OrderSource.BRACKET_UNFILLED:
+                        total_bracket_orders += 1
+                        try:
+                            attached = self.position_manager.attach_bracket_order_to_position(
+                                hotkey, trade_pair.trade_pair_id, order.to_python_dict()
+                            )
+                            if attached:
+                                total_bracket_attached += 1
+                        except Exception as e:
+                            bt.logging.error(f"Error attaching bracket order {order.order_uuid} to position: {e}")
+
+        bt.logging.info(f"[LIMIT ORDER INIT] Attached {total_bracket_attached}/{total_bracket_orders} bracket orders to positions")
 
     def _sync_pending_bracket_orders(self, miner_hotkey: str, position):
         """

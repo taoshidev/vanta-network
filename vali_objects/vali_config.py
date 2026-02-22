@@ -322,6 +322,8 @@ class ValiConfig:
     INDICES_MAX_LEVERAGE = 5
     EQUITIES_MIN_LEVERAGE = 0.1
     EQUITIES_MAX_LEVERAGE = 2
+    COMMODITIES_MIN_LEVERAGE = 0.1
+    COMMODITIES_MAX_LEVERAGE = 4
 
     # Minimum position size limits
     FOREX_MIN_POSITION_SIZE_LOTS = 0.01  # 0.01 standard lots
@@ -446,7 +448,8 @@ class ValiConfig:
     SUBACCOUNT_COLLATERAL_AMOUNT = 1000.0  # Placeholder collateral amount per subaccount
 
     # Challenge Period Configuration
-    SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD = 0.08  # 8% returns required to pass challenge period
+    SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD = 0.08  # 8% returns required to pass evaluation
+    SUBACCOUNT_CRYPTO_CHALLENGE_RETURNS_THRESHOLD = 0.1  # 10% returns required to pass crypto evaluation
     SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD = 0.05  # 5% max drawdown allowed during challenge period
 
     # Subaccount promotion requirements
@@ -525,7 +528,7 @@ class ValiConfig:
 
     LIMIT_ORDER_PRICE_BUFFER_TOLERANCE = 0.001 # +-0.1% tolerance
     LIMIT_ORDER_PRICE_BUFFER_MS = 30 * 1000
-    MIN_UNIQUE_PRICES_FOR_LIMIT_FILL = 5
+    MIN_UNIQUE_PRICES_FOR_LIMIT_FILL = 10
 
 assert ValiConfig.CRYPTO_MIN_LEVERAGE >= ValiConfig.ORDER_MIN_LEVERAGE
 assert ValiConfig.CRYPTO_MAX_LEVERAGE <= ValiConfig.ORDER_MAX_LEVERAGE
@@ -617,9 +620,9 @@ class TradePair(Enum):
               TradePairCategory.FOREX, ForexSubcategory.G5]
 
 
-    # "Commodities" (Bundle with Forex for now) (temporariliy paused for trading)
-    XAUUSD = ["XAUUSD", "XAU/USD", 0.00007, ValiConfig.FOREX_MIN_LEVERAGE, ValiConfig.FOREX_MAX_LEVERAGE, TradePairCategory.FOREX]
-    XAGUSD = ["XAGUSD", "XAG/USD", 0.00007, ValiConfig.FOREX_MIN_LEVERAGE, ValiConfig.FOREX_MAX_LEVERAGE, TradePairCategory.FOREX]
+    # "Commodities" (Bundle with Forex for now)
+    XAUUSD = ["XAUUSD", "XAU/USD", 0.00007, ValiConfig.COMMODITIES_MIN_LEVERAGE, ValiConfig.COMMODITIES_MAX_LEVERAGE, TradePairCategory.FOREX]
+    XAGUSD = ["XAGUSD", "XAG/USD", 0.00007, ValiConfig.COMMODITIES_MIN_LEVERAGE, ValiConfig.COMMODITIES_MAX_LEVERAGE, TradePairCategory.FOREX]
 
     # Equities - Stocks
     # Technology (10)
@@ -744,6 +747,12 @@ class TradePair(Enum):
 
     @property
     def lot_size(self):
+        trade_pair_lot_size_override = {
+            'XAUUSD': 100,
+            'XAGUSD': 5_000,
+        }
+        if self.trade_pair_id in trade_pair_lot_size_override:
+            return trade_pair_lot_size_override[self.trade_pair_id]
         trade_pair_lot_size = {TradePairCategory.CRYPTO: 1,
                                TradePairCategory.FOREX: 100_000,
                                TradePairCategory.INDICES: 1,

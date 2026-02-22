@@ -670,8 +670,12 @@ class Position(BaseModel):
             self._position_log("setting new position type as SHORT. Trade pair: " + str(self.trade_pair.trade_pair_id))
             self.position_type = OrderType.SHORT
         else:
-            print(self)
-            raise ValueError("leverage of 0 provided as initial order.")
+            bt.logging.error(
+                f"Position {self.position_uuid} has zero leverage initial order for "
+                f"{self.trade_pair.trade_pair_id}. Closing with 0 realized PnL."
+            )
+            self.position_type = order.order_type if order.order_type != OrderType.FLAT else OrderType.LONG
+            self.close_out_position(order.processed_ms)
 
     def close_out_position(self, close_ms):
         self.position_type = OrderType.FLAT
@@ -700,9 +704,9 @@ class Position(BaseModel):
         # Flatten order
         flatten = False
         if self.position_type == OrderType.LONG:
-            flatten = proposed_quantity <= 0
+            flatten = proposed_quantity <= 0 or proposed_value <= 0
         elif self.position_type == OrderType.SHORT:
-            flatten = proposed_quantity >= 0
+            flatten = proposed_quantity >= 0 or proposed_value >= 0
 
         if flatten:
             order.order_type = OrderType.FLAT
@@ -712,6 +716,7 @@ class Position(BaseModel):
             return False
 
         # If order increases position size, validate max position size
+        clamped = False
         if order.order_type == self.position_type:
             if abs(self.net_value + self.unrealized_pnl) >= max_position_value:
                 raise ValueError(f"Position at max ${abs(self.net_value):.2f} (limit: ${max_position_value:.2f})")
@@ -720,7 +725,9 @@ class Position(BaseModel):
             if abs(order.value) > max_order_value:
                 sign = 1 if self.position_type == OrderType.LONG else -1
                 order.value = sign * max_order_value
-                return True
+                order.quantity = (order.value * order.usd_base_rate) / order.trade_pair.lot_size
+                proposed_quantity = self.net_quantity + order.quantity
+                clamped = True
 
         # Validate against min position size
         min_position_leverage, _ = leverage_utils.get_position_leverage_bounds(self.trade_pair)
@@ -738,7 +745,7 @@ class Position(BaseModel):
                 raise ValueError(
                     f"{self.trade_pair.trade_pair_id}: below min leverage {min_position_leverage} ({abs(proposed_leverage)})")
 
-        return False
+        return clamped
 
     def apply_stock_split(self, stock_split_ratio: float, execution_date: str) -> bool:
         """

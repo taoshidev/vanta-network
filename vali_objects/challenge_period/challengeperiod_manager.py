@@ -435,6 +435,8 @@ class ChallengePeriodManager(CacheController):
         hotkeys_to_promote = []
         miners_to_eliminate = {}
 
+        asset_classes = self.asset_selection_client.get_asset_selections()
+
         for hotkey, bucket_start_time in inspection_hotkeys.items():
 
             # Unified check: Minimum ledger
@@ -468,17 +470,25 @@ class ChallengePeriodManager(CacheController):
             if subaccount_account_size is None or subaccount_account_size <= 0:
                 continue
 
+            subaccount_asset_class = asset_classes.get(hotkey)
+            if subaccount_asset_class is None:
+                bt.logging.error(f"[SYNTH_EVAL {hotkey}] Subaccount does not have asset class - unexpected")
+                continue
+
             # Calculate returns percentage: (current_equity - starting_equity) / starting_equity
             returns_percentage = (total_equity - subaccount_account_size) / subaccount_account_size
+            returns_threshold = ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD
+
+            if subaccount_asset_class == TradePairCategory.CRYPTO:
+                returns_threshold = ValiConfig.SUBACCOUNT_CRYPTO_CHALLENGE_RETURNS_THRESHOLD
+
+            # Promote if returns meet threshold
+            if returns_percentage >= returns_threshold:
+                hotkeys_to_promote.append(hotkey)
 
             bt.logging.info(
                 f"[SYNTH_EVAL {hotkey}] total_equity={total_equity:.2f}, account_size={subaccount_account_size:.2f}, returns={returns_percentage:.2%}"
             )
-
-            # Promote if returns meet threshold
-            should_promote = returns_percentage >= ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD
-            if should_promote:
-                hotkeys_to_promote.append(hotkey)
 
         bt.logging.info(
             f"[SYNTH_EVAL] Evaluation complete: {len(inspection_hotkeys)} evaluated, "
