@@ -499,9 +499,13 @@ class ChallengePeriodManager(CacheController):
             if returns_percentage >= returns_threshold:
                 hotkeys_to_promote.append(hotkey)
 
-            bt.logging.info(
-                f"[SYNTH_EVAL {hotkey}] current_return={current_return:.6f}, returns={returns_percentage:.2%}"
-            )
+            near_elimination = drawdown_pct >= threshold_pct * 0.5
+            near_promotion = returns_percentage >= returns_threshold * 0.5
+            if near_elimination or near_promotion:
+                bt.logging.info(
+                    f"[SYNTH_EVAL {hotkey}] current_return={current_return:.6f}, returns={returns_percentage:.2%}, "
+                    f"drawdown={drawdown_pct:.2f}% (elim threshold={threshold_pct:.1f}%)"
+                )
 
         bt.logging.info(
             f"[SYNTH_EVAL] Evaluation complete: {len(inspection_hotkeys)} evaluated, "
