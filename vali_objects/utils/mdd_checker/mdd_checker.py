@@ -28,6 +28,7 @@ from vali_objects.position_management.position_manager_client import PositionMan
 from vali_objects.utils.price_slippage_model import PriceSlippageModel
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
+from vali_objects.miner_account.miner_account_client import MinerAccountClient
 from vali_objects.vali_config import ValiConfig, TradePair, RPCConnectionMode
 from vali_objects.vali_dataclasses.price_source import PriceSource
 
@@ -66,6 +67,7 @@ class MDDChecker(CacheController):
         )
         self._position_client = PositionManagerClient()
         self._position_lock_client = PositionLockClient(running_unit_tests=running_unit_tests)
+        self._miner_account_client = MinerAccountClient(connection_mode=connection_mode)
 
         self.all_trade_pairs = [trade_pair for trade_pair in TradePair]
         self._prev_iteration_prices = {}
@@ -214,6 +216,19 @@ class MDDChecker(CacheController):
 
         for hotkey, sorted_positions in hotkey_to_positions.items():
             self.perform_price_corrections(hotkey, sorted_positions, tp_to_price_sources, iteration_epoch)
+
+        # Update max_return (HWM) on MinerAccount for all miners
+        accounts = self._miner_account_client.get_accounts(list(hotkey_to_positions.keys()))
+        hotkey_to_return = {}
+        for hotkey, account in accounts.items():
+            account_size = account.get('account_size', 0)
+            if account_size <= 0:
+                continue
+            balance = account.get('balance', 0)
+            unrealized_pnl = self._position_client.get_unrealized_pnl(hotkey)
+            hotkey_to_return[hotkey] = (balance + unrealized_pnl) / account_size
+        if hotkey_to_return:
+            self._miner_account_client.update_max_returns(hotkey_to_return)
 
         # Log aggregate timing statistics
         if self.position_refresh_count > 0:

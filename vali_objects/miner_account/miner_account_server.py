@@ -237,6 +237,17 @@ class MinerAccountServer(RPCServerBase):
             return None
         return account.to_dict()
 
+    def get_accounts(self, hotkeys: list) -> Dict[str, dict]:
+        """Get accounts for multiple hotkeys. Returns dict of hotkey -> account dict."""
+        accounts = self._manager.get_accounts(hotkeys)
+        return {hk: account.to_dict() for hk, account in accounts.items()}
+
+    def update_max_returns(self, hotkey_to_return: dict) -> None:
+        """Batch update HWM for multiple hotkeys. Saves to disk once."""
+        self._manager.update_max_returns(hotkey_to_return)
+
+
+
     def set_miner_bucket(self, hotkey: str, bucket_value: Optional[str]) -> None:
         """Set the miner bucket on an account. Converts string to MinerBucket enum."""
         bucket = MinerBucket(bucket_value) if bucket_value else None

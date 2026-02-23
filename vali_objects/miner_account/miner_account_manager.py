@@ -77,6 +77,7 @@ class MinerAccount:
     collateral_records: List[CollateralRecord] = None  # Historical CollateralRecords (List[CollateralRecord])
     last_interest_date_ms: Optional[int] = None  # Last date interest was applied
     miner_bucket: Optional[MinerBucket] = None  # Pushed by ChallengePeriodManager
+    max_return: float = 1.0  # High water mark for portfolio return
 
     def __post_init__(self):
         """Initialize collateral_records to empty list if None."""
@@ -141,6 +142,7 @@ class MinerAccount:
         self.total_interest_paid = 0
         self.last_interest_date_ms = None
         self.miner_bucket = None
+        self.max_return = 1.0
 
 
     def apply_interest(self, current_time_ms: int, running_unit_tests: bool = False) -> bool:
@@ -211,7 +213,8 @@ class MinerAccount:
             'total_interest_paid': self.total_interest_paid,
             'total_fees_paid': self.total_fees_paid,
             'last_interest_date_ms': self.last_interest_date_ms,
-            'miner_bucket': self.miner_bucket.value if self.miner_bucket else None
+            'miner_bucket': self.miner_bucket.value if self.miner_bucket else None,
+            'max_return': self.max_return
         }
 
         if include_collateral_records:
@@ -384,6 +387,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     total_fees_paid = last_record.get("total_fees_paid", 0.0)
                     last_interest_date_ms = last_record.get("last_interest_date_ms")
                     miner_bucket_str = last_record.get("miner_bucket")
+                    max_return = last_record.get("max_return", 1.0)
                 else:
                     total_realized_pnl = None
                     capital_used = None
@@ -392,6 +396,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     total_fees_paid = 0.0
                     last_interest_date_ms = None
                     miner_bucket_str = None
+                    max_return = 1.0
 
                 # Parse collateral records
                 for record_data in records_list:
@@ -437,7 +442,8 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     asset_class=asset_class,
                     collateral_records=collateral_records,
                     last_interest_date_ms=last_interest_date_ms,
-                    miner_bucket=miner_bucket
+                    miner_bucket=miner_bucket,
+                    max_return=max_return
                 )
 
             except Exception as e:
@@ -671,6 +677,25 @@ class MinerAccountManager(ValidatorBroadcastBase):
     def get_account(self, hotkey: str) -> Optional[MinerAccount]:
         """Get account if it exists, without creating."""
         return self.accounts.get(hotkey)
+
+    def get_accounts(self, hotkeys: List[str]) -> Dict[str, MinerAccount]:
+        """Get accounts for multiple hotkeys. Returns dict of hotkey -> MinerAccount for existing accounts."""
+        with self._accounts_lock:
+            return {hk: self.accounts[hk] for hk in hotkeys if hk in self.accounts}
+
+    def update_max_returns(self, hotkey_to_return: Dict[str, float]) -> None:
+        """Batch update HWM for multiple hotkeys. Saves to disk once at the end."""
+        with self._accounts_lock:
+            write_to_disk = False
+            for hotkey, current_return in hotkey_to_return.items():
+                account = self.accounts.get(hotkey)
+                if account and current_return > account.max_return:
+                    account.max_return = current_return
+                    write_to_disk = True
+
+            if write_to_disk:
+                self._save_accounts_to_disk()
+
 
     def set_miner_bucket(self, hotkey: str, bucket: Optional[MinerBucket]) -> None:
         """Set the miner bucket on an account. Called by ChallengePeriodManager via RPC."""
