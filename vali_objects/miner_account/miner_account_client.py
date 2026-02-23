@@ -309,9 +309,9 @@ class MinerAccountClient(RPCClientBase):
         """
         return self._server.update_asset_selection(hotkey, asset_selection)
 
-    def process_fee(self, hotkey: str, fee_usd: float):
-        """Add fee to total_fees_paid for a miner account."""
-        self._server.process_fee(hotkey, fee_usd)
+    def process_fees(self, hotkey_to_fee: Dict[str, float]) -> None:
+        """Batch update total_fees_paid for multiple hotkeys. Saves to disk once."""
+        self._server.process_fees(hotkey_to_fee)
 
     def apply_daily_interest(self) -> int:
         """Apply daily interest to accounts with outstanding margin loans."""

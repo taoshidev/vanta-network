@@ -834,11 +834,12 @@ class MinerAccountManager(ValidatorBroadcastBase):
 
         return accounts_processed
 
-    def process_fee(self, hotkey: str, fee_usd: float):
-        """Add fee to total_fees_paid for a miner account."""
+    def process_fees(self, hotkey_to_fee: Dict[str, float]) -> None:
+        """Batch update total_fees_paid for multiple hotkeys. Saves to disk once at the end."""
         with self._accounts_lock:
-            account = self.get_or_create(hotkey)
-            account.total_fees_paid += fee_usd
+            for hotkey, fee_usd in hotkey_to_fee.items():
+                account = self.get_or_create(hotkey)
+                account.total_fees_paid += fee_usd
             self._save_accounts_to_disk()
 
     # ==================== Asset Selection / Withdrawal Methods ====================

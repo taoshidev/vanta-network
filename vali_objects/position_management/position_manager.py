@@ -1137,6 +1137,7 @@ class PositionManager:
             time_ms = TimeUtil.now_in_millis()
         total_fee_charged = 0.0
         positions_charged = 0
+        hotkey_to_fee = {}
 
         for hotkey, positions_dict in self.hotkey_to_open_positions.items():
             hotkey_fee = 0.0
@@ -1148,11 +1149,14 @@ class PositionManager:
                     self._write_position_to_disk(position)
 
             if hotkey_fee > 0:
-                try:
-                    self._miner_account_client.process_fee(hotkey, hotkey_fee)
-                except Exception as e:
-                    bt.logging.error(f"Failed to charge carry fee for {hotkey}: {e}")
+                hotkey_to_fee[hotkey] = hotkey_fee
                 total_fee_charged += hotkey_fee
+
+        if hotkey_to_fee:
+            try:
+                self._miner_account_client.process_fees(hotkey_to_fee)
+            except Exception as e:
+                bt.logging.error(f"Failed to charge carry fees: {e}")
 
         if positions_charged > 0:
             bt.logging.info(
