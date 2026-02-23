@@ -164,7 +164,7 @@ class MDDChecker(CacheController):
         # Time the RPC read of positions
         rpc_start = time.perf_counter()
         hotkey_to_positions = self._position_client.get_positions_for_hotkeys(
-            self._metagraph_client.get_hotkeys(),
+            self._position_client.get_all_hotkeys(),
             filter_eliminations=True,
             sort_positions=True
         )
