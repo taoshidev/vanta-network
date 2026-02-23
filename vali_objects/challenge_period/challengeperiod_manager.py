@@ -414,13 +414,12 @@ class ChallengePeriodManager(CacheController):
             bt.logging.warning(f"[SYNTHETIC_CP] Error checking returns for {hotkey}: {e}")
             return False
 
-    def _compute_portfolio_return(self, hotkey: str) -> Optional[float]:
+    def _compute_portfolio_return(self, hotkey: str, account: Optional[dict] = None) -> Optional[float]:
         """Compute current portfolio return as (balance + unrealized_pnl) / account_size.
 
         Returns None if account data is unavailable.
         """
-        account = self._miner_account_client.get_account(hotkey)
-        if not account:
+        if account is None:
             return None
         account_size = account.get('account_size', 0)
         if account_size <= 0:
@@ -451,6 +450,7 @@ class ChallengePeriodManager(CacheController):
         miners_to_eliminate = {}
 
         asset_classes = self.asset_selection_client.get_asset_selections()
+        accounts = self._miner_account_client.get_accounts(list(inspection_hotkeys.keys()))
 
         for hotkey, bucket_start_time in inspection_hotkeys.items():
 
@@ -463,12 +463,13 @@ class ChallengePeriodManager(CacheController):
                 continue
 
             # Compute portfolio return: (balance + unrealized_pnl) / account_size
-            current_return = self._compute_portfolio_return(hotkey)
+            current_return = self._compute_portfolio_return(hotkey, accounts.get(hotkey))
             if current_return is None:
                 continue
 
             # Check drawdown from MinerAccount HWM (resets on promotion)
-            max_return = self._miner_account_client.get_max_return(hotkey)
+            account = accounts.get(hotkey, {})
+            max_return = account.get('max_return', 1.0)
             drawdown_pct = (1 - current_return / max_return) * 100
             threshold_pct = ValiConfig.SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD * 100
             if drawdown_pct >= threshold_pct:
@@ -537,6 +538,8 @@ class ChallengePeriodManager(CacheController):
         promotion_eligible_hotkeys = []
         rank_eligible_hotkeys = []
 
+        accounts = self._miner_account_client.get_accounts(list(inspection_hotkeys.keys()))
+
         for hotkey, bucket_start_time in inspection_hotkeys.items():
             bucket = self.get_miner_bucket(hotkey)
 
@@ -564,8 +567,9 @@ class ChallengePeriodManager(CacheController):
             # Unified check: Drawdown during challenge/probation period
             # NOTE: This is for FAILING the challenge period (FAILED_CHALLENGE_PERIOD_DRAWDOWN)
             # EliminationManager separately handles ongoing 10% max drawdown for all miners
-            current_return = self._compute_portfolio_return(hotkey)
-            max_return = self._miner_account_client.get_max_return(hotkey)
+            current_return = self._compute_portfolio_return(hotkey, accounts.get(hotkey))
+            account = accounts.get(hotkey, {})
+            max_return = account.get('max_return', 1.0)
             if current_return is not None:
                 drawdown_pct = (1 - current_return / max_return) * 100
                 if drawdown_pct >= ValiConfig.DRAWDOWN_MAXVALUE_PERCENTAGE:

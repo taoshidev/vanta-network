@@ -218,17 +218,17 @@ class MDDChecker(CacheController):
             self.perform_price_corrections(hotkey, sorted_positions, tp_to_price_sources, iteration_epoch)
 
         # Update max_return (HWM) on MinerAccount for all miners
-        for hotkey in hotkey_to_positions.keys():
-            account = self._miner_account_client.get_account(hotkey)
-            if not account:
-                continue
+        accounts = self._miner_account_client.get_accounts(list(hotkey_to_positions.keys()))
+        hotkey_to_return = {}
+        for hotkey, account in accounts.items():
             account_size = account.get('account_size', 0)
             if account_size <= 0:
                 continue
             balance = account.get('balance', 0)
             unrealized_pnl = self._position_client.get_unrealized_pnl(hotkey)
-            portfolio_return = (balance + unrealized_pnl) / account_size
-            self._miner_account_client.update_max_return(hotkey, portfolio_return)
+            hotkey_to_return[hotkey] = (balance + unrealized_pnl) / account_size
+        if hotkey_to_return:
+            self._miner_account_client.update_max_returns(hotkey_to_return)
 
         # Log aggregate timing statistics
         if self.position_refresh_count > 0:

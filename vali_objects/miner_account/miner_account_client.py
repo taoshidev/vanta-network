@@ -212,13 +212,24 @@ class MinerAccountClient(RPCClientBase):
         """
         return self._server.get_account(hotkey)
 
-    def update_max_return(self, hotkey: str, current_return: float) -> float:
-        """Update HWM if current_return exceeds it. Returns (possibly updated) max_return."""
-        return self._server.update_max_return(hotkey, current_return)
+    def get_accounts(self, hotkeys: list) -> Dict[str, dict]:
+        """
+        Get accounts for multiple hotkeys in a single RPC call.
 
-    def get_max_return(self, hotkey: str) -> float:
-        """Get the high water mark (max_return) for a miner."""
-        return self._server.get_max_return(hotkey)
+        Args:
+            hotkeys: List of miner hotkeys to look up
+
+        Returns:
+            Dict of hotkey -> account dict for existing accounts.
+            Hotkeys without accounts are omitted from the result.
+        """
+        return self._server.get_accounts(hotkeys)
+
+    def update_max_returns(self, hotkey_to_return: Dict[str, float]) -> None:
+        """Batch update HWM for multiple hotkeys. Saves to disk once."""
+        self._server.update_max_returns(hotkey_to_return)
+
+
 
     def set_miner_bucket(self, hotkey: str, bucket: Optional[MinerBucket]) -> None:
         """Set the miner bucket on an account. Converts MinerBucket to string for RPC."""

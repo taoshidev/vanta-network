@@ -77,7 +77,7 @@ class MinerAccount:
     collateral_records: List[CollateralRecord] = None  # Historical CollateralRecords (List[CollateralRecord])
     last_interest_date_ms: Optional[int] = None  # Last date interest was applied
     miner_bucket: Optional[MinerBucket] = None  # Pushed by ChallengePeriodManager
-    max_return: float = 1.0  # High water mark for portfolio return (1.0 = break-even). Resets on promotion.
+    max_return: float = 1.0  # High water mark for portfolio return
 
     def __post_init__(self):
         """Initialize collateral_records to empty list if None."""
@@ -678,22 +678,24 @@ class MinerAccountManager(ValidatorBroadcastBase):
         """Get account if it exists, without creating."""
         return self.accounts.get(hotkey)
 
-    def update_max_return(self, hotkey: str, current_return: float) -> float:
-        """Update HWM if current_return exceeds it. Returns (possibly updated) max_return."""
+    def get_accounts(self, hotkeys: List[str]) -> Dict[str, MinerAccount]:
+        """Get accounts for multiple hotkeys. Returns dict of hotkey -> MinerAccount for existing accounts."""
         with self._accounts_lock:
-            account = self.accounts.get(hotkey)
-            if not account:
-                return 1.0
-            if current_return > account.max_return:
-                account.max_return = current_return
-                self._save_accounts_to_disk()
-            return account.max_return
+            return {hk: self.accounts[hk] for hk in hotkeys if hk in self.accounts}
 
-    def get_max_return(self, hotkey: str) -> float:
-        """Get the high water mark (max_return) for a miner."""
+    def update_max_returns(self, hotkey_to_return: Dict[str, float]) -> None:
+        """Batch update HWM for multiple hotkeys. Saves to disk once at the end."""
         with self._accounts_lock:
-            account = self.accounts.get(hotkey)
-            return account.max_return if account else 1.0
+            write_to_disk = False
+            for hotkey, current_return in hotkey_to_return.items():
+                account = self.accounts.get(hotkey)
+                if account and current_return > account.max_return:
+                    account.max_return = current_return
+                    write_to_disk = True
+
+            if write_to_disk:
+                self._save_accounts_to_disk()
+
 
     def set_miner_bucket(self, hotkey: str, bucket: Optional[MinerBucket]) -> None:
         """Set the miner bucket on an account. Called by ChallengePeriodManager via RPC."""

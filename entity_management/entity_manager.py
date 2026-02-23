@@ -43,8 +43,6 @@ from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_client import DebtLed
 from vali_objects.contract.contract_client import ContractClient
 from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
 from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
-
-
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from time_util.time_util import TimeUtil
 from vanta_api.websocket_notifier import WebSocketNotifierClient
@@ -940,9 +938,6 @@ class EntityManager(ValidatorBroadcastBase):
             elimination_data = self._elimination_client.get_elimination(synthetic_hotkey)
         except Exception as e:
             bt.logging.error(f"[ENTITY_MANAGER] Elimination data unavailable for {synthetic_hotkey}: {e}")
-
-        # max_return is now tracked on MinerAccount (resets on promotion)
-        # No need to override from PerfLedger
 
         # 3. Build aggregated response
         return {
