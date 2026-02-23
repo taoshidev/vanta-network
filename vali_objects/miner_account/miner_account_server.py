@@ -237,6 +237,14 @@ class MinerAccountServer(RPCServerBase):
             return None
         return account.to_dict()
 
+    def update_max_return(self, hotkey: str, current_return: float) -> float:
+        """Update HWM if current_return exceeds it. Returns (possibly updated) max_return."""
+        return self._manager.update_max_return(hotkey, current_return)
+
+    def get_max_return(self, hotkey: str) -> float:
+        """Get the high water mark (max_return) for a miner."""
+        return self._manager.get_max_return(hotkey)
+
     def set_miner_bucket(self, hotkey: str, bucket_value: Optional[str]) -> None:
         """Set the miner bucket on an account. Converts string to MinerBucket enum."""
         bucket = MinerBucket(bucket_value) if bucket_value else None

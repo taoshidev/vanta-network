@@ -43,8 +43,8 @@ from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_client import DebtLed
 from vali_objects.contract.contract_client import ContractClient
 from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
 from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
-from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
-from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import TP_ID_PORTFOLIO
+
+
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from time_util.time_util import TimeUtil
 from vanta_api.websocket_notifier import WebSocketNotifierClient
@@ -212,13 +212,6 @@ class EntityManager(ValidatorBroadcastBase):
 
         # Create LimitOrderClient for unfilled limit orders
         self._limit_order_client = LimitOrderClient(
-            connection_mode=connection_mode,
-            connect_immediately=False,
-            running_unit_tests=running_unit_tests
-        )
-
-        # Create PerfLedgerClient for real-time HWM data
-        self._perf_ledger_client = PerfLedgerClient(
             connection_mode=connection_mode,
             connect_immediately=False,
             running_unit_tests=running_unit_tests
@@ -948,20 +941,8 @@ class EntityManager(ValidatorBroadcastBase):
         except Exception as e:
             bt.logging.error(f"[ENTITY_MANAGER] Elimination data unavailable for {synthetic_hotkey}: {e}")
 
-        # TODO: revisit storing hwm logic elsewhere
-        # HWM data (real-time from perf ledger)
-        try:
-            bundle = self._perf_ledger_client.get_perf_ledger_for_hotkey(synthetic_hotkey)
-            if bundle and synthetic_hotkey in bundle:
-                hotkey_bundle = bundle[synthetic_hotkey]
-                if TP_ID_PORTFOLIO in hotkey_bundle:
-                    if account_size_data is None:
-                        account_size_data = {}
-                    account_size_data['max_return'] = hotkey_bundle[TP_ID_PORTFOLIO].max_return
-            else:
-                bt.logging.error(f"[ENTITY_MANAGER] could not find perf ledger for {synthetic_hotkey}")
-        except Exception as e:
-            bt.logging.error(f"[ENTITY_MANAGER] HWM data unavailable for {synthetic_hotkey}: {e}")
+        # max_return is now tracked on MinerAccount (resets on promotion)
+        # No need to override from PerfLedger
 
         # 3. Build aggregated response
         return {
