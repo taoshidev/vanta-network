@@ -172,9 +172,16 @@ class DatabentoDataService(BaseDataService):
         # Convert nanoseconds to milliseconds
         timestamp_ms = msg.ts_event // 1_000_000
 
+        # Databento uses INT64_MAX as null sentinel for missing prices
+        UNDEF_PRICE = 9_223_372_036_854_775_807
+        raw_bid = msg.levels[0].bid_px
+        raw_ask = msg.levels[0].ask_px
+        if raw_bid == UNDEF_PRICE or raw_ask == UNDEF_PRICE:
+            return
+
         # Get bid/ask from first level (prices are in fixed-point, divide by 1e9)
-        bid = msg.levels[0].bid_px / 1e9
-        ask = msg.levels[0].ask_px / 1e9
+        bid = raw_bid / 1e9
+        ask = raw_ask / 1e9
         mid = (bid + ask) / 2
 
         ps = PriceSource(
@@ -308,8 +315,14 @@ if __name__ == "__main__":
             msg_count += 1
             instrument_id = msg.instrument_id
             symbol = symbol_map.get(instrument_id, f"unknown:{instrument_id}")
-            bid = msg.levels[0].bid_px / 1e9
-            ask = msg.levels[0].ask_px / 1e9
+            UNDEF_PRICE = 9_223_372_036_854_775_807
+            raw_bid = msg.levels[0].bid_px
+            raw_ask = msg.levels[0].ask_px
+            if raw_bid == UNDEF_PRICE or raw_ask == UNDEF_PRICE:
+                print(f"[{msg_count}] {symbol}: skipping (null bid/ask sentinel)")
+                continue
+            bid = raw_bid / 1e9
+            ask = raw_ask / 1e9
             price = msg.price / 1e9
             print(f"[{msg_count}] {symbol}: price={price:.2f} bid={bid:.2f} ask={ask:.2f}")
 
