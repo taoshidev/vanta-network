@@ -114,7 +114,8 @@ class EntityClient(RPCClientBase):
         entity_hotkey: str,
         account_size: float,
         hl_address: str,
-        admin: bool = False
+        admin: bool = False,
+        payout_address: Optional[str] = None
     ) -> Tuple[bool, Optional[dict], str]:
         """
         Create a new subaccount linked to a Hyperliquid address.
@@ -124,11 +125,12 @@ class EntityClient(RPCClientBase):
             account_size: Account size in USD
             hl_address: Hyperliquid address (0x-prefixed, 40 hex chars)
             admin: If True, skip collateral slashing
+            payout_address: Optional EVM address (0x + 40 hex) for USDC payouts
 
         Returns:
             (success: bool, subaccount_info_dict: Optional[dict], message: str)
         """
-        return self._server.create_hl_subaccount_rpc(entity_hotkey, account_size, hl_address, admin=admin)
+        return self._server.create_hl_subaccount_rpc(entity_hotkey, account_size, hl_address, admin=admin, payout_address=payout_address)
 
     def get_all_active_hl_subaccounts(self) -> List[Tuple[str, dict]]:
         """
@@ -319,7 +321,8 @@ class EntityClient(RPCClientBase):
         account_size: float,
         asset_class: str,
         status: str = "active",
-        hl_address: Optional[str] = None
+        hl_address: Optional[str] = None,
+        payout_address: Optional[str] = None
     ) -> None:
         """
         Broadcast subaccount registration to other validators.
@@ -333,10 +336,11 @@ class EntityClient(RPCClientBase):
             asset_class: Asset class selection
             status: Subaccount status (active, admin, etc.)
             hl_address: Optional Hyperliquid address for HL-linked subaccounts
+            payout_address: Optional EVM address for USDC payouts
         """
         return self._server.broadcast_subaccount_registration_rpc(
             entity_hotkey, subaccount_id, subaccount_uuid, synthetic_hotkey,
-            account_size, asset_class, status, hl_address=hl_address
+            account_size, asset_class, status, hl_address=hl_address, payout_address=payout_address
         )
 
     def receive_subaccount_registration_update(self, subaccount_data: dict, sender_hotkey: str = None) -> bool:
