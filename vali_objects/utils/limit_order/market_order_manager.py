@@ -47,6 +47,10 @@ class MarketOrderManager():
         # Create EntityClient for subaccount dashboard broadcasts
         self._entity_client = EntityClient(connection_mode=connection_mode, connect_immediately=False)
 
+        # Create EntityCollateralClient for cross-margin gating and slashing
+        from vali_objects.utils.entity_collateral.entity_collateral_client import EntityCollateralClient
+        self._entity_collateral_client = EntityCollateralClient(connection_mode=connection_mode, connect_immediately=False)
+
         # Create own PositionManagerClient (forward compatibility - no parameter passing)
         from vali_objects.position_management.position_manager_client import PositionManagerClient
         self._position_client = PositionManagerClient(
@@ -300,6 +304,13 @@ class MarketOrderManager():
             order.quantity, order.leverage, order.value = order_sizes
             bt.logging.info(f"[ADD_ORDER_DETAIL] order resized to ${order.value} (max position: {max_position_value}, max_cash: {buying_power}")
 
+        # TODO: Entity cross-margin gating for subaccounts
+        # If miner_hotkey is a synthetic hotkey (entity subaccount), check entity
+        # cross-margin availability before accepting buy orders.
+        # Uses EntityCollateralClient.can_open_position() which reads from the
+        # on-disk collateral cache (refreshed every ~60s by EntityCollateralServer daemon).
+        # Challenge period subaccounts are exempt from this check.
+
         # Process cash balance after validation passes
         if order.order_type == existing_position.position_type:
             # Buy: pay value plus transaction fee (raises SignalException if invalid)
@@ -331,6 +342,11 @@ class MarketOrderManager():
 
             # Store loan repayment as negative margin_loan so position.margin_loan sums correctly
             order.margin_loan = -loan_repaid
+
+            # TODO: Entity collateral slashing on realized loss for subaccounts
+            # If miner_hotkey is a synthetic hotkey and order_realized_pnl < 0,
+            # call EntityCollateralClient.slash_on_realized_loss() to slash the
+            # entity's collateral pool proportional to the loss (capped at MDD%).
 
         step_start = TimeUtil.now_in_millis()
         existing_position.add_order(order, transaction_fee=transaction_fee)

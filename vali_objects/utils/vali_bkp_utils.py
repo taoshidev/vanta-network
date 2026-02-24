@@ -292,6 +292,16 @@ class ValiBkpUtils:
         return ValiConfig.BASE_DIR + f"{suffix}/validation/entities.json"
 
     @staticmethod
+    def get_entity_collateral_cache_file_location(running_unit_tests=False) -> str:
+        suffix = "/tests" if running_unit_tests else ""
+        return ValiConfig.BASE_DIR + f"{suffix}/validation/entity_collateral_cache.json"
+
+    @staticmethod
+    def get_entity_slash_tracking_file_location(running_unit_tests=False) -> str:
+        suffix = "/tests" if running_unit_tests else ""
+        return ValiConfig.BASE_DIR + f"{suffix}/validation/entity_slash_tracking.json"
+
+    @staticmethod
     def get_secrets_dir():
         return ValiConfig.BASE_DIR + "/secrets.json"
 

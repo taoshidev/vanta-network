@@ -234,8 +234,11 @@ class ValiConfig:
     RPC_ENTITY_PORT = 50024
     RPC_ENTITY_SERVICE_NAME = "EntityServer"
 
-    RPC_HL_FUNDING_PORT = 50025
-    RPC_HL_FUNDING_SERVICE_NAME = "HLFundingRateServer"
+    RPC_ENTITY_COLLATERAL_PORT = 50025
+    RPC_ENTITY_COLLATERAL_SERVICE_NAME = "EntityCollateralServer"
+
+    # Entity collateral cache refresh interval (seconds)
+    ENTITY_COLLATERAL_CACHE_REFRESH_S = 60
 
     # Public API Configuration (well-known network endpoints)
     REST_API_HOST = "127.0.0.1"
