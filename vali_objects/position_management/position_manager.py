@@ -1144,6 +1144,9 @@ class PositionManager:
             for _, position in positions_dict.items():
                 fee = position.refresh_carry_fee_usd(time_ms)
                 if fee > 0:
+                    bt.logging.info(
+                        f"[CARRY FEE] {hotkey} {position.trade_pair.trade_pair_id} ${fee:.6f}"
+                    )
                     hotkey_fee += fee
                     positions_charged += 1
                     self._write_position_to_disk(position)
