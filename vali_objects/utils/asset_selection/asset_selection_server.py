@@ -299,6 +299,24 @@ class AssetSelectionServer(RPCServerBase):
 
         return synapse
 
+    # ==================== HL Miner RPC Methods ====================
+
+    def is_hl_miner_rpc(self, hotkey: str) -> bool:
+        """Check if a miner is registered as a Hyperliquid miner (RPC method)."""
+        return self._manager.is_hl_miner(hotkey)
+
+    def get_hl_wallet_address_rpc(self, hotkey: str):
+        """Get HL wallet address for a miner (RPC method)."""
+        return self._manager.get_hl_wallet_address(hotkey)
+
+    def get_all_hl_miners_rpc(self) -> Dict[str, str]:
+        """Get all HL miner mappings (RPC method)."""
+        return self._manager.get_all_hl_miners()
+
+    def register_hl_miner_rpc(self, hotkey: str, hl_wallet_address: str) -> Dict[str, str]:
+        """Register a miner as HL miner (RPC method)."""
+        return self._manager.register_hl_miner(hotkey, hl_wallet_address)
+
     def clear_asset_selections_for_test_rpc(self) -> None:
         """
         Clear all asset selections (TEST ONLY - requires running_unit_tests=True).

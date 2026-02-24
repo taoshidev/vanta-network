@@ -33,9 +33,10 @@ from vali_objects.vali_dataclasses.position import Position
 from vali_objects.position_management.position_utils.position_filtering import PositionFiltering
 from vali_objects.position_management.position_manager import PositionManager
 from vali_objects.vali_config import TradePair, ValiConfig, RPCConnectionMode
+from shared_objects.websockets.miner_management import WebSocketMinerConnectionPool
 
 
-class PositionManagerClient(RPCClientBase):
+class PositionManagerClient(RPCClientBase, WebSocketMinerConnectionPool):
     """
     Lightweight RPC client for PositionManagerServer.
 
@@ -61,7 +62,7 @@ class PositionManagerClient(RPCClientBase):
                 - RPC (1): Normal RPC mode - connect via network
         """
         self.running_unit_tests = running_unit_tests
-        super().__init__(
+        RPCClientBase.__init__(self,
             service_name=ValiConfig.RPC_POSITIONMANAGER_SERVICE_NAME,
             port=port or ValiConfig.RPC_POSITIONMANAGER_PORT,
             max_retries=5,
@@ -69,6 +70,9 @@ class PositionManagerClient(RPCClientBase):
             connect_immediately=connect_immediately,
             connection_mode=connection_mode
         )
+
+        # essentially we'll want to initialize the websocket manager here
+        WebSocketMinerConnectionPool.__init__(self)
 
     # ==================== Query Methods ====================
 
@@ -214,13 +218,23 @@ class PositionManagerClient(RPCClientBase):
         Returns:
             Dict mapping hotkey to list of Position objects
         """
-        return self._server.get_positions_for_hotkeys_rpc(
+        rpc_positions = self._server.get_positions_for_hotkeys_rpc(
             hotkeys,
             only_open_positions=only_open_positions,
             filter_eliminations=filter_eliminations,
             acceptable_position_end_ms=acceptable_position_end_ms,
             sort_positions=sort_positions
         )
+
+        websocket_positions = self._websocket_manager.get_positions_for_hotkeys(
+            hotkeys,
+            only_open_positions=only_open_positions,
+            filter_eliminations=filter_eliminations,
+            acceptable_position_end_ms=acceptable_position_end_ms,
+            sort_positions=sort_positions
+        )
+
+        return {**rpc_positions, **websocket_positions}
 
     def get_position(self, hotkey: str, position_uuid: str) -> Optional[Position]:
         """

@@ -195,6 +195,24 @@ class AssetSelectionClient(RPCClientBase):
         """
         return self._server.receive_asset_selection_rpc(synapse)
 
+    # ==================== HL Miner Methods ====================
+
+    def is_hl_miner(self, hotkey: str) -> bool:
+        """Check if a miner is registered as a Hyperliquid miner."""
+        return self._server.is_hl_miner_rpc(hotkey)
+
+    def get_hl_wallet_address(self, hotkey: str):
+        """Get the HL wallet address for a miner, or None."""
+        return self._server.get_hl_wallet_address_rpc(hotkey)
+
+    def get_all_hl_miners(self) -> Dict[str, str]:
+        """Get all HL miner mappings (hotkey -> hl_wallet_address)."""
+        return self._server.get_all_hl_miners_rpc()
+
+    def register_hl_miner(self, hotkey: str, hl_wallet_address: str) -> Dict[str, str]:
+        """Register a miner as a Hyperliquid miner."""
+        return self._server.register_hl_miner_rpc(hotkey, hl_wallet_address)
+
     # ==================== Utility Methods ====================
 
     def health_check(self) -> dict:

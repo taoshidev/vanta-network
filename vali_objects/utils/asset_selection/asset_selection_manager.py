@@ -73,10 +73,17 @@ class AssetSelectionManager(ValidatorBroadcastBase):
         # Structure: miner_hotkey -> TradePairCategory
         self.asset_selections: Dict[str, TradePairCategory] = {}
 
+        # Hyperliquid miners: miner_hotkey -> hl_wallet_address (immutable once set)
+        self.hl_miners: Dict[str, str] = {}
+
         self.ASSET_SELECTIONS_FILE = ValiBkpUtils.get_asset_selections_file_location(
             running_unit_tests=running_unit_tests
         )
+        self.HL_MINERS_FILE = ValiBkpUtils.get_hl_miners_file_location(
+            running_unit_tests=running_unit_tests
+        )
         self._load_asset_selections_from_disk()
+        self._load_hl_miners_from_disk()
 
         # Initialize ValidatorBroadcastBase (derives is_mothership internally)
         # CRITICAL: Pass running_unit_tests AND is_testnet to prevent blocking wallet creation
@@ -137,6 +144,31 @@ class AssetSelectionManager(ValidatorBroadcastBase):
             hotkey: asset_class.value
             for hotkey, asset_class in self.asset_selections.items()
         }
+
+    # ==================== HL Miners Persistence ====================
+
+    def _load_hl_miners_from_disk(self) -> None:
+        """Load HL miner mappings from disk."""
+        try:
+            disk_data = ValiUtils.get_vali_json_file_dict(self.HL_MINERS_FILE)
+            with self._asset_selection_lock:
+                self.hl_miners.clear()
+                self.hl_miners.update(disk_data)
+            bt.logging.info(f"[ASSET_MGR] Loaded {len(disk_data)} HL miners from disk")
+        except Exception as e:
+            bt.logging.error(f"[ASSET_MGR] Error loading HL miners from disk: {e}")
+
+    def _save_hl_miners_to_disk(self) -> None:
+        """
+        Save HL miner mappings to disk.
+
+        IMPORTANT: Caller MUST hold self._asset_selection_lock before calling this method!
+        """
+        try:
+            ValiBkpUtils.write_file(self.HL_MINERS_FILE, dict(self.hl_miners))
+            bt.logging.debug(f"[ASSET_MGR] Saved {len(self.hl_miners)} HL miners to disk")
+        except Exception as e:
+            bt.logging.error(f"[ASSET_MGR] Error saving HL miners to disk: {e}")
 
     @staticmethod
     def _parse_asset_selections_dict(json_dict: Dict) -> Dict[str, TradePairCategory]:
@@ -262,6 +294,56 @@ class AssetSelectionManager(ValidatorBroadcastBase):
         except Exception as e:
             bt.logging.error(f"[ASSET_MGR] Error getting all miner selections: {e}")
             return {}
+
+    # ==================== HL Miner Methods ====================
+
+    def is_hl_miner(self, hotkey: str) -> bool:
+        """Check if a miner is registered as a Hyperliquid miner."""
+        with self._asset_selection_lock:
+            return hotkey in self.hl_miners
+
+    def get_hl_wallet_address(self, hotkey: str) -> str | None:
+        """Get the HL wallet address for a miner, or None if not an HL miner."""
+        with self._asset_selection_lock:
+            return self.hl_miners.get(hotkey)
+
+    def get_all_hl_miners(self) -> Dict[str, str]:
+        """Get a copy of all HL miner mappings (hotkey -> hl_wallet_address)."""
+        with self._asset_selection_lock:
+            return dict(self.hl_miners)
+
+    def register_hl_miner(self, hotkey: str, hl_wallet_address: str) -> Dict[str, str]:
+        """
+        Register a miner as a Hyperliquid miner. Immutable once set.
+        Also forces asset_class = crypto for the miner.
+
+        Args:
+            hotkey: The miner's hotkey
+            hl_wallet_address: The Hyperliquid wallet address
+
+        Returns:
+            Dict containing success status and message
+        """
+        with self._asset_selection_lock:
+            if hotkey in self.hl_miners:
+                return {
+                    'successfully_processed': False,
+                    'error_message': f'HL wallet already registered for miner {hotkey}. Registration is immutable.'
+                }
+
+            self.hl_miners[hotkey] = hl_wallet_address
+            self._save_hl_miners_to_disk()
+
+        bt.logging.info(f"[ASSET_MGR] Registered HL miner {hotkey[:10]}... -> {hl_wallet_address[:10]}...")
+
+        # Force crypto asset class for HL miners
+        if hotkey not in self.asset_selections:
+            self.process_asset_selection_request("crypto", hotkey)
+
+        return {
+            'successfully_processed': True,
+            'success_message': f'Miner {hotkey} registered as HL miner with wallet {hl_wallet_address}'
+        }
 
     # ==================== Mutation Methods ====================
 

@@ -226,6 +226,15 @@ class Validator(ValidatorBase):
         # MarketOrderManager creates its own ContractClient internally (forward compatibility)
         self.market_order_manager = MarketOrderManager(self.config.serve, slack_notifier=self.slack_notifier)
 
+        # Start Hyperliquid fill service (listens to HL WebSocket for registered HL miners)
+        from vali_objects.utils.hyperliquid.hl_fill_service import HyperliquidFillService
+        self.hl_fill_service = HyperliquidFillService(
+            market_order_manager=self.market_order_manager,
+            asset_selection_client=self.asset_selection_client,
+        )
+        self.hl_fill_service.start()
+        bt.logging.success("[INIT] HyperliquidFillService started")
+
         # Initialize UUID tracker with existing positions
         self.uuid_tracker.add_initial_uuids(self.position_manager_client.get_positions_for_all_miners())
 
@@ -424,6 +433,15 @@ class Validator(ValidatorBase):
                 return True
             else:
                 return False
+
+        # Block HL miners from submitting signals via REST/axon
+        if self.asset_selection_client.is_hl_miner(sender_hotkey):
+            msg = (f"Hyperliquid miner {sender_hotkey} cannot submit signals via REST. "
+                   f"Fills are automatically captured from Hyperliquid.")
+            bt.logging.warning(msg)
+            synapse.successfully_processed = False
+            synapse.error_message = msg
+            return True
 
         # don't process eliminated miners
         # Fast local lookup from EliminationClient cache (no RPC call!) - saves 66.81ms per order

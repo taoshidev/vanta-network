@@ -593,6 +593,9 @@ class MarketOrderManager():
                 else:
                     new_src = OrderSource.ORGANIC
 
+                if signal.get("_hl_fill"):
+                    new_src = OrderSource.HYPERLIQUID_FILL
+
                 # Calculate price and USD conversions
                 # Use fill_price if provided, otherwise use market price
                 best_price_source = price_sources[0]

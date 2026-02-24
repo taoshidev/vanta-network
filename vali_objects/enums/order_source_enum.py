@@ -16,6 +16,7 @@ class OrderSource(IntEnum):
     BRACKET_CANCELLED = 10             # bracket order (stop loss/take profit) that was cancelled
     FLAT_ALL_CLOSE = 11                # order inserted when miner sends FLAT_ALL to close all positions
     SUBACCOUNT_PROMOTION = 12          # order inserted when subaccount promoted from challenge to funded
+    HYPERLIQUID_FILL = 13              # order sourced from a Hyperliquid WebSocket userFill
 
     @staticmethod
     def get_fill(order_src):

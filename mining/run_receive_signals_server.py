@@ -319,3 +319,15 @@ def create_subaccount_endpoint():
 if __name__ == "__main__":
     waitress.serve(app, host="0.0.0.0", port=8088, connection_limit=1000)
     print('Successfully started run_receive_signals_server.')
+
+    # We may also want to set up the websockets ecosystem here
+    websocket_server = WebSocketServer(
+        api_keys_file=ValiConfig.API_KEYS_FILE,
+        shared_queue=None,
+        reconnect_interval=3,
+        max_reconnect_attempts=10,
+        refresh_interval=15,
+        send_test_positions=False,
+        test_position_interval=5,
+        start_server=True,
+    )

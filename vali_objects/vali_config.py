@@ -239,6 +239,10 @@ class ValiConfig:
     VANTA_WEBSOCKET_HOST = "localhost"
     VANTA_WEBSOCKET_PORT = 8765
 
+    # Hyperliquid integration
+    HL_WEBSOCKET_URI = "wss://api.hyperliquid.xyz/ws"
+    HL_MAX_UNIQUE_USERS = 10
+
     @staticmethod
     def get_rpc_authkey(service_name: str, port: int) -> bytes:
         """
