@@ -716,6 +716,9 @@ class TestHyperliquidTracker(TestBase):
         }
         self.price_fetcher_client.is_market_open.return_value = True
 
+        # Mock USDC balance check to pass by default
+        self.tracker._get_hl_usdc_balance = MagicMock(return_value=5000.0)
+
         # OrderProcessor mock
         mock_result = MagicMock()
         mock_result.should_track_uuid = True
@@ -972,6 +975,100 @@ class TestHyperliquidTracker(TestBase):
         fill = self._make_fill(side="X")
         self.tracker._process_fill(VALID_HL_ADDRESS, fill)
         self.assertEqual(self.tracker._fills_processed, 0)
+
+    # ==================== USDC Balance Check ====================
+
+    @patch('entity_management.hyperliquid_tracker.OrderProcessor')
+    def test_process_fill_sufficient_balance_proceeds(self, mock_order_processor):
+        """Test that fills proceed when USDC balance meets minimum."""
+        mock_result = self._setup_successful_fill_mocks()
+        mock_order_processor.process_order.return_value = mock_result
+
+        fill = self._make_fill()
+        with patch.object(self.tracker, '_get_hl_usdc_balance', return_value=5000.0):
+            self.tracker._process_fill(VALID_HL_ADDRESS, fill)
+
+        self.assertEqual(self.tracker._fills_processed, 1)
+
+    def test_process_fill_insufficient_balance_rejected(self):
+        """Test that fills are rejected when USDC balance is below minimum."""
+        self._setup_successful_fill_mocks()
+
+        fill = self._make_fill()
+        with patch.object(self.tracker, '_get_hl_usdc_balance', return_value=500.0):
+            self.tracker._process_fill(VALID_HL_ADDRESS, fill)
+
+        self.assertEqual(self.tracker._fills_processed, 0)
+
+    def test_process_fill_exactly_minimum_balance_proceeds(self):
+        """Test that fills proceed when USDC balance is exactly the minimum."""
+        mock_result = self._setup_successful_fill_mocks()
+
+        fill = self._make_fill()
+        with patch.object(self.tracker, '_get_hl_usdc_balance', return_value=float(ValiConfig.HL_MIN_USDC_BALANCE)), \
+             patch('entity_management.hyperliquid_tracker.OrderProcessor') as mock_op:
+            mock_op.process_order.return_value = mock_result
+            self.tracker._process_fill(VALID_HL_ADDRESS, fill)
+
+        self.assertEqual(self.tracker._fills_processed, 1)
+
+    def test_process_fill_balance_query_fails_rejected(self):
+        """Test that fills are rejected when USDC balance query returns None."""
+        self._setup_successful_fill_mocks()
+
+        fill = self._make_fill()
+        with patch.object(self.tracker, '_get_hl_usdc_balance', return_value=None):
+            self.tracker._process_fill(VALID_HL_ADDRESS, fill)
+
+        self.assertEqual(self.tracker._fills_processed, 0)
+
+    def test_process_fill_zero_balance_rejected(self):
+        """Test that fills are rejected when USDC balance is zero."""
+        self._setup_successful_fill_mocks()
+
+        fill = self._make_fill()
+        with patch.object(self.tracker, '_get_hl_usdc_balance', return_value=0.0):
+            self.tracker._process_fill(VALID_HL_ADDRESS, fill)
+
+        self.assertEqual(self.tracker._fills_processed, 0)
+
+    @patch('entity_management.hyperliquid_tracker.requests')
+    def test_get_hl_usdc_balance_success(self, mock_requests):
+        """Test _get_hl_usdc_balance returns withdrawable amount on success."""
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"withdrawable": "2500.50"}
+        mock_resp.raise_for_status = MagicMock()
+        mock_requests.post.return_value = mock_resp
+
+        balance = self.tracker._get_hl_usdc_balance(VALID_HL_ADDRESS)
+
+        self.assertAlmostEqual(balance, 2500.50)
+        mock_requests.post.assert_called_once_with(
+            ValiConfig.HL_MAINNET_INFO,
+            json={"type": "clearinghouseState", "user": VALID_HL_ADDRESS},
+            timeout=5,
+        )
+
+    @patch('entity_management.hyperliquid_tracker.requests')
+    def test_get_hl_usdc_balance_api_error(self, mock_requests):
+        """Test _get_hl_usdc_balance returns None on API error."""
+        mock_requests.post.side_effect = Exception("connection timeout")
+
+        balance = self.tracker._get_hl_usdc_balance(VALID_HL_ADDRESS)
+
+        self.assertIsNone(balance)
+
+    @patch('entity_management.hyperliquid_tracker.requests')
+    def test_get_hl_usdc_balance_missing_withdrawable(self, mock_requests):
+        """Test _get_hl_usdc_balance returns 0 when withdrawable is missing."""
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {}
+        mock_resp.raise_for_status = MagicMock()
+        mock_requests.post.return_value = mock_resp
+
+        balance = self.tracker._get_hl_usdc_balance(VALID_HL_ADDRESS)
+
+        self.assertEqual(balance, 0.0)
 
     # ==================== Leverage Calculation ====================
 
