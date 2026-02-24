@@ -454,10 +454,7 @@ class Position(BaseModel):
             raise ValueError(
                 f"Order trade pair [{order.trade_pair}] does not match position trade pair [{self.trade_pair}]")
 
-        if (order.order_type != OrderType.FLAT and
-            (order.leverage == 0 or order.value == 0 or order.quantity == 0)):
-                raise ValueError(f"Invalid order size")
-
+        self.validate_order_size(order)
         self.orders.append(order)
 
         if transaction_fee:
@@ -749,12 +746,22 @@ class Position(BaseModel):
         self.is_closed_position = False
         self.close_ms = None
 
-    def validate_order_size(self, order: Order, max_position_value: float) -> bool:
+    def validate_order_size(self, order: Order, max_position_value: Optional[float] = None) -> bool:
         """
         returns True if clamped due to max position value
         """
         if order.order_type == OrderType.FLAT:
             return False
+
+        # Validate individual order min/max leverage
+        min_order_lev, max_order_lev = leverage_utils.get_position_leverage_bounds(self.trade_pair)
+        if abs(order.leverage) > max_order_lev:
+            raise ValueError(
+                f"{self.trade_pair.trade_pair_id}: order leverage {abs(order.leverage):.5f} exceeds maximum {max_order_lev}")
+        is_opening_or_increasing = self.position_type is None or order.order_type == self.position_type
+        if is_opening_or_increasing and abs(order.leverage) < min_order_lev:
+            raise ValueError(
+                f"{self.trade_pair.trade_pair_id}: order leverage {abs(order.leverage):.5f} below minimum {min_order_lev}")
 
         proposed_leverage = self.net_leverage + (order.leverage or 0)
         proposed_quantity = self.net_quantity + (order.quantity or 0)
@@ -779,7 +786,7 @@ class Position(BaseModel):
 
         # If order increases position size, validate max position size
         clamped = False
-        if order.order_type == self.position_type:
+        if order.order_type == self.position_type and max_position_value is not None:
             if abs(self.net_value + self.unrealized_pnl) >= max_position_value:
                 raise ValueError(f"Position at max ${abs(self.net_value):.2f} (limit: ${max_position_value:.2f})")
 
@@ -792,7 +799,6 @@ class Position(BaseModel):
                 clamped = True
 
         # Validate against min position size
-        min_position_leverage, _ = leverage_utils.get_position_leverage_bounds(self.trade_pair)
         if self.trade_pair.is_forex:
             proposed_lots = abs(proposed_quantity)
             if proposed_lots > 0 and proposed_lots < ValiConfig.FOREX_MIN_POSITION_SIZE_LOTS:
@@ -803,6 +809,7 @@ class Position(BaseModel):
                 raise ValueError(
                     f"{self.trade_pair.trade_pair_id}: below min ${ValiConfig.CRYPTO_MIN_POSITION_SIZE_USD} (${abs(proposed_value):.2f})")
         else:  # for other asset classes
+            min_position_leverage, _ = leverage_utils.get_position_leverage_bounds(self.trade_pair)
             if abs(proposed_leverage) < min_position_leverage:
                 raise ValueError(
                     f"{self.trade_pair.trade_pair_id}: below min leverage {min_position_leverage} ({abs(proposed_leverage)})")
