@@ -599,11 +599,13 @@ class MarketOrderManager():
                 price = fill_price if fill_price else best_price_source.parse_appropriate_price(now_ms, trade_pair.is_forex, signal_order_type, existing_position)
                 usd_base_price = self.live_price_fetcher.get_usd_base_conversion(trade_pair, now_ms, price, signal_order_type, existing_position)
 
-                if signal_order_type != OrderType.FLAT:
-                    # Parse order size (supports leverage, value, or quantity)
-                    quantity, leverage, value = self.parse_order_size(signal, usd_base_price, trade_pair, existing_position.account_size)
-                else:
-                    quantity, leverage, value = 0.0, 0.0, 0.0
+                if signal_order_type == OrderType.FLAT:
+                    signal["leverage"] = None
+                    signal["value"] = None
+                    signal["quantity"] = -existing_position.net_quantity
+
+                # Parse order size (supports leverage, value, or quantity)
+                quantity, leverage, value = self.parse_order_size(signal, usd_base_price, trade_pair, existing_position.account_size)
 
                 created_order = self._add_order_to_existing_position(existing_position, trade_pair, signal_order_type,
                                                      quantity, leverage, value, now_ms, miner_hotkey,
