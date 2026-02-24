@@ -9,7 +9,8 @@ Runs a daemon that periodically refreshes the collateral cache from on-chain con
 Clients connect using EntityCollateralClient.
 """
 
-from typing import Dict, Optional, Tuple
+import bittensor as bt
+from typing import Optional, Tuple
 
 from shared_objects.rpc.rpc_server_base import RPCServerBase
 from vali_objects.utils.entity_collateral.entity_collateral_manager import EntityCollateralManager
@@ -45,10 +46,26 @@ class EntityCollateralServer(RPCServerBase):
             start_daemon: Whether to start the cache refresh daemon immediately.
             connection_mode: RPCConnectionMode.LOCAL for tests, RPCConnectionMode.RPC for production.
         """
-        # TODO: Create EntityCollateralManager FIRST (before RPCServerBase.__init__)
-        # TODO: Initialize RPCServerBase with daemon_interval_s=60
-        # TODO: Start daemon if requested
-        pass
+        # Create manager FIRST before RPCServerBase.__init__ to prevent race conditions
+        self._manager = EntityCollateralManager(
+            running_unit_tests=running_unit_tests,
+            connection_mode=connection_mode,
+        )
+
+        bt.logging.success("[ENTITY_COLLATERAL_SERVER] EntityCollateralManager initialized")
+
+        super().__init__(
+            service_name=ValiConfig.RPC_ENTITY_COLLATERAL_SERVICE_NAME,
+            port=ValiConfig.RPC_ENTITY_COLLATERAL_PORT,
+            slack_notifier=slack_notifier,
+            start_server=start_server,
+            start_daemon=start_daemon,
+            daemon_interval_s=float(ValiConfig.ENTITY_COLLATERAL_CACHE_REFRESH_S),
+            hang_timeout_s=120.0,
+            connection_mode=connection_mode,
+        )
+
+        bt.logging.success("[ENTITY_COLLATERAL_SERVER] EntityCollateralServer initialized")
 
     # ==================== RPCServerBase Abstract Methods ====================
 
@@ -56,22 +73,24 @@ class EntityCollateralServer(RPCServerBase):
         """
         Single daemon iteration: refresh the collateral cache from on-chain contracts.
         """
-        # TODO: Delegate to self._manager.refresh_collateral_cache()
-        pass
+        self._manager.refresh_collateral_cache()
 
     def get_health_check_details(self) -> dict:
         """Add service-specific health check details."""
-        pass
+        return {
+            "cached_entities": len(self._manager._collateral_cache),
+            "slash_records": len(self._manager._slash_tracking),
+        }
 
     # ==================== RPC Methods (exposed to clients) ====================
 
     def get_cached_collateral_rpc(self, entity_hotkey: str) -> Optional[float]:
         """Get cached collateral balance for an entity (RPC method)."""
-        pass
+        return self._manager.get_cached_collateral(entity_hotkey)
 
     def compute_entity_required_collateral_rpc(self, entity_hotkey: str) -> float:
         """Compute required collateral for an entity (RPC method)."""
-        pass
+        return self._manager.compute_entity_required_collateral(entity_hotkey)
 
     def can_open_position_rpc(
         self,
@@ -80,7 +99,7 @@ class EntityCollateralServer(RPCServerBase):
         additional_position_value: float,
     ) -> Tuple[bool, str]:
         """Check if a subaccount can open a new position (RPC method)."""
-        pass
+        return self._manager.can_open_position(entity_hotkey, synthetic_hotkey, additional_position_value)
 
     def slash_on_realized_loss_rpc(
         self,
@@ -89,16 +108,16 @@ class EntityCollateralServer(RPCServerBase):
         realized_loss: float,
     ) -> float:
         """Slash entity collateral on subaccount realized loss (RPC method)."""
-        pass
+        return self._manager.slash_on_realized_loss(entity_hotkey, synthetic_hotkey, realized_loss)
 
     def get_cumulative_slashed_rpc(self, synthetic_hotkey: str) -> float:
         """Get cumulative slashed amount for a subaccount (RPC method)."""
-        pass
+        return self._manager.get_cumulative_slashed(synthetic_hotkey)
 
     def get_max_slash_rpc(self, synthetic_hotkey: str) -> float:
         """Get max slashable amount for a subaccount (RPC method)."""
-        pass
+        return self._manager.get_max_slash(synthetic_hotkey)
 
     def refresh_collateral_cache_rpc(self) -> int:
         """Force-refresh the collateral cache (RPC method)."""
-        pass
+        return self._manager.refresh_collateral_cache()
