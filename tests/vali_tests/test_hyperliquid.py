@@ -167,6 +167,77 @@ class TestHyperliquidSubaccounts(TestBase):
         self.assertTrue(success)
         self.assertEqual(subaccount_info['status'], 'admin')
 
+    # ==================== Payout Address ====================
+
+    def test_create_hl_subaccount_with_payout_address(self):
+        """Test HL subaccount creation with a valid payout address."""
+        self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
+        payout_addr = "0x" + "de" * 20
+
+        success, subaccount_info, message = self.entity_client.create_hl_subaccount(
+            entity_hotkey=self.ENTITY_HOTKEY_1,
+            account_size=50_000,
+            hl_address=VALID_HL_ADDRESS,
+            payout_address=payout_addr
+        )
+
+        self.assertTrue(success, f"HL subaccount with payout_address failed: {message}")
+        self.assertIsNotNone(subaccount_info)
+
+        info = self.entity_client.get_subaccount_info_for_synthetic(
+            subaccount_info['synthetic_hotkey']
+        )
+        self.assertIsNotNone(info)
+        self.assertEqual(info['payout_address'], payout_addr)
+        self.assertEqual(info['hl_address'], VALID_HL_ADDRESS)
+
+    def test_create_hl_subaccount_without_payout_address(self):
+        """Test HL subaccount creation without payout_address defaults to None."""
+        self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
+
+        success, subaccount_info, _ = self.entity_client.create_hl_subaccount(
+            entity_hotkey=self.ENTITY_HOTKEY_1,
+            account_size=50_000,
+            hl_address=VALID_HL_ADDRESS
+        )
+        self.assertTrue(success)
+
+        info = self.entity_client.get_subaccount_info_for_synthetic(
+            subaccount_info['synthetic_hotkey']
+        )
+        self.assertIsNotNone(info)
+        self.assertIsNone(info.get('payout_address'))
+
+    def test_create_hl_subaccount_invalid_payout_address(self):
+        """Test HL subaccount creation fails with invalid payout_address formats."""
+        self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
+
+        for invalid_addr in ["0xabc", "not_an_address", "0x" + "zz" * 20, ""]:
+            success, _, message = self.entity_client.create_hl_subaccount(
+                entity_hotkey=self.ENTITY_HOTKEY_1,
+                account_size=50_000,
+                hl_address=VALID_HL_ADDRESS_2,
+                payout_address=invalid_addr
+            )
+            self.assertFalse(success, f"Should reject invalid payout_address: {invalid_addr}")
+            self.assertIn("payout_address", message.lower())
+
+    def test_regular_subaccount_has_no_payout_address(self):
+        """Test that regular (non-HL) subaccounts have None payout_address."""
+        self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
+        success, subaccount_info, _ = self.entity_client.create_subaccount(
+            entity_hotkey=self.ENTITY_HOTKEY_1,
+            account_size=100_000,
+            asset_class="crypto"
+        )
+        self.assertTrue(success)
+
+        info = self.entity_client.get_subaccount_info_for_synthetic(
+            subaccount_info['synthetic_hotkey']
+        )
+        self.assertIsNotNone(info)
+        self.assertIsNone(info.get('payout_address'))
+
     # ==================== HL Address Reverse Index Lookups ====================
 
     def test_get_synthetic_hotkey_for_hl_address(self):
@@ -471,6 +542,98 @@ class TestHyperliquidSubaccounts(TestBase):
         info = self.entity_client.get_subaccount_info_for_synthetic(f'{self.ENTITY_HOTKEY_1}_0')
         self.assertIsNotNone(info)
         self.assertEqual(info['hl_address'], VALID_HL_ADDRESS)
+
+    def test_sync_entity_data_with_payout_address(self):
+        """Test that syncing entity data preserves payout_address."""
+        now_ms = TimeUtil.now_in_millis()
+        payout_addr = "0x" + "ab" * 20
+        checkpoint_dict = {
+            self.ENTITY_HOTKEY_1: {
+                'entity_hotkey': self.ENTITY_HOTKEY_1,
+                'subaccounts': {
+                    '0': {
+                        'subaccount_id': 0,
+                        'subaccount_uuid': 'uuid-hl-payout',
+                        'synthetic_hotkey': f'{self.ENTITY_HOTKEY_1}_0',
+                        'status': 'active',
+                        'created_at_ms': now_ms,
+                        'eliminated_at_ms': None,
+                        'account_size': 50_000,
+                        'asset_class': 'crypto',
+                        'hl_address': VALID_HL_ADDRESS,
+                        'payout_address': payout_addr
+                    }
+                },
+                'next_subaccount_id': 1,
+                'registered_at_ms': now_ms
+            }
+        }
+
+        stats = self.entity_client.sync_entity_data(checkpoint_dict)
+        self.assertEqual(stats['entities_added'], 1)
+
+        info = self.entity_client.get_subaccount_info_for_synthetic(f'{self.ENTITY_HOTKEY_1}_0')
+        self.assertIsNotNone(info)
+        self.assertEqual(info['hl_address'], VALID_HL_ADDRESS)
+        self.assertEqual(info['payout_address'], payout_addr)
+
+    def test_sync_idempotent_adds_payout_address(self):
+        """Test that re-syncing can add payout_address to existing subaccount."""
+        now_ms = TimeUtil.now_in_millis()
+        payout_addr = "0x" + "cd" * 20
+
+        # First sync: without payout_address
+        checkpoint_no_payout = {
+            self.ENTITY_HOTKEY_1: {
+                'entity_hotkey': self.ENTITY_HOTKEY_1,
+                'subaccounts': {
+                    '0': {
+                        'subaccount_id': 0,
+                        'subaccount_uuid': 'uuid-sync-payout',
+                        'synthetic_hotkey': f'{self.ENTITY_HOTKEY_1}_0',
+                        'status': 'active',
+                        'created_at_ms': now_ms,
+                        'eliminated_at_ms': None,
+                        'account_size': 50_000,
+                        'asset_class': 'crypto',
+                        'hl_address': VALID_HL_ADDRESS
+                    }
+                },
+                'next_subaccount_id': 1,
+                'registered_at_ms': now_ms
+            }
+        }
+        self.entity_client.sync_entity_data(checkpoint_no_payout)
+
+        info = self.entity_client.get_subaccount_info_for_synthetic(f'{self.ENTITY_HOTKEY_1}_0')
+        self.assertIsNone(info.get('payout_address'))
+
+        # Second sync: same UUID, now with payout_address
+        checkpoint_with_payout = {
+            self.ENTITY_HOTKEY_1: {
+                'entity_hotkey': self.ENTITY_HOTKEY_1,
+                'subaccounts': {
+                    '0': {
+                        'subaccount_id': 0,
+                        'subaccount_uuid': 'uuid-sync-payout',
+                        'synthetic_hotkey': f'{self.ENTITY_HOTKEY_1}_0',
+                        'status': 'active',
+                        'created_at_ms': now_ms,
+                        'eliminated_at_ms': None,
+                        'account_size': 50_000,
+                        'asset_class': 'crypto',
+                        'hl_address': VALID_HL_ADDRESS,
+                        'payout_address': payout_addr
+                    }
+                },
+                'next_subaccount_id': 1,
+                'registered_at_ms': now_ms
+            }
+        }
+        self.entity_client.sync_entity_data(checkpoint_with_payout)
+
+        info = self.entity_client.get_subaccount_info_for_synthetic(f'{self.ENTITY_HOTKEY_1}_0')
+        self.assertEqual(info['payout_address'], payout_addr)
 
     # ==================== HL Address Format Validation ====================
 
