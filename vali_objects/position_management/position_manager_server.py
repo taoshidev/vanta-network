@@ -85,12 +85,14 @@ class PositionManagerServer(RPCServerBase):
 
         bt.logging.success("PositionManager initialized")
 
+        self._last_compact_time_s: float = 0.0  # Track last compact_price_sources run time
+
         # Initialize RPCServerBase (may start RPC server immediately if start_server=True)
         # At this point, self._manager exists, so RPC calls won't fail
-        # daemon_interval_s: 8 hours (matches crypto carry fee interval, the smallest interval)
+        # daemon_interval_s: 1 hour (frequent carry fee charging; compact is separately rate-limited)
         # hang_timeout_s: Dynamically set to 2x interval to prevent false alarms during normal sleep
-        daemon_interval_s = 8 * 3600 + 60  # 8 hours + 1 min buffer to ensure interval boundary has passed
-        hang_timeout_s = daemon_interval_s * 2.0  # 16 hours (2x interval)
+        daemon_interval_s = 3600 + 60  # 1 hour + 1 min buffer to ensure interval boundary has passed
+        hang_timeout_s = daemon_interval_s * 2.0  # 2 hours (2x interval)
 
         super().__init__(
             service_name=ValiConfig.RPC_POSITIONMANAGER_SERVICE_NAME,
@@ -110,18 +112,23 @@ class PositionManagerServer(RPCServerBase):
     def run_daemon_iteration(self) -> None:
         """
         Daemon iteration that:
-        1. Compacts price sources from old closed positions
+        1. Compacts price sources from old closed positions (guarded: at most every 12 hours)
         2. Charges carry fees on all open positions
 
-        Runs every 8 hours (matches smallest carry fee interval).
+        Runs every 1 hour. Compact price sources is rate-limited via
+        ValiConfig.PRICE_SOURCE_COMPACTING_SLEEP_INTERVAL_SECONDS to avoid expensive
+        disk I/O on every iteration.
         Delegates to manager for direct memory access - no RPC overhead!
         """
-        try:
-            t0 = time.time()
-            self._manager.compact_price_sources()
-            bt.logging.info(f'Compacted price sources in {time.time() - t0:.2f} seconds')
-        except Exception as e:
-            bt.logging.error(f"Error in compaction daemon iteration: {traceback.format_exc()}")
+        now = time.time()
+        if now - self._last_compact_time_s >= ValiConfig.PRICE_SOURCE_COMPACTING_SLEEP_INTERVAL_SECONDS:
+            try:
+                t0 = time.time()
+                self._manager.compact_price_sources()
+                bt.logging.info(f'Compacted price sources in {time.time() - t0:.2f} seconds')
+                self._last_compact_time_s = now
+            except Exception as e:
+                bt.logging.error(f"Error in compaction daemon iteration: {traceback.format_exc()}")
 
         try:
             self._manager.charge_carry_fees()

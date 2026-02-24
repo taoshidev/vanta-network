@@ -231,7 +231,7 @@ class Position(BaseModel):
         if market_value <= 0:
             return 0.0
 
-        carry_fee = market_value * rate
+        carry_fee = market_value * rate * intervals
         if carry_fee > 0:
             self.record_fee_event("carry", carry_fee, current_time_ms)
 
