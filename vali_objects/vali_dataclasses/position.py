@@ -5,7 +5,7 @@ from typing import Dict, Optional, List
 from pydantic import model_validator, BaseModel, Field
 
 from time_util.time_util import TimeUtil, MS_IN_8_HOURS, MS_IN_24_HOURS
-from vali_objects.vali_config import TradePair, ValiConfig
+from vali_objects.vali_config import TradePair, TradePairCategory, ValiConfig
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.enums.order_type_enum import OrderType
@@ -19,10 +19,6 @@ CRYPTO_CARRY_FEE_PER_INTERVAL = math.exp(math.log(1 - 0.1095) / (365.0*3.0))  # 
 FOREX_CARRY_FEE_PER_INTERVAL = math.exp(math.log(1 - .03) / 365.0)  # 3% per year for 1x leverage. Each interval is 24 hrs
 INDICES_CARRY_FEE_PER_INTERVAL = math.exp(math.log(1 - .0525) / 365.0)  # 5.25% per year for 1x leverage. Each interval is 24 hrs
 
-# Linear USD carry fee rates (annual_rate / intervals_per_year)
-CRYPTO_USD_FEE_RATE_PER_INTERVAL = 0.1095 / (365.0 * 3.0)    # 10.95% annual / (365*3 intervals)
-FOREX_USD_FEE_RATE_PER_INTERVAL = 0.03 / 365.0                 # 3% annual / 365 intervals
-INDICES_USD_FEE_RATE_PER_INTERVAL = 0.0525 / 365.0             # 5.25% annual / 365 intervals
 FEE_V6_TIME_MS = 1720843707000  # V6 PR merged
 SLIPPAGE_V1_TIME_MS = 1739937600000  # Slippage PR merged
 ALWAYS_USE_SLIPPAGE = None  # set as either True or False to control whether slippage is always or never applied. if set as None, slippage will be applied based on SLIPPAGE_V1_TIME_MS time gate
@@ -221,10 +217,10 @@ class Position(BaseModel):
 
         if self.trade_pair.is_crypto:
             intervals = (current_time_ms - interval_start_ms) // MS_IN_8_HOURS
-            rate = CRYPTO_USD_FEE_RATE_PER_INTERVAL
+            rate = ValiConfig.CARRY_FEE_RATE_PER_INTERVAL[TradePairCategory.CRYPTO]
         elif self.trade_pair.is_forex:
             intervals = (current_time_ms - interval_start_ms) // MS_IN_24_HOURS
-            rate = FOREX_USD_FEE_RATE_PER_INTERVAL
+            rate = ValiConfig.CARRY_FEE_RATE_PER_INTERVAL[TradePairCategory.FOREX]
         else:
             return 0.0
 
@@ -458,9 +454,13 @@ class Position(BaseModel):
             raise ValueError(
                 f"Order trade pair [{order.trade_pair}] does not match position trade pair [{self.trade_pair}]")
 
+        if (order.order_type != OrderType.FLAT and
+            (order.leverage == 0 or order.value == 0 or order.quantity == 0)):
+                raise ValueError(f"Invalid order size")
+
         self.orders.append(order)
 
-        transaction_fee = abs(ValiConfig.TRANSACTION_FEE_MULTIPLIER[self.trade_pair.trade_pair_category] * order.value)
+        transaction_fee = abs(ValiConfig.TRANSACTION_FEE_RATE[self.trade_pair.trade_pair_category] * order.value)
         if transaction_fee > 0:
             self.record_fee_event("transaction", transaction_fee, order.processed_ms)
 

@@ -270,7 +270,7 @@ class MarketOrderManager():
         max_position_value = max_position_leverage * balance
 
         # Calculate transaction fee AFTER clamping based on final order value
-        transaction_fee = ValiConfig.TRANSACTION_FEE_MULTIPLIER.get(trade_pair.trade_pair_category, 0)
+        transaction_fee = ValiConfig.TRANSACTION_FEE_RATE.get(trade_pair.trade_pair_category, 0)
         buying_power = self._miner_account_client.get_buying_power(miner_hotkey)
         if self.running_unit_tests:
             buying_power = ValiConfig.MIN_CAPITAL
