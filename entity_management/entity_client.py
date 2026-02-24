@@ -114,7 +114,8 @@ class EntityClient(RPCClientBase):
         entity_hotkey: str,
         account_size: float,
         hl_address: str,
-        admin: bool = False
+        admin: bool = False,
+        payout_address: Optional[str] = None
     ) -> Tuple[bool, Optional[dict], str]:
         """
         Create a new subaccount linked to a Hyperliquid address.
@@ -124,11 +125,12 @@ class EntityClient(RPCClientBase):
             account_size: Account size in USD
             hl_address: Hyperliquid address (0x-prefixed, 40 hex chars)
             admin: If True, skip collateral slashing
+            payout_address: Optional EVM address (0x + 40 hex) for USDC payouts
 
         Returns:
             (success: bool, subaccount_info_dict: Optional[dict], message: str)
         """
-        return self._server.create_hl_subaccount_rpc(entity_hotkey, account_size, hl_address, admin=admin)
+        return self._server.create_hl_subaccount_rpc(entity_hotkey, account_size, hl_address, admin=admin, payout_address=payout_address)
 
     def get_all_active_hl_subaccounts(self) -> List[Tuple[str, dict]]:
         """
