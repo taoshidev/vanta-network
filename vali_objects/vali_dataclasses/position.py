@@ -435,7 +435,7 @@ class Position(BaseModel):
         ]
         bt.logging.debug(f"position order details: " f"close_ms [{order_info}] ")
 
-    def add_order(self, order: Order, live_price_fetcher=None):
+    def add_order(self, order: Order, live_price_fetcher=None, transaction_fee: float = 0):
         """
         Add an order to a position, and adjust its size to stay within
         the trade pair max and portfolio max.
@@ -460,8 +460,7 @@ class Position(BaseModel):
 
         self.orders.append(order)
 
-        transaction_fee = abs(ValiConfig.TRANSACTION_FEE_RATE[self.trade_pair.trade_pair_category] * order.value)
-        if transaction_fee > 0:
+        if transaction_fee:
             self.record_fee_event("transaction", transaction_fee, order.processed_ms)
 
         self._update_position(live_price_fetcher)
