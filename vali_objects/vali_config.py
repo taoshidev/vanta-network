@@ -513,7 +513,6 @@ class ValiConfig:
 
     BLOCKED_TRADE_PAIR_IDS = {
         'SPX', 'DJI', 'NDX', 'VIX', 'FTSE', 'GDAXI',  # Indices
-        'XAUUSD', 'XAGUSD',  # Commodities
         'AUDJPY', 'CADJPY', 'CHFJPY', 'EURJPY', 'NZDJPY', 'GBPJPY', 'USDJPY',  # Forex JPY pairs
         'USDMXN'
     }
