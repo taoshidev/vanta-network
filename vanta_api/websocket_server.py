@@ -20,9 +20,19 @@ from vali_objects.utils.vali_bkp_utils import CustomEncoder, ValiBkpUtils
 from vanta_api.api_key_refresh import APIKeyMixin
 from vali_objects.vali_config import TradePair, ValiConfig, RPCConnectionMode
 from shared_objects.rpc.rpc_server_base import RPCServerBase
+from entity_management.entity_client import EntityClient
 
 # Maximum number of websocket connections allowed per API key
-MAX_N_WS_PER_API_KEY = 5
+MAX_N_WS_PER_API_KEY = 50
+
+# Subaccount dashboard broadcast throttle (2 seconds per subaccount)
+SUBACCOUNT_BROADCAST_THROTTLE_MS = 2000
+
+# How often to poll and push subaccount dashboard data to subscribers
+SUBACCOUNT_POLL_INTERVAL_S = 15
+
+# Minimum tier required for subaccount dashboard subscriptions
+SUBACCOUNT_SUBSCRIPTION_TIER = 200
 
 class WebSocketServer(APIKeyMixin, RPCServerBase):
     """
@@ -120,6 +130,16 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
 
         # Subscriptions: set of subscribed client IDs
         self.subscribed_clients: Set[str] = set()
+
+        # Subaccount dashboard subscriptions: synthetic_hotkey -> set of subscribed client_ids
+        self.subaccount_subscriptions: Dict[str, Set[str]] = defaultdict(set)
+        self.subaccount_last_broadcast_ms: Dict[str, int] = {}
+
+        # Subaccount polling tasks: synthetic_hotkey -> asyncio.Task
+        self._subaccount_poll_tasks: Dict[str, asyncio.Task] = {}
+
+        # Entity client for fetching dashboard data
+        self._entity_client = EntityClient(connection_mode=connection_mode)
 
         # Test order configuration
         self.send_test_positions = send_test_positions
@@ -492,6 +512,14 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
             if client_id in self.subscribed_clients:
                 self.subscribed_clients.remove(client_id)
 
+            # Remove from subaccount subscriptions and cancel poll tasks if empty
+            for synthetic_hotkey in list(self.subaccount_subscriptions.keys()):
+                if client_id in self.subaccount_subscriptions[synthetic_hotkey]:
+                    self.subaccount_subscriptions[synthetic_hotkey].discard(client_id)
+                    if not self.subaccount_subscriptions[synthetic_hotkey]:
+                        del self.subaccount_subscriptions[synthetic_hotkey]
+                    self._cancel_subaccount_poll_task(synthetic_hotkey)
+
             bt.logging.info(f"WebSocketServer: Client {client_id} removed from all registries")
 
     def send_message(self, message_data: Dict[str, Any]) -> bool:
@@ -537,6 +565,8 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
         return {
             "connected_clients": len(self.connected_clients),
             "subscribed_clients": len(self.subscribed_clients),
+            "subaccount_subscriptions_count": len(self.subaccount_subscriptions),
+            "subaccount_subscribers_total": sum(len(s) for s in self.subaccount_subscriptions.values()),
             "queue_size": self.message_queue.qsize() if self.message_queue else 0,
             "queue_maxsize": 1000
         }
@@ -565,6 +595,163 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
             bt.logging.error(f"WebSocketServer: Error broadcasting position update: {e}")
             bt.logging.error(traceback.format_exc())
             return False
+
+    def has_subaccount_subscribers_rpc(self, synthetic_hotkey: str) -> bool:
+        """
+        Check if there are any WebSocket clients subscribed to a subaccount.
+
+        Args:
+            synthetic_hotkey: The synthetic hotkey to check
+
+        Returns:
+            bool: True if there are subscribers, False otherwise
+        """
+        if synthetic_hotkey not in self.subaccount_subscriptions:
+            return False
+        return bool(self.subaccount_subscriptions[synthetic_hotkey])
+
+    def broadcast_subaccount_dashboard_rpc(self, synthetic_hotkey: str, data: dict) -> bool:
+        """
+        RPC method to broadcast subaccount dashboard to subscribed clients.
+
+        Args:
+            synthetic_hotkey: The synthetic hotkey to broadcast dashboard for
+            data: The dashboard data to broadcast
+
+        Returns:
+            bool: True if broadcast was successful or skipped (throttled/no subscribers), False on error
+        """
+        try:
+            # Early exit if no subscribers
+            if synthetic_hotkey not in self.subaccount_subscriptions:
+                return True
+            if not self.subaccount_subscriptions[synthetic_hotkey]:
+                return True
+
+            # Throttle check
+            now_ms = TimeUtil.now_in_millis()
+            last_broadcast = self.subaccount_last_broadcast_ms.get(synthetic_hotkey, 0)
+            if now_ms - last_broadcast < SUBACCOUNT_BROADCAST_THROTTLE_MS:
+                bt.logging.warning(f"WebSocketServer: Throttling dashboard broadcast for {synthetic_hotkey}")
+                return True
+
+            # Update throttle timestamp
+            self.subaccount_last_broadcast_ms[synthetic_hotkey] = now_ms
+
+            message_type = "error" if "error_msg" in data else "subaccount_dashboard"
+
+            # Queue broadcast
+            message = {
+                "type": message_type,
+                "synthetic_hotkey": synthetic_hotkey,
+                "data": data
+            }
+            return self._send_subaccount_message(synthetic_hotkey, message)
+        except Exception as e:
+            bt.logging.error(f"WebSocketServer: Error broadcasting dashboard for {synthetic_hotkey}: {e}")
+            return False
+
+    def _send_subaccount_message(self, synthetic_hotkey: str, message_data: Dict[str, Any]) -> bool:
+        """
+        Queue a subaccount message for broadcasting to specific subscribers.
+
+        Args:
+            synthetic_hotkey: The synthetic hotkey to broadcast to
+            message_data: The message data to broadcast
+
+        Returns:
+            bool: True if message was queued successfully, False otherwise
+        """
+        try:
+            if self.loop is None:
+                return False
+
+            # Add sequence and timestamp
+            self.sequence_number += 1
+            envelope = {
+                "sequence": self.sequence_number,
+                "timestamp": TimeUtil.now_in_millis(),
+                **message_data
+            }
+
+            # Schedule async broadcast
+            asyncio.run_coroutine_threadsafe(
+                self._broadcast_to_subaccount_subscribers(synthetic_hotkey, envelope),
+                self.loop
+            )
+            return True
+        except Exception as e:
+            bt.logging.error(f"WebSocketServer: Error queueing subaccount message: {e}")
+            return False
+
+    async def _broadcast_to_subaccount_subscribers(self, synthetic_hotkey: str, envelope: dict) -> None:
+        """
+        Broadcast message to clients subscribed to a specific subaccount.
+
+        Args:
+            synthetic_hotkey: The synthetic hotkey to broadcast to
+            envelope: The message envelope with sequence number and timestamp
+        """
+        subscribers = self.subaccount_subscriptions.get(synthetic_hotkey, set()).copy()
+        message = json.dumps(envelope, cls=CustomEncoder)
+
+        disconnected = []
+        for client_id in subscribers:
+            if client_id in self.connected_clients:
+                try:
+                    await self.connected_clients[client_id].send(message)
+                except websockets.exceptions.ConnectionClosed:
+                    disconnected.append(client_id)
+
+        for client_id in disconnected:
+            self._remove_client(client_id)
+
+    # ==================== Subaccount Dashboard Polling ====================
+
+    def _ensure_subaccount_poll_task(self, synthetic_hotkey: str) -> None:
+        """Start a polling task for a subaccount if one isn't already running."""
+        existing = self._subaccount_poll_tasks.get(synthetic_hotkey)
+        if existing and not existing.done():
+            return
+        self._subaccount_poll_tasks[synthetic_hotkey] = asyncio.ensure_future(
+            self._poll_subaccount_dashboard(synthetic_hotkey)
+        )
+
+    async def _poll_subaccount_dashboard(self, synthetic_hotkey: str) -> None:
+        """Fetch and push dashboard data immediately, then every SUBACCOUNT_POLL_INTERVAL_S seconds.
+
+        The task exits automatically when no subscribers remain.
+        """
+        try:
+            while self.subaccount_subscriptions.get(synthetic_hotkey):
+                try:
+                    dashboard_data = self._entity_client.get_subaccount_dashboard_data(synthetic_hotkey)
+                    if dashboard_data:
+                        self.sequence_number += 1
+                        envelope = {
+                            "sequence": self.sequence_number,
+                            "timestamp": TimeUtil.now_in_millis(),
+                            "type": "subaccount_dashboard",
+                            "synthetic_hotkey": synthetic_hotkey,
+                            "data": dashboard_data
+                        }
+                        await self._broadcast_to_subaccount_subscribers(synthetic_hotkey, envelope)
+                except Exception as e:
+                    bt.logging.warning(f"WebSocketServer: Dashboard poll failed for {synthetic_hotkey}: {e}")
+
+                await asyncio.sleep(SUBACCOUNT_POLL_INTERVAL_S)
+        except asyncio.CancelledError:
+            pass
+        finally:
+            self._subaccount_poll_tasks.pop(synthetic_hotkey, None)
+
+    def _cancel_subaccount_poll_task(self, synthetic_hotkey: str) -> None:
+        """Cancel the polling task for a subaccount if no subscribers remain."""
+        if self.subaccount_subscriptions.get(synthetic_hotkey):
+            return  # still has subscribers
+        task = self._subaccount_poll_tasks.pop(synthetic_hotkey, None)
+        if task and not task.done():
+            task.cancel()
 
     # ==================== WebSocket Client Handling ====================
 
@@ -730,6 +917,53 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                                 "action": "unsubscribe"
                             }))
 
+                    elif message_type == "subscribe_subaccount":
+                        # Handle subaccount dashboard subscription
+                        synthetic_hotkey = data.get("synthetic_hotkey")
+                        if not synthetic_hotkey:
+                            await websocket.send(json.dumps({
+                                "type": "subscription_status",
+                                "status": "error",
+                                "action": "subscribe_subaccount",
+                                "message": "Missing synthetic_hotkey parameter"
+                            }))
+                        elif self.client_auth.get(client_id, {}).get("tier", 0) < SUBACCOUNT_SUBSCRIPTION_TIER:
+                            await websocket.send(json.dumps({
+                                "type": "subscription_status",
+                                "status": "error",
+                                "action": "subscribe_subaccount",
+                                "synthetic_hotkey": synthetic_hotkey,
+                                "message": "Subaccount subscriptions require tier 200 access.",
+                                "code": "INSUFFICIENT_TIER"
+                            }))
+                        else:
+                            self.subaccount_subscriptions[synthetic_hotkey].add(client_id)
+                            bt.logging.info(f"WebSocketServer: Client {client_id} subscribed to subaccount {synthetic_hotkey}")
+                            await websocket.send(json.dumps({
+                                "type": "subscription_status",
+                                "status": "success",
+                                "action": "subscribe_subaccount",
+                                "subscribed_to": synthetic_hotkey
+                            }))
+                            # Start polling if not already running — sends data immediately
+                            self._ensure_subaccount_poll_task(synthetic_hotkey)
+
+                    elif message_type == "unsubscribe_subaccount":
+                        # Handle subaccount dashboard unsubscription
+                        synthetic_hotkey = data.get("synthetic_hotkey")
+                        if synthetic_hotkey and client_id in self.subaccount_subscriptions.get(synthetic_hotkey, set()):
+                            self.subaccount_subscriptions[synthetic_hotkey].discard(client_id)
+                            if not self.subaccount_subscriptions[synthetic_hotkey]:
+                                del self.subaccount_subscriptions[synthetic_hotkey]
+                            self._cancel_subaccount_poll_task(synthetic_hotkey)
+                            bt.logging.info(f"WebSocketServer: Client {client_id} unsubscribed from subaccount {synthetic_hotkey}")
+                        await websocket.send(json.dumps({
+                            "type": "subscription_status",
+                            "status": "success",
+                            "action": "unsubscribe_subaccount",
+                            "synthetic_hotkey": synthetic_hotkey
+                        }))
+
                 except websockets.exceptions.ConnectionClosed:
                     break
                 except json.JSONDecodeError:
@@ -881,6 +1115,11 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                     except asyncio.CancelledError:
                         pass
 
+                # Cancel all subaccount poll tasks
+                for task in self._subaccount_poll_tasks.values():
+                    task.cancel()
+                self._subaccount_poll_tasks.clear()
+
                 # Final save of sequence number
                 self._save_sequence_number()
                 raise
@@ -936,6 +1175,13 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
         if self.test_positions_task and not self.test_positions_task.done():
             self.test_positions_task.cancel()
             tasks_to_cancel.append(self.test_positions_task)
+
+        # Cancel all subaccount poll tasks
+        for task in self._subaccount_poll_tasks.values():
+            if not task.done():
+                task.cancel()
+                tasks_to_cancel.append(task)
+        self._subaccount_poll_tasks.clear()
 
         # Wait for all tasks to complete cancellation with exception handling
         if tasks_to_cancel:

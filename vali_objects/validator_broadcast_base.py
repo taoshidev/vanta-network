@@ -307,7 +307,7 @@ class ValidatorBroadcastBase:
         if sender_hotkey != mothership_hotkey:
             bt.logging.warning(
                 f"[SECURITY] Rejected {broadcast_name} broadcast from unauthorized validator: {sender_hotkey}. "
-                f"Only mothership ({ValiConfig.MOTHERSHIP_HOTKEY}) can broadcast."
+                f"Only mothership ({mothership_hotkey}) can broadcast."
             )
             return False
 

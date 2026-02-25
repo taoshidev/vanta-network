@@ -27,7 +27,7 @@ import threading
 
 from vali_objects.utils.elimination.elimination_manager import EliminationManager
 from typing import Dict, Set, List, Optional
-from vali_objects.vali_config import ValiConfig
+from vali_objects.vali_config import ValiConfig, TradePair
 from setproctitle import setproctitle
 from shared_objects.rpc.common_data_client import CommonDataClient
 from shared_objects.rpc.rpc_server_base import RPCServerBase

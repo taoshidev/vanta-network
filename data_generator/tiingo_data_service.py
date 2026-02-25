@@ -283,7 +283,7 @@ class TiingoDataService(BaseDataService):
             ask_price = 0
             if tp.is_forex:
                 assert len(data) == 8, data
-                mode, ticker, date_str, bid_size, bid_price, mid_price, ask_price, ask_size = data
+                mode, ticker, date_str, bid_size, bid_price, mid_price, ask_size, ask_price = data
                 start_timestamp_orig = TimeUtil.parse_iso_to_ms(date_str)
                 start_timestamp = round(start_timestamp_orig, -3)  # round to nearest second which allows aggresssive filtering via dup logic
                 if symbol in self.trade_pair_to_recent_events and self.trade_pair_to_recent_events[symbol].timestamp_exists(start_timestamp):

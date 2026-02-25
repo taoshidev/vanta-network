@@ -515,7 +515,7 @@ class TestOrderProcessor(TestBase):
 
         mock_limit_order_client = Mock()
 
-        with self.assertRaises(SignalException) as context:
+        with self.assertRaises(ValueError) as context:
             OrderProcessor.process_limit_order(
                 signal=signal,
                 trade_pair=self.DEFAULT_TRADE_PAIR,
@@ -526,7 +526,7 @@ class TestOrderProcessor(TestBase):
             )
 
         self.assertIn("stop_loss", str(context.exception))
-        self.assertIn("less than limit_price", str(context.exception))
+        self.assertIn("< limit_price", str(context.exception))
 
     def test_process_limit_order_short_stop_loss_below_limit_price(self):
         """Test error for SHORT order with stop_loss <= limit_price"""
@@ -539,7 +539,7 @@ class TestOrderProcessor(TestBase):
 
         mock_limit_order_client = Mock()
 
-        with self.assertRaises(SignalException) as context:
+        with self.assertRaises(ValueError) as context:
             OrderProcessor.process_limit_order(
                 signal=signal,
                 trade_pair=self.DEFAULT_TRADE_PAIR,
@@ -550,7 +550,7 @@ class TestOrderProcessor(TestBase):
             )
 
         self.assertIn("stop_loss", str(context.exception))
-        self.assertIn("greater than limit_price", str(context.exception))
+        self.assertIn("limit_price <", str(context.exception))
 
     def test_process_limit_order_long_take_profit_below_limit_price(self):
         """Test error for LONG order with take_profit <= limit_price"""
@@ -563,7 +563,7 @@ class TestOrderProcessor(TestBase):
 
         mock_limit_order_client = Mock()
 
-        with self.assertRaises(SignalException) as context:
+        with self.assertRaises(ValueError) as context:
             OrderProcessor.process_limit_order(
                 signal=signal,
                 trade_pair=self.DEFAULT_TRADE_PAIR,
@@ -574,7 +574,7 @@ class TestOrderProcessor(TestBase):
             )
 
         self.assertIn("take_profit", str(context.exception))
-        self.assertIn("greater than limit_price", str(context.exception))
+        self.assertIn("limit_price <", str(context.exception))
 
     def test_process_limit_order_short_take_profit_above_limit_price(self):
         """Test error for SHORT order with take_profit >= limit_price"""
@@ -587,7 +587,7 @@ class TestOrderProcessor(TestBase):
 
         mock_limit_order_client = Mock()
 
-        with self.assertRaises(SignalException) as context:
+        with self.assertRaises(ValueError) as context:
             OrderProcessor.process_limit_order(
                 signal=signal,
                 trade_pair=self.DEFAULT_TRADE_PAIR,
@@ -598,7 +598,7 @@ class TestOrderProcessor(TestBase):
             )
 
         self.assertIn("take_profit", str(context.exception))
-        self.assertIn("less than limit_price", str(context.exception))
+        self.assertIn("< limit_price", str(context.exception))
 
     # ============================================================================
     # Test: process_limit_order - Manager Integration

@@ -321,6 +321,18 @@ class PositionManagerClient(RPCClientBase):
         """
         return self._server.compute_realtime_drawdown_rpc(hotkey)
 
+    def get_unrealized_pnl(self, hotkey: str) -> float:
+        """
+        Get total unrealized PnL across all open positions for a hotkey.
+
+        Args:
+            hotkey: The miner hotkey
+
+        Returns:
+            Total unrealized PnL in USD (sum of all open positions' unrealized_pnl)
+        """
+        return self._server.get_unrealized_pnl_rpc(hotkey)
+
     # ==================== Mutation Methods ====================
 
     def save_miner_position(self, position: Position, delete_open_position_if_exists: bool = True) -> None:

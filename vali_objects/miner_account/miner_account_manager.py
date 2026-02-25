@@ -24,6 +24,7 @@ from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.exceptions.signal_exception import SignalException
 from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.validator_broadcast_base import ValidatorBroadcastBase
 
 
@@ -71,9 +72,12 @@ class MinerAccount:
     capital_used: float = 0.0            # Total leveraged USD value of open positions
     total_borrowed_amount: float = 0.0   # Total margin loans outstanding (equities only)
     total_interest_paid: float = 0.0     # Cumulative interest paid on margin loans
+    total_fees_paid: float = 0.0         # Cumulative fees paid (transaction, funding, ...)
     asset_class: Optional[TradePairCategory] = None  # EQUITIES, CRYPTO, FOREX
     collateral_records: List[CollateralRecord] = None  # Historical CollateralRecords (List[CollateralRecord])
     last_interest_date_ms: Optional[int] = None  # Last date interest was applied
+    miner_bucket: Optional[MinerBucket] = None  # Pushed by ChallengePeriodManager
+    max_return: float = 1.0  # High water mark for portfolio return
 
     def __post_init__(self):
         """Initialize collateral_records to empty list if None."""
@@ -83,13 +87,20 @@ class MinerAccount:
     @property
     def balance(self) -> float:
         """Current balance = account_size + total_realized_pnl - total_interest_paid."""
-        return self.get_account_size() + self.total_realized_pnl - self.total_interest_paid
+        return self.get_account_size() + self.total_realized_pnl - self.total_interest_paid - self.total_fees_paid
 
     @property
     def buying_power(self) -> float:
         """Available buying power = balance * multiplier - capital_used."""
+        return self.balance * self.multiplier - self.capital_used
+
+    @property
+    def multiplier(self) -> float:
         multiplier = ValiConfig.PORTFOLIO_LEVERAGE_CAP.get(self.asset_class, 1.0) if self.asset_class else 1.0
-        return self.balance * multiplier - self.capital_used
+        if self.miner_bucket == MinerBucket.SUBACCOUNT_CHALLENGE:
+            multiplier /= ValiConfig.SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR
+        return multiplier
+
 
     def add_collateral_record(self, record: 'CollateralRecord'):
         """Add a new collateral record. Account size flows through balance property."""
@@ -127,8 +138,11 @@ class MinerAccount:
         self.total_realized_pnl = 0
         self.capital_used = 0
         self.total_borrowed_amount = 0
+        self.total_fees_paid = 0
         self.total_interest_paid = 0
         self.last_interest_date_ms = None
+        self.miner_bucket = None
+        self.max_return = 1.0
 
 
     def apply_interest(self, current_time_ms: int, running_unit_tests: bool = False) -> bool:
@@ -197,7 +211,10 @@ class MinerAccount:
             'asset_class': self.asset_class.value if self.asset_class else None,
             'total_borrowed_amount': self.total_borrowed_amount,
             'total_interest_paid': self.total_interest_paid,
-            'last_interest_date_ms': self.last_interest_date_ms
+            'total_fees_paid': self.total_fees_paid,
+            'last_interest_date_ms': self.last_interest_date_ms,
+            'miner_bucket': self.miner_bucket.value if self.miner_bucket else None,
+            'max_return': self.max_return
         }
 
         if include_collateral_records:
@@ -227,7 +244,9 @@ class MinerAccountManager(ValidatorBroadcastBase):
         self,
         running_unit_tests: bool = False,
         collateral_balance_getter=None,
-        connection_mode: RPCConnectionMode = RPCConnectionMode.RPC
+        connection_mode: RPCConnectionMode = RPCConnectionMode.RPC,
+        config=None,
+        is_testnet: bool = False
     ):
         """
         Initialize the manager.
@@ -238,9 +257,18 @@ class MinerAccountManager(ValidatorBroadcastBase):
                                        Signature: (hotkey: str) -> Optional[float]
                                        Returns balance in theta tokens, or None.
             connection_mode: RPC or LOCAL mode for asset selection client
+            config: Bittensor config (for ValidatorBroadcastBase)
+            is_testnet: Whether running on testnet (for ValidatorBroadcastBase)
         """
+        # Initialize ValidatorBroadcastBase first
+        super().__init__(
+            running_unit_tests=running_unit_tests,
+            is_testnet=is_testnet,
+            config=config,
+            connection_mode=connection_mode
+        )
+
         self.running_unit_tests = running_unit_tests
-        self._collateral_balance_getter = collateral_balance_getter
         self.connection_mode = connection_mode
 
         # Unified MinerAccount storage - single source of truth
@@ -268,10 +296,6 @@ class MinerAccountManager(ValidatorBroadcastBase):
 
         # Load from disk
         self._load_accounts_from_disk()
-
-    def set_collateral_balance_getter(self, getter):
-        """Set the collateral balance getter (for lazy initialization)."""
-        self._collateral_balance_getter = getter
 
     # ==================== Disk Persistence ====================
 
@@ -360,13 +384,19 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     capital_used = last_record.get("capital_used")
                     total_borrowed = last_record.get("total_borrowed_amount", 0.0)
                     total_interest_paid = last_record.get("total_interest_paid", 0.0)
+                    total_fees_paid = last_record.get("total_fees_paid", 0.0)
                     last_interest_date_ms = last_record.get("last_interest_date_ms")
+                    miner_bucket_str = last_record.get("miner_bucket")
+                    max_return = last_record.get("max_return", 1.0)
                 else:
                     total_realized_pnl = None
                     capital_used = None
                     total_borrowed = 0.0
                     total_interest_paid = 0.0
+                    total_fees_paid = 0.0
                     last_interest_date_ms = None
+                    miner_bucket_str = None
+                    max_return = 1.0
 
                 # Parse collateral records
                 for record_data in records_list:
@@ -394,15 +424,26 @@ class MinerAccountManager(ValidatorBroadcastBase):
                         except ValueError:
                             bt.logging.warning(f"Unknown asset_class '{asset_class_str}' for {hotkey}")
 
+                # Parse miner_bucket from disk (None for legacy data, filled on first CP refresh)
+                miner_bucket = None
+                if miner_bucket_str:
+                    try:
+                        miner_bucket = MinerBucket(miner_bucket_str)
+                    except ValueError:
+                        bt.logging.warning(f"Unknown miner_bucket '{miner_bucket_str}' for {hotkey}")
+
                 parsed_accounts[hotkey] = MinerAccount(
                     miner_hotkey=hotkey,
                     total_realized_pnl=total_realized_pnl if total_realized_pnl is not None else 0.0,
                     capital_used=capital_used if capital_used is not None else 0.0,
                     total_borrowed_amount=total_borrowed,
                     total_interest_paid=total_interest_paid,
+                    total_fees_paid=total_fees_paid,
                     asset_class=asset_class,
                     collateral_records=collateral_records,
-                    last_interest_date_ms=last_interest_date_ms
+                    last_interest_date_ms=last_interest_date_ms,
+                    miner_bucket=miner_bucket,
+                    max_return=max_return
                 )
 
             except Exception as e:
@@ -593,7 +634,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     return False
 
                 # Create a CollateralRecord object
-                is_first_record = hotkey not in self.miner_account_sizes or not self.miner_account_sizes[hotkey]
+                is_first_record = hotkey not in self.accounts or not self.accounts[hotkey].collateral_records
                 collateral_record = CollateralRecord(account_size, account_size_theta, update_time_ms, is_first_record)
 
                 # Get or create account
@@ -626,18 +667,42 @@ class MinerAccountManager(ValidatorBroadcastBase):
     def get_or_create(self, hotkey: str) -> MinerAccount:
         """Get existing account or create new one with zero realized PNL and zero capital used."""
         if hotkey not in self.accounts:
-            asset_selection = self._asset_selection_client.get_asset_selection(hotkey)
             self.accounts[hotkey] = MinerAccount(
                 miner_hotkey=hotkey,
                 total_realized_pnl=0.0,
                 capital_used=0.0,
-                asset_class=asset_selection,
             )
         return self.accounts[hotkey]
 
     def get_account(self, hotkey: str) -> Optional[MinerAccount]:
         """Get account if it exists, without creating."""
         return self.accounts.get(hotkey)
+
+    def get_accounts(self, hotkeys: List[str]) -> Dict[str, MinerAccount]:
+        """Get accounts for multiple hotkeys. Returns dict of hotkey -> MinerAccount for existing accounts."""
+        with self._accounts_lock:
+            return {hk: self.accounts[hk] for hk in hotkeys if hk in self.accounts}
+
+    def update_max_returns(self, hotkey_to_return: Dict[str, float]) -> None:
+        """Batch update HWM for multiple hotkeys. Saves to disk once at the end."""
+        with self._accounts_lock:
+            write_to_disk = False
+            for hotkey, current_return in hotkey_to_return.items():
+                account = self.accounts.get(hotkey)
+                if account and current_return > account.max_return:
+                    account.max_return = current_return
+                    write_to_disk = True
+
+            if write_to_disk:
+                self._save_accounts_to_disk()
+
+
+    def set_miner_bucket(self, hotkey: str, bucket: Optional[MinerBucket]) -> None:
+        """Set the miner bucket on an account. Called by ChallengePeriodManager via RPC."""
+        with self._accounts_lock:
+            account = self.get_or_create(hotkey)
+            account.miner_bucket = bucket
+            self._save_accounts_to_disk()
 
     def get_all_hotkeys(self) -> list:
         """Get all hotkeys with accounts."""
@@ -659,7 +724,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
 
     # ==================== Margin/Cash Processing Methods ====================
 
-    def process_order_buy(self, hotkey: str, order_value_usd: float) -> float:
+    def process_order_buy(self, hotkey: str, order_value_usd: float, fee_usd: float = 0) -> float:
         """
         Process buy order. Check buying_power and track capital_used.
 
@@ -678,30 +743,32 @@ class MinerAccountManager(ValidatorBroadcastBase):
         order_value_usd = abs(order_value_usd)
 
         with self._accounts_lock:
-            if order_value_usd > account.buying_power:
+            tolerance = 0.001  # floating point errors
+            if order_value_usd + fee_usd * account.multiplier > account.buying_power + tolerance:
                 raise SignalException(
-                    f"Insufficient buying power. Need ${order_value_usd:.2f}, have ${account.buying_power:.2f}"
+                    f"Insufficient buying power. Need ${order_value_usd + fee_usd:.2f}, have ${account.buying_power:.2f}"
                 )
 
             borrowed_amount = 0.0
             # Equities: only borrow if order exceeds available cash
             if account.asset_class == TradePairCategory.EQUITIES:
-                available_cash = account.balance - account.capital_used
+                available_cash = account.balance - account.capital_used - fee_usd
                 if order_value_usd > available_cash:
                     borrowed_amount = order_value_usd * 0.5
                     account.total_borrowed_amount += borrowed_amount
 
             account.capital_used += order_value_usd
+            account.total_fees_paid += fee_usd
 
             self._save_accounts_to_disk()
 
             bt.logging.info(
-                f"[{hotkey[:8]}] Buy: ${order_value_usd:.2f}, capital_used: ${account.capital_used:.2f}, "
+                f"[PROCESS ORDER BUY {hotkey}] ${order_value_usd:.2f}, capital_used: ${account.capital_used:.2f}, "
                 f"buying_power: ${account.buying_power:.2f}, borrowed: ${borrowed_amount:.2f}"
             )
             return borrowed_amount
 
-    def process_order_sell(self, hotkey: str, entry_value_usd: float, realized_pnl: float, position_margin_loan: float) -> float:
+    def process_order_sell(self, hotkey: str, entry_value_usd: float, realized_pnl: float, position_margin_loan: float, fee_usd: float = 0) -> float:
         """
         Process sell/close order. Free capital_used, compound realized PNL to balance.
 
@@ -710,6 +777,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
             entry_value_usd: Original entry value of the position being closed (full leveraged value)
             realized_pnl: Realized PNL from this sale (raw, unmultiplied)
             position_margin_loan: Margin loan amount for this position (equities only)
+            fee_usd: Transaction fee in USD
 
         Returns: loan_repaid
         """
@@ -721,6 +789,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
             # All asset classes: free capital and compound realized PNL
             account.capital_used = max(0.0, account.capital_used - entry_value_usd)
             account.total_realized_pnl += realized_pnl
+            account.total_fees_paid += fee_usd
 
             loan_repaid = 0.0
             if account.asset_class == TradePairCategory.EQUITIES and position_margin_loan > 0:
@@ -731,7 +800,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
             self._save_accounts_to_disk()
 
             bt.logging.info(
-                f"[{hotkey[:8]}] Sell: entry_value=${entry_value_usd:.2f}, pnl=${realized_pnl:.2f}, "
+                f"[PROCESS ORDER BUY {hotkey}] entry_value=${entry_value_usd:.2f}, pnl=${realized_pnl:.2f}, "
                 f"loan_repaid=${loan_repaid:.2f}, balance=${account.balance:.2f}, buying_power=${account.buying_power:.2f}"
             )
             return loan_repaid

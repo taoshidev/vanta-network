@@ -19,7 +19,9 @@ Usage:
 """
 from typing import Optional, Dict, List, Any
 
+import template.protocol
 from shared_objects.rpc.rpc_client_base import RPCClientBase
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.miner_account.miner_account_server import MinerAccountServer
 from vali_objects.vali_config import RPCConnectionMode, ValiConfig, TradePairCategory
 
@@ -74,7 +76,8 @@ class MinerAccountClient(RPCClientBase):
         hotkey: str,
         collateral_balance_theta: float,
         timestamp_ms: Optional[int] = None,
-        account_size: float = None
+        account_size: float = None,
+        bucket: Optional[MinerBucket] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         Set the account size for a miner.
@@ -89,6 +92,8 @@ class MinerAccountClient(RPCClientBase):
             CollateralRecord as dict if successful, None otherwise.
             Dict contains: account_size, account_size_theta, update_time_ms, valid_date_timestamp
         """
+        if bucket:
+            self._server.set_miner_bucket(hotkey, bucket.value)
         return self._server.set_miner_account_size(hotkey, collateral_balance_theta, timestamp_ms, account_size)
 
     def delete_miner_account_size(self, hotkey: str) -> bool:
@@ -159,9 +164,20 @@ class MinerAccountClient(RPCClientBase):
         """Reload account sizes from disk."""
         self._server.re_init_account_sizes()
 
-    def receive_collateral_record_update(self, collateral_record_data: dict, sender_hotkey: str=None) -> bool:
-        """Process an incoming CollateralRecord synapse."""
-        return self._server.receive_collateral_record_update(collateral_record_data, sender_hotkey)
+    def receive_collateral_record(self, synapse: template.protocol.CollateralRecord) -> template.protocol.CollateralRecord:
+        """
+        Receive collateral record update synapse (for axon attachment).
+
+        This method is called directly by the validator's axon when a CollateralRecord
+        broadcast is received from another validator.
+
+        Args:
+            synapse: CollateralRecord synapse from the sending validator
+
+        Returns:
+            Updated synapse with successfully_processed and error_message fields
+        """
+        return self._server.receive_collateral_record_rpc(synapse)
 
     # ==================== MinerAccount Cache Methods ====================
 
@@ -196,6 +212,30 @@ class MinerAccountClient(RPCClientBase):
         """
         return self._server.get_account(hotkey)
 
+    def get_accounts(self, hotkeys: list) -> Dict[str, dict]:
+        """
+        Get accounts for multiple hotkeys in a single RPC call.
+
+        Args:
+            hotkeys: List of miner hotkeys to look up
+
+        Returns:
+            Dict of hotkey -> account dict for existing accounts.
+            Hotkeys without accounts are omitted from the result.
+        """
+        return self._server.get_accounts(hotkeys)
+
+    def update_max_returns(self, hotkey_to_return: Dict[str, float]) -> None:
+        """Batch update HWM for multiple hotkeys. Saves to disk once."""
+        self._server.update_max_returns(hotkey_to_return)
+
+
+
+    def set_miner_bucket(self, hotkey: str, bucket: Optional[MinerBucket]) -> None:
+        """Set the miner bucket on an account. Converts MinerBucket to string for RPC."""
+        bucket_value = bucket.value if bucket else None
+        self._server.set_miner_bucket(hotkey, bucket_value)
+
     def get_all_hotkeys(self) -> list:
         """Get all hotkeys with accounts."""
         return self._server.get_all_hotkeys()
@@ -213,23 +253,22 @@ class MinerAccountClient(RPCClientBase):
 
     # ==================== Margin/Cash Processing Methods ====================
 
-    def process_order_buy(self, hotkey: str, order_value_usd: float) -> float:
+    def process_order_buy(self, hotkey: str, order_value_usd: float, fee_usd: float = 0) -> float:
         """
         Process buy order cash/margin.
 
         Args:
             hotkey: Miner's hotkey
             order_value_usd: Order value in USD
-            trade_pair_category: TradePairCategory enum value
 
         Returns:
             Borrowed amount (float)
 
         Raises: SignalException if insufficient funds for margin
         """
-        return self._server.process_order_buy(hotkey, order_value_usd)
+        return self._server.process_order_buy(hotkey, order_value_usd, fee_usd)
 
-    def process_order_sell(self, hotkey: str, entry_value_usd: float, realized_pnl: float, position_margin_loan: float) -> float:
+    def process_order_sell(self, hotkey: str, entry_value_usd: float, realized_pnl: float, position_margin_loan: float, fee_usd: float = 0) -> float:
         """
         Process sell/close order. Free capital_used, compound realized PNL to balance.
 
@@ -238,10 +277,11 @@ class MinerAccountClient(RPCClientBase):
             entry_value_usd: Original entry value of the position being closed
             realized_pnl: Realized PNL from this sale
             position_margin_loan: Margin loan amount for this position
+            fee_usd: Transaction fee in USD
 
         Returns: loan_repaid
         """
-        return self._server.process_order_sell(hotkey, entry_value_usd, realized_pnl, position_margin_loan)
+        return self._server.process_order_sell(hotkey, entry_value_usd, realized_pnl, position_margin_loan, fee_usd)
 
     def get_total_borrowed_amount(self, hotkey: str) -> float:
         """Get total borrowed amount for a miner."""

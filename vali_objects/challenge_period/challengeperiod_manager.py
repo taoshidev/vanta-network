@@ -203,6 +203,7 @@ class ChallengePeriodManager(CacheController):
         if not self.refreshed_challengeperiod_start_time:
             self.refreshed_challengeperiod_start_time = True
             self._refresh_challengeperiod_start_time(hk_to_first_order_time)
+            self._sync_all_miner_buckets()
 
         ledger = self._perf_ledger_client.filtered_ledger_for_scoring(hotkeys=all_miners, portfolio_only=False)
 
@@ -360,7 +361,7 @@ class ChallengePeriodManager(CacheController):
         Returns:
             (should_eliminate, elimination_reason_tuple)
         """
-        exceeds_max_drawdown, recorded_drawdown_percentage = LedgerUtils.is_beyond_max_drawdown(ledger)
+        _, recorded_drawdown_percentage = LedgerUtils.is_beyond_max_drawdown(ledger, drawdown_threshold_percentage)
 
         # recorded_drawdown_percentage is in 0-100 scale (e.g., 1.0 for 1% drawdown)
         # Compare against threshold in same scale
@@ -413,6 +414,20 @@ class ChallengePeriodManager(CacheController):
             bt.logging.warning(f"[SYNTHETIC_CP] Error checking returns for {hotkey}: {e}")
             return False
 
+    def _compute_portfolio_return(self, hotkey: str, account: Optional[dict] = None) -> Optional[float]:
+        """Compute current portfolio return as (balance + unrealized_pnl) / account_size.
+
+        Returns None if account data is unavailable.
+        """
+        if account is None:
+            return None
+        account_size = account.get('account_size', 0)
+        if account_size <= 0:
+            return None
+        balance = account.get('balance', 0)
+        unrealized_pnl = self._position_client.get_unrealized_pnl(hotkey)
+        return (balance + unrealized_pnl) / account_size
+
     # ==================== Evaluation Methods ====================
 
     def _evaluate_synthetic_challenge(
@@ -423,89 +438,79 @@ class ChallengePeriodManager(CacheController):
         """
         Evaluate synthetic hotkeys in CHALLENGE bucket with instantaneous pass criteria.
 
-        Pass criteria (checked continuously):
-        - Returns >= 8% (SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD)
-        - Drawdown <= 5% (SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD)
+        Elimination criteria:
+        - Drawdown > 5% from peak equity (SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD)
+          Uses high water mark methodology, same as rank-based miners
 
-        Returns immediately promoted as soon as they hit 8% returns.
+        Promotion criteria:
+        - Returns >= 8% (SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD)
+          Returns immediately promoted as soon as they hit 8% returns.
         """
         hotkeys_to_promote = []
         miners_to_eliminate = {}
 
-        bt.logging.info(
-            f"[SYNTH_EVAL] Starting evaluation of {len(inspection_hotkeys)} synthetic hotkeys. "
-            f"Thresholds: promote>{ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD:.1%}, "
-            f"eliminate<-{ValiConfig.SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD:.1%}"
-        )
-        bt.logging.info(f"[SYNTH_EVAL] Portfolio ledgers available for: {list(portfolio_only_ledgers.keys())}")
+        asset_classes = self.asset_selection_client.get_asset_selections()
+        accounts = self._miner_account_client.get_accounts(list(inspection_hotkeys.keys()))
 
         for hotkey, bucket_start_time in inspection_hotkeys.items():
-            hotkey_short = f"{hotkey[-4:]}"
-            bt.logging.info(f"[SYNTH_EVAL] [{hotkey_short}] Evaluating (bucket_start_time={bucket_start_time})")
 
             # Unified check: Minimum ledger
+            # NOTE not needed?
             has_minimum_ledger, ledger = self._check_minimum_ledger(
                 portfolio_only_ledgers, hotkey
             )
-            if not has_minimum_ledger:
-                bt.logging.info(f"[SYNTH_EVAL] [{hotkey_short}] SKIPPED - no minimum ledger (ledger={ledger})")
-                continue
-            bt.logging.info(f"[SYNTH_EVAL] [{hotkey_short}] Has minimum ledger, cps_count={len(ledger.cps) if ledger else 0}")
-
-            # TODO: temp code - using ledger realized pnl directly. replace with equity curve
-            pnl = self._perf_ledger_client.get_returns(hotkey)
-            bt.logging.info(f"[SYNTH_EVAL] [{hotkey_short}] PnL from perf_ledger_client.get_returns(): {pnl}")
-
-            if pnl is None:
-                bt.logging.warning(f"[SYNTH_EVAL] [{hotkey_short}] SKIPPED - pnl is None")
+            if not has_minimum_ledger or not ledger:
                 continue
 
-            subaccount_account_size = self._miner_account_client.get_miner_account_size(hotkey, use_account_floor=True)
-            bt.logging.info(f"[SYNTH_EVAL] [{hotkey_short}] Account size: ${subaccount_account_size:,.2f}")
-
-            if subaccount_account_size is None or subaccount_account_size <= 0:
-                bt.logging.warning(f"[SYNTH_EVAL] [{hotkey_short}] SKIPPED - invalid account size: {subaccount_account_size}")
+            # Compute portfolio return: (balance + unrealized_pnl) / account_size
+            current_return = self._compute_portfolio_return(hotkey, accounts.get(hotkey))
+            if current_return is None:
                 continue
 
-            # Calculate thresholds
-            eliminate_threshold = -1 * ValiConfig.SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD * subaccount_account_size
-            promote_threshold = ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD * subaccount_account_size
-            pnl_pct = (pnl / subaccount_account_size) * 100 if subaccount_account_size else 0
-
-            bt.logging.info(
-                f"[SYNTH_EVAL] [{hotkey_short}] Comparing: pnl=${pnl:,.2f} ({pnl_pct:+.2f}%) | "
-                f"eliminate_threshold=${eliminate_threshold:,.2f} | promote_threshold=${promote_threshold:,.2f}"
-            )
-
-            should_eliminate = pnl < eliminate_threshold
-            if should_eliminate:
+            # Check drawdown from MinerAccount HWM (resets on promotion)
+            account = accounts.get(hotkey, {})
+            max_return = account.get('max_return', 1.0)
+            drawdown_pct = (1 - current_return / max_return) * 100
+            threshold_pct = ValiConfig.SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD * 100
+            if drawdown_pct >= threshold_pct:
                 bt.logging.info(
-                    f"[SYNTH_EVAL] [{hotkey_short}] ELIMINATING - pnl ${pnl:,.2f} < threshold ${eliminate_threshold:,.2f}"
+                    f"[SYNTHETIC_CP] {hotkey} failed challenge period - "
+                    f"drawdown {drawdown_pct:.2f}% >= {threshold_pct}%"
                 )
-                reason = (EliminationReason.FAILED_CHALLENGE_PERIOD_DRAWDOWN.value, abs(pnl/subaccount_account_size) * 100)
-                miners_to_eliminate[hotkey] = reason
+                miners_to_eliminate[hotkey] = (
+                    EliminationReason.FAILED_CHALLENGE_PERIOD_DRAWDOWN.value,
+                    drawdown_pct
+                )
                 continue
 
-            should_promote = pnl > promote_threshold
-            if should_promote:
-                bt.logging.info(
-                    f"[SYNTH_EVAL] [{hotkey_short}] PROMOTING - pnl ${pnl:,.2f} > threshold ${promote_threshold:,.2f}"
-                )
+            # returns_percentage = current_return - 1.0 (e.g. 1.08 -> 8%)
+            returns_percentage = current_return - 1.0
+
+            subaccount_asset_class = asset_classes.get(hotkey)
+            if subaccount_asset_class is None:
+                bt.logging.error(f"[SYNTH_EVAL {hotkey}] Subaccount does not have asset class - unexpected")
+                continue
+
+            returns_threshold = ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD
+            if subaccount_asset_class == TradePairCategory.CRYPTO:
+                returns_threshold = ValiConfig.SUBACCOUNT_CRYPTO_CHALLENGE_RETURNS_THRESHOLD
+
+            # Promote if returns meet threshold
+            if returns_percentage >= returns_threshold:
                 hotkeys_to_promote.append(hotkey)
-            else:
+
+            near_elimination = drawdown_pct >= threshold_pct * 0.5
+            near_promotion = returns_percentage >= returns_threshold * 0.5
+            if near_elimination or near_promotion:
                 bt.logging.info(
-                    f"[SYNTH_EVAL] [{hotkey_short}] HOLDING - pnl ${pnl:,.2f} within range "
-                    f"[${eliminate_threshold:,.2f}, ${promote_threshold:,.2f}]"
+                    f"[SYNTH_EVAL {hotkey}] current_return={current_return:.6f}, returns={returns_percentage:.2%}, "
+                    f"drawdown={drawdown_pct:.2f}% (elim threshold={threshold_pct:.1f}%)"
                 )
 
         bt.logging.info(
             f"[SYNTH_EVAL] Evaluation complete: {len(inspection_hotkeys)} evaluated, "
             f"{len(hotkeys_to_promote)} to promote, {len(miners_to_eliminate)} to eliminate"
         )
-        if hotkeys_to_promote:
-            bt.logging.info(f"[SYNTH_EVAL] Hotkeys to promote: {hotkeys_to_promote}")
-        if miners_to_eliminate:
-            bt.logging.info(f"[SYNTH_EVAL] Hotkeys to eliminate: {list(miners_to_eliminate.keys())}")
 
         return hotkeys_to_promote, miners_to_eliminate
 
@@ -537,6 +542,8 @@ class ChallengePeriodManager(CacheController):
         promotion_eligible_hotkeys = []
         rank_eligible_hotkeys = []
 
+        accounts = self._miner_account_client.get_accounts(list(inspection_hotkeys.keys()))
+
         for hotkey, bucket_start_time in inspection_hotkeys.items():
             bucket = self.get_miner_bucket(hotkey)
 
@@ -564,14 +571,17 @@ class ChallengePeriodManager(CacheController):
             # Unified check: Drawdown during challenge/probation period
             # NOTE: This is for FAILING the challenge period (FAILED_CHALLENGE_PERIOD_DRAWDOWN)
             # EliminationManager separately handles ongoing 10% max drawdown for all miners
-            should_eliminate, reason = self._check_drawdown_limit(
-                hotkey=hotkey,
-                ledger=inspection_ledger,
-                drawdown_threshold_percentage=ValiConfig.DRAWDOWN_MAXVALUE_PERCENTAGE  # 10% threshold
-            )
-            if should_eliminate:
-                miners_to_eliminate[hotkey] = reason
-                continue
+            current_return = self._compute_portfolio_return(hotkey, accounts.get(hotkey))
+            account = accounts.get(hotkey, {})
+            max_return = account.get('max_return', 1.0)
+            if current_return is not None:
+                drawdown_pct = (1 - current_return / max_return) * 100
+                if drawdown_pct >= ValiConfig.DRAWDOWN_MAXVALUE_PERCENTAGE:
+                    miners_to_eliminate[hotkey] = (
+                        EliminationReason.FAILED_CHALLENGE_PERIOD_DRAWDOWN.value,
+                        drawdown_pct
+                    )
+                    continue
 
             # Regular-specific checks (only for regular hotkeys, not synthetic)
             if not is_synthetic_hotkey(hotkey):
@@ -1055,6 +1065,10 @@ class ChallengePeriodManager(CacheController):
                 bt.logging.info(f"[CP_DEBUG] Eliminating {hotkey} from bucket {bucket.value}")
                 self.remove_miner(hotkey)
 
+                # Broadcast dashboard update for synthetic hotkeys
+                if is_synthetic_hotkey(hotkey):
+                    self._entity_client.broadcast_subaccount_dashboard(hotkey)
+
                 # Verify deletion
                 if not self.has_miner(hotkey):
                     bt.logging.info(f"[CP_DEBUG] ✓ Verified {hotkey} was removed from active_miners")
@@ -1265,6 +1279,7 @@ class ChallengePeriodManager(CacheController):
             True if this is a new miner, False if updating existing
         """
         is_new = hotkey not in self.active_miners
+        bucket_changed = False
 
         # Auto-capture previous state if not explicitly provided and miner exists
         if not is_new and prev_bucket is None and prev_time is None:
@@ -1273,8 +1288,25 @@ class ChallengePeriodManager(CacheController):
             if current_bucket != bucket:
                 prev_bucket = current_bucket
                 prev_time = current_time
+                bucket_changed = True
+        elif is_new:
+            bucket_changed = True
 
         self.active_miners[hotkey] = (bucket, start_time, prev_bucket, prev_time)
+
+        # Push bucket to MinerAccount
+        try:
+            self._miner_account_client.set_miner_bucket(hotkey, bucket)
+        except Exception as e:
+            bt.logging.warning(f"Failed to push miner_bucket to MinerAccount for {hotkey}: {e}")
+
+        # Broadcast dashboard update for synthetic hotkeys when bucket changes
+        if bucket_changed and is_synthetic_hotkey(hotkey):
+            try:
+                self._entity_client.broadcast_subaccount_dashboard(hotkey)
+            except Exception as e:
+                bt.logging.debug(f"Failed to broadcast dashboard for {hotkey}: {e}")
+
         return is_new
 
     def get_miner_start_time(self, hotkey: str) -> int:
@@ -1300,8 +1332,24 @@ class ChallengePeriodManager(CacheController):
         """Remove a miner from active_miners."""
         if hotkey in self.active_miners:
             del self.active_miners[hotkey]
+            # Clear bucket on MinerAccount
+            try:
+                self._miner_account_client.set_miner_bucket(hotkey, None)
+            except Exception as e:
+                bt.logging.warning(f"Failed to clear miner_bucket on MinerAccount for {hotkey}: {e}")
             return True
         return False
+
+    def _sync_all_miner_buckets(self):
+        """Push all current miner buckets to MinerAccount on startup."""
+        synced = 0
+        for hotkey, (bucket, _, _, _) in self.active_miners.items():
+            try:
+                self._miner_account_client.set_miner_bucket(hotkey, bucket)
+                synced += 1
+            except Exception as e:
+                bt.logging.warning(f"Failed to sync miner_bucket for {hotkey}: {e}")
+        bt.logging.info(f"[CP_MANAGER] Synced {synced}/{len(self.active_miners)} miner buckets to MinerAccount")
 
     def clear_active_miners(self):
         """Clear all miners from active_miners."""
