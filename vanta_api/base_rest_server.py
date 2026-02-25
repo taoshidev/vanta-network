@@ -341,6 +341,7 @@ class BaseRestServer(APIKeyMixin, ABC):
         # Create Flask app
         self.app = Flask(__name__)
         self.app.config['MAX_CONTENT_LENGTH'] = 256 * 1024  # 256 KB
+        self.app.json_provider_class.sort_keys = False
         print(f"[REST-INIT] Step 4/9: Flask app created ✓")
 
         print(f"[REST-INIT] Step 5/9: Contract owner loaded ✓")
