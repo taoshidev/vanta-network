@@ -177,6 +177,9 @@ class DebtLedgerServer(RPCServerBase):
         """
         return self._manager.get_all_ledgers()
 
+    def get_dashboard_rpc(self, hotkey: str, start_time_ms: int) -> dict | None:
+        return self._manager.get_dashboard(hotkey, start_time_ms)
+
     def get_ledger_summary_rpc(self, hotkey: str) -> Optional[dict]:
         """
         Get summary stats for a specific ledger (RPC method).

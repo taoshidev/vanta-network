@@ -186,6 +186,9 @@ class LimitOrderServer(RPCServerBase):
         """
         return self._manager.to_dashboard_dict_rpc(miner_hotkey, status_filter)
 
+    def get_dashboard_rpc(self, hotkey: str, start_time_ms: int) -> dict | None:
+        return self._manager.get_dashboard(hotkey, start_time_ms)
+
     def get_all_limit_orders_rpc(self):
         """
         RPC method to get all limit orders across all trade pairs and hotkeys.

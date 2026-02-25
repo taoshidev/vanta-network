@@ -8,6 +8,7 @@ from typing import Dict, Optional
 
 import bittensor as bt
 
+from tests.shared_objects.test_utilities import ledger_generator
 from time_util.time_util import TimeUtil
 from vali_objects.utils.vali_bkp_utils import CustomEncoder
 from vali_objects.vali_config import RPCConnectionMode
@@ -138,6 +139,27 @@ class DebtLedgerManager():
             Dict mapping hotkey to DebtLedger instance
         """
         return self.debt_ledgers
+
+    def get_dashboard(self, hotkey: str, start_time_ms: int) -> dict | None:
+        dashboard = None
+        snapshot_time_ms = start_time_ms
+
+        ledger = self.get_ledger(hotkey)
+        if ledger:
+            dashboard_checkpoints = []
+            for checkpoint in ledger.checkpoints:
+                snapshot_time_ms = max(snapshot_time_ms, checkpoint.timestamp_ms)
+                if checkpoint.timestamp_ms >= start_time_ms:
+                    dashboard_checkpoint = checkpoint.to_dashboard()
+                    dashboard_checkpoints.append(dashboard_checkpoint)
+
+            dashboard = {
+                "checkpoints": dashboard_checkpoints,
+                "portfolio_return": ledger.get_current_portfolio_return(),
+                "snapshot_time_ms": snapshot_time_ms,
+            }
+
+        return dashboard
 
     def get_ledger_summary(self, hotkey: str) -> Optional[dict]:
         """

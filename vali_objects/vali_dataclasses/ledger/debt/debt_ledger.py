@@ -193,6 +193,15 @@ class DebtCheckpoint:
             }
         }
 
+    def to_dashboard(self) -> dict:
+        return {
+            "t": self.timestamp_ms,
+            "r": self.realized_pnl,
+            "u": self.unrealized_pnl,
+            "m": self.max_portfolio_value,
+            "s": self.challenge_period_status
+        }
+
 
 class DebtLedger:
     """

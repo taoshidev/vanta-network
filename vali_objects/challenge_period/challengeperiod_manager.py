@@ -119,8 +119,8 @@ class ChallengePeriodManager(CacheController):
             connect_immediately=False
         )
 
-        # Local dicts (NOT IPC managerized) - much faster!
         self.eliminations_with_reasons: Dict[str, Tuple[str, float]] = {}
+        # TODO: Fix this using a dataclass with named properties
         self.active_miners: Dict[str, Tuple[MinerBucket, int, Optional[MinerBucket], Optional[int]]] = {}
 
         # Cached scores for MinerStatisticsManager
@@ -1379,6 +1379,20 @@ class ChallengePeriodManager(CacheController):
     def get_miner_bucket(self, hotkey):
         """Get the bucket of a miner."""
         return self.active_miners.get(hotkey, [None])[0]
+
+    def get_dashboard(self, hotkey) -> dict | None:
+        dashboard = None
+
+        active_miner = self.active_miners.get(hotkey)
+        if active_miner is not None:
+            bucket = active_miner[0]
+            start_time_ms = active_miner[1]
+            dashboard = {
+                "bucket": bucket.value,
+                "start_time_ms": start_time_ms,
+            }
+
+        return dashboard
 
     # TODO: revisit to separate regular and subaccount miners
     def get_testing_miners(self):

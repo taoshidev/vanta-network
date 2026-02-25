@@ -29,10 +29,11 @@ from shared_objects.rpc.rpc_client_base import RPCClientBase
 from time_util.time_util import TimeUtil
 from vali_objects.decoders.generalized_json_decoder import GeneralizedJSONDecoder
 from vali_objects.enums.order_source_enum import OrderSource
-from vali_objects.vali_dataclasses.position import Position
-from vali_objects.position_management.position_utils.position_filtering import PositionFiltering
 from vali_objects.position_management.position_manager import PositionManager
-from vali_objects.vali_config import TradePair, ValiConfig, RPCConnectionMode
+from vali_objects.position_management.position_utils import PositionUtils
+from vali_objects.position_management.position_utils.position_filtering import PositionFiltering
+from vali_objects.vali_config import ValiConfig, RPCConnectionMode
+from vali_objects.vali_dataclasses.position import Position
 
 
 class PositionManagerClient(RPCClientBase):
@@ -91,13 +92,13 @@ class PositionManagerClient(RPCClientBase):
             if position.open_ms > acceptable_position_end_ms
         ]
         ps_30_days = PositionFiltering.filter_positions_for_duration(positions_30_days)
-        return_per_position = PositionManagerClient.get_return_per_closed_position(ps_30_days)
+        return_per_position = PositionUtils.get_closed_positions_cumulative_returns(ps_30_days)
         if len(return_per_position) > 0:
             curr_return = return_per_position[len(return_per_position) - 1]
             ans["thirty_day_returns"] = curr_return
 
         ps_all_time = PositionFiltering.filter_positions_for_duration(original_positions)
-        return_per_position = PositionManagerClient.get_return_per_closed_position(ps_all_time)
+        return_per_position = PositionUtils.get_closed_positions_cumulative_returns(ps_all_time)
         if len(return_per_position) > 0:
             curr_return = return_per_position[len(return_per_position) - 1]
             ans["all_time_returns"] = curr_return
@@ -142,30 +143,6 @@ class PositionManagerClient(RPCClientBase):
             return 0.0
 
         return profitable_positions / n_closed_positions
-
-    @staticmethod
-    def get_return_per_closed_position(positions: List[Position]) -> List[float]:
-        if len(positions) == 0:
-            return []
-
-        t0 = None
-        closed_position_returns = []
-        for position in positions:
-            if position.is_open_position:
-                continue
-            elif t0 and position.close_ms < t0:
-                raise ValueError("Positions must be sorted by close time for this calculation to work.")
-            t0 = position.close_ms
-            closed_position_returns.append(position.return_at_close)
-
-        cumulative_return = 1
-        per_position_return = []
-
-        # calculate the return over time at each position close
-        for value in closed_position_returns:
-            cumulative_return *= value
-            per_position_return.append(cumulative_return)
-        return per_position_return
 
     def get_positions_for_one_hotkey(
         self,
@@ -240,6 +217,9 @@ class PositionManagerClient(RPCClientBase):
         Alias for get_position() for backward compatibility.
         """
         return self.get_position(hotkey, position_uuid)
+
+    def get_dashboard(self, hotkey: str, start_time_ms: int) -> dict | None:
+        return self._server.get_dashboard_rpc(hotkey, start_time_ms)
 
     def get_open_position_for_trade_pair(
         self,

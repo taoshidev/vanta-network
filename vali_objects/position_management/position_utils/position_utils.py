@@ -323,3 +323,27 @@ class PositionUtils:
             sorted(list(trade_pairs)),
             order_list
         )
+
+    @staticmethod
+    def get_closed_positions_cumulative_returns(positions: list[Position]) -> list[float]:
+        if len(positions) == 0:
+            return []
+
+        last_close_ms = None
+        closed_position_returns = []
+        for position in positions:
+            if position.is_open_position:
+                continue
+            elif last_close_ms and position.close_ms < last_close_ms:
+                raise ValueError("Positions must be sorted by close time for this calculation to work.")
+            last_close_ms = position.close_ms
+            closed_position_returns.append(position.return_at_close)
+
+        cumulative_return = 1
+        cumulative_returns = []
+
+        for position_return in closed_position_returns:
+            cumulative_return *= position_return
+            cumulative_returns.append(cumulative_return)
+            
+        return cumulative_returns

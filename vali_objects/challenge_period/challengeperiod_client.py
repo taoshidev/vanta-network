@@ -135,6 +135,9 @@ class ChallengePeriodClient(RPCClientBase):
             prev_time
         )
 
+    def get_dashboard(self, hotkey) -> dict | None:
+        return self._server.get_dashboard_rpc(hotkey)
+
     def remove_miner(self, hotkey: str) -> bool:
         """Remove a miner from active_miners."""
         return self._server.remove_miner_rpc(hotkey)

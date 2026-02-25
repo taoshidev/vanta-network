@@ -257,6 +257,28 @@ class Position(BaseModel):
         d = deepcopy(self.model_dump())
         return self._handle_trade_pair_encoding(d)
 
+    def to_dashboard(self, filled_orders, unfilled_orders) -> dict:
+        results = {
+            "tp": self.trade_pair.value[:5],
+            "t": self.position_type.name,
+            "o": self.open_ms,
+            "r": self.current_return,
+            "nl": self.net_leverage,
+            "ap": self.average_entry_price,
+        }
+
+        if self.is_closed_position:
+            results["c"] = self.close_ms
+            results["rc"] = self.return_at_close
+
+        if filled_orders:
+            results["fo"] = filled_orders
+
+        if unfilled_orders:
+            results["uo"] = unfilled_orders
+
+        return results
+
     def compact_dict_no_orders(self):
         temp = self.to_dict()
         temp.pop('orders')

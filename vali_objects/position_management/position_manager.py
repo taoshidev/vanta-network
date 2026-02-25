@@ -13,6 +13,7 @@ from typing import List, Dict, Optional
 from time_util.time_util import TimeUtil, timeme
 from vali_objects.exceptions.corrupt_data_exception import ValiBkpCorruptDataException
 from vali_objects.exceptions.vali_bkp_file_missing_exception import ValiFileMissingException
+from vali_objects.position_management.position_utils import PositionUtils
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.vali_config import TradePairCategory, ValiConfig, TradePair, RPCConnectionMode
@@ -321,8 +322,6 @@ class PositionManager:
                 f" position with a different position_uuid {open_position.position_uuid}.")
             raise ValiRecordsMisalignmentException(msg)
 
-
-
     def get_positions_for_hotkeys(
         self,
         hotkeys: List[str],
@@ -437,6 +436,53 @@ class PositionManager:
 
         # O(1) direct dict access
         return positions_dict.get(position_uuid, None)
+
+    def get_dashboard(self, hotkey: str, start_time_ms: int) -> dict | None:
+        dashboard = None
+        snapshot_time_ms = start_time_ms
+
+        positions = self.get_positions_for_one_hotkey(hotkey, sort_positions=True)
+        if positions:
+            dashboard_positions = {}
+            for position in positions:
+                snapshot_time_ms = max(snapshot_time_ms, position.close_ms)
+
+                if position.is_closed_position and (position.close_ms < start_time_ms):
+                    continue
+
+                dashboard_filled_orders = {}
+                for order in position.orders:
+                    if order.processed_ms >= start_time_ms:
+                        snapshot_time_ms = max(snapshot_time_ms, order.processed_ms)
+                        dashboard_filled_orders[order.order_uuid] = order.to_dashboard_dict()
+
+                dashboard_unfilled_orders = []
+                for order in position.unfilled_orders:
+                    dashboard_unfilled_orders.append(order.order_uuid)
+
+                dashboard_position = position.to_dashboard(
+                    filled_orders=dashboard_filled_orders,
+                    unfilled_orders=dashboard_unfilled_orders)
+
+                dashboard_positions[position.position_uuid] = dashboard_position
+
+            minimum_positions = PositionFiltering.filter_positions_for_duration(positions)
+            minimum_position_returns = PositionUtils.get_closed_positions_cumulative_returns(minimum_positions)
+            if minimum_position_returns:
+                all_time_returns = minimum_position_returns[-1]
+            else:
+                all_time_returns = 0
+
+            total_leverage = self.calculate_net_portfolio_leverage(hotkey)
+
+            dashboard = {
+                "positions": dashboard_positions,
+                "all_time_returns": all_time_returns,
+                "total_leverage": total_leverage,
+                "snapshot_time_ms": snapshot_time_ms,
+            }
+
+        return dashboard
 
     @staticmethod
     def sort_by_close_ms(_position):
@@ -1439,4 +1485,3 @@ class PositionManager:
 
         except Exception as e:
             bt.logging.error(f"Error writing position {position.position_uuid} to disk: {e}")
-

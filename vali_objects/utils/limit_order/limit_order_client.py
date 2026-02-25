@@ -147,6 +147,9 @@ class LimitOrderClient(RPCClientBase):
         """
         return self._server.to_dashboard_dict_rpc(miner_hotkey, status_filter)
 
+    def get_dashboard(self, hotkey: str, start_time_ms: int) -> dict | None:
+        return self._server.get_dashboard_rpc(hotkey, start_time_ms)
+
     # ==================== Mutation Methods ====================
 
     def delete_all_limit_orders_for_hotkey(self, miner_hotkey: str) -> dict:
