@@ -237,6 +237,34 @@ class Position(BaseModel):
 
         return carry_fee
 
+    def refresh_interest_fee_usd(self, current_time_ms: int) -> float:
+        """
+        Calculate and record interest on the borrowed (margin loan) amount for equities positions.
+        Interest accrues every 24 hours using DAILY_INTEREST_RATE (6.6% annual / 365).
+        Only applies to equities trade pairs.
+        """
+        if self.is_closed_position or not self.trade_pair.is_equities:
+            return 0.0
+
+        borrowed = self.margin_loan
+        if borrowed <= 0:
+            return 0.0
+
+        interval_start_ms = self.open_ms
+        for fee_event in self.fee_history:
+            if fee_event["fee_type"] == "interest":
+                interval_start_ms = max(interval_start_ms, fee_event["time_ms"])
+
+        intervals = (current_time_ms - interval_start_ms) // MS_IN_24_HOURS
+        if intervals <= 0:
+            return 0.0
+
+        interest = borrowed * ValiConfig.DAILY_INTEREST_RATE * intervals
+        if interest > 0:
+            self.record_fee_event("interest", interest, current_time_ms)
+
+        return interest
+
     def record_fee_event(self, fee_type: str, amount: float, time_ms: int):
         if amount <= 0:
             return

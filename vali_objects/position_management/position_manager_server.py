@@ -131,7 +131,7 @@ class PositionManagerServer(RPCServerBase):
                 bt.logging.error(f"Error in compaction daemon iteration: {traceback.format_exc()}")
 
         try:
-            self._manager.charge_carry_fees()
+            self._manager.refresh_position_fees()
         except Exception as e:
             bt.logging.error(f"Error in carry fee daemon iteration: {traceback.format_exc()}")
 

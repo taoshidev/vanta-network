@@ -71,11 +71,9 @@ class MinerAccount:
     total_realized_pnl: float = 0.0     # Cumulative realized PNL from closed trades
     capital_used: float = 0.0            # Total leveraged USD value of open positions
     total_borrowed_amount: float = 0.0   # Total margin loans outstanding (equities only)
-    total_interest_paid: float = 0.0     # Cumulative interest paid on margin loans
-    total_fees_paid: float = 0.0         # Cumulative fees paid (transaction, funding, ...)
+    total_fees_paid: float = 0.0         # Cumulative fees paid (transaction, funding, interest, ...)
     asset_class: Optional[TradePairCategory] = None  # EQUITIES, CRYPTO, FOREX
     collateral_records: List[CollateralRecord] = None  # Historical CollateralRecords (List[CollateralRecord])
-    last_interest_date_ms: Optional[int] = None  # Last date interest was applied
     miner_bucket: Optional[MinerBucket] = None  # Pushed by ChallengePeriodManager
     max_return: float = 1.0  # High water mark for portfolio return
 
@@ -86,8 +84,8 @@ class MinerAccount:
 
     @property
     def balance(self) -> float:
-        """Current balance = account_size + total_realized_pnl - total_interest_paid."""
-        return self.get_account_size() + self.total_realized_pnl - self.total_interest_paid - self.total_fees_paid
+        """Current balance = account_size + total_realized_pnl - total_fees_paid."""
+        return self.get_account_size() + self.total_realized_pnl - self.total_fees_paid
 
     @property
     def buying_power(self) -> float:
@@ -139,57 +137,9 @@ class MinerAccount:
         self.capital_used = 0
         self.total_borrowed_amount = 0
         self.total_fees_paid = 0
-        self.total_interest_paid = 0
-        self.last_interest_date_ms = None
         self.miner_bucket = None
         self.max_return = 1.0
 
-
-    def apply_interest(self, current_time_ms: int, running_unit_tests: bool = False) -> bool:
-        """
-        Apply daily interest to this account if needed.
-
-        Args:
-            current_time_ms: Current timestamp in milliseconds
-            running_unit_tests: Whether running in test mode (for transaction recording)
-
-        Returns:
-            True if interest was processed for this hotkey, False otherwise
-        """
-        daily_interest_rate = ValiConfig.DAILY_INTEREST_RATE
-
-        # Skip if no borrowed amount
-        if self.total_borrowed_amount <= 0:
-            if self.last_interest_date_ms:
-                self.last_interest_date_ms = None
-                return True
-            return False
-
-        # First time seeing this loan - mark date, don't charge (first day free)
-        if self.last_interest_date_ms is None:
-            self.last_interest_date_ms = current_time_ms
-            return True
-
-        # Check last applied date
-        current_date = datetime.fromtimestamp(current_time_ms/1000, tz=timezone.utc).date()
-        last_applied_date = datetime.fromtimestamp(self.last_interest_date_ms/1000, tz=timezone.utc).date()
-        if last_applied_date >= current_date:
-            return False
-
-        # Calculate daily interest
-        daily_interest = self.total_borrowed_amount * daily_interest_rate
-
-        # Track interest separately (reduces balance without affecting realized PnL)
-        self.total_interest_paid += daily_interest
-        bt.logging.info(
-            f"[{self.miner_hotkey[:8]}] Interest charged: ${daily_interest:.4f} (deducted from balance), "
-            f"balance: ${self.balance:.2f}, buying_power: ${self.buying_power:.2f}, total borrowed: ${self.total_borrowed_amount:.2f}"
-        )
-
-        # Update last interest date
-        self.last_interest_date_ms = current_time_ms
-
-        return True
 
     def to_dict(self, include_collateral_records: bool = False) -> dict:
         """
@@ -210,9 +160,7 @@ class MinerAccount:
             'buying_power': self.buying_power,
             'asset_class': self.asset_class.value if self.asset_class else None,
             'total_borrowed_amount': self.total_borrowed_amount,
-            'total_interest_paid': self.total_interest_paid,
             'total_fees_paid': self.total_fees_paid,
-            'last_interest_date_ms': self.last_interest_date_ms,
             'miner_bucket': self.miner_bucket.value if self.miner_bucket else None,
             'max_return': self.max_return
         }
@@ -360,7 +308,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
         """Parse miner accounts from disk format back to MinerAccount objects.
 
         Format: {"hotkey": [list of CollateralRecord dicts]}
-        Account-level fields (cash_balance, asset_class, total_borrowed_amount, last_interest_date_ms)
+        Account-level fields (cash_balance, asset_class, total_borrowed_amount, total_fees_paid)
         are stored on the last record in the list.
 
         Args:
@@ -383,18 +331,14 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     total_realized_pnl = last_record.get("total_realized_pnl")
                     capital_used = last_record.get("capital_used")
                     total_borrowed = last_record.get("total_borrowed_amount", 0.0)
-                    total_interest_paid = last_record.get("total_interest_paid", 0.0)
                     total_fees_paid = last_record.get("total_fees_paid", 0.0)
-                    last_interest_date_ms = last_record.get("last_interest_date_ms")
                     miner_bucket_str = last_record.get("miner_bucket")
                     max_return = last_record.get("max_return", 1.0)
                 else:
                     total_realized_pnl = None
                     capital_used = None
                     total_borrowed = 0.0
-                    total_interest_paid = 0.0
                     total_fees_paid = 0.0
-                    last_interest_date_ms = None
                     miner_bucket_str = None
                     max_return = 1.0
 
@@ -437,11 +381,9 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     total_realized_pnl=total_realized_pnl if total_realized_pnl is not None else 0.0,
                     capital_used=capital_used if capital_used is not None else 0.0,
                     total_borrowed_amount=total_borrowed,
-                    total_interest_paid=total_interest_paid,
                     total_fees_paid=total_fees_paid,
                     asset_class=asset_class,
                     collateral_records=collateral_records,
-                    last_interest_date_ms=last_interest_date_ms,
                     miner_bucket=miner_bucket,
                     max_return=max_return
                 )
@@ -811,28 +753,6 @@ class MinerAccountManager(ValidatorBroadcastBase):
         if not account:
             return 0.0
         return account.total_borrowed_amount
-
-    def apply_daily_interest(self) -> int:
-        """
-        Apply daily interest to accounts with outstanding margin loans that need it.
-        Interest is applied on a 24-hour interval basis per account via MinerAccount.apply_interest().
-        """
-        accounts_processed = 0
-        current_time_ms = TimeUtil.now_in_millis()
-
-        with self._accounts_lock:
-            for hotkey, account in self.accounts.items():
-                # Let the account handle its own interest calculation
-                processed = account.apply_interest(current_time_ms, running_unit_tests=self.running_unit_tests)
-                if processed:
-                    accounts_processed += 1
-
-            # Save to disk
-            if accounts_processed > 0:
-                self._save_accounts_to_disk()
-                bt.logging.success(f"Daily interest applied to {accounts_processed} accounts")
-
-        return accounts_processed
 
     def process_fees(self, hotkey_to_fee: Dict[str, float]) -> None:
         """Batch update total_fees_paid for multiple hotkeys. Saves to disk once at the end."""

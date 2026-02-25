@@ -115,7 +115,7 @@ class MinerAccountClient(RPCClientBase):
         Reset account fields for a miner.
 
         Resets: total_realized_pnl, capital_used, total_borrowed_amount,
-        total_interest_paid, and last_interest_date_ms to zero/None.
+        and total_fees_paid to zero.
 
         Args:
             hotkey: Miner's hotkey (SS58 address)
@@ -313,6 +313,3 @@ class MinerAccountClient(RPCClientBase):
         """Batch update total_fees_paid for multiple hotkeys. Saves to disk once."""
         self._server.process_fees(hotkey_to_fee)
 
-    def apply_daily_interest(self) -> int:
-        """Apply daily interest to accounts with outstanding margin loans."""
-        return self._server.apply_daily_interest()

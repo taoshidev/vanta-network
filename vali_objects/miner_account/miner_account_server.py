@@ -97,23 +97,7 @@ class MinerAccountServer(RPCServerBase):
     # ==================== RPCServerBase Abstract Methods ====================
 
     def run_daemon_iteration(self) -> None:
-        """
-        Daemon loop that runs every hour.
-        Calls apply_daily_interest() which handles per-account 24-hour interval checks.
-        """
-        try:
-            # Apply interest to accounts that need it (24-hour check is handled in the method)
-            result = self._manager.apply_daily_interest()
-
-            if result > 0:
-                bt.logging.success(
-                    f"Interest application completed: {result} accounts processed"
-                )
-            else:
-                bt.logging.info("No interest application needed (no accounts ready for interest)")
-
-        except Exception as e:
-            bt.logging.error(f"Error in interest calculation daemon: {e}")
+        pass
 
     # ==================== Setup Methods ====================
 
@@ -306,6 +290,3 @@ class MinerAccountServer(RPCServerBase):
         """Batch update total_fees_paid for multiple hotkeys. Saves to disk once."""
         self._manager.process_fees(hotkey_to_fee)
 
-    def apply_daily_interest(self) -> int:
-        """Apply daily interest to accounts with outstanding margin loans."""
-        return self._manager.apply_daily_interest()

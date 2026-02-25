@@ -1131,7 +1131,7 @@ class PositionManager:
 
         bt.logging.info(f'Removed {n_price_sources_removed} price sources from old data.')
 
-    def charge_carry_fees(self, time_ms: Optional[int] = None) -> None:
+    def refresh_position_fees(self, time_ms: Optional[int] = None) -> None:
         """Iterate over all open positions, compute carry fees, update positions and miner accounts."""
         if not time_ms:
             time_ms = TimeUtil.now_in_millis()
@@ -1142,10 +1142,14 @@ class PositionManager:
         for hotkey, positions_dict in self.hotkey_to_open_positions.items():
             hotkey_fee = 0.0
             for _, position in positions_dict.items():
-                fee = position.refresh_carry_fee_usd(time_ms)
+                if position.trade_pair.is_equities:
+                    fee = position.refresh_interest_fee_usd(time_ms)
+                else:
+                    fee = position.refresh_carry_fee_usd(time_ms)
+
                 if fee > 0:
                     bt.logging.info(
-                        f"[CARRY FEE] {hotkey} {position.trade_pair.trade_pair_id} ${fee:.6f}"
+                        f"[POSITION FEE] {hotkey} {position.trade_pair.trade_pair_id} ${fee:.6f}"
                     )
                     hotkey_fee += fee
                     positions_charged += 1
@@ -1159,12 +1163,7 @@ class PositionManager:
             try:
                 self._miner_account_client.process_fees(hotkey_to_fee)
             except Exception as e:
-                bt.logging.error(f"Failed to charge carry fees: {e}")
-
-        if positions_charged > 0:
-            bt.logging.info(
-                f"Carry fees charged: ${total_fee_charged:.4f} across {positions_charged} positions"
-            )
+                bt.logging.error(f"Failed to charge position fees: {e}")
 
     # ==================== Index Management ====================
 
