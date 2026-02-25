@@ -150,3 +150,25 @@ class EntityCollateralClient(RPCClientBase):
     def health_check(self) -> dict:
         """Check server health."""
         return self._server.health_check_rpc()
+
+    # ==================== Test Helpers ====================
+
+    def set_test_collateral_cache(self, entity_hotkey: str, collateral_usd: float) -> None:
+        """Test-only: Inject collateral cache value for an entity."""
+        return self._server.set_test_collateral_cache_rpc(entity_hotkey, collateral_usd)
+
+    def set_test_slash_tracking(self, synthetic_hotkey: str, cumulative_realized_loss: float, cumulative_slashed: float) -> None:
+        """Test-only: Inject slash tracking data for a subaccount."""
+        return self._server.set_test_slash_tracking_rpc(synthetic_hotkey, cumulative_realized_loss, cumulative_slashed)
+
+    def get_test_slash_tracking(self, synthetic_hotkey: str) -> Optional[dict]:
+        """Test-only: Get raw slash tracking data for a subaccount."""
+        return self._server.get_test_slash_tracking_rpc(synthetic_hotkey)
+
+    def clear_test_state(self) -> None:
+        """Test-only: Clear all state for test isolation."""
+        return self._server.clear_test_state_rpc()
+
+    def get_test_slash_file_path(self) -> str:
+        """Test-only: Get the slash tracking file path."""
+        return self._server.get_test_slash_file_path_rpc()

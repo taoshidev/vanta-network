@@ -44,9 +44,7 @@ from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLed
 from vali_objects.position_management.position_manager_client import PositionManagerClient
 from vali_objects.vali_dataclasses.price_source import PriceSource
 from shared_objects.rpc.common_data_client import CommonDataClient
-from entity_management.entity_utils import is_synthetic_hotkey
-from vali_objects.enums.order_type_enum import OrderType
-from vali_objects.miner_account.miner_account_client import MinerAccountClient
+from entity_management.entity_utils import is_synthetic_hotkey, parse_synthetic_hotkey
 
 
 # ==================== Elimination Types ====================
@@ -250,10 +248,11 @@ class EliminationManager(CacheController):
             connection_mode=connection_mode
         )
 
-        self._miner_account_client = MinerAccountClient(
-            connect_immediately=False,
+        # Create own EntityCollateralClient for slashing on elimination
+        from vali_objects.utils.entity_collateral.entity_collateral_client import EntityCollateralClient
+        self._entity_collateral_client = EntityCollateralClient(
             connection_mode=connection_mode,
-            running_unit_tests=running_unit_tests
+            connect_immediately=False
         )
 
         # Local dicts (no IPC) - much faster!
@@ -479,6 +478,17 @@ class EliminationManager(CacheController):
             self._position_client.save_miner_position(position, delete_open_position_if_exists=True)
             if self.serve and self.websocket_notifier_client:
                 self.websocket_notifier_client.broadcast_position_update(position)
+
+            # Slash entity collateral on elimination-driven position close
+            if is_synthetic_hotkey(hotkey) and position.is_closed_position:
+                realized_pnl = position.realized_pnl if hasattr(position, 'realized_pnl') else 0.0
+                if realized_pnl < 0:
+                    entity_hotkey, _ = parse_synthetic_hotkey(hotkey)
+                    if entity_hotkey:
+                        self._entity_collateral_client.slash_on_realized_loss(
+                            entity_hotkey, hotkey, abs(realized_pnl)
+                        )
+
             bt.logging.info(
                 f'Added flat order for miner {hotkey} that has been eliminated. '
                 f'Trade pair: {position.trade_pair.trade_pair_id}. flat order: {flat_order}. '

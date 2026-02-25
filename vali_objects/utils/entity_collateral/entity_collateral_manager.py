@@ -78,8 +78,8 @@ class EntityCollateralManager(CacheController):
         self._collateral_cache: Dict[str, float] = {}
         self._cache_lock = threading.RLock()
 
-        # Slash tracking: synthetic_hotkey -> cumulative slashed USD
-        self._slash_tracking: Dict[str, float] = {}
+        # Slash tracking: synthetic_hotkey -> {cumulative_realized_loss, cumulative_slashed}
+        self._slash_tracking: Dict[str, Dict[str, float]] = {}
         self._slash_lock = threading.RLock()
 
         # File locations
@@ -169,17 +169,31 @@ class EntityCollateralManager(CacheController):
         except Exception as e:
             bt.logging.error(f"[ENTITY_COLLATERAL] Failed to save cache to disk: {e}")
 
-    def _load_slash_tracking_from_disk(self) -> Dict[str, float]:
+    def _load_slash_tracking_from_disk(self) -> Dict[str, Dict[str, float]]:
         """
         Load the slash tracking data from disk.
 
         Returns:
-            Dict mapping synthetic_hotkey -> cumulative_slashed_usd.
+            Dict mapping synthetic_hotkey -> {cumulative_realized_loss, cumulative_slashed}.
         """
         try:
             data = ValiUtils.get_vali_json_file_dict(self._slash_file)
             if isinstance(data, dict):
-                return {k: float(v) for k, v in data.items()}
+                result = {}
+                for k, v in data.items():
+                    if isinstance(v, dict):
+                        # New format: {cumulative_realized_loss, cumulative_slashed}
+                        result[k] = {
+                            "cumulative_realized_loss": float(v.get("cumulative_realized_loss", 0.0)),
+                            "cumulative_slashed": float(v.get("cumulative_slashed", 0.0)),
+                        }
+                    else:
+                        # Legacy format: synthetic_hotkey -> cumulative_slashed_usd
+                        result[k] = {
+                            "cumulative_realized_loss": float(v),
+                            "cumulative_slashed": float(v),
+                        }
+                return result
         except Exception as e:
             bt.logging.warning(f"[ENTITY_COLLATERAL] Failed to load slash tracking from disk: {e}")
         return {}
@@ -353,11 +367,12 @@ class EntityCollateralManager(CacheController):
         Slash entity collateral when a subaccount closes a position with a
         realized loss.
 
-        Slashing formula:
-            max_slash = account_balance * MDD%
-            remaining_limit = max_slash - cumulative_slashed
-            actual_slash = min(abs(realized_loss), remaining_limit)
-            cumulative_slashed += actual_slash
+        Cumulative MDD slashing model:
+        - Track cumulative_realized_loss per subaccount (total losses over lifetime)
+        - max_slash = current_account_size * MDD% (dynamic, tracks current size)
+        - target_slash = min(cumulative_realized_loss, max_slash)
+        - slash_delta = target_slash - cumulative_slashed (only slash the new delta)
+        - If account size increases, max_slash grows, opening new slash headroom
 
         Args:
             entity_hotkey: The entity's hotkey.
@@ -378,49 +393,69 @@ class EntityCollateralManager(CacheController):
             return 0.0
 
         with self._slash_lock:
-            cumulative = self._slash_tracking.get(synthetic_hotkey, 0.0)
-            remaining_limit = max_slash - cumulative
-            if remaining_limit <= 0:
+            tracking = self._slash_tracking.get(synthetic_hotkey, {
+                "cumulative_realized_loss": 0.0,
+                "cumulative_slashed": 0.0,
+            })
+            cumulative_realized_loss = tracking["cumulative_realized_loss"] + realized_loss
+            cumulative_slashed = tracking["cumulative_slashed"]
+
+            # Target slash is the lesser of total losses and the dynamic MDD cap
+            target_slash = min(cumulative_realized_loss, max_slash)
+            slash_delta = target_slash - cumulative_slashed
+
+            # Update cumulative_realized_loss regardless (always track losses)
+            tracking["cumulative_realized_loss"] = cumulative_realized_loss
+
+            if slash_delta <= 0:
+                # No new slashing needed — already slashed up to the limit
+                self._slash_tracking[synthetic_hotkey] = tracking
                 bt.logging.info(
-                    f"[ENTITY_COLLATERAL] Slash limit reached for {synthetic_hotkey} "
-                    f"(cumulative={cumulative:.2f}, max={max_slash:.2f})"
+                    f"[ENTITY_COLLATERAL] No new slash needed for {synthetic_hotkey}. "
+                    f"cumulative_loss=${cumulative_realized_loss:.2f}, "
+                    f"cumulative_slashed=${cumulative_slashed:.2f}, max=${max_slash:.2f}"
                 )
+                self._save_slash_tracking_to_disk()
                 return 0.0
 
-            actual_slash = min(realized_loss, remaining_limit)
-            self._slash_tracking[synthetic_hotkey] = cumulative + actual_slash
+            # Tentatively update cumulative_slashed
+            tracking["cumulative_slashed"] = cumulative_slashed + slash_delta
+            self._slash_tracking[synthetic_hotkey] = tracking
 
-        # Convert USD to theta for the on-chain slash
-        slash_theta = actual_slash / ValiConfig.ENTITY_COST_PER_THETA
-        try:
-            success = self._contract_client.slash_miner_collateral(entity_hotkey, slash_theta)
-            if not success:
-                bt.logging.error(
-                    f"[ENTITY_COLLATERAL] On-chain slash failed for entity {entity_hotkey}, "
-                    f"amount={slash_theta:.4f} theta (${actual_slash:.2f})"
-                )
-                # Revert tracking on failure
+        # Convert USD to theta for the on-chain slash (skip in test mode)
+        if not self.running_unit_tests:
+            slash_theta = slash_delta / ValiConfig.ENTITY_COST_PER_THETA
+            try:
+                success = self._contract_client.slash_miner_collateral(entity_hotkey, slash_theta)
+                if not success:
+                    bt.logging.error(
+                        f"[ENTITY_COLLATERAL] On-chain slash failed for entity {entity_hotkey}, "
+                        f"amount={slash_theta:.4f} theta (${slash_delta:.2f})"
+                    )
+                    # Revert cumulative_slashed on failure (keep cumulative_realized_loss)
+                    with self._slash_lock:
+                        self._slash_tracking[synthetic_hotkey]["cumulative_slashed"] -= slash_delta
+                    return 0.0
+            except Exception as e:
+                bt.logging.error(f"[ENTITY_COLLATERAL] Slash exception for {entity_hotkey}: {e}")
                 with self._slash_lock:
-                    self._slash_tracking[synthetic_hotkey] -= actual_slash
+                    self._slash_tracking[synthetic_hotkey]["cumulative_slashed"] -= slash_delta
                 return 0.0
-        except Exception as e:
-            bt.logging.error(f"[ENTITY_COLLATERAL] Slash exception for {entity_hotkey}: {e}")
-            with self._slash_lock:
-                self._slash_tracking[synthetic_hotkey] -= actual_slash
-            return 0.0
 
         # Persist and update collateral cache after successful slash
         self._save_slash_tracking_to_disk()
         with self._cache_lock:
             if entity_hotkey in self._collateral_cache:
-                self._collateral_cache[entity_hotkey] -= actual_slash
+                self._collateral_cache[entity_hotkey] -= slash_delta
 
+        slash_theta = slash_delta / ValiConfig.ENTITY_COST_PER_THETA
         bt.logging.info(
-            f"[ENTITY_COLLATERAL] Slashed ${actual_slash:.2f} ({slash_theta:.4f} theta) "
+            f"[ENTITY_COLLATERAL] Slashed ${slash_delta:.2f} ({slash_theta:.4f} theta) "
             f"from entity {entity_hotkey} for subaccount {synthetic_hotkey}. "
-            f"Cumulative: ${cumulative + actual_slash:.2f} / ${max_slash:.2f}"
+            f"Cumulative loss: ${cumulative_realized_loss:.2f}, "
+            f"Cumulative slashed: ${cumulative_slashed + slash_delta:.2f} / max ${max_slash:.2f}"
         )
-        return actual_slash
+        return slash_delta
 
     def get_cumulative_slashed(self, synthetic_hotkey: str) -> float:
         """
@@ -433,7 +468,52 @@ class EntityCollateralManager(CacheController):
             Cumulative slashed amount in USD.
         """
         with self._slash_lock:
-            return self._slash_tracking.get(synthetic_hotkey, 0.0)
+            tracking = self._slash_tracking.get(synthetic_hotkey)
+            if tracking is None:
+                return 0.0
+            return tracking.get("cumulative_slashed", 0.0)
+
+    # ==================== Test Helpers ====================
+
+    def set_test_collateral_cache(self, entity_hotkey: str, collateral_usd: float) -> None:
+        """Test-only: Inject a collateral cache value for an entity."""
+        if not self.running_unit_tests:
+            raise RuntimeError("set_test_collateral_cache can only be used in unit test mode")
+        with self._cache_lock:
+            self._collateral_cache[entity_hotkey] = collateral_usd
+
+    def set_test_slash_tracking(self, synthetic_hotkey: str, cumulative_realized_loss: float, cumulative_slashed: float) -> None:
+        """Test-only: Inject slash tracking data for a subaccount."""
+        if not self.running_unit_tests:
+            raise RuntimeError("set_test_slash_tracking can only be used in unit test mode")
+        with self._slash_lock:
+            self._slash_tracking[synthetic_hotkey] = {
+                "cumulative_realized_loss": cumulative_realized_loss,
+                "cumulative_slashed": cumulative_slashed,
+            }
+
+    def get_test_slash_tracking(self, synthetic_hotkey: str) -> Optional[Dict[str, float]]:
+        """Test-only: Get raw slash tracking data for a subaccount."""
+        if not self.running_unit_tests:
+            raise RuntimeError("get_test_slash_tracking can only be used in unit test mode")
+        with self._slash_lock:
+            tracking = self._slash_tracking.get(synthetic_hotkey)
+            return dict(tracking) if tracking else None
+
+    def clear_test_state(self) -> None:
+        """Test-only: Clear all in-memory state for test isolation."""
+        if not self.running_unit_tests:
+            raise RuntimeError("clear_test_state can only be used in unit test mode")
+        with self._cache_lock:
+            self._collateral_cache.clear()
+        with self._slash_lock:
+            self._slash_tracking.clear()
+
+    def get_test_slash_file_path(self) -> str:
+        """Test-only: Get the slash tracking file path for direct disk testing."""
+        if not self.running_unit_tests:
+            raise RuntimeError("get_test_slash_file_path can only be used in unit test mode")
+        return self._slash_file
 
     def get_max_slash(self, synthetic_hotkey: str) -> float:
         """

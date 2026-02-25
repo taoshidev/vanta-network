@@ -24,6 +24,7 @@ from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 import template.protocol
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
 from vali_objects.miner_account.miner_account_client import MinerAccountClient
+from entity_management.entity_client import EntityClient
 
 
 # ==================== Constants ====================
@@ -99,6 +100,9 @@ class ValidatorContractManager(ValidatorBroadcastBase):
 
         # MinerAccountClient for account size operations
         self._miner_account_client = MinerAccountClient(connection_mode=connection_mode)
+
+        # EntityClient for checking entity subaccounts during withdrawals
+        self._entity_client = EntityClient(connection_mode=connection_mode, connect_immediately=False)
 
         # Lock for test collateral balances dict (prevents concurrent modifications in tests)
         self._test_balances_lock = threading.Lock()
@@ -449,6 +453,28 @@ class ValidatorContractManager(ValidatorBroadcastBase):
                 )
                 bt.logging.error(error_msg)
                 return {"successfully_processed": False, "error_message": error_msg}
+
+            # Block entity withdrawals when subaccounts have open positions
+            entity_data = self._entity_client.get_entity_data(miner_hotkey)
+            if entity_data:
+                subaccounts = entity_data.get("subaccounts", {})
+                for sa_id, sa_info in subaccounts.items():
+                    synthetic_hotkey = sa_info.get("synthetic_hotkey")
+                    if not synthetic_hotkey:
+                        continue
+                    if sa_info.get("status") not in ("active", "admin"):
+                        continue
+                    open_positions = self._position_client.get_positions_for_one_hotkey(
+                        synthetic_hotkey, only_open_positions=True
+                    )
+                    if open_positions:
+                        error_msg = (
+                            f"Cannot withdraw collateral. Subaccount {sa_id} ({synthetic_hotkey}) "
+                            f"has {len(open_positions)} open position(s). "
+                            f"Please close all subaccount positions before withdrawing."
+                        )
+                        bt.logging.error(error_msg)
+                        return {"successfully_processed": False, "error_message": error_msg}
 
             # Determine amount slashed and remaining amount eligible for withdrawal
             drawdown = self._position_client.compute_realtime_drawdown(miner_hotkey)

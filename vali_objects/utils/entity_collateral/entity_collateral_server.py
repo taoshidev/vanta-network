@@ -121,3 +121,25 @@ class EntityCollateralServer(RPCServerBase):
     def refresh_collateral_cache_rpc(self) -> int:
         """Force-refresh the collateral cache (RPC method)."""
         return self._manager.refresh_collateral_cache()
+
+    # ==================== Test Helper RPC Methods ====================
+
+    def set_test_collateral_cache_rpc(self, entity_hotkey: str, collateral_usd: float) -> None:
+        """Test-only: Inject collateral cache value."""
+        return self._manager.set_test_collateral_cache(entity_hotkey, collateral_usd)
+
+    def set_test_slash_tracking_rpc(self, synthetic_hotkey: str, cumulative_realized_loss: float, cumulative_slashed: float) -> None:
+        """Test-only: Inject slash tracking data."""
+        return self._manager.set_test_slash_tracking(synthetic_hotkey, cumulative_realized_loss, cumulative_slashed)
+
+    def get_test_slash_tracking_rpc(self, synthetic_hotkey: str) -> Optional[dict]:
+        """Test-only: Get raw slash tracking data."""
+        return self._manager.get_test_slash_tracking(synthetic_hotkey)
+
+    def clear_test_state_rpc(self) -> None:
+        """Test-only: Clear all state for test isolation."""
+        return self._manager.clear_test_state()
+
+    def get_test_slash_file_path_rpc(self) -> str:
+        """Test-only: Get the slash tracking file path."""
+        return self._manager.get_test_slash_file_path()
