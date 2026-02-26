@@ -24,8 +24,8 @@ class PositionInspector:
         self.last_update_time = 0
         self.recently_acked_validators = []
         self.stop_requested = False  # Flag to control the loop
-        assert self.config.netuid in (8, 116), "Taoshi runs on netuid 8 (mainnet) and 116 (testnet)"
-        self.is_testnet = self.config.netuid == 116
+        assert self.config.netuid in (2, 8, 116), "Taoshi runs on netuid 8 (mainnet), 116 (testnet), or 2 (local)"
+        self.is_testnet = self.config.netuid in (2, 116)
 
 
     async def run_update_loop(self):
