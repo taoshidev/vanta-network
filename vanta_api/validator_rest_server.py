@@ -32,7 +32,7 @@ from vali_objects.miner_account.miner_account_manager import MinerAccountManager
 from vali_objects.utils.limit_order.order_processor import OrderProcessor
 from vali_objects.utils.vali_bkp_utils import CustomEncoder
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
-from vali_objects.vali_config import ValiConfig, RPCConnectionMode, TradePairCategory, TradePair
+from vali_objects.vali_config import ValiConfig, RPCConnectionMode, TradePairCategory
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_client import DebtLedgerClient
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
@@ -282,8 +282,9 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
         # Public HL trader lookup (no auth required)
         self.app.route("/hl-traders/<hl_address>", methods=["GET"])(self.get_hl_trader)
+        self.app.route("/hl-traders/<hl_address>/limits", methods=["GET"])(self.get_hl_trader_limits)
 
-        print(f"[REST-INIT] 30 validator endpoints registered ✓")
+        print(f"[REST-INIT] 31 validator endpoints registered ✓")
 
     # ============================================================================
     # MINER POSITION ENDPOINTS
@@ -2016,27 +2017,6 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             },
             cls=CustomEncoder,
         )
-        return Response(response_body, content_type='application/json'), 200
-
-    def get_hl_leaderboard(self):
-        """
-        Public endpoint — no authentication required.
-        Returns aggregated leaderboard data for all Hyperliquid traders:
-        summary metrics, funded traders table, and in-challenge traders table.
-
-        Example:
-        curl http://localhost:48888/hl-leaderboard
-        """
-        if not self._entity_client:
-            return jsonify({'error': 'Entity management not available'}), 503
-
-        try:
-            leaderboard = self._entity_client.get_hl_leaderboard_data()
-        except Exception as e:
-            bt.logging.error(f"get_hl_leaderboard: failed: {e}")
-            return jsonify({'status': 'error', 'message': 'Internal error'}), 500
-
-        response_body = json.dumps(leaderboard, cls=CustomEncoder)
         return Response(response_body, content_type='application/json'), 200
 
     def calculate_subaccount_payout(self):
