@@ -302,7 +302,10 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         self.app.route("/entity/subaccount/<synthetic_hotkey>", methods=["GET"])(self.get_subaccount_dashboard)
         self.app.route("/entity/subaccount/payout", methods=["POST"])(self.calculate_subaccount_payout)
 
-        print(f"[REST-INIT] 29 validator endpoints registered ✓")
+        # Public HL trader lookup (no auth required)
+        self.app.route("/hl-traders/<hl_address>", methods=["GET"])(self.get_hl_trader)
+
+        print(f"[REST-INIT] 30 validator endpoints registered ✓")
 
     # ============================================================================
     # MINER POSITION ENDPOINTS
@@ -1772,6 +1775,66 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         except Exception as e:
             bt.logging.error(f"Error retrieving dashboard for {synthetic_hotkey}: {e}")
             return jsonify({'error': 'Internal server error retrieving dashboard'}), 500
+
+    def get_hl_trader(self, hl_address: str):
+        """
+        Public endpoint — no authentication required.
+        Looks up a Hyperliquid trader by their HL address and returns
+        their positions, drawdown, funded account size, and payout info.
+
+        Example:
+        curl http://localhost:48888/hl-traders/0xabcd1234...
+        """
+        # Check if entity client is available
+        if not self._entity_client:
+            return jsonify({'error': 'Entity management not available'}), 503
+
+        # Resolve hl_address -> synthetic_hotkey
+        try:
+            synthetic_hotkey = self._entity_client.get_synthetic_hotkey_for_hl_address(hl_address)
+        except Exception as e:
+            bt.logging.error(f"get_hl_trader: lookup failed for {hl_address}: {e}")
+            return jsonify({'status': 'error', 'message': 'Internal error'}), 500
+
+        if not synthetic_hotkey:
+            return jsonify({'status': 'error', 'message': 'HL address not found'}), 404
+
+        # Re-use existing dashboard aggregation (same logic as /entity/subaccount/<hotkey>)
+        try:
+            dashboard = self._entity_client.get_subaccount_dashboard_data(synthetic_hotkey)
+        except Exception as e:
+            bt.logging.error(f"get_hl_trader: dashboard failed for {synthetic_hotkey}: {e}")
+            return jsonify({'status': 'error', 'message': 'Internal error'}), 500
+
+        if dashboard is None:
+            return jsonify({'status': 'error', 'message': 'Trader data not available'}), 404
+
+        # Extract drawdown: combine statistics cache (instant/daily) + ledger last checkpoint
+        drawdown = {}
+        stats = dashboard.get('statistics') or {}
+        drawdown.update(stats.get('drawdowns') or {})
+        ledger = dashboard.get('ledger') or {}
+        checkpoints = ledger.get('checkpoints') or []
+        if checkpoints:
+            last_perf = checkpoints[-1].get('performance') or {}
+            drawdown['ledger_max_drawdown'] = last_perf.get('max_drawdown')
+
+        subaccount_info = dashboard.get('subaccount_info') or {}
+
+        response_body = json.dumps(
+            {
+                'status': 'success',
+                'synthetic_hotkey': synthetic_hotkey,
+                'hl_address': hl_address,
+                'account_size': subaccount_info.get('account_size'),   # funded account size (USD)
+                'payout_address': subaccount_info.get('payout_address'),  # EVM address for USDC
+                'positions': dashboard.get('positions'),
+                'drawdown': drawdown or None,
+                'timestamp': TimeUtil.now_in_millis(),
+            },
+            cls=CustomEncoder,
+        )
+        return Response(response_body, content_type='application/json'), 200
 
     def calculate_subaccount_payout(self):
         """
