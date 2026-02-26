@@ -149,7 +149,7 @@ class DebtLedgerManager():
             dashboard_checkpoints = []
             for checkpoint in ledger.checkpoints:
                 snapshot_time_ms = max(snapshot_time_ms, checkpoint.timestamp_ms)
-                if checkpoint.timestamp_ms >= start_time_ms:
+                if checkpoint.timestamp_ms > start_time_ms:
                     dashboard_checkpoint = checkpoint.to_dashboard()
                     dashboard_checkpoints.append(dashboard_checkpoint)
 

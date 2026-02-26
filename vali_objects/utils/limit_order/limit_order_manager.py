@@ -564,7 +564,7 @@ class LimitOrderManager(CacheController):
             orders = miner_orders.get(miner_hotkey)
             if orders is not None:
                 for order in orders:
-                    if order.processed_ms >= start_time_ms:
+                    if order.processed_ms > start_time_ms:
                         snapshot_time_ms = max(snapshot_time_ms, order.processed_ms)
                         dashboard_order = order.to_dashboard(include_trade_pair=True)
                         dashboard_orders[order.order_uuid] = dashboard_order

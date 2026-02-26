@@ -1117,7 +1117,7 @@ class MinerStatisticsManager:
         for return_date, return_value in daily_returns:
             return_time_ms = TimeUtil.formatted_date_str_to_millis(return_date)
             snapshot_time_ms = max(snapshot_time_ms, return_time_ms)
-            if return_time_ms >= snapshot_time_ms:
+            if return_time_ms > start_time_ms:
                 dashboard_daily_returns[return_date] = return_value
 
         return {

@@ -449,12 +449,12 @@ class PositionManager:
 
             if position.is_closed_position:
                 snapshot_time_ms = max(snapshot_time_ms, position.close_ms)
-                if position.close_ms < start_time_ms:
+                if position.close_ms <= start_time_ms:
                     continue
 
             dashboard_filled_orders = {}
             for order in position.orders:
-                if order.processed_ms >= start_time_ms:
+                if order.processed_ms > start_time_ms:
                     snapshot_time_ms = max(snapshot_time_ms, order.processed_ms)
                     dashboard_filled_orders[order.order_uuid] = order.to_dashboard()
 
