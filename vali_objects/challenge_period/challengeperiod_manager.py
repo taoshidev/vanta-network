@@ -467,7 +467,7 @@ class ChallengePeriodManager(CacheController):
             threshold_pct = ValiConfig.SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD * 100
 
             # returns_percentage = current_return - 1.0 (e.g. 1.08 -> 8%)
-            returns_percentage = max(max_return, current_return) - 1.0
+            returns_percentage = current_return - 1.0
 
             subaccount_asset_class = asset_classes.get(hotkey)
             if subaccount_asset_class is None:
@@ -479,14 +479,14 @@ class ChallengePeriodManager(CacheController):
                 returns_threshold = ValiConfig.SUBACCOUNT_CRYPTO_CHALLENGE_RETURNS_THRESHOLD
 
             # Promote if returns meet threshold
-            if returns_percentage >= returns_threshold:
+            if max(returns_percentage, max_return) >= returns_threshold:
                 bt.logging.info(
                     f"[SYNTHETIC_CP] {hotkey} promoted - "
                     f"returns {returns_percentage:.2f}% >= {returns_threshold}%"
                 )
                 hotkeys_to_promote.append(hotkey)
                 continue
-                
+
             # Eliminate if returns exceed max drawdown
             if drawdown_pct >= threshold_pct:
                 bt.logging.info(
