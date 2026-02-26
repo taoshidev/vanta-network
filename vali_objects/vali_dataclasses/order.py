@@ -235,7 +235,7 @@ class Order(Signal):
             "q": self.quantity,
             "v": self.value,
             "p": self.price,
-            "et": self.execution_type,
+            "et": self.execution_type.name,
             "pt": self.processed_ms,
         }
 
