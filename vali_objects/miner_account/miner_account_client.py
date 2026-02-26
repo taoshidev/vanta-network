@@ -225,11 +225,12 @@ class MinerAccountClient(RPCClientBase):
         """
         return self._server.get_accounts(hotkeys)
 
+    def get_dashboard(self, hotkey: str) -> dict | None:
+        return self._server.get_dashboard_rpc(hotkey)
+
     def update_max_returns(self, hotkey_to_return: Dict[str, float]) -> None:
         """Batch update HWM for multiple hotkeys. Saves to disk once."""
         self._server.update_max_returns(hotkey_to_return)
-
-
 
     def set_miner_bucket(self, hotkey: str, bucket: Optional[MinerBucket]) -> None:
         """Set the miner bucket on an account. Converts MinerBucket to string for RPC."""

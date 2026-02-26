@@ -245,6 +245,7 @@ class EliminationManager(CacheController):
         )
 
         # Local dicts (no IPC) - much faster!
+        # TODO: Fix these using dataclasses with named properties
         self.eliminations: Dict[str, dict] = {}
         self.departed_hotkeys: Dict[str, dict] = {}
         self.eliminations_lock = threading.Lock()
@@ -870,6 +871,17 @@ class EliminationManager(CacheController):
         """Get full elimination details"""
         elimination = self.eliminations.get(hotkey)
         return deepcopy(elimination) if elimination else None
+
+    def get_dashboard(self, hotkey: str) -> dict | None:
+        elimination = self.eliminations.get(hotkey)
+        if elimination is None:
+            return None
+        return {
+            "elimination_initiated_time_ms": elimination["elimination_initiated_time_ms"],
+            "reason": elimination["reason"],
+            "dd": elimination["dd"],
+            "t_ms": elimination["t_ms"],
+        }
 
     def get_eliminated_hotkeys(self) -> Set[str]:
         """

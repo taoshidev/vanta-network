@@ -219,6 +219,9 @@ class EliminationServer(RPCServerBase):
         """Get full elimination details"""
         return self._manager.get_elimination(hotkey)
 
+    def get_dashboard_rpc(self, hotkey: str) -> dict | None:
+        return self._manager.get_dashboard(hotkey)
+
     def get_eliminated_hotkeys_rpc(self) -> Set[str]:
         """Get all eliminated hotkeys"""
         return self._manager.get_eliminated_hotkeys()

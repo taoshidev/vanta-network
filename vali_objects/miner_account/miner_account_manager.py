@@ -222,6 +222,16 @@ class MinerAccount:
 
         return result
 
+    def to_dashboard(self) -> dict:
+        return {
+            'account_size': self.get_account_size(),
+            'total_realized_pnl': self.total_realized_pnl,
+            'capital_used': self.capital_used,
+            'balance': self.balance,
+            'buying_power': self.buying_power,
+            'max_return': self.max_return
+        }
+
 
 # ==================== Manager Implementation ====================
 
@@ -682,6 +692,12 @@ class MinerAccountManager(ValidatorBroadcastBase):
         """Get accounts for multiple hotkeys. Returns dict of hotkey -> MinerAccount for existing accounts."""
         with self._accounts_lock:
             return {hk: self.accounts[hk] for hk in hotkeys if hk in self.accounts}
+
+    def get_dashboard(self, hotkey: str) -> dict | None:
+        account = self.accounts.get(hotkey)
+        if account is None:
+            return None
+        return account.to_dashboard()
 
     def update_max_returns(self, hotkey_to_return: Dict[str, float]) -> None:
         """Batch update HWM for multiple hotkeys. Saves to disk once at the end."""

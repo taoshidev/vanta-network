@@ -94,6 +94,9 @@ class EliminationClient(RPCClientBase):
         """
         return self._server.get_elimination_rpc(hotkey)
 
+    def get_dashboard(self, hotkey: str) -> dict | None:
+        return self._server.get_dashboard_rpc(hotkey)
+
     def hotkey_in_eliminations(self, hotkey: str) -> Optional[dict]:
         """Alias for get_elimination() for backward compatibility."""
         return self._server.get_elimination_rpc(hotkey)

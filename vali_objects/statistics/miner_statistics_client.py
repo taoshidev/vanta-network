@@ -146,6 +146,9 @@ class MinerStatisticsClient(RPCClientBase):
         """
         return self._server.get_miner_statistics_for_hotkey_rpc(hotkey)
 
+    def get_dashboard(self, hotkey: str, start_time_ms) -> dict | None:
+        return self._server.get_dashboard_rpc(hotkey, start_time_ms)
+
     def health_check(self) -> dict:
         """Check server health."""
         return self._server.health_check_rpc()
