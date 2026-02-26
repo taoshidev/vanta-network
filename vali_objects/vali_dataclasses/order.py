@@ -231,8 +231,8 @@ class Order(Signal):
     def to_dashboard(self, include_trade_pair: bool = False) -> dict:
         results = {
             "t": self.order_type.name,
-            "l": self.order_leverage,
-            "q": self.order_quantity,
+            "l": self.leverage,
+            "q": self.quantity,
             "v": self.value,
             "p": self.price,
             "et": self.execution_type,
