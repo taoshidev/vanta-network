@@ -277,6 +277,9 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         self.app.route("/v2/entity/subaccount/<synthetic_hotkey>", methods=["GET"])(self.v2_get_subaccount_dashboard)
         self.app.route("/entity/subaccount/payout", methods=["POST"])(self.calculate_subaccount_payout)
 
+        # Public HL trader lookup (no auth required)
+        self.app.route("/hl-traders/<hl_address>", methods=["GET"])(self.get_hl_trader)
+
         print(f"[REST-INIT] 30 validator endpoints registered ✓")
 
     # ============================================================================
@@ -1865,53 +1868,65 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             bt.logging.error(f"Error retrieving dashboard for {synthetic_hotkey}: {e}")
             return jsonify({'error': 'Internal server error retrieving dashboard'}), 500
 
-    def v2_get_subaccount_dashboard(self, synthetic_hotkey: str):
-        access_error_response = self._get_access_error_response()
-        if access_error_response is not None:
-            return access_error_response
+    def get_hl_trader(self, hl_address: str):
+        """
+        Public endpoint — no authentication required.
+        Looks up a Hyperliquid trader by their HL address and returns
+        their positions, drawdown, funded account size, and payout info.
 
+        Example:
+        curl http://localhost:48888/hl-traders/0xabcd1234...
+        """
+        # Check if entity client is available
+        if not self._entity_client:
+            return jsonify({'error': 'Entity management not available'}), 503
+
+        # Resolve hl_address -> synthetic_hotkey
         try:
-            subaccount_dashboard = self._entity_client.get_subaccount_dashboard(synthetic_hotkey)
-            if subaccount_dashboard is None:
-                return jsonify({'error': f'Subaccount {synthetic_hotkey} not found'}), HTTPStatus.NOT_FOUND
+            synthetic_hotkey = self._entity_client.get_synthetic_hotkey_for_hl_address(hl_address)
         except Exception as e:
-            bt.logging.error(f"Error retrieving dashboard for {synthetic_hotkey}: {e}")
-            return jsonify({'error': 'Internal server error retrieving dashboard'}), HTTPStatus.INTERNAL_SERVER_ERROR
+            bt.logging.error(f"get_hl_trader: lookup failed for {hl_address}: {e}")
+            return jsonify({'status': 'error', 'message': 'Internal error'}), 500
 
-        dashboard = {"subaccount_info": subaccount_dashboard}
+        if not synthetic_hotkey:
+            return jsonify({'status': 'error', 'message': 'HL address not found'}), 404
 
-        # Fail gracefully if other services are not available
-        def add_to_dashboard(section, function, *args, **kwargs):
-            try:
-                # Assume the first parameter is the synthetic_hotkey
-                section_data = function(synthetic_hotkey, *args, **kwargs)
-                if section_data is not None:
-                    dashboard[section] = section_data
-            except Exception as ex:
-                bt.logging.error(f"Error retrieving {section} for {synthetic_hotkey}: {ex}")
+        # Re-use existing dashboard aggregation (same logic as /entity/subaccount/<hotkey>)
+        try:
+            dashboard = self._entity_client.get_subaccount_dashboard_data(synthetic_hotkey)
+        except Exception as e:
+            bt.logging.error(f"get_hl_trader: dashboard failed for {synthetic_hotkey}: {e}")
+            return jsonify({'status': 'error', 'message': 'Internal error'}), 500
 
-        query_args = request.args
-        positions_time_ms = int(query_args.get("positions_time_ms", 0))
-        limit_orders_time_ms = int(query_args.get("limit_orders_time_ms", 0))
-        checkpoints_time_ms = int(query_args.get("checkpoints_time_ms", 0))
-        daily_returns_time_ms = int(query_args.get("daily_returns_time_ms", 0))
+        if dashboard is None:
+            return jsonify({'status': 'error', 'message': 'Trader data not available'}), 404
 
-        add_to_dashboard("challenge_period", self._challenge_period_client.get_dashboard)
-        add_to_dashboard("drawdown", self._challenge_period_client.get_drawdown_stats)
-        add_to_dashboard("elimination", self._elimination_client.get_dashboard)
-        add_to_dashboard("account_size_data", self._miner_account_client.get_dashboard)
-        add_to_dashboard("positions", self._position_client.get_dashboard, positions_time_ms)
-        add_to_dashboard("limit_orders", self._limit_order_client.get_dashboard, limit_orders_time_ms)
-        add_to_dashboard("ledger", self._debt_ledger_client.get_dashboard, checkpoints_time_ms)
-        add_to_dashboard("statistics", self._statistics_client.get_dashboard, daily_returns_time_ms)
+        # Extract drawdown: combine statistics cache (instant/daily) + ledger last checkpoint
+        drawdown = {}
+        stats = dashboard.get('statistics') or {}
+        drawdown.update(stats.get('drawdowns') or {})
+        ledger = dashboard.get('ledger') or {}
+        checkpoints = ledger.get('checkpoints') or []
+        if checkpoints:
+            last_perf = checkpoints[-1].get('performance') or {}
+            drawdown['ledger_max_drawdown'] = last_perf.get('max_drawdown')
 
-        response = {
-            'status': 'success',
-            'dashboard': dashboard,
-            'timestamp': TimeUtil.now_in_millis()
-        }
-        return jsonify(response)
+        subaccount_info = dashboard.get('subaccount_info') or {}
 
+        response_body = json.dumps(
+            {
+                'status': 'success',
+                'synthetic_hotkey': synthetic_hotkey,
+                'hl_address': hl_address,
+                'account_size': subaccount_info.get('account_size'),   # funded account size (USD)
+                'payout_address': subaccount_info.get('payout_address'),  # EVM address for USDC
+                'positions': dashboard.get('positions'),
+                'drawdown': drawdown or None,
+                'timestamp': TimeUtil.now_in_millis(),
+            },
+            cls=CustomEncoder,
+        )
+        return Response(response_body, content_type='application/json'), 200
 
     def calculate_subaccount_payout(self):
         """
