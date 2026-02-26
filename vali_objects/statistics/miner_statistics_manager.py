@@ -1101,8 +1101,8 @@ class MinerStatisticsManager:
         stats_dict = self.miner_statistics.get('stats_dict', {})
         return stats_dict.get(hotkey)
 
-    def get_dashboard(self, hotkey: str, start_time_ms) -> dict | None:
-        snapshot_time_ms = start_time_ms
+    def get_dashboard(self, hotkey: str, daily_returns_time_ms) -> dict | None:
+        snapshot_time_ms = daily_returns_time_ms
 
         statistics = self.miner_statistics.get("stats_dict")
         if statistics is None:
@@ -1117,10 +1117,13 @@ class MinerStatisticsManager:
         for return_date, return_value in daily_returns:
             return_time_ms = TimeUtil.formatted_date_str_to_millis(return_date)
             snapshot_time_ms = max(snapshot_time_ms, return_time_ms)
-            if return_time_ms > start_time_ms:
+            if return_time_ms > daily_returns_time_ms:
                 dashboard_daily_returns[return_date] = return_value
+
+        if not dashboard_daily_returns:
+            return None
 
         return {
             "daily_returns": dashboard_daily_returns,
-            "snapshot_time_ms": snapshot_time_ms,
+            "daily_returns_time_ms": snapshot_time_ms,
         }

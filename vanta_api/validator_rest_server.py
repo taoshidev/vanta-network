@@ -1651,17 +1651,17 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
         query_args = request.args
         positions_time_ms = int(query_args.get("positions_time_ms", 0))
-        ledger_time_ms = int(query_args.get("ledger_time_ms", 0))
-        limit_order_time_ms = int(query_args.get("limit_order_time_ms", 0))
-        statistics_time_ms = int(query_args.get("statistics_time_ms", 0))
+        limit_orders_time_ms = int(query_args.get("limit_orders_time_ms", 0))
+        checkpoints_time_ms = int(query_args.get("checkpoints_time_ms", 0))
+        daily_returns_time_ms = int(query_args.get("daily_returns_time_ms", 0))
 
         add_to_dashboard("challenge_period", self._challenge_period_client.get_dashboard)
-        add_to_dashboard("positions", self._position_client.get_dashboard, positions_time_ms)
-        add_to_dashboard("ledger", self._debt_ledger_client.get_dashboard, ledger_time_ms)
-        add_to_dashboard("limit_orders", self._limit_order_client.get_dashboard, limit_order_time_ms)
-        add_to_dashboard("account_size_data", self._miner_account_client.get_dashboard)
-        add_to_dashboard("statistics", self._statistics_client.get_dashboard, statistics_time_ms)
         add_to_dashboard("elimination", self._elimination_client.get_dashboard)
+        add_to_dashboard("account_size_data", self._miner_account_client.get_dashboard)
+        add_to_dashboard("positions", self._position_client.get_dashboard, positions_time_ms)
+        add_to_dashboard("limit_orders", self._limit_order_client.get_dashboard, limit_orders_time_ms)
+        add_to_dashboard("ledger", self._debt_ledger_client.get_dashboard, checkpoints_time_ms)
+        add_to_dashboard("statistics", self._statistics_client.get_dashboard, daily_returns_time_ms)
 
         response = {
             'status': 'success',

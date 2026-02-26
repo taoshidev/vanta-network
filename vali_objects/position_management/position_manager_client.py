@@ -218,8 +218,8 @@ class PositionManagerClient(RPCClientBase):
         """
         return self.get_position(hotkey, position_uuid)
 
-    def get_dashboard(self, hotkey: str, start_time_ms: int) -> dict | None:
-        return self._server.get_dashboard_rpc(hotkey, start_time_ms)
+    def get_dashboard(self, hotkey: str, positions_time_ms: int) -> dict | None:
+        return self._server.get_dashboard_rpc(hotkey, positions_time_ms)
 
     def get_open_position_for_trade_pair(
         self,
