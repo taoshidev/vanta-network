@@ -1650,10 +1650,10 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 bt.logging.error(f"Error retrieving {section} for {synthetic_hotkey}: {ex}")
 
         query_args = request.args
-        positions_time_ms = query_args.get("positions_time_ms", 0)
-        ledger_time_ms = query_args.get("ledger_time_ms", 0)
-        limit_order_time_ms = query_args.get("limit_order_time_ms", 0)
-        statistics_time_ms = query_args.get("statistics_time_ms", 0)
+        positions_time_ms = int(query_args.get("positions_time_ms", 0))
+        ledger_time_ms = int(query_args.get("ledger_time_ms", 0))
+        limit_order_time_ms = int(query_args.get("limit_order_time_ms", 0))
+        statistics_time_ms = int(query_args.get("statistics_time_ms", 0))
 
         add_to_dashboard("challenge_period", self._challenge_period_client.get_dashboard)
         add_to_dashboard("positions", self._position_client.get_dashboard, positions_time_ms)
