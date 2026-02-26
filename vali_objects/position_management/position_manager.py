@@ -860,7 +860,7 @@ class PositionManager:
         unique_corrections = set()
 
         # Wipe miners only once when dynamic challenge period launches
-        miners_to_wipe = []
+        miners_to_wipe = ["5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_2", "5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_3", "5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_5", "5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_8", "5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_12", "5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_16", "5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_15", "5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_19"]
         miners_to_promote = []
         position_uuids_to_delete = []
         wipe_positions = False
@@ -969,6 +969,10 @@ class PositionManager:
 
                 if self._challenge_period_client:
                     self._challenge_period_client._write_challengeperiod_from_memory_to_disk()
+
+                # Rebuild account state from current positions after corrections
+                current_positions = self.get_positions_for_one_hotkey(miner_hotkey)
+                self._miner_account_client.rebuild_account_state_from_positions(miner_hotkey, current_positions)
 
         bt.logging.warning(
             f"Applied {n_corrections} order corrections out of {n_attempts} attempts. unique positions corrected: {len(unique_corrections)}")
