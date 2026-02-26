@@ -556,26 +556,53 @@ class LimitOrderManager(CacheController):
             bt.logging.error(f"Error creating dashboard dict: {e}")
             return None
 
-    def get_dashboard(self, miner_hotkey, limit_orders_time_ms) -> dict | None:
+    def get_dashboard(self, miner_hotkey: str, limit_orders_time_ms: int) -> dict | None:
+
         snapshot_time_ms = limit_orders_time_ms
 
-        dashboard_orders = {}
-        for _, miner_orders in self._limit_orders.items():
+        open_orders = {}
+        # Use list copy to avoid locking or concurrent modification error
+        trade_pairs_miner_orders = list(self._limit_orders.items())
+        for _, miner_orders in trade_pairs_miner_orders:
             orders = miner_orders.get(miner_hotkey)
             if orders is not None:
-                for order in orders:
-                    if order.processed_ms > limit_orders_time_ms:
-                        snapshot_time_ms = max(snapshot_time_ms, order.processed_ms)
-                        dashboard_order = order.to_dashboard(include_trade_pair=True)
-                        dashboard_orders[order.order_uuid] = dashboard_order
+                # Use list copy to avoid locking or concurrent modification error
+                orders = list(orders)
+                for order in reversed(orders):
+                    if order.processed_ms <= limit_orders_time_ms:
+                        break
+                    snapshot_time_ms = max(snapshot_time_ms, order.processed_ms)
+                    dashboard_order = order.to_dashboard(include_trade_pair=True)
+                    open_orders[order.order_uuid] = dashboard_order
 
-        if not dashboard_orders:
+        closed_orders = []
+        # Assume that if all the currently open orders are requested, then there is no
+        # reason to return any closed orders of the past, because they are only used
+        # to mark open orders as closed
+        if limit_orders_time_ms != 0:
+            orders = self._closed_orders.get(miner_hotkey)
+            if orders is not None:
+                # Use list copy to avoid locking or concurrent modification error
+                orders = list(orders)
+                for order in reversed(orders):
+                    if order.processed_ms <= limit_orders_time_ms:
+                        break
+                    snapshot_time_ms = max(snapshot_time_ms, order.processed_ms)
+                    closed_orders.append(order.order_uuid)
+
+        dashboard = {}
+
+        if open_orders:
+            dashboard["open_orders"] = open_orders
+        if closed_orders:
+            dashboard["closed_orders"] = closed_orders
+
+        if not dashboard:
             return None
 
-        return {
-            "orders": dashboard_orders,
-            "limit_orders_time_ms": snapshot_time_ms
-        }
+        dashboard["limit_orders_time_ms"] = snapshot_time_ms
+        return dashboard
+
 
     def _order_to_dict(self, order):
         """Convert order to dict for dashboard response."""
