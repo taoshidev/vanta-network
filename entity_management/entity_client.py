@@ -165,6 +165,18 @@ class EntityClient(RPCClientBase):
         """
         return self._server.get_subaccount_info_for_synthetic_rpc(synthetic_hotkey)
 
+    def get_hl_subaccount_limits_data(self, hl_address: str) -> Optional[dict]:
+        """
+        Get lightweight limits data for an HL subaccount.
+
+        Args:
+            hl_address: The Hyperliquid address
+
+        Returns:
+            Dict with {account_size, asset_class, challenge_bucket} or None
+        """
+        return self._server.get_hl_subaccount_limits_data_rpc(hl_address)
+
     def eliminate_subaccount(
         self,
         entity_hotkey: str,

@@ -727,6 +727,40 @@ class EntityManager(ValidatorBroadcastBase):
                 return None
             return entity_data.subaccounts.get(subaccount_id)
 
+    def get_hl_subaccount_limits_data(self, hl_address: str) -> Optional[dict]:
+        """
+        Get lightweight limits data for an HL subaccount.
+
+        Only fetches subaccount info (O(1) dict lookup) and challenge bucket
+        (1 lightweight RPC call), avoiding the 7+ RPC calls of the full dashboard.
+
+        Args:
+            hl_address: The Hyperliquid address
+
+        Returns:
+            Dict with {account_size, asset_class, challenge_bucket} or None
+        """
+        synthetic_hotkey = self.get_synthetic_hotkey_for_hl_address(hl_address)
+        if not synthetic_hotkey:
+            return None
+
+        subaccount_info = self.get_subaccount_info_for_synthetic(synthetic_hotkey)
+        if not subaccount_info:
+            return None
+
+        # Get challenge bucket (1 lightweight RPC call)
+        challenge_bucket = None
+        if self._challenge_period_client.has_miner(synthetic_hotkey):
+            bucket = self._challenge_period_client.get_miner_bucket(synthetic_hotkey)
+            if bucket:
+                challenge_bucket = bucket.value
+
+        return {
+            'account_size': subaccount_info.account_size,
+            'asset_class': subaccount_info.asset_class,
+            'challenge_bucket': challenge_bucket,
+        }
+
     def eliminate_subaccount(
         self,
         entity_hotkey: str,
