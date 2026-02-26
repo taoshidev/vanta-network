@@ -472,16 +472,6 @@ class ChallengePeriodManager(CacheController):
             max_return = account.get('max_return', 1.0)
             drawdown_pct = (1 - current_return / max_return) * 100
             threshold_pct = ValiConfig.SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD * 100
-            if drawdown_pct >= threshold_pct:
-                bt.logging.info(
-                    f"[SYNTHETIC_CP] {hotkey} failed challenge period - "
-                    f"drawdown {drawdown_pct:.2f}% >= {threshold_pct}%"
-                )
-                miners_to_eliminate[hotkey] = (
-                    EliminationReason.FAILED_CHALLENGE_PERIOD_DRAWDOWN.value,
-                    drawdown_pct
-                )
-                continue
 
             # returns_percentage = current_return - 1.0 (e.g. 1.08 -> 8%)
             returns_percentage = max(max_return, current_return) - 1.0
@@ -497,7 +487,24 @@ class ChallengePeriodManager(CacheController):
 
             # Promote if returns meet threshold
             if returns_percentage >= returns_threshold:
+                bt.logging.info(
+                    f"[SYNTHETIC_CP] {hotkey} promoted - "
+                    f"returns {returns_percentage:.2f}% >= {returns_threshold}%"
+                )
                 hotkeys_to_promote.append(hotkey)
+                continue
+                
+            # Eliminate if returns exceed max drawdown
+            if drawdown_pct >= threshold_pct:
+                bt.logging.info(
+                    f"[SYNTHETIC_CP] {hotkey} failed challenge period - "
+                    f"drawdown {drawdown_pct:.2f}% >= {threshold_pct}%"
+                )
+                miners_to_eliminate[hotkey] = (
+                    EliminationReason.FAILED_CHALLENGE_PERIOD_DRAWDOWN.value,
+                    drawdown_pct
+                )
+                continue
 
             near_elimination = drawdown_pct >= threshold_pct * 0.75
             near_promotion = returns_percentage >= returns_threshold * 0.75
