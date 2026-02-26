@@ -1639,44 +1639,37 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             subaccount_dashboard = self._entity_client.get_subaccount_dashboard(synthetic_hotkey)
             if subaccount_dashboard is None:
                 return jsonify({'error': f'Subaccount {synthetic_hotkey} not found'}), HTTPStatus.NOT_FOUND
-
-            dashboard = {"subaccount_info": subaccount_dashboard}
-
-            def add_to_dashboard(key, value):
-                if value is not None:
-                    dashboard[key] = value
-
-            challenge_period_dashboard = self._challenge_period_client.get_dashboard(synthetic_hotkey)
-            add_to_dashboard("challenge_period", challenge_period_dashboard)
-
-            positions_dashboard = self._position_client.get_dashboard(synthetic_hotkey, positions_time_ms)
-            add_to_dashboard("positions", positions_dashboard)
-
-            ledger_dashboard = self._debt_ledger_client.get_dashboard(synthetic_hotkey, ledger_time_ms)
-            add_to_dashboard("ledger", ledger_dashboard)
-
-            limit_orders_dashboard = self._limit_order_client.get_dashboard(synthetic_hotkey, limit_order_time_ms)
-            add_to_dashboard("limit_orders", limit_orders_dashboard)
-
-            miner_account_dashboard = self._miner_account_client.get_dashboard(synthetic_hotkey)
-            add_to_dashboard("account_size_data", miner_account_dashboard)
-
-            statistics_dashboard = self._statistics_client.get_dashboard(synthetic_hotkey, statistics_time_ms)
-            add_to_dashboard("statistics", statistics_dashboard)
-
-            elimination_dashboard = self._elimination_client.get_dashboard(synthetic_hotkey)
-            add_to_dashboard("elimination", elimination_dashboard)
-
-            response = {
-                'status': 'success',
-                'dashboard': dashboard,
-                'timestamp': TimeUtil.now_in_millis()
-            }
-            return jsonify(response)
-
         except Exception as e:
             bt.logging.error(f"Error retrieving dashboard for {synthetic_hotkey}: {e}")
             return jsonify({'error': 'Internal server error retrieving dashboard'}), HTTPStatus.INTERNAL_SERVER_ERROR
+
+        dashboard = {"subaccount_info": subaccount_dashboard}
+
+        # Fail gracefully if other services are not available
+        def add_to_dashboard(section, function, *args, **kwargs):
+            try:
+                # Assume the first parameter is the synthetic_hotkey
+                section_data = function(synthetic_hotkey, *args, **kwargs)
+                if section_data is not None:
+                    dashboard[section] = section_data
+            except Exception as ex:
+                bt.logging.error(f"Error retrieving {section} for {synthetic_hotkey}: {ex}")
+
+        add_to_dashboard("challenge_period", self._challenge_period_client.get_dashboard)
+        add_to_dashboard("positions", self._position_client.get_dashboard, positions_time_ms)
+        add_to_dashboard("ledger", self._debt_ledger_client.get_dashboard,  ledger_time_ms)
+        add_to_dashboard("limit_orders", self._limit_order_client.get_dashboard,  limit_order_time_ms)
+        add_to_dashboard("account_size_data", self._miner_account_client.get_dashboard)
+        add_to_dashboard("statistics", self._statistics_client.get_dashboard,statistics_time_ms)
+        add_to_dashboard("elimination", self._elimination_client.get_dashboard)
+
+        response = {
+            'status': 'success',
+            'dashboard': dashboard,
+            'timestamp': TimeUtil.now_in_millis()
+        }
+        return jsonify(response)
+
 
     def calculate_subaccount_payout(self):
         """
