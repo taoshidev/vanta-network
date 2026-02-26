@@ -282,9 +282,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
         # Public HL trader lookup (no auth required)
         self.app.route("/hl-traders/<hl_address>", methods=["GET"])(self.get_hl_trader)
-        self.app.route("/hl-traders/<hl_address>/limits", methods=["GET"])(self.get_hl_trader_limits)
 
-        print(f"[REST-INIT] 31 validator endpoints registered ✓")
+        print(f"[REST-INIT] 30 validator endpoints registered ✓")
 
     # ============================================================================
     # MINER POSITION ENDPOINTS
