@@ -266,6 +266,7 @@ class Position(BaseModel):
             "r": self.current_return,
             "nl": self.net_leverage,
             "ap": self.average_entry_price,
+            "rp": self.realized_pnl,
         }
 
         if self.is_closed_position:
