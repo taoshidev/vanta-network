@@ -479,10 +479,16 @@ class ValiConfig:
         TradePairCategory.INDICES: 10,
         TradePairCategory.EQUITIES: 2,
     }
-    TRANSACTION_FEE_MULTIPLIER = {
+    TRANSACTION_FEE_RATE = {
         TradePairCategory.CRYPTO: 0.001,
         TradePairCategory.FOREX: 0,
         TradePairCategory.INDICES: 0,
+        TradePairCategory.EQUITIES: 0,
+    }
+    CARRY_FEE_RATE_PER_INTERVAL = {
+        TradePairCategory.CRYPTO: 0.0001,          # 10.95% annual / (365*3 intervals)
+        TradePairCategory.FOREX: 0.0000821918,     # 3% annual / 365 intervals
+        TradePairCategory.INDICES: 0.0001438356,   # 5.25% annual / 365 intervals
         TradePairCategory.EQUITIES: 0,
     }
 

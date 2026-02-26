@@ -89,12 +89,18 @@ class PositionManager:
 
         # Internal clients always use RPC mode to connect to their servers
         # The connection_mode parameter is for how OTHER components connect TO PositionManager
+        from vali_objects.miner_account.miner_account_client import MinerAccountClient
+
         self._elimination_client = EliminationClient(connection_mode=RPCConnectionMode.RPC)
         self._challenge_period_client = ChallengePeriodClient(connection_mode=RPCConnectionMode.RPC)
         self._perf_ledger_client = PerfLedgerClient(connection_mode=RPCConnectionMode.RPC)
         self._live_price_client = LivePriceFetcherClient(
             running_unit_tests=self.running_unit_tests,
             connection_mode=RPCConnectionMode.RPC
+        )
+        self._miner_account_client = MinerAccountClient(
+            connection_mode=RPCConnectionMode.RPC,
+            running_unit_tests=self.running_unit_tests
         )
 
         # Load positions from disk on startup
@@ -887,7 +893,7 @@ class PositionManager:
             # bt.logging.info(f"Applied {n_slippage_corrections} forex slippage corrections")
 
             # All miners that wanted their challenge period restarted
-            miners_to_wipe = ["5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_1"]
+            miners_to_wipe = []
             position_uuids_to_delete = []
             miners_to_promote = []
 
@@ -1124,6 +1130,40 @@ class PositionManager:
                     self._write_position_to_disk(position)
 
         bt.logging.info(f'Removed {n_price_sources_removed} price sources from old data.')
+
+    def refresh_position_fees(self, time_ms: Optional[int] = None) -> None:
+        """Iterate over all open positions, compute carry fees, update positions and miner accounts."""
+        if not time_ms:
+            time_ms = TimeUtil.now_in_millis()
+        total_fee_charged = 0.0
+        positions_charged = 0
+        hotkey_to_fee = {}
+
+        for hotkey, positions_dict in self.hotkey_to_open_positions.items():
+            hotkey_fee = 0.0
+            for _, position in positions_dict.items():
+                if position.trade_pair.is_equities:
+                    fee = position.refresh_interest_fee_usd(time_ms)
+                else:
+                    fee = position.refresh_carry_fee_usd(time_ms)
+
+                if fee > 0:
+                    bt.logging.info(
+                        f"[POSITION FEE] {hotkey} {position.trade_pair.trade_pair_id} ${fee:.6f}"
+                    )
+                    hotkey_fee += fee
+                    positions_charged += 1
+                    self._write_position_to_disk(position)
+
+            if hotkey_fee > 0:
+                hotkey_to_fee[hotkey] = hotkey_fee
+                total_fee_charged += hotkey_fee
+
+        if hotkey_to_fee:
+            try:
+                self._miner_account_client.process_fees(hotkey_to_fee)
+            except Exception as e:
+                bt.logging.error(f"Failed to charge position fees: {e}")
 
     # ==================== Index Management ====================
 

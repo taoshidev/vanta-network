@@ -662,10 +662,7 @@ class LimitOrderManager(CacheController):
             self._attach_bracket_orders_to_positions()
             self._needs_initial_bracket_sync = False
 
-        if self.running_unit_tests:
-            print(f"[CHECK_AND_FILL_CALLED] check_and_fill_limit_orders(call_id={call_id}) called, {len(self._limit_orders)} trade pairs")
-
-        if now_ms - self._last_print_time_ms > 60 * 1000:
+        if now_ms - self._last_print_time_ms > 4 * 60 * 1000:
             total_orders = sum(len(orders) for hotkey_dict in self._limit_orders.values() for orders in hotkey_dict.values())
             bt.logging.info(f"Checking {total_orders} limit orders across {len(self._limit_orders)} trade pairs")
             for trade_pair, stats in self._price_stats.items():

@@ -37,7 +37,6 @@ from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.plagiarism.plagiarism_client import PlagiarismClient
 from vali_objects.miner_account.miner_account_client import MinerAccountClient
 from shared_objects.rpc.common_data_client import CommonDataClient
-from entity_management.entity_client import EntityClient
 from entity_management.entity_utils import is_synthetic_hotkey
 
 
@@ -111,12 +110,6 @@ class ChallengePeriodManager(CacheController):
         self.asset_selection_client = AssetSelectionClient(
             connect_immediately=False,
             connection_mode=connection_mode
-        )
-
-        # Create EntityClient for synthetic hotkey detection
-        self._entity_client = EntityClient(
-            connection_mode=connection_mode,
-            connect_immediately=False
         )
 
         # Local dicts (NOT IPC managerized) - much faster!
@@ -474,7 +467,7 @@ class ChallengePeriodManager(CacheController):
             threshold_pct = ValiConfig.SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD * 100
 
             # returns_percentage = current_return - 1.0 (e.g. 1.08 -> 8%)
-            returns_percentage = max(max_return, current_return) - 1.0
+            returns_percentage = current_return - 1.0
 
             subaccount_asset_class = asset_classes.get(hotkey)
             if subaccount_asset_class is None:
@@ -486,14 +479,14 @@ class ChallengePeriodManager(CacheController):
                 returns_threshold = ValiConfig.SUBACCOUNT_CRYPTO_CHALLENGE_RETURNS_THRESHOLD
 
             # Promote if returns meet threshold
-            if returns_percentage >= returns_threshold:
+            if max(returns_percentage, max_return) >= returns_threshold:
                 bt.logging.info(
                     f"[SYNTHETIC_CP] {hotkey} promoted - "
                     f"returns {returns_percentage:.2f}% >= {returns_threshold}%"
                 )
                 hotkeys_to_promote.append(hotkey)
                 continue
-                
+
             # Eliminate if returns exceed max drawdown
             if drawdown_pct >= threshold_pct:
                 bt.logging.info(
@@ -1072,10 +1065,6 @@ class ChallengePeriodManager(CacheController):
                 bt.logging.info(f"[CP_DEBUG] Eliminating {hotkey} from bucket {bucket.value}")
                 self.remove_miner(hotkey)
 
-                # Broadcast dashboard update for synthetic hotkeys
-                if is_synthetic_hotkey(hotkey):
-                    self._entity_client.broadcast_subaccount_dashboard(hotkey)
-
                 # Verify deletion
                 if not self.has_miner(hotkey):
                     bt.logging.info(f"[CP_DEBUG] ✓ Verified {hotkey} was removed from active_miners")
@@ -1306,13 +1295,6 @@ class ChallengePeriodManager(CacheController):
             self._miner_account_client.set_miner_bucket(hotkey, bucket)
         except Exception as e:
             bt.logging.warning(f"Failed to push miner_bucket to MinerAccount for {hotkey}: {e}")
-
-        # Broadcast dashboard update for synthetic hotkeys when bucket changes
-        if bucket_changed and is_synthetic_hotkey(hotkey):
-            try:
-                self._entity_client.broadcast_subaccount_dashboard(hotkey)
-            except Exception as e:
-                bt.logging.debug(f"Failed to broadcast dashboard for {hotkey}: {e}")
 
         return is_new
 
