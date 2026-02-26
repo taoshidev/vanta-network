@@ -233,10 +233,10 @@ class Order(Signal):
             "t": self.order_type.name,
             "l": self.leverage,
             "q": self.quantity,
+            "pr": self.price,
             "v": self.value,
-            "p": self.price,
-            "et": self.execution_type.name,
-            "pt": self.processed_ms,
+            "e": self.execution_type.name,
+            "p": self.processed_ms,
         }
 
         if include_trade_pair and self.trade_pair is not None:
