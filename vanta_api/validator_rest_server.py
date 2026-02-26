@@ -282,12 +282,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
         # Public HL trader lookup (no auth required)
         self.app.route("/hl-traders/<hl_address>", methods=["GET"])(self.get_hl_trader)
-        self.app.route("/hl-traders/<hl_address>/limits", methods=["GET"])(self.get_hl_trader_limits)
 
-        # Public HL leaderboard (no auth required)
-        self.app.route("/hl-leaderboard", methods=["GET"])(self.get_hl_leaderboard)
-
-        print(f"[REST-INIT] 32 validator endpoints registered ✓")
+        print(f"[REST-INIT] 30 validator endpoints registered ✓")
 
     # ============================================================================
     # MINER POSITION ENDPOINTS
@@ -1946,73 +1942,6 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             drawdown['ledger_max_drawdown'] = last_perf.get('max_drawdown')
 
         subaccount_info = dashboard.get('subaccount_info') or {}
-        challenge_period = dashboard.get('challenge_period') or {}
-        account_size_data = dashboard.get('account_size_data') or {}
-
-        # Build challenge progress metrics for subaccounts in SUBACCOUNT_CHALLENGE.
-        challenge_bucket = challenge_period.get('bucket')
-        challenge_start_time_ms = challenge_period.get('start_time_ms')
-        now_ms = TimeUtil.now_in_millis()
-        in_challenge_period = challenge_bucket == 'SUBACCOUNT_CHALLENGE'
-
-        elapsed_time_ms = None
-        time_progress_percent = None
-        if isinstance(challenge_start_time_ms, int):
-            elapsed_time_ms = max(0, now_ms - challenge_start_time_ms)
-            if ValiConfig.CHALLENGE_PERIOD_MAXIMUM_MS > 0:
-                time_progress_percent = min(
-                    100.0,
-                    (elapsed_time_ms / ValiConfig.CHALLENGE_PERIOD_MAXIMUM_MS) * 100.0
-                )
-
-        account_size = subaccount_info.get('account_size')
-        balance = account_size_data.get('balance')
-        max_return = account_size_data.get('max_return')
-        asset_class = (subaccount_info.get('asset_class') or '').lower()
-
-        target_return_threshold = (
-            ValiConfig.SUBACCOUNT_CRYPTO_CHALLENGE_RETURNS_THRESHOLD
-            if asset_class == TradePairCategory.CRYPTO.value
-            else ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD
-        )
-        target_return_percent = target_return_threshold * 100.0
-        drawdown_limit_percent = ValiConfig.SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD * 100.0
-
-        current_return = None
-        returns_percent = None
-        returns_progress_percent = None
-        challenge_completion_percent = None
-        drawdown_percent = None
-        drawdown_usage_percent = None
-
-        if isinstance(account_size, (int, float)) and account_size > 0 and isinstance(balance, (int, float)):
-            current_return = balance / account_size
-            returns_percent = (current_return - 1.0) * 100.0
-            if in_challenge_period and target_return_percent > 0:
-                raw_returns_progress = (returns_percent / target_return_percent) * 100.0
-                returns_progress_percent = min(max(raw_returns_progress, 0.0), 100.0)
-                challenge_completion_percent = returns_progress_percent
-
-            if isinstance(max_return, (int, float)) and max_return > 0:
-                drawdown_percent = max((1.0 - (current_return / max_return)) * 100.0, 0.0)
-                if drawdown_limit_percent > 0:
-                    drawdown_usage_percent = min(max((drawdown_percent / drawdown_limit_percent) * 100.0, 0.0), 100.0)
-
-        challenge_progress = {
-            'in_challenge_period': in_challenge_period,
-            'bucket': challenge_bucket,
-            'start_time_ms': challenge_start_time_ms,
-            'elapsed_time_ms': elapsed_time_ms,
-            'time_progress_percent': time_progress_percent,
-            'current_return': current_return,
-            'returns_percent': returns_percent,
-            'target_return_percent': target_return_percent,
-            'returns_progress_percent': returns_progress_percent,
-            'challenge_completion_percent': challenge_completion_percent,
-            'drawdown_percent': drawdown_percent,
-            'drawdown_limit_percent': drawdown_limit_percent,
-            'drawdown_usage_percent': drawdown_usage_percent,
-        }
 
         response_body = json.dumps(
             {
@@ -2023,58 +1952,11 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 'payout_address': subaccount_info.get('payout_address'),  # EVM address for USDC
                 'positions': dashboard.get('positions'),
                 'drawdown': drawdown or None,
-                'challenge_progress': challenge_progress,
-                'timestamp': now_ms,
+                'timestamp': TimeUtil.now_in_millis(),
             },
             cls=CustomEncoder,
         )
         return Response(response_body, content_type='application/json'), 200
-    def v2_get_subaccount_dashboard(self, synthetic_hotkey: str):
-        access_error_response = self._get_access_error_response()
-        if access_error_response is not None:
-            return access_error_response
-
-        try:
-            subaccount_dashboard = self._entity_client.get_subaccount_dashboard(synthetic_hotkey)
-            if subaccount_dashboard is None:
-                return jsonify({'error': f'Subaccount {synthetic_hotkey} not found'}), HTTPStatus.NOT_FOUND
-        except Exception as e:
-            bt.logging.error(f"Error retrieving dashboard for {synthetic_hotkey}: {e}")
-            return jsonify({'error': 'Internal server error retrieving dashboard'}), HTTPStatus.INTERNAL_SERVER_ERROR
-
-        dashboard = {"subaccount_info": subaccount_dashboard}
-
-        # Fail gracefully if other services are not available
-        def add_to_dashboard(section, function, *args, **kwargs):
-            try:
-                # Assume the first parameter is the synthetic_hotkey
-                section_data = function(synthetic_hotkey, *args, **kwargs)
-                if section_data is not None:
-                    dashboard[section] = section_data
-            except Exception as ex:
-                bt.logging.error(f"Error retrieving {section} for {synthetic_hotkey}: {ex}")
-
-        query_args = request.args
-        positions_time_ms = int(query_args.get("positions_time_ms", 0))
-        limit_orders_time_ms = int(query_args.get("limit_orders_time_ms", 0))
-        checkpoints_time_ms = int(query_args.get("checkpoints_time_ms", 0))
-        daily_returns_time_ms = int(query_args.get("daily_returns_time_ms", 0))
-
-        add_to_dashboard("challenge_period", self._challenge_period_client.get_dashboard)
-        add_to_dashboard("elimination", self._elimination_client.get_dashboard)
-        add_to_dashboard("account_size_data", self._miner_account_client.get_dashboard)
-        add_to_dashboard("positions", self._position_client.get_dashboard, positions_time_ms)
-        add_to_dashboard("limit_orders", self._limit_order_client.get_dashboard, limit_orders_time_ms)
-        add_to_dashboard("ledger", self._debt_ledger_client.get_dashboard, checkpoints_time_ms)
-        add_to_dashboard("statistics", self._statistics_client.get_dashboard, daily_returns_time_ms)
-
-        response = {
-            'status': 'success',
-            'dashboard': dashboard,
-            'timestamp': TimeUtil.now_in_millis()
-        }
-        return jsonify(response)
-
 
     def get_hl_trader_limits(self, hl_address: str):
         """
