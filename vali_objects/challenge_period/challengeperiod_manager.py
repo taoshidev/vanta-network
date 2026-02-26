@@ -487,6 +487,10 @@ class ChallengePeriodManager(CacheController):
 
             # Promote if returns meet threshold
             if returns_percentage >= returns_threshold:
+                bt.logging.info(
+                    f"[SYNTHETIC_CP] {hotkey} promoted - "
+                    f"returns {returns_percentage:.2f}% >= {returns_threshold}%"
+                )
                 hotkeys_to_promote.append(hotkey)
                 continue
                 
