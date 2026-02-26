@@ -1624,13 +1624,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             bt.logging.error(f"Error retrieving dashboard for {synthetic_hotkey}: {e}")
             return jsonify({'error': 'Internal server error retrieving dashboard'}), 500
 
-    def v2_get_subaccount_dashboard(
-        self, synthetic_hotkey: str,
-        positions_time_ms: int = 0,
-        ledger_time_ms: int = 0,
-        limit_order_time_ms: int = 0,
-        statistics_time_ms: int = 0,
-    ):
+    def v2_get_subaccount_dashboard(self, synthetic_hotkey: str):
         access_error_response = self._get_access_error_response()
         if access_error_response is not None:
             return access_error_response
@@ -1655,12 +1649,18 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             except Exception as ex:
                 bt.logging.error(f"Error retrieving {section} for {synthetic_hotkey}: {ex}")
 
+        query_args = request.args
+        positions_time_ms = query_args.get("positions_time_ms", 0)
+        ledger_time_ms = query_args.get("ledger_time_ms", 0)
+        limit_order_time_ms = query_args.get("limit_order_time_ms", 0)
+        statistics_time_ms = query_args.get("statistics_time_ms", 0)
+
         add_to_dashboard("challenge_period", self._challenge_period_client.get_dashboard)
         add_to_dashboard("positions", self._position_client.get_dashboard, positions_time_ms)
-        add_to_dashboard("ledger", self._debt_ledger_client.get_dashboard,  ledger_time_ms)
-        add_to_dashboard("limit_orders", self._limit_order_client.get_dashboard,  limit_order_time_ms)
+        add_to_dashboard("ledger", self._debt_ledger_client.get_dashboard, ledger_time_ms)
+        add_to_dashboard("limit_orders", self._limit_order_client.get_dashboard, limit_order_time_ms)
         add_to_dashboard("account_size_data", self._miner_account_client.get_dashboard)
-        add_to_dashboard("statistics", self._statistics_client.get_dashboard,statistics_time_ms)
+        add_to_dashboard("statistics", self._statistics_client.get_dashboard, statistics_time_ms)
         add_to_dashboard("elimination", self._elimination_client.get_dashboard)
 
         response = {
@@ -1867,19 +1867,19 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run the REST API server with API key authentication")
     parser.add_argument("--api-keys", type=str, default="api_keys.json", help="Path to API keys JSON file")
 
-    args = parser.parse_args()
+    parser_args = parser.parse_args()
 
     # Create test API keys file if it doesn't exist
-    if not os.path.exists(args.api_keys):
-        with open(args.api_keys, "w") as f:
+    if not os.path.exists(parser_args.api_keys):
+        with open(parser_args.api_keys, "w") as f:
             json.dump({"test_user": "test_key", "client": "abc"}, f)
-        print(f"Created test API keys file at {args.api_keys}")
+        print(f"Created test API keys file at {parser_args.api_keys}")
 
     print(f"REST server will run on {ValiConfig.REST_API_HOST}:{ValiConfig.REST_API_PORT} (hardcoded in ValiConfig)")
 
     # Create and run the server (host/port read from ValiConfig)
     server = ValidatorRestServer(
-        api_keys_file=args.api_keys,
+        api_keys_file=parser_args.api_keys,
         metrics_interval_minutes=1
     )
     server.run()
