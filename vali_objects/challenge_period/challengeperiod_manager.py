@@ -484,7 +484,7 @@ class ChallengePeriodManager(CacheController):
                 continue
 
             # returns_percentage = current_return - 1.0 (e.g. 1.08 -> 8%)
-            returns_percentage = current_return - 1.0
+            returns_percentage = max(max_return, current_return) - 1.0
 
             subaccount_asset_class = asset_classes.get(hotkey)
             if subaccount_asset_class is None:
@@ -499,8 +499,8 @@ class ChallengePeriodManager(CacheController):
             if returns_percentage >= returns_threshold:
                 hotkeys_to_promote.append(hotkey)
 
-            near_elimination = drawdown_pct >= threshold_pct * 0.5
-            near_promotion = returns_percentage >= returns_threshold * 0.5
+            near_elimination = drawdown_pct >= threshold_pct * 0.75
+            near_promotion = returns_percentage >= returns_threshold * 0.75
             if near_elimination or near_promotion:
                 bt.logging.info(
                     f"[SYNTH_EVAL {hotkey}] current_return={current_return:.6f}, returns={returns_percentage:.2%}, "
