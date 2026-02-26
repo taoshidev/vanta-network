@@ -781,8 +781,8 @@ class Position(BaseModel):
         if order.order_type == OrderType.FLAT:
             return False
 
-        # Validate individual order min/max leverage
-        min_order_lev, max_order_lev = leverage_utils.get_position_leverage_bounds(self.trade_pair)
+        # Validate order min leverage
+        min_order_lev, max_order_lev = leverage_utils.get_order_leverage_bounds()
         if abs(order.leverage) > max_order_lev:
             raise ValueError(
                 f"{self.trade_pair.trade_pair_id}: order leverage {abs(order.leverage):.5f} exceeds maximum {max_order_lev}")
