@@ -438,51 +438,51 @@ class PositionManager:
         return positions_dict.get(position_uuid, None)
 
     def get_dashboard(self, hotkey: str, start_time_ms: int) -> dict | None:
-        dashboard = None
         snapshot_time_ms = start_time_ms
 
         positions = self.get_positions_for_one_hotkey(hotkey, sort_positions=True)
-        if positions:
-            dashboard_positions = {}
-            for position in positions:
-                snapshot_time_ms = max(snapshot_time_ms, position.close_ms)
+        if not positions:
+            return None
 
-                if position.is_closed_position and (position.close_ms < start_time_ms):
+        dashboard_positions = {}
+        for position in positions:
+
+            if position.is_closed_position:
+                snapshot_time_ms = max(snapshot_time_ms, position.close_ms)
+                if position.close_ms < start_time_ms:
                     continue
 
-                dashboard_filled_orders = {}
-                for order in position.orders:
-                    if order.processed_ms >= start_time_ms:
-                        snapshot_time_ms = max(snapshot_time_ms, order.processed_ms)
-                        dashboard_filled_orders[order.order_uuid] = order.to_dashboard_dict()
+            dashboard_filled_orders = {}
+            for order in position.orders:
+                if order.processed_ms >= start_time_ms:
+                    snapshot_time_ms = max(snapshot_time_ms, order.processed_ms)
+                    dashboard_filled_orders[order.order_uuid] = order.to_dashboard()
 
-                dashboard_unfilled_orders = []
-                for order in position.unfilled_orders:
-                    dashboard_unfilled_orders.append(order.order_uuid)
+            dashboard_unfilled_orders = []
+            for order in position.unfilled_orders:
+                dashboard_unfilled_orders.append(order.order_uuid)
 
-                dashboard_position = position.to_dashboard(
-                    filled_orders=dashboard_filled_orders,
-                    unfilled_orders=dashboard_unfilled_orders)
+            dashboard_position = position.to_dashboard(
+                filled_orders=dashboard_filled_orders,
+                unfilled_orders=dashboard_unfilled_orders)
 
-                dashboard_positions[position.position_uuid] = dashboard_position
+            dashboard_positions[position.position_uuid] = dashboard_position
 
-            minimum_positions = PositionFiltering.filter_positions_for_duration(positions)
-            minimum_position_returns = PositionUtils.get_closed_positions_cumulative_returns(minimum_positions)
-            if minimum_position_returns:
-                all_time_returns = minimum_position_returns[-1]
-            else:
-                all_time_returns = 0
+        minimum_positions = PositionFiltering.filter_positions_for_duration(positions)
+        minimum_position_returns = PositionUtils.get_closed_positions_cumulative_returns(minimum_positions)
+        if minimum_position_returns:
+            all_time_returns = minimum_position_returns[-1]
+        else:
+            all_time_returns = 0
 
-            total_leverage = self.calculate_net_portfolio_leverage(hotkey)
+        total_leverage = self.calculate_net_portfolio_leverage(hotkey)
 
-            dashboard = {
-                "positions": dashboard_positions,
-                "all_time_returns": all_time_returns,
-                "total_leverage": total_leverage,
-                "snapshot_time_ms": snapshot_time_ms,
-            }
-
-        return dashboard
+        return {
+            "positions": dashboard_positions,
+            "all_time_returns": all_time_returns,
+            "total_leverage": total_leverage,
+            "snapshot_time_ms": snapshot_time_ms,
+        }
 
     @staticmethod
     def sort_by_close_ms(_position):

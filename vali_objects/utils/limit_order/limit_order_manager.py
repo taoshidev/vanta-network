@@ -557,7 +557,6 @@ class LimitOrderManager(CacheController):
             return None
 
     def get_dashboard(self, miner_hotkey, start_time_ms) -> dict | None:
-        dashboard = None
         snapshot_time_ms = start_time_ms
 
         dashboard_orders = {}
@@ -570,13 +569,13 @@ class LimitOrderManager(CacheController):
                         dashboard_order = order.to_dashboard(include_trade_pair=True)
                         dashboard_orders[order.order_uuid] = dashboard_order
 
-        if dashboard_orders:
-            dashboard = {
-                "orders": dashboard_orders,
-                "snapshot_time_ms": snapshot_time_ms
-            }
+        if not dashboard_orders:
+            return None
 
-        return dashboard
+        return {
+            "orders": dashboard_orders,
+            "snapshot_time_ms": snapshot_time_ms
+        }
 
     def _order_to_dict(self, order):
         """Convert order to dict for dashboard response."""

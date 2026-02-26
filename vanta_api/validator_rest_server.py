@@ -276,9 +276,10 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
     # MINER POSITION ENDPOINTS
     # ============================================================================
 
-    def _get_api_key_error_response(
-        self, tier_required: int,
-        entity_management_required: bool = False
+    def _get_access_error_response(
+        self,
+        tier_required: int = ValiConfig.SUBACCOUNT_SUBSCRIPTION_TIER,
+        entity_management_required: bool = True,
     ):
         api_key = self._get_api_key_safe()
         if not self.is_valid_api_key(api_key):
@@ -1628,13 +1629,11 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         positions_time_ms: int = 0,
         ledger_time_ms: int = 0,
         limit_order_time_ms: int = 0,
+        statistics_time_ms: int = 0,
     ):
-        api_key_error_response = self._get_api_key_error_response(
-            tier_required=200,
-            entity_management_required=True
-        )
-        if api_key_error_response is not None:
-            return api_key_error_response
+        access_error_response = self._get_access_error_response()
+        if access_error_response is not None:
+            return access_error_response
 
         try:
             subaccount_dashboard = self._entity_client.get_subaccount_dashboard(synthetic_hotkey)
@@ -1659,10 +1658,14 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             limit_orders_dashboard = self._limit_order_client.get_dashboard(synthetic_hotkey, limit_order_time_ms)
             add_to_dashboard("limit_orders", limit_orders_dashboard)
 
-            # TODO: Fix these
-            dashboard["account_size_data"] = self._miner_account_client.get_account(synthetic_hotkey)
-            dashboard["statistics"] = self._statistics_client.get_miner_statistics_for_hotkey(synthetic_hotkey)
-            dashboard["elimination"] = self._elimination_client.get_elimination(synthetic_hotkey)
+            miner_account_dashboard = self._miner_account_client.get_dashboard(synthetic_hotkey)
+            add_to_dashboard("account_size_data", miner_account_dashboard)
+
+            statistics_dashboard = self._statistics_client.get_dashboard(synthetic_hotkey, statistics_time_ms)
+            add_to_dashboard("statistics", statistics_dashboard)
+
+            elimination_dashboard = self._elimination_client.get_dashboard(synthetic_hotkey)
+            add_to_dashboard("elimination", elimination_dashboard)
 
             response = {
                 'status': 'success',

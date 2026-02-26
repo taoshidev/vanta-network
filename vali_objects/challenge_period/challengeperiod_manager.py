@@ -1429,18 +1429,17 @@ class ChallengePeriodManager(CacheController):
         return self.active_miners.get(hotkey, [None])[0]
 
     def get_dashboard(self, hotkey) -> dict | None:
-        dashboard = None
-
         active_miner = self.active_miners.get(hotkey)
-        if active_miner is not None:
-            bucket = active_miner[0]
-            start_time_ms = active_miner[1]
-            dashboard = {
-                "bucket": bucket.value,
-                "start_time_ms": start_time_ms,
-            }
+        if active_miner is None:
+            return None
 
-        return dashboard
+        bucket = active_miner[0]
+        start_time_ms = active_miner[1]
+
+        return {
+            "bucket": bucket.value,
+            "start_time_ms": start_time_ms,
+        }
 
     # TODO: revisit to separate regular and subaccount miners
     def get_testing_miners(self):
