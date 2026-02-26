@@ -277,6 +277,12 @@ class MinerAccountServer(RPCServerBase):
         """Check if miner can withdraw the specified amount of collateral."""
         return self._manager.can_withdraw_collateral(hotkey, amount_theta)
 
+    def rebuild_account_state_from_positions(self, hotkey: str, positions: list) -> None:
+        """Rebuild a miner's account state from a list of Position dicts."""
+        from vali_objects.vali_dataclasses.position import Position
+        position_objects = [Position(**p) if isinstance(p, dict) else p for p in positions]
+        self._manager.rebuild_account_state_from_positions(hotkey, position_objects)
+
     def update_asset_selection(
         self, hotkey: str, asset_selection: TradePairCategory
     ) -> bool:

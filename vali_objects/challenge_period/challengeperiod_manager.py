@@ -479,7 +479,7 @@ class ChallengePeriodManager(CacheController):
                 returns_threshold = ValiConfig.SUBACCOUNT_CRYPTO_CHALLENGE_RETURNS_THRESHOLD
 
             # Promote if returns meet threshold
-            if max(returns_percentage, max_return) >= returns_threshold:
+            if returns_percentage >= returns_threshold:
                 bt.logging.info(
                     f"[SYNTHETIC_CP] {hotkey} promoted - "
                     f"returns {returns_percentage:.2f}% >= {returns_threshold}%"

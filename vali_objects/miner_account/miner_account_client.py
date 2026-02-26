@@ -300,6 +300,19 @@ class MinerAccountClient(RPCClientBase):
         """
         return self._server.can_withdraw_collateral(hotkey, amount_theta)
 
+    def rebuild_account_state_from_positions(self, hotkey: str, positions: list) -> None:
+        """
+        Rebuild a miner's account state from a list of positions.
+
+        Resets capital_used, total_realized_pnl, total_fees_paid, and total_borrowed_amount,
+        then recomputes them from the provided positions.
+
+        Args:
+            hotkey: Miner's hotkey
+            positions: List of Position objects or dicts for this miner
+        """
+        self._server.rebuild_account_state_from_positions(hotkey, positions)
+
     def update_asset_selection(
         self, hotkey: str, asset_selection: TradePairCategory
     ) -> bool:

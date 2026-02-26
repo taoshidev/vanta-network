@@ -803,6 +803,39 @@ class MinerAccountManager(ValidatorBroadcastBase):
 
             return amount_theta <= max(0.0, max_withdrawable_theta)
 
+    def rebuild_account_state_from_positions(self, hotkey: str, positions: List['Position']) -> None:
+        """
+        Rebuild a miner's account state (capital_used, total_realized_pnl, total_fees_paid)
+        from a list of positions. Preserves collateral_records, asset_class, miner_bucket, and max_return.
+
+        For open positions: accumulates capital_used (from net_value) and realized_pnl (from partial closes).
+        For closed positions: accumulates realized_pnl.
+        For all positions: accumulates total_fees_paid from fee_history.
+
+        Args:
+            hotkey: Miner's hotkey
+            positions: All positions (open and closed) for this miner
+        """
+        with self._accounts_lock:
+            account = self.get_or_create(hotkey)
+            account.reset_account_fields()
+
+            for position in positions:
+                account.total_realized_pnl += position.realized_pnl
+                account.total_fees_paid += position.total_fees
+
+                if not position.is_closed_position:
+                    account.capital_used += abs(position.net_value)
+
+            self._save_accounts_to_disk()
+
+            bt.logging.info(
+                f"[REBUILD {hotkey[:8]}] capital_used=${account.capital_used:.2f}, "
+                f"realized_pnl=${account.total_realized_pnl:.2f}, "
+                f"fees_paid=${account.total_fees_paid:.2f}, "
+                f"balance=${account.balance:.2f}"
+            )
+
     def update_asset_selection(self, hotkey: str, asset_selection: TradePairCategory) -> bool:
 
         with self._accounts_lock:
