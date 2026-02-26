@@ -455,6 +455,9 @@ class ValiConfig:
     # Subaccount promotion requirements
     SUBACCOUNT_FUNDED_MINIMUM_DAYS = 90  # Minimum days in FUNDED before promoting to ALPHA
 
+    # Minimum tier required for subaccount dashboard subscriptions
+    SUBACCOUNT_SUBSCRIPTION_TIER = 200
+
     # Distributional statistics
     SOFTMAX_TEMPERATURE = 0.15
 
