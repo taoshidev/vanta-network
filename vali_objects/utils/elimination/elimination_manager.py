@@ -880,7 +880,6 @@ class EliminationManager(CacheController):
             "elimination_initiated_time_ms": elimination["elimination_initiated_time_ms"],
             "reason": elimination["reason"],
             "dd": elimination["dd"],
-            "t_ms": elimination["t_ms"],
         }
 
     def get_eliminated_hotkeys(self) -> Set[str]:
