@@ -437,24 +437,27 @@ class PositionManager:
         # O(1) direct dict access
         return positions_dict.get(position_uuid, None)
 
-    def get_dashboard(self, hotkey: str, start_time_ms: int) -> dict | None:
-        snapshot_time_ms = start_time_ms
+    def get_dashboard(self, hotkey: str, positions_time_ms: int) -> dict | None:
+        snapshot_time_ms = positions_time_ms
 
         positions = self.get_positions_for_one_hotkey(hotkey, sort_positions=True)
         if not positions:
             return None
 
+        dashboard = {}
         dashboard_positions = {}
+        new_closed_positions = False
         for position in positions:
 
             if position.is_closed_position:
                 snapshot_time_ms = max(snapshot_time_ms, position.close_ms)
-                if position.close_ms <= start_time_ms:
+                if position.close_ms <= positions_time_ms:
                     continue
+                new_closed_positions = True
 
             dashboard_filled_orders = {}
             for order in position.orders:
-                if order.processed_ms > start_time_ms:
+                if order.processed_ms > positions_time_ms:
                     snapshot_time_ms = max(snapshot_time_ms, order.processed_ms)
                     dashboard_filled_orders[order.order_uuid] = order.to_dashboard()
 
@@ -468,21 +471,24 @@ class PositionManager:
 
             dashboard_positions[position.position_uuid] = dashboard_position
 
-        minimum_positions = PositionFiltering.filter_positions_for_duration(positions)
-        minimum_position_returns = PositionUtils.get_closed_positions_cumulative_returns(minimum_positions)
-        if minimum_position_returns:
-            all_time_returns = minimum_position_returns[-1]
-        else:
-            all_time_returns = 0
+        if dashboard_positions:
+            dashboard["positions"] = dashboard_positions
+
+        if new_closed_positions:
+            minimum_positions = PositionFiltering.filter_positions_for_duration(positions)
+            minimum_position_returns = PositionUtils.get_closed_positions_cumulative_returns(minimum_positions)
+            if minimum_position_returns:
+                all_time_returns = minimum_position_returns[-1]
+            else:
+                all_time_returns = 0
+            dashboard["all_time_returns"] = all_time_returns
 
         total_leverage = self.calculate_net_portfolio_leverage(hotkey)
 
-        return {
-            "positions": dashboard_positions,
-            "all_time_returns": all_time_returns,
-            "total_leverage": total_leverage,
-            "snapshot_time_ms": snapshot_time_ms,
-        }
+        dashboard["total_leverage"] = total_leverage
+        dashboard["positions_time_ms"] = snapshot_time_ms
+
+        return dashboard
 
     @staticmethod
     def sort_by_close_ms(_position):
