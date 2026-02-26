@@ -22,7 +22,7 @@ from vali_objects.utils.limit_order.market_order_manager import MarketOrderManag
 from vali_objects.utils.vali_bkp_utils import CustomEncoder
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
-from vali_objects.vali_config import ValiConfig, RPCConnectionMode
+from vali_objects.vali_config import ValiConfig, RPCConnectionMode, TradePairCategory
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_client import DebtLedgerClient
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
@@ -304,8 +304,9 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
         # Public HL trader lookup (no auth required)
         self.app.route("/hl-traders/<hl_address>", methods=["GET"])(self.get_hl_trader)
+        self.app.route("/hl-traders/<hl_address>/limits", methods=["GET"])(self.get_hl_trader_limits)
 
-        print(f"[REST-INIT] 30 validator endpoints registered ✓")
+        print(f"[REST-INIT] 31 validator endpoints registered ✓")
 
     # ============================================================================
     # MINER POSITION ENDPOINTS
@@ -1830,6 +1831,66 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 'payout_address': subaccount_info.get('payout_address'),  # EVM address for USDC
                 'positions': dashboard.get('positions'),
                 'drawdown': drawdown or None,
+                'timestamp': TimeUtil.now_in_millis(),
+            },
+            cls=CustomEncoder,
+        )
+        return Response(response_body, content_type='application/json'), 200
+
+    def get_hl_trader_limits(self, hl_address: str):
+        """
+        Public endpoint — no authentication required.
+        Returns trading limits for a Hyperliquid subaccount: account size,
+        max position per pair, max portfolio value, and challenge period status.
+
+        Example:
+        curl http://localhost:48888/hl-traders/0xabcd1234.../limits
+        """
+        from vali_objects.enums.miner_bucket_enum import MinerBucket
+
+        if not self._entity_client:
+            return jsonify({'error': 'Entity management not available'}), 503
+
+        try:
+            limits_data = self._entity_client.get_hl_subaccount_limits_data(hl_address)
+        except Exception as e:
+            bt.logging.error(f"get_hl_trader_limits: lookup failed for {hl_address}: {e}")
+            return jsonify({'status': 'error', 'message': 'Internal error'}), 500
+
+        if limits_data is None:
+            return jsonify({'status': 'error', 'message': 'HL address not found'}), 404
+
+        account_size = limits_data['account_size']
+        asset_class = limits_data['asset_class']
+        challenge_bucket = limits_data['challenge_bucket']
+
+        # HL subaccounts are always crypto
+        try:
+            category = TradePairCategory(asset_class)
+        except ValueError:
+            category = TradePairCategory.CRYPTO
+
+        max_leverage = ValiConfig.CRYPTO_MAX_LEVERAGE
+        portfolio_cap = ValiConfig.PORTFOLIO_LEVERAGE_CAP.get(category, ValiConfig.PORTFOLIO_LEVERAGE_CAP[TradePairCategory.CRYPTO])
+
+        max_position_per_pair_usd = account_size * max_leverage
+        max_portfolio_usd = account_size * portfolio_cap
+
+        # Challenge period miners get reduced limits
+        in_challenge = challenge_bucket == MinerBucket.SUBACCOUNT_CHALLENGE.value
+        if in_challenge:
+            divisor = ValiConfig.SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR
+            max_position_per_pair_usd /= divisor
+            max_portfolio_usd /= divisor
+
+        response_body = json.dumps(
+            {
+                'status': 'success',
+                'hl_address': hl_address,
+                'account_size': account_size,
+                'max_position_per_pair_usd': max_position_per_pair_usd,
+                'max_portfolio_usd': max_portfolio_usd,
+                'in_challenge_period': in_challenge,
                 'timestamp': TimeUtil.now_in_millis(),
             },
             cls=CustomEncoder,
