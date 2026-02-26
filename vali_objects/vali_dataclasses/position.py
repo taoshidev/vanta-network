@@ -58,6 +58,7 @@ class Position(BaseModel):
     realized_pnl: float = 0.0               # USD
     unrealized_pnl: float = 0.0             # USD
     position_type: Optional[OrderType] = None
+    # TODO: Replace this with a property that checks if close_ms is None
     is_closed_position: bool = False
     last_stock_split_date: Optional[str] = None  # Only set for equities
     unfilled_orders: list = Field(default=[], exclude=True)
@@ -259,7 +260,7 @@ class Position(BaseModel):
 
     def to_dashboard(self, filled_orders, unfilled_orders) -> dict:
         results = {
-            "tp": self.trade_pair.value[:5],
+            "tp": self.trade_pair.trade_pair,
             "t": self.position_type.name,
             "o": self.open_ms,
             "r": self.current_return,

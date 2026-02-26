@@ -240,7 +240,7 @@ class Order(Signal):
         }
 
         if include_trade_pair and self.trade_pair is not None:
-            results["tp"] = self.trade_pair.value[:5]
+            results["tp"] = self.trade_pair.trade_pair
 
         if self.stop_loss is not None:
             results["lp"] = self.limit_price
