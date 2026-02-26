@@ -271,7 +271,10 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         self.app.route("/v2/entity/subaccount/<synthetic_hotkey>", methods=["GET"])(self.v2_get_subaccount_dashboard)
         self.app.route("/entity/subaccount/payout", methods=["POST"])(self.calculate_subaccount_payout)
 
-        print(f"[REST-INIT] 29 validator endpoints registered ✓")
+        # Public HL trader lookup (no auth required)
+        self.app.route("/hl-traders/<hl_address>", methods=["GET"])(self.get_hl_trader)
+
+        print(f"[REST-INIT] 30 validator endpoints registered ✓")
 
     # ============================================================================
     # MINER POSITION ENDPOINTS
