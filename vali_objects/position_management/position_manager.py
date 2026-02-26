@@ -893,7 +893,7 @@ class PositionManager:
             # bt.logging.info(f"Applied {n_slippage_corrections} forex slippage corrections")
 
             # All miners that wanted their challenge period restarted
-            miners_to_wipe = ["5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_1"]
+            miners_to_wipe = []
             position_uuids_to_delete = []
             miners_to_promote = []
 
