@@ -424,8 +424,9 @@ class OrderProcessor:
                         bt.logging.warning(f"Cannot edit order {bracket_uuid}: order not found, skipping")
                         continue
 
-                    # If bracket_uuid exists but both SL and TP are None, cancel the order
-                    if bracket.get("stop_loss") is None and bracket.get("take_profit") is None:
+                    # If bracket_uuid exists but no SL, TP, or trailing fields, cancel the order
+                    has_trailing = bracket.get("trailing_percent") is not None or bracket.get("trailing_value") is not None
+                    if bracket.get("stop_loss") is None and bracket.get("take_profit") is None and not has_trailing:
                         try:
                             OrderProcessor.process_limit_cancel(
                                 None, None, bracket_uuid, now_ms,
@@ -443,10 +444,18 @@ class OrderProcessor:
                     bracket_uuid = str(uuid.uuid4())
 
                 # Build bracket signal
+                # Build trailing_stop dict if trailing fields present in bracket entry
+                bracket_trailing_stop = None
+                if bracket.get("trailing_percent") is not None:
+                    bracket_trailing_stop = {"trailing_percent": bracket["trailing_percent"]}
+                elif bracket.get("trailing_value") is not None:
+                    bracket_trailing_stop = {"trailing_value": bracket["trailing_value"]}
+
                 bracket_signal = {
                     "trade_pair": signal.get("trade_pair"),
                     "stop_loss": bracket.get("stop_loss"),
                     "take_profit": bracket.get("take_profit"),
+                    "trailing_stop": bracket_trailing_stop,
                     "leverage": bracket.get("leverage"),
                     "value": bracket.get("value"),
                     "quantity": bracket.get("quantity"),
