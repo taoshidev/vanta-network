@@ -1161,19 +1161,7 @@ class LimitOrderManager(CacheController):
 
             bracket_uuid = f"{parent_order.order_uuid}-bracket-{i}"
 
-            # Compute initial stop_loss from trailing distance if trailing fields present
             has_trailing = trailing_percent is not None or trailing_value is not None
-            if has_trailing:
-                if parent_order.order_type == OrderType.LONG:
-                    if trailing_percent is not None:
-                        stop_loss = fill_price * (1 - trailing_percent)
-                    else:
-                        stop_loss = fill_price - trailing_value
-                elif parent_order.order_type == OrderType.SHORT:
-                    if trailing_percent is not None:
-                        stop_loss = fill_price * (1 + trailing_percent)
-                    else:
-                        stop_loss = fill_price + trailing_value
 
             self._validate_sltp_against_price(
                 parent_order.order_type, stop_loss, take_profit,
