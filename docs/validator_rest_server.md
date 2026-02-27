@@ -1293,7 +1293,7 @@ curl -H "Authorization: Bearer YOUR_TIER_200_API_KEY" \
           "t": "FLAT", // position_type
           "o": 1770727691818, // open_ms
           "r": 1.0001031522298502, // current_return
-          "nl": 0.0, // net_leverage
+          "nl": 0.1, // net_leverage (if not zero)
           "ap": 83.88350685527055, // average_entry_price
           "rp": 10.315222985026267, // realized_pnl
           "c": 1770727882140, // close_ms (if closed)
@@ -1301,9 +1301,9 @@ curl -H "Authorization: Bearer YOUR_TIER_200_API_KEY" \
           "fo": { // filled_orders (if filled orders)
             "7413e788-e000-465a-a37c-da22d7b94acc": { // order_uuid
               "t": "LONG", // order_type
-              "l": 0.1, // leverage
-              "q": 119.26058437686345, // quantity
-              "pr": 83.85, // price
+              "l": 0.1, // leverage (if not null)
+              "q": 119.26058437686345, // quantity (if not null)
+              "pr": 83.85, // price (if not zero)
               "v": 10000.0, // value
               "e": "MARKET", // execution_type
               "p": 1770727691818, // processed_ms
@@ -1315,9 +1315,9 @@ curl -H "Authorization: Bearer YOUR_TIER_200_API_KEY" \
           "uo": { // unfilled_orders (if unfilled orders)
             "7413e788-e000-465a-a37c-da22d7b94acc": { // order_uuid
               "t": "LONG", // order_type
-              "l": 0.1, // leverage
-              "q": 119.26058437686345, // quantity
-              "pr": 83.85, // price
+              "l": 0.1, // leverage (if not null)
+              "q": 119.26058437686345, // quantity (if not null)
+              "pr": 83.85, // price (if not zero)
               "v": 10000.0, // value
               "e": "MARKET", // execution_type
               "p": 1770727691818, // processed_ms
@@ -1341,9 +1341,9 @@ curl -H "Authorization: Bearer YOUR_TIER_200_API_KEY" \
         "7413e788-e000-465a-a37c-da22d7b94acc": { // order_uuid
           "tp": "SOL/USD", // trade_pair
           "t": "LONG", // order_type
-          "l": 0.1, // leverage
-          "q": 119.26058437686345, // quantity
-          "pr": 83.85, // price
+          "l": 0.1, // leverage (if not null)
+          "q": 119.26058437686345, // quantity (if not null)
+          "pr": 83.85, // price (if not zero)
           "v": 10000.0, // value
           "e": "MARKET", // execution_type
           "p": 1770727691818, // processed_ms
@@ -1361,8 +1361,8 @@ curl -H "Authorization: Bearer YOUR_TIER_200_API_KEY" \
       "checkpoints": [
         {
           "t": 1770768000000, // timestamp_ms
-          "r": -11.400847781869729, // realized_pnl
-          "u": 0.0, // unrealized_pnl
+          "r": -11.400847781869729, // realized_pnl (if not zero)
+          "u": 9.2605843763286, // unrealized_pnl (if not zero)
           "m": 1.0001092732205306, // max_portfolio_value
           "s": "CHALLENGE" // challenge_period_status
         }

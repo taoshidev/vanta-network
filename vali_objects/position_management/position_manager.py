@@ -479,6 +479,7 @@ class PositionManager:
 
         if dashboard_positions:
             dashboard["positions"] = dashboard_positions
+            dashboard["positions_time_ms"] = snapshot_time_ms
 
         if new_closed_positions:
             minimum_positions = PositionFiltering.filter_positions_for_duration(positions)
@@ -492,7 +493,6 @@ class PositionManager:
         total_leverage = self.calculate_net_portfolio_leverage(hotkey)
 
         dashboard["total_leverage"] = total_leverage
-        dashboard["positions_time_ms"] = snapshot_time_ms
 
         return dashboard
 

@@ -194,13 +194,19 @@ class DebtCheckpoint:
         }
 
     def to_dashboard(self) -> dict:
-        return {
+        results = {
             "t": self.timestamp_ms,
-            "r": self.realized_pnl,
-            "u": self.unrealized_pnl,
             "m": self.max_portfolio_value,
             "s": self.challenge_period_status
         }
+
+        if self.realized_pnl:
+            results["r"] = self.realized_pnl
+
+        if self.unrealized_pnl:
+            results["u"] = self.unrealized_pnl
+
+        return results
 
 
 class DebtLedger:

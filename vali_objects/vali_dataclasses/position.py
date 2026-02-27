@@ -346,10 +346,12 @@ class Position(BaseModel):
             "t": self.position_type.name,
             "o": self.open_ms,
             "r": self.current_return,
-            "nl": self.net_leverage,
             "ap": self.average_entry_price,
             "rp": self.realized_pnl,
         }
+
+        if self.net_leverage:
+            results["nl"] = self.net_leverage
 
         if self.is_closed_position:
             results["c"] = self.close_ms
