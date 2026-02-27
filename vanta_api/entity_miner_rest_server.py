@@ -17,6 +17,7 @@ Endpoints:
 """
 import asyncio
 import json
+import os
 import queue
 import threading
 import time
@@ -157,6 +158,9 @@ class EntityMinerRestServer(BaseRestServer):
         # Load HL address mappings from validator
         self._load_hl_mappings()
 
+        # Send endpoint URL to validator if configured
+        self._send_endpoint_url(secrets)
+
         # Start WebSocket listener thread
         self._start_ws_listener()
 
@@ -202,6 +206,70 @@ class EntityMinerRestServer(BaseRestServer):
             bt.logging.info(f"[ENTITY-GW] Loaded {len(self._hl_to_synthetic)} HL address mappings")
         except Exception as e:
             bt.logging.error(f"[ENTITY-GW] Error loading HL mappings: {e}")
+
+    # ==================== Endpoint URL Registration ====================
+
+    def _send_endpoint_url(self, secrets: dict):
+        """
+        Send the entity miner's public endpoint URL to the validator at startup.
+
+        Reads from ENTITY_MINER_ENDPOINT_URL env var, falling back to
+        entity_endpoint_url in miner_secrets.json.
+
+        Args:
+            secrets: The loaded miner secrets dict
+        """
+        endpoint_url = os.environ.get("ENTITY_MINER_ENDPOINT_URL") or secrets.get("entity_endpoint_url")
+
+        if not endpoint_url:
+            bt.logging.info("[ENTITY-GW] No endpoint URL configured (set ENTITY_MINER_ENDPOINT_URL or entity_endpoint_url in secrets)")
+            return
+
+        if not self._coldkey or not self._hotkey or not self._validator_url:
+            bt.logging.warning("[ENTITY-GW] Cannot send endpoint URL: wallet or validator_url not configured")
+            return
+
+        try:
+            import requests as http_requests
+
+            entity_hotkey = self._hotkey.ss58_address
+            entity_coldkey = self._coldkey.ss58_address
+
+            # Sign the message (sorted keys)
+            message_dict = {
+                "endpoint_url": endpoint_url,
+                "entity_coldkey": entity_coldkey,
+                "entity_hotkey": entity_hotkey
+            }
+            message = json.dumps(message_dict, sort_keys=True).encode('utf-8')
+            signature = self._coldkey.sign(message).hex()
+
+            payload = {
+                "entity_hotkey": entity_hotkey,
+                "entity_coldkey": entity_coldkey,
+                "endpoint_url": endpoint_url,
+                "signature": signature
+            }
+
+            resp = http_requests.post(
+                f"{self._validator_url}/entity/set-endpoint",
+                json=payload,
+                headers={"Content-Type": "application/json"},
+                timeout=30
+            )
+
+            if resp.status_code == 200:
+                bt.logging.info(f"[ENTITY-GW] Endpoint URL registered: {endpoint_url}")
+            else:
+                try:
+                    error_data = resp.json()
+                    error_msg = error_data.get('error', resp.text)
+                except json.JSONDecodeError:
+                    error_msg = resp.text
+                bt.logging.warning(f"[ENTITY-GW] Failed to register endpoint URL ({resp.status_code}): {error_msg}")
+
+        except Exception as e:
+            bt.logging.error(f"[ENTITY-GW] Error sending endpoint URL: {e}")
 
     # ==================== WebSocket Listener ====================
 

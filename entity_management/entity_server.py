@@ -448,6 +448,97 @@ class EntityServer(RPCServerBase):
 
         return synapse
 
+    # ==================== Entity Endpoint URL RPC Methods ====================
+
+    def set_endpoint_url_rpc(
+        self,
+        entity_hotkey: str,
+        endpoint_url: str
+    ) -> Tuple[bool, str]:
+        """
+        Set the public endpoint URL for an entity miner (RPC method).
+
+        Args:
+            entity_hotkey: The VANTA_ENTITY_HOTKEY
+            endpoint_url: The public-facing endpoint URL
+
+        Returns:
+            (success: bool, message: str)
+        """
+        return self._manager.set_endpoint_url(entity_hotkey, endpoint_url)
+
+    def get_endpoint_url_by_address_rpc(
+        self,
+        hl_address: str = None,
+        subaccount: str = None
+    ) -> Optional[str]:
+        """
+        Resolve an HL address or synthetic hotkey to the entity's endpoint URL (RPC method).
+
+        Args:
+            hl_address: Hyperliquid address (0x-prefixed)
+            subaccount: Synthetic hotkey (entity_hotkey_N)
+
+        Returns:
+            The entity's endpoint URL, or None if not found
+        """
+        return self._manager.get_endpoint_url_by_address(hl_address=hl_address, subaccount=subaccount)
+
+    def receive_entity_endpoint_update_rpc(self, endpoint_data: dict, sender_hotkey: str = None) -> bool:
+        """
+        Process an incoming EntityEndpointUpdate and update entity data (RPC method).
+
+        Args:
+            endpoint_data: Dictionary containing entity_hotkey and endpoint_url
+            sender_hotkey: The hotkey of the validator that sent this broadcast
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        return self._manager.receive_entity_endpoint_update(endpoint_data, sender_hotkey)
+
+    def receive_entity_endpoint_synapse_rpc(
+        self,
+        synapse: template.protocol.EntityEndpointUpdate
+    ) -> template.protocol.EntityEndpointUpdate:
+        """
+        Receive EntityEndpointUpdate synapse (RPC method for axon handler).
+
+        Args:
+            synapse: EntityEndpointUpdate synapse from another validator
+
+        Returns:
+            Updated synapse with success/error status
+        """
+        try:
+            sender_hotkey = synapse.dendrite.hotkey
+            bt.logging.info(
+                f"[ENTITY_SERVER] Received EntityEndpointUpdate synapse from validator hotkey [{sender_hotkey}]"
+            )
+            success = self.receive_entity_endpoint_update_rpc(synapse.endpoint_data, sender_hotkey)
+
+            if success:
+                synapse.successfully_processed = True
+                synapse.error_message = ""
+                bt.logging.info(
+                    f"[ENTITY_SERVER] Successfully processed EntityEndpointUpdate synapse from {sender_hotkey}"
+                )
+            else:
+                synapse.successfully_processed = False
+                synapse.error_message = "Failed to process entity endpoint update"
+                bt.logging.warning(
+                    f"[ENTITY_SERVER] Failed to process EntityEndpointUpdate synapse from {sender_hotkey}"
+                )
+
+        except Exception as e:
+            synapse.successfully_processed = False
+            synapse.error_message = f"Error processing entity endpoint update: {e}"
+            bt.logging.error(f"[ENTITY_SERVER] Error processing EntityEndpointUpdate synapse: {e}")
+            import traceback
+            bt.logging.error(traceback.format_exc())
+
+        return synapse
+
     # ==================== Testing/Admin RPC Methods ====================
 
     def clear_all_entities_rpc(self) -> None:

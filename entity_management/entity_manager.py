@@ -73,6 +73,7 @@ class EntityData(BaseModel):
     subaccounts: Dict[int, SubaccountInfo] = Field(default_factory=dict, description="Map subaccount_id -> SubaccountInfo")
     next_subaccount_id: int = Field(default=0, description="Next subaccount ID to assign (monotonic)")
     registered_at_ms: int = Field(description="Timestamp when entity was registered")
+    endpoint_url: Optional[str] = Field(default=None, description="Public-facing endpoint URL for this entity miner")
 
     class Config:
         arbitrary_types_allowed = True
@@ -1522,6 +1523,150 @@ class EntityManager(ValidatorBroadcastBase):
 
         except Exception as e:
             bt.logging.error(f"[ENTITY_MANAGER] Error processing subaccount registration: {e}")
+            import traceback
+            bt.logging.error(traceback.format_exc())
+            return False
+
+    # ==================== Entity Endpoint URL Methods ====================
+
+    def set_endpoint_url(self, entity_hotkey: str, endpoint_url: str) -> Tuple[bool, str]:
+        """
+        Set the public endpoint URL for an entity miner.
+
+        Args:
+            entity_hotkey: The VANTA_ENTITY_HOTKEY
+            endpoint_url: The public-facing endpoint URL (http/https, max 512 chars)
+
+        Returns:
+            (success: bool, message: str)
+        """
+        # Validate URL
+        if not endpoint_url or not isinstance(endpoint_url, str):
+            return False, "endpoint_url is required"
+
+        if len(endpoint_url) > 512:
+            return False, "endpoint_url must be 512 characters or fewer"
+
+        if not endpoint_url.startswith("http://") and not endpoint_url.startswith("https://"):
+            return False, "endpoint_url must start with http:// or https://"
+
+        with self._entities_lock:
+            entity_data = self.entities.get(entity_hotkey)
+            if not entity_data:
+                return False, f"Entity {entity_hotkey} not found. Register first."
+
+            entity_data.endpoint_url = endpoint_url
+            self._write_entities_from_memory_to_disk()
+
+        bt.logging.info(f"[ENTITY_MANAGER] Set endpoint URL for {entity_hotkey}: {endpoint_url}")
+
+        # Broadcast to other validators (non-mothership validators receive this)
+        self.broadcast_entity_endpoint_update(entity_hotkey, endpoint_url)
+
+        return True, f"Endpoint URL set successfully: {endpoint_url}"
+
+    def get_endpoint_url_by_address(self, hl_address: str = None, subaccount: str = None) -> Optional[str]:
+        """
+        Resolve an HL address or synthetic hotkey to the entity's endpoint URL.
+
+        Args:
+            hl_address: Hyperliquid address (0x-prefixed)
+            subaccount: Synthetic hotkey (entity_hotkey_N)
+
+        Returns:
+            The entity's endpoint URL, or None if not found
+        """
+        entity_hotkey = None
+
+        if hl_address:
+            # HL address -> synthetic hotkey -> entity_hotkey
+            with self._entities_lock:
+                synthetic = self._hl_address_to_synthetic.get(hl_address)
+            if synthetic:
+                parsed = parse_synthetic_hotkey(synthetic)
+                if parsed[0]:
+                    entity_hotkey = parsed[0]
+
+        elif subaccount:
+            # Synthetic hotkey -> entity_hotkey
+            parsed = parse_synthetic_hotkey(subaccount)
+            if parsed[0]:
+                entity_hotkey = parsed[0]
+
+        if not entity_hotkey:
+            return None
+
+        with self._entities_lock:
+            entity_data = self.entities.get(entity_hotkey)
+            if entity_data:
+                return entity_data.endpoint_url
+
+        return None
+
+    def broadcast_entity_endpoint_update(self, entity_hotkey: str, endpoint_url: str):
+        """
+        Broadcast EntityEndpointUpdate synapse to other validators.
+
+        Args:
+            entity_hotkey: The VANTA_ENTITY_HOTKEY
+            endpoint_url: The public-facing endpoint URL
+        """
+        def create_synapse():
+            endpoint_data = {
+                "entity_hotkey": entity_hotkey,
+                "endpoint_url": endpoint_url
+            }
+            return template.protocol.EntityEndpointUpdate(endpoint_data=endpoint_data)
+
+        self._broadcast_to_validators(
+            synapse_factory=create_synapse,
+            broadcast_name="EntityEndpointUpdate",
+            context={"entity_hotkey": entity_hotkey}
+        )
+
+    def receive_entity_endpoint_update(self, endpoint_data: dict, sender_hotkey: str = None) -> bool:
+        """
+        Process an incoming EntityEndpointUpdate from another validator (mothership).
+
+        Args:
+            endpoint_data: Dictionary containing entity_hotkey and endpoint_url
+            sender_hotkey: The hotkey of the validator that sent this broadcast
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            # SECURITY: Verify sender using shared base class method
+            if not self.verify_broadcast_sender(sender_hotkey, "EntityEndpointUpdate"):
+                return False
+
+            entity_hotkey = endpoint_data.get("entity_hotkey")
+            endpoint_url = endpoint_data.get("endpoint_url")
+
+            if not entity_hotkey or not endpoint_url:
+                bt.logging.warning(
+                    f"[ENTITY_MANAGER] Invalid endpoint update data - missing required fields: {endpoint_data}"
+                )
+                return False
+
+            with self._entities_lock:
+                entity_data = self.entities.get(entity_hotkey)
+                if not entity_data:
+                    bt.logging.warning(
+                        f"[ENTITY_MANAGER] Entity {entity_hotkey} not found for endpoint update"
+                    )
+                    return False
+
+                entity_data.endpoint_url = endpoint_url
+                self._write_entities_from_memory_to_disk()
+
+            bt.logging.info(
+                f"[ENTITY_MANAGER] Received endpoint URL update for {entity_hotkey}: {endpoint_url}"
+            )
+            return True
+
+        except Exception as e:
+            bt.logging.error(f"[ENTITY_MANAGER] Error processing endpoint update: {e}")
             import traceback
             bt.logging.error(traceback.format_exc())
             return False
