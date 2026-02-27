@@ -168,6 +168,64 @@ class Signal(BaseModel):
 
         return values
 
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_bracket_orders(cls, values):
+        """
+        Convert stop_loss/take_profit/trailing_stop to bracket_orders format and validate entries.
+        """
+        bracket_orders = values.get('bracket_orders')
+        stop_loss = values.get('stop_loss')
+        take_profit = values.get('take_profit')
+        trailing_stop = values.get('trailing_stop')
+        has_sl_tp = stop_loss is not None or take_profit is not None
+        has_trailing = trailing_stop is not None
+
+        execution_type = values.get('execution_type')
+        if execution_type not in [ExecutionType.MARKET, ExecutionType.LIMIT]:
+            return values
+
+        # Convert stop_loss/take_profit/trailing_stop to bracket_orders
+        if (has_sl_tp or has_trailing) and not bracket_orders:
+            bracket_entry = {
+                'stop_loss': stop_loss,
+                'take_profit': take_profit,
+                'leverage': values.get('leverage'),
+                'value': values.get('value'),
+                'quantity': values.get('quantity'),
+            }
+            # Merge trailing fields into bracket entry
+            if has_trailing:
+                if 'trailing_percent' in trailing_stop:
+                    bracket_entry['trailing_percent'] = trailing_stop['trailing_percent']
+                if 'trailing_value' in trailing_stop:
+                    bracket_entry['trailing_value'] = trailing_stop['trailing_value']
+            values['bracket_orders'] = [bracket_entry]
+            return values
+
+        # Validate bracket_orders entries
+        bracket_orders = values.get('bracket_orders')
+        if not bracket_orders:
+            return values
+
+        size_fields = {'leverage', 'value', 'quantity'}
+        price_fields = {'stop_loss', 'take_profit'}
+        trailing_fields = {'trailing_percent', 'trailing_value'}
+
+        for i, bracket in enumerate(bracket_orders):
+            # Exactly one size field required
+            size_present = [f for f in size_fields if bracket.get(f) is not None]
+            if len(size_present) != 1:
+                raise ValueError(f"bracket_orders[{i}]: exactly one of leverage/value/quantity required")
+
+            # At least one price field or trailing field required
+            price_present = [f for f in price_fields if bracket.get(f) is not None]
+            trailing_present = [f for f in trailing_fields if bracket.get(f) is not None]
+            if len(price_present) < 1 and len(trailing_present) < 1:
+                raise ValueError(f"bracket_orders[{i}]: at least one of stop_loss/take_profit/trailing_percent/trailing_value required")
+
+        return values
+
     @staticmethod
     def parse_trade_pair_from_signal(signal) -> TradePair | None:
         if not signal or not isinstance(signal, dict):

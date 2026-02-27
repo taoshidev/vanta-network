@@ -1161,20 +1161,28 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             if not data:
                 return jsonify({'error': 'Invalid JSON body'}), 400
 
-            # Create signal dict from request data
-            signal = {
-                'trade_pair': {'trade_pair_id': data.get('trade_pair_id')},
-                'order_type': data.get('order_type', '').upper(),
-                'leverage': data.get('leverage'),
-                'value': data.get('value'),
-                'quantity': data.get('quantity'),
-                'execution_type': data.get('execution_type', 'MARKET').upper(),
-                'limit_price': data.get('limit_price'),
-                'stop_loss': data.get('stop_loss'),
-                'take_profit': data.get('take_profit'),
-                'trailing_stop': data.get('trailing_stop'),
-                'bracket_orders': data.get('bracket_orders'),
-            }
+            # Parse and validate signal through Signal class
+            from vali_objects.vali_dataclasses.order_signal import Signal
+            from vali_objects.enums.order_type_enum import OrderType
+            from vali_objects.vali_config import TradePair
+
+            trade_pair_id = data.get('trade_pair_id')
+            trade_pair = TradePair.from_trade_pair_id(trade_pair_id) if trade_pair_id else None
+
+            signal_obj = Signal(
+                trade_pair=trade_pair,
+                order_type=OrderType.from_string(data['order_type'].upper()) if data.get('order_type') else None,
+                leverage=data.get('leverage'),
+                value=data.get('value'),
+                quantity=data.get('quantity'),
+                execution_type=ExecutionType.from_string(data.get('execution_type', 'MARKET').upper()),
+                limit_price=data.get('limit_price'),
+                stop_loss=data.get('stop_loss'),
+                take_profit=data.get('take_profit'),
+                trailing_stop=data.get('trailing_stop'),
+                bracket_orders=data.get('bracket_orders'),
+            )
+            signal = signal_obj.model_dump(mode='json')
 
             now_ms = TimeUtil.now_in_millis()
             miner_repo_version = "development"
