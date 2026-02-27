@@ -1172,6 +1172,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 'limit_price': data.get('limit_price'),
                 'stop_loss': data.get('stop_loss'),
                 'take_profit': data.get('take_profit'),
+                'trailing_stop': data.get('trailing_stop'),
                 'bracket_orders': data.get('bracket_orders'),
             }
 

@@ -224,6 +224,7 @@ class MinerRestServer(BaseRestServer):
                 limit_price=float(signal_data['limit_price']) if 'limit_price' in signal_data else None,
                 stop_loss=float(signal_data['stop_loss']) if 'stop_loss' in signal_data else None,
                 take_profit=float(signal_data['take_profit']) if 'take_profit' in signal_data else None,
+                trailing_stop=signal_data.get('trailing_stop'),
                 bracket_orders=signal_data.get('bracket_orders')
             )
 

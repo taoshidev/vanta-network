@@ -210,10 +210,10 @@ class LimitOrderManager(CacheController):
                 f"Invalid bracket order: no open position or previous unfilled limit orders found for {order.trade_pair.trade_pair_id}"
             )
 
-        # Validate that at least one of SL or TP is set
-        if order.stop_loss is None and order.take_profit is None:
+        # Validate that at least one of SL, TP, or trailing_stop is set
+        if order.stop_loss is None and order.take_profit is None and order.trailing_stop is None:
             raise SignalException(
-                f"BRACKET orders must have at least one of stop_loss or take_profit set"
+                f"BRACKET orders must have at least one of stop_loss, take_profit, or trailing_stop set"
             )
 
         # Set order type based on open position, skip validation if there is no position.
@@ -255,6 +255,7 @@ class LimitOrderManager(CacheController):
             for i, bracket in enumerate(order.bracket_orders):
                 stop_loss = bracket.get('stop_loss')
                 take_profit = bracket.get('take_profit')
+                has_trailing = bracket.get('trailing_percent') is not None or bracket.get('trailing_value') is not None
 
                 # Validate SL/TP are positive if provided
                 if stop_loss is not None and stop_loss <= 0:
@@ -262,10 +263,16 @@ class LimitOrderManager(CacheController):
                 if take_profit is not None and take_profit <= 0:
                     raise SignalException(f"bracket_orders[{i}]: take_profit must be greater than 0")
 
-                # Validate SL/TP against limit price
-                self._validate_sltp_against_price(
-                    order.order_type, stop_loss, take_profit, order.limit_price, f"{order.order_uuid}-bracket-{i}"
-                )
+                # Skip SL vs limit_price validation when trailing_stop is set (SL computed at fill time)
+                if not has_trailing:
+                    self._validate_sltp_against_price(
+                        order.order_type, stop_loss, take_profit, order.limit_price, f"{order.order_uuid}-bracket-{i}"
+                    )
+                else:
+                    # For trailing entries, only validate take_profit against limit price
+                    self._validate_sltp_against_price(
+                        order.order_type, None, take_profit, order.limit_price, f"{order.order_uuid}-bracket-{i}"
+                    )
 
     # ==================== Public API Methods ====================
 
@@ -705,6 +712,7 @@ class LimitOrderManager(CacheController):
         now_ms = TimeUtil.now_in_millis()
         total_checked = 0
         total_filled = 0
+        self._trailing_stop_price_changed = False
 
         if self._needs_initial_bracket_sync:
             self._attach_bracket_orders_to_positions()
@@ -771,6 +779,13 @@ class LimitOrderManager(CacheController):
                         # Only one order per trade pair per hotkey can fill within the interval.
                         # This prevents rapid sequential fills and enforces rate limiting.
                         break
+
+                # Persist trailing stop orders whose best price changed (crash recovery)
+                if self._trailing_stop_price_changed:
+                    for order in orders:
+                        if order.trailing_stop is not None and order.src == OrderSource.BRACKET_UNFILLED:
+                            self._write_to_disk(miner_hotkey, order)
+                    self._trailing_stop_price_changed = False
 
         if total_filled > 0:
             bt.logging.info(f"Limit order check complete: checked={total_checked}, filled={total_filled}")
@@ -1138,8 +1153,24 @@ class LimitOrderManager(CacheController):
             leverage = float(bracket['leverage']) if bracket.get('leverage') is not None else None
             value = float(bracket['value']) if bracket.get('value') is not None else None
             quantity = float(bracket['quantity']) if bracket.get('quantity') is not None else None
+            trailing_percent = float(bracket['trailing_percent']) if bracket.get('trailing_percent') is not None else None
+            trailing_value = float(bracket['trailing_value']) if bracket.get('trailing_value') is not None else None
 
             bracket_uuid = f"{parent_order.order_uuid}-bracket-{i}"
+
+            # Compute initial stop_loss from trailing distance if trailing fields present
+            has_trailing = trailing_percent is not None or trailing_value is not None
+            if has_trailing:
+                if parent_order.order_type == OrderType.LONG:
+                    if trailing_percent is not None:
+                        stop_loss = fill_price * (1 - trailing_percent)
+                    else:
+                        stop_loss = fill_price - trailing_value
+                elif parent_order.order_type == OrderType.SHORT:
+                    if trailing_percent is not None:
+                        stop_loss = fill_price * (1 + trailing_percent)
+                    else:
+                        stop_loss = fill_price + trailing_value
 
             self._validate_sltp_against_price(
                 parent_order.order_type, stop_loss, take_profit,
@@ -1153,6 +1184,9 @@ class LimitOrderManager(CacheController):
                 'leverage': leverage,
                 'value': value,
                 'quantity': quantity,
+                'trailing_percent': trailing_percent,
+                'trailing_value': trailing_value,
+                'best_price': fill_price if has_trailing else None,
             })
 
         try:
@@ -1165,11 +1199,18 @@ class LimitOrderManager(CacheController):
                     self._last_fill_time[trade_pair][miner_hotkey] = 0
 
                 for bracket_data in brackets_to_create:
+                    # Build trailing_stop dict for the Order if trailing fields present
+                    trailing_stop_dict = None
+                    if bracket_data.get('trailing_percent') is not None:
+                        trailing_stop_dict = {'trailing_percent': bracket_data['trailing_percent']}
+                    elif bracket_data.get('trailing_value') is not None:
+                        trailing_stop_dict = {'trailing_value': bracket_data['trailing_value']}
+
                     bracket_order = Order(
                         trade_pair=trade_pair,
                         order_uuid=bracket_data['uuid'],
                         processed_ms=now_ms,
-                        price=0.0,
+                        price=bracket_data.get('best_price') or 0.0,
                         order_type=parent_order.order_type,
                         leverage=bracket_data['leverage'],
                         value=bracket_data['value'],
@@ -1178,6 +1219,7 @@ class LimitOrderManager(CacheController):
                         limit_price=None,
                         stop_loss=bracket_data['stop_loss'],
                         take_profit=bracket_data['take_profit'],
+                        trailing_stop=trailing_stop_dict,
                         src=OrderSource.BRACKET_UNFILLED
                     )
 
@@ -1189,9 +1231,12 @@ class LimitOrderManager(CacheController):
                         miner_hotkey, trade_pair.trade_pair_id, bracket_order.to_python_dict()
                     )
 
+                    trailing_info = ""
+                    if trailing_stop_dict:
+                        trailing_info = f", trailing={trailing_stop_dict}"
                     bt.logging.success(
                         f"Created bracket order [{bracket_order.order_uuid}] "
-                        f"with SL={bracket_data['stop_loss']}, TP={bracket_data['take_profit']}"
+                        f"with SL={bracket_data['stop_loss']}, TP={bracket_data['take_profit']}{trailing_info}"
                     )
 
         except Exception as e:
@@ -1230,6 +1275,7 @@ class LimitOrderManager(CacheController):
         """
         Evaluate trigger price for bracket orders (SLTP combined).
         Checks both stop_loss and take_profit boundaries.
+        Also handles trailing stop logic: updates best price and computes dynamic SL.
         Returns trigger price when either boundary is hit.
 
         The bracket order has the SAME type as the parent order.
@@ -1247,15 +1293,38 @@ class LimitOrderManager(CacheController):
         order_type = position.position_type
         order.order_type = order_type
 
+        # Trailing stop: update best price and overwrite stop_loss
+        if order.trailing_stop is not None:
+            trailing_percent = order.trailing_stop.get('trailing_percent')
+            trailing_value = order.trailing_stop.get('trailing_value')
+
+            if order_type == OrderType.LONG:
+                new_best = max(order.price, bid_price) if order.price > 0 else bid_price
+                if new_best != order.price:
+                    order.price = new_best
+                    if trailing_percent is not None:
+                        order.stop_loss = order.price * (1 - float(trailing_percent))
+                    else:
+                        order.stop_loss = order.price - float(trailing_value)
+                    self._trailing_stop_price_changed = True
+
+            elif order_type == OrderType.SHORT:
+                new_best = min(order.price, ask_price) if order.price > 0 else ask_price
+                if new_best != order.price:
+                    order.price = new_best
+                    if trailing_percent is not None:
+                        order.stop_loss = order.price * (1 + float(trailing_percent))
+                    else:
+                        order.stop_loss = order.price + float(trailing_value)
+                    self._trailing_stop_price_changed = True
+
         # For LONG orders:
         # - Stop loss: triggers when market price < SL (use bid for selling)
         # - Take profit: triggers when market price > TP (use bid for selling)
         if order_type == OrderType.LONG:
-            # Check stop loss first (higher priority on losses)
             if order.stop_loss is not None and bid_price < order.stop_loss:
                 bt.logging.info(f"Bracket order stop loss triggered: bid={bid_price} < SL={order.stop_loss}")
                 return order.stop_loss
-            # Check take profit
             if order.take_profit is not None and bid_price > order.take_profit:
                 bt.logging.info(f"Bracket order take profit triggered: bid={bid_price} > TP={order.take_profit}")
                 return order.take_profit
@@ -1264,11 +1333,9 @@ class LimitOrderManager(CacheController):
         # - Stop loss: triggers when market price > SL (use ask for buying)
         # - Take profit: triggers when market price < TP (use ask for buying)
         elif order_type == OrderType.SHORT:
-            # Check stop loss first (higher priority on losses)
             if order.stop_loss is not None and ask_price > order.stop_loss:
                 bt.logging.info(f"Bracket order stop loss triggered: ask={ask_price} > SL={order.stop_loss}")
                 return order.stop_loss
-            # Check take profit
             if order.take_profit is not None and ask_price < order.take_profit:
                 bt.logging.info(f"Bracket order take profit triggered: ask={ask_price} < TP={order.take_profit}")
                 return order.take_profit

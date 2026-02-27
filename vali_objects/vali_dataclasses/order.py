@@ -144,26 +144,35 @@ class Order(Signal):
     @classmethod
     def normalize_bracket_orders(cls, values):
         """
-        Convert stop_loss/take_profit to bracket_orders format and validate entries.
+        Convert stop_loss/take_profit/trailing_stop to bracket_orders format and validate entries.
         """
         bracket_orders = values.get('bracket_orders')
         stop_loss = values.get('stop_loss')
         take_profit = values.get('take_profit')
+        trailing_stop = values.get('trailing_stop')
         has_sl_tp = stop_loss is not None or take_profit is not None
+        has_trailing = trailing_stop is not None
 
         execution_type = values.get('execution_type')
         if execution_type not in [ExecutionType.MARKET, ExecutionType.LIMIT]:
             return values
 
-        # Convert stop_loss/take_profit to bracket_orders
-        if has_sl_tp and not bracket_orders:
-            values['bracket_orders'] = [{
+        # Convert stop_loss/take_profit/trailing_stop to bracket_orders
+        if (has_sl_tp or has_trailing) and not bracket_orders:
+            bracket_entry = {
                 'stop_loss': stop_loss,
                 'take_profit': take_profit,
                 'leverage': values.get('leverage'),
                 'value': values.get('value'),
                 'quantity': values.get('quantity'),
-            }]
+            }
+            # Merge trailing fields into bracket entry
+            if has_trailing:
+                if 'trailing_percent' in trailing_stop:
+                    bracket_entry['trailing_percent'] = trailing_stop['trailing_percent']
+                if 'trailing_value' in trailing_stop:
+                    bracket_entry['trailing_value'] = trailing_stop['trailing_value']
+            values['bracket_orders'] = [bracket_entry]
             return values
 
         # Validate bracket_orders entries
@@ -173,6 +182,7 @@ class Order(Signal):
 
         size_fields = {'leverage', 'value', 'quantity'}
         price_fields = {'stop_loss', 'take_profit'}
+        trailing_fields = {'trailing_percent', 'trailing_value'}
 
         for i, bracket in enumerate(bracket_orders):
             # Exactly one size field required
@@ -180,10 +190,11 @@ class Order(Signal):
             if len(size_present) != 1:
                 raise ValueError(f"bracket_orders[{i}]: exactly one of leverage/value/quantity required")
 
-            # At least one price field required
+            # At least one price field or trailing field required
             price_present = [f for f in price_fields if bracket.get(f) is not None]
-            if len(price_present) < 1:
-                raise ValueError(f"bracket_orders[{i}]: at least one of stop_loss/take_profit required")
+            trailing_present = [f for f in trailing_fields if bracket.get(f) is not None]
+            if len(price_present) < 1 and len(trailing_present) < 1:
+                raise ValueError(f"bracket_orders[{i}]: at least one of stop_loss/take_profit/trailing_percent/trailing_value required")
 
         return values
 
@@ -226,6 +237,7 @@ class Order(Signal):
                 'stop_loss': self.stop_loss,
                 'take_profit': self.take_profit,
                 'margin_loan': self.margin_loan,
+                'trailing_stop': self.trailing_stop,
                 'bracket_orders': self.bracket_orders}
 
     def to_dashboard(self, include_trade_pair: bool = False) -> dict:

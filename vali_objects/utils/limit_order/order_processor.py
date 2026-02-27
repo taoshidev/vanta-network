@@ -162,6 +162,7 @@ class OrderProcessor:
         limit_price = signal.get("limit_price")
         stop_loss = signal.get("stop_loss")
         take_profit = signal.get("take_profit")
+        trailing_stop = signal.get("trailing_stop")
         bracket_orders = signal.get("bracket_orders")
 
         # Validate required fields
@@ -204,6 +205,7 @@ class OrderProcessor:
             limit_price=float(limit_price),
             stop_loss=stop_loss,
             take_profit=take_profit,
+            trailing_stop=trailing_stop,
             bracket_orders=bracket_orders,
             src=OrderSource.LIMIT_UNFILLED
         )
@@ -278,23 +280,31 @@ class OrderProcessor:
         # Extract signal data
         stop_loss = signal.get("stop_loss")
         take_profit = signal.get("take_profit")
+        trailing_stop = signal.get("trailing_stop")
         bracket_orders = signal.get("bracket_orders")
 
         # If top-level SL/TP empty but bracket_orders provided, extract from first entry
-        if stop_loss is None and take_profit is None and bracket_orders:
+        if stop_loss is None and take_profit is None and trailing_stop is None and bracket_orders:
             if len(bracket_orders) != 1:
                 raise SignalException("bracket_orders must contain exactly one entry when used for BRACKET orders")
 
             signal = {**signal, **bracket_orders[0]}
             stop_loss = signal.get("stop_loss")
             take_profit = signal.get("take_profit")
+            # Check for trailing fields in bracket entry
+            if signal.get("trailing_percent") is not None or signal.get("trailing_value") is not None:
+                trailing_stop = {}
+                if signal.get("trailing_percent") is not None:
+                    trailing_stop["trailing_percent"] = signal["trailing_percent"]
+                if signal.get("trailing_value") is not None:
+                    trailing_stop["trailing_value"] = signal["trailing_value"]
 
         # Parse size fields using common method
         leverage, value, quantity = OrderProcessor.parse_size(signal)
 
-        # Validate that at least one of SL or TP is set
-        if stop_loss is None and take_profit is None:
-            raise SignalException("Bracket order must specify at least one of stop_loss or take_profit")
+        # Validate that at least one of SL, TP, or trailing_stop is set
+        if stop_loss is None and take_profit is None and trailing_stop is None:
+            raise SignalException("Bracket order must specify at least one of stop_loss, take_profit, or trailing_stop")
 
         # Parse and validate stop_loss
         if stop_loss is not None:
@@ -322,6 +332,7 @@ class OrderProcessor:
             limit_price=None,  # Not used for bracket orders
             stop_loss=stop_loss,
             take_profit=take_profit,
+            trailing_stop=trailing_stop,
             src=OrderSource.BRACKET_UNFILLED
         )
 
