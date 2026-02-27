@@ -51,6 +51,7 @@ from vali_objects.exceptions.signal_exception import SignalException
 from vali_objects.utils.limit_order.order_processor import OrderProcessor
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import ValiConfig, TradePair, TRADE_PAIR_ID_TO_TRADE_PAIR
+from vanta_api.websocket_notifier import WebSocketNotifierClient
 
 
 class HyperliquidTracker:
@@ -273,6 +274,7 @@ class HyperliquidTracker:
         limit_order_client,
         uuid_tracker,
         rate_limiter: Optional[RateLimiter] = None,
+        ws_notifier_client: Optional[WebSocketNotifierClient] = None,
     ):
         self._entity_client = entity_client
         self._elimination_client = elimination_client
@@ -282,6 +284,7 @@ class HyperliquidTracker:
         self._limit_order_client = limit_order_client
         self._uuid_tracker = uuid_tracker
         self._rate_limiter = rate_limiter or RateLimiter()
+        self._ws_notifier_client = ws_notifier_client
 
         # State
         self._thread: Optional[threading.Thread] = None
@@ -672,6 +675,19 @@ class HyperliquidTracker:
         while len(self._processed_hashes) > self.MAX_DEDUP_HASHES:
             self._processed_hashes.popitem(last=False)
 
+    # ==================== Rejection Broadcast ====================
+
+    def _broadcast_rejection(self, synthetic_hotkey: str, error_msg: str) -> None:
+        """Broadcast a rejection/error message to WebSocket subscribers for a subaccount."""
+        if not self._ws_notifier_client:
+            return
+        try:
+            self._ws_notifier_client.broadcast_subaccount_dashboard(
+                synthetic_hotkey, {"error_msg": error_msg}
+            )
+        except Exception as e:
+            bt.logging.debug(f"[HL_TRACKER] Rejection broadcast failed for {synthetic_hotkey}: {e}")
+
     # ==================== Fill Processing ====================
 
     def _process_fill(self, hl_address: str, fill: dict):
@@ -724,29 +740,35 @@ class HyperliquidTracker:
         allowed, wait_time = self._rate_limiter.is_allowed(synthetic_hotkey)
         if not allowed:
             bt.logging.debug(f"[HL_TRACKER] Rate limited: {synthetic_hotkey}, wait {wait_time:.1f}s")
+            self._broadcast_rejection(synthetic_hotkey, f"Rate limited. Please wait {wait_time:.0f}s.")
             return
 
         # Elimination check
         elimination_info = self._elimination_client.get_elimination_local_cache(synthetic_hotkey)
         if elimination_info:
             bt.logging.debug(f"[HL_TRACKER] Eliminated miner: {synthetic_hotkey}")
+            self._broadcast_rejection(synthetic_hotkey, f"Miner {synthetic_hotkey} has been eliminated.")
             return
 
         # Subaccount status check
         validation = self._entity_client.validate_hotkey_for_orders(synthetic_hotkey)
         if not validation.get("is_valid"):
-            bt.logging.debug(f"[HL_TRACKER] Invalid hotkey: {synthetic_hotkey} - {validation.get('error_message')}")
+            error_message = validation.get('error_message', 'Subaccount validation failed')
+            bt.logging.debug(f"[HL_TRACKER] Invalid hotkey: {synthetic_hotkey} - {error_message}")
+            self._broadcast_rejection(synthetic_hotkey, error_message)
             return
 
         # Trade pair blocked check
         if trade_pair.is_blocked:
             bt.logging.debug(f"[HL_TRACKER] Blocked trade pair: {trade_pair_id}")
+            self._broadcast_rejection(synthetic_hotkey, f"Trade pair {trade_pair_id} is no longer supported.")
             return
 
         # Market hours check (only for market orders)
         is_market_open = self._price_fetcher_client.is_market_open(trade_pair, now_ms)
         if not is_market_open:
             bt.logging.debug(f"[HL_TRACKER] Market closed for {trade_pair_id}")
+            self._broadcast_rejection(synthetic_hotkey, f"Market is closed for {trade_pair_id}.")
             return
 
         # USDC balance check
@@ -818,6 +840,7 @@ class HyperliquidTracker:
 
         except SignalException as e:
             bt.logging.warning(f"[HL_TRACKER] Signal rejected for {synthetic_hotkey}: {e}")
+            self._broadcast_rejection(synthetic_hotkey, f"Order rejected: {e}")
         except Exception as e:
             bt.logging.error(f"[HL_TRACKER] Order processing error for {synthetic_hotkey}: {e}")
             bt.logging.error(traceback.format_exc())

@@ -20,6 +20,7 @@ from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMod
 from vali_objects.decoders.generalized_json_decoder import GeneralizedJSONDecoder
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vanta_api.miner_api_manager import MinerAPIManager
+from vanta_api.entity_miner_api_manager import EntityMinerAPIManager
 
 
 class Miner:
@@ -162,6 +163,27 @@ class Miner:
             self.api_manager = None
             self.api_thread = None
 
+        # Start Entity Miner Gateway (optional, enabled with --entity-miner)
+        self.entity_api_manager = None
+        self.entity_api_thread = None
+        if not running_unit_tests and getattr(self.config, 'entity_miner', False):
+            bt.logging.info("Starting Entity Miner Gateway...")
+            entity_port = getattr(self.config, 'entity_api_port', 8089)
+            self.entity_api_manager = EntityMinerAPIManager(
+                api_host=getattr(self.config, 'api_host', '0.0.0.0'),
+                api_port=entity_port,
+                slack_notifier=self.slack_notifier
+            )
+            self.entity_api_thread = threading.Thread(
+                target=self.entity_api_manager.run, daemon=True
+            )
+            self.entity_api_thread.start()
+            time.sleep(0.5)
+            if self.entity_api_thread.is_alive():
+                bt.logging.success(f"Entity Miner Gateway started on port {entity_port}")
+            else:
+                bt.logging.error("Entity Miner Gateway thread failed to start")
+
         # Send startup notification with hotkey and IP
         self.slack_notifier.send_message(
             f"🚀 Miner starting on netuid {self.config.netuid} ({'testnet' if self.is_testnet else 'mainnet'})\n"
@@ -298,6 +320,17 @@ class Miner:
             default=8088,
             help='Port for the REST API server (default: 8088)'
         )
+        parser.add_argument(
+            '--entity-miner',
+            action='store_true',
+            help='Enable Entity Miner Gateway for HL rejection notifications and dashboard proxy'
+        )
+        parser.add_argument(
+            '--entity-api-port',
+            type=int,
+            default=8089,
+            help='Port for the Entity Miner Gateway REST server (default: 8089)'
+        )
 
         # Parse the config (will take command-line arguments if provided)
         config = bt.config(parser)
@@ -390,6 +423,14 @@ class Miner:
                     if self.api_thread is not None and self.api_thread.is_alive():
                         self.api_thread.join(timeout=5.0)
                     bt.logging.info("API manager shutdown complete.")
+
+                # Shutdown entity miner gateway if running
+                if self.entity_api_manager is not None:
+                    bt.logging.info("Shutting down Entity Miner Gateway...")
+                    self.entity_api_manager.shutdown()
+                    if self.entity_api_thread is not None and self.entity_api_thread.is_alive():
+                        self.entity_api_thread.join(timeout=5.0)
+                    bt.logging.info("Entity Miner Gateway shutdown complete.")
 
                 if self.dashboard_frontend_process:
                     self.dashboard_frontend_process.terminate()
