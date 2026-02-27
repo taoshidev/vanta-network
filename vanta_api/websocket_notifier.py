@@ -117,6 +117,24 @@ class WebSocketNotifierClient(RPCClientBase):
             bt.logging.debug(f"WebSocketNotifierClient: Dashboard broadcast failed: {e}")
             return False
 
+    def notify_new_subaccount(self, entity_hotkey: str, synthetic_hotkey: str) -> bool:
+        """
+        Notify the WebSocket server of a newly created subaccount so connected
+        entity clients can be auto-subscribed.
+
+        Args:
+            entity_hotkey: The entity hotkey that owns the new subaccount
+            synthetic_hotkey: The synthetic hotkey of the new subaccount
+
+        Returns:
+            bool: True if notification was sent successfully
+        """
+        try:
+            return self._server.notify_new_subaccount_rpc(entity_hotkey, synthetic_hotkey)
+        except Exception as e:
+            bt.logging.debug(f"WebSocketNotifierClient: New subaccount notification failed: {e}")
+            return False
+
     def health_check(self) -> Optional[dict]:
         """
         Health check endpoint for monitoring.

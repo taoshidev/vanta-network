@@ -91,10 +91,9 @@ class MinerAPIManager:
                 f"Miner REST API server started at http://{self.api_host}:{self.api_rest_port}"
             )
             bt.logging.info(f"Endpoints available:")
-            bt.logging.info(f"  POST   /api/submit-order      - Synchronous order submission")
-            bt.logging.info(f"  POST   /api/create-subaccount - Entity subaccount creation")
-            bt.logging.info(f"  GET    /api/order-status/<uuid> - Query order status")
-            bt.logging.info(f"  GET    /api/health           - Health check")
+            bt.logging.info(f"  POST   /api/submit-order        - Synchronous order submission")
+            bt.logging.info(f"  GET    /api/order-status/<uuid>  - Query order status")
+            bt.logging.info(f"  GET    /api/health              - Health check")
 
         except Exception as e:
             bt.logging.error(f"Failed to start Miner REST API server: {e}")

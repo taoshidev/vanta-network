@@ -231,6 +231,8 @@ class Validator(ValidatorBase):
 
         # Hyperliquid tracker (daemon thread for tracking HL trader fills)
         from entity_management.hyperliquid_tracker import HyperliquidTracker
+        from vanta_api.websocket_notifier import WebSocketNotifierClient
+        hl_ws_notifier = WebSocketNotifierClient(connect_immediately=False)
         self.hl_tracker = HyperliquidTracker(
             entity_client=self.entity_client,
             elimination_client=self.elimination_client,
@@ -240,6 +242,7 @@ class Validator(ValidatorBase):
             limit_order_client=self.limit_order_client,
             uuid_tracker=self.uuid_tracker,
             rate_limiter=RateLimiter(),
+            ws_notifier_client=hl_ws_notifier,
         )
         self.hl_tracker.start()
 

@@ -534,6 +534,12 @@ class EntityManager(ValidatorBroadcastBase):
                     subaccount_info.status = "active"
                 self._write_entities_from_memory_to_disk()
 
+                # Notify WebSocket server so connected entity clients auto-subscribe
+                try:
+                    self._websocket_client.notify_new_subaccount(entity_hotkey, synthetic_hotkey)
+                except Exception as notify_err:
+                    bt.logging.debug(f"[ENTITY_MANAGER] New subaccount WS notification failed: {notify_err}")
+
             total_ms = int((time.time() - t_start) * 1000)
 
             bt.logging.info(
@@ -587,6 +593,13 @@ class EntityManager(ValidatorBroadcastBase):
 
             # Broadcast dashboard update to WebSocket subscribers after slashing completes
             self.broadcast_subaccount_dashboard(synthetic_hotkey)
+
+            # Notify WebSocket server so connected entity clients auto-subscribe
+            if slash_success:
+                try:
+                    self._websocket_client.notify_new_subaccount(entity_hotkey, synthetic_hotkey)
+                except Exception as notify_err:
+                    bt.logging.debug(f"[ENTITY_MANAGER] New subaccount WS notification failed: {notify_err}")
 
         except Exception as e:
             bt.logging.error(f"[ENTITY_MANAGER] Slashing error for {synthetic_hotkey}: {e}")
