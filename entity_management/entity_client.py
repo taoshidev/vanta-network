@@ -26,7 +26,7 @@ Usage:
 from typing import Optional, Tuple, Dict, List
 
 import template.protocol
-from template.protocol import SubaccountRegistration
+from template.protocol import SubaccountRegistration, EntityEndpointUpdate
 from shared_objects.rpc.rpc_client_base import RPCClientBase
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 
@@ -385,6 +385,72 @@ class EntityClient(RPCClientBase):
             Updated synapse with success/error status
         """
         return self._server.receive_subaccount_registration_rpc(synapse)
+
+    # ==================== Entity Endpoint URL Methods ====================
+
+    def set_endpoint_url(
+        self,
+        entity_hotkey: str,
+        endpoint_url: str
+    ) -> Tuple[bool, str]:
+        """
+        Set the public endpoint URL for an entity miner.
+
+        Args:
+            entity_hotkey: The VANTA_ENTITY_HOTKEY
+            endpoint_url: The public-facing endpoint URL
+
+        Returns:
+            (success: bool, message: str)
+        """
+        return self._server.set_endpoint_url_rpc(entity_hotkey, endpoint_url)
+
+    def get_endpoint_url_by_address(
+        self,
+        hl_address: str = None,
+        subaccount: str = None
+    ) -> Optional[str]:
+        """
+        Resolve an HL address or synthetic hotkey to the entity's endpoint URL.
+
+        Args:
+            hl_address: Hyperliquid address (0x-prefixed)
+            subaccount: Synthetic hotkey (entity_hotkey_N)
+
+        Returns:
+            The entity's endpoint URL, or None if not found
+        """
+        return self._server.get_endpoint_url_by_address_rpc(hl_address=hl_address, subaccount=subaccount)
+
+    def receive_entity_endpoint_update(self, endpoint_data: dict, sender_hotkey: str = None) -> bool:
+        """
+        Process incoming entity endpoint update from another validator.
+
+        Args:
+            endpoint_data: Dict containing entity_hotkey and endpoint_url
+            sender_hotkey: The hotkey of the validator that sent this broadcast
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        return self._server.receive_entity_endpoint_update_rpc(endpoint_data, sender_hotkey)
+
+    def receive_entity_endpoint_synapse(
+        self,
+        synapse: EntityEndpointUpdate
+    ) -> EntityEndpointUpdate:
+        """
+        Receive EntityEndpointUpdate synapse (for axon attachment).
+
+        This delegates to the server's RPC handler. Used by validator_base.py for axon attachment.
+
+        Args:
+            synapse: EntityEndpointUpdate synapse from another validator
+
+        Returns:
+            Updated synapse with success/error status
+        """
+        return self._server.receive_entity_endpoint_synapse_rpc(synapse)
 
     # ==================== Health Check Methods ====================
 

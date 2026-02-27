@@ -276,6 +276,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         self.app.route("/entity/subaccount/<synthetic_hotkey>", methods=["GET"])(self.get_subaccount_dashboard)
         self.app.route("/v2/entity/subaccount/<synthetic_hotkey>", methods=["GET"])(self.v2_get_subaccount_dashboard)
         self.app.route("/entity/subaccount/payout", methods=["POST"])(self.calculate_subaccount_payout)
+        self.app.route("/entity/set-endpoint", methods=["POST"])(self.set_entity_endpoint)
+        self.app.route("/entity/endpoint", methods=["GET"])(self.get_entity_endpoint)
 
         # Public HL trader lookup (no auth required)
         self.app.route("/hl-traders/<hl_address>", methods=["GET"])(self.get_hl_trader)
@@ -2144,6 +2146,122 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 'error': 'Internal server error calculating payout',
                 'detail': error_msg if self.running_unit_tests else None
             }), 500
+
+    def set_entity_endpoint(self):
+        """
+        Set the public endpoint URL for an entity miner.
+
+        Requires coldkey signature authentication (same pattern as register_entity).
+
+        Example:
+        curl -X POST http://localhost:48888/entity/set-endpoint \\
+          -H "Content-Type: application/json" \\
+          -d '{
+            "entity_hotkey": "5GhDr...",
+            "entity_coldkey": "5FxY...",
+            "endpoint_url": "https://my-gateway.example.com",
+            "signature": "0x..."
+          }'
+        """
+        if not self._entity_client:
+            return jsonify({'error': 'Entity management not available'}), 503
+
+        try:
+            if not request.is_json:
+                return jsonify({'error': 'Content-Type must be application/json'}), 400
+
+            data = request.get_json()
+            if not data:
+                return jsonify({'error': 'Invalid JSON body'}), 400
+
+            # Validate required fields
+            required_fields = ['entity_coldkey', 'entity_hotkey', 'endpoint_url', 'signature']
+            for field in required_fields:
+                if field not in data:
+                    return jsonify({'error': f'Missing required field: {field}'}), 400
+
+            entity_coldkey = data['entity_coldkey']
+            entity_hotkey = data['entity_hotkey']
+            endpoint_url = data['endpoint_url']
+
+            # Verify signature
+            keypair = Keypair(ss58_address=entity_coldkey)
+            message = json.dumps({
+                "endpoint_url": endpoint_url,
+                "entity_coldkey": entity_coldkey,
+                "entity_hotkey": entity_hotkey
+            }, sort_keys=True).encode('utf-8')
+
+            is_valid = keypair.verify(message, bytes.fromhex(data['signature']))
+            if not is_valid:
+                return jsonify({'error': 'Invalid signature'}), 401
+
+            # Verify coldkey-hotkey ownership
+            owns_hotkey = self._verify_coldkey_owns_hotkey(entity_coldkey, entity_hotkey)
+            if not owns_hotkey:
+                return jsonify({'error': 'Coldkey does not own the specified hotkey'}), 403
+
+            # Set endpoint URL via RPC
+            success, message = self._entity_client.set_endpoint_url(
+                entity_hotkey=entity_hotkey,
+                endpoint_url=endpoint_url
+            )
+
+            if success:
+                return jsonify({
+                    'status': 'success',
+                    'message': message,
+                    'entity_hotkey': entity_hotkey,
+                    'endpoint_url': endpoint_url
+                }), 200
+            else:
+                return jsonify({'error': message}), 400
+
+        except Exception as e:
+            bt.logging.error(f"Error setting entity endpoint: {e}")
+            return jsonify({'error': 'Internal server error setting entity endpoint'}), 500
+
+    def get_entity_endpoint(self):
+        """
+        Look up the public endpoint URL for an entity miner by HL address or subaccount.
+
+        No authentication required.
+
+        Example:
+        curl http://localhost:48888/entity/endpoint?hl_address=0x1234...
+        curl http://localhost:48888/entity/endpoint?subaccount=entity_hotkey_0
+        """
+        if not self._entity_client:
+            return jsonify({'error': 'Entity management not available'}), 503
+
+        try:
+            hl_address = request.args.get('hl_address')
+            subaccount = request.args.get('subaccount')
+
+            if not hl_address and not subaccount:
+                return jsonify({'error': 'Must provide hl_address or subaccount query parameter'}), 400
+
+            endpoint_url = self._entity_client.get_endpoint_url_by_address(
+                hl_address=hl_address,
+                subaccount=subaccount
+            )
+
+            if endpoint_url:
+                return jsonify({
+                    'endpoint_url': endpoint_url,
+                    'hl_address': hl_address,
+                    'subaccount': subaccount
+                }), 200
+            else:
+                return jsonify({
+                    'error': 'No endpoint URL found for the given address',
+                    'hl_address': hl_address,
+                    'subaccount': subaccount
+                }), 404
+
+        except Exception as e:
+            bt.logging.error(f"Error looking up entity endpoint: {e}")
+            return jsonify({'error': 'Internal server error looking up entity endpoint'}), 500
 
     def _verify_coldkey_owns_hotkey(self, coldkey_ss58: str, hotkey_ss58: str) -> bool:
         """
