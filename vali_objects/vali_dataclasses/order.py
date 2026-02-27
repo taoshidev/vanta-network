@@ -131,15 +131,6 @@ class Order(Signal):
         """
         return values
 
-    @model_validator(mode="before")
-    @classmethod
-    def check_bracket_orders(cls, values):
-        """
-        Overrides inherited check_bracket_orders from Signal.
-        Order allows both bracket_orders and stop_loss/take_profit for display purposes.
-        """
-        return values
-
     @classmethod
     def from_dict(cls, order_dict):
         """
