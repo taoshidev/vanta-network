@@ -78,7 +78,7 @@ class ChallengePeriodServer(RPCServerBase):
         # At this point, self._manager exists, so RPC calls won't fail
         # daemon_interval_s: 5 minutes (challenge period checks)
         # hang_timeout_s: Dynamically set to 2x interval to prevent false alarms during normal sleep
-        daemon_interval_s = ValiConfig.CHALLENGE_PERIOD_REFRESH_TIME_MS / 1000.0  # 5 minutes (300s)
+        daemon_interval_s = ValiConfig.CHALLENGE_PERIOD_REFRESH_TIME_MS / 1000.0  # 1 minutes (60s)
         hang_timeout_s = daemon_interval_s * 2.0  # 10 minutes (2x interval)
 
         RPCServerBase.__init__(

@@ -309,7 +309,7 @@ class ValiConfig:
 
     # Fees take into account exiting and entering a position, liquidity, and futures fees
     PERF_LEDGER_REFRESH_TIME_MS = 1000 * 60 * 5  # minutes
-    CHALLENGE_PERIOD_REFRESH_TIME_MS = 1000 * 60 * 5  # minutes
+    CHALLENGE_PERIOD_REFRESH_TIME_MS = 1000 * 60 * 1  # minutes
     MDD_CHECK_REFRESH_TIME_MS = 60 * 1000  # 60 seconds
     PRICE_SOURCE_COMPACTING_SLEEP_INTERVAL_SECONDS = 60 * 60 * 12 # 12 hours
 
@@ -482,10 +482,16 @@ class ValiConfig:
         TradePairCategory.INDICES: 10,
         TradePairCategory.EQUITIES: 2,
     }
-    TRANSACTION_FEE_MULTIPLIER = {
+    TRANSACTION_FEE_RATE = {
         TradePairCategory.CRYPTO: 0.001,
         TradePairCategory.FOREX: 0,
         TradePairCategory.INDICES: 0,
+        TradePairCategory.EQUITIES: 0,
+    }
+    CARRY_FEE_RATE_PER_INTERVAL = {
+        TradePairCategory.CRYPTO: 0.0001,          # 10.95% annual / (365*3 intervals)
+        TradePairCategory.FOREX: 0.0000821918,     # 3% annual / 365 intervals
+        TradePairCategory.INDICES: 0.0001438356,   # 5.25% annual / 365 intervals
         TradePairCategory.EQUITIES: 0,
     }
 
@@ -516,7 +522,6 @@ class ValiConfig:
 
     BLOCKED_TRADE_PAIR_IDS = {
         'SPX', 'DJI', 'NDX', 'VIX', 'FTSE', 'GDAXI',  # Indices
-        'XAUUSD', 'XAGUSD',  # Commodities
         'AUDJPY', 'CADJPY', 'CHFJPY', 'EURJPY', 'NZDJPY', 'GBPJPY', 'USDJPY',  # Forex JPY pairs
         'USDMXN'
     }

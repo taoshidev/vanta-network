@@ -710,10 +710,7 @@ class LimitOrderManager(CacheController):
             self._attach_bracket_orders_to_positions()
             self._needs_initial_bracket_sync = False
 
-        if self.running_unit_tests:
-            print(f"[CHECK_AND_FILL_CALLED] check_and_fill_limit_orders(call_id={call_id}) called, {len(self._limit_orders)} trade pairs")
-
-        if now_ms - self._last_print_time_ms > 60 * 1000:
+        if now_ms - self._last_print_time_ms > 4 * 60 * 1000:
             total_orders = sum(len(orders) for hotkey_dict in self._limit_orders.values() for orders in hotkey_dict.values())
             bt.logging.info(f"Checking {total_orders} limit orders across {len(self._limit_orders)} trade pairs")
             for trade_pair, stats in self._price_stats.items():
@@ -996,9 +993,10 @@ class LimitOrderManager(CacheController):
                 closing_order_type = OrderType.opposite_order_type(order.order_type)
                 if closing_order_type:
                     order_dict['order_type'] = closing_order_type.name
-                    order_dict['leverage'] = -order.leverage if order.leverage else None
-                    order_dict['value'] = -order.value if order.value else None
-                    order_dict['quantity'] = -order.quantity if order.quantity else None
+                    sign = 1 if closing_order_type == OrderType.LONG else -1
+                    order_dict['leverage'] = sign * order.leverage if order.leverage else None
+                    order_dict['value'] = sign * order.value if order.value else None
+                    order_dict['quantity'] = sign * order.quantity if order.quantity else None
                 else:
                     raise ValueError("Bracket Order type was not LONG or SHORT")
 

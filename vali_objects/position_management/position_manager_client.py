@@ -430,8 +430,12 @@ class PositionManagerClient(RPCClientBase):
             value1 = getattr(position1, attr)
             # Check if position2 is a dict and access the value accordingly.
             if comparing_to_dict:
-                # Use .get() to avoid KeyError if the attribute is missing in the dictionary.
-                value2 = position2.get(attr)
+                # Skip attributes not present in the dict — the dict is a partial spec,
+                # so only fields explicitly listed are validated. This means adding new
+                # fields to Position doesn't require updating every test dict.
+                if attr not in position2:
+                    continue
+                value2 = position2[attr]
             else:
                 value2 = getattr(position2, attr, None)
 
