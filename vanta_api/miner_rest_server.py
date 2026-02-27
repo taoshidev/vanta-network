@@ -83,28 +83,6 @@ class MinerRestServer(BaseRestServer):
             **kwargs
         )
 
-        # Pre-load wallet secrets and coldkey for subaccount creation
-        try:
-            secrets = ValiUtils.get_secrets(secrets_path=MinerConfig.get_secrets_file_path())
-            self._wallet_name = secrets.get('wallet_name')
-            self._wallet_hotkey = secrets.get('wallet_hotkey')
-            self._validator_url = secrets.get('validator_url')
-            wallet_password = ValiUtils.get_secret('wallet_password', secrets_path=MinerConfig.get_secrets_file_path())
-
-            wallet = Wallet(name=self._wallet_name, hotkey=self._wallet_hotkey)
-            self._coldkey = wallet.get_coldkey(password=wallet_password)
-            self._hotkey = wallet.hotkey
-            del wallet_password
-            print(f"[MINER-REST-INIT] Wallet and secrets loaded for subaccount creation")
-        except Exception as e:
-            bt.logging.error(f"[MINER-REST-INIT] Failed to pre-load wallet secrets: {e}. "
-                             f"Subaccount creation will fall back to per-request loading.")
-            self._coldkey = None
-            self._hotkey = None
-            self._wallet_name = None
-            self._wallet_hotkey = None
-            self._validator_url = None
-
         print(f"[MINER-REST-INIT] MinerRestServer initialized on {self.flask_host}:{self.flask_port}")
 
     # ============================================================================

@@ -7,23 +7,17 @@ Connects to the validator WebSocket as an entity-authenticated client,
 receives dashboard data and rejection notifications for all subaccounts,
 and exposes REST/SSE endpoints for Chrome extensions and other consumers.
 
-Inherits from MinerRestServer:
-    POST /api/submit-order               - Synchronous order submission
-    GET  /api/order-status/<order_uuid>   - Query order status
-
-Entity-specific endpoints:
+Endpoints:
     GET  /api/hl/<hl_address>/dashboard  - Cached dashboard data
     GET  /api/hl/<hl_address>/events     - Ring buffer of order events
     GET  /api/hl/<hl_address>/stream     - SSE real-time stream
     POST /api/create-subaccount          - Create standard subaccount
     POST /api/create-hl-subaccount       - Create HL-linked subaccount
-    GET  /api/health                     - Health check (extended with WS status)
+    GET  /api/health                     - Health check
 """
 import asyncio
 import json
-import os
 import queue
-import re
 import threading
 import time
 import uuid
@@ -36,8 +30,7 @@ from flask import jsonify, request, Response
 
 from miner_config import MinerConfig
 from vali_objects.utils.vali_utils import ValiUtils
-from vali_objects.vali_config import ValiConfig
-from vanta_api.miner_rest_server import MinerRestServer
+from vanta_api.base_rest_server import BaseRestServer
 
 try:
     import websockets
@@ -77,17 +70,9 @@ class OrderEventStore:
         self._events: Dict[str, deque] = {}
         self._lock = threading.Lock()
 
-    @staticmethod
-    def _normalize_hl_address(hl_address: str) -> str:
-        if not isinstance(hl_address, str):
-            return ""
-        return hl_address.lower()
-
     def add(self, event: OrderEvent) -> None:
         with self._lock:
-            addr = self._normalize_hl_address(event.hl_address)
-            if not addr:
-                return
+            addr = event.hl_address
             if addr not in self._events:
                 self._events[addr] = deque(maxlen=self.MAX_EVENTS_PER_ADDRESS)
             self._events[addr].append(event)
@@ -95,8 +80,7 @@ class OrderEventStore:
     def get_events(self, hl_address: str, since_ms: int = 0) -> list:
         """Get events for an address, optionally filtered by timestamp."""
         with self._lock:
-            normalized = self._normalize_hl_address(hl_address)
-            events = self._events.get(normalized, deque())
+            events = self._events.get(hl_address, deque())
             if since_ms > 0:
                 return [e.to_dict() for e in events if e.timestamp_ms > since_ms]
             return [e.to_dict() for e in events]
@@ -104,22 +88,18 @@ class OrderEventStore:
 
 # ==================== Entity Miner REST Server ====================
 
-class EntityMinerRestServer(MinerRestServer):
+class EntityMinerRestServer(BaseRestServer):
     """
     Gateway server for entity miners.
 
-    Extends MinerRestServer with entity-specific functionality:
-    - WebSocket connection to validator for dashboard/rejection data
-    - SSE real-time streaming to Chrome extensions and consumers
-    - HL address mapping and subaccount management
-
-    Inherits all MinerRestServer endpoints (submit-order, order-status)
-    and adds entity-specific endpoints (dashboard, events, stream,
-    create-subaccount, create-hl-subaccount).
+    Connects to the validator WebSocket using entity hotkey auth,
+    receives dashboard + rejection data, and exposes REST/SSE endpoints.
     """
 
     def __init__(self, api_keys_file, flask_host="0.0.0.0", flask_port=8089,
-                 slack_notifier=None, prop_net_order_placer=None, **kwargs):
+                 slack_notifier=None, **kwargs):
+        self.slack_notifier = slack_notifier
+
         # Internal state (initialized before super().__init__ calls _initialize_clients)
         self._event_store = OrderEventStore()
         self._dashboard_cache: Dict[str, dict] = {}  # hl_address -> latest dashboard
@@ -141,23 +121,19 @@ class EntityMinerRestServer(MinerRestServer):
         self._validator_url = None
         self._validator_ws_host = None
         self._validator_ws_port = None
-        self._mappings_file: Optional[str] = None
 
         super().__init__(
-            prop_net_order_placer=prop_net_order_placer,
             api_keys_file=api_keys_file,
             service_name="EntityMinerRestServer",
             refresh_interval=15,
             metrics_interval_minutes=5,
             flask_host=flask_host,
             flask_port=flask_port,
-            slack_notifier=slack_notifier,
             **kwargs
         )
 
     def _initialize_clients(self, **kwargs):
         """Load wallet secrets and start WebSocket listener."""
-        super()._initialize_clients(**kwargs)
         try:
             secrets = ValiUtils.get_secrets(secrets_path=MinerConfig.get_secrets_file_path())
             wallet_name = secrets.get('wallet_name')
@@ -175,171 +151,57 @@ class EntityMinerRestServer(MinerRestServer):
                 print(f"[ENTITY-GW-INIT] Wallet loaded: {self._hotkey.ss58_address}")
             else:
                 print(f"[ENTITY-GW-INIT] WARNING: Could not load wallet")
-
-            # Derive mappings file path alongside the secrets file
-            secrets_dir = os.path.dirname(MinerConfig.get_secrets_file_path())
-            self._mappings_file = os.path.join(secrets_dir, "entity_hl_mappings.json")
         except Exception as e:
             bt.logging.error(f"[ENTITY-GW-INIT] Failed to load wallet secrets: {e}")
 
-        # Load HL address mappings from local persistence file
+        # Load HL address mappings from validator
         self._load_hl_mappings()
-
-        # Send endpoint URL to validator if configured
-        self._send_endpoint_url(secrets)
 
         # Start WebSocket listener thread
         self._start_ws_listener()
 
-    @staticmethod
-    def _normalize_hl_address(hl_address: str) -> str:
-        if not isinstance(hl_address, str):
-            return ""
-        return hl_address.lower()
-
     def _register_routes(self):
-        """Register miner endpoints (inherited) plus entity-specific endpoints."""
-        # Register all MinerRestServer routes (submit-order, order-status, health).
-        # health_endpoint is overridden in this class, so the parent's registration
-        # will use our version via Python MRO.
-        super()._register_routes()
-
-        # Register entity-specific endpoints
+        """Register entity miner gateway endpoints."""
         self.app.route("/api/hl/<hl_address>/dashboard", methods=["GET"])(self.dashboard_endpoint)
         self.app.route("/api/hl/<hl_address>/events", methods=["GET"])(self.events_endpoint)
         self.app.route("/api/hl/<hl_address>/stream", methods=["GET"])(self.stream_endpoint)
         self.app.route("/api/create-subaccount", methods=["POST"])(self.create_subaccount_endpoint)
         self.app.route("/api/create-hl-subaccount", methods=["POST"])(self.create_hl_subaccount_endpoint)
-        print(f"[ENTITY-GW-INIT] 8 endpoints registered (3 inherited + 5 entity-specific)")
+        self.app.route("/api/health", methods=["GET"])(self.health_endpoint)
+        print(f"[ENTITY-GW-INIT] 6 endpoints registered")
 
     # ==================== HL Address Mapping ====================
 
     def _load_hl_mappings(self):
-        """Load HL address -> synthetic hotkey mappings from local persistence file."""
-        if not self._mappings_file:
+        """Load HL address -> synthetic hotkey mappings from validator."""
+        if not self._validator_url or not self._hotkey:
             return
 
         try:
-            if not os.path.exists(self._mappings_file):
-                bt.logging.info(f"[ENTITY-GW] No mappings file found at {self._mappings_file}, starting fresh")
+            import requests
+            resp = requests.get(
+                f"{self._validator_url}/entity/data",
+                params={"entity_hotkey": self._hotkey.ss58_address},
+                timeout=15
+            )
+            if resp.status_code != 200:
+                bt.logging.warning(f"[ENTITY-GW] Failed to load entity data: {resp.status_code}")
                 return
 
-            with open(self._mappings_file, "r") as f:
-                data = json.load(f)
+            data = resp.json()
+            entity_data = data.get("entity_data", data)
+            subaccounts = entity_data.get("subaccounts", {})
 
-            raw_hl_to_synthetic = data.get("hl_to_synthetic", {})
-            raw_synthetic_to_hl = data.get("synthetic_to_hl", {})
+            for sub_id, sub_info in subaccounts.items():
+                hl_addr = sub_info.get("hl_address")
+                synthetic = sub_info.get("synthetic_hotkey", f"{self._hotkey.ss58_address}_{sub_id}")
+                if hl_addr:
+                    self._hl_to_synthetic[hl_addr] = synthetic
+                    self._synthetic_to_hl[synthetic] = hl_addr
 
-            # Normalize stored addresses so lookup is case-insensitive.
-            normalized_hl_to_synthetic = {}
-            normalized_synthetic_to_hl = {}
-
-            for hl_addr, synthetic in raw_hl_to_synthetic.items():
-                normalized_hl = self._normalize_hl_address(hl_addr)
-                if normalized_hl and synthetic:
-                    normalized_hl_to_synthetic[normalized_hl] = synthetic
-                    normalized_synthetic_to_hl[synthetic] = normalized_hl
-
-            for synthetic, hl_addr in raw_synthetic_to_hl.items():
-                normalized_hl = self._normalize_hl_address(hl_addr)
-                if normalized_hl and synthetic:
-                    normalized_synthetic_to_hl[synthetic] = normalized_hl
-                    normalized_hl_to_synthetic[normalized_hl] = synthetic
-
-            self._hl_to_synthetic = normalized_hl_to_synthetic
-            self._synthetic_to_hl = normalized_synthetic_to_hl
-            bt.logging.info(f"[ENTITY-GW] Loaded {len(self._hl_to_synthetic)} HL address mappings from disk")
+            bt.logging.info(f"[ENTITY-GW] Loaded {len(self._hl_to_synthetic)} HL address mappings")
         except Exception as e:
             bt.logging.error(f"[ENTITY-GW] Error loading HL mappings: {e}")
-
-    def _save_hl_mappings(self):
-        """Persist HL address -> synthetic hotkey mappings to disk."""
-        if not self._mappings_file:
-            return
-
-        try:
-            with open(self._mappings_file, "w") as f:
-                json.dump({
-                    "hl_to_synthetic": self._hl_to_synthetic,
-                    "synthetic_to_hl": self._synthetic_to_hl,
-                }, f, indent=2)
-        except Exception as e:
-            bt.logging.error(f"[ENTITY-GW] Error saving HL mappings: {e}")
-
-    def _apply_hl_mappings(self, hl_mappings: dict):
-        """Apply HL address -> synthetic hotkey mappings received from validator (e.g. WS auth response)."""
-        for hl_addr, synthetic in hl_mappings.items():
-            normalized_hl = self._normalize_hl_address(hl_addr)
-            if not normalized_hl or not synthetic:
-                continue
-            self._hl_to_synthetic[normalized_hl] = synthetic
-            self._synthetic_to_hl[synthetic] = normalized_hl
-        self._save_hl_mappings()
-        bt.logging.info(f"[ENTITY-GW] Applied {len(hl_mappings)} HL mappings from validator")
-
-    # ==================== Endpoint URL Registration ====================
-
-    def _send_endpoint_url(self, secrets: dict):
-        """
-        Send the entity miner's public endpoint URL to the validator at startup.
-
-        Reads from ENTITY_MINER_ENDPOINT_URL env var, falling back to
-        entity_endpoint_url in miner_secrets.json.
-
-        Args:
-            secrets: The loaded miner secrets dict
-        """
-        endpoint_url = os.environ.get("ENTITY_MINER_ENDPOINT_URL") or secrets.get("entity_endpoint_url")
-
-        if not endpoint_url:
-            bt.logging.info("[ENTITY-GW] No endpoint URL configured (set ENTITY_MINER_ENDPOINT_URL or entity_endpoint_url in secrets)")
-            return
-
-        if not self._coldkey or not self._hotkey or not self._validator_url:
-            bt.logging.warning("[ENTITY-GW] Cannot send endpoint URL: wallet or validator_url not configured")
-            return
-
-        try:
-            import requests as http_requests
-
-            entity_hotkey = self._hotkey.ss58_address
-            entity_coldkey = self._coldkey.ss58_address
-
-            # Sign the message (sorted keys)
-            message_dict = {
-                "endpoint_url": endpoint_url,
-                "entity_coldkey": entity_coldkey,
-                "entity_hotkey": entity_hotkey
-            }
-            message = json.dumps(message_dict, sort_keys=True).encode('utf-8')
-            signature = self._coldkey.sign(message).hex()
-
-            payload = {
-                "entity_hotkey": entity_hotkey,
-                "entity_coldkey": entity_coldkey,
-                "endpoint_url": endpoint_url,
-                "signature": signature
-            }
-
-            resp = http_requests.post(
-                f"{self._validator_url}/entity/set-endpoint",
-                json=payload,
-                headers={"Content-Type": "application/json"},
-                timeout=30
-            )
-
-            if resp.status_code == 200:
-                bt.logging.info(f"[ENTITY-GW] Endpoint URL registered: {endpoint_url}")
-            else:
-                try:
-                    error_data = resp.json()
-                    error_msg = error_data.get('error', resp.text)
-                except json.JSONDecodeError:
-                    error_msg = resp.text
-                bt.logging.warning(f"[ENTITY-GW] Failed to register endpoint URL ({resp.status_code}): {error_msg}")
-
-        except Exception as e:
-            bt.logging.error(f"[ENTITY-GW] Error sending endpoint URL: {e}")
 
     # ==================== WebSocket Listener ====================
 
@@ -410,20 +272,11 @@ class EntityMinerRestServer(MinerRestServer):
 
                     self._ws_connected = True
                     backoff_s = 1.0
-
-                    # Populate HL mappings from auth response (validator sends these on every connect)
-                    hl_mappings = auth_resp.get("hl_mappings", {})
-                    if hl_mappings:
-                        loop_ref = asyncio.get_running_loop()
-                        await loop_ref.run_in_executor(None, self._apply_hl_mappings, hl_mappings)
-
                     bt.logging.info(
                         f"[ENTITY-GW] WS connected and authenticated "
-                        f"(subscribed to {auth_resp.get('subscribed_subaccounts', 0)} subaccounts, "
-                        f"hl_mappings={len(hl_mappings)})")
+                        f"(subscribed to {auth_resp.get('subscribed_subaccounts', 0)} subaccounts)")
 
                     # Message receive loop
-                    loop = asyncio.get_running_loop()
                     while not self._ws_stop_event.is_set():
                         try:
                             raw = await asyncio.wait_for(ws.recv(), timeout=5.0)
@@ -432,7 +285,7 @@ class EntityMinerRestServer(MinerRestServer):
 
                         try:
                             msg = json.loads(raw)
-                            await loop.run_in_executor(None, self._handle_ws_message, msg)
+                            self._handle_ws_message(msg)
                         except json.JSONDecodeError:
                             continue
 
@@ -468,32 +321,11 @@ class EntityMinerRestServer(MinerRestServer):
         # Resolve HL address
         hl_address = self._synthetic_to_hl.get(synthetic_hotkey)
         if not hl_address:
-            bt.logging.debug(
-                f"[ENTITY-GW] Dropping WS message for {synthetic_hotkey}: "
-                f"no HL mapping (known mappings={len(self._synthetic_to_hl)})"
-            )
             return
 
         if msg_type == "subaccount_dashboard":
-            data = msg.get("data", {})
-
-            # Accepted fill event payloads are sent through the dashboard channel.
-            order_event_data = data.get("order_event") if isinstance(data, dict) else None
-            if isinstance(order_event_data, dict) and order_event_data.get("status") == "accepted":
-                event = OrderEvent(
-                    timestamp_ms=msg.get("timestamp", int(time.time() * 1000)),
-                    hl_address=hl_address,
-                    trade_pair=order_event_data.get("trade_pair", ""),
-                    order_type=order_event_data.get("order_type", ""),
-                    status="accepted",
-                    fill_hash=order_event_data.get("fill_hash", ""),
-                    synthetic_hotkey=synthetic_hotkey
-                )
-                self._event_store.add(event)
-                self._push_sse(hl_address, {"type": "event", "data": event.to_dict()})
-                return
-
             # Update dashboard cache
+            data = msg.get("data", {})
             self._dashboard_cache[hl_address] = {
                 "timestamp_ms": msg.get("timestamp", int(time.time() * 1000)),
                 "synthetic_hotkey": synthetic_hotkey,
@@ -562,25 +394,34 @@ class EntityMinerRestServer(MinerRestServer):
     # ==================== Endpoints ====================
 
     def dashboard_endpoint(self, hl_address):
-        """GET /api/hl/<hl_address>/dashboard - Return cached dashboard data (no API key required)."""
-        normalized_hl = self._normalize_hl_address(hl_address)
-        dashboard = self._dashboard_cache.get(normalized_hl)
+        """GET /api/hl/<hl_address>/dashboard - Return cached dashboard data."""
+        api_key = self._get_api_key_safe()
+        if not self.is_valid_api_key(api_key):
+            return jsonify({'error': 'Unauthorized access'}), 401
+
+        dashboard = self._dashboard_cache.get(hl_address)
         if not dashboard:
-            return jsonify({'status': 'no_data', 'hl_address': normalized_hl}), 404
+            return jsonify({'status': 'no_data', 'hl_address': hl_address}), 404
 
         return jsonify(dashboard), 200
 
     def events_endpoint(self, hl_address):
-        """GET /api/hl/<hl_address>/events?since=<ms> - Return order events (no API key required)."""
+        """GET /api/hl/<hl_address>/events?since=<ms> - Return order events."""
+        api_key = self._get_api_key_safe()
+        if not self.is_valid_api_key(api_key):
+            return jsonify({'error': 'Unauthorized access'}), 401
+
         since_ms = request.args.get('since', 0, type=int)
-        normalized_hl = self._normalize_hl_address(hl_address)
-        events = self._event_store.get_events(normalized_hl, since_ms=since_ms)
-        return jsonify({'hl_address': normalized_hl, 'events': events, 'count': len(events)}), 200
+        events = self._event_store.get_events(hl_address, since_ms=since_ms)
+        return jsonify({'hl_address': hl_address, 'events': events, 'count': len(events)}), 200
 
     def stream_endpoint(self, hl_address):
-        """GET /api/hl/<hl_address>/stream - SSE real-time stream (no API key required)."""
-        normalized_hl = self._normalize_hl_address(hl_address)
-        subscriber_queue = self._subscribe_sse(normalized_hl)
+        """GET /api/hl/<hl_address>/stream - SSE real-time stream."""
+        api_key = self._get_api_key_safe()
+        if not self.is_valid_api_key(api_key):
+            return jsonify({'error': 'Unauthorized access'}), 401
+
+        subscriber_queue = self._subscribe_sse(hl_address)
 
         def event_stream():
             try:
@@ -594,7 +435,7 @@ class EntityMinerRestServer(MinerRestServer):
             except GeneratorExit:
                 pass
             finally:
-                self._unsubscribe_sse(normalized_hl, subscriber_queue)
+                self._unsubscribe_sse(hl_address, subscriber_queue)
 
         return Response(
             event_stream(),
@@ -607,79 +448,47 @@ class EntityMinerRestServer(MinerRestServer):
         )
 
     def create_subaccount_endpoint(self):
-        """
-        POST /api/create-subaccount - Create a standard subaccount via validator.
-
-        Request body (JSON):
-        {
-            "asset_class": "crypto" | "forex",  // Required
-            "account_size": float,              // Required, must be > 0
-            "admin": bool                       // Optional, default false
-        }
-
-        Response (200 OK):
-        {
-            "status": "success",
-            "message": "...",
-            "subaccount": {
-                "subaccount_id": 0,
-                "subaccount_uuid": "uuid-string",
-                "synthetic_hotkey": "5xxx_0",
-                "account_size": 10000.0,
-                "asset_class": "crypto"
-            }
-        }
-        """
-        import requests as http_requests
-        start_time = time.time()
-
-        # 1. Validate API key
+        """POST /api/create-subaccount - Create a standard subaccount via validator."""
         api_key = self._get_api_key_safe()
         if not self.is_valid_api_key(api_key):
             return jsonify({'error': 'Unauthorized access'}), 401
 
-        # 2. Parse and validate request body
+        return self._proxy_subaccount_creation("/entity/create-subaccount")
+
+    def create_hl_subaccount_endpoint(self):
+        """POST /api/create-hl-subaccount - Create an HL-linked subaccount via validator."""
+        api_key = self._get_api_key_safe()
+        if not self.is_valid_api_key(api_key):
+            return jsonify({'error': 'Unauthorized access'}), 401
+
+        return self._proxy_subaccount_creation("/entity/create-hl-subaccount")
+
+    def _proxy_subaccount_creation(self, endpoint: str):
+        """
+        Proxy subaccount creation to the validator.
+
+        Signs the request with the entity coldkey and forwards to the validator REST API.
+        """
+        import requests as http_requests
+        start_time = time.time()
+
         try:
             request_data = request.get_json()
             if not request_data:
-                return jsonify({'status': 'error', 'message': 'Invalid request: missing JSON body'}), 400
-
-            if "asset_class" not in request_data:
-                return jsonify({'status': 'error', 'message': 'Missing required field: asset_class'}), 400
-
-            if "account_size" not in request_data:
-                return jsonify({'status': 'error', 'message': 'Missing required field: account_size'}), 400
-
-            asset_class = request_data["asset_class"]
-            admin = request_data.get("admin", False)
-
-            try:
-                account_size = float(request_data["account_size"])
-            except (ValueError, TypeError):
-                return jsonify({'status': 'error', 'message': 'account_size must be a number'}), 400
-
-            if not isinstance(admin, bool):
-                return jsonify({'status': 'error', 'message': 'admin must be a boolean'}), 400
-
-            if asset_class not in ["crypto", "forex"]:
-                return jsonify({
-                    'status': 'error',
-                    'message': f"Invalid asset_class: {asset_class}. Must be 'crypto' or 'forex'"
-                }), 400
-
-            if account_size <= 0:
-                return jsonify({'status': 'error', 'message': 'account_size must be positive'}), 400
-
+                return jsonify({'status': 'error', 'message': 'Missing JSON body'}), 400
         except Exception as e:
-            bt.logging.error(f"Error parsing request body: {e}")
-            return jsonify({'status': 'error', 'message': f'Invalid request: {str(e)}'}), 400
+            return jsonify({'status': 'error', 'message': f'Invalid request: {e}'}), 400
 
-        # 3. Check wallet is configured
         if not self._coldkey or not self._hotkey or not self._validator_url:
             return jsonify({'status': 'error', 'message': 'Wallet not configured'}), 500
 
-        # 4. Sign message
+        # Build and sign payload
         try:
+            asset_class = request_data.get("asset_class", "crypto")
+            account_size = float(request_data.get("account_size", 0))
+            admin = request_data.get("admin", False)
+            hl_address = request_data.get("hl_address")  # Only for HL subaccounts
+
             message_dict = {
                 "account_size": account_size,
                 "admin": admin,
@@ -687,14 +496,12 @@ class EntityMinerRestServer(MinerRestServer):
                 "entity_coldkey": self._coldkey.ss58_address,
                 "entity_hotkey": self._hotkey.ss58_address
             }
+            if hl_address:
+                message_dict["hl_address"] = hl_address
+
             message = json.dumps(message_dict, sort_keys=True).encode('utf-8')
             signature = self._coldkey.sign(message).hex()
-        except Exception as e:
-            bt.logging.error(f"Error signing message: {e}")
-            return jsonify({'status': 'error', 'message': f'Wallet error: {str(e)}'}), 500
 
-        # 5. Send request to validator
-        try:
             payload = {
                 "entity_hotkey": self._hotkey.ss58_address,
                 "entity_coldkey": self._coldkey.ss58_address,
@@ -704,278 +511,54 @@ class EntityMinerRestServer(MinerRestServer):
                 "signature": signature,
                 "version": "2.0.0"
             }
+            if hl_address:
+                payload["hl_address"] = hl_address
 
+        except Exception as e:
+            return jsonify({'status': 'error', 'message': f'Signing error: {e}'}), 500
+
+        # Forward to validator
+        try:
             resp = http_requests.post(
-                f"{self._validator_url}/entity/create-subaccount",
+                f"{self._validator_url}{endpoint}",
                 json=payload,
                 headers={"Content-Type": "application/json"},
                 timeout=60
             )
-            elapsed_s = time.time() - start_time
 
             try:
                 response_data = resp.json()
             except json.JSONDecodeError:
-                return jsonify({'status': 'error', 'message': 'Invalid JSON response from validator'}), 500
+                return jsonify({'status': 'error', 'message': 'Invalid response from validator'}), 500
 
             if resp.status_code == 200:
-                if self.slack_notifier:
-                    subaccount = response_data.get('subaccount', {})
-                    from datetime import datetime, timezone
-                    timestamp = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
-                    self.slack_notifier.send_message(
-                        f"Subaccount created successfully!\n"
-                        f"ID: {subaccount.get('subaccount_id')}\n"
-                        f"UUID: {subaccount.get('subaccount_uuid')}\n"
-                        f"Synthetic Hotkey: {subaccount.get('synthetic_hotkey')}\n"
-                        f"Asset Class: {subaccount.get('asset_class')}\n"
-                        f"Account Size: ${subaccount.get('account_size'):,.2f}\n"
-                        f"Message: {response_data.get('message', '')}\n"
-                        f"Created: {timestamp}\n"
-                        f"Time: {elapsed_s:.2f}s",
-                        level="success",
-                        bypass_cooldown=True
-                    )
-                return jsonify(response_data), 200
-            else:
-                error_message = response_data.get('message', 'Unknown error from validator')
-                if self.slack_notifier:
-                    self.slack_notifier.send_message(
-                        f"Subaccount creation failed\n"
-                        f"Asset Class: {asset_class}\n"
-                        f"Account Size: ${account_size:,.2f}\n"
-                        f"Error: {error_message}",
-                        level="error"
-                    )
-                return jsonify({'status': 'error', 'message': error_message}), resp.status_code
-
-        except http_requests.exceptions.Timeout:
-            if self.slack_notifier:
-                self.slack_notifier.send_message(
-                    f"Subaccount creation failed\n"
-                    f"Asset Class: {asset_class}\n"
-                    f"Account Size: ${account_size:,.2f}\n"
-                    f"Error: Request to validator timed out",
-                    level="error"
-                )
-            return jsonify({'status': 'error', 'message': 'Request to validator timed out'}), 504
-
-        except http_requests.exceptions.ConnectionError:
-            if self.slack_notifier:
-                self.slack_notifier.send_message(
-                    f"Subaccount creation failed\n"
-                    f"Asset Class: {asset_class}\n"
-                    f"Account Size: ${account_size:,.2f}\n"
-                    f"Error: Could not connect to validator",
-                    level="error"
-                )
-            return jsonify({'status': 'error', 'message': 'Could not connect to validator'}), 503
-
-        except Exception as e:
-            bt.logging.error(f"Error communicating with validator: {e}")
-            if self.slack_notifier:
-                self.slack_notifier.send_message(
-                    f"Subaccount creation failed\n"
-                    f"Asset Class: {asset_class}\n"
-                    f"Account Size: ${account_size:,.2f}\n"
-                    f"Error: {str(e)}",
-                    level="error"
-                )
-            return jsonify({'status': 'error', 'message': f'Validator communication error: {str(e)}'}), 500
-
-    def create_hl_subaccount_endpoint(self):
-        """
-        POST /api/create-hl-subaccount - Create an HL-linked subaccount via validator.
-
-        Request body (JSON):
-        {
-            "hl_address": "0x...",          // Required, 0x + 40 hex chars
-            "account_size": float,           // Required, must be > 0
-            "payout_address": "0x...",       // Optional, EVM address (0x + 40 hex) for USDC payouts
-            "admin": bool                    // Optional, default false
-        }
-
-        Response (200 OK):
-        {
-            "status": "success",
-            "message": "...",
-            "subaccount": { ... }
-        }
-        """
-        import requests as http_requests
-        start_time = time.time()
-
-        # 1. Validate API key
-        api_key = self._get_api_key_safe()
-        if not self.is_valid_api_key(api_key):
-            return jsonify({'error': 'Unauthorized access'}), 401
-
-        # 2. Parse and validate request body
-        try:
-            request_data = request.get_json()
-            if not request_data:
-                return jsonify({'status': 'error', 'message': 'Invalid request: missing JSON body'}), 400
-
-            if "hl_address" not in request_data:
-                return jsonify({'status': 'error', 'message': 'Missing required field: hl_address'}), 400
-
-            if "account_size" not in request_data:
-                return jsonify({'status': 'error', 'message': 'Missing required field: account_size'}), 400
-
-            hl_address = request_data["hl_address"]
-            admin = request_data.get("admin", False)
-            payout_address = request_data.get("payout_address")
-
-            try:
-                account_size = float(request_data["account_size"])
-            except (ValueError, TypeError):
-                return jsonify({'status': 'error', 'message': 'account_size must be a number'}), 400
-
-            if not isinstance(admin, bool):
-                return jsonify({'status': 'error', 'message': 'admin must be a boolean'}), 400
-
-            if not isinstance(hl_address, str) or not re.match(ValiConfig.HL_ADDRESS_REGEX, hl_address):
-                return jsonify({
-                    'status': 'error',
-                    'message': 'hl_address must be a valid Hyperliquid address (0x followed by 40 hex characters)'
-                }), 400
-
-            if payout_address is not None:
-                if not isinstance(payout_address, str) or not re.match(ValiConfig.HL_ADDRESS_REGEX, payout_address):
-                    return jsonify({
-                        'status': 'error',
-                        'message': 'payout_address must be a valid EVM address (0x followed by 40 hex characters)'
-                    }), 400
-
-            if account_size <= 0:
-                return jsonify({'status': 'error', 'message': 'account_size must be positive'}), 400
-
-        except Exception as e:
-            bt.logging.error(f"Error parsing request body: {e}")
-            return jsonify({'status': 'error', 'message': f'Invalid request: {str(e)}'}), 400
-
-        # 3. Check wallet is configured
-        if not self._coldkey or not self._hotkey or not self._validator_url:
-            return jsonify({'status': 'error', 'message': 'Wallet not configured'}), 500
-
-        # 4. Sign message
-        try:
-            message_dict = {
-                "account_size": account_size,
-                "admin": admin,
-                "entity_coldkey": self._coldkey.ss58_address,
-                "entity_hotkey": self._hotkey.ss58_address,
-                "hl_address": hl_address
-            }
-            if payout_address is not None:
-                message_dict["payout_address"] = payout_address
-            message = json.dumps(message_dict, sort_keys=True).encode('utf-8')
-            signature = self._coldkey.sign(message).hex()
-        except Exception as e:
-            bt.logging.error(f"Error signing message: {e}")
-            return jsonify({'status': 'error', 'message': f'Wallet error: {str(e)}'}), 500
-
-        # 5. Send request to validator
-        try:
-            payload = {
-                "entity_hotkey": self._hotkey.ss58_address,
-                "entity_coldkey": self._coldkey.ss58_address,
-                "account_size": account_size,
-                "hl_address": hl_address,
-                "admin": admin,
-                "signature": signature,
-                "version": "2.0.0"
-            }
-            if payout_address is not None:
-                payload["payout_address"] = payout_address
-
-            resp = http_requests.post(
-                f"{self._validator_url}/entity/create-hl-subaccount",
-                json=payload,
-                headers={"Content-Type": "application/json"},
-                timeout=60
-            )
-            elapsed_s = time.time() - start_time
-
-            try:
-                response_data = resp.json()
-            except json.JSONDecodeError:
-                return jsonify({'status': 'error', 'message': 'Invalid JSON response from validator'}), 500
-
-            if resp.status_code == 200:
-                # Update HL address mappings and persist to disk
+                # Update HL mappings if this was an HL subaccount
                 subaccount = response_data.get('subaccount', {})
+                new_hl = subaccount.get('hl_address') or hl_address
                 synthetic = subaccount.get('synthetic_hotkey')
-                normalized_hl = self._normalize_hl_address(hl_address)
-                if synthetic and normalized_hl:
-                    self._hl_to_synthetic[normalized_hl] = synthetic
-                    self._synthetic_to_hl[synthetic] = normalized_hl
-                    self._save_hl_mappings()
+                if new_hl and synthetic:
+                    self._hl_to_synthetic[new_hl] = synthetic
+                    self._synthetic_to_hl[synthetic] = new_hl
 
                 if self.slack_notifier:
-                    from datetime import datetime, timezone
-                    timestamp = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
-                    payout_line = f"Payout Address: {payout_address}\n" if payout_address else ""
+                    elapsed_s = time.time() - start_time
                     self.slack_notifier.send_message(
-                        f"HL Subaccount created successfully!\n"
-                        f"ID: {subaccount.get('subaccount_id')}\n"
-                        f"UUID: {subaccount.get('subaccount_uuid')}\n"
-                        f"Synthetic Hotkey: {subaccount.get('synthetic_hotkey')}\n"
-                        f"HL Address: {hl_address}\n"
-                        f"{payout_line}"
-                        f"Account Size: ${subaccount.get('account_size', 0):,.2f}\n"
-                        f"Message: {response_data.get('message', '')}\n"
-                        f"Created: {timestamp}\n"
-                        f"Time: {elapsed_s:.2f}s",
+                        f"Subaccount created: {subaccount.get('synthetic_hotkey')} "
+                        f"({subaccount.get('asset_class')}, ${subaccount.get('account_size', 0):,.2f}) "
+                        f"in {elapsed_s:.2f}s",
                         level="success",
                         bypass_cooldown=True
                     )
                 return jsonify(response_data), 200
             else:
-                error_message = response_data.get('message', 'Unknown error from validator')
-                if self.slack_notifier:
-                    self.slack_notifier.send_message(
-                        f"HL Subaccount creation failed\n"
-                        f"HL Address: {hl_address}\n"
-                        f"Account Size: ${account_size:,.2f}\n"
-                        f"Error: {error_message}",
-                        level="error"
-                    )
-                return jsonify({'status': 'error', 'message': error_message}), resp.status_code
+                return jsonify(response_data), resp.status_code
 
         except http_requests.exceptions.Timeout:
-            if self.slack_notifier:
-                self.slack_notifier.send_message(
-                    f"HL Subaccount creation failed\n"
-                    f"HL Address: {hl_address}\n"
-                    f"Account Size: ${account_size:,.2f}\n"
-                    f"Error: Request to validator timed out",
-                    level="error"
-                )
-            return jsonify({'status': 'error', 'message': 'Request to validator timed out'}), 504
-
+            return jsonify({'status': 'error', 'message': 'Validator request timed out'}), 504
         except http_requests.exceptions.ConnectionError:
-            if self.slack_notifier:
-                self.slack_notifier.send_message(
-                    f"HL Subaccount creation failed\n"
-                    f"HL Address: {hl_address}\n"
-                    f"Account Size: ${account_size:,.2f}\n"
-                    f"Error: Could not connect to validator",
-                    level="error"
-                )
-            return jsonify({'status': 'error', 'message': 'Could not connect to validator'}), 503
-
+            return jsonify({'status': 'error', 'message': 'Cannot connect to validator'}), 503
         except Exception as e:
-            bt.logging.error(f"Error communicating with validator: {e}")
-            if self.slack_notifier:
-                self.slack_notifier.send_message(
-                    f"HL Subaccount creation failed\n"
-                    f"HL Address: {hl_address}\n"
-                    f"Account Size: ${account_size:,.2f}\n"
-                    f"Error: {str(e)}",
-                    level="error"
-                )
-            return jsonify({'status': 'error', 'message': f'Validator communication error: {str(e)}'}), 500
+            return jsonify({'status': 'error', 'message': f'Validator error: {e}'}), 500
 
     def health_endpoint(self):
         """GET /api/health - Health check."""

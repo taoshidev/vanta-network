@@ -749,29 +749,6 @@ class TestHLTrackerRejectionBroadcasts(TestBase):
         # Should not raise
         tracker._broadcast_rejection("5Entity_0", "No crash")
 
-    def test_broadcast_accepted_fill_calls_notifier(self):
-        """Accepted fills are broadcast as order_event payloads."""
-        tracker = self._make_tracker()
-
-        tracker._broadcast_accepted_fill(
-            synthetic_hotkey="5Entity_0",
-            trade_pair="BTCUSD",
-            order_type="LONG",
-            fill_hash="0xabc123",
-        )
-
-        tracker._ws_notifier_client.broadcast_subaccount_dashboard.assert_called_once_with(
-            "5Entity_0",
-            {
-                "order_event": {
-                    "status": "accepted",
-                    "trade_pair": "BTCUSD",
-                    "order_type": "LONG",
-                    "fill_hash": "0xabc123",
-                }
-            },
-        )
-
     def test_rate_limit_rejection_broadcasts(self):
         """Rate limiting rejection triggers broadcast with wait time."""
         tracker = self._make_tracker()
@@ -845,34 +822,6 @@ class TestHLTrackerRejectionBroadcasts(TestBase):
         self.assertIn("Order rejected", call_args[0][1]["error_msg"])
         self.assertIn("Leverage too high", call_args[0][1]["error_msg"])
 
-    def test_unexpected_exception_rejection_broadcasts(self):
-        """Unexpected exceptions during order processing also trigger rejection broadcast."""
-        tracker = self._make_tracker()
-        self._setup_valid_fill_path(tracker)
-
-        tracker._rate_limiter = MagicMock()
-        tracker._rate_limiter.is_allowed.return_value = (True, 0)
-        tracker._elimination_client.get_elimination_local_cache.return_value = None
-        tracker._entity_client.validate_hotkey_for_orders.return_value = {"is_valid": True}
-
-        with patch('entity_management.hyperliquid_tracker.ValiConfig') as mock_config, \
-             patch('entity_management.hyperliquid_tracker.TRADE_PAIR_ID_TO_TRADE_PAIR') as mock_tp, \
-             patch('entity_management.hyperliquid_tracker.OrderProcessor') as mock_op:
-            mock_config.HL_COIN_TO_TRADE_PAIR = {"BTC": "BTCUSD"}
-            mock_config.CRYPTO_MIN_LEVERAGE = 0.01
-            mock_config.CRYPTO_MAX_LEVERAGE = 0.5
-            tp_mock = MagicMock(is_blocked=False)
-            mock_tp.get = MagicMock(return_value=tp_mock)
-            tracker._price_fetcher_client.is_market_open.return_value = True
-
-            mock_op.process_order.side_effect = ValueError("Position at max $1000.00 (limit: $1000.00)")
-
-            tracker._process_fill("0xaddr", self._make_fill())
-
-        call_args = tracker._ws_notifier_client.broadcast_subaccount_dashboard.call_args
-        self.assertIn("Order rejected", call_args[0][1]["error_msg"])
-        self.assertIn("Position at max", call_args[0][1]["error_msg"])
-
 
 # ==================== EntityMinerRestServer WS Message Handling Tests ====================
 
@@ -929,34 +878,6 @@ class TestEntityMinerRestServerMessageHandling(TestBase):
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0]["status"], "rejected")
         self.assertEqual(events[0]["error_message"], "Market is closed for BTCUSD.")
-        gw._push_sse.assert_called_once()
-
-    def test_handle_accepted_order_event_message(self):
-        """Accepted order_event payloads create OrderEvents and SSE updates."""
-        gw = self._make_gateway()
-        gw._push_sse = MagicMock()
-
-        gw._handle_ws_message({
-            "type": "subaccount_dashboard",
-            "synthetic_hotkey": "5Entity_0",
-            "timestamp": 1700000000000,
-            "data": {
-                "order_event": {
-                    "status": "accepted",
-                    "trade_pair": "BTCUSD",
-                    "order_type": "LONG",
-                    "fill_hash": "0xfill",
-                }
-            }
-        })
-
-        events = gw._event_store.get_events("0xHL1")
-        self.assertEqual(len(events), 1)
-        self.assertEqual(events[0]["status"], "accepted")
-        self.assertEqual(events[0]["trade_pair"], "BTCUSD")
-        self.assertEqual(events[0]["order_type"], "LONG")
-        self.assertEqual(events[0]["fill_hash"], "0xfill")
-        self.assertNotIn("0xHL1", gw._dashboard_cache)
         gw._push_sse.assert_called_once()
 
     def test_handle_message_unknown_synthetic(self):
