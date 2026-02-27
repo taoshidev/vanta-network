@@ -80,6 +80,7 @@ class LimitOrderManager(CacheController):
 
         self._read_limit_orders_from_disk()
         self._needs_initial_bracket_sync = True
+        self._last_trailing_disk_write_ms = 0
 
         # Create dedicated locks for protecting self._limit_orders dictionary
         # Convert limit orders structure to format expected by PositionLocks
@@ -781,10 +782,12 @@ class LimitOrderManager(CacheController):
                         break
 
                 # Persist trailing stop orders whose best price changed (crash recovery)
-                if self._trailing_stop_price_changed:
+                # Rate limited to once per minute to avoid excessive disk I/O
+                if self._trailing_stop_price_changed and now_ms - self._last_trailing_disk_write_ms >= 60_000:
                     for order in orders:
                         if order.trailing_stop is not None and order.src == OrderSource.BRACKET_UNFILLED:
                             self._write_to_disk(miner_hotkey, order)
+                    self._last_trailing_disk_write_ms = now_ms
                     self._trailing_stop_price_changed = False
 
         if total_filled > 0:
