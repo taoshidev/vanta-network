@@ -1293,7 +1293,8 @@ class LimitOrderManager(CacheController):
         order_type = position.position_type
         order.order_type = order_type
 
-        # Trailing stop: update best price and overwrite stop_loss
+        # Trailing stop: update best price and compute trailing SL
+        trailing_sl = None
         if order.trailing_stop is not None:
             trailing_percent = order.trailing_stop.get('trailing_percent')
             trailing_value = order.trailing_stop.get('trailing_value')
@@ -1302,29 +1303,40 @@ class LimitOrderManager(CacheController):
                 new_best = max(order.price, bid_price) if order.price > 0 else bid_price
                 if new_best != order.price:
                     order.price = new_best
-                    if trailing_percent is not None:
-                        order.stop_loss = order.price * (1 - float(trailing_percent))
-                    else:
-                        order.stop_loss = order.price - float(trailing_value)
                     self._trailing_stop_price_changed = True
+                if trailing_percent is not None:
+                    trailing_sl = order.price * (1 - float(trailing_percent))
+                else:
+                    trailing_sl = order.price - float(trailing_value)
 
             elif order_type == OrderType.SHORT:
                 new_best = min(order.price, ask_price) if order.price > 0 else ask_price
                 if new_best != order.price:
                     order.price = new_best
-                    if trailing_percent is not None:
-                        order.stop_loss = order.price * (1 + float(trailing_percent))
-                    else:
-                        order.stop_loss = order.price + float(trailing_value)
                     self._trailing_stop_price_changed = True
+                if trailing_percent is not None:
+                    trailing_sl = order.price * (1 + float(trailing_percent))
+                else:
+                    trailing_sl = order.price + float(trailing_value)
+
+        # Compute effective stop loss: use the more protective value
+        # LONG: higher SL is more protective, SHORT: lower SL is more protective
+        effective_sl = order.stop_loss
+        if trailing_sl is not None:
+            if effective_sl is None:
+                effective_sl = trailing_sl
+            elif order_type == OrderType.LONG:
+                effective_sl = max(effective_sl, trailing_sl)
+            elif order_type == OrderType.SHORT:
+                effective_sl = min(effective_sl, trailing_sl)
 
         # For LONG orders:
         # - Stop loss: triggers when market price < SL (use bid for selling)
         # - Take profit: triggers when market price > TP (use bid for selling)
         if order_type == OrderType.LONG:
-            if order.stop_loss is not None and bid_price < order.stop_loss:
-                bt.logging.info(f"Bracket order stop loss triggered: bid={bid_price} < SL={order.stop_loss}")
-                return order.stop_loss
+            if effective_sl is not None and bid_price < effective_sl:
+                bt.logging.info(f"Bracket order stop loss triggered: bid={bid_price} < SL={effective_sl}")
+                return effective_sl
             if order.take_profit is not None and bid_price > order.take_profit:
                 bt.logging.info(f"Bracket order take profit triggered: bid={bid_price} > TP={order.take_profit}")
                 return order.take_profit
@@ -1333,9 +1345,9 @@ class LimitOrderManager(CacheController):
         # - Stop loss: triggers when market price > SL (use ask for buying)
         # - Take profit: triggers when market price < TP (use ask for buying)
         elif order_type == OrderType.SHORT:
-            if order.stop_loss is not None and ask_price > order.stop_loss:
-                bt.logging.info(f"Bracket order stop loss triggered: ask={ask_price} > SL={order.stop_loss}")
-                return order.stop_loss
+            if effective_sl is not None and ask_price > effective_sl:
+                bt.logging.info(f"Bracket order stop loss triggered: ask={ask_price} > SL={effective_sl}")
+                return effective_sl
             if order.take_profit is not None and ask_price < order.take_profit:
                 bt.logging.info(f"Bracket order take profit triggered: ask={ask_price} < TP={order.take_profit}")
                 return order.take_profit

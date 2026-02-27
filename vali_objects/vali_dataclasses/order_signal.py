@@ -33,9 +33,6 @@ class Signal(BaseModel):
         if bracket_orders and (has_sl_tp or has_trailing):
             raise ValueError("Cannot set both bracket_orders and stop_loss/take_profit/trailing_stop on Signal")
 
-        if has_trailing and values.get('stop_loss') is not None:
-            raise ValueError("Cannot set both trailing_stop and stop_loss on Signal")
-
         return values
 
     @model_validator(mode='before')
