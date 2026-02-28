@@ -39,13 +39,7 @@ class Signal(BaseModel):
             return values
 
         if (has_sl_tp or has_trailing) and not bracket_orders:
-            bracket_entry = {
-                'stop_loss': stop_loss,
-                'take_profit': take_profit,
-                'leverage': values.get('leverage'),
-                'value': values.get('value'),
-                'quantity': values.get('quantity'),
-            }
+            bracket_entry = {'stop_loss': stop_loss, 'take_profit': take_profit}
             if has_trailing:
                 if 'trailing_percent' in trailing_stop:
                     bracket_entry['trailing_percent'] = trailing_stop['trailing_percent']
@@ -57,15 +51,10 @@ class Signal(BaseModel):
         if not bracket_orders:
             return values
 
-        size_fields = {'leverage', 'value', 'quantity'}
         price_fields = {'stop_loss', 'take_profit'}
         trailing_fields = {'trailing_percent', 'trailing_value'}
 
         for i, bracket in enumerate(bracket_orders):
-            size_present = [f for f in size_fields if bracket.get(f) is not None]
-            if len(size_present) != 1:
-                raise ValueError(f"bracket_orders[{i}]: exactly one of leverage/value/quantity required")
-
             price_present = [f for f in price_fields if bracket.get(f) is not None]
             trailing_present = [f for f in trailing_fields if bracket.get(f) is not None]
             if len(price_present) < 1 and len(trailing_present) < 1:

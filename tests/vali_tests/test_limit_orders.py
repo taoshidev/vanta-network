@@ -1803,7 +1803,10 @@ class TestLimitOrders(TestBase):
         bracket = order.bracket_orders[0]
         self.assertEqual(bracket['stop_loss'], 49000.0)
         self.assertEqual(bracket['take_profit'], 51000.0)
-        self.assertEqual(bracket['quantity'], 0.5)
+        # Size is not copied into bracket entry — inherited from parent order at fill time
+        self.assertIsNone(bracket.get('leverage'))
+        self.assertIsNone(bracket.get('value'))
+        self.assertIsNone(bracket.get('quantity'))
 
     def test_bracket_orders_with_different_size_fields(self):
         """Test bracket_orders work with leverage, value, and quantity size fields"""
