@@ -443,22 +443,28 @@ class LimitOrderManager(CacheController):
         Returns:
             dict with cancellation details
         """
-        # TODO support cancel by trade pair in v2
         try:
             # Parse trade_pair only if trade_pair_id is provided
-            # trade_pair = TradePair.from_trade_pair_id(trade_pair_id) if trade_pair_id else None
+            cancel_trade_pair = TradePair.from_trade_pair_id(trade_pair_id) if trade_pair_id else None
 
-            # Split order_uuid by commas to support multiple cancellations
-            order_uuids = [uuid.strip() for uuid in order_uuid.split(',')] if order_uuid else []
+            cancel_all = order_uuid and order_uuid.strip().upper() == "ALL"
 
-            # Find orders for each UUID
             orders_to_cancel = []
-            for uuid in order_uuids:
-                orders_to_cancel.extend(self._find_orders_to_cancel_by_uuid(miner_hotkey, uuid))
+            if cancel_all:
+                # Cancel all unfilled limit and bracket orders for this miner
+                for trade_pair, hotkey_dict in self._limit_orders.items():
+                    if cancel_trade_pair and trade_pair != cancel_trade_pair:
+                        continue
 
-            # Only cancel one order at a time with order_uuid
-            # if not orders_to_cancel and trade_pair:
-            #     orders_to_cancel = self._find_orders_to_cancel_by_trade_pair(miner_hotkey, trade_pair)
+                    if miner_hotkey in hotkey_dict:
+                        for order in hotkey_dict[miner_hotkey]:
+                            if order.src in [OrderSource.LIMIT_UNFILLED, OrderSource.BRACKET_UNFILLED]:
+                                orders_to_cancel.append(order)
+            else:
+                # Cancel by specific UUID(s) — comma-separated for multiple
+                order_uuids = [uuid.strip() for uuid in order_uuid.split(',')] if order_uuid else []
+                for uuid in order_uuids:
+                    orders_to_cancel.extend(self._find_orders_to_cancel_by_uuid(miner_hotkey, uuid))
 
             if not orders_to_cancel:
                 raise SignalException(

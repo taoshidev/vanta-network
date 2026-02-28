@@ -240,7 +240,7 @@ class OrderProcessor:
         # Call cancel limit order (may throw SignalException)
         result = limit_order_client.cancel_limit_order(
             miner_hotkey,
-            None,  # TODO support cancel by trade pair in v2
+            trade_pair.trade_pair_id if trade_pair else None,
             order_uuid,
             now_ms
         )

@@ -255,7 +255,17 @@ Size is optional — omit to inherit from the position.
 
 Cancels one or all pending limit/bracket orders.
 
-#### Cancel all limit orders
+#### Cancel all orders for a specific pair
+
+```json
+{
+  "execution_type": "LIMIT_CANCEL",
+  "trade_pair_id": "BTCUSD",
+  "order_uuid": "ALL"
+}
+```
+
+#### Cancel all limit orders across all pairs
 
 ```json
 {
