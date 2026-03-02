@@ -1492,6 +1492,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             account_size = data['account_size']
             hl_address = data['hl_address']
             admin = data.get('admin', False)
+            payout_address = data.get('payout_address')
 
             # Validate admin flag type early
             if not isinstance(admin, bool):
@@ -1509,15 +1510,23 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             if not isinstance(hl_address, str) or not re.match(ValiConfig.HL_ADDRESS_REGEX, hl_address):
                 return jsonify({'error': 'hl_address must be a valid Hyperliquid address (0x followed by 40 hex characters)'}), 400
 
+            # Validate payout_address format if provided
+            if payout_address:
+                if not isinstance(payout_address, str) or not re.match(ValiConfig.HL_ADDRESS_REGEX, payout_address):
+                    return jsonify({'error': 'payout_address must be a valid EVM address (0x followed by 40 hex characters)'}), 400
+
             # Verify signature (message includes hl_address instead of asset_class)
             keypair = Keypair(ss58_address=entity_coldkey)
-            message = json.dumps({
+            sig_message_dict = {
                 "account_size": account_size,
                 "admin": admin,
                 "entity_coldkey": entity_coldkey,
                 "entity_hotkey": entity_hotkey,
                 "hl_address": hl_address
-            }, sort_keys=True).encode('utf-8')
+            }
+            if payout_address:
+                sig_message_dict["payout_address"] = payout_address
+            message = json.dumps(sig_message_dict, sort_keys=True).encode('utf-8')
 
             is_valid = keypair.verify(message, bytes.fromhex(data['signature']))
             if not is_valid:
@@ -1530,7 +1539,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
             # Create HL subaccount via RPC
             success, subaccount_info, message = self._entity_client.create_hl_subaccount(
-                entity_hotkey, account_size, hl_address, admin=admin
+                entity_hotkey, account_size, hl_address, admin=admin, payout_address=payout_address
             )
 
             if success:
@@ -1544,7 +1553,9 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                             synthetic_hotkey=subaccount_info['synthetic_hotkey'],
                             account_size=subaccount_info['account_size'],
                             asset_class=subaccount_info['asset_class'],
-                            status=subaccount_info['status']
+                            status=subaccount_info['status'],
+                            hl_address=hl_address,
+                            payout_address=payout_address
                         )
                     except Exception as e:
                         bt.logging.warning(f"[REST_API] Failed to broadcast HL subaccount registration: {e}")

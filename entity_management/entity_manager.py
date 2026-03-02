@@ -62,6 +62,7 @@ class SubaccountInfo(BaseModel):
     account_size: float = Field(description="Account size in USD (immutable once set)")
     asset_class: str = Field(description="Asset class selection (immutable once set)")
     hl_address: Optional[str] = Field(default=None, description="Hyperliquid address for HL tracking subaccounts")
+    payout_address: Optional[str] = Field(default=None, description="EVM payout address for HL subaccounts")
 
     # Note: Challenge period tracking has been migrated to ChallengePeriodManager
     # Synthetic hotkeys are added to challenge period bucket and evaluated via inspect()
@@ -588,7 +589,9 @@ class EntityManager(ValidatorBroadcastBase):
                     synthetic_hotkey=synthetic_hotkey,
                     account_size=subaccount.account_size,
                     asset_class=subaccount.asset_class,
-                    status="active"
+                    status="active",
+                    hl_address=subaccount.hl_address,
+                    payout_address=subaccount.payout_address
                 )
 
             # Broadcast dashboard update to WebSocket subscribers after slashing completes
@@ -645,7 +648,8 @@ class EntityManager(ValidatorBroadcastBase):
         entity_hotkey: str,
         account_size: float,
         hl_address: str,
-        admin: bool = False
+        admin: bool = False,
+        payout_address: Optional[str] = None
     ) -> Tuple[bool, Optional[SubaccountInfo], str]:
         """
         Create a new subaccount linked to a Hyperliquid address.
@@ -658,6 +662,7 @@ class EntityManager(ValidatorBroadcastBase):
             account_size: Account size in USD
             hl_address: Hyperliquid address (0x-prefixed, 40 hex chars)
             admin: If True, skip collateral slashing
+            payout_address: Optional EVM address for payouts (0x-prefixed, 40 hex chars)
 
         Returns:
             (success: bool, subaccount_info: Optional[SubaccountInfo], message: str)
@@ -665,6 +670,10 @@ class EntityManager(ValidatorBroadcastBase):
         # Validate HL address format
         if not re.match(ValiConfig.HL_ADDRESS_REGEX, hl_address):
             return False, None, f"Invalid Hyperliquid address format: {hl_address}. Must be 0x followed by 40 hex characters."
+
+        # Validate payout_address format if provided
+        if payout_address and not re.match(ValiConfig.HL_ADDRESS_REGEX, payout_address):
+            return False, None, f"Invalid payout address format: {payout_address}. Must be 0x followed by 40 hex characters."
 
         # Check for duplicate HL address across all entities
         with self._entities_lock:
@@ -689,7 +698,7 @@ class EntityManager(ValidatorBroadcastBase):
         if not success:
             return False, None, message
 
-        # Set hl_address on the subaccount and re-persist
+        # Set hl_address and payout_address on the subaccount and re-persist
         entity_lock = self._get_entity_lock(entity_hotkey)
         with entity_lock:
             entity_data = self.entities.get(entity_hotkey)
@@ -697,6 +706,8 @@ class EntityManager(ValidatorBroadcastBase):
                 subaccount = entity_data.subaccounts.get(subaccount_info.subaccount_id)
                 if subaccount:
                     subaccount.hl_address = hl_address
+                    if payout_address:
+                        subaccount.payout_address = payout_address
                     # Update HL reverse index
                     with self._entities_lock:
                         self._hl_address_to_synthetic[hl_address] = subaccount.synthetic_hotkey
@@ -1121,18 +1132,24 @@ class EntityManager(ValidatorBroadcastBase):
             bt.logging.error(f"[ENTITY_MANAGER] HWM data unavailable for {synthetic_hotkey}: {e}")
 
         # 3. Build aggregated response
+        subaccount_info_dict = {
+            'synthetic_hotkey': synthetic_hotkey,
+            'entity_hotkey': entity_hotkey,
+            'subaccount_id': subaccount_id,
+            'subaccount_uuid': subaccount.subaccount_uuid,
+            'asset_class': subaccount.asset_class,
+            'account_size': subaccount.account_size,
+            'status': subaccount.status,
+            'created_at_ms': subaccount.created_at_ms,
+            'eliminated_at_ms': subaccount.eliminated_at_ms,
+        }
+        if subaccount.hl_address:
+            subaccount_info_dict['hl_address'] = subaccount.hl_address
+        if subaccount.payout_address:
+            subaccount_info_dict['payout_address'] = subaccount.payout_address
+
         return {
-            'subaccount_info': {
-                'synthetic_hotkey': synthetic_hotkey,
-                'entity_hotkey': entity_hotkey,
-                'subaccount_id': subaccount_id,
-                'subaccount_uuid': subaccount.subaccount_uuid,
-                'asset_class': subaccount.asset_class,
-                'account_size': subaccount.account_size,
-                'status': subaccount.status,
-                'created_at_ms': subaccount.created_at_ms,
-                'eliminated_at_ms': subaccount.eliminated_at_ms,
-            },
+            'subaccount_info': subaccount_info_dict,
             'challenge_period': challenge_data,
             'ledger': ledger_data,
             'positions': positions_data,
@@ -1379,7 +1396,9 @@ class EntityManager(ValidatorBroadcastBase):
         synthetic_hotkey: str,
         account_size: float,
         asset_class: str,
-        status: str = "active"
+        status: str = "active",
+        hl_address: Optional[str] = None,
+        payout_address: Optional[str] = None
     ):
         """
         Broadcast SubaccountRegistration synapse to other validators using shared broadcast base.
@@ -1392,6 +1411,8 @@ class EntityManager(ValidatorBroadcastBase):
             account_size: Account size in USD (immutable)
             asset_class: Asset class selection (immutable)
             status: Subaccount status (active, admin, etc.)
+            hl_address: Optional Hyperliquid address for HL subaccounts
+            payout_address: Optional EVM payout address for HL subaccounts
         """
         def create_synapse():
             subaccount_data = {
@@ -1403,6 +1424,10 @@ class EntityManager(ValidatorBroadcastBase):
                 "asset_class": asset_class,
                 "status": status
             }
+            if hl_address:
+                subaccount_data["hl_address"] = hl_address
+            if payout_address:
+                subaccount_data["payout_address"] = payout_address
             return template.protocol.SubaccountRegistration(subaccount_data=subaccount_data)
 
         self._broadcast_to_validators(
@@ -1491,6 +1516,8 @@ class EntityManager(ValidatorBroadcastBase):
 
                 # Create new subaccount info
                 now_ms = TimeUtil.now_in_millis()
+                hl_address = subaccount_data.get("hl_address")
+                payout_address = subaccount_data.get("payout_address")
                 subaccount_info = SubaccountInfo(
                     subaccount_id=subaccount_id,
                     subaccount_uuid=subaccount_uuid,
@@ -1498,15 +1525,19 @@ class EntityManager(ValidatorBroadcastBase):
                     status=status,
                     created_at_ms=now_ms,
                     account_size=account_size,
-                    asset_class=asset_class
+                    asset_class=asset_class,
+                    hl_address=hl_address,
+                    payout_address=payout_address
                 )
 
                 # Add to entity
                 entity_data.subaccounts[subaccount_id] = subaccount_info
 
-                # Update reverse index
+                # Update reverse indices
                 with self._entities_lock:
                     self._uuid_to_hotkey[subaccount_uuid] = synthetic_hotkey
+                    if hl_address:
+                        self._hl_address_to_synthetic[hl_address] = synthetic_hotkey
 
                 # Update next_subaccount_id if needed
                 if subaccount_id >= entity_data.next_subaccount_id:
