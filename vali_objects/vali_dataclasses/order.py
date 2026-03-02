@@ -7,6 +7,7 @@ from pydantic import field_validator, model_validator
 from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.vali_config import TradePair
+from vali_objects.enums.order_type_enum import StopCondition
 from vali_objects.vali_dataclasses.order_signal import Signal
 from vali_objects.vali_dataclasses.price_source import PriceSource
 
@@ -45,6 +46,14 @@ class Order(Signal):
         """Convert execution_type string to ExecutionType enum if needed."""
         if isinstance(v, str):
             return ExecutionType.from_string(v)
+        return v
+
+    @field_validator('stop_condition', mode='before')
+    @classmethod
+    def convert_stop_condition(cls, v):
+        """Convert stop_condition string to StopCondition enum if needed."""
+        if isinstance(v, str):
+            return StopCondition.from_string(v)
         return v
 
     @model_validator(mode='before')
@@ -171,7 +180,9 @@ class Order(Signal):
                 'take_profit': self.take_profit,
                 'margin_loan': self.margin_loan,
                 'trailing_stop': self.trailing_stop,
-                'bracket_orders': self.bracket_orders}
+                'bracket_orders': self.bracket_orders,
+                'stop_price': self.stop_price,
+                'stop_condition': str(self.stop_condition) if self.stop_condition else None}
 
     def to_dashboard(self, include_trade_pair: bool = False) -> dict:
         results = {

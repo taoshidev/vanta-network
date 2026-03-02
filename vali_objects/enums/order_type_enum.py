@@ -46,3 +46,28 @@ class OrderType(Enum):
     def __json__(self):
         # Provide a dictionary representation for JSON serialization
         return self.__str__()
+
+
+class StopCondition(Enum):
+    GTE = "GTE"  # trigger when price >= stop_price
+    LTE = "LTE"  # trigger when price <= stop_price
+
+    def __str__(self):
+        return self.value
+
+    @staticmethod
+    def stop_condition_map():
+        return {sc.value: sc for sc in StopCondition}
+
+    @staticmethod
+    def from_string(stop_condition_value: str):
+        scm = StopCondition.stop_condition_map()
+        upper_value = stop_condition_value.upper() if stop_condition_value else None
+        if upper_value in scm:
+            return scm[upper_value]
+        else:
+            raise ValueError(f"No matching stop condition found for value '{stop_condition_value}'. "
+                             f"Valid values are: {', '.join(scm.keys())}")
+
+    def __json__(self):
+        return self.__str__()

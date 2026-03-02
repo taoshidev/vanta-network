@@ -11,7 +11,7 @@ import bittensor as bt
 from dataclasses import dataclass
 from typing import Optional
 from vali_objects.enums.execution_type_enum import ExecutionType
-from vali_objects.enums.order_type_enum import OrderType
+from vali_objects.enums.order_type_enum import OrderType, StopCondition
 from vali_objects.exceptions.bracket_order_exception import BracketOrderException
 from vali_objects.exceptions.signal_exception import SignalException
 from vali_objects.vali_dataclasses.order import Order
@@ -217,6 +217,92 @@ class OrderProcessor:
         return order
 
     @staticmethod
+    def process_stop_limit_order(signal: dict, trade_pair, order_uuid: str, now_ms: int,
+                                 miner_hotkey: str, limit_order_client, is_edit: bool = False) -> Order:
+        """
+        Process a STOP_LIMIT order by creating an Order object and calling limit_order_manager.
+
+        A stop-limit order waits for stop_price to be hit (per stop_condition), then spawns
+        a limit order at limit_price.
+
+        Args:
+            signal: Signal dictionary with stop-limit order details
+            trade_pair: Parsed TradePair object
+            order_uuid: Order UUID
+            now_ms: Current timestamp in milliseconds
+            miner_hotkey: Miner's hotkey
+            limit_order_client: Client to process the order
+            is_edit: If True, this is an edit operation
+
+        Returns:
+            The created Order object
+
+        Raises:
+            SignalException: If required fields are missing or processing fails
+        """
+        # Parse size fields
+        leverage, value, quantity = OrderProcessor.parse_size(signal)
+        if not leverage and not value and not quantity:
+            raise SignalException("Order size must be set: leverage, value, or quantity")
+
+        # Extract signal data
+        signal_order_type_str = signal.get("order_type")
+        stop_price = signal.get("stop_price")
+        stop_condition_str = signal.get("stop_condition")
+        limit_price = signal.get("limit_price")
+        bracket_orders = signal.get("bracket_orders")
+
+        # Validate required fields
+        if not signal_order_type_str:
+            raise SignalException("Missing required field: order_type")
+        if not stop_price:
+            raise SignalException("must set stop_price for stop-limit order")
+        if not stop_condition_str:
+            raise SignalException("must set stop_condition for stop-limit order (GTE or LTE)")
+        if not limit_price:
+            raise SignalException("must set limit_price for stop-limit order")
+
+        # Parse order type
+        try:
+            signal_order_type = OrderType.from_string(signal_order_type_str)
+        except ValueError as e:
+            raise SignalException(f"Invalid order_type: {str(e)}")
+
+        # Parse stop condition
+        try:
+            stop_condition = StopCondition.from_string(stop_condition_str)
+        except ValueError as e:
+            raise SignalException(f"Invalid stop_condition: {str(e)}")
+
+        # Convert numeric fields
+        stop_price = float(stop_price)
+        limit_price = float(limit_price)
+
+        # Create order object
+        order = Order(
+            trade_pair=trade_pair,
+            order_uuid=order_uuid,
+            processed_ms=now_ms,
+            price=0.0,
+            order_type=signal_order_type,
+            leverage=leverage,
+            quantity=quantity,
+            value=value,
+            execution_type=ExecutionType.STOP_LIMIT,
+            stop_price=stop_price,
+            stop_condition=stop_condition,
+            limit_price=limit_price,
+            bracket_orders=bracket_orders,
+            src=OrderSource.STOP_LIMIT_UNFILLED
+        )
+
+        # Process via limit order manager
+        limit_order_client.process_limit_order(miner_hotkey, order, is_edit=is_edit)
+
+        bt.logging.info(f"[ORDER_PROCESSOR] Processed STOP_LIMIT order{'(EDIT)' if is_edit else ''}: {order.order_uuid} for {miner_hotkey}")
+        return order
+
+    @staticmethod
     def process_limit_cancel(signal: dict, trade_pair, order_uuid: str, now_ms: int,
                             miner_hotkey: str, limit_order_client) -> dict:
         """
@@ -383,7 +469,7 @@ class OrderProcessor:
             existing_order = Order.from_dict(existing_order_dict)
 
             # VALIDATE order is unfilled
-            if existing_order.src not in [OrderSource.LIMIT_UNFILLED, OrderSource.BRACKET_UNFILLED]:
+            if existing_order.src not in [OrderSource.LIMIT_UNFILLED, OrderSource.BRACKET_UNFILLED, OrderSource.STOP_LIMIT_UNFILLED]:
                 raise SignalException(f"Cannot edit order {order_uuid}: order is not unfilled (status: {existing_order.src})")
 
             # VALIDATE trade pair matches
@@ -399,6 +485,10 @@ class OrderProcessor:
             # DELEGATE based on existing order's execution type
             if existing_order.execution_type == ExecutionType.BRACKET:
                 return OrderProcessor.process_bracket_order(
+                    signal, trade_pair, order_uuid, now_ms, miner_hotkey, limit_order_client, is_edit=True
+                )
+            elif existing_order.execution_type == ExecutionType.STOP_LIMIT:
+                return OrderProcessor.process_stop_limit_order(
                     signal, trade_pair, order_uuid, now_ms, miner_hotkey, limit_order_client, is_edit=True
                 )
             else:
@@ -572,6 +662,17 @@ class OrderProcessor:
             )
             return OrderProcessingResult(
                 execution_type=ExecutionType.BRACKET,
+                order=order,
+                should_track_uuid=True
+            )
+
+        elif execution_type == ExecutionType.STOP_LIMIT:
+            order = OrderProcessor.process_stop_limit_order(
+                signal, trade_pair, order_uuid, now_ms,
+                miner_hotkey, limit_order_client
+            )
+            return OrderProcessingResult(
+                execution_type=ExecutionType.STOP_LIMIT,
                 order=order,
                 should_track_uuid=True
             )

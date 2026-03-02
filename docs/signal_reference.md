@@ -8,13 +8,15 @@ Complete reference for all order signal types supported by Vanta Network.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `execution_type` | string | One of: `MARKET`, `LIMIT`, `BRACKET`, `LIMIT_CANCEL`, `LIMIT_EDIT`, `FLAT_ALL` |
+| `execution_type` | string | One of: `MARKET`, `LIMIT`, `STOP_LIMIT`, `BRACKET`, `LIMIT_CANCEL`, `LIMIT_EDIT`, `FLAT_ALL` |
 | `trade_pair_id` | string | Asset identifier (e.g. `BTCUSD`, `EURUSD`) |
 | `order_type` | string | `LONG`, `SHORT`, or `FLAT` |
 | `leverage` | float | Position size as a multiplier of account size |
 | `value` | float | Position size in USD notional |
 | `quantity` | float | Position size in base currency units |
-| `limit_price` | float | Trigger price for LIMIT orders |
+| `limit_price` | float | Execution price for LIMIT and STOP_LIMIT orders |
+| `stop_price` | float | Trigger price for STOP_LIMIT orders |
+| `stop_condition` | string | Trigger direction for STOP_LIMIT: `GTE` or `LTE` |
 | `stop_loss` | float | Static stop loss price |
 | `take_profit` | float | Take profit price |
 | `trailing_stop` | object | Dynamic trailing stop — `{"trailing_percent": 0.02}` or `{"trailing_value": 500}` |
@@ -194,6 +196,69 @@ Price validation:
   ]
 }
 ```
+
+---
+
+### STOP_LIMIT
+
+A stop-limit order combines a stop trigger with a limit execution. When the market hits `stop_price` (per `stop_condition`), a LIMIT order at `limit_price` is created. This gives control over worst-case execution price after a breakout/breakdown trigger.
+
+**Required:** `trade_pair_id`, `order_type`, one size field, `stop_price`, `stop_condition`, `limit_price`
+
+```json
+{
+  "execution_type": "STOP_LIMIT",
+  "trade_pair_id": "BTCUSD",
+  "order_type": "LONG",
+  "value": 1000.0,
+  "stop_price": 100000.0,
+  "stop_condition": "GTE",
+  "limit_price": 98000.0
+}
+```
+
+`stop_condition` values:
+- `GTE` — trigger when market price >= `stop_price`
+- `LTE` — trigger when market price <= `stop_price`
+
+Price validation:
+- `stop_price` > 0, `limit_price` > 0
+- `limit_price` can be above or below `stop_price` — it controls the worst-case fill price after the stop triggers
+- `stop_loss` < `limit_price` < `take_profit` (LONG) or `take_profit` < `limit_price` < `stop_loss` (SHORT)
+
+#### With SL/TP (creates bracket when the spawned limit order fills)
+
+```json
+{
+  "execution_type": "STOP_LIMIT",
+  "trade_pair_id": "BTCUSD",
+  "order_type": "LONG",
+  "value": 1000.0,
+  "stop_price": 100000.0,
+  "stop_condition": "GTE",
+  "limit_price": 98000.0,
+  "bracket_orders": [
+    {"stop_loss": 93000.0, "take_profit": 115000.0}
+  ]
+}
+```
+
+#### Lifecycle
+
+1. Order is stored as `STOP_LIMIT_UNFILLED`
+2. Daemon checks if market price satisfies `stop_condition` against `stop_price`
+3. When triggered, stop-limit is marked `STOP_LIMIT_FILLED` and a child LIMIT order is created with UUID `{parent_uuid}-limit`
+4. The child limit order follows normal LIMIT lifecycle (may fill immediately if price is at or past `limit_price`)
+5. `bracket_orders` are forwarded to the child and created when the child fills
+
+#### Notes
+
+- Stop-limit orders are **never filled immediately** on submission — they always wait for the daemon
+- The trigger uses mid price (average of bid and ask)
+- `FLAT` order type is not supported
+- Cancellable via `LIMIT_CANCEL` while unfilled
+- Editable via `LIMIT_EDIT` while unfilled
+- Counts toward the max unfilled orders limit
 
 ---
 

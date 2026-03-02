@@ -16,6 +16,9 @@ class OrderSource(IntEnum):
     BRACKET_CANCELLED = 10             # bracket order (stop loss/take profit) that was cancelled
     FLAT_ALL_CLOSE = 11                # order inserted when miner sends FLAT_ALL to close all positions
     SUBACCOUNT_PROMOTION = 12          # order inserted when subaccount promoted from challenge to funded
+    STOP_LIMIT_UNFILLED = 13           # stop-limit order created but not yet triggered
+    STOP_LIMIT_FILLED = 14             # stop-limit order that was triggered (spawned a limit order)
+    STOP_LIMIT_CANCELLED = 15          # stop-limit order that was cancelled
 
     @staticmethod
     def get_fill(order_src):
@@ -23,6 +26,8 @@ class OrderSource(IntEnum):
             return OrderSource.LIMIT_FILLED
         elif order_src == OrderSource.BRACKET_UNFILLED:
             return OrderSource.BRACKET_FILLED
+        elif order_src == OrderSource.STOP_LIMIT_UNFILLED:
+            return OrderSource.STOP_LIMIT_FILLED
         elif order_src == OrderSource.ORGANIC:
             return OrderSource.ORGANIC
         else:
@@ -34,6 +39,8 @@ class OrderSource(IntEnum):
             return OrderSource.LIMIT_CANCELLED
         elif order_src in [OrderSource.BRACKET_UNFILLED, OrderSource.BRACKET_FILLED]:
             return OrderSource.BRACKET_CANCELLED
+        elif order_src in [OrderSource.STOP_LIMIT_UNFILLED, OrderSource.STOP_LIMIT_FILLED]:
+            return OrderSource.STOP_LIMIT_CANCELLED
         elif order_src == OrderSource.ORGANIC:
             return OrderSource.ORGANIC
         else:
@@ -44,6 +51,7 @@ class OrderSource(IntEnum):
         return src in {
             OrderSource.LIMIT_UNFILLED,
             OrderSource.BRACKET_UNFILLED,
+            OrderSource.STOP_LIMIT_UNFILLED,
         }
 
     @staticmethod
@@ -52,7 +60,9 @@ class OrderSource(IntEnum):
             OrderSource.LIMIT_FILLED,
             OrderSource.LIMIT_CANCELLED,
             OrderSource.BRACKET_FILLED,
-            OrderSource.BRACKET_CANCELLED
+            OrderSource.BRACKET_CANCELLED,
+            OrderSource.STOP_LIMIT_FILLED,
+            OrderSource.STOP_LIMIT_CANCELLED,
         }
 
     @staticmethod
@@ -60,15 +70,16 @@ class OrderSource(IntEnum):
         return src in {
             OrderSource.LIMIT_CANCELLED,
             OrderSource.BRACKET_CANCELLED,
+            OrderSource.STOP_LIMIT_CANCELLED,
         }
 
     @staticmethod
     def status(order_src) -> str:
-        if order_src in [OrderSource.LIMIT_UNFILLED, OrderSource.BRACKET_UNFILLED]:
+        if order_src in [OrderSource.LIMIT_UNFILLED, OrderSource.BRACKET_UNFILLED, OrderSource.STOP_LIMIT_UNFILLED]:
             return "UNFILLED"
-        elif order_src in [OrderSource.LIMIT_FILLED, OrderSource.BRACKET_FILLED]:
+        elif order_src in [OrderSource.LIMIT_FILLED, OrderSource.BRACKET_FILLED, OrderSource.STOP_LIMIT_FILLED]:
             return "FILLED"
-        elif order_src in [OrderSource.LIMIT_CANCELLED, OrderSource.BRACKET_CANCELLED]:
+        elif order_src in [OrderSource.LIMIT_CANCELLED, OrderSource.BRACKET_CANCELLED, OrderSource.STOP_LIMIT_CANCELLED]:
             return "CANCELLED"
         else:
             return OrderSource(order_src).name

@@ -4,7 +4,7 @@ from typing import Optional
 
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.vali_config import TradePair, ValiConfig
-from vali_objects.enums.order_type_enum import OrderType
+from vali_objects.enums.order_type_enum import OrderType, StopCondition
 from pydantic import BaseModel, model_validator
 
 class Signal(BaseModel):
@@ -17,6 +17,8 @@ class Signal(BaseModel):
     limit_price: Optional[float] = None
     stop_loss: Optional[float] = None
     take_profit: Optional[float] = None
+    stop_price: Optional[float] = None
+    stop_condition: Optional[StopCondition] = None
     trailing_stop: Optional[dict] = None
     bracket_orders: Optional[list[dict]] = None
 
@@ -35,7 +37,7 @@ class Signal(BaseModel):
         has_trailing = trailing_stop is not None
 
         execution_type = values.get('execution_type', ExecutionType.MARKET)
-        if execution_type not in [ExecutionType.MARKET, ExecutionType.LIMIT]:
+        if execution_type not in [ExecutionType.MARKET, ExecutionType.LIMIT, ExecutionType.STOP_LIMIT]:
             return values
 
         if (has_sl_tp or has_trailing) and not bracket_orders:
@@ -104,6 +106,9 @@ class Signal(BaseModel):
         if execution_type == ExecutionType.LIMIT and is_flat:
             raise ValueError("FLAT order is not supported for LIMIT orders")
 
+        if execution_type == ExecutionType.STOP_LIMIT and is_flat:
+            raise ValueError("FLAT order is not supported for STOP_LIMIT orders")
+
         for field in ['leverage', 'value', 'quantity']:
             size = values.get(field)
             if size is not None:
@@ -152,6 +157,39 @@ class Signal(BaseModel):
             elif order_type == OrderType.SHORT and (((sl and not has_trailing) and sl <= limit_price) or (tp and tp >= limit_price)):
                 raise ValueError(
                     f"SHORT LIMIT orders must satisfy: take_profit < limit_price < stop_loss. "
+                    f"Got take_profit={tp}, limit_price={limit_price}, stop_loss={sl}"
+                )
+
+        elif execution_type == ExecutionType.STOP_LIMIT:
+            stop_price = values.get('stop_price')
+            limit_price = values.get('limit_price')
+            stop_condition = values.get('stop_condition')
+
+            if not stop_price or float(stop_price) <= 0:
+                raise ValueError("stop_price must be specified and > 0 for STOP_LIMIT orders")
+            if not limit_price or float(limit_price) <= 0:
+                raise ValueError("limit_price must be specified and > 0 for STOP_LIMIT orders")
+            if stop_condition is None:
+                raise ValueError("stop_condition must be specified for STOP_LIMIT orders (GTE or LTE)")
+            # Validate stop_condition is a valid enum value
+            if isinstance(stop_condition, str):
+                try:
+                    StopCondition.from_string(stop_condition)
+                except ValueError:
+                    raise ValueError(f"Invalid stop_condition '{stop_condition}'. Must be GTE or LTE")
+
+            # Validate SL/TP against limit_price (same as LIMIT order validation)
+            sl = values.get('stop_loss')
+            tp = values.get('take_profit')
+            has_trailing = values.get('trailing_stop') is not None
+            if order_type == OrderType.LONG and (((sl and not has_trailing) and sl >= float(limit_price)) or (tp and tp <= float(limit_price))):
+                raise ValueError(
+                    f"LONG STOP_LIMIT orders must satisfy: stop_loss < limit_price < take_profit. "
+                    f"Got stop_loss={sl}, limit_price={limit_price}, take_profit={tp}"
+                )
+            elif order_type == OrderType.SHORT and (((sl and not has_trailing) and sl <= float(limit_price)) or (tp and tp >= float(limit_price))):
+                raise ValueError(
+                    f"SHORT STOP_LIMIT orders must satisfy: take_profit < limit_price < stop_loss. "
                     f"Got take_profit={tp}, limit_price={limit_price}, stop_loss={sl}"
                 )
 
@@ -216,6 +254,16 @@ class Signal(BaseModel):
 
         elif self.execution_type == ExecutionType.LIMIT:
             base.update({
+                'limit_price': self.limit_price,
+                'stop_loss': self.stop_loss,
+                'take_profit': self.take_profit
+            })
+            return str(base)
+
+        elif self.execution_type == ExecutionType.STOP_LIMIT:
+            base.update({
+                'stop_price': self.stop_price,
+                'stop_condition': str(self.stop_condition) if self.stop_condition else None,
                 'limit_price': self.limit_price,
                 'stop_loss': self.stop_loss,
                 'take_profit': self.take_profit
