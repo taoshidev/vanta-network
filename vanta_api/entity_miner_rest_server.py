@@ -487,17 +487,21 @@ class EntityMinerRestServer(BaseRestServer):
             asset_class = request_data.get("asset_class", "crypto")
             account_size = float(request_data.get("account_size", 0))
             admin = request_data.get("admin", False)
-            hl_address = request_data.get("hl_address")  # Only for HL subaccounts
+            hl_address = request_data.get("hl_address")
+            payout_address = request_data.get("payout_address")
 
             message_dict = {
                 "account_size": account_size,
                 "admin": admin,
-                "asset_class": asset_class,
                 "entity_coldkey": self._coldkey.ss58_address,
                 "entity_hotkey": self._hotkey.ss58_address
             }
             if hl_address:
                 message_dict["hl_address"] = hl_address
+                if payout_address:
+                    message_dict["payout_address"] = payout_address
+            else:
+                message_dict["asset_class"] = asset_class
 
             message = json.dumps(message_dict, sort_keys=True).encode('utf-8')
             signature = self._coldkey.sign(message).hex()
@@ -506,13 +510,16 @@ class EntityMinerRestServer(BaseRestServer):
                 "entity_hotkey": self._hotkey.ss58_address,
                 "entity_coldkey": self._coldkey.ss58_address,
                 "account_size": account_size,
-                "asset_class": asset_class,
                 "admin": admin,
                 "signature": signature,
                 "version": "2.0.0"
             }
             if hl_address:
                 payload["hl_address"] = hl_address
+                if payout_address:
+                    payload["payout_address"] = payout_address
+            else:
+                payload["asset_class"] = asset_class
 
         except Exception as e:
             return jsonify({'status': 'error', 'message': f'Signing error: {e}'}), 500
