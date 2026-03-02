@@ -340,7 +340,7 @@ class Position(BaseModel):
         d = deepcopy(self.model_dump())
         return self._handle_trade_pair_encoding(d)
 
-    def to_dashboard(self, filled_orders, unfilled_orders) -> dict:
+    def to_dashboard(self, positions_time_ms: int, filled_orders, unfilled_orders) -> dict:
         results = {
             "tp": self.trade_pair.trade_pair,
             "t": self.position_type.name,
@@ -362,6 +362,18 @@ class Position(BaseModel):
 
         if unfilled_orders:
             results["uo"] = unfilled_orders
+
+        dashboard_fee_history = {}
+        for fee_event in self.fee_history:
+            fee_time_ms = fee_event["time_ms"]
+            if fee_time_ms > positions_time_ms:
+                dashboard_fee_history[str(fee_time_ms)] = {
+                    "t": fee_event["fee_type"],
+                    "a": fee_event["amount"]
+                }
+
+        if dashboard_fee_history:
+            results["fh"] = dashboard_fee_history
 
         return results
 

@@ -472,6 +472,7 @@ class PositionManager:
                 dashboard_unfilled_orders.append(order.order_uuid)
 
             dashboard_position = position.to_dashboard(
+                positions_time_ms,
                 filled_orders=dashboard_filled_orders,
                 unfilled_orders=dashboard_unfilled_orders)
 

@@ -1325,6 +1325,12 @@ curl -H "Authorization: Bearer YOUR_TIER_200_API_KEY" \
               "sl": 78.34, // stop_loss (if not null)
               "tk": 88.42 // take_profit (if not null)
             }
+          },
+          "fh": { // fee_history (if fee history)
+            "1770727691818": { // time_ms
+              "t": "transaction", // fee_type
+              "a": 4.54 // amount
+            }
           }
         }
       },
@@ -1419,7 +1425,7 @@ This section is only included if the subaccount is eliminated.
   - `close_ms`: When position was closed (only included if closed)
   - `return_at_close`: Final return when position closes (only included if closed)
   - `realized_pnl`: Net realized profit/loss for this position
-  - `orders`: Dictionary of orders within this position
+  - `filled_orders`: Dictionary of filled orders within this position
     - `order_uuid`: Unique identifier for this order
     - `order_type`: LONG, SHORT, or FLAT
     - `leverage`: Leverage applied to this order
@@ -1431,6 +1437,11 @@ This section is only included if the subaccount is eliminated.
     - `limit_price`: Limit price (if applicable)
     - `stop_loss`: Stop loss price (if applicable)
     - `take_profit`: Take profit price (if applicable)
+  - `unfilled_orders`: Dictionary of unfilled orders within this position
+  - `fee_history`: Dictionary of unfilled orders within this position
+    - `time_ms`: Timestamp of fee
+    - `fee_type`: transaction, carry, or interest
+    - `amount`: Amount of fee` 
 - `all_time_returns`: Return multiplier across all positions
 - `total_leverage`: Sum of net leverage across all open positions
 - `positions_time_ms`: Timestamp of last position or order (used as a query parameter in the next request)
