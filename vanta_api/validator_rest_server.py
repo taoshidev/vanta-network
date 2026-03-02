@@ -302,7 +302,10 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         self.app.route("/entity/subaccount/<synthetic_hotkey>", methods=["GET"])(self.get_subaccount_dashboard)
         self.app.route("/entity/subaccount/payout", methods=["POST"])(self.calculate_subaccount_payout)
 
-        print(f"[REST-INIT] 29 validator endpoints registered ✓")
+        # Public (unauthenticated) endpoints
+        self.app.route("/hl/<hl_address>/dashboard", methods=["GET"])(self.get_hl_dashboard)
+
+        print(f"[REST-INIT] 30 validator endpoints registered ✓")
 
     # ============================================================================
     # MINER POSITION ENDPOINTS
@@ -1770,6 +1773,55 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
         except Exception as e:
             bt.logging.error(f"Error retrieving dashboard for {synthetic_hotkey}: {e}")
+            return jsonify({'error': 'Internal server error retrieving dashboard'}), 500
+
+    def get_hl_dashboard(self, hl_address):
+        """
+        Public (unauthenticated) dashboard for Hyperliquid accounts.
+
+        Resolves the HL address to a synthetic hotkey, then returns the same
+        aggregated dashboard data as the authenticated subaccount endpoint.
+
+        Example:
+        curl http://localhost:48888/hl/0x1234abcd.../dashboard
+        """
+        import re
+
+        if not self._entity_client:
+            return jsonify({'error': 'Entity management not available'}), 503
+
+        if not re.match(ValiConfig.HL_ADDRESS_REGEX, hl_address):
+            return jsonify({'error': 'Invalid Hyperliquid address format'}), 400
+
+        try:
+            synthetic_hotkey = self._entity_client.get_synthetic_hotkey_for_hl_address(hl_address)
+            if not synthetic_hotkey:
+                return jsonify({'error': f'No subaccount found for HL address {hl_address}'}), 404
+
+            dashboard_data = self._entity_client.get_subaccount_dashboard_data(synthetic_hotkey)
+            if not dashboard_data:
+                return jsonify({'error': f'Dashboard data not available for {hl_address}'}), 404
+
+            dashboard_json = json.dumps(dashboard_data, cls=CustomEncoder, sort_keys=True)
+
+            etag = '"' + hashlib.md5(dashboard_json.encode()).hexdigest() + '"'
+            if_none_match = request.headers.get('If-None-Match')
+            if if_none_match == etag:
+                return Response(status=304, headers={'ETag': etag})
+
+            response_data = json.dumps({
+                'status': 'success',
+                'hl_address': hl_address,
+                'dashboard': dashboard_data,
+                'timestamp': TimeUtil.now_in_millis()
+            }, cls=CustomEncoder)
+
+            response = Response(response_data, content_type='application/json')
+            response.headers['ETag'] = etag
+            return response, 200
+
+        except Exception as e:
+            bt.logging.error(f"Error retrieving HL dashboard for {hl_address}: {e}")
             return jsonify({'error': 'Internal server error retrieving dashboard'}), 500
 
     def calculate_subaccount_payout(self):
