@@ -286,6 +286,7 @@ class PropNetOrderPlacer:
                     responses = await dendrite.aquery([mothership_axon], synapse)
                     response = responses[0]
 
+                    self._log_validator_response(mothership_axon.hotkey, response)
                     if response.successfully_processed:
                         return {"success": True, "order_json": response.order_json, "error_message": ""}
 
@@ -474,6 +475,19 @@ class PropNetOrderPlacer:
                 "message": f"Internal error: {str(e)}"
             }
 
+    @staticmethod
+    def _log_validator_response(hotkey: str, response):
+        msg = (
+            f"Validator {hotkey} response: "
+            f"success={response.successfully_processed}, "
+            f"error='{response.error_message}', "
+            f"order_json={response.order_json!r}"
+        )
+        if response.successfully_processed:
+            bt.logging.info(msg)
+        else:
+            bt.logging.error(msg)
+
     def _query_validators_sync(self, axons, send_signal_request):
         """Fire-and-forget query to validators (runs in separate thread)."""
 
@@ -481,7 +495,9 @@ class PropNetOrderPlacer:
             """Async helper for background validator queries."""
             dendrite = bt.dendrite(wallet=self.wallet)
             try:
-                await dendrite.aquery(axons, send_signal_request)
+                responses = await dendrite.aquery(axons, send_signal_request)
+                for axon, response in zip(axons, responses):
+                    self._log_validator_response(axon.hotkey, response)
             finally:
                 await dendrite.aclose_session()
 
