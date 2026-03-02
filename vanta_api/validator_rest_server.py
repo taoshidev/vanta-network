@@ -1178,6 +1178,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 execution_type=ExecutionType.from_string(data.get('execution_type', 'MARKET').upper()),
                 limit_price=data.get('limit_price'),
                 stop_loss=data.get('stop_loss'),
+                stop_price=data.get('stop_price'),
+                stop_condition=data.get('stop_condition'),
                 take_profit=data.get('take_profit'),
                 trailing_stop=data.get('trailing_stop'),
                 bracket_orders=data.get('bracket_orders'),
