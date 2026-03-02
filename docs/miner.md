@@ -34,11 +34,137 @@ A long position is a bet that the trade pair will increase, while a short positi
 11. A miner can have a maximum of 1 open position per trade pair. No limit on the number of closed positions.
 12. A miner's order will be ignored if placing a trade outside of market hours.
 13. A miner's order will be ignored if they are rate limited (maliciously sending too many requests)
-14. There is a 10-second cooldown period between orders of the same trade pair, during which the miner cannot place another order.
+14. There is a 5-second cooldown period between orders of the same trade pair, during which the miner cannot place another order.
 15. **CRITICAL**: Never reuse hotkeys that have been previously eliminated or deregistered. Once a hotkey is eliminated or deregistered, it is **permanently blacklisted** by the network. Validators internally track all departed hotkeys (both eliminated miners and voluntary deregistrations) and will reject orders from re-registered hotkeys. **Each registration must use a completely new, unused hotkey**. This policy ensures network integrity and prevents circumventing elimination penalties.
 
 ## Asset Class Selection
 Each miner selects a single asset class to compete in (crypto, forex, or equities), and competes only against other miners with the same asset class selection. Miners who do not select an asset class are restricted from placing orders.
+
+## Available Trade Pairs
+
+### Crypto
+
+| Symbol  | Pair      |
+|---------|-----------|
+| BTCUSD  | BTC/USD   |
+| ETHUSD  | ETH/USD   |
+| SOLUSD  | SOL/USD   |
+| XRPUSD  | XRP/USD   |
+| DOGEUSD | DOGE/USD  |
+| ADAUSD  | ADA/USD   |
+
+### Forex
+
+| Symbol | Pair    |
+|--------|---------|
+| AUDUSD | AUD/USD |
+| EURUSD | EUR/USD |
+| GBPUSD | GBP/USD |
+| NZDUSD | NZD/USD |
+| USDCAD | USD/CAD |
+| USDCHF | USD/CHF |
+| EURAUD | EUR/AUD |
+| EURCAD | EUR/CAD |
+| EURCHF | EUR/CHF |
+| EURGBP | EUR/GBP |
+| EURNZD | EUR/NZD |
+| GBPAUD | GBP/AUD |
+| GBPCAD | GBP/CAD |
+| GBPCHF | GBP/CHF |
+| GBPNZD | GBP/NZD |
+| AUDCAD | AUD/CAD |
+| AUDCHF | AUD/CHF |
+| AUDNZD | AUD/NZD |
+| CADCHF | CAD/CHF |
+| NZDCAD | NZD/CAD |
+| NZDCHF | NZD/CHF |
+
+### Commodities
+
+| Symbol | Pair             |
+|--------|------------------|
+| XAUUSD | XAU/USD (Gold)   |
+| XAGUSD | XAG/USD (Silver) |
+
+### Equities
+
+**Stocks:**
+
+| Symbol | Name                    | Sector                 |
+|--------|-------------------------|------------------------|
+| NVDA   | NVIDIA                  | Technology             |
+| MSFT   | Microsoft               | Technology             |
+| AAPL   | Apple                   | Technology             |
+| AVGO   | Broadcom                | Technology             |
+| TSM    | Taiwan Semiconductor    | Technology             |
+| ORCL   | Oracle                  | Technology             |
+| AMD    | Advanced Micro Devices  | Technology             |
+| MU     | Micron Technology       | Technology             |
+| CRM    | Salesforce              | Technology             |
+| UBER   | Uber                    | Technology             |
+| BRK_B  | Berkshire Hathaway B    | Financial Services     |
+| JPM    | JPMorgan Chase          | Financial Services     |
+| V      | Visa                    | Financial Services     |
+| MA     | Mastercard              | Financial Services     |
+| BAC    | Bank of America         | Financial Services     |
+| AMZN   | Amazon                  | Consumer Discretionary |
+| TSLA   | Tesla                   | Consumer Discretionary |
+| HD     | Home Depot              | Consumer Discretionary |
+| BABA   | Alibaba                 | Consumer Discretionary |
+| SBUX   | Starbucks               | Consumer Discretionary |
+| GOOGL  | Alphabet                | Communication Services |
+| META   | Meta Platforms          | Communication Services |
+| NFLX   | Netflix                 | Communication Services |
+| APP    | AppLovin                | Communication Services |
+| T      | AT&T                    | Communication Services |
+
+**Sector ETFs:**
+
+| Symbol | Sector (Provider)                    |
+|--------|--------------------------------------|
+| XLK    | Technology (SPDR)                    |
+| VGT    | Technology (Vanguard)                |
+| XLF    | Financial Services (SPDR)            |
+| VFH    | Financial Services (Vanguard)        |
+| XLY    | Consumer Discretionary (SPDR)        |
+| VCR    | Consumer Discretionary (Vanguard)    |
+| XLC    | Communication Services (SPDR)        |
+| VOX    | Communication Services (Vanguard)    |
+| XLV    | Healthcare (SPDR)                    |
+| VHT    | Healthcare (Vanguard)                |
+| XLI    | Industrials (SPDR)                   |
+| VIS    | Industrials (Vanguard)               |
+| XLP    | Consumer Staples (SPDR)              |
+| VDC    | Consumer Staples (Vanguard)          |
+| XLE    | Energy (SPDR)                        |
+| VDE    | Energy (Vanguard)                    |
+| XLB    | Materials (SPDR)                     |
+| VAW    | Materials (Vanguard)                 |
+| XLU    | Utilities (SPDR)                     |
+| VPU    | Utilities (Vanguard)                 |
+| XLRE   | Real Estate (SPDR)                   |
+| VNQ    | Real Estate (Vanguard)               |
+
+### Blocked / Disabled Trade Pairs
+
+The following pairs are defined in the system but currently disabled:
+
+| Symbol  | Category | Reason                            |
+|---------|----------|-----------------------------------|
+| AUDJPY  | Forex    | Align with copy trading on Glitch |
+| CADJPY  | Forex    | Align with copy trading on Glitch |
+| CHFJPY  | Forex    | Align with copy trading on Glitch |
+| EURJPY  | Forex    | Align with copy trading on Glitch |
+| NZDJPY  | Forex    | Align with copy trading on Glitch |
+| GBPJPY  | Forex    | Align with copy trading on Glitch |
+| USDJPY  | Forex    | Align with copy trading on Glitch |
+| USDMXN  | Forex    | Exotic, larger spreads            |
+| SPX     | Indices  | Disabled indices                  |
+| DJI     | Indices  | Disabled indices                  |
+| NDX     | Indices  | Disabled indices                  |
+| VIX     | Indices  | Disabled indices                  |
+| FTSE    | Indices  | Disabled indices                  |
+| GDAXI   | Indices  | Disabled indices                  |
 
 ## Scoring Details
 
@@ -57,7 +183,7 @@ These components are combined into a **Debt Ledger** that calculates:
 
 Weights are distributed proportionally to remaining payouts, targeting completion by **midnight on Sunday of each week**.
 
-*Average Daily PnL* has the highest weight (90%) and incentivizes miners to maintain high returns while increasing account sizes. The remaining scoring metrics (Calmar, Sharpe, Omega, Sortino, Statistical Confidence) each contribute 2% to ensure well-rounded performance evaluation.
+*Average Daily PnL* currently has 100% weight and incentivizes miners to maintain high returns while increasing account sizes. The remaining scoring metrics (Calmar, Sharpe, Omega, Sortino, Statistical Confidence) are tracked but currently have 0% weight.
 
 We calculate daily returns for all positions and the entire portfolio, spanning from 12:00 AM UTC to 12:00 AM UTC the following day. However, if a trading day is still ongoing, we still monitor real-time performance and risks. 
 
@@ -148,37 +274,38 @@ Spread fee is applied to crypto pairs only and is calculated as 0.1% multiplied 
 
 **Carry Fees:**
 
-| Market   | Fee Period | Times                   | Rates Applied   | Triple Wednesday |
-|----------| ---------- | ----------------------- | --------------- | ---------------- |
-| Forex    | 24h        | 21:00 UTC               | Mon-Fri         | ✓                |
-| Crypto   | 8h         | 04:00, 12:00, 20:00 UTC | Daily (Mon-Sun) |                  |
-| Equities | 24h        | 21:00 UTC               | Mon-Fri         | ✓                |
+| Market             | Fee Period | Times                   | Rates Applied   | Triple Wednesday |
+|--------------------| ---------- | ----------------------- | --------------- | ---------------- |
+| Forex, Commodities | 24h        | 21:00 UTC               | Mon-Fri         | ✓                |
+| Crypto             | 8h         | 04:00, 12:00, 20:00 UTC | Daily (Mon-Sun) |                  |
+| Equities           | 24h        | 21:00 UTC               | Mon-Fri         | ✓                |
 
 The magnitude of the carry fees will reflect the following distribution:
 
-| Market   | Base Rate (Annual) | Daily Rate Calculation      |
-|----------|--------------------|-----------------------------|
-| Forex    | 3%                 | 0.008% \* Max Seen Leverage |
-| Crypto   | 10.95%             | 0.03% \* Max Seen Leverage  |
-| Equities | 5.25%              | 0.014% \* Max Seen Leverage |
+| Market             | Base Rate (Annual) | Daily Rate Calculation      |
+|--------------------|--------------------|-----------------------------|
+| Forex, Commodities | 3%                 | 0.008% \* Max Seen Leverage |
+| Crypto             | 10.95%             | 0.03% \* Max Seen Leverage  |
+| Equities           | 5.25%              | 0.014% \* Max Seen Leverage |
 
 **Spread Fee (Transaction Fee):**
 
-| Market   | Spread Fee Rate    | Applied To           |
-|----------| ------------------ | -------------------- |
-| Forex    | None               | N/A                  |
-| Crypto   | 0.1% \* Leverage   | Each order placed    |
-| Equities | None               | N/A                  |
+| Market             | Spread Fee Rate  | Applied To           |
+|--------------------| ---------------- | -------------------- |
+| Forex, Commodities | None             | N/A                  |
+| Crypto             | 0.1% \* Leverage | Each order placed    |
+| Equities           | None             | N/A                  |
 
 ### Leverage Limits
 
 We also set limits on leverage usage, to ensure that the network has a level of risk protection and mitigation of naive strategies. The [positional leverage limits](https://docs.taoshi.io/tips/p5/) are as follows:
 
-| Market   | Leverage Limit |
-|----------|-------------|
-| Forex    | 0.1x - 10x  |
-| Crypto   | 0.01x - 2.5x |
-| Equities | 0.1x - 2x   |
+| Market        | Leverage Limit |
+|---------------|----------------|
+| Forex         | 0.1x - 10x     |
+| Commodities   | 0.1x - 4x      |
+| Crypto        | 0.01x - 2.5x   |
+| Equities      | 0.1x - 2x      |
 
 We also implement a [portfolio level leverage limit](https://docs.taoshi.io/tips/p10/), which is the sum of all the leverages from each open position. This limit is set at 5x for crypto, 20x for forex, and 2x for equities. You can therefore open 20 forex positions at 1x leverage each, 10 forex positions at 2x leverage each, 5 crypto positions at 1x, 2 equities positions at 1x, etc.
 
@@ -205,12 +332,12 @@ This system ensures miners are compensated fairly based on their performance whi
 
 There are several enforced trading holidays where signals will not be processed. These include:
 
-| Holiday       | Date         | Asset |
-|---------------|--------------|-------|
-| New Years     | Jan 1        | Forex |
-| Good Friday   | Apr 18, 2025 | Forex |
-| Christmas Day | Dec 25       | Forex |
-| Boxing Day    | Dec 26       | Forex |
+| Holiday       | Date         | Asset              |
+|---------------|--------------|---------------------|
+| New Years     | Jan 1        | Forex, Commodities  |
+| Good Friday   | Apr 18, 2025 | Forex, Commodities  |
+| Christmas Day | Dec 25       | Forex, Commodities  |
+| Boxing Day    | Dec 26       | Forex, Commodities  |
 
 Where a holiday falls on a weekend, it is observed on the nearest working day.
 
@@ -246,9 +373,9 @@ When getting set up, we recommend running `mining/run_receive_signals_server.py`
 After that, we suggest running `mining/run_receive_signals_server.py` and `mining/sample_signal_request.py` in conjunction with `neurons/miner.py` on testnet. Inspect the log outputs to ensure that validators receive your orders. Ensure you are on your intended enviornment add the appropriate testnet flags.
 
 | Environment | Netuid |
-| ----------- | -----: |
-| Mainnet     |      8 |
-| Testnet     |    116 |
+| ----------- |--------|
+| Mainnet     | 8      |
+| Testnet     | 116    |
 
 The simplest way to get a miner to submit orders to validators is by manually running `mining/sample_signal_request.py`. However, we expect most top miners to interface their existing trading software with `neurons/miner.py` and `mining/run_receive_signals_server.py` to automatically send trade signals. We will be releasing more detailed guides on how to set up an automated trades soon.
 
