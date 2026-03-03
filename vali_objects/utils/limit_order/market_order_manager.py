@@ -305,17 +305,12 @@ class MarketOrderManager():
             bt.logging.info(f"[ADD_ORDER_DETAIL] order resized to ${order.value} (max position: {max_position_value}, max_cash: {buying_power}")
 
         # Entity cross-margin gating for subaccounts
-        if is_synthetic_hotkey(miner_hotkey) and order.order_type == existing_position.position_type:
-            from entity_management.entity_utils import parse_synthetic_hotkey
-            entity_hotkey, _ = parse_synthetic_hotkey(miner_hotkey)
-            if entity_hotkey:
-                allowed, reason = self._entity_collateral_client.can_open_position(
-                    entity_hotkey, miner_hotkey, abs(order.value)
+        if order.order_type == existing_position.position_type:
+            allowed, reason = self._entity_collateral_client.try_gate_position_open(miner_hotkey, order.value)
+            if not allowed:
+                raise SignalException(
+                    f"Entity cross-margin check failed for subaccount [{miner_hotkey}]: {reason}"
                 )
-                if not allowed:
-                    raise SignalException(
-                        f"Entity cross-margin check failed for subaccount [{miner_hotkey}]: {reason}"
-                    )
 
         # Process cash balance after validation passes
         if order.order_type == existing_position.position_type:
@@ -349,14 +344,8 @@ class MarketOrderManager():
             # Store loan repayment as negative margin_loan so position.margin_loan sums correctly
             order.margin_loan = -loan_repaid
 
-            # Entity collateral slashing on realized loss for subaccounts
-            if order_realized_pnl < 0 and is_synthetic_hotkey(miner_hotkey):
-                from entity_management.entity_utils import parse_synthetic_hotkey
-                entity_hotkey, _ = parse_synthetic_hotkey(miner_hotkey)
-                if entity_hotkey:
-                    self._entity_collateral_client.slash_on_realized_loss(
-                        entity_hotkey, miner_hotkey, abs(order_realized_pnl)
-                    )
+            # Slash entity collateral on realized loss for subaccounts
+            self._entity_collateral_client.try_slash_on_position_close(miner_hotkey, order_realized_pnl)
 
         step_start = TimeUtil.now_in_millis()
         existing_position.add_order(order, transaction_fee=transaction_fee)

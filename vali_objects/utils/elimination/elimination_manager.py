@@ -44,7 +44,7 @@ from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLed
 from vali_objects.position_management.position_manager_client import PositionManagerClient
 from vali_objects.vali_dataclasses.price_source import PriceSource
 from shared_objects.rpc.common_data_client import CommonDataClient
-from entity_management.entity_utils import is_synthetic_hotkey, parse_synthetic_hotkey
+from entity_management.entity_utils import is_synthetic_hotkey
 
 
 # ==================== Elimination Types ====================
@@ -480,14 +480,8 @@ class EliminationManager(CacheController):
                 self.websocket_notifier_client.broadcast_position_update(position)
 
             # Slash entity collateral on elimination-driven position close
-            if is_synthetic_hotkey(hotkey) and position.is_closed_position:
-                realized_pnl = position.realized_pnl if hasattr(position, 'realized_pnl') else 0.0
-                if realized_pnl < 0:
-                    entity_hotkey, _ = parse_synthetic_hotkey(hotkey)
-                    if entity_hotkey:
-                        self._entity_collateral_client.slash_on_realized_loss(
-                            entity_hotkey, hotkey, abs(realized_pnl)
-                        )
+            if position.is_closed_position:
+                self._entity_collateral_client.try_slash_on_position_close(hotkey, position.realized_pnl)
 
             bt.logging.info(
                 f'Added flat order for miner {hotkey} that has been eliminated. '

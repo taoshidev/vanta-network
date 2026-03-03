@@ -12,6 +12,7 @@ Primary consumers:
 
 from typing import Optional, Tuple
 
+from entity_management.entity_utils import is_synthetic_hotkey, parse_synthetic_hotkey
 from shared_objects.rpc.rpc_client_base import RPCClientBase
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 
@@ -72,6 +73,30 @@ class EntityCollateralClient(RPCClientBase):
             entity_hotkey, synthetic_hotkey, additional_position_value
         )
 
+    def try_gate_position_open(self, hotkey: str, position_value: float) -> Tuple[bool, str]:
+        """
+        Gate a new position if the hotkey is a synthetic subaccount.
+
+        Handles all gating logic: checks if the hotkey is a synthetic subaccount,
+        parses the entity hotkey, and calls can_open_position.
+        Non-synthetic hotkeys are always allowed.
+
+        Args:
+            hotkey: The miner hotkey (may or may not be a synthetic subaccount).
+            position_value: USD value of the proposed new position.
+
+        Returns:
+            (allowed: bool, reason: str) - reason is empty if allowed.
+        """
+        if not is_synthetic_hotkey(hotkey):
+            return True, ""
+
+        entity_hotkey, _ = parse_synthetic_hotkey(hotkey)
+        if not entity_hotkey:
+            return True, ""
+
+        return self.can_open_position(entity_hotkey, hotkey, abs(position_value))
+
     # ==================== Slashing ====================
 
     def slash_on_realized_loss(
@@ -94,6 +119,32 @@ class EntityCollateralClient(RPCClientBase):
         return self._server.slash_on_realized_loss_rpc(
             entity_hotkey, synthetic_hotkey, realized_loss
         )
+
+    def try_slash_on_position_close(self, hotkey: str, realized_pnl: float) -> float:
+        """
+        Slash entity collateral if a subaccount position closed with a loss.
+
+        Handles all gating logic: checks if the hotkey is a synthetic subaccount,
+        parses the entity hotkey, and only slashes when realized_pnl is negative.
+
+        Args:
+            hotkey: The miner hotkey (may or may not be a synthetic subaccount).
+            realized_pnl: The realized PnL in USD (negative = loss).
+
+        Returns:
+            Actual amount slashed in USD, or 0.0 if no slash was needed.
+        """
+        if realized_pnl >= 0:
+            return 0.0
+
+        if not is_synthetic_hotkey(hotkey):
+            return 0.0
+
+        entity_hotkey, _ = parse_synthetic_hotkey(hotkey)
+        if not entity_hotkey:
+            return 0.0
+
+        return self.slash_on_realized_loss(entity_hotkey, hotkey, abs(realized_pnl))
 
     # ==================== Query Methods ====================
 
