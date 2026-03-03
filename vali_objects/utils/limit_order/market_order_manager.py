@@ -320,7 +320,7 @@ class MarketOrderManager():
             order.margin_loan = -loan_repaid
 
         step_start = TimeUtil.now_in_millis()
-        existing_position.add_order(order, transaction_fee)
+        existing_position.add_order(order, transaction_fee=transaction_fee)
         add_order_ms = TimeUtil.now_in_millis() - step_start
         bt.logging.info(f"[ADD_ORDER_DETAIL] Position.add_order() took {add_order_ms}ms")
 
