@@ -375,14 +375,14 @@ class EntityManager(ValidatorBroadcastBase):
         """
         Create a new subaccount for an entity.
 
-        Verifies entity has sufficient collateral for the requested account size
-        and slashes the required amount as a subaccount registration fee.
+        No collateral check or registration slash at creation time.
+        Collateral adequacy is checked at position-open time via can_open_position().
 
         Args:
             entity_hotkey: The VANTA_ENTITY_HOTKEY
             account_size: Account size in USD (immutable once set, max 100k)
             asset_class: Asset class selection (immutable once set)
-            admin: If True, skip collateral slashing and set status to "admin".
+            admin: If True, set status to "admin" instead of "active".
                    Admin subaccounts are excluded from entity aggregation and payouts.
 
         Returns:
@@ -411,32 +411,12 @@ class EntityManager(ValidatorBroadcastBase):
             if active_count >= ValiConfig.ENTITY_MAX_SUBACCOUNTS:
                 return False, None, f"Entity {entity_hotkey} has reached maximum subaccounts ({ValiConfig.ENTITY_MAX_SUBACCOUNTS})"
 
-            # Calculate required collateral: account_size / ENTITY_COST_PER_THETA
-            required_theta = account_size / ValiConfig.ENTITY_COST_PER_THETA if not admin else 0
-            current_balance = None  # dummy init for collateral tracking on miner
+            # No collateral check or slash at subaccount creation.
+            # Collateral adequacy is checked at position-open time via
+            # EntityCollateralClient.can_open_position(). At creation the
+            # subaccount has no positions, so risk exposure = 0.
 
-            # Verify collateral balance
             try:
-                if not self.running_unit_tests:
-                    t0 = time.time()
-                    current_balance = self._contract_client.get_miner_collateral_balance(entity_hotkey)
-                    timings['get_collateral_balance'] = int((time.time() - t0) * 1000)
-
-                    if current_balance is None:
-                        bt.logging.warning(f"[ENTITY_MANAGER] Unable to verify collateral for {entity_hotkey} - balance check returned None")
-                        return False, None, "Unable to verify collateral balance"
-
-                    if current_balance < required_theta:
-                        bt.logging.warning(
-                            f"[ENTITY_MANAGER] Insufficient collateral for subaccount creation: "
-                            f"entity {entity_hotkey} has {current_balance} theta, needs {required_theta} theta "
-                            f"to create new subaccount with ${account_size} account size"
-                        )
-                        return False, None, (
-                            f"Insufficient collateral: has {current_balance} theta, needs {required_theta} theta "
-                            f"to create new subaccount with ${account_size} account size"
-                        )
-
                 # Generate monotonic ID
                 subaccount_id = entity_data.next_subaccount_id
                 entity_data.next_subaccount_id += 1
@@ -498,10 +478,8 @@ class EntityManager(ValidatorBroadcastBase):
                 return False, None, f"Error creating subaccount: {str(e)}"
 
             # Create subaccount info
-            # Admin subaccounts get "admin" status (no slashing, excluded from payouts)
-            # Regular subaccounts get "pending" status (slashing happens async)
             now_ms = TimeUtil.now_in_millis()
-            initial_status = "admin" if admin else "pending"
+            initial_status = "admin" if admin else "active"
             subaccount_info = SubaccountInfo(
                 subaccount_id=subaccount_id,
                 subaccount_uuid=subaccount_uuid,
@@ -522,20 +500,18 @@ class EntityManager(ValidatorBroadcastBase):
             self._write_entities_from_memory_to_disk()
             timings['write_to_disk'] = int((time.time() - t0) * 1000)
 
-            # Start background slashing thread (not in unit tests, not for admin)
-            if not self.running_unit_tests and not admin:
-                thread = threading.Thread(
-                    target=self._complete_subaccount_slashing,
-                    args=(subaccount_id, entity_hotkey, synthetic_hotkey, required_theta),
-                    daemon=True
+            # Broadcast to other validators and dashboard subscribers
+            if not admin:
+                self.broadcast_subaccount_registration(
+                    entity_hotkey=entity_hotkey,
+                    subaccount_id=subaccount_id,
+                    subaccount_uuid=subaccount_uuid,
+                    synthetic_hotkey=synthetic_hotkey,
+                    account_size=account_size,
+                    asset_class=asset_class,
+                    status="active"
                 )
-                thread.start()
-            else:
-                # In tests or admin: mark as active immediately (skip slashing)
-                # Admin subaccounts keep "admin" status, test subaccounts become "active"
-                if not admin:
-                    subaccount_info.status = "active"
-                self._write_entities_from_memory_to_disk()
+            self.broadcast_subaccount_dashboard(synthetic_hotkey)
 
                 # Notify WebSocket server so connected entity clients auto-subscribe
                 try:
@@ -548,78 +524,9 @@ class EntityManager(ValidatorBroadcastBase):
             bt.logging.info(
                 f"[ENTITY_MANAGER] Created subaccount {subaccount_id} for entity {entity_hotkey}: "
                 f"{synthetic_hotkey}, account_size=${account_size}, asset_class={asset_class}, "
-                f"status={initial_status}, slashing {required_theta} theta in background ({total_ms} ms) | timings: {timings}"
+                f"status={initial_status} ({total_ms} ms) | timings: {timings}"
             )
-            remaining_theta = (current_balance - required_theta) if current_balance else 0.0
-            return True, subaccount_info, f"[{initial_status}] Subaccount creation - slashing {required_theta} theta, {remaining_theta:.2f} theta remaining"
-
-    def _complete_subaccount_slashing(
-        self,
-        subaccount_id: int,
-        entity_hotkey: str,
-        synthetic_hotkey: str,
-        required_theta: float
-    ) -> None:
-        """Background thread to complete collateral slashing."""
-        try:
-            slash_success = self._contract_client.slash_miner_collateral(entity_hotkey, required_theta)
-
-            entity_lock = self._get_entity_lock(entity_hotkey)
-            with entity_lock:
-                entity_data = self.entities.get(entity_hotkey)
-                if not entity_data:
-                    return
-
-                subaccount = entity_data.subaccounts.get(subaccount_id)
-                if not subaccount:
-                    return
-
-                if slash_success:
-                    subaccount.status = "active"
-                    bt.logging.info(f"[ENTITY_MANAGER] Slashing complete for {synthetic_hotkey}")
-                else:
-                    subaccount.status = "failed"
-                    bt.logging.error(f"[ENTITY_MANAGER] Slashing failed for {synthetic_hotkey}")
-                self._write_entities_from_memory_to_disk()
-
-            # Broadcast status update to other validators after slashing completes
-            if slash_success:
-                self.broadcast_subaccount_registration(
-                    entity_hotkey=entity_hotkey,
-                    subaccount_id=subaccount_id,
-                    subaccount_uuid=subaccount.subaccount_uuid,
-                    synthetic_hotkey=synthetic_hotkey,
-                    account_size=subaccount.account_size,
-                    asset_class=subaccount.asset_class,
-                    status="active",
-                    hl_address=subaccount.hl_address,
-                    payout_address=subaccount.payout_address
-                )
-
-            # Broadcast dashboard update to WebSocket subscribers after slashing completes
-            self.broadcast_subaccount_dashboard(synthetic_hotkey)
-
-            # Notify WebSocket server so connected entity clients auto-subscribe
-            if slash_success:
-                try:
-                    self._websocket_client.notify_new_subaccount(entity_hotkey, synthetic_hotkey)
-                except Exception as notify_err:
-                    bt.logging.debug(f"[ENTITY_MANAGER] New subaccount WS notification failed: {notify_err}")
-
-        except Exception as e:
-            bt.logging.error(f"[ENTITY_MANAGER] Slashing error for {synthetic_hotkey}: {e}")
-            # Mark as failed
-            entity_lock = self._get_entity_lock(entity_hotkey)
-            with entity_lock:
-                entity_data = self.entities.get(entity_hotkey)
-                if entity_data:
-                    subaccount = entity_data.subaccounts.get(subaccount_id)
-                    if subaccount:
-                        subaccount.status = "failed"
-                        self._write_entities_from_memory_to_disk()
-
-            # Broadcast dashboard update even on failure so clients see the status change
-            self.broadcast_subaccount_dashboard(synthetic_hotkey)
+            return True, subaccount_info, f"Subaccount created successfully"
 
     def _get_hl_max_addresses(self) -> int:
         """
@@ -1806,8 +1713,7 @@ class EntityManager(ValidatorBroadcastBase):
                 if subaccount_id in entity_data.subaccounts:
                     existing_sub = entity_data.subaccounts[subaccount_id]
                     if existing_sub.subaccount_uuid == subaccount_uuid:
-                        changed = False
-                        # Update status if changed (e.g., pending -> active after slashing)
+                        # Update status if changed
                         if existing_sub.status != status:
                             bt.logging.info(
                                 f"[ENTITY_MANAGER] Updating subaccount {synthetic_hotkey} status: "

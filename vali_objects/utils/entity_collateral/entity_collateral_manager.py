@@ -74,7 +74,7 @@ class EntityCollateralManager(CacheController):
         self._challenge_period_client = ChallengePeriodClient(connection_mode=connection_mode,
                                                               running_unit_tests=running_unit_tests)
 
-        # In-memory cache: entity_hotkey -> deposited collateral in USD
+        # In-memory cache: entity_hotkey -> deposited collateral in theta
         self._collateral_cache: Dict[str, float] = {}
         self._cache_lock = threading.RLock()
 
@@ -119,9 +119,8 @@ class EntityCollateralManager(CacheController):
             try:
                 balance_theta = self._contract_client.get_miner_collateral_balance(entity_hotkey)
                 if balance_theta is not None:
-                    collateral_usd = balance_theta * ValiConfig.ENTITY_COST_PER_THETA
                     with self._cache_lock:
-                        self._collateral_cache[entity_hotkey] = collateral_usd
+                        self._collateral_cache[entity_hotkey] = balance_theta
                     refreshed += 1
             except Exception as e:
                 bt.logging.warning(f"[ENTITY_COLLATERAL] Failed to refresh collateral for {entity_hotkey}: {e}")
@@ -138,7 +137,7 @@ class EntityCollateralManager(CacheController):
             entity_hotkey: The entity's hotkey.
 
         Returns:
-            Deposited collateral in USD, or None if entity not found in cache.
+            Deposited collateral in theta, or None if entity not found in cache.
         """
         with self._cache_lock:
             return self._collateral_cache.get(entity_hotkey)
@@ -148,7 +147,7 @@ class EntityCollateralManager(CacheController):
         Load the entity collateral cache from disk.
 
         Returns:
-            Dict mapping entity_hotkey -> deposited_collateral_usd.
+            Dict mapping entity_hotkey -> deposited_collateral_theta.
         """
         try:
             data = ValiUtils.get_vali_json_file_dict(self._cache_file)
@@ -213,28 +212,26 @@ class EntityCollateralManager(CacheController):
 
     def compute_entity_required_collateral(self, entity_hotkey: str) -> float:
         """
-        Compute the total required collateral for an entity across all
-        non-challenge-period subaccounts.
+        Compute the total required collateral for an entity in theta.
 
-        For each subaccount:
-            risk_exposure = min(sum(abs(position_value)), account_balance * MDD%)
+        Formula:
+            required_theta = n_subaccounts / CPT_SUBACCOUNT + active_risk_usd / CPT_RISK
 
-        Entity required collateral = sum of all subaccount risk exposures.
-
-        Challenge period subaccounts are excluded (their risk exposure is 0).
+        Challenge period subaccounts are excluded from both counts.
 
         Args:
             entity_hotkey: The entity's hotkey.
 
         Returns:
-            Total required collateral in USD.
+            Total required collateral in theta.
         """
         entity_data = self._entity_client.get_entity_data(entity_hotkey)
         if not entity_data:
             return 0.0
 
         subaccounts = entity_data.get("subaccounts", {})
-        total_required = 0.0
+        n_active_subaccounts = 0
+        total_active_risk_usd = 0.0
 
         for sa_id, sa_info in subaccounts.items():
             if sa_info.get("status") not in ("active", "admin"):
@@ -249,14 +246,18 @@ class EntityCollateralManager(CacheController):
             if bucket == MinerBucket.SUBACCOUNT_CHALLENGE:
                 continue
 
+            n_active_subaccounts += 1
+
             account_balance = self._miner_account_client.get_balance(synthetic_hotkey)
             if not account_balance or account_balance <= 0:
                 continue
 
-            exposure = self.compute_subaccount_risk_exposure(synthetic_hotkey, account_balance)
-            total_required += exposure
+            total_active_risk_usd += self.compute_subaccount_risk_exposure(synthetic_hotkey, account_balance)
 
-        return total_required
+        return (
+            n_active_subaccounts / ValiConfig.ENTITY_COLLATERAL_CPT_SUBACCOUNT
+            + total_active_risk_usd / ValiConfig.ENTITY_COLLATERAL_CPT_RISK
+        )
 
     def compute_subaccount_risk_exposure(
         self,
@@ -300,6 +301,9 @@ class EntityCollateralManager(CacheController):
 
         Skips the check if the subaccount is in challenge period.
 
+        Compares entity's deposited theta against required theta:
+            required_theta = n_subaccounts / CPT_SUBACCOUNT + active_risk_usd / CPT_RISK
+
         Args:
             entity_hotkey: The entity's hotkey.
             synthetic_hotkey: The subaccount's synthetic hotkey.
@@ -314,19 +318,16 @@ class EntityCollateralManager(CacheController):
         if bucket == MinerBucket.SUBACCOUNT_CHALLENGE:
             return True, ""
 
-        # Compute current required collateral across all entity subaccounts
-        current_required = self.compute_entity_required_collateral(entity_hotkey)
+        # Compute current required collateral in theta across all entity subaccounts
+        current_required_theta = self.compute_entity_required_collateral(entity_hotkey)
 
-        # Add the impact of the proposed new position.
-        # The new position increases risk exposure by at most the additional value,
-        # but capped by the subaccount's MDD limit.
+        # Compute the risk delta from the proposed new position (in USD),
+        # then convert to theta via CPT_RISK
         account_balance = self._miner_account_client.get_balance(synthetic_hotkey) or 0.0
         max_subaccount_exposure = account_balance * self.mdd_percent
 
-        # Current exposure for this subaccount (already included in current_required)
         current_subaccount_exposure = self.compute_subaccount_risk_exposure(synthetic_hotkey, account_balance)
 
-        # Projected exposure after adding the new position
         open_positions = self._position_client.get_positions_for_one_hotkey(
             synthetic_hotkey, only_open_positions=True
         )
@@ -334,23 +335,23 @@ class EntityCollateralManager(CacheController):
         projected_position_value = current_position_value + abs(additional_position_value)
         projected_subaccount_exposure = min(projected_position_value, max_subaccount_exposure)
 
-        # Delta is the increase in required collateral from this order
-        exposure_delta = projected_subaccount_exposure - current_subaccount_exposure
-        projected_required = current_required + exposure_delta
+        risk_delta_usd = projected_subaccount_exposure - current_subaccount_exposure
+        risk_delta_theta = risk_delta_usd / ValiConfig.ENTITY_COLLATERAL_CPT_RISK
+        projected_required_theta = current_required_theta + risk_delta_theta
 
-        # Look up deposited collateral from cache
-        deposited = self.get_cached_collateral(entity_hotkey)
-        if deposited is None:
+        # Look up deposited collateral from cache (theta)
+        deposited_theta = self.get_cached_collateral(entity_hotkey)
+        if deposited_theta is None:
             return False, (
                 f"Entity {entity_hotkey} has no cached collateral. "
                 f"Collateral cache may not have refreshed yet."
             )
 
-        if projected_required > deposited:
+        if projected_required_theta > deposited_theta:
             return False, (
-                f"Insufficient entity cross-margin. "
-                f"Required: ${projected_required:.2f}, Deposited: ${deposited:.2f}. "
-                f"Order would add ${exposure_delta:.2f} to margin requirement."
+                f"Insufficient entity collateral. "
+                f"Required: {projected_required_theta:.2f} theta, Deposited: {deposited_theta:.2f} theta. "
+                f"Order would add {risk_delta_theta:.2f} theta to requirement."
             )
 
         return True, ""
@@ -424,7 +425,7 @@ class EntityCollateralManager(CacheController):
 
         # Convert USD to theta for the on-chain slash (skip in test mode)
         if not self.running_unit_tests:
-            slash_theta = slash_delta / ValiConfig.ENTITY_COST_PER_THETA
+            slash_theta = slash_delta / ValiConfig.ENTITY_COLLATERAL_CPT_RISK
             try:
                 success = self._contract_client.slash_miner_collateral(entity_hotkey, slash_theta)
                 if not success:
@@ -442,13 +443,13 @@ class EntityCollateralManager(CacheController):
                     self._slash_tracking[synthetic_hotkey]["cumulative_slashed"] -= slash_delta
                 return 0.0
 
-        # Persist and update collateral cache after successful slash
+        # Persist and update collateral cache (theta) after successful slash
         self._save_slash_tracking_to_disk()
+        slash_theta = slash_delta / ValiConfig.ENTITY_COLLATERAL_CPT_RISK
         with self._cache_lock:
             if entity_hotkey in self._collateral_cache:
-                self._collateral_cache[entity_hotkey] -= slash_delta
+                self._collateral_cache[entity_hotkey] -= slash_theta
 
-        slash_theta = slash_delta / ValiConfig.ENTITY_COST_PER_THETA
         bt.logging.info(
             f"[ENTITY_COLLATERAL] Slashed ${slash_delta:.2f} ({slash_theta:.4f} theta) "
             f"from entity {entity_hotkey} for subaccount {synthetic_hotkey}. "
@@ -475,12 +476,12 @@ class EntityCollateralManager(CacheController):
 
     # ==================== Test Helpers ====================
 
-    def set_test_collateral_cache(self, entity_hotkey: str, collateral_usd: float) -> None:
-        """Test-only: Inject a collateral cache value for an entity."""
+    def set_test_collateral_cache(self, entity_hotkey: str, collateral_theta: float) -> None:
+        """Test-only: Inject a collateral cache value for an entity (in theta)."""
         if not self.running_unit_tests:
             raise RuntimeError("set_test_collateral_cache can only be used in unit test mode")
         with self._cache_lock:
-            self._collateral_cache[entity_hotkey] = collateral_usd
+            self._collateral_cache[entity_hotkey] = collateral_theta
 
     def set_test_slash_tracking(self, synthetic_hotkey: str, cumulative_realized_loss: float, cumulative_slashed: float) -> None:
         """Test-only: Inject slash tracking data for a subaccount."""

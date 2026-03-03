@@ -118,9 +118,9 @@ class TestEntityCollateral(TestBase):
         synthetic_hotkey = subaccount_info['synthetic_hotkey']
         return entity_hotkey, synthetic_hotkey, subaccount_info
 
-    def _set_collateral_cache(self, entity_hotkey, collateral_usd):
-        """Helper: Inject collateral cache value via RPC."""
-        self.entity_collateral_client.set_test_collateral_cache(entity_hotkey, collateral_usd)
+    def _set_collateral_cache(self, entity_hotkey, collateral_theta):
+        """Helper: Inject collateral cache value in theta via RPC."""
+        self.entity_collateral_client.set_test_collateral_cache(entity_hotkey, collateral_theta)
 
     def _get_slash_tracking(self, synthetic_hotkey):
         """Helper: Get slash tracking data via RPC."""
@@ -167,22 +167,22 @@ class TestEntityCollateral(TestBase):
         self.assertIsNone(result)
 
     def test_get_cached_collateral_returns_value(self):
-        """Test that get_cached_collateral returns injected value."""
-        self._set_collateral_cache(self.ENTITY_HOTKEY, 500_000.0)
+        """Test that get_cached_collateral returns injected value (theta)."""
+        self._set_collateral_cache(self.ENTITY_HOTKEY, 100.0)
 
         result = self.entity_collateral_client.get_cached_collateral(self.ENTITY_HOTKEY)
-        self.assertAlmostEqual(result, 500_000.0)
+        self.assertAlmostEqual(result, 100.0)
 
     def test_cached_collateral_independent_per_entity(self):
         """Test that collateral cache is independent per entity."""
-        self._set_collateral_cache(self.ENTITY_HOTKEY, 100_000.0)
-        self._set_collateral_cache(self.ENTITY_HOTKEY_2, 200_000.0)
+        self._set_collateral_cache(self.ENTITY_HOTKEY, 50.0)
+        self._set_collateral_cache(self.ENTITY_HOTKEY_2, 100.0)
 
         self.assertAlmostEqual(
-            self.entity_collateral_client.get_cached_collateral(self.ENTITY_HOTKEY), 100_000.0
+            self.entity_collateral_client.get_cached_collateral(self.ENTITY_HOTKEY), 50.0
         )
         self.assertAlmostEqual(
-            self.entity_collateral_client.get_cached_collateral(self.ENTITY_HOTKEY_2), 200_000.0
+            self.entity_collateral_client.get_cached_collateral(self.ENTITY_HOTKEY_2), 100.0
         )
 
     # ==================== Order Gating Tests (can_open_position) ====================
@@ -193,8 +193,9 @@ class TestEntityCollateral(TestBase):
             account_size=100_000
         )
 
-        # Set collateral cache — entity has $500K deposited
-        self._set_collateral_cache(entity_hotkey, 500_000.0)
+        # Required: 1/500 (subaccount) + min(50K, 10K)/10 (risk) = 0.002 + 1000 = ~1000 theta
+        # Set 5000 theta (well above 1000)
+        self._set_collateral_cache(entity_hotkey, 5000.0)
 
         allowed, reason = self.entity_collateral_client.can_open_position(
             entity_hotkey, synthetic_hotkey, 50_000.0
@@ -209,8 +210,8 @@ class TestEntityCollateral(TestBase):
             account_size=100_000
         )
 
-        # Set very low collateral (only $100)
-        self._set_collateral_cache(entity_hotkey, 100.0)
+        # Required: 1/500 + 10000/10 = ~1000 theta. Set only 10 theta.
+        self._set_collateral_cache(entity_hotkey, 10.0)
 
         allowed, reason = self.entity_collateral_client.can_open_position(
             entity_hotkey, synthetic_hotkey, 50_000.0
@@ -246,8 +247,9 @@ class TestEntityCollateral(TestBase):
         synthetic_1 = sa_info_1['synthetic_hotkey']
         synthetic_2 = sa_info_2['synthetic_hotkey']
 
-        # Set collateral: $15K deposited (each subaccount has 100K * 10% MDD = $10K risk, so two = $20K needed)
-        self._set_collateral_cache(self.ENTITY_HOTKEY, 15_000.0)
+        # 2 subaccounts = 2/500 = 0.004 theta base. $1K order risk = min(1K,10K)/10 = 100 theta.
+        # Total projected: 0.004 + 100 = ~100 theta. Set 500 theta (sufficient).
+        self._set_collateral_cache(self.ENTITY_HOTKEY, 500.0)
 
         # First subaccount with small order should work
         allowed, reason = self.entity_collateral_client.can_open_position(
@@ -262,7 +264,7 @@ class TestEntityCollateral(TestBase):
         entity_hotkey, synthetic_hotkey, _ = self._register_entity_with_subaccount(
             account_size=100_000
         )
-        self._set_collateral_cache(entity_hotkey, 500_000.0)
+        self._set_collateral_cache(entity_hotkey, 100.0)  # 100 theta
 
         # Loss of $5,000 on an account with max_slash = $100K * 10% = $10K
         slashed = self.entity_collateral_client.slash_on_realized_loss(
@@ -283,7 +285,7 @@ class TestEntityCollateral(TestBase):
         entity_hotkey, synthetic_hotkey, _ = self._register_entity_with_subaccount(
             account_size=100_000
         )
-        self._set_collateral_cache(entity_hotkey, 500_000.0)
+        self._set_collateral_cache(entity_hotkey, 100.0)
 
         slashed = self.entity_collateral_client.slash_on_realized_loss(
             entity_hotkey, synthetic_hotkey, 0.0
@@ -296,7 +298,7 @@ class TestEntityCollateral(TestBase):
         entity_hotkey, synthetic_hotkey, _ = self._register_entity_with_subaccount(
             account_size=100_000
         )
-        self._set_collateral_cache(entity_hotkey, 500_000.0)
+        self._set_collateral_cache(entity_hotkey, 100.0)
 
         slashed = self.entity_collateral_client.slash_on_realized_loss(
             entity_hotkey, synthetic_hotkey, -1_000.0
@@ -309,7 +311,7 @@ class TestEntityCollateral(TestBase):
         entity_hotkey, synthetic_hotkey, _ = self._register_entity_with_subaccount(
             account_size=100_000
         )
-        self._set_collateral_cache(entity_hotkey, 500_000.0)
+        self._set_collateral_cache(entity_hotkey, 100.0)
 
         # max_slash = $100K * 10% = $10K
 
@@ -335,7 +337,7 @@ class TestEntityCollateral(TestBase):
         entity_hotkey, synthetic_hotkey, _ = self._register_entity_with_subaccount(
             account_size=100_000
         )
-        self._set_collateral_cache(entity_hotkey, 500_000.0)
+        self._set_collateral_cache(entity_hotkey, 100.0)
 
         # max_slash = $100K * 10% = $10K
 
@@ -361,7 +363,7 @@ class TestEntityCollateral(TestBase):
         entity_hotkey, synthetic_hotkey, _ = self._register_entity_with_subaccount(
             account_size=100_000
         )
-        self._set_collateral_cache(entity_hotkey, 500_000.0)
+        self._set_collateral_cache(entity_hotkey, 100.0)
 
         # Pre-fill tracking to exactly at cap ($10K)
         self._set_slash_tracking(synthetic_hotkey, 10_000.0, 10_000.0)
@@ -385,7 +387,7 @@ class TestEntityCollateral(TestBase):
         # The synthetic hotkey won't have a miner account size
         synthetic_hotkey = f"{self.ENTITY_HOTKEY}_999"
 
-        self._set_collateral_cache(self.ENTITY_HOTKEY, 500_000.0)
+        self._set_collateral_cache(self.ENTITY_HOTKEY, 100.0)
 
         slashed = self.entity_collateral_client.slash_on_realized_loss(
             self.ENTITY_HOTKEY, synthetic_hotkey, 5_000.0
@@ -393,19 +395,19 @@ class TestEntityCollateral(TestBase):
         self.assertAlmostEqual(slashed, 0.0)
 
     def test_slash_collateral_cache_decremented(self):
-        """Test that collateral cache is decremented after successful slash."""
+        """Test that collateral cache (theta) is decremented after successful slash."""
         entity_hotkey, synthetic_hotkey, _ = self._register_entity_with_subaccount(
             account_size=100_000
         )
-        self._set_collateral_cache(entity_hotkey, 500_000.0)
+        self._set_collateral_cache(entity_hotkey, 5000.0)  # 5000 theta
 
+        # Slash $5,000 → 5000 / CPT_RISK(10) = 500 theta decrement
         self.entity_collateral_client.slash_on_realized_loss(
             entity_hotkey, synthetic_hotkey, 5_000.0
         )
 
-        # Collateral cache should be decremented by slash amount
         cached = self.entity_collateral_client.get_cached_collateral(entity_hotkey)
-        self.assertAlmostEqual(cached, 495_000.0)
+        self.assertAlmostEqual(cached, 4500.0)  # 5000 - 500 theta
 
     def test_slash_independent_per_subaccount(self):
         """Test that slash tracking is independent per subaccount."""
@@ -420,7 +422,7 @@ class TestEntityCollateral(TestBase):
         synthetic_1 = sa_info_1['synthetic_hotkey']
         synthetic_2 = sa_info_2['synthetic_hotkey']
 
-        self._set_collateral_cache(self.ENTITY_HOTKEY, 1_000_000.0)
+        self._set_collateral_cache(self.ENTITY_HOTKEY, 200.0)  # 200 theta
 
         # Slash subaccount 1
         slashed_1 = self.entity_collateral_client.slash_on_realized_loss(
@@ -445,7 +447,7 @@ class TestEntityCollateral(TestBase):
         entity_hotkey, synthetic_hotkey, _ = self._register_entity_with_subaccount(
             account_size=100_000
         )
-        self._set_collateral_cache(entity_hotkey, 500_000.0)
+        self._set_collateral_cache(entity_hotkey, 100.0)
 
         # Pre-fill: already at cap
         self._set_slash_tracking(synthetic_hotkey, 10_000.0, 10_000.0)
@@ -498,7 +500,7 @@ class TestEntityCollateral(TestBase):
         entity_hotkey, synthetic_hotkey, _ = self._register_entity_with_subaccount(
             account_size=100_000
         )
-        self._set_collateral_cache(entity_hotkey, 500_000.0)
+        self._set_collateral_cache(entity_hotkey, 100.0)
 
         # Slash to create tracking data
         self.entity_collateral_client.slash_on_realized_loss(
@@ -582,23 +584,22 @@ class TestEntityCollateral(TestBase):
             account_size=100_000
         )
 
-        # Entity has exactly $10K collateral (= max_slash for this $100K account)
-        self._set_collateral_cache(entity_hotkey, 10_000.0)
+        # Entity has 5000 theta. 1 subaccount = 1/500 = 0.002 theta base.
+        # $1K order risk = min(1K, 10K)/10 = 100 theta. Total = ~100 theta. 5000 > 100 → allowed.
+        self._set_collateral_cache(entity_hotkey, 5000.0)
 
-        # Order gating should initially allow (required collateral is 0 with no positions)
         allowed, _ = self.entity_collateral_client.can_open_position(
             entity_hotkey, synthetic_hotkey, 1_000.0
         )
         self.assertTrue(allowed)
 
-        # Slash $5K from the entity
+        # Slash $5K → cache decremented by 5000/10 = 500 theta → 4500 theta remaining
         self.entity_collateral_client.slash_on_realized_loss(
             entity_hotkey, synthetic_hotkey, 5_000.0
         )
 
-        # Verify collateral decreased
         cached = self.entity_collateral_client.get_cached_collateral(entity_hotkey)
-        self.assertAlmostEqual(cached, 5_000.0)
+        self.assertAlmostEqual(cached, 4500.0)
 
     # ==================== Edge Cases ====================
 
@@ -607,7 +608,7 @@ class TestEntityCollateral(TestBase):
         entity_hotkey, synthetic_hotkey, _ = self._register_entity_with_subaccount(
             account_size=100_000
         )
-        self._set_collateral_cache(entity_hotkey, 500_000.0)
+        self._set_collateral_cache(entity_hotkey, 100.0)
 
         slashed = self.entity_collateral_client.slash_on_realized_loss(
             entity_hotkey, synthetic_hotkey, 0.01
@@ -619,7 +620,7 @@ class TestEntityCollateral(TestBase):
         entity_hotkey, synthetic_hotkey, _ = self._register_entity_with_subaccount(
             account_size=100_000
         )
-        self._set_collateral_cache(entity_hotkey, 500_000.0)
+        self._set_collateral_cache(entity_hotkey, 100.0)
 
         # max_slash = $10K, loss exactly $10K
         slashed = self.entity_collateral_client.slash_on_realized_loss(
@@ -636,7 +637,7 @@ class TestEntityCollateral(TestBase):
         entity_hotkey, synthetic_hotkey, _ = self._register_entity_with_subaccount(
             account_size=100_000
         )
-        self._set_collateral_cache(entity_hotkey, 500_000.0)
+        self._set_collateral_cache(entity_hotkey, 100.0)
 
         # max_slash = $10K, loss = $50K → only slash $10K
         slashed = self.entity_collateral_client.slash_on_realized_loss(
@@ -653,7 +654,7 @@ class TestEntityCollateral(TestBase):
         entity_hotkey, synthetic_hotkey, _ = self._register_entity_with_subaccount(
             account_size=100_000
         )
-        self._set_collateral_cache(entity_hotkey, 500_000.0)
+        self._set_collateral_cache(entity_hotkey, 100.0)
 
         # max_slash = $10K
         losses = [1_000, 2_000, 3_000, 4_000, 5_000]

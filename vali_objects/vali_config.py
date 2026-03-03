@@ -534,66 +534,9 @@ class ValiConfig:
     ENTITY_COST_PER_THETA = 5000  # USD account size per theta of collateral for entity subaccounts
     MAX_SUBACCOUNT_ACCOUNT_SIZE = 100_000  # Maximum account size in USD for entity subaccounts
 
-    # Hyperliquid tracking configuration
-    HL_USE_TESTNET = False  # Set to True to use Hyperliquid testnet endpoints
-    HL_MAINNET_WS = "wss://api.hyperliquid.xyz/ws"
-    HL_MAINNET_INFO = "https://api.hyperliquid.xyz/info"
-    HL_MAINNET_HOST = "api.hyperliquid.xyz"
-
-    HL_TESTNET_WS = "wss://api.hyperliquid-testnet.xyz/ws"
-    HL_TESTNET_INFO = "https://api.hyperliquid-testnet.xyz/info"
-    HL_TESTNET_HOST = "api.hyperliquid-testnet.xyz"
-
-    @classmethod
-    def hl_ws_url(cls) -> str:
-        return cls.HL_TESTNET_WS if cls.HL_USE_TESTNET else cls.HL_MAINNET_WS
-
-    @classmethod
-    def hl_info_url(cls) -> str:
-        return cls.HL_TESTNET_INFO if cls.HL_USE_TESTNET else cls.HL_MAINNET_INFO
-
-    @classmethod
-    def hl_host(cls) -> str:
-        return cls.HL_TESTNET_HOST if cls.HL_USE_TESTNET else cls.HL_MAINNET_HOST
-
-    HL_MAX_TRACKED_ADDRESSES_PER_IP = 10  # HL WebSocket limit: 10 unique users per IP
-    HL_MAX_TRACKED_ADDRESSES = HL_MAX_TRACKED_ADDRESSES_PER_IP  # backward compat alias
-    HL_WS_HEARTBEAT_INTERVAL_S = 30.0
-    HL_WS_RECONNECT_BACKOFF_MAX_S = 30.0
-    HL_PROXY_SECRET_KEY = "hl_proxy_url"  # key in secrets.json for base proxy URL (without port)
-    HL_PROXY_PORTS_SECRET_KEY = "hl_proxy_ports"  # key in secrets.json for port list/range
-    HL_MAX_PROXY_SHARDS = 20  # safety cap on proxy connections (200 addresses max)
-    HL_SHARD_MAX_CONSECUTIVE_FAILURES = 5  # failures before marking a proxy IP as unhealthy
-    HL_PORT_REST_FAILURE_THRESHOLD = 3
-    HL_PORT_HEALTH_PROBE_INTERVAL_S = 30.0
-    HL_PORT_HEALTH_MAX_COOLDOWN_S = 600.0
-    HL_ADDRESS_REGEX = r"^0x[a-fA-F0-9]{40}$"
-    HL_BACKUP_POLL_INTERVAL_S = 10.0
-    HL_BACKUP_POLL_RATE_BUDGET = 60
-    HL_BACKUP_POLL_LOOKBACK_MS = 60 * 60 * 1000 # TODO: change to 2 min
-    HL_BACKUP_RESTART_LOOKBACK_MS = 60 * 60 * 1000
-
-    # L2 orderbook precision: nSigFigs controls price aggregation granularity.
-    # HL returns max 20 levels per side regardless of nSigFigs.
-    # Coarse (2) = deep coverage but loses granular price distribution.
-    # We subscribe at coarse and full resolution on separate shards and combine them.
-    HL_L2_COARSE_SIG_FIGS = 2
-
-    TRADE_PAIR_ID_TO_HL_COIN = {
-        "BTCUSD": "BTC", "ETHUSD": "ETH", "SOLUSD": "SOL",
-        "XRPUSD": "XRP", "DOGEUSD": "DOGE", "ADAUSD": "ADA",
-        "TAOUSD": "TAO", "HYPEUSD": "HYPE", "ZECUSD": "ZED",
-        "BCHUSD": "BCH", "LINKUSD": "LINK", "XMRUSD": "XMR",
-        "LTCUSD": "LTC"
-    }
-
-    # HL fee constants
-    HL_TAKER_FEE = 0.00045    # 0.045%
-    HL_MAKER_FEE = 0.00015    # 0.015%
-
-    # HL Funding Rate Service
-    HL_FUNDING_DAEMON_INTERVAL_S = 300
-    HL_FUNDING_BACKFILL_HOURS = 4
+    # Entity collateral requirement: required_theta = n_subaccounts / CPT_SUBACCOUNT + active_risk_usd / CPT_RISK
+    ENTITY_COLLATERAL_CPT_SUBACCOUNT = 500  # Subaccounts per theta (1 theta covers 500 subaccount slots)
+    ENTITY_COLLATERAL_CPT_RISK = 10  # USD of active risk per theta (1 theta covers $10 of risk)
 
     # Account Size
     COST_PER_THETA = 500  # Account size USD value per theta of collateral

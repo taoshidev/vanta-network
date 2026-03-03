@@ -156,7 +156,7 @@ class EntityCollateralClient(RPCClientBase):
             entity_hotkey: The entity's hotkey.
 
         Returns:
-            Deposited collateral in USD, or None if not found.
+            Deposited collateral in theta, or None if not found.
         """
         return self._server.get_cached_collateral_rpc(entity_hotkey)
 
@@ -168,7 +168,7 @@ class EntityCollateralClient(RPCClientBase):
             entity_hotkey: The entity's hotkey.
 
         Returns:
-            Required collateral in USD.
+            Required collateral in theta.
         """
         return self._server.compute_entity_required_collateral_rpc(entity_hotkey)
 
@@ -204,9 +204,9 @@ class EntityCollateralClient(RPCClientBase):
 
     # ==================== Test Helpers ====================
 
-    def set_test_collateral_cache(self, entity_hotkey: str, collateral_usd: float) -> None:
-        """Test-only: Inject collateral cache value for an entity."""
-        return self._server.set_test_collateral_cache_rpc(entity_hotkey, collateral_usd)
+    def set_test_collateral_cache(self, entity_hotkey: str, collateral_theta: float) -> None:
+        """Test-only: Inject collateral cache value for an entity (in theta)."""
+        return self._server.set_test_collateral_cache_rpc(entity_hotkey, collateral_theta)
 
     def set_test_slash_tracking(self, synthetic_hotkey: str, cumulative_realized_loss: float, cumulative_slashed: float) -> None:
         """Test-only: Inject slash tracking data for a subaccount."""
