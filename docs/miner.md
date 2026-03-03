@@ -274,19 +274,13 @@ Spread fee is applied to crypto pairs only and is calculated as 0.1% multiplied 
 
 **Carry Fees:**
 
-| Market             | Fee Period | Times                   | Rates Applied   | Triple Wednesday |
-|--------------------| ---------- | ----------------------- | --------------- | ---------------- |
-| Forex, Commodities | 24h        | 21:00 UTC               | Mon-Fri         | ✓                |
-| Crypto             | 8h         | 04:00, 12:00, 20:00 UTC | Daily (Mon-Sun) |                  |
-| Equities           | 24h        | 21:00 UTC               | Mon-Fri         | ✓                |
+A carry fee is charged at each interval based on the current market value of the position. The fee is calculated as a percentage of the position's market value and deducted at each fee interval.
 
-The magnitude of the carry fees will reflect the following distribution:
-
-| Market             | Base Rate (Annual) | Daily Rate Calculation      |
-|--------------------|--------------------|-----------------------------|
-| Forex, Commodities | 3%                 | 0.008% \* Max Seen Leverage |
-| Crypto             | 10.95%             | 0.03% \* Max Seen Leverage  |
-| Equities           | 5.25%              | 0.014% \* Max Seen Leverage |
+| Market             | Fee Period | Fee Per Interval                    | Annual Rate |
+|--------------------| ---------- | ----------------------------------- | ----------- |
+| Forex, Commodities | 24h        | 0.008% × position market value      | 3%          |
+| Crypto             | 8h         | 0.03% × position market value       | 10.95%      |
+| Equities           | 24h        | 0.014% × position market value      | 5.25%       |
 
 **Spread Fee (Transaction Fee):**
 
@@ -352,14 +346,11 @@ Here are platforms that allows you to trade on Vanta with a simple interface or 
 
 For our power users with more technical knowledge, we've setup some helpful infrastructure for you to send in signals to the network programatically.
 
-The script `mining/run_receive_signals_server.py` will launch a flask server to receive order signals.
-We recommend using this flask server to send in signals to the network. To see an example of sending a signal into the server, use `mining/sample_signal_request.py`.
-
-Once a signal is properly sent into the signals server, it is parsed and stored locally in `mining/received_signals` to prepare for processing by `neurons/miner.py`. From there, the core miner logic in `neurons/miner.py` will automatically look to send the signal to validators on the network, retrying on failure. Once the signal is successfully sent into the network and ack'd by validators, the signal is stored in `mining/processed_signals`. otherwise, it gets stored in `mining/failed_signals` with debug information about which validators didn't receive the signal.
+When you run `neurons/miner.py`, a REST server starts automatically on port 8088 to receive order signals. You do not need to run any separate server process. Submit signals via `POST http://127.0.0.1:8088/api/submit-order`. To see an example, use `mining/sample_signal_request.py`. Full API documentation is available in [docs/miner_rest_server.md](miner_rest_server.md).
 
 The current flow of information is as follows:
 
-1. Run `mining/run_receive_signals_server.py` and `neurons/miner.py` to receive and parse signals
+1. Run `neurons/miner.py` — the REST server starts automatically alongside the miner
 2. Send order signals from your choice of data provider (TradingView, python script, manually running `mining/sample_signal_request.py`)
 3. Allow the miner to automatically send in your signals to validators
 4. Validators update your existing positions, or create new positions based on your signals
@@ -368,16 +359,16 @@ The current flow of information is as follows:
 7. Validators wait for you to send in signals to close out positions (FLAT)
 8. Validators set weights based on miner returns every 5 minutes based on portfolio performance with both open and closed positions.
 
-When getting set up, we recommend running `mining/run_receive_signals_server.py` and `mining/sample_signal_request.py` locally to verify that order signals can be created and parsed correctly.
+When getting set up, we recommend running `neurons/miner.py` and `mining/sample_signal_request.py` locally to verify that order signals can be created and parsed correctly.
 
-After that, we suggest running `mining/run_receive_signals_server.py` and `mining/sample_signal_request.py` in conjunction with `neurons/miner.py` on testnet. Inspect the log outputs to ensure that validators receive your orders. Ensure you are on your intended enviornment add the appropriate testnet flags.
+After that, we suggest running `neurons/miner.py` on testnet and sending test signals via `mining/sample_signal_request.py`. Inspect the log outputs to ensure that validators receive your orders. Ensure you are on your intended environment and add the appropriate testnet flags.
 
 | Environment | Netuid |
 | ----------- |--------|
 | Mainnet     | 8      |
 | Testnet     | 116    |
 
-The simplest way to get a miner to submit orders to validators is by manually running `mining/sample_signal_request.py`. However, we expect most top miners to interface their existing trading software with `neurons/miner.py` and `mining/run_receive_signals_server.py` to automatically send trade signals. We will be releasing more detailed guides on how to set up an automated trades soon.
+The simplest way to get a miner to submit orders to validators is by manually running `mining/sample_signal_request.py`. However, we expect most top miners to interface their existing trading software with `neurons/miner.py` directly to automatically send trade signals.
 
 **DANGER**
 
@@ -447,11 +438,14 @@ Create a local and editable installation
 python3 -m pip install -e .
 ```
 
-Create `mining/miner_secrets.json` and replace xxxx with your API key. The API key value is determined by you and needs to match the value in `mining/sample_signal_request.py`.
+Create `vanta_api/api_keys.json` and replace xxxx with your API key. The API key value is determined by you and must be passed as the `Authorization` header when sending signals to the REST server.
 
 ```json
 {
-  "api_key": "xxxx"
+  "my_api_key": {
+    "key": "xxxx",
+    "tier": 200
+  }
 }
 ```
 
