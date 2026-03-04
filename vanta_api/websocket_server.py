@@ -31,9 +31,6 @@ SUBACCOUNT_BROADCAST_THROTTLE_MS = 2000
 # How often to poll and push subaccount dashboard data to subscribers
 SUBACCOUNT_POLL_INTERVAL_S = 15
 
-# Minimum tier required for subaccount dashboard subscriptions
-SUBACCOUNT_SUBSCRIPTION_TIER = 200
-
 class WebSocketServer(APIKeyMixin, RPCServerBase):
     """
     WebSocket server with RPC interface for position broadcasting.
@@ -927,7 +924,7 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                                 "action": "subscribe_subaccount",
                                 "message": "Missing synthetic_hotkey parameter"
                             }))
-                        elif self.client_auth.get(client_id, {}).get("tier", 0) < SUBACCOUNT_SUBSCRIPTION_TIER:
+                        elif self.client_auth.get(client_id, {}).get("tier", 0) < ValiConfig.SUBACCOUNT_SUBSCRIPTION_TIER:
                             await websocket.send(json.dumps({
                                 "type": "subscription_status",
                                 "status": "error",

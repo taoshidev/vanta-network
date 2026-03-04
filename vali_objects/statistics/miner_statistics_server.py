@@ -258,6 +258,9 @@ class MinerStatisticsServer(RPCServerBase):
         """
         return self._manager.get_miner_statistics_for_hotkey(hotkey)
 
+    def get_dashboard_rpc(self, hotkey: str, daily_returns_time_ms) -> dict | None:
+        return self._manager.get_dashboard(hotkey, daily_returns_time_ms)
+
     # ==================== Forward-Compatible Aliases (without _rpc suffix) ====================
     # These allow direct use of the server in tests without RPC
 

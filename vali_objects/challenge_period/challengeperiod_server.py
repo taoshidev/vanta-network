@@ -151,6 +151,9 @@ class ChallengePeriodServer(RPCServerBase):
             return info[0].value
         return None
 
+    def get_dashboard_rpc(self, hotkey) -> dict | None:
+        return self._manager.get_dashboard(hotkey)
+
     def get_miner_start_time_rpc(self, hotkey: str) -> Optional[int]:
         """Get the start time of a miner's current bucket."""
         return self._manager.get_miner_start_time(hotkey)

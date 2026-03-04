@@ -187,6 +187,9 @@ class PositionManagerServer(RPCServerBase):
         """Get a specific position by UUID - delegates to manager."""
         return self._manager.get_position(hotkey, position_uuid)
 
+    def get_dashboard_rpc(self, hotkey: str, positions_time_ms: int) -> dict | None:
+        return self._manager.get_dashboard(hotkey, positions_time_ms)
+
     def get_open_position_for_trade_pair_rpc(self, hotkey: str, trade_pair_id: str) -> Optional[Position]:
         """Get open position for trade pair - delegates to manager."""
         return self._manager.get_open_position_for_trade_pair(hotkey, trade_pair_id)

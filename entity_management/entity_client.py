@@ -154,6 +154,9 @@ class EntityClient(RPCClientBase):
         """
         return self._server.get_entity_data_rpc(entity_hotkey)
 
+    def get_subaccount_dashboard(self, synthetic_hotkey: str) -> dict | None:
+        return self._server.get_subaccount_dashboard_rpc(synthetic_hotkey)
+
     def get_all_entities(self) -> Dict[str, dict]:
         """
         Get all entities.

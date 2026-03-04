@@ -1226,6 +1226,266 @@ curl -H "Authorization: Bearer YOUR_TIER_200_API_KEY" \
 - Challenge period progress tracking
 - Position and risk management
 
+### Get Subaccount Dashboard (version 2)
+
+`GET /v2/entity/subaccount/<synthetic_hotkey>`
+
+Retrieve comprehensive dashboard data for a specific subaccount by aggregating information from multiple systems.
+
+**Aggregated Data Includes:**
+- Subaccount info (status, timestamps, entity parent)
+- Challenge period status (bucket, start time, progress)
+- Debt ledger data (performance metrics, returns)
+- Position data (open positions, leverage, PnL)
+- Statistics (daily returns)
+- Elimination status (if eliminated)
+
+**Parameters:**
+- `positions_time_ms` (int): Only include positions after this timestamp (milliseconds, exclusive)
+- `limit_orders_time_ms` (int): Only include limit orders after this timestamp (milliseconds, exclusive)
+- `checkpoints_time_ms` (int): Only include ledger checkpoints after this timestamp (milliseconds, exclusive)
+- `daily_returns_time_ms` (int): Only include daily returns after this timestamp (milliseconds, exclusive)
+
+**Example:**
+```bash
+curl -H "Authorization: Bearer YOUR_TIER_200_API_KEY" \
+     http://localhost:48888/entity/subaccount/5GhDr3xy...abc_123?positions_time_ms=1770027342742
+```
+
+**Response:**
+```json
+{
+  "status": "success",
+  "dashboard": {
+    "subaccount_info": {
+      "synthetic_hotkey": "5GhDr3xy...abc_123",
+      "subaccount_uuid": "abc...789",
+      "asset_class": "crypto",
+      "account_size": 100000.0,
+      "status": "active",
+      "created_at_ms": 1770657674533,
+      "eliminated_at_ms": null
+    },
+    "challenge_period": {
+      "bucket": "CHALLENGE",
+      "start_time_ms": 1702345678901
+    },
+    // eliminination is only included if the subaccount is eliminated  
+    "elimination": {
+      "elimination_initiated_time_ms": 1771893304364,
+      "reason": "FAILED_CHALLENGE_PERIOD_DRAWDOWN",
+      "dd": 99.99929388128832
+    },
+    "account_size_data": {
+      "account_size": 100000,
+      "total_realized_pnl": -580.4117834499989,
+      "capital_used": 0.0,
+      "balance": 98339.3684339573,
+      "buying_power": 122924.21054244661,
+      "max_return": 1.0
+    },
+    "positions": {
+      // positions is only included if there are open positions or closed positions newer
+      // than the positions_time_ms query parameter
+      "positions": { 
+        "7413e788-e000-465a-a37c-da22d7b94acc": { // position_uuid
+          "tp": "SOL/USD", // trade_pair
+          "t": "FLAT", // position_type
+          "o": 1770727691818, // open_ms
+          "r": 1.0001031522298502, // current_return
+          "nl": 0.1, // net_leverage (if not zero)
+          "ap": 83.88350685527055, // average_entry_price
+          "rp": 10.315222985026267, // realized_pnl
+          "c": 1770727882140, // close_ms (if closed)
+          "rc": 0.9999031315994042, // return_at_close (if closed)
+          "fo": { // filled_orders (if filled orders)
+            "7413e788-e000-465a-a37c-da22d7b94acc": { // order_uuid
+              "t": "LONG", // order_type
+              "l": 0.1, // leverage (if not null)
+              "q": 119.26058437686345, // quantity (if not null)
+              "pr": 83.85, // price (if not zero)
+              "v": 10000.0, // value
+              "e": "MARKET", // execution_type
+              "p": 1770727691818, // processed_ms
+              "lp": 83.85, // limit_price (if not null)
+              "sl": 78.34, // stop_loss (if not null)
+              "tk": 88.42 // take_profit (if not null)
+            }
+          },
+          "uo": { // unfilled_orders (if unfilled orders)
+            "7413e788-e000-465a-a37c-da22d7b94acc": { // order_uuid
+              "t": "LONG", // order_type
+              "l": 0.1, // leverage (if not null)
+              "q": 119.26058437686345, // quantity (if not null)
+              "pr": 83.85, // price (if not zero)
+              "v": 10000.0, // value
+              "e": "MARKET", // execution_type
+              "p": 1770727691818, // processed_ms
+              "lp": 83.85, // limit_price (if not null)
+              "sl": 78.34, // stop_loss (if not null)
+              "tk": 88.42 // take_profit (if not null)
+            }
+          },
+          "fh": { // fee_history (if fee history)
+            "1770727691818": { // time_ms
+              "t": "transaction", // fee_type
+              "a": 4.54 // amount
+            }
+          }
+        }
+      },
+      // all_time_returns is only included if there are closed positions newer than the
+      // positions_time_ms query parameter
+      "all_time_returns": 1.035,
+      "total_leverage": 0.0,
+      "positions_time_ms": 1770727691818 // Use as a query parameter in next request
+    },
+    // limit_orders is only included if any limit orders newer than the limit_order_time_ms
+    // query parameter
+    "limit_orders": {
+      "open_orders": {
+        "7413e788-e000-465a-a37c-da22d7b94acc": { // order_uuid
+          "tp": "SOL/USD", // trade_pair
+          "t": "LONG", // order_type
+          "l": 0.1, // leverage (if not null)
+          "q": 119.26058437686345, // quantity (if not null)
+          "pr": 83.85, // price (if not zero)
+          "v": 10000.0, // value
+          "e": "MARKET", // execution_type
+          "p": 1770727691818, // processed_ms
+          "lp": 83.85, // limit_price (if not null)
+          "sl": 78.34, // stop_loss (if not null)
+          "tk": 88.42 // take_profit (if not null)
+        }
+      },
+      "closed_orders": [
+        "7413e788-e000-465a-a37c-da22d7b94acc" // order_uuid
+      ],
+      "limit_orders_time_ms": 1701388800000, // Use as a query parameter in next request
+    },
+    "ledger": {
+      "checkpoints": [
+        {
+          "t": 1770768000000, // timestamp_ms
+          "r": -11.400847781869729, // realized_pnl (if not zero)
+          "u": 9.2605843763286, // unrealized_pnl (if not zero)
+          "m": 1.0001092732205306, // max_portfolio_value
+          "s": "CHALLENGE" // challenge_period_status
+        }
+      ],
+      "portfolio_return": 2.2204460492503128e-16,
+      "checkpoints_time_ms": 1770768000000 // Use as a query parameter in next request
+    },
+    // statistics is only included if any returns newer than the daily_returns_time_ms
+    // query parameter
+    "statistics": {
+      "daily_returns": { 
+        "2023-12-01" : 1.2 // date : value
+      },
+      "daily_returns_time_ms": 1701388800000 // Use as a query parameter in next request
+    }
+  },
+  "timestamp": 1702345690000
+}
+```
+
+**Response Field Descriptions:**
+
+**Subaccount Info:**
+
+This is the only guaranteed section of the response. All other sections may be missing if they do not contain new information or the manager that supplies the information is not available.
+- `synthetic_hotkey`: The subaccount's synthetic hotkey ({entity_hotkey}_{subaccount_id})
+- `subaccount_uuid`: Unique identifier for this subaccount
+- `asset_class`: Asset class (crypto, forex, etc.)
+- `account_size`: Current account size (in USD)
+- `status`: Current status ("active", "eliminated", or "unknown")
+- `created_at_ms`: Timestamp when subaccount was created
+- `eliminated_at_ms`: Timestamp when eliminated (null if active)
+
+**Challenge Period:**
+- `bucket`: Challenge period bucket ("CHALLENGE", "MAINCOMP", "PROBATION", etc.)
+- `start_time_ms`: Timestamp when challenge period started
+
+**Elimination:**
+
+This section is only included if the subaccount is eliminated.
+  - `elimination_initiated_time_ms`: When elimination occurred
+  - `reason`: Elimination reason (LIQUIDATED, PLAGIARISM, etc.)
+  - `dd`: Drawdown at elimination (if applicable)
+
+**Positions:**
+- `positions`: Dictionary of trading positions
+  - `position_uuid`: Unique identifier for this position
+  - `trade_pair`: display_name
+  - `position_type`: LONG, SHORT, or FLAT
+  - `open_ms`: When position was opened (timestamp)
+  - `current_return`: Current return multiplier (1.0235 = 2.35% gain)
+  - `net_leverage`: Current leverage (positive = LONG, negative = SHORT, 0 = FLAT)
+  - `average_entry_price`: Average price across all entries
+  - `close_ms`: When position was closed (only included if closed)
+  - `return_at_close`: Final return when position closes (only included if closed)
+  - `realized_pnl`: Net realized profit/loss for this position
+  - `filled_orders`: Dictionary of filled orders within this position
+    - `order_uuid`: Unique identifier for this order
+    - `order_type`: LONG, SHORT, or FLAT
+    - `leverage`: Leverage applied to this order
+    - `quanity`: Quanity executed
+    - `price`: Execution price
+    - `value`: Value of order (quantity * price)
+    - `execution_type`: MARKET, LIMIT, or BRACKET
+    - `processed_ms`: When order was processed
+    - `limit_price`: Limit price (if applicable)
+    - `stop_loss`: Stop loss price (if applicable)
+    - `take_profit`: Take profit price (if applicable)
+  - `unfilled_orders`: Dictionary of unfilled orders within this position
+  - `fee_history`: Dictionary of unfilled orders within this position
+    - `time_ms`: Timestamp of fee
+    - `fee_type`: transaction, carry, or interest
+    - `amount`: Amount of fee` 
+- `all_time_returns`: Return multiplier across all positions
+- `total_leverage`: Sum of net leverage across all open positions
+- `positions_time_ms`: Timestamp of last position or order (used as a query parameter in the next request)
+
+**Limit Orders:**
+- `open_orders`: Dictionary of untriggered limit orders
+  - `order_uuid`: Unique identifier for this order
+  - `trade_pair`: display_name
+  - `order_type`: LONG, SHORT, or FLAT
+  - `leverage`: Leverage applied to this order
+  - `quanity`: Quanity executed
+  - `price`: Execution price
+  - `value`: Value of order (quantity * price)
+  - `execution_type`: MARKET, LIMIT, or BRACKET
+  - `processed_ms`: When order was processed
+  - `limit_price`: Limit price (if applicable)
+  - `stop_loss`: Stop loss price (if applicable)
+  - `take_profit`: Take profit price (if applicable)
+- `closed_orders`: Array of closed limit orders
+  - `order_uuid` Unique identifier for a closed order
+- `limit_orders_time_ms`: Timestamp of last limit order (used as a query parameter in the next request)
+
+**Ledger:**
+- `checkpoints`: Array of performance snapshots over time
+  - `timestamp_ms`: Checkpoint timestamp in milliseconds
+  - `realized_pnl`: Net realized profit/loss during this checkpoint
+  - `unrealized_pnl`: Net unrealized profit/loss during this checkpoint
+  - `max_portfolio_value`: Best portfolio value achieved
+  - `challenge_period_status`: Challenge period status for this checkpoint
+- `portfolio_return`: Portfolio return multiplier (1.0 = break-even)
+- `checkpoints_time_ms`: Timestamp of last checkpoint (used as a query parameter in the next request)
+
+**Statistics:**
+- `daily_returns`: Dictionary of daily return data
+  - `date`
+  - `value`
+- `daily_returns_time_ms`: Timestamp of the last daily return (used as a query parameter in the next request)
+
+**Use Cases:**
+- Frontend dashboards for displaying subaccount performance
+- Real-time monitoring of subaccount trading activity
+- Challenge period progress tracking
+- Position and risk management
+
 ### Eliminate Subaccount
 
 `POST /entity/subaccount/eliminate`

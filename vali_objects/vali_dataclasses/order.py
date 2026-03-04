@@ -228,11 +228,39 @@ class Order(Signal):
                 'margin_loan': self.margin_loan,
                 'bracket_orders': self.bracket_orders}
 
+    def to_dashboard(self, include_trade_pair: bool = False) -> dict:
+        results = {
+            "t": self.order_type.name,
+            "v": self.value,
+            "e": self.execution_type.name,
+            "p": self.processed_ms,
+        }
+
+        if self.leverage is not None:
+            results["l"] = self.leverage
+
+        if self.quantity is not None:
+            results["q"] = self.quantity
+
+        if self.price:
+            results["pr"] = self.price
+
+        if include_trade_pair and self.trade_pair is not None:
+            results["tp"] = self.trade_pair.trade_pair
+
+        if self.limit_price is not None:
+            results["lp"] = self.limit_price
+
+        if self.stop_loss is not None:
+            results["sl"] = self.stop_loss
+
+        if self.take_profit is not None:
+            results["tk"] = self.take_profit
+
+        return results
+
     def __str__(self):
         # Ensuring the `trade_pair.trade_pair_id` is accessible for the string representation
         # This assumes that trade_pair_id is a valid attribute of trade_pair
         d = self.to_python_dict()
         return str(d)
-
-
-

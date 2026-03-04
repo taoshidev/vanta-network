@@ -60,6 +60,7 @@ class Position(BaseModel):
     realized_pnl: float = 0.0               # USD
     unrealized_pnl: float = 0.0             # USD
     position_type: Optional[OrderType] = None
+    # TODO: Replace this with a property that checks if close_ms is None
     is_closed_position: bool = False
     fee_history: List[Dict] = Field(default_factory=list) # [{"fee_type": "carry", "amount": 123, "time_ms": 123}]
     last_stock_split_date: Optional[str] = None  # Only set for equities
@@ -338,6 +339,43 @@ class Position(BaseModel):
     def to_dict(self):
         d = deepcopy(self.model_dump())
         return self._handle_trade_pair_encoding(d)
+
+    def to_dashboard(self, positions_time_ms: int, filled_orders, unfilled_orders) -> dict:
+        results = {
+            "tp": self.trade_pair.trade_pair,
+            "t": self.position_type.name,
+            "o": self.open_ms,
+            "r": self.current_return,
+            "ap": self.average_entry_price,
+            "rp": self.realized_pnl,
+        }
+
+        if self.net_leverage:
+            results["nl"] = self.net_leverage
+
+        if self.is_closed_position:
+            results["c"] = self.close_ms
+            results["rc"] = self.return_at_close
+
+        if filled_orders:
+            results["fo"] = filled_orders
+
+        if unfilled_orders:
+            results["uo"] = unfilled_orders
+
+        dashboard_fee_history = {}
+        for fee_event in self.fee_history:
+            fee_time_ms = fee_event["time_ms"]
+            if fee_time_ms > positions_time_ms:
+                dashboard_fee_history[str(fee_time_ms)] = {
+                    "t": fee_event["fee_type"],
+                    "a": fee_event["amount"]
+                }
+
+        if dashboard_fee_history:
+            results["fh"] = dashboard_fee_history
+
+        return results
 
     def compact_dict_no_orders(self):
         temp = self.to_dict()

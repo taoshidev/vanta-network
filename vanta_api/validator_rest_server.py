@@ -1,39 +1,42 @@
 import hashlib
-import statistics
 from string import hexdigits
 
 import bittensor as bt
-import threading
-from collections import defaultdict, deque
-from typing import Dict, Deque, Tuple, Optional
+from typing import Optional
 
-from flask import Flask, jsonify, request, Response, g
+from flask import jsonify, request, Response
+from http import HTTPStatus
 import os
 import time
 import json
+from multiprocessing import current_process
 import gzip
 import traceback
-from setproctitle import setproctitle
-from waitress import serve
 from bittensor_wallet import Keypair
 
+from entity_management.entity_client import EntityClient
 from time_util.time_util import TimeUtil
+from shared_objects.rpc.rpc_server_base import RPCServerBase
+from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
+from vali_objects.contract.contract_client import ContractClient
+from vali_objects.data_export.core_outputs_client import CoreOutputsClient
+from vali_objects.miner_account.miner_account_client import MinerAccountClient
+from vali_objects.position_management.position_manager_client import PositionManagerClient
+from vali_objects.statistics.miner_statistics_client import MinerStatisticsClient
+from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
+from vali_objects.utils.elimination.elimination_client import EliminationClient
+from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
 from vali_objects.utils.limit_order.market_order_manager import MarketOrderManager
+from vali_objects.utils.limit_order.order_processor import OrderProcessor
 from vali_objects.utils.vali_bkp_utils import CustomEncoder
-from vali_objects.vali_dataclasses.position import Position
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
-from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_client import DebtLedgerClient
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
+from vali_objects.vali_dataclasses.position import Position
 from vali_objects.exceptions.signal_exception import SignalException
-from vali_objects.utils.limit_order.order_processor import OrderProcessor
-from multiprocessing import current_process
-from vanta_api.api_key_refresh import APIKeyMixin
-from vanta_api.nonce_manager import NonceManager
 from vanta_api.base_rest_server import BaseRestServer
-from shared_objects.rpc.rpc_server_base import RPCServerBase
-from entity_management.entity_client import EntityClient
+from vanta_api.nonce_manager import NonceManager
 
 
 class ValidatorRestServer(BaseRestServer, RPCServerBase):
@@ -101,7 +104,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
         # Initialize BaseRestServer first (Flask, metrics, error handlers)
         # This will call _initialize_clients() and _register_routes()
-        print(f"[REST-INIT] Step 1/2: Initializing BaseRestServer (Flask)...")
+        print(f"[REST-INIT] Initializing BaseRestServer (Flask)...")
         BaseRestServer.__init__(
             self,
             api_keys_file=api_keys_file,
@@ -114,10 +117,10 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             connection_mode=connection_mode,
             running_unit_tests=running_unit_tests
         )
-        print(f"[REST-INIT] Step 1/2: BaseRestServer initialized ✓")
+        print(f"[REST-INIT] BaseRestServer initialized ✓")
 
         # Initialize RPCServerBase (health monitoring)
-        print(f"[REST-INIT] Step 2/2: Initializing RPCServerBase (health monitoring)...")
+        print(f"[REST-INIT] Initializing RPCServerBase (health monitoring)...")
         RPCServerBase.__init__(
             self,
             service_name=self.service_name,
@@ -127,7 +130,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             start_daemon=False,  # Flask runs in background thread, no daemon needed
             **kwargs
         )
-        print(f"[REST-INIT] Step 2/2: RPCServerBase initialized on port {self.service_port} ✓")
+        print(f"[REST-INIT] RPCServerBase initialized on port {self.service_port} ✓")
 
         print(f"[{current_process().name}] VantaRestServer initialized with {len(self.accessible_api_keys)} API keys")
         print(f"[{current_process().name}] Flask HTTP server running on {self.flask_host}:{self.flask_port}")
@@ -138,63 +141,28 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
     # ============================================================================
 
     def _initialize_clients(self, connection_mode=RPCConnectionMode.RPC, running_unit_tests=False, **kwargs):
-        """
-        Initialize 9 RPC clients for validator data access.
-
-        Called by BaseRestServer.__init__() after Flask app is created but before routes are registered.
-
-        Args:
-            connection_mode: RPC or LOCAL mode for client connections
-            running_unit_tests: Whether running in unit test mode
-        """
-        print(f"[REST-INIT] Step 2/9: Creating PositionManagerClient...")
-        # Create own PositionManagerClient (forward compatibility - no parameter passing)
-        from vali_objects.position_management.position_manager_client import PositionManagerClient
         self._position_client = PositionManagerClient(connection_mode=connection_mode)
         self._debt_ledger_client = DebtLedgerClient(connection_mode=connection_mode)
         self._perf_ledger_client = PerfLedgerClient(connection_mode=connection_mode)
-        print(f"[REST-INIT] Step 2/9: PositionManagerClient created ✓")
-
-        print(f"[REST-INIT] Step 2b/9: Creating AssetSelectionClient...")
-        # Create own AssetSelectionClient (forward compatibility - no parameter passing)
-        from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
         self._asset_selection_client = AssetSelectionClient(connection_mode=connection_mode)
-        print(f"[REST-INIT] Step 2b/9: AssetSelectionClient created ✓")
-
-        print(f"[REST-INIT] Step 2c/9: Creating LimitOrderClient...")
-        # Create own LimitOrderClient (forward compatibility - no parameter passing)
-        from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
         self._limit_order_client = LimitOrderClient(connection_mode=connection_mode)
-        print(f"[REST-INIT] Step 2c/9: LimitOrderClient created ✓")
-
-        print(f"[REST-INIT] Step 2d/9: Creating ContractClient...")
-        # Create own ContractClient (forward compatibility - no parameter passing)
-        from vali_objects.contract.contract_client import ContractClient
         self._contract_client = ContractClient(connection_mode=connection_mode)
-        print(f"[REST-INIT] Step 2d/9: ContractClient created ✓")
-
-        print(f"[REST-INIT] Step 2d2/9: Creating MinerAccountClient...")
-        # Create own MinerAccountClient (for account sizes data)
-        from vali_objects.miner_account.miner_account_client import MinerAccountClient
         self._miner_account_client = MinerAccountClient(connection_mode=connection_mode)
-        print(f"[REST-INIT] Step 2d2/9: MinerAccountClient created ✓")
-
-        print(f"[REST-INIT] Step 2e/9: Creating CoreOutputsClient...")
-        # Create own CoreOutputsClient (forward compatibility - no parameter passing)
-        from vali_objects.data_export.core_outputs_client import CoreOutputsClient
         self._core_outputs_client = CoreOutputsClient(connection_mode=connection_mode)
-        print(f"[REST-INIT] Step 2e/9: CoreOutputsClient created ✓")
-
-        print(f"[REST-INIT] Step 2f/9: Creating StatisticsOutputsClient...")
-        # Create own StatisticsOutputsClient (forward compatibility - no parameter passing)
-        from vali_objects.statistics.miner_statistics_client import MinerStatisticsClient
-        self._statistics_outputs_client = MinerStatisticsClient(connection_mode=connection_mode)
-        print(f"[REST-INIT] Step 2f/9: StatisticsOutputsClient created ✓")
-
-        print(f"[REST-INIT] Step 2g/9: Creating EntityClient...")
-        # Create own EntityClient (forward compatibility - no parameter passing)
-        self._entity_client = EntityClient(connection_mode=connection_mode, running_unit_tests=running_unit_tests)
-        print(f"[REST-INIT] Step 2g/9: EntityClient created ✓")
+        self._statistics_client = MinerStatisticsClient(connection_mode=connection_mode)
+        self._entity_client = EntityClient(
+            connection_mode=connection_mode,
+            running_unit_tests=running_unit_tests
+        )
+        self._challenge_period_client = ChallengePeriodClient(
+            connection_mode=connection_mode,
+            running_unit_tests=running_unit_tests
+        )
+        self._elimination_client = EliminationClient(
+            connection_mode=connection_mode,
+            connect_immediately=False,
+            running_unit_tests=running_unit_tests
+        )
 
     # ============================================================================
     # LIFECYCLE MANAGEMENT (multiple inheritance coordination)
@@ -299,6 +267,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         self.app.route("/entities", methods=["GET"])(self.get_all_entities)
         self.app.route("/entity/subaccount/eliminate", methods=["POST"])(self.eliminate_subaccount)
         self.app.route("/entity/subaccount/<synthetic_hotkey>", methods=["GET"])(self.get_subaccount_dashboard)
+        self.app.route("/v2/entity/subaccount/<synthetic_hotkey>", methods=["GET"])(self.v2_get_subaccount_dashboard)
         self.app.route("/entity/subaccount/payout", methods=["POST"])(self.calculate_subaccount_payout)
 
         print(f"[REST-INIT] 29 validator endpoints registered ✓")
@@ -306,6 +275,24 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
     # ============================================================================
     # MINER POSITION ENDPOINTS
     # ============================================================================
+
+    def _get_access_error_response(
+        self,
+        tier_required: int = ValiConfig.SUBACCOUNT_SUBSCRIPTION_TIER,
+        entity_management_required: bool = True,
+    ):
+        api_key = self._get_api_key_safe()
+        if not self.is_valid_api_key(api_key):
+            return jsonify({"error": "Unauthorized access"}), HTTPStatus.UNAUTHORIZED
+
+        if not self.can_access_tier(api_key, tier_required):
+            return jsonify({"error": "Your API key does not have access to tier 200 data"}), HTTPStatus.FORBIDDEN
+
+        if entity_management_required:
+            if not self._entity_client:
+                return jsonify({"error": "Entity management not available"}), HTTPStatus.SERVICE_UNAVAILABLE
+
+        return None
 
     def get_miner_positions(self):
         api_key = self._get_api_key_safe()
@@ -549,8 +536,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         include_checkpoints = show_checkpoints == "true"
 
         # PRIMARY: Try to use pre-compressed payload from memory cache (fastest)
-        if self._statistics_outputs_client:
-            compressed_data = self._statistics_outputs_client.get_compressed_statistics(include_checkpoints)
+        if self._statistics_client:
+            compressed_data = self._statistics_client.get_compressed_statistics(include_checkpoints)
             if compressed_data:
                 # Return pre-compressed JSON directly
                 return Response(compressed_data, content_type='application/json', headers={
@@ -1637,6 +1624,53 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             bt.logging.error(f"Error retrieving dashboard for {synthetic_hotkey}: {e}")
             return jsonify({'error': 'Internal server error retrieving dashboard'}), 500
 
+    def v2_get_subaccount_dashboard(self, synthetic_hotkey: str):
+        access_error_response = self._get_access_error_response()
+        if access_error_response is not None:
+            return access_error_response
+
+        try:
+            subaccount_dashboard = self._entity_client.get_subaccount_dashboard(synthetic_hotkey)
+            if subaccount_dashboard is None:
+                return jsonify({'error': f'Subaccount {synthetic_hotkey} not found'}), HTTPStatus.NOT_FOUND
+        except Exception as e:
+            bt.logging.error(f"Error retrieving dashboard for {synthetic_hotkey}: {e}")
+            return jsonify({'error': 'Internal server error retrieving dashboard'}), HTTPStatus.INTERNAL_SERVER_ERROR
+
+        dashboard = {"subaccount_info": subaccount_dashboard}
+
+        # Fail gracefully if other services are not available
+        def add_to_dashboard(section, function, *args, **kwargs):
+            try:
+                # Assume the first parameter is the synthetic_hotkey
+                section_data = function(synthetic_hotkey, *args, **kwargs)
+                if section_data is not None:
+                    dashboard[section] = section_data
+            except Exception as ex:
+                bt.logging.error(f"Error retrieving {section} for {synthetic_hotkey}: {ex}")
+
+        query_args = request.args
+        positions_time_ms = int(query_args.get("positions_time_ms", 0))
+        limit_orders_time_ms = int(query_args.get("limit_orders_time_ms", 0))
+        checkpoints_time_ms = int(query_args.get("checkpoints_time_ms", 0))
+        daily_returns_time_ms = int(query_args.get("daily_returns_time_ms", 0))
+
+        add_to_dashboard("challenge_period", self._challenge_period_client.get_dashboard)
+        add_to_dashboard("elimination", self._elimination_client.get_dashboard)
+        add_to_dashboard("account_size_data", self._miner_account_client.get_dashboard)
+        add_to_dashboard("positions", self._position_client.get_dashboard, positions_time_ms)
+        add_to_dashboard("limit_orders", self._limit_order_client.get_dashboard, limit_orders_time_ms)
+        add_to_dashboard("ledger", self._debt_ledger_client.get_dashboard, checkpoints_time_ms)
+        add_to_dashboard("statistics", self._statistics_client.get_dashboard, daily_returns_time_ms)
+
+        response = {
+            'status': 'success',
+            'dashboard': dashboard,
+            'timestamp': TimeUtil.now_in_millis()
+        }
+        return jsonify(response)
+
+
     def calculate_subaccount_payout(self):
         """
         Calculate payout for a subaccount based on debt ledger checkpoints.
@@ -1833,19 +1867,19 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run the REST API server with API key authentication")
     parser.add_argument("--api-keys", type=str, default="api_keys.json", help="Path to API keys JSON file")
 
-    args = parser.parse_args()
+    parser_args = parser.parse_args()
 
     # Create test API keys file if it doesn't exist
-    if not os.path.exists(args.api_keys):
-        with open(args.api_keys, "w") as f:
+    if not os.path.exists(parser_args.api_keys):
+        with open(parser_args.api_keys, "w") as f:
             json.dump({"test_user": "test_key", "client": "abc"}, f)
-        print(f"Created test API keys file at {args.api_keys}")
+        print(f"Created test API keys file at {parser_args.api_keys}")
 
     print(f"REST server will run on {ValiConfig.REST_API_HOST}:{ValiConfig.REST_API_PORT} (hardcoded in ValiConfig)")
 
     # Create and run the server (host/port read from ValiConfig)
     server = ValidatorRestServer(
-        api_keys_file=args.api_keys,
+        api_keys_file=parser_args.api_keys,
         metrics_interval_minutes=1
     )
     server.run()

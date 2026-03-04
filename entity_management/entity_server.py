@@ -217,6 +217,9 @@ class EntityServer(RPCServerBase):
         entity_data = self._manager.get_entity_data(entity_hotkey)
         return entity_data.model_dump() if entity_data else None
 
+    def get_subaccount_dashboard_rpc(self, synthetic_hotkey: str) -> dict | None:
+        return self._manager.get_subaccount_dashboard(synthetic_hotkey)
+
     def get_all_entities_rpc(self) -> Dict[str, dict]:
         """
         Get all entities.
