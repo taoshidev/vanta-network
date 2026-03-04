@@ -182,6 +182,10 @@ class MDDChecker(CacheController):
         price_fetch_ms = (time.perf_counter() - price_fetch_start) * 1000
 
         now_ms = TimeUtil.now_in_millis()
+        for tp, sources in tp_to_price_sources.items():
+            sources_str = ", ".join(ps.debug_str(now_ms) for ps in sources)
+            bt.logging.info(f"[MDD_PRICE_SOURCES] {tp.trade_pair_id}: [{sources_str}]")
+
         today_date_est = TimeUtil.timestamp_ms_to_eastern_time_str(now_ms, short=True)
         last_update_date_est = TimeUtil.timestamp_ms_to_eastern_time_str(self._last_update_time_ms, short=True)
         is_new_day = today_date_est != last_update_date_est
@@ -415,7 +419,10 @@ class MDDChecker(CacheController):
                 )
 
             temp = tp_to_price_sources_for_realtime_price.get(trade_pair, [])
-            realtime_price = temp[0].close if temp else None
+            price_source = temp[0] if temp else None
+            realtime_price = price_source.parse_appropriate_price(
+                now_ms, trade_pair.is_forex, position.position_type, position
+            ) if price_source else None
             ret_changed = False
 
             if position.is_open_position and realtime_price is not None:
