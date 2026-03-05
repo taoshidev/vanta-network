@@ -230,24 +230,10 @@ class PositionManager:
         self.hotkey_to_positions[hotkey][position_uuid] = position
 
         # Maintain the open positions index
-        if existing_position:
-            # Position is being updated - handle state transitions
-            was_open = existing_position.is_open_position
-            is_now_open = not position.is_closed_position
-
-            if was_open and not is_now_open:
-                # Open -> Closed transition: remove from index
-                self._remove_from_open_index(position)
-            elif is_now_open and not was_open:
-                # Closed -> Open transition: add to index (rare but possible)
-                self._add_to_open_index(position)
-            elif is_now_open:
-                # Still open: update the index reference
-                self._add_to_open_index(position)
+        if position.is_closed_position:
+            self._remove_from_open_index(position)
         else:
-            # New position being inserted
-            if not position.is_closed_position:
-                self._add_to_open_index(position)
+            self._add_to_open_index(position)
 
         bt.logging.trace(f"Saved position {position_uuid} for {hotkey}")
 
