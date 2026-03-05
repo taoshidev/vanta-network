@@ -210,8 +210,20 @@ class Order(Signal):
         if self.stop_loss is not None:
             results["sl"] = self.stop_loss
 
+        if self.trailing_stop is not None:
+            tsl_compact = {}
+            if 'trailing_percent' in self.trailing_stop:
+                tsl_compact["pct"] = self.trailing_stop["trailing_percent"]
+            if 'trailing_value' in self.trailing_stop:
+                tsl_compact["val"] = self.trailing_stop["trailing_value"]
+            results["tsl"] = tsl_compact
+
         if self.take_profit is not None:
             results["tk"] = self.take_profit
+
+        if self.execution_type == ExecutionType.STOP_LIMIT:
+            results["sp"] = self.stop_price
+            results["cond"] = self.stop_condition.name
 
         return results
 
