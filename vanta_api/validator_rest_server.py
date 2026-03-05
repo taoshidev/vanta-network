@@ -20,6 +20,7 @@ from shared_objects.rpc.rpc_server_base import RPCServerBase
 from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
 from vali_objects.contract.contract_client import ContractClient
 from vali_objects.data_export.core_outputs_client import CoreOutputsClient
+from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.miner_account.miner_account_client import MinerAccountClient
 from vali_objects.position_management.position_manager_client import PositionManagerClient
 from vali_objects.statistics.miner_statistics_client import MinerStatisticsClient
