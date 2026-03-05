@@ -129,7 +129,7 @@ Use `bracket_orders` for multiple independent bracket entries or when specifying
 }
 ```
 
-Each bracket entry requires at least one of `stop_loss`, `take_profit`, `trailing_percent`, or `trailing_value`. If no size is specified in a bracket entry, the parent order's size is inherited.
+Each bracket entry requires at least one of `stop_loss`, `take_profit`, `trailing_percent`, or `trailing_value`. If no size is specified in a bracket entry, it will inherit the filled quantity of the parent order.
 
 ---
 
@@ -430,7 +430,7 @@ Each entry in `bracket_orders` supports:
 | `value` | Close size in USD |
 | `quantity` | Close size in base units |
 
-At least one price field (`stop_loss`, `take_profit`, `trailing_percent`, or `trailing_value`) is required. If no size field is specified, the parent order's size is inherited.
+At least one price field (`stop_loss`, `take_profit`, `trailing_percent`, or `trailing_value`) is required. If no size is specified, it will inherit the filled quantity of the parent order.
 
 ---
 
