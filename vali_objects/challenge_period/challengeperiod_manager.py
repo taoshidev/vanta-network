@@ -112,7 +112,7 @@ class ChallengePeriodManager(CacheController):
             connection_mode=connection_mode
         )
 
-        self.eliminations_with_reasons: Dict[str, Tuple[str, float]] = {}
+        self.eliminations_with_reasons: Dict[str, Tuple[str, float, int]] = {}  # (reason, mdd, detection_time_ms)
         # TODO: Fix this using a dataclass with named properties
         self.active_miners: Dict[str, Tuple[MinerBucket, int, Optional[MinerBucket], Optional[int]]] = {}
 
@@ -312,7 +312,7 @@ class ChallengePeriodManager(CacheController):
         bucket_start_time: int,
         current_time: int,
         time_limit_ms: int
-    ) -> tuple[bool, tuple[str, float] | None]:
+    ) -> tuple[bool, tuple[str, float, int] | None]:
         """Unified time limit check."""
         if time_limit_ms == 0:
             return False, None
@@ -327,7 +327,7 @@ class ChallengePeriodManager(CacheController):
                 f"[{context}_CP] {hotkey} failed {bucket.value} period - "
                 f"time expired ({days:.0f} days)"
             )
-            return True, (EliminationReason.FAILED_CHALLENGE_PERIOD_TIME.value, -1)
+            return True, (EliminationReason.FAILED_CHALLENGE_PERIOD_TIME.value, -1, current_time)
 
         return False, None
 
@@ -345,8 +345,9 @@ class ChallengePeriodManager(CacheController):
         self,
         hotkey: str,
         ledger: PerfLedger,
-        drawdown_threshold_percentage: float
-    ) -> tuple[bool, tuple[str, float] | None]:
+        drawdown_threshold_percentage: float,
+        current_time: int = None
+    ) -> tuple[bool, tuple[str, float, int] | None]:
         """
         Unified drawdown check with configurable threshold.
 
@@ -354,6 +355,7 @@ class ChallengePeriodManager(CacheController):
             hotkey: Miner hotkey
             ledger: Performance ledger
             drawdown_threshold_percentage: Threshold in 0-100 scale (e.g., 5.0 for 5%)
+            current_time: Detection timestamp in ms (used as elimination_initiated_time_ms)
 
         Returns:
             (should_eliminate, elimination_reason_tuple)
@@ -370,9 +372,11 @@ class ChallengePeriodManager(CacheController):
                 f"[{context}_CP] {hotkey} failed challenge period - "
                 f"drawdown {recorded_drawdown_percentage}% >= {drawdown_threshold_percentage}%"
             )
+            t_ms = current_time if current_time is not None else TimeUtil.now_in_millis()
             return True, (
                 EliminationReason.FAILED_CHALLENGE_PERIOD_DRAWDOWN.value,
-                recorded_drawdown_percentage
+                recorded_drawdown_percentage,
+                t_ms
             )
 
         return False, None
@@ -430,8 +434,9 @@ class ChallengePeriodManager(CacheController):
     def _evaluate_synthetic_challenge(
         self,
         inspection_hotkeys: dict[str, int],
-        portfolio_only_ledgers: dict[str, PerfLedger]
-    ) -> tuple[list[str], dict[str, tuple[str, float]]]:
+        portfolio_only_ledgers: dict[str, PerfLedger],
+        current_time: int = None
+    ) -> tuple[list[str], dict[str, tuple[str, float, int]]]:
         """
         Evaluate synthetic hotkeys in CHALLENGE bucket with instantaneous pass criteria.
 
@@ -497,9 +502,11 @@ class ChallengePeriodManager(CacheController):
                     f"[SYNTHETIC_CP] {hotkey} failed challenge period - "
                     f"drawdown {drawdown_pct:.2f}% >= {threshold_pct}%"
                 )
+                t_ms = current_time if current_time is not None else TimeUtil.now_in_millis()
                 miners_to_eliminate[hotkey] = (
                     EliminationReason.FAILED_CHALLENGE_PERIOD_DRAWDOWN.value,
-                    drawdown_pct
+                    drawdown_pct,
+                    t_ms
                 )
                 continue
 
@@ -529,7 +536,7 @@ class ChallengePeriodManager(CacheController):
         current_time: int,
         hk_to_first_order_time: dict[str, int] | None,
         asset_softmaxed_scores: dict[TradePairCategory, dict] | None
-    ) -> tuple[list[str], list[str], dict[str, tuple[str, float]]]:
+    ) -> tuple[list[str], list[str], dict[str, tuple[str, float, int]]]:
         """
         Evaluate hotkeys using rank-based criteria.
 
@@ -583,7 +590,8 @@ class ChallengePeriodManager(CacheController):
                 if drawdown_pct >= ValiConfig.DRAWDOWN_MAXVALUE_PERCENTAGE:
                     miners_to_eliminate[hotkey] = (
                         EliminationReason.FAILED_CHALLENGE_PERIOD_DRAWDOWN.value,
-                        drawdown_pct
+                        drawdown_pct,
+                        current_time
                     )
                     continue
 
@@ -670,7 +678,7 @@ class ChallengePeriodManager(CacheController):
         probation_hotkeys: list[str],
         hk_to_first_order_time: dict[str, int] | None = None,
         asset_softmaxed_scores: dict[TradePairCategory, dict] | None = None
-    ) -> tuple[list[str], list[str], dict[str, tuple[str, float]]]:
+    ) -> tuple[list[str], list[str], dict[str, tuple[str, float, int]]]:
         """
         Unified inspection logic for all hotkeys.
 
@@ -705,7 +713,8 @@ class ChallengePeriodManager(CacheController):
         if synthetic_challenge_hotkeys:
             synthetic_promotions, synthetic_eliminations = self._evaluate_synthetic_challenge(
                 synthetic_challenge_hotkeys,
-                portfolio_only_ledgers
+                portfolio_only_ledgers,
+                current_time
             )
             bt.logging.info("DRYRUN: skipping actual challenge period promotion and elimination")
             hotkeys_to_promote.extend(synthetic_promotions)
@@ -740,7 +749,7 @@ class ChallengePeriodManager(CacheController):
         current_time: int,
         hk_to_first_order_time: dict[str, int] | None = None,
         asset_softmaxed_scores: dict[TradePairCategory, dict] | None = None,
-    ) -> tuple[list[str], list[str], dict[str, tuple[str, float]]]:
+    ) -> tuple[list[str], list[str], dict[str, tuple[str, float, int]]]:
         """
         Runs a screening process to eliminate miners who didn't pass the challenge period.
 
@@ -762,7 +771,7 @@ class ChallengePeriodManager(CacheController):
         Returns:
             hotkeys_to_promote - list of miners that should be promoted from challenge/probation to maincomp
             hotkeys_to_demote - list of miners whose scores were lower than the threshold rank, to be demoted to probation
-            miners_to_eliminate - dictionary of hotkey to a tuple of the form (reason failed challenge period, maximum drawdown)
+            miners_to_eliminate - dictionary of hotkey to a tuple of the form (reason failed challenge period, maximum drawdown, detection_time_ms)
         """
         if len(inspection_hotkeys) == 0:
             return [], [], {}  # no hotkeys to inspect
@@ -991,7 +1000,7 @@ class ChallengePeriodManager(CacheController):
             if self.has_miner(hotkey):
                 bt.logging.info(
                     f'Hotkey {hotkey} is overdue in {MinerBucket.PLAGIARISM} at time {current_time}')
-                elim_miners_to_return[hotkey] = (EliminationReason.PLAGIARISM.value, -1)
+                elim_miners_to_return[hotkey] = (EliminationReason.PLAGIARISM.value, -1, current_time)
                 self._plagiarism_client.send_plagiarism_elimination_notification(hotkey)
 
         return elim_miners_to_return
@@ -1401,7 +1410,7 @@ class ChallengePeriodManager(CacheController):
         with self.eliminations_lock:
             return bool(self.eliminations_with_reasons)
 
-    def pop_elimination_reason(self, hotkey: str) -> Optional[Tuple[str, float]]:
+    def pop_elimination_reason(self, hotkey: str) -> Optional[Tuple[str, float, int]]:
         """Atomically get and remove an elimination reason for a single hotkey."""
         with self.eliminations_lock:
             return self.eliminations_with_reasons.pop(hotkey, None)

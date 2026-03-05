@@ -487,6 +487,9 @@ class EliminationManager(CacheController):
 
             elim_reason = elim_data[0]
             elim_mdd = elim_data[1]
+            # Use the detection time recorded by the CP manager so the flat order timestamp
+            # reflects when the violation was detected, not when this loop runs.
+            detection_time_ms = elim_data[2] if len(elim_data) > 2 else None
 
             # Atomic check-then-add: Lock prevents another thread from adding
             # the same elimination between check and add
@@ -501,7 +504,7 @@ class EliminationManager(CacheController):
 
                 # Add elimination directly (we're already holding the lock)
                 bt.logging.info(f"[ELIM_DEBUG] Adding new elimination for {hotkey}")
-                elimination_row = self.generate_elimination_row(hotkey, elim_mdd, elim_reason)
+                elimination_row = self.generate_elimination_row(hotkey, elim_mdd, elim_reason, t_ms=detection_time_ms)
                 self.eliminations[hotkey] = elimination_row
                 # Save while holding lock
                 self._save_eliminations_locked()
