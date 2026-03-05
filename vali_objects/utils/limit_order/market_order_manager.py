@@ -2,6 +2,7 @@
 
 Modularize the logic that was originally in validator.py. No IPC communication here.
 """
+import math
 import time
 import uuid
 import threading
@@ -300,7 +301,7 @@ class MarketOrderManager():
                 order_resized = True
 
         if order_resized:
-            order_sizes = self.parse_order_size({"value": order.value}, usd_base_price, trade_pair, existing_position.account_size)
+            order_sizes = self.parse_order_size({"value": order.value}, usd_base_price, trade_pair, existing_position.account_size, use_floor=True)
             order.quantity, order.leverage, order.value = order_sizes
             bt.logging.info(f"[ADD_ORDER_DETAIL] order resized to ${order.value} (max position: {max_position_value}, max_cash: {buying_power}")
 
@@ -405,7 +406,7 @@ class MarketOrderManager():
         return msg
 
     @staticmethod
-    def parse_order_size(signal, usd_base_conversion, trade_pair, portfolio_value):
+    def parse_order_size(signal, usd_base_conversion, trade_pair, portfolio_value, use_floor=False):
         """
         parses an order signal and calculates leverage, value, and quantity
         """
@@ -417,15 +418,16 @@ class MarketOrderManager():
         if sum(fields_set) != 1:
             raise ValueError("Exactly one of 'leverage', 'value', or 'quantity' must be set")
 
-        if quantity is not None:
-            value = quantity * trade_pair.lot_size / usd_base_conversion
-            leverage = value / portfolio_value
-        elif leverage is not None:
-            value = leverage * portfolio_value
-            quantity = (value * usd_base_conversion) / trade_pair.lot_size
+        if leverage is not None:
+            quantity = (leverage * portfolio_value * usd_base_conversion) / trade_pair.lot_size
         elif value is not None:
-            leverage = value / portfolio_value
             quantity = (value * usd_base_conversion) / trade_pair.lot_size
+
+        if trade_pair.is_forex:
+            quantity = math.trunc(quantity / 0.01) * 0.01 if use_floor else round(quantity / 0.01) * 0.01
+
+        value = quantity * trade_pair.lot_size / usd_base_conversion
+        leverage = value / portfolio_value
 
         return quantity, leverage, value
 
