@@ -434,7 +434,7 @@ class OrderProcessor:
 
     @staticmethod
     def process_limit_edit(signal: dict, order_uuid: str, now_ms: int,
-                          miner_hotkey: str, limit_order_client) -> Order:
+                          miner_hotkey: str, limit_order_client) -> Optional[Order]:
         """
         Process a LIMIT_EDIT operation by validating the existing order and delegating
         to the appropriate handler based on execution type.
@@ -504,6 +504,7 @@ class OrderProcessor:
                 raise SignalException("Invalid trade pair in signal for bulk bracket update")
 
             processed_orders = []
+            cancelled_count = 0
             for bracket in bracket_orders:
                 bracket_uuid = bracket.get("order_uuid")
 
@@ -523,6 +524,7 @@ class OrderProcessor:
                                 miner_hotkey, limit_order_client
                             )
                             bt.logging.info(f"[ORDER_PROCESSOR] Cancelled bracket order {bracket_uuid} (no SL/TP provided)")
+                            cancelled_count += 1
                         except SignalException as e:
                             bt.logging.warning(f"Failed to cancel bracket order {bracket_uuid}: {e}, skipping")
                         continue
@@ -564,6 +566,9 @@ class OrderProcessor:
 
             if processed_orders:
                 return processed_orders[0]
+
+            if cancelled_count > 0:
+                return None
 
             raise SignalException("No bracket edits to process")
 
