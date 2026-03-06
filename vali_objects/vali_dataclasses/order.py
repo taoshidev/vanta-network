@@ -1,6 +1,8 @@
 # developer: Taoshidev
 # Copyright (c) 2024 Taoshi Inc
 
+from typing import Optional as OptionalType
+
 from time_util.time_util import TimeUtil
 from pydantic import field_validator, model_validator
 
@@ -23,6 +25,7 @@ class Order(Signal):
     price_sources: list = []
     src: int = OrderSource.ORGANIC
     margin_loan: float = 0.0
+    is_hl_taker: OptionalType[bool] = None  # None=not HL, True=taker (0.045%), False=maker (0.015%)
 
     @field_validator('trade_pair', mode='before')
     @classmethod
@@ -226,7 +229,8 @@ class Order(Signal):
                 'stop_loss': self.stop_loss,
                 'take_profit': self.take_profit,
                 'margin_loan': self.margin_loan,
-                'bracket_orders': self.bracket_orders}
+                'bracket_orders': self.bracket_orders,
+                'is_hl_taker': self.is_hl_taker}
 
     def to_dashboard(self, include_trade_pair: bool = False) -> dict:
         results = {

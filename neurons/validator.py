@@ -36,6 +36,7 @@ from shared_objects.subtensor_ops.subtensor_ops import SubtensorOpsManager
 from shared_objects.error_utils import ErrorUtils
 from shared_objects.slack_notifier import SlackNotifier
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
+from vali_objects.vali_config import ValiConfig
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.utils.limit_order.order_processor import OrderProcessor
@@ -102,6 +103,7 @@ class Validator(ValidatorBase):
 
         self.config = self.get_config()
         self.is_mainnet = self.config.netuid == 8
+        ValiConfig.HL_USE_TESTNET = not self.is_mainnet
         # Ensure the directory for logging exists, else create one.
         if not os.path.exists(self.config.full_path):
             os.makedirs(self.config.full_path, exist_ok=True)

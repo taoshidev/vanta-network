@@ -515,8 +515,25 @@ class ValiConfig:
     MAX_SUBACCOUNT_ACCOUNT_SIZE = 100_000  # Maximum account size in USD for entity subaccounts
 
     # Hyperliquid tracking configuration
+    HL_USE_TESTNET = False  # Set to True to use Hyperliquid testnet endpoints
     HL_MAINNET_WS = "wss://api.hyperliquid.xyz/ws"
     HL_MAINNET_INFO = "https://api.hyperliquid.xyz/info"
+    HL_TESTNET_WS = "wss://api.hyperliquid-testnet.xyz/ws"
+    HL_TESTNET_INFO = "https://api.hyperliquid-testnet.xyz/info"
+    HL_MAINNET_HOST = "api.hyperliquid.xyz"
+    HL_TESTNET_HOST = "api.hyperliquid-testnet.xyz"
+
+    @classmethod
+    def hl_ws_url(cls) -> str:
+        return cls.HL_TESTNET_WS if cls.HL_USE_TESTNET else cls.HL_MAINNET_WS
+
+    @classmethod
+    def hl_info_url(cls) -> str:
+        return cls.HL_TESTNET_INFO if cls.HL_USE_TESTNET else cls.HL_MAINNET_INFO
+
+    @classmethod
+    def hl_host(cls) -> str:
+        return cls.HL_TESTNET_HOST if cls.HL_USE_TESTNET else cls.HL_MAINNET_HOST
     HL_MAX_TRACKED_ADDRESSES_PER_IP = 10  # HL WebSocket limit: 10 unique users per IP
     HL_MAX_TRACKED_ADDRESSES = HL_MAX_TRACKED_ADDRESSES_PER_IP  # backward compat alias
     HL_WS_HEARTBEAT_INTERVAL_S = 30.0
@@ -531,6 +548,17 @@ class ValiConfig:
         "BTC": "BTCUSD", "ETH": "ETHUSD", "SOL": "SOLUSD",
         "XRP": "XRPUSD", "DOGE": "DOGEUSD", "ADA": "ADAUSD",
     }
+    TRADE_PAIR_ID_TO_HL_COIN = {v: k for k, v in HL_COIN_TO_TRADE_PAIR.items()}
+
+    # HL fee constants
+    HL_TAKER_FEE = 0.00045    # 0.045%
+    HL_MAKER_FEE = 0.00015    # 0.015%
+
+    # HL Funding Rate Service
+    RPC_HL_FUNDING_PORT = 50025
+    RPC_HL_FUNDING_SERVICE_NAME = "HLFundingRateServer"
+    HL_FUNDING_DAEMON_INTERVAL_S = 300
+    HL_FUNDING_BACKFILL_HOURS = 4
 
     # Account Size
     COST_PER_THETA = 500  # Account size USD value per theta of collateral
