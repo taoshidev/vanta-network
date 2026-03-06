@@ -4,7 +4,7 @@ from copy import deepcopy
 from typing import Optional, List
 from pydantic import model_validator, BaseModel, Field
 
-from time_util.time_util import TimeUtil, MS_IN_8_HOURS, MS_IN_24_HOURS
+from time_util.time_util import TimeUtil, MS_IN_1_HOUR, MS_IN_8_HOURS, MS_IN_24_HOURS
 from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.enums.order_source_enum import OrderSource
@@ -59,6 +59,7 @@ class Position(BaseModel):
     unrealized_pnl: float = 0.0             # USD
     position_type: Optional[OrderType] = None
     is_closed_position: bool = False
+    is_hl: bool = False  # True for Hyperliquid-tracked positions (different fee model)
     last_stock_split_date: Optional[str] = None  # Only set for equities
     unfilled_orders: list = Field(default=[], exclude=True)
 
@@ -118,6 +119,17 @@ class Position(BaseModel):
         """
         if not self.trade_pair.is_crypto:
             return 1.0
+
+        # HL positions use per-order taker/maker rates
+        if self.is_hl:
+            fee = 1.0
+            for order in self.orders:
+                if order.is_hl_taker is True:
+                    fee *= (1 - ValiConfig.HL_TAKER_FEE * abs(order.leverage))
+                elif order.is_hl_taker is False:
+                    fee *= (1 - ValiConfig.HL_MAKER_FEE * abs(order.leverage))
+            return fee
+
         ans = 1.0 - (self.get_cumulative_leverage() * .001)
         return ans
 
@@ -175,7 +187,36 @@ class Position(BaseModel):
         assert next_update_time_ms > current_time_ms, (next_update_time_ms, current_time_ms, fee_product, n_intervals_elapsed, time_until_next_interval_ms)
         return fee_product, next_update_time_ms
 
-    def get_carry_fee(self, current_time_ms) -> (float, int):
+    def hl_carry_fee(self, current_time_ms: int, funding_rates: dict) -> (float, int):
+        """
+        Funding cash flow settlement using actual HL rates.
+
+        Args:
+            current_time_ms: Current time in milliseconds.
+            funding_rates: {settlement_time_ms: rate} from HLFundingRateManager.
+
+        Per the HL translation spec, funding cash flow uses the actual position
+        size at settlement time (not the max leverage in the interval):
+          funding_cash_flow = abs(vanta_position_size) * price * funding_rate
+
+        As a fraction of account value this becomes leverage * rate, so:
+          LONG:  fee *= (1 - rate * leverage)  [positive rate = longs pay]
+          SHORT: fee *= (1 + rate * leverage)  [positive rate = shorts receive]
+        """
+        fee_product = 1.0
+        for settlement_ms, rate in sorted(funding_rates.items()):
+            if settlement_ms < self.start_carry_fee_accrual_ms or settlement_ms > current_time_ms:
+                continue
+            lev = self.leverage_at_time(settlement_ms)
+            if self.position_type == OrderType.LONG:
+                fee_product *= (1 - rate * lev)
+            else:
+                fee_product *= (1 + rate * lev)
+
+        next_update_ms = current_time_ms + TimeUtil.ms_to_next_hour(current_time_ms)
+        return fee_product, next_update_ms
+
+    def get_carry_fee(self, current_time_ms, funding_rates=None) -> (float, int):
         # Calculate the number of times a new day occurred (UTC). If a position is opened at 23:59:58 and this function is
         # called at 00:00:02, the carry fee will be calculated as if a day has passed. Another example: if a position is
         # opened at 23:59:58 and this function is called at 23:59:59, the carry fee will be calculated as 0 days have passed
@@ -186,10 +227,13 @@ class Position(BaseModel):
             current_time_ms = self.close_ms
 
         if current_time_ms < self.start_carry_fee_accrual_ms:
-            delta = MS_IN_8_HOURS if self.trade_pair.is_crypto else MS_IN_24_HOURS
+            delta = MS_IN_1_HOUR if (self.is_hl and funding_rates is not None) else (MS_IN_8_HOURS if self.trade_pair.is_crypto else MS_IN_24_HOURS)
             return 1.0, min(current_time_ms + delta, self.start_carry_fee_accrual_ms)
 
-        if self.trade_pair.is_crypto:
+        # HL positions use actual funding rates when available
+        if self.is_hl and funding_rates is not None:
+            carry_fee, next_update_time_ms = self.hl_carry_fee(current_time_ms, funding_rates)
+        elif self.trade_pair.is_crypto:
             carry_fee, next_update_time_ms = self.crypto_carry_fee(current_time_ms)
         elif self.trade_pair.is_forex or self.trade_pair.is_indices or self.trade_pair.is_equities:
             carry_fee, next_update_time_ms = self.forex_indices_carry_fee(current_time_ms)
@@ -439,6 +483,22 @@ class Position(BaseModel):
             return 0
         net_return = 1 + gain
         return net_return
+
+    def leverage_at_time(self, target_ms: int) -> float:
+        """Return the absolute net leverage at a specific timestamp.
+
+        Walks orders up to target_ms and returns the cumulative absolute leverage,
+        handling FLAT orders and leverage flips the same way as max_leverage_seen.
+        """
+        current_leverage = 0.0
+        for order in self.orders:
+            if order.processed_ms > target_ms:
+                break
+            prev_leverage = current_leverage
+            current_leverage += order.leverage
+            if order.order_type == OrderType.FLAT or self._leverage_flipped(prev_leverage, current_leverage):
+                current_leverage = 0.0
+        return abs(current_leverage)
 
     def _leverage_flipped(self, prev_leverage, cur_leverage):
         return prev_leverage * cur_leverage < 0 or prev_leverage != 0 and cur_leverage == 0
