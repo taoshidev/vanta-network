@@ -1407,10 +1407,6 @@ class LimitOrderManager(CacheController):
                     trailing_sl = order.price * (1 - float(trailing_percent))
                 else:
                     trailing_sl = order.price - float(trailing_value)
-                bt.logging.info(
-                    f"[TRAILING] [{order.order_uuid}] LONG best={order.price:.6f} "
-                    f"bid={bid_price:.6f} trailing_sl={trailing_sl:.6f} static_sl={order.stop_loss}"
-                )
 
             elif order_type == OrderType.SHORT:
                 new_best = min(order.price, ask_price) if order.price > 0 else ask_price
@@ -1425,10 +1421,6 @@ class LimitOrderManager(CacheController):
                     trailing_sl = order.price * (1 + float(trailing_percent))
                 else:
                     trailing_sl = order.price + float(trailing_value)
-                bt.logging.info(
-                    f"[TRAILING] [{order.order_uuid}] SHORT best={order.price:.6f} "
-                    f"ask={ask_price:.6f} trailing_sl={trailing_sl:.6f} static_sl={order.stop_loss}"
-                )
 
         # Compute effective stop loss: use the more protective value
         # LONG: higher SL is more protective, SHORT: lower SL is more protective
@@ -1440,10 +1432,6 @@ class LimitOrderManager(CacheController):
                 effective_sl = max(effective_sl, trailing_sl)
             elif order_type == OrderType.SHORT:
                 effective_sl = min(effective_sl, trailing_sl)
-            bt.logging.info(
-                f"[TRAILING] [{order.order_uuid}] effective_sl={effective_sl:.6f} "
-                f"(trailing_sl={trailing_sl:.6f}, static_sl={order.stop_loss})"
-            )
 
         # For LONG orders:
         # - Stop loss: triggers when market price < SL (use bid for selling)
