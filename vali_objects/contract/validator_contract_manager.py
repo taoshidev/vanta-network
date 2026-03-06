@@ -581,12 +581,10 @@ class ValidatorContractManager(ValidatorBroadcastBase):
             return False
 
         if slash_amount is None:
-            slash_amount = self.compute_slash_amount(miner_hotkey)
+            slash_amount = min(self.compute_slash_amount(miner_hotkey), self.max_theta) # limited to max theta
 
         # Ensure we don't slash more than the current balance
         slash_amount = min(slash_amount, current_balance_theta)
-        # Limit slashing to max theta
-        slash_amount = min(slash_amount, self.max_theta)
         if slash_amount <= 0:
             bt.logging.info(f"No slashing required for {miner_hotkey} (calculated amount: {slash_amount})")
             return True
