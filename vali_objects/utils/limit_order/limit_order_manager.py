@@ -1167,13 +1167,6 @@ class LimitOrderManager(CacheController):
         trade_pair = order.trade_pair
         trade_pair_id = trade_pair.trade_pair_id
 
-        # Orders that were filled immediately are not stored on disk or in memory
-        if src == OrderSource.ORGANIC:
-            order.src = src
-            order.processed_ms = time_ms
-            bt.logging.info(f"Closed ORGANIC limit order [{order_uuid}] [{trade_pair_id}] for [{miner_hotkey}] - no disk cleanup")
-            return
-
         with self.limit_order_locks.get_lock(miner_hotkey, trade_pair_id):
             unfilled_dir = ValiBkpUtils.get_limit_orders_dir(miner_hotkey, trade_pair_id, "unfilled", self.running_unit_tests)
             closed_filename = unfilled_dir + order_uuid
