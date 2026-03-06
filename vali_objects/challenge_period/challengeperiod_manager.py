@@ -250,7 +250,8 @@ class ChallengePeriodManager(CacheController):
         Prune the challenge period of miners who are no longer valid.
 
         Uses position_client.get_all_hotkeys() to determine valid hotkeys,
-        which includes regular miners, entity hotkeys, and synthetic hotkeys with positions.
+        which includes regular miners and synthetic hotkeys with positions.
+        Skip entity miners.
         Elimination system handles removing truly invalid miners.
         """
         if not hotkeys:
@@ -262,6 +263,9 @@ class ChallengePeriodManager(CacheController):
         any_changes = False
         for hotkey in self.get_all_miner_hotkeys():
             if hotkey not in hotkeys:
+                # Entity miners do not have positions. skip pruning
+                if self.get_miner_bucket(hotkey) == MinerBucket.ENTITY:
+                    continue
                 self.remove_miner(hotkey)
                 any_changes = True
 
