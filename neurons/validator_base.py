@@ -156,6 +156,9 @@ class ValidatorBase:
         def sr_blacklist_fn(synapse: template.protocol.SubaccountRegistration) -> Tuple[bool, str]:
             return self.blacklist_fn(synapse, self.metagraph_client)
 
+        def eeu_blacklist_fn(synapse: template.protocol.EntityEndpointUpdate) -> Tuple[bool, str]:
+            return self.blacklist_fn(synapse, self.metagraph_client)
+
         self.axon.attach(
             forward_fn=self.receive_signal,
             blacklist_fn=rs_blacklist_fn
@@ -175,6 +178,10 @@ class ValidatorBase:
         self.axon.attach(
             forward_fn=self._entity_client.receive_subaccount_registration,
             blacklist_fn=sr_blacklist_fn
+        )
+        self.axon.attach(
+            forward_fn=self._entity_client.receive_entity_endpoint_synapse,
+            blacklist_fn=eeu_blacklist_fn
         )
 
         # Serve passes the axon information to the network + netuid we are hosting on.

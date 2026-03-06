@@ -22,7 +22,7 @@ from vali_objects.utils.limit_order.market_order_manager import MarketOrderManag
 from vali_objects.utils.vali_bkp_utils import CustomEncoder
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
-from vali_objects.vali_config import ValiConfig, RPCConnectionMode
+from vali_objects.vali_config import ValiConfig, RPCConnectionMode, TradePair
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_client import DebtLedgerClient
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
@@ -281,6 +281,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         # Trading endpoints
         self.app.route("/limit-orders/<minerid>", methods=["GET"])(self.get_limit_orders_unique)
         self.app.route("/orders/<minerid>", methods=["GET"])(self.get_orders_for_miner)
+        self.app.route("/trade-pairs", methods=["GET"])(self.get_allowed_trade_pairs)
         self.app.route("/asset-selection", methods=["POST"])(self.asset_selection)
         self.app.route("/miner-selections", methods=["GET"])(self.get_miner_selections)
         self.app.route("/development/order", methods=["POST"])(self.process_development_order)
@@ -301,6 +302,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         self.app.route("/entity/subaccount/eliminate", methods=["POST"])(self.eliminate_subaccount)
         self.app.route("/entity/subaccount/<synthetic_hotkey>", methods=["GET"])(self.get_subaccount_dashboard)
         self.app.route("/entity/subaccount/payout", methods=["POST"])(self.calculate_subaccount_payout)
+        self.app.route("/entity/set-endpoint", methods=["POST"])(self.set_entity_endpoint)
+        self.app.route("/entity/endpoint", methods=["GET"])(self.get_entity_endpoint)
 
         # Public (unauthenticated) endpoints
         self.app.route("/hl/<hl_address>/dashboard", methods=["GET"])(self.get_hl_dashboard)
@@ -722,6 +725,33 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         except Exception as e:
             bt.logging.error(f"Error retrieving orders for {minerid}: {e}")
             return jsonify({'error': 'Error retrieving orders'}), 500
+
+    def get_allowed_trade_pairs(self):
+        """Return the currently allowed trading pairs and each pair's max leverage. No API key required."""
+        try:
+            unsupported_trade_pairs = set(ValiConfig.UNSUPPORTED_TRADE_PAIRS or ())
+            allowed_trade_pairs = []
+
+            for trade_pair in TradePair:
+                if trade_pair in unsupported_trade_pairs or trade_pair.is_blocked:
+                    continue
+
+                allowed_trade_pairs.append({
+                    'trade_pair_id': trade_pair.trade_pair_id,
+                    'trade_pair': trade_pair.trade_pair,
+                    'trade_pair_category': trade_pair.trade_pair_category.value,
+                    'max_leverage': trade_pair.max_leverage,
+                })
+
+            return jsonify({
+                'allowed_trade_pairs': allowed_trade_pairs,
+                'allowed_trade_pair_ids': [pair['trade_pair_id'] for pair in allowed_trade_pairs],
+                'total_trade_pairs': len(allowed_trade_pairs),
+                'timestamp': TimeUtil.now_in_millis(),
+            })
+        except Exception as e:
+            bt.logging.error(f"Error retrieving allowed trade pairs: {e}")
+            return jsonify({'error': 'Internal server error retrieving allowed trade pairs'}), 500
 
     # ============================================================================
     # COLLATERAL ENDPOINTS
@@ -1919,6 +1949,122 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 'error': 'Internal server error calculating payout',
                 'detail': error_msg if self.running_unit_tests else None
             }), 500
+
+    def set_entity_endpoint(self):
+        """
+        Set the public endpoint URL for an entity miner.
+
+        Requires coldkey signature authentication (same pattern as register_entity).
+
+        Example:
+        curl -X POST http://localhost:48888/entity/set-endpoint \\
+          -H "Content-Type: application/json" \\
+          -d '{
+            "entity_hotkey": "5GhDr...",
+            "entity_coldkey": "5FxY...",
+            "endpoint_url": "https://my-gateway.example.com",
+            "signature": "0x..."
+          }'
+        """
+        if not self._entity_client:
+            return jsonify({'error': 'Entity management not available'}), 503
+
+        try:
+            if not request.is_json:
+                return jsonify({'error': 'Content-Type must be application/json'}), 400
+
+            data = request.get_json()
+            if not data:
+                return jsonify({'error': 'Invalid JSON body'}), 400
+
+            # Validate required fields
+            required_fields = ['entity_coldkey', 'entity_hotkey', 'endpoint_url', 'signature']
+            for field in required_fields:
+                if field not in data:
+                    return jsonify({'error': f'Missing required field: {field}'}), 400
+
+            entity_coldkey = data['entity_coldkey']
+            entity_hotkey = data['entity_hotkey']
+            endpoint_url = data['endpoint_url']
+
+            # Verify signature
+            keypair = Keypair(ss58_address=entity_coldkey)
+            message = json.dumps({
+                "endpoint_url": endpoint_url,
+                "entity_coldkey": entity_coldkey,
+                "entity_hotkey": entity_hotkey
+            }, sort_keys=True).encode('utf-8')
+
+            is_valid = keypair.verify(message, bytes.fromhex(data['signature']))
+            if not is_valid:
+                return jsonify({'error': 'Invalid signature'}), 401
+
+            # Verify coldkey-hotkey ownership
+            owns_hotkey = self._verify_coldkey_owns_hotkey(entity_coldkey, entity_hotkey)
+            if not owns_hotkey:
+                return jsonify({'error': 'Coldkey does not own the specified hotkey'}), 403
+
+            # Set endpoint URL via RPC
+            success, message = self._entity_client.set_endpoint_url(
+                entity_hotkey=entity_hotkey,
+                endpoint_url=endpoint_url
+            )
+
+            if success:
+                return jsonify({
+                    'status': 'success',
+                    'message': message,
+                    'entity_hotkey': entity_hotkey,
+                    'endpoint_url': endpoint_url
+                }), 200
+            else:
+                return jsonify({'error': message}), 400
+
+        except Exception as e:
+            bt.logging.error(f"Error setting entity endpoint: {e}")
+            return jsonify({'error': 'Internal server error setting entity endpoint'}), 500
+
+    def get_entity_endpoint(self):
+        """
+        Look up the public endpoint URL for an entity miner by HL address or subaccount.
+
+        No authentication required.
+
+        Example:
+        curl http://localhost:48888/entity/endpoint?hl_address=0x1234...
+        curl http://localhost:48888/entity/endpoint?subaccount=entity_hotkey_0
+        """
+        if not self._entity_client:
+            return jsonify({'error': 'Entity management not available'}), 503
+
+        try:
+            hl_address = request.args.get('hl_address')
+            subaccount = request.args.get('subaccount')
+
+            if not hl_address and not subaccount:
+                return jsonify({'error': 'Must provide hl_address or subaccount query parameter'}), 400
+
+            endpoint_url = self._entity_client.get_endpoint_url_by_address(
+                hl_address=hl_address,
+                subaccount=subaccount
+            )
+
+            if endpoint_url:
+                return jsonify({
+                    'endpoint_url': endpoint_url,
+                    'hl_address': hl_address,
+                    'subaccount': subaccount
+                }), 200
+            else:
+                return jsonify({
+                    'error': 'No endpoint URL found for the given address',
+                    'hl_address': hl_address,
+                    'subaccount': subaccount
+                }), 404
+
+        except Exception as e:
+            bt.logging.error(f"Error looking up entity endpoint: {e}")
+            return jsonify({'error': 'Internal server error looking up entity endpoint'}), 500
 
     def _verify_coldkey_owns_hotkey(self, coldkey_ss58: str, hotkey_ss58: str) -> bool:
         """

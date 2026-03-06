@@ -200,6 +200,66 @@ Returns position data for a specific miner identified by their hotkey.
 
 Returns all the hotkeys as seen in the metagraph from the validator's perspective.
 
+### Allowed Trade Pairs
+
+`GET /trade-pairs`
+
+Returns the currently allowed trading pairs and their maximum leverage limits. This endpoint excludes blocked pairs (e.g., indices, commodities, deprecated forex pairs) and unsupported pairs (e.g., TAOUSD). Use it to discover which `trade_pair_id` values are valid when placing orders and what leverage constraints apply per pair.
+
+**Authentication:** None required. Public endpoint.
+
+**Response:**
+```json
+{
+  "allowed_trade_pairs": [
+    {
+      "trade_pair_id": "BTCUSD",
+      "trade_pair": "BTC/USD",
+      "trade_pair_category": "CRYPTO",
+      "max_leverage": 0.5
+    },
+    {
+      "trade_pair_id": "ETHUSD",
+      "trade_pair": "ETH/USD",
+      "trade_pair_category": "CRYPTO",
+      "max_leverage": 0.5
+    },
+    {
+      "trade_pair_id": "EURUSD",
+      "trade_pair": "EUR/USD",
+      "trade_pair_category": "FOREX",
+      "max_leverage": 5
+    }
+  ],
+  "allowed_trade_pair_ids": ["BTCUSD", "ETHUSD", "EURUSD", "..."],
+  "total_trade_pairs": 45,
+  "timestamp": 1749234567890
+}
+```
+
+**Response fields:**
+- `allowed_trade_pairs`: Array of objects, each with:
+  - `trade_pair_id`: Identifier to use in order requests (e.g., `"BTCUSD"`)
+  - `trade_pair`: Display format (e.g., `"BTC/USD"`)
+  - `trade_pair_category`: Asset class (`CRYPTO`, `FOREX`, `EQUITIES`, `INDICES`)
+  - `max_leverage`: Maximum allowed leverage for this pair
+- `allowed_trade_pair_ids`: Flat list of valid `trade_pair_id` values
+- `total_trade_pairs`: Count of allowed pairs
+- `timestamp`: Response timestamp in milliseconds
+
+**Example:**
+```bash
+curl http://localhost:48888/trade-pairs
+```
+
+**Error responses:**
+```json
+// 500 Internal Server Error
+{
+  "error": "Internal server error retrieving allowed trade pairs"
+}
+```
+
 ### All Miners Statistics 
 
 `GET /statistics`

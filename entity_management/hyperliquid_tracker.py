@@ -27,6 +27,7 @@ from collections import OrderedDict
 from typing import Dict, List, Optional, Set
 
 import bittensor as bt
+import requests
 
 import ssl
 
@@ -43,12 +44,15 @@ except ImportError:
     SocksProxy = None
 
 from entity_management.entity_client import EntityClient
+from entity_management.hl_orderbook_utils import simulate_fill
 from shared_objects.rate_limiter import RateLimiter
 from time_util.time_util import TimeUtil
+from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.exceptions.signal_exception import SignalException
+from vali_objects.position_management.position_manager_client import PositionManagerClient
 from vali_objects.utils.limit_order.order_processor import OrderProcessor
 from vali_objects.utils.vali_utils import ValiUtils
-from vali_objects.vali_config import ValiConfig, TradePair, TRADE_PAIR_ID_TO_TRADE_PAIR
+from vali_objects.vali_config import ValiConfig, TradePair, TRADE_PAIR_ID_TO_TRADE_PAIR, RPCConnectionMode
 from vanta_api.websocket_notifier import WebSocketNotifierClient
 
 
@@ -109,22 +113,23 @@ class HyperliquidTracker:
             """Open a WebSocket connection, optionally through a SOCKS5 proxy."""
             if self.proxy_url and SocksProxy:
                 proxy = SocksProxy.from_url(self.proxy_url)
+                hl_host = ValiConfig.hl_host()
                 # HL WS is wss:// so we connect to port 443
                 sock = await asyncio.wait_for(
-                    proxy.connect(dest_host="api.hyperliquid.xyz", dest_port=443),
+                    proxy.connect(dest_host=hl_host, dest_port=443),
                     timeout=15,
                 )
                 ssl_ctx = ssl.create_default_context()
                 return websockets.connect(
-                    ValiConfig.HL_MAINNET_WS,
+                    ValiConfig.hl_ws_url(),
                     sock=sock,
                     ssl=ssl_ctx,
-                    server_hostname="api.hyperliquid.xyz",
+                    server_hostname=hl_host,
                     ping_interval=None,
                 )
             else:
                 return websockets.connect(
-                    ValiConfig.HL_MAINNET_WS,
+                    ValiConfig.hl_ws_url(),
                     ping_interval=None,
                 )
 
@@ -139,7 +144,7 @@ class HyperliquidTracker:
                     ws = await ws_ctx
 
                     bt.logging.info(
-                        f"[HL_{self.label}] Connected to {ValiConfig.HL_MAINNET_WS}"
+                        f"[HL_{self.label}] Connected to {ValiConfig.hl_ws_url()}"
                         + (f" via {self.proxy_url}" if self.proxy_url else " (direct)")
                     )
                     self._consecutive_failures = 0
@@ -251,6 +256,17 @@ class HyperliquidTracker:
 
             self.subscribed_addresses = new_addresses
 
+            # First shard (shard_id 0) subscribes to L2 orderbook for all supported coins
+            if self.shard_id == 0:
+                for coin in ValiConfig.HL_COIN_TO_TRADE_PAIR.keys():
+                    try:
+                        await ws.send(json.dumps({
+                            "method": "subscribe",
+                            "subscription": {"type": "l2Book", "coin": coin}
+                        }))
+                    except Exception as e:
+                        bt.logging.warning(f"[HL_{self.label}] Failed to subscribe l2Book for {coin}: {e}")
+
         async def _periodic_refresh(self, ws):
             """Periodically sync subscriptions for address changes."""
             while True:
@@ -273,6 +289,7 @@ class HyperliquidTracker:
         uuid_tracker,
         rate_limiter: Optional[RateLimiter] = None,
         ws_notifier_client: Optional[WebSocketNotifierClient] = None,
+        connection_mode: RPCConnectionMode = RPCConnectionMode.RPC,
     ):
         self._entity_client = entity_client
         self._elimination_client = elimination_client
@@ -283,6 +300,16 @@ class HyperliquidTracker:
         self._uuid_tracker = uuid_tracker
         self._rate_limiter = rate_limiter or RateLimiter()
         self._ws_notifier_client = ws_notifier_client
+
+        # Position client for querying current Vanta positions (weight delta calculation)
+        self._position_client = PositionManagerClient(
+            port=ValiConfig.RPC_POSITIONMANAGER_PORT,
+            connect_immediately=False,
+            connection_mode=connection_mode
+        )
+
+        # L2 orderbook snapshots per coin (updated via WebSocket)
+        self._orderbooks: Dict[str, dict] = {}
 
         # State
         self._thread: Optional[threading.Thread] = None
@@ -612,6 +639,11 @@ class HyperliquidTracker:
 
         if channel == "userFills":
             self._handle_user_fills(msg)
+        elif channel == "l2Book":
+            book = msg.get("data", {})
+            coin = book.get("coin")
+            if coin:
+                self._orderbooks[coin] = book
 
     def _handle_user_fills(self, msg: dict):
         """Handle userFills channel messages."""
@@ -664,17 +696,70 @@ class HyperliquidTracker:
         except Exception as e:
             bt.logging.debug(f"[HL_TRACKER] Rejection broadcast failed for {synthetic_hotkey}: {e}")
 
+    # ==================== HL Account State ====================
+
+    def _fetch_hl_account_state(self, hl_address: str) -> Optional[dict]:
+        """
+        Fetch HL account state via REST and compute portfolio weight per position.
+
+        Returns dict with:
+          - total_portfolio_value: perp + spot available (avoiding double-counting)
+          - positions: {coin: {"szi": float, "positionValue": float, "weight": float}}
+        """
+        api_url = ValiConfig.hl_info_url()
+        try:
+            perp = requests.post(api_url, json={"type": "clearinghouseState", "user": hl_address}, timeout=10).json()
+            spot = requests.post(api_url, json={"type": "spotClearinghouseState", "user": hl_address}, timeout=10).json()
+            all_mids = requests.post(api_url, json={"type": "allMids"}, timeout=10).json()
+        except Exception as e:
+            bt.logging.error(f"[HL_TRACKER] REST error fetching account state for {hl_address}: {e}")
+            return None
+
+        margin = perp.get("crossMarginSummary", perp.get("marginSummary", {}))
+        perp_value = float(margin.get("accountValue", 0))
+
+        # Spot: sum USD value of all holdings, subtract amount locked as perp margin
+        spot_value, spot_hold = 0.0, 0.0
+        for b in spot.get("balances", []):
+            coin = b.get("coin", "")
+            total_qty = float(b.get("total", 0))
+            hold_qty = float(b.get("hold", 0))
+            if coin == "USDC":
+                usd_val, hold_val = total_qty, hold_qty
+            else:
+                mid_price = float(all_mids.get(coin, 0))
+                usd_val, hold_val = total_qty * mid_price, hold_qty * mid_price
+            spot_value += usd_val
+            spot_hold += hold_val
+
+        spot_available = spot_value - spot_hold
+        total_portfolio_value = perp_value + spot_available
+
+        # Collect per-coin position weights
+        positions = {}
+        for p in perp.get("assetPositions", []):
+            pos = p.get("position", {})
+            coin = pos.get("coin", "")
+            szi = float(pos.get("szi", 0))
+            pos_value_abs = float(pos.get("positionValue", 0))
+            sign = 1 if szi >= 0 else -1
+            pos_value = sign * pos_value_abs
+            weight = pos_value / total_portfolio_value if total_portfolio_value > 0 else 0
+            positions[coin] = {"szi": szi, "positionValue": pos_value_abs, "weight": weight}
+
+        return {"total_portfolio_value": total_portfolio_value, "positions": positions}
+
     # ==================== Fill Processing ====================
 
     def _process_fill(self, hl_address: str, fill: dict):
         """
         Convert a Hyperliquid fill to a Vanta signal and process it.
 
-        Steps:
-        1. Map coin to Vanta TradePair
-        2. Resolve synthetic hotkey
-        3. Run should_fail_early-equivalent checks
-        4. Build signal and process via OrderProcessor
+        Uses portfolio-weight-to-delta approach:
+        1. Fetch HL account state -> compute target position weight
+        2. Query current Vanta position -> compute current signed leverage
+        3. Delta = target - current -> build incremental Vanta signal
+        4. Calculate L2 orderbook slippage for taker fills
         """
         coin = fill.get("coin")
         if not coin:
@@ -747,33 +832,103 @@ class HyperliquidTracker:
             self._broadcast_rejection(synthetic_hotkey, f"Market is closed for {trade_pair_id}.")
             return
 
-        # === Build signal ===
-        side = fill.get("side", "")
-        fill_sz = float(fill.get("sz", 0))
-        fill_px = float(fill.get("px", 0))
-
-        if fill_sz <= 0 or fill_px <= 0:
+        # === Step 1: Fetch HL account state -> compute target weight ===
+        account_state = self._fetch_hl_account_state(hl_address)
+        if not account_state or account_state["total_portfolio_value"] <= 0:
+            bt.logging.warning(f"[HL_TRACKER] Zero/missing portfolio value for {hl_address}")
             return
 
-        # Determine order type from side
-        # HL side: "B" = buy (LONG), "A" = sell (SHORT)
-        if side == "B":
-            order_type = "LONG"
-        elif side == "A":
-            order_type = "SHORT"
+        pos_info = account_state["positions"].get(coin)
+
+        # Step 2: Compute target signed weight (+ = long, - = short)
+        if pos_info:
+            target_signed_weight = pos_info["weight"]
         else:
-            bt.logging.warning(f"[HL_TRACKER] Unknown fill side: {side}")
+            target_signed_weight = 0.0  # position closed on HL side
+
+        # Clip to Vanta limits (signed)
+        max_lev = ValiConfig.CRYPTO_MAX_LEVERAGE
+        min_lev = ValiConfig.CRYPTO_MIN_LEVERAGE
+        if abs(target_signed_weight) < min_lev:
+            target_signed_weight = 0.0  # below minimum -> treat as flat
+        elif abs(target_signed_weight) > max_lev:
+            sign = 1 if target_signed_weight > 0 else -1
+            target_signed_weight = sign * max_lev
+
+        # Step 3: Get current Vanta position -> compute current signed leverage
+        current_position = self._position_client.get_open_position_for_trade_pair(
+            synthetic_hotkey, trade_pair_id
+        )
+
+        if current_position and not current_position.is_closed_position:
+            if current_position.position_type == OrderType.LONG:
+                current_signed_lev = current_position.net_leverage
+            elif current_position.position_type == OrderType.SHORT:
+                current_signed_lev = -current_position.net_leverage
+            else:
+                current_signed_lev = 0.0
+        else:
+            current_signed_lev = 0.0
+
+        # Step 4: Compute delta order
+        delta = target_signed_weight - current_signed_lev
+
+        if abs(delta) < min_lev and target_signed_weight != 0.0:
+            bt.logging.debug(f"[HL_TRACKER] Delta {delta:.4f} below min leverage, skipping")
             return
 
-        # Calculate leverage: position notional / account_size, clamped to crypto limits
-        raw_leverage = (fill_sz * fill_px) / account_size
-        leverage = max(ValiConfig.CRYPTO_MIN_LEVERAGE, min(raw_leverage, ValiConfig.CRYPTO_MAX_LEVERAGE))
+        # Step 5: Convert delta to order_type + leverage
+        if target_signed_weight == 0.0:
+            order_type = "FLAT"
+            leverage = 0.0
+        elif delta > 0:
+            order_type = "LONG"
+            leverage = delta
+        else:
+            order_type = "SHORT"
+            leverage = abs(delta)
 
+        # === Step 6: Calculate L2 orderbook slippage ===
+        is_taker = fill.get("crossed", True)
+        slippage_pct = 0.0
+
+        if is_taker and coin in self._orderbooks:
+            book = self._orderbooks[coin]
+            bids = book.get("levels", [[], []])[0]
+            asks = book.get("levels", [[], []])[1]
+            if asks and bids:
+                mid = (float(asks[0]["px"]) + float(bids[0]["px"])) / 2
+                if mid > 0:
+                    if order_type == "FLAT":
+                        # Closing a position: trade size is the current position's leverage,
+                        # direction is opposite to position type (closing LONG = sell = eat bids,
+                        # closing SHORT = buy = eat asks)
+                        translated_size_usd = abs(current_signed_lev) * account_size
+                        is_buying = current_signed_lev < 0  # closing SHORT = buying
+                    else:
+                        translated_size_usd = leverage * account_size
+                        is_buying = order_type == "LONG"
+
+                    levels = asks if is_buying else bids
+                    fills_result, _remaining = simulate_fill(levels, translated_size_usd, "usd")
+                    total_coins = sum(f[1] for f in fills_result)
+                    total_usd = sum(f[2] for f in fills_result)
+                    avg_price = total_usd / total_coins if total_coins > 0 else mid
+                    if is_buying:
+                        slippage_pct = (avg_price - mid) / mid
+                    else:
+                        slippage_pct = (mid - avg_price) / mid
+                    slippage_pct = max(0.0, min(slippage_pct, 0.03))  # clip to 3% max
+
+        # === Build signal ===
         signal = {
             "order_type": order_type,
             "leverage": leverage,
             "trade_pair": {"trade_pair_id": trade_pair_id},
             "execution_type": "MARKET",
+            "is_hl": True,
+            "is_hl_taker": is_taker,
+            "hl_slippage": slippage_pct,
         }
 
         miner_order_uuid = str(uuid.uuid4())
@@ -798,8 +953,9 @@ class HyperliquidTracker:
             self._last_fill_time = time.time()
 
             bt.logging.info(
-                f"[HL_TRACKER] Processed fill: {coin} {side} {fill_sz}@{fill_px} -> "
-                f"{synthetic_hotkey} {order_type} leverage={leverage:.4f}"
+                f"[HL_TRACKER] Processed fill: {coin} target_weight={target_signed_weight:+.4f} "
+                f"current_lev={current_signed_lev:+.4f} delta={delta:+.4f} -> "
+                f"{synthetic_hotkey} {order_type} leverage={leverage:.4f} slippage={slippage_pct:.6f}"
             )
 
         except SignalException as e:

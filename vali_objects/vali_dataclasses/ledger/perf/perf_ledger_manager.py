@@ -88,6 +88,13 @@ class PerfLedgerManager(CacheController):
         # Create own LivePriceFetcherClient (forward compatibility - no parameter passing)
         self._live_price_client = LivePriceFetcherClient(running_unit_tests=running_unit_tests)
 
+        # HL funding rate client for HL position carry fees
+        from vali_objects.hl_funding.hl_funding_rate_client import HLFundingRateClient
+        self._hl_funding_client = HLFundingRateClient(
+            connection_mode=connection_mode,
+            connect_immediately=False,
+        )
+
         # Every update, pick a hotkey to rebuild in case polygon 1s candle data changed.
         self.trade_pair_to_price_info = {'second':{}, 'minute':{}}
         self.trade_pair_to_position_ret = {}
@@ -106,6 +113,7 @@ class PerfLedgerManager(CacheController):
         self.mode_to_n_updates = {}
         self.update_to_n_open_positions = {}
         self.position_uuid_to_cache = defaultdict(FeeCache)
+        self._hl_funding_rates_cache: dict = {}  # (coin, position_uuid) -> funding_rates dict
         self.target_ledger_window_ms = target_ledger_window_ms
         bt.logging.info(f"Running performance ledger manager with mode {self.parallel_mode.name}")
         if self.is_backtesting or self.parallel_mode != ParallelizationMode.SERIAL:
@@ -127,6 +135,21 @@ class PerfLedgerManager(CacheController):
             self.secrets = secrets
         else:
             self.secrets = ValiUtils.get_secrets(running_unit_tests=self.running_unit_tests)
+
+    def _get_hl_funding_rates(self, position, current_time_ms: int):
+        """Fetch HL funding rates for a position if it is an HL position, otherwise return None."""
+        if not position.is_hl:
+            return None
+        coin = ValiConfig.TRADE_PAIR_ID_TO_HL_COIN.get(position.trade_pair.trade_pair_id)
+        if not coin:
+            return None
+        try:
+            return self._hl_funding_client.get_rates_for_position(
+                coin, position.start_carry_fee_accrual_ms, current_time_ms
+            )
+        except Exception as e:
+            bt.logging.warning(f"[PERF_LEDGER] Failed to fetch HL funding rates for {coin}: {e}")
+            return None
 
     @property
     def contract_manager(self):
@@ -534,7 +557,8 @@ class PerfLedgerManager(CacheController):
                 for k in [TP_ID_PORTFOLIO, tp_id]:
                     csf, _ = self.position_uuid_to_cache[historical_position.position_uuid].get_spread_fee(historical_position, end_time_ms)
                     tp_to_spread_fee[k] *= csf
-                    ccf, _ = self.position_uuid_to_cache[historical_position.position_uuid].get_carry_fee(end_time_ms, historical_position)
+                    hl_fr = self._get_hl_funding_rates(historical_position, end_time_ms)
+                    ccf, _ = self.position_uuid_to_cache[historical_position.position_uuid].get_carry_fee(end_time_ms, historical_position, funding_rates=hl_fr)
                     tp_to_carry_fee[k] *= ccf
                     tp_to_return[k] *= historical_position.return_at_close
                     tp_to_realized_pnl[k] += historical_position.realized_pnl
@@ -735,7 +759,8 @@ class PerfLedgerManager(CacheController):
 
                 # Calculate fees for this position
                 position_spread_fee, psf_updated = self.position_uuid_to_cache[historical_position.position_uuid].get_spread_fee(historical_position, t_ms)
-                position_carry_fee, pcf_updated = self.position_uuid_to_cache[historical_position.position_uuid].get_carry_fee(t_ms, historical_position)
+                hl_fr = self._get_hl_funding_rates(historical_position, t_ms)
+                position_carry_fee, pcf_updated = self.position_uuid_to_cache[historical_position.position_uuid].get_carry_fee(t_ms, historical_position, funding_rates=hl_fr)
 
                 # Apply fees to the appropriate IDs
                 for x in tp_ids_to_build:
@@ -909,7 +934,8 @@ class PerfLedgerManager(CacheController):
                         tp_to_initial_return[x] *= historical_position.return_at_close
                         tp_to_initial_realized_pnl[x] += historical_position.realized_pnl
                         tp_to_initial_spread_fee[x] *= self.position_uuid_to_cache[historical_position.position_uuid].get_spread_fee(historical_position, historical_position.orders[-1].processed_ms)[0]
-                        tp_to_initial_carry_fee[x] *= self.position_uuid_to_cache[historical_position.position_uuid].get_carry_fee(historical_position.orders[-1].processed_ms, historical_position)[0]
+                        hl_fr = self._get_hl_funding_rates(historical_position, historical_position.orders[-1].processed_ms)
+                        tp_to_initial_carry_fee[x] *= self.position_uuid_to_cache[historical_position.position_uuid].get_carry_fee(historical_position.orders[-1].processed_ms, historical_position, funding_rates=hl_fr)[0]
                 elif len(historical_position.orders) == 0:
                     continue
                 else:
@@ -1515,7 +1541,8 @@ class PerfLedgerManager(CacheController):
 
                         # Calculate the return at the last known price point
                         position_spread_fee, _ = self.position_uuid_to_cache[position.position_uuid].get_spread_fee(position, t_ms)
-                        position_carry_fee, _ = self.position_uuid_to_cache[position.position_uuid].get_carry_fee(t_ms, position)
+                        hl_fr = self._get_hl_funding_rates(position, t_ms)
+                        position_carry_fee, _ = self.position_uuid_to_cache[position.position_uuid].get_carry_fee(t_ms, position, funding_rates=hl_fr)
                         position.set_returns(last_price, self._live_price_client, time_ms=t_ms, total_fees=position_spread_fee * position_carry_fee)
 
                         # Store info for aggregate logging with both price and return changes
