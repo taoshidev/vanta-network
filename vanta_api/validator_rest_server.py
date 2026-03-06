@@ -720,11 +720,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             return jsonify({'error': 'Error retrieving orders'}), 500
 
     def get_allowed_trade_pairs(self):
-        """Return the currently allowed trading pairs and each pair's max leverage."""
-        api_key = self._get_api_key_safe()
-        if not self.is_valid_api_key(api_key):
-            return jsonify({'error': 'Unauthorized access'}), 401
-
+        """Return the currently allowed trading pairs and each pair's max leverage. No API key required."""
         try:
             unsupported_trade_pairs = set(ValiConfig.UNSUPPORTED_TRADE_PAIRS or ())
             allowed_trade_pairs = []
