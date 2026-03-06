@@ -430,6 +430,29 @@ class TimeUtil:
         return int(dt.replace(hour=0, minute=0, second=0, microsecond=0).timestamp() * 1000)
 
     @staticmethod
+    def ms_to_next_hour(t_ms: int) -> int:
+        """Return ms remaining until the next full UTC hour boundary."""
+        dt = TimeUtil.millis_to_timestamp(t_ms, change_timezone=False)
+        next_hour = dt.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+        return int((next_hour - dt).total_seconds() * 1000)
+
+    @staticmethod
+    def n_hours_elapsed(start_ms: int, current_ms: int) -> int:
+        """Return the number of full UTC hour boundaries between start_ms and current_ms."""
+        dt_start = TimeUtil.millis_to_timestamp(start_ms, change_timezone=False)
+        dt_end = TimeUtil.millis_to_timestamp(current_ms, change_timezone=False)
+        # Align to next hour boundary from start
+        next_hour = dt_start.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+        if next_hour > dt_end:
+            return 0
+        # Count full hour boundaries
+        count = 0
+        while next_hour <= dt_end:
+            count += 1
+            next_hour += timedelta(hours=1)
+        return count
+
+    @staticmethod
     def delta_ms_to_next_crypto_interval(t_ms: int):
         # Convert the timestamp to a datetime object in UTC
         dt = TimeUtil.millis_to_timestamp(t_ms, change_timezone=False)

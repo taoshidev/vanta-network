@@ -174,7 +174,7 @@ class MarketOrderManager():
                                         price_sources, miner_order_uuid: str, miner_repo_version: str, src:OrderSource,
                                         balance=None, usd_base_price=None, execution_type=ExecutionType.MARKET,
                                         fill_price=None, limit_price=None, stop_loss=None, take_profit=None, bracket_orders=None,
-                                        hl_slippage=None, is_hl_taker=None, trailing_stop=None) -> Order:
+                                        hl_slippage=None, is_hl_taker=None) -> Order:
         # Must be locked by caller
         step_start = TimeUtil.now_in_millis()
 
@@ -256,11 +256,9 @@ class MarketOrderManager():
 
         step_start = TimeUtil.now_in_millis()
         if hl_slippage is not None:
-            # Use pre-computed L2 orderbook slippage (from HL entity miner signals)
+            # Use pre-computed L2 orderbook slippage for HL positions
             order.slippage = hl_slippage
         else:
-            # PriceSlippageModel handles HL orderbook simulation for crypto internally,
-            # falling back to the existing model when orderbook data is unavailable
             order.slippage = PriceSlippageModel.calculate_slippage(order.bid, order.ask, order, existing_position.account_size)
         if is_hl_taker is not None:
             order.is_hl_taker = is_hl_taker
@@ -640,8 +638,7 @@ class MarketOrderManager():
                                                      new_src, account_balance, usd_base_price, execution_type,
                                                      fill_price, limit_price, stop_loss, take_profit, bracket_orders,
                                                      hl_slippage=signal.get("hl_slippage"),
-                                                     is_hl_taker=signal.get("is_hl_taker"),
-                                                     trailing_stop=trailing_stop)
+                                                     is_hl_taker=signal.get("is_hl_taker"))
                 add_order_ms = TimeUtil.now_in_millis() - add_order_start
                 bt.logging.info(f"[LOCK_WORK] Add order to position took {add_order_ms}ms")
             else:

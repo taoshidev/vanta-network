@@ -182,10 +182,8 @@ class Order(Signal):
                 'stop_loss': self.stop_loss,
                 'take_profit': self.take_profit,
                 'margin_loan': self.margin_loan,
-                'trailing_stop': self.trailing_stop,
                 'bracket_orders': self.bracket_orders,
-                'stop_price': self.stop_price,
-                'stop_condition': str(self.stop_condition) if self.stop_condition else None}
+                'is_hl_taker': self.is_hl_taker}
 
     def to_dashboard(self, include_trade_pair: bool = False) -> dict:
         results = {
