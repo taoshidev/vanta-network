@@ -22,7 +22,7 @@ from vali_objects.utils.limit_order.market_order_manager import MarketOrderManag
 from vali_objects.utils.vali_bkp_utils import CustomEncoder
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
-from vali_objects.vali_config import ValiConfig, RPCConnectionMode
+from vali_objects.vali_config import ValiConfig, RPCConnectionMode, TradePair
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_client import DebtLedgerClient
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
@@ -281,6 +281,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         # Trading endpoints
         self.app.route("/limit-orders/<minerid>", methods=["GET"])(self.get_limit_orders_unique)
         self.app.route("/orders/<minerid>", methods=["GET"])(self.get_orders_for_miner)
+        self.app.route("/trade-pairs", methods=["GET"])(self.get_allowed_trade_pairs)
         self.app.route("/asset-selection", methods=["POST"])(self.asset_selection)
         self.app.route("/miner-selections", methods=["GET"])(self.get_miner_selections)
         self.app.route("/development/order", methods=["POST"])(self.process_development_order)
@@ -304,7 +305,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         self.app.route("/entity/set-endpoint", methods=["POST"])(self.set_entity_endpoint)
         self.app.route("/entity/endpoint", methods=["GET"])(self.get_entity_endpoint)
 
-        print(f"[REST-INIT] 31 validator endpoints registered")
+        print(f"[REST-INIT] 32 validator endpoints registered")
 
     # ============================================================================
     # MINER POSITION ENDPOINTS
@@ -721,6 +722,37 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         except Exception as e:
             bt.logging.error(f"Error retrieving orders for {minerid}: {e}")
             return jsonify({'error': 'Error retrieving orders'}), 500
+
+    def get_allowed_trade_pairs(self):
+        """Return the currently allowed trading pairs and each pair's max leverage."""
+        api_key = self._get_api_key_safe()
+        if not self.is_valid_api_key(api_key):
+            return jsonify({'error': 'Unauthorized access'}), 401
+
+        try:
+            unsupported_trade_pairs = set(ValiConfig.UNSUPPORTED_TRADE_PAIRS or ())
+            allowed_trade_pairs = []
+
+            for trade_pair in TradePair:
+                if trade_pair in unsupported_trade_pairs or trade_pair.is_blocked:
+                    continue
+
+                allowed_trade_pairs.append({
+                    'trade_pair_id': trade_pair.trade_pair_id,
+                    'trade_pair': trade_pair.trade_pair,
+                    'trade_pair_category': trade_pair.trade_pair_category.value,
+                    'max_leverage': trade_pair.max_leverage,
+                })
+
+            return jsonify({
+                'allowed_trade_pairs': allowed_trade_pairs,
+                'allowed_trade_pair_ids': [pair['trade_pair_id'] for pair in allowed_trade_pairs],
+                'total_trade_pairs': len(allowed_trade_pairs),
+                'timestamp': TimeUtil.now_in_millis(),
+            })
+        except Exception as e:
+            bt.logging.error(f"Error retrieving allowed trade pairs: {e}")
+            return jsonify({'error': 'Internal server error retrieving allowed trade pairs'}), 500
 
     # ============================================================================
     # COLLATERAL ENDPOINTS
