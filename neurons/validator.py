@@ -36,6 +36,7 @@ from shared_objects.subtensor_ops.subtensor_ops import SubtensorOpsManager
 from shared_objects.error_utils import ErrorUtils
 from shared_objects.slack_notifier import SlackNotifier
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
+from vali_objects.vali_config import ValiConfig
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.utils.limit_order.order_processor import OrderProcessor
@@ -88,9 +89,9 @@ class Validator(ValidatorBase):
 
         # Run any pending migrations before initializing validator state
         print("Checking for pending migrations...")
-        # if not run_migrations():
-        #     print("ERROR: Migration failed. Aborting validator startup.")
-        #     sys.exit(1)
+        if not run_migrations():
+            print("ERROR: Migration failed. Aborting validator startup.")
+            sys.exit(1)
         print("Migrations completed successfully.")
 
         ValiBkpUtils.clear_tmp_dir()
@@ -102,6 +103,7 @@ class Validator(ValidatorBase):
 
         self.config = self.get_config()
         self.is_mainnet = self.config.netuid == 8
+        ValiConfig.HL_USE_TESTNET = not self.is_mainnet
         # Ensure the directory for logging exists, else create one.
         if not os.path.exists(self.config.full_path):
             os.makedirs(self.config.full_path, exist_ok=True)
@@ -231,6 +233,8 @@ class Validator(ValidatorBase):
 
         # Hyperliquid tracker (daemon thread for tracking HL trader fills)
         from entity_management.hyperliquid_tracker import HyperliquidTracker
+        from vanta_api.websocket_notifier import WebSocketNotifierClient
+        hl_ws_notifier = WebSocketNotifierClient(connect_immediately=False)
         self.hl_tracker = HyperliquidTracker(
             entity_client=self.entity_client,
             elimination_client=self.elimination_client,
@@ -240,6 +244,7 @@ class Validator(ValidatorBase):
             limit_order_client=self.limit_order_client,
             uuid_tracker=self.uuid_tracker,
             rate_limiter=RateLimiter(),
+            ws_notifier_client=hl_ws_notifier,
         )
         self.hl_tracker.start()
 
@@ -478,22 +483,11 @@ class Validator(ValidatorBase):
         entity_check_start = time.perf_counter()
         # Fast static function call (no RPC overhead!) - saves ~5-10ms per order
         if is_synthetic_hotkey(sender_hotkey):
-            # This is a synthetic hotkey - verify it's active and not HL-linked
-            subaccount_info = self.entity_client.get_subaccount_info_for_synthetic(sender_hotkey)
-            if not subaccount_info or subaccount_info.get('status') not in ['active', 'admin']:
+            # This is a synthetic hotkey - verify it's active
+            found, status, _ = self.entity_client.get_subaccount_status(sender_hotkey)
+            if not found or status not in ['active', 'admin']:
                 msg = (f"Synthetic hotkey {sender_hotkey} is not active or not found. "
                        f"Please ensure your subaccount is properly registered.")
-                bt.logging.warning(msg)
-                synapse.successfully_processed = False
-                synapse.error_message = msg
-                return True
-
-            # Block HL-linked subaccounts from direct trade submission
-            # HL subaccounts receive trades through HyperliquidTracker (calls OrderProcessor.process_order() directly)
-            if subaccount_info.get('hl_address'):
-                msg = (f"Subaccount {sender_hotkey} is linked to Hyperliquid address "
-                       f"{subaccount_info['hl_address']} and cannot submit trades directly. "
-                       f"Trades must come through the HyperliquidTracker service.")
                 bt.logging.warning(msg)
                 synapse.successfully_processed = False
                 synapse.error_message = msg

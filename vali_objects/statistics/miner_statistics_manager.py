@@ -217,20 +217,14 @@ class MinerStatisticsManager:
         from vali_objects.contract.contract_client import ContractClient
         from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
         from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
+        from vali_objects.miner_account.miner_account_client import MinerAccountClient
 
-        self._position_client = PositionManagerClient(
-            port=ValiConfig.RPC_POSITIONMANAGER_PORT,
-            connection_mode=connection_mode,
-            connect_immediately=not running_unit_tests
-        )
+        self._position_client = PositionManagerClient(connection_mode=connection_mode)
         self._challengeperiod_client = ChallengePeriodClient(connection_mode=connection_mode)
         self._elimination_client = EliminationClient(connection_mode=connection_mode)
         self._perf_ledger_client = PerfLedgerClient(connection_mode=connection_mode)
         self._contract_client = ContractClient(connection_mode=connection_mode)
         self._asset_selection_client = AssetSelectionClient(connection_mode=connection_mode)
-
-        # MinerAccountClient - source of truth for account sizes
-        from vali_objects.miner_account.miner_account_client import MinerAccountClient
         self._miner_account_client = MinerAccountClient(connection_mode=connection_mode)
 
         self.metrics_calculator = MetricsCalculator(metrics=metrics)
@@ -1106,3 +1100,30 @@ class MinerStatisticsManager:
         """
         stats_dict = self.miner_statistics.get('stats_dict', {})
         return stats_dict.get(hotkey)
+
+    def get_dashboard(self, hotkey: str, daily_returns_time_ms) -> dict | None:
+        snapshot_time_ms = daily_returns_time_ms
+
+        statistics = self.miner_statistics.get("stats_dict")
+        if statistics is None:
+            return None
+
+        miner_statistics = statistics.get(hotkey)
+        if miner_statistics is None:
+            return None
+
+        daily_returns = miner_statistics.get("daily_returns")
+        dashboard_daily_returns = {}
+        for return_date, return_value in daily_returns:
+            return_time_ms = TimeUtil.formatted_date_str_to_millis(return_date)
+            snapshot_time_ms = max(snapshot_time_ms, return_time_ms)
+            if return_time_ms > daily_returns_time_ms:
+                dashboard_daily_returns[return_date] = return_value
+
+        if not dashboard_daily_returns:
+            return None
+
+        return {
+            "daily_returns": dashboard_daily_returns,
+            "daily_returns_time_ms": snapshot_time_ms,
+        }

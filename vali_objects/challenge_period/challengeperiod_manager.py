@@ -37,7 +37,6 @@ from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.plagiarism.plagiarism_client import PlagiarismClient
 from vali_objects.miner_account.miner_account_client import MinerAccountClient
 from shared_objects.rpc.common_data_client import CommonDataClient
-from entity_management.entity_client import EntityClient
 from entity_management.entity_utils import is_synthetic_hotkey
 
 
@@ -113,14 +112,8 @@ class ChallengePeriodManager(CacheController):
             connection_mode=connection_mode
         )
 
-        # Create EntityClient for synthetic hotkey detection
-        self._entity_client = EntityClient(
-            connection_mode=connection_mode,
-            connect_immediately=False
-        )
-
-        # Local dicts (NOT IPC managerized) - much faster!
         self.eliminations_with_reasons: Dict[str, Tuple[str, float]] = {}
+        # TODO: Fix this using a dataclass with named properties
         self.active_miners: Dict[str, Tuple[MinerBucket, int, Optional[MinerBucket], Optional[int]]] = {}
 
         # Cached scores for MinerStatisticsManager
@@ -257,7 +250,8 @@ class ChallengePeriodManager(CacheController):
         Prune the challenge period of miners who are no longer valid.
 
         Uses position_client.get_all_hotkeys() to determine valid hotkeys,
-        which includes regular miners, entity hotkeys, and synthetic hotkeys with positions.
+        which includes regular miners and synthetic hotkeys with positions.
+        Skip entity miners.
         Elimination system handles removing truly invalid miners.
         """
         if not hotkeys:
@@ -269,6 +263,9 @@ class ChallengePeriodManager(CacheController):
         any_changes = False
         for hotkey in self.get_all_miner_hotkeys():
             if hotkey not in hotkeys:
+                # Entity miners do not have positions. skip pruning
+                if self.get_miner_bucket(hotkey) == MinerBucket.ENTITY:
+                    continue
                 self.remove_miner(hotkey)
                 any_changes = True
 
@@ -414,6 +411,20 @@ class ChallengePeriodManager(CacheController):
             bt.logging.warning(f"[SYNTHETIC_CP] Error checking returns for {hotkey}: {e}")
             return False
 
+    def _compute_portfolio_return(self, hotkey: str, account: Optional[dict] = None) -> Optional[float]:
+        """Compute current portfolio return as (balance + unrealized_pnl) / account_size.
+
+        Returns None if account data is unavailable.
+        """
+        if account is None:
+            return None
+        account_size = account.get('account_size', 0)
+        if account_size <= 0:
+            return None
+        balance = account.get('balance', 0)
+        unrealized_pnl = self._position_client.get_unrealized_pnl(hotkey)
+        return (balance + unrealized_pnl) / account_size
+
     # ==================== Evaluation Methods ====================
 
     def _evaluate_synthetic_challenge(
@@ -435,50 +446,70 @@ class ChallengePeriodManager(CacheController):
         hotkeys_to_promote = []
         miners_to_eliminate = {}
 
+        asset_classes = self.asset_selection_client.get_asset_selections()
+        accounts = self._miner_account_client.get_accounts(list(inspection_hotkeys.keys()))
+
         for hotkey, bucket_start_time in inspection_hotkeys.items():
 
             # Unified check: Minimum ledger
+            # NOTE not needed?
             has_minimum_ledger, ledger = self._check_minimum_ledger(
                 portfolio_only_ledgers, hotkey
             )
             if not has_minimum_ledger or not ledger:
                 continue
 
-            # Check drawdown from high water mark (same as rank-based miners)
-            # SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD = 0.05 (5%) -> convert to 5.0 for percentage scale
-            should_eliminate, reason = self._check_drawdown_limit(
-                hotkey=hotkey,
-                ledger=ledger,
-                drawdown_threshold_percentage=ValiConfig.SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD * 100
-            )
-            if should_eliminate:
-                miners_to_eliminate[hotkey] = reason
+            # Compute portfolio return: (balance + unrealized_pnl) / account_size
+            current_return = self._compute_portfolio_return(hotkey, accounts.get(hotkey))
+            if current_return is None:
                 continue
 
-            # Calculate current equity from MinerAccount balance + unrealized PnL
-            balance = self._miner_account_client.get_balance(hotkey)
-            if balance is None:
+            # Check drawdown from MinerAccount HWM (resets on promotion)
+            account = accounts.get(hotkey, {})
+            max_return = account.get('max_return', 1.0)
+            drawdown_pct = (1 - current_return / max_return) * 100
+            threshold_pct = ValiConfig.SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD * 100
+
+            # returns_percentage = current_return - 1.0 (e.g. 1.08 -> 8%)
+            returns_percentage = current_return - 1.0
+
+            subaccount_asset_class = asset_classes.get(hotkey)
+            if subaccount_asset_class is None:
+                bt.logging.error(f"[SYNTH_EVAL {hotkey}] Subaccount does not have asset class - unexpected")
                 continue
 
-            unrealized_pnl = self._position_client.get_unrealized_pnl(hotkey)
-            total_equity = balance + unrealized_pnl
-
-            # Get account size for calculating returns percentage
-            subaccount_account_size = self._miner_account_client.get_miner_account_size(hotkey, use_account_floor=True)
-            if subaccount_account_size is None or subaccount_account_size <= 0:
-                continue
-
-            # Calculate returns percentage: (current_equity - starting_equity) / starting_equity
-            returns_percentage = (total_equity - subaccount_account_size) / subaccount_account_size
-
-            bt.logging.info(
-                f"[SYNTH_EVAL {hotkey}] total_equity={total_equity:.2f}, account_size={subaccount_account_size:.2f}, returns={returns_percentage:.2%}"
-            )
+            returns_threshold = ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD
+            if subaccount_asset_class == TradePairCategory.CRYPTO:
+                returns_threshold = ValiConfig.SUBACCOUNT_CRYPTO_CHALLENGE_RETURNS_THRESHOLD
 
             # Promote if returns meet threshold
-            should_promote = returns_percentage >= ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD
-            if should_promote:
+            if returns_percentage >= returns_threshold:
+                bt.logging.info(
+                    f"[SYNTHETIC_CP] {hotkey} promoted - "
+                    f"returns {returns_percentage:.2f}% >= {returns_threshold}%"
+                )
                 hotkeys_to_promote.append(hotkey)
+                continue
+
+            # Eliminate if returns exceed max drawdown
+            if drawdown_pct >= threshold_pct:
+                bt.logging.info(
+                    f"[SYNTHETIC_CP] {hotkey} failed challenge period - "
+                    f"drawdown {drawdown_pct:.2f}% >= {threshold_pct}%"
+                )
+                miners_to_eliminate[hotkey] = (
+                    EliminationReason.FAILED_CHALLENGE_PERIOD_DRAWDOWN.value,
+                    drawdown_pct
+                )
+                continue
+
+            near_elimination = drawdown_pct >= threshold_pct * 0.75
+            near_promotion = returns_percentage >= returns_threshold * 0.75
+            if near_elimination or near_promotion:
+                bt.logging.info(
+                    f"[SYNTH_EVAL {hotkey}] current_return={current_return:.6f}, returns={returns_percentage:.2%}, "
+                    f"drawdown={drawdown_pct:.2f}% (elim threshold={threshold_pct:.1f}%)"
+                )
 
         bt.logging.info(
             f"[SYNTH_EVAL] Evaluation complete: {len(inspection_hotkeys)} evaluated, "
@@ -515,6 +546,8 @@ class ChallengePeriodManager(CacheController):
         promotion_eligible_hotkeys = []
         rank_eligible_hotkeys = []
 
+        accounts = self._miner_account_client.get_accounts(list(inspection_hotkeys.keys()))
+
         for hotkey, bucket_start_time in inspection_hotkeys.items():
             bucket = self.get_miner_bucket(hotkey)
 
@@ -542,14 +575,17 @@ class ChallengePeriodManager(CacheController):
             # Unified check: Drawdown during challenge/probation period
             # NOTE: This is for FAILING the challenge period (FAILED_CHALLENGE_PERIOD_DRAWDOWN)
             # EliminationManager separately handles ongoing 10% max drawdown for all miners
-            should_eliminate, reason = self._check_drawdown_limit(
-                hotkey=hotkey,
-                ledger=inspection_ledger,
-                drawdown_threshold_percentage=ValiConfig.DRAWDOWN_MAXVALUE_PERCENTAGE  # 10% threshold
-            )
-            if should_eliminate:
-                miners_to_eliminate[hotkey] = reason
-                continue
+            current_return = self._compute_portfolio_return(hotkey, accounts.get(hotkey))
+            account = accounts.get(hotkey, {})
+            max_return = account.get('max_return', 1.0)
+            if current_return is not None:
+                drawdown_pct = (1 - current_return / max_return) * 100
+                if drawdown_pct >= ValiConfig.DRAWDOWN_MAXVALUE_PERCENTAGE:
+                    miners_to_eliminate[hotkey] = (
+                        EliminationReason.FAILED_CHALLENGE_PERIOD_DRAWDOWN.value,
+                        drawdown_pct
+                    )
+                    continue
 
             # Regular-specific checks (only for regular hotkeys, not synthetic)
             if not is_synthetic_hotkey(hotkey):
@@ -1395,6 +1431,19 @@ class ChallengePeriodManager(CacheController):
     def get_miner_bucket(self, hotkey):
         """Get the bucket of a miner."""
         return self.active_miners.get(hotkey, [None])[0]
+
+    def get_dashboard(self, hotkey) -> dict | None:
+        active_miner = self.active_miners.get(hotkey)
+        if active_miner is None:
+            return None
+
+        bucket = active_miner[0]
+        start_time_ms = active_miner[1]
+
+        return {
+            "bucket": bucket.value,
+            "start_time_ms": start_time_ms,
+        }
 
     # TODO: revisit to separate regular and subaccount miners
     def get_testing_miners(self):

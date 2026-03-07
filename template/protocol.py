@@ -7,9 +7,38 @@ import typing
 import uuid
 
 import bittensor as bt
+import bittensor.utils.networking
 from pydantic import Field
 
 from typing import List
+
+
+original_Synapse_get_required_fields = bt.Synapse.get_required_fields
+
+# Monkey patch to improve Bittensor Synapse performance
+def synapse_get_required_fields(self):
+    _REQUIRED_FIELDS_ATTR = "__required_fields"
+    required_fields = getattr(self.__class__, _REQUIRED_FIELDS_ATTR, None)
+    if required_fields is None:
+        required_fields = original_Synapse_get_required_fields(self)
+        setattr(self.__class__, _REQUIRED_FIELDS_ATTR, required_fields)
+    return required_fields
+
+bt.Synapse.get_required_fields = synapse_get_required_fields
+
+
+original_get_external_ip = bittensor.utils.networking.get_external_ip
+external_ip = None
+
+# Monkey patch to improve Bittensor performance
+def get_external_ip() -> str:
+    global external_ip
+    if external_ip is None:
+        external_ip = original_get_external_ip()
+    return external_ip
+
+bittensor.utils.networking.get_external_ip = get_external_ip
+
 
 class SendSignal(bt.Synapse):
     signal: typing.Dict = Field(default_factory=dict, title="Signal", frozen=False, max_length=4096)
@@ -73,3 +102,10 @@ class SubaccountRegistration(bt.Synapse):
     error_message: str = Field("", title="Error Message", frozen=False, max_length=4096)
     computed_body_hash: str = Field("", title="Computed Body Hash", frozen=False)
 SubaccountRegistration.required_hash_fields = ["subaccount_data"]
+
+class EntityEndpointUpdate(bt.Synapse):
+    endpoint_data: typing.Dict = Field(default_factory=dict, title="Entity Endpoint Update Data", frozen=False, max_length=4096)
+    successfully_processed: bool = Field(False, title="Successfully Processed", frozen=False)
+    error_message: str = Field("", title="Error Message", frozen=False, max_length=4096)
+    computed_body_hash: str = Field("", title="Computed Body Hash", frozen=False)
+EntityEndpointUpdate.required_hash_fields = ["endpoint_data"]

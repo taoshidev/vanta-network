@@ -1053,7 +1053,7 @@ class TestMarketOrderManager(TestBase):
         # Close all positions with FLAT_ALL
         close_time_ms = now_ms + 10000
         result = self.market_order_manager.process_flat_all_order(
-            order_uuid="flat_all_uuid",
+            order_uuid="ALL",
             miner_repo_version="1.0.0",
             miner_hotkey=self.DEFAULT_MINER_HOTKEY,
             now_ms=close_time_ms

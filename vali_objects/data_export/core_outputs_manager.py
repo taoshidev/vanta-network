@@ -81,23 +81,14 @@ class CoreOutputsManager:
         from vali_objects.miner_account.miner_account_client import MinerAccountClient
         from entity_management.entity_client import EntityClient
 
-        self._position_client = PositionManagerClient(
-            port=ValiConfig.RPC_POSITIONMANAGER_PORT,
-            connect_immediately=not running_unit_tests
-        )
-        self._challengeperiod_client = ChallengePeriodClient()
-        self._elimination_client = EliminationClient()
-        # PerfLedgerClient for perf ledger operations (forward compatibility)
+        self._position_client = PositionManagerClient(connection_mode=connection_mode)
+        self._challengeperiod_client = ChallengePeriodClient(connection_mode=connection_mode)
+        self._elimination_client = EliminationClient(connection_mode=connection_mode)
         self._perf_ledger_client = PerfLedgerClient(connection_mode=connection_mode)
-        # LimitOrderClient for limit order operations (forward compatibility)
         self._limit_order_client = LimitOrderClient(connection_mode=connection_mode)
-        # Create own ContractClient (forward compatibility - no parameter passing)
         self._contract_client = ContractClient(connection_mode=connection_mode)
-        # MinerAccountClient for miner account operations (forward compatibility)
         self._miner_account_client = MinerAccountClient(connection_mode=connection_mode)
-        # AssetSelectionClient for asset selection operations (forward compatibility)
         self._asset_selection_client = AssetSelectionClient(connection_mode=connection_mode)
-        # EntityClient for entity operations (forward compatibility)
         self._entity_client = EntityClient(connection_mode=connection_mode, running_unit_tests=running_unit_tests)
 
         # Manager uses regular dict (no IPC needed - managed by server)

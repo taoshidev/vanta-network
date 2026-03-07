@@ -28,6 +28,7 @@ from vali_objects.position_management.position_manager_client import PositionMan
 from vali_objects.utils.price_slippage_model import PriceSlippageModel
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
+from vali_objects.miner_account.miner_account_client import MinerAccountClient
 from vali_objects.vali_config import ValiConfig, TradePair, RPCConnectionMode
 from vali_objects.vali_dataclasses.price_source import PriceSource
 
@@ -66,6 +67,7 @@ class MDDChecker(CacheController):
         )
         self._position_client = PositionManagerClient()
         self._position_lock_client = PositionLockClient(running_unit_tests=running_unit_tests)
+        self._miner_account_client = MinerAccountClient(connection_mode=connection_mode)
 
         self.all_trade_pairs = [trade_pair for trade_pair in TradePair]
         self._prev_iteration_prices = {}
@@ -162,7 +164,7 @@ class MDDChecker(CacheController):
         # Time the RPC read of positions
         rpc_start = time.perf_counter()
         hotkey_to_positions = self._position_client.get_positions_for_hotkeys(
-            self._metagraph_client.get_hotkeys(),
+            self._position_client.get_all_hotkeys(),
             filter_eliminations=True,
             sort_positions=True
         )
@@ -180,6 +182,10 @@ class MDDChecker(CacheController):
         price_fetch_ms = (time.perf_counter() - price_fetch_start) * 1000
 
         now_ms = TimeUtil.now_in_millis()
+        for tp, sources in tp_to_price_sources.items():
+            sources_str = ", ".join(ps.debug_str(now_ms) for ps in sources)
+            bt.logging.info(f"[MDD_PRICE_SOURCES] {tp.trade_pair_id}: [{sources_str}]")
+
         today_date_est = TimeUtil.timestamp_ms_to_eastern_time_str(now_ms, short=True)
         last_update_date_est = TimeUtil.timestamp_ms_to_eastern_time_str(self._last_update_time_ms, short=True)
         is_new_day = today_date_est != last_update_date_est
@@ -214,6 +220,19 @@ class MDDChecker(CacheController):
 
         for hotkey, sorted_positions in hotkey_to_positions.items():
             self.perform_price_corrections(hotkey, sorted_positions, tp_to_price_sources, iteration_epoch)
+
+        # Update max_return (HWM) on MinerAccount for all miners
+        accounts = self._miner_account_client.get_accounts(list(hotkey_to_positions.keys()))
+        hotkey_to_return = {}
+        for hotkey, account in accounts.items():
+            account_size = account.get('account_size', 0)
+            if account_size <= 0:
+                continue
+            balance = account.get('balance', 0)
+            unrealized_pnl = self._position_client.get_unrealized_pnl(hotkey)
+            hotkey_to_return[hotkey] = (balance + unrealized_pnl) / account_size
+        if hotkey_to_return:
+            self._miner_account_client.update_max_returns(hotkey_to_return)
 
         # Log aggregate timing statistics
         if self.position_refresh_count > 0:
@@ -400,7 +419,10 @@ class MDDChecker(CacheController):
                 )
 
             temp = tp_to_price_sources_for_realtime_price.get(trade_pair, [])
-            realtime_price = temp[0].close if temp else None
+            price_source = temp[0] if temp else None
+            realtime_price = price_source.parse_appropriate_price(
+                now_ms, trade_pair.is_forex, position.position_type, position
+            ) if price_source else None
             ret_changed = False
 
             if position.is_open_position and realtime_price is not None:

@@ -13,6 +13,7 @@ from typing import List, Dict, Optional
 from time_util.time_util import TimeUtil, timeme
 from vali_objects.exceptions.corrupt_data_exception import ValiBkpCorruptDataException
 from vali_objects.exceptions.vali_bkp_file_missing_exception import ValiFileMissingException
+from vali_objects.position_management.position_utils import PositionUtils
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.vali_config import TradePairCategory, ValiConfig, TradePair, RPCConnectionMode
@@ -30,7 +31,7 @@ from vali_objects.price_fetcher.live_price_client import LivePriceFetcherClient
 from vali_objects.utils.elimination.elimination_client import EliminationClient
 from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
 
-TARGET_MS = 1771217940000 + (1000 * 60 * 60 * 6)  # + 6 hours
+TARGET_MS = 1772128740000 + (1000 * 60 * 60 * 6)  # + 6 hours
 
 
 class PositionManager:
@@ -89,12 +90,18 @@ class PositionManager:
 
         # Internal clients always use RPC mode to connect to their servers
         # The connection_mode parameter is for how OTHER components connect TO PositionManager
+        from vali_objects.miner_account.miner_account_client import MinerAccountClient
+
         self._elimination_client = EliminationClient(connection_mode=RPCConnectionMode.RPC)
         self._challenge_period_client = ChallengePeriodClient(connection_mode=RPCConnectionMode.RPC)
         self._perf_ledger_client = PerfLedgerClient(connection_mode=RPCConnectionMode.RPC)
         self._live_price_client = LivePriceFetcherClient(
             running_unit_tests=self.running_unit_tests,
             connection_mode=RPCConnectionMode.RPC
+        )
+        self._miner_account_client = MinerAccountClient(
+            connection_mode=RPCConnectionMode.RPC,
+            running_unit_tests=self.running_unit_tests
         )
 
         # Load positions from disk on startup
@@ -321,8 +328,6 @@ class PositionManager:
                 f" position with a different position_uuid {open_position.position_uuid}.")
             raise ValiRecordsMisalignmentException(msg)
 
-
-
     def get_positions_for_hotkeys(
         self,
         hotkeys: List[str],
@@ -437,6 +442,60 @@ class PositionManager:
 
         # O(1) direct dict access
         return positions_dict.get(position_uuid, None)
+
+    def get_dashboard(self, hotkey: str, positions_time_ms: int) -> dict | None:
+        snapshot_time_ms = positions_time_ms
+
+        positions = self.get_positions_for_one_hotkey(hotkey, sort_positions=True)
+        if not positions:
+            return None
+
+        dashboard = {}
+        dashboard_positions = {}
+        new_closed_positions = False
+        for position in positions:
+
+            if position.is_closed_position:
+                snapshot_time_ms = max(snapshot_time_ms, position.close_ms)
+                if position.close_ms <= positions_time_ms:
+                    continue
+                new_closed_positions = True
+
+            dashboard_filled_orders = {}
+            for order in position.orders:
+                if order.processed_ms > positions_time_ms:
+                    snapshot_time_ms = max(snapshot_time_ms, order.processed_ms)
+                    dashboard_filled_orders[order.order_uuid] = order.to_dashboard()
+
+            dashboard_unfilled_orders = []
+            for order in position.unfilled_orders:
+                dashboard_unfilled_orders.append(order.order_uuid)
+
+            dashboard_position = position.to_dashboard(
+                positions_time_ms,
+                filled_orders=dashboard_filled_orders,
+                unfilled_orders=dashboard_unfilled_orders)
+
+            dashboard_positions[position.position_uuid] = dashboard_position
+
+        if dashboard_positions:
+            dashboard["positions"] = dashboard_positions
+            dashboard["positions_time_ms"] = snapshot_time_ms
+
+        if new_closed_positions:
+            minimum_positions = PositionFiltering.filter_positions_for_duration(positions)
+            minimum_position_returns = PositionUtils.get_closed_positions_cumulative_returns(minimum_positions)
+            if minimum_position_returns:
+                all_time_returns = minimum_position_returns[-1]
+            else:
+                all_time_returns = 0
+            dashboard["all_time_returns"] = all_time_returns
+
+        total_leverage = self.calculate_net_portfolio_leverage(hotkey)
+
+        dashboard["total_leverage"] = total_leverage
+
+        return dashboard
 
     @staticmethod
     def sort_by_close_ms(_position):
@@ -857,8 +916,8 @@ class PositionManager:
         miners_to_wipe = []
         miners_to_promote = []
         position_uuids_to_delete = []
-        wipe_positions = True
-        reopen_force_closed_orders = False
+        wipe_positions = False
+        reopen_force_closed_orders = True
         miners_to_wipe_perf_ledger = []
 
         current_eliminations = self._elimination_client.get_eliminations_from_memory() if self._elimination_client else []
@@ -887,7 +946,7 @@ class PositionManager:
             # bt.logging.info(f"Applied {n_slippage_corrections} forex slippage corrections")
 
             # All miners that wanted their challenge period restarted
-            miners_to_wipe = ["5FdxufcVWB8kn5nbRz3RiWZckfEN1q6ZrmyVUVrLD8dmQkdf"]
+            miners_to_wipe = ["5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_2", "5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_3", "5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_5", "5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_8", "5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_12", "5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_16", "5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_15", "5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_19"]
             position_uuids_to_delete = []
             miners_to_promote = []
 
@@ -951,8 +1010,8 @@ class PositionManager:
                         print(f'Deleting position {pos.position_uuid} for trade pair {pos.trade_pair.trade_pair_id} for hk {pos.miner_hotkey}')
                         self.delete_position(pos.miner_hotkey, pos.position_uuid)
                     elif reopen_force_closed_orders:
-                        if any((o.src in (1, 3)) for o in pos.orders):
-                            pos.orders = [o for o in pos.orders if (o.src not in (1, 3))]
+                        if any((o.src in (1, 3, 12)) for o in pos.orders):
+                            pos.orders = [o for o in pos.orders if (o.src not in (1, 3, 12))]
                             pos.rebuild_position_with_updated_orders(self._live_price_client)
                             self.save_miner_position(pos, validate=False)
                             print(f'Removed eliminated orders from position {pos}')
@@ -963,6 +1022,10 @@ class PositionManager:
 
                 if self._challenge_period_client:
                     self._challenge_period_client._write_challengeperiod_from_memory_to_disk()
+
+                # Rebuild account state from current positions after corrections
+                current_positions = self.get_positions_for_one_hotkey(miner_hotkey)
+                self._miner_account_client.rebuild_account_state_from_positions(miner_hotkey, current_positions)
 
         bt.logging.warning(
             f"Applied {n_corrections} order corrections out of {n_attempts} attempts. unique positions corrected: {len(unique_corrections)}")
@@ -1124,6 +1187,40 @@ class PositionManager:
                     self._write_position_to_disk(position)
 
         bt.logging.info(f'Removed {n_price_sources_removed} price sources from old data.')
+
+    def refresh_position_fees(self, time_ms: Optional[int] = None) -> None:
+        """Iterate over all open positions, compute carry fees, update positions and miner accounts."""
+        if not time_ms:
+            time_ms = TimeUtil.now_in_millis()
+        total_fee_charged = 0.0
+        positions_charged = 0
+        hotkey_to_fee = {}
+
+        for hotkey, positions_dict in self.hotkey_to_open_positions.items():
+            hotkey_fee = 0.0
+            for _, position in positions_dict.items():
+                if position.trade_pair.is_equities:
+                    fee = position.refresh_interest_fee_usd(time_ms)
+                else:
+                    fee = position.refresh_carry_fee_usd(time_ms)
+
+                if fee > 0:
+                    bt.logging.info(
+                        f"[POSITION FEE] {hotkey} {position.trade_pair.trade_pair_id} ${fee:.6f}"
+                    )
+                    hotkey_fee += fee
+                    positions_charged += 1
+                    self._write_position_to_disk(position)
+
+            if hotkey_fee > 0:
+                hotkey_to_fee[hotkey] = hotkey_fee
+                total_fee_charged += hotkey_fee
+
+        if hotkey_to_fee:
+            try:
+                self._miner_account_client.process_fees(hotkey_to_fee)
+            except Exception as e:
+                bt.logging.error(f"Failed to charge position fees: {e}")
 
     # ==================== Index Management ====================
 
@@ -1461,4 +1558,3 @@ class PositionManager:
 
         except Exception as e:
             bt.logging.error(f"Error writing position {position.position_uuid} to disk: {e}")
-

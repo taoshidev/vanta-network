@@ -59,6 +59,9 @@ class DebtLedgerClient(RPCClientBase):
             bt.logging.debug(f"DebtLedgerClient: Get ledger failed: {e}")
             return None
 
+    def get_dashboard(self, hotkey: str, checkpoints_time_ms: int) -> dict | None:
+        return self._server.get_dashboard_rpc(hotkey, checkpoints_time_ms)
+
     def get_compressed_summaries_rpc(self) -> bytes | None:
         """
         Get pre-compressed debt ledger summaries as gzip bytes from cache.

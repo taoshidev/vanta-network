@@ -28,6 +28,7 @@ jobs:
           pip install pytest coverage
 
       - name: Run unit tests with coverage
+        timeout-minutes: 15
         run: |
           coverage run -m pytest .
           coverage xml -o coverage.xml

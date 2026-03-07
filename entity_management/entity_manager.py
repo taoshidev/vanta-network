@@ -74,6 +74,7 @@ class EntityData(BaseModel):
     subaccounts: Dict[int, SubaccountInfo] = Field(default_factory=dict, description="Map subaccount_id -> SubaccountInfo")
     next_subaccount_id: int = Field(default=0, description="Next subaccount ID to assign (monotonic)")
     registered_at_ms: int = Field(description="Timestamp when entity was registered")
+    endpoint_url: Optional[str] = Field(default=None, description="Public-facing endpoint URL for this entity miner")
 
     class Config:
         arbitrary_types_allowed = True
@@ -535,6 +536,12 @@ class EntityManager(ValidatorBroadcastBase):
                     subaccount_info.status = "active"
                 self._write_entities_from_memory_to_disk()
 
+                # Notify WebSocket server so connected entity clients auto-subscribe
+                try:
+                    self._websocket_client.notify_new_subaccount(entity_hotkey, synthetic_hotkey)
+                except Exception as notify_err:
+                    bt.logging.debug(f"[ENTITY_MANAGER] New subaccount WS notification failed: {notify_err}")
+
             total_ms = int((time.time() - t_start) * 1000)
 
             bt.logging.info(
@@ -591,6 +598,13 @@ class EntityManager(ValidatorBroadcastBase):
             # Broadcast dashboard update to WebSocket subscribers after slashing completes
             self.broadcast_subaccount_dashboard(synthetic_hotkey)
 
+            # Notify WebSocket server so connected entity clients auto-subscribe
+            if slash_success:
+                try:
+                    self._websocket_client.notify_new_subaccount(entity_hotkey, synthetic_hotkey)
+                except Exception as notify_err:
+                    bt.logging.debug(f"[ENTITY_MANAGER] New subaccount WS notification failed: {notify_err}")
+
         except Exception as e:
             bt.logging.error(f"[ENTITY_MANAGER] Slashing error for {synthetic_hotkey}: {e}")
             # Mark as failed
@@ -605,6 +619,30 @@ class EntityManager(ValidatorBroadcastBase):
 
             # Broadcast dashboard update even on failure so clients see the status change
             self.broadcast_subaccount_dashboard(synthetic_hotkey)
+
+    def _get_hl_max_addresses(self) -> int:
+        """
+        Return the max number of HL addresses we can track.
+
+        If proxy ports are configured in secrets.json, returns PER_IP * num_ports.
+        Otherwise returns PER_IP (10).
+        """
+        try:
+            secrets = ValiUtils.get_secrets(running_unit_tests=self.running_unit_tests)
+        except Exception:
+            return ValiConfig.HL_MAX_TRACKED_ADDRESSES_PER_IP
+
+        proxy_url = secrets.get(ValiConfig.HL_PROXY_SECRET_KEY)
+        ports_str = secrets.get(ValiConfig.HL_PROXY_PORTS_SECRET_KEY)
+
+        if not proxy_url or not ports_str:
+            return ValiConfig.HL_MAX_TRACKED_ADDRESSES_PER_IP
+
+        # Parse ports to count them
+        from entity_management.hyperliquid_tracker import HyperliquidTracker
+        ports = HyperliquidTracker._parse_ports(ports_str)
+        num_ports = min(len(ports), ValiConfig.HL_MAX_PROXY_SHARDS)
+        return num_ports * ValiConfig.HL_MAX_TRACKED_ADDRESSES_PER_IP
 
     def create_hl_subaccount(
         self,
@@ -625,7 +663,7 @@ class EntityManager(ValidatorBroadcastBase):
             account_size: Account size in USD
             hl_address: Hyperliquid address (0x-prefixed, 40 hex chars)
             admin: If True, skip collateral slashing
-            payout_address: Optional EVM address (0x + 40 hex) for USDC payouts
+            payout_address: Optional EVM address for payouts (0x-prefixed, 40 hex chars)
 
         Returns:
             (success: bool, subaccount_info: Optional[SubaccountInfo], message: str)
@@ -647,9 +685,10 @@ class EntityManager(ValidatorBroadcastBase):
 
             # Check total active HL subaccounts < max limit
             active_hl_count = len(self._hl_address_to_synthetic)
-            if active_hl_count >= ValiConfig.HL_MAX_TRACKED_ADDRESSES:
+            max_addresses = self._get_hl_max_addresses()
+            if active_hl_count >= max_addresses:
                 return False, None, (
-                    f"Maximum number of tracked Hyperliquid addresses ({ValiConfig.HL_MAX_TRACKED_ADDRESSES}) reached. "
+                    f"Maximum number of tracked Hyperliquid addresses ({max_addresses}) reached. "
                     f"Cannot register more HL subaccounts."
                 )
 
@@ -1129,19 +1168,24 @@ class EntityManager(ValidatorBroadcastBase):
             bt.logging.error(f"[ENTITY_MANAGER] HWM data unavailable for {synthetic_hotkey}: {e}")
 
         # 3. Build aggregated response
+        subaccount_info_dict = {
+            'synthetic_hotkey': synthetic_hotkey,
+            'entity_hotkey': entity_hotkey,
+            'subaccount_id': subaccount_id,
+            'subaccount_uuid': subaccount.subaccount_uuid,
+            'asset_class': subaccount.asset_class,
+            'account_size': subaccount.account_size,
+            'status': subaccount.status,
+            'created_at_ms': subaccount.created_at_ms,
+            'eliminated_at_ms': subaccount.eliminated_at_ms,
+        }
+        if subaccount.hl_address:
+            subaccount_info_dict['hl_address'] = subaccount.hl_address
+        if subaccount.payout_address:
+            subaccount_info_dict['payout_address'] = subaccount.payout_address
+
         return {
-            'subaccount_info': {
-                'synthetic_hotkey': synthetic_hotkey,
-                'entity_hotkey': entity_hotkey,
-                'subaccount_id': subaccount_id,
-                'subaccount_uuid': subaccount.subaccount_uuid,
-                'asset_class': subaccount.asset_class,
-                'account_size': subaccount.account_size,
-                'status': subaccount.status,
-                'created_at_ms': subaccount.created_at_ms,
-                'eliminated_at_ms': subaccount.eliminated_at_ms,
-                'payout_address': subaccount.payout_address,
-            },
+            'subaccount_info': subaccount_info_dict,
             'challenge_period': challenge_data,
             'ledger': ledger_data,
             'positions': positions_data,
@@ -1423,8 +1467,8 @@ class EntityManager(ValidatorBroadcastBase):
             account_size: Account size in USD (immutable)
             asset_class: Asset class selection (immutable)
             status: Subaccount status (active, admin, etc.)
-            hl_address: Optional Hyperliquid address for HL-linked subaccounts
-            payout_address: Optional EVM address for USDC payouts
+            hl_address: Optional Hyperliquid address for HL subaccounts
+            payout_address: Optional EVM payout address for HL subaccounts
         """
         def create_synapse():
             subaccount_data = {
@@ -1438,6 +1482,10 @@ class EntityManager(ValidatorBroadcastBase):
                 "hl_address": hl_address,
                 "payout_address": payout_address
             }
+            if hl_address:
+                subaccount_data["hl_address"] = hl_address
+            if payout_address:
+                subaccount_data["payout_address"] = payout_address
             return template.protocol.SubaccountRegistration(subaccount_data=subaccount_data)
 
         self._broadcast_to_validators(
@@ -1546,6 +1594,8 @@ class EntityManager(ValidatorBroadcastBase):
 
                 # Create new subaccount info
                 now_ms = TimeUtil.now_in_millis()
+                hl_address = subaccount_data.get("hl_address")
+                payout_address = subaccount_data.get("payout_address")
                 subaccount_info = SubaccountInfo(
                     subaccount_id=subaccount_id,
                     subaccount_uuid=subaccount_uuid,
@@ -1581,6 +1631,150 @@ class EntityManager(ValidatorBroadcastBase):
 
         except Exception as e:
             bt.logging.error(f"[ENTITY_MANAGER] Error processing subaccount registration: {e}")
+            import traceback
+            bt.logging.error(traceback.format_exc())
+            return False
+
+    # ==================== Entity Endpoint URL Methods ====================
+
+    def set_endpoint_url(self, entity_hotkey: str, endpoint_url: str) -> Tuple[bool, str]:
+        """
+        Set the public endpoint URL for an entity miner.
+
+        Args:
+            entity_hotkey: The VANTA_ENTITY_HOTKEY
+            endpoint_url: The public-facing endpoint URL (http/https, max 512 chars)
+
+        Returns:
+            (success: bool, message: str)
+        """
+        # Validate URL
+        if not endpoint_url or not isinstance(endpoint_url, str):
+            return False, "endpoint_url is required"
+
+        if len(endpoint_url) > 512:
+            return False, "endpoint_url must be 512 characters or fewer"
+
+        if not endpoint_url.startswith("http://") and not endpoint_url.startswith("https://"):
+            return False, "endpoint_url must start with http:// or https://"
+
+        with self._entities_lock:
+            entity_data = self.entities.get(entity_hotkey)
+            if not entity_data:
+                return False, f"Entity {entity_hotkey} not found. Register first."
+
+            entity_data.endpoint_url = endpoint_url
+            self._write_entities_from_memory_to_disk()
+
+        bt.logging.info(f"[ENTITY_MANAGER] Set endpoint URL for {entity_hotkey}: {endpoint_url}")
+
+        # Broadcast to other validators (non-mothership validators receive this)
+        self.broadcast_entity_endpoint_update(entity_hotkey, endpoint_url)
+
+        return True, f"Endpoint URL set successfully: {endpoint_url}"
+
+    def get_endpoint_url_by_address(self, hl_address: str = None, subaccount: str = None) -> Optional[str]:
+        """
+        Resolve an HL address or synthetic hotkey to the entity's endpoint URL.
+
+        Args:
+            hl_address: Hyperliquid address (0x-prefixed)
+            subaccount: Synthetic hotkey (entity_hotkey_N)
+
+        Returns:
+            The entity's endpoint URL, or None if not found
+        """
+        entity_hotkey = None
+
+        if hl_address:
+            # HL address -> synthetic hotkey -> entity_hotkey
+            with self._entities_lock:
+                synthetic = self._hl_address_to_synthetic.get(hl_address)
+            if synthetic:
+                parsed = parse_synthetic_hotkey(synthetic)
+                if parsed[0]:
+                    entity_hotkey = parsed[0]
+
+        elif subaccount:
+            # Synthetic hotkey -> entity_hotkey
+            parsed = parse_synthetic_hotkey(subaccount)
+            if parsed[0]:
+                entity_hotkey = parsed[0]
+
+        if not entity_hotkey:
+            return None
+
+        with self._entities_lock:
+            entity_data = self.entities.get(entity_hotkey)
+            if entity_data:
+                return entity_data.endpoint_url
+
+        return None
+
+    def broadcast_entity_endpoint_update(self, entity_hotkey: str, endpoint_url: str):
+        """
+        Broadcast EntityEndpointUpdate synapse to other validators.
+
+        Args:
+            entity_hotkey: The VANTA_ENTITY_HOTKEY
+            endpoint_url: The public-facing endpoint URL
+        """
+        def create_synapse():
+            endpoint_data = {
+                "entity_hotkey": entity_hotkey,
+                "endpoint_url": endpoint_url
+            }
+            return template.protocol.EntityEndpointUpdate(endpoint_data=endpoint_data)
+
+        self._broadcast_to_validators(
+            synapse_factory=create_synapse,
+            broadcast_name="EntityEndpointUpdate",
+            context={"entity_hotkey": entity_hotkey}
+        )
+
+    def receive_entity_endpoint_update(self, endpoint_data: dict, sender_hotkey: str = None) -> bool:
+        """
+        Process an incoming EntityEndpointUpdate from another validator (mothership).
+
+        Args:
+            endpoint_data: Dictionary containing entity_hotkey and endpoint_url
+            sender_hotkey: The hotkey of the validator that sent this broadcast
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            # SECURITY: Verify sender using shared base class method
+            if not self.verify_broadcast_sender(sender_hotkey, "EntityEndpointUpdate"):
+                return False
+
+            entity_hotkey = endpoint_data.get("entity_hotkey")
+            endpoint_url = endpoint_data.get("endpoint_url")
+
+            if not entity_hotkey or not endpoint_url:
+                bt.logging.warning(
+                    f"[ENTITY_MANAGER] Invalid endpoint update data - missing required fields: {endpoint_data}"
+                )
+                return False
+
+            with self._entities_lock:
+                entity_data = self.entities.get(entity_hotkey)
+                if not entity_data:
+                    bt.logging.warning(
+                        f"[ENTITY_MANAGER] Entity {entity_hotkey} not found for endpoint update"
+                    )
+                    return False
+
+                entity_data.endpoint_url = endpoint_url
+                self._write_entities_from_memory_to_disk()
+
+            bt.logging.info(
+                f"[ENTITY_MANAGER] Received endpoint URL update for {entity_hotkey}: {endpoint_url}"
+            )
+            return True
+
+        except Exception as e:
+            bt.logging.error(f"[ENTITY_MANAGER] Error processing endpoint update: {e}")
             import traceback
             bt.logging.error(traceback.format_exc())
             return False

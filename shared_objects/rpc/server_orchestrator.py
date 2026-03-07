@@ -229,6 +229,18 @@ class ServerOrchestrator:
             required_in_testing=True,
             spawn_kwargs={'start_daemon': False}  # Daemon started later via orchestrator
         ),
+        'miner_account': ServerConfig(
+            server_class=None,
+            client_class=None,
+            required_in_testing=True,
+            spawn_kwargs={'start_daemon': False}
+        ),
+        'asset_selection': ServerConfig(
+            server_class=None,
+            client_class=None,
+            required_in_testing=True,
+            spawn_kwargs={}
+        ),
 
         # Tier 3: Depends on tier 2
         'position_manager': ServerConfig(
@@ -271,24 +283,6 @@ class ServerOrchestrator:
         ),
 
         # Tier 5: Aggregation and statistics (depends on all above)
-        'core_outputs': ServerConfig(
-            server_class=None,
-            client_class=None,
-            required_in_testing=True,
-            spawn_kwargs={'start_daemon': False}  # No daemon in testing
-        ),
-        'miner_statistics': ServerConfig(
-            server_class=None,
-            client_class=None,
-            required_in_testing=True,
-            spawn_kwargs={'start_daemon': False}  # No daemon in testing
-        ),
-        'asset_selection': ServerConfig(
-            server_class=None,
-            client_class=None,
-            required_in_testing=True,
-            spawn_kwargs={}
-        ),
         'entity': ServerConfig(
             server_class=None,
             client_class=None,
@@ -305,10 +299,24 @@ class ServerOrchestrator:
             required_in_validator=True,  # Auto-started with other servers
             spawn_kwargs={'start_daemon': False}  # Daemon started later via orchestrator.start_server_daemons()
         ),
-        'miner_account': ServerConfig(
+        'core_outputs': ServerConfig(
             server_class=None,
             client_class=None,
             required_in_testing=True,
+            spawn_kwargs={'start_daemon': False}  # No daemon in testing
+        ),
+        'miner_statistics': ServerConfig(
+            server_class=None,
+            client_class=None,
+            required_in_testing=True,
+            spawn_kwargs={'start_daemon': False}  # No daemon in testing
+        ),
+        'hl_funding': ServerConfig(
+            server_class=None,
+            client_class=None,
+            required_in_testing=False,
+            required_in_miner=False,
+            required_in_validator=True,
             spawn_kwargs={'start_daemon': False}
         ),
     }
@@ -404,6 +412,8 @@ class ServerOrchestrator:
         from vali_objects.miner_account.miner_account_client import MinerAccountClient
         from entity_management.entity_server import EntityServer
         from entity_management.entity_client import EntityClient
+        from vali_objects.hl_funding.hl_funding_rate_server import HLFundingRateServer
+        from vali_objects.hl_funding.hl_funding_rate_client import HLFundingRateClient
 
         # Update registry with classes
         self.SERVERS['common_data'].server_class = CommonDataServer
@@ -465,6 +475,9 @@ class ServerOrchestrator:
 
         self.SERVERS['entity'].server_class = EntityServer
         self.SERVERS['entity'].client_class = EntityClient
+
+        self.SERVERS['hl_funding'].server_class = HLFundingRateServer
+        self.SERVERS['hl_funding'].client_class = HLFundingRateClient
 
         self._classes_loaded = True
 

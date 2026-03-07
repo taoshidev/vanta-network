@@ -309,7 +309,7 @@ class ValiConfig:
 
     # Fees take into account exiting and entering a position, liquidity, and futures fees
     PERF_LEDGER_REFRESH_TIME_MS = 1000 * 60 * 5  # minutes
-    CHALLENGE_PERIOD_REFRESH_TIME_MS = 1000 * 60 * 5  # minutes
+    CHALLENGE_PERIOD_REFRESH_TIME_MS = 1000 * 60 * 1  # minutes
     MDD_CHECK_REFRESH_TIME_MS = 60 * 1000  # 60 seconds
     PRICE_SOURCE_COMPACTING_SLEEP_INTERVAL_SECONDS = 60 * 60 * 12 # 12 hours
 
@@ -322,6 +322,12 @@ class ValiConfig:
     INDICES_MAX_LEVERAGE = 5
     EQUITIES_MIN_LEVERAGE = 0.1
     EQUITIES_MAX_LEVERAGE = 2
+    COMMODITIES_MIN_LEVERAGE = 0.1
+    COMMODITIES_MAX_LEVERAGE = 4
+
+    # Minimum position size limits
+    FOREX_MIN_POSITION_SIZE_LOTS = 0.01  # 0.01 standard lots
+    CRYPTO_MIN_POSITION_SIZE_USD = 10.0  # $10 USD
 
     # Minimum position size limits
     FOREX_MIN_POSITION_SIZE_LOTS = 0.01  # 0.01 standard lots
@@ -446,11 +452,15 @@ class ValiConfig:
     SUBACCOUNT_COLLATERAL_AMOUNT = 1000.0  # Placeholder collateral amount per subaccount
 
     # Challenge Period Configuration
-    SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD = 0.08  # 8% returns required to pass challenge period
+    SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD = 0.08  # 8% returns required to pass evaluation
+    SUBACCOUNT_CRYPTO_CHALLENGE_RETURNS_THRESHOLD = 0.1  # 10% returns required to pass crypto evaluation
     SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD = 0.05  # 5% max drawdown allowed during challenge period
 
     # Subaccount promotion requirements
     SUBACCOUNT_FUNDED_MINIMUM_DAYS = 90  # Minimum days in FUNDED before promoting to ALPHA
+
+    # Minimum tier required for subaccount dashboard subscriptions
+    SUBACCOUNT_SUBSCRIPTION_TIER = 200
 
     # Distributional statistics
     SOFTMAX_TEMPERATURE = 0.15
@@ -476,12 +486,20 @@ class ValiConfig:
         TradePairCategory.INDICES: 10,
         TradePairCategory.EQUITIES: 2,
     }
-    TRANSACTION_FEE_MULTIPLIER = {
+    TRANSACTION_FEE_RATE = {
         TradePairCategory.CRYPTO: 0.001,
         TradePairCategory.FOREX: 0,
         TradePairCategory.INDICES: 0,
         TradePairCategory.EQUITIES: 0,
     }
+    CARRY_FEE_RATE_PER_INTERVAL = {
+        TradePairCategory.CRYPTO: 0.0001,          # 10.95% annual / (365*3 intervals)
+        TradePairCategory.FOREX: 0.0000821918,     # 3% annual / 365 intervals
+        TradePairCategory.INDICES: 0.0001438356,   # 5.25% annual / 365 intervals
+        TradePairCategory.EQUITIES: 0,
+    }
+
+    SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR = 4
 
     SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR = 4
 
@@ -497,17 +515,50 @@ class ValiConfig:
     MAX_SUBACCOUNT_ACCOUNT_SIZE = 100_000  # Maximum account size in USD for entity subaccounts
 
     # Hyperliquid tracking configuration
+    HL_USE_TESTNET = False  # Set to True to use Hyperliquid testnet endpoints
     HL_MAINNET_WS = "wss://api.hyperliquid.xyz/ws"
     HL_MAINNET_INFO = "https://api.hyperliquid.xyz/info"
-    HL_MAX_TRACKED_ADDRESSES = 10  # HL WebSocket limit: 10 unique users per IP
+    HL_TESTNET_WS = "wss://api.hyperliquid-testnet.xyz/ws"
+    HL_TESTNET_INFO = "https://api.hyperliquid-testnet.xyz/info"
+    HL_MAINNET_HOST = "api.hyperliquid.xyz"
+    HL_TESTNET_HOST = "api.hyperliquid-testnet.xyz"
+
+    @classmethod
+    def hl_ws_url(cls) -> str:
+        return cls.HL_TESTNET_WS if cls.HL_USE_TESTNET else cls.HL_MAINNET_WS
+
+    @classmethod
+    def hl_info_url(cls) -> str:
+        return cls.HL_TESTNET_INFO if cls.HL_USE_TESTNET else cls.HL_MAINNET_INFO
+
+    @classmethod
+    def hl_host(cls) -> str:
+        return cls.HL_TESTNET_HOST if cls.HL_USE_TESTNET else cls.HL_MAINNET_HOST
+    HL_MAX_TRACKED_ADDRESSES_PER_IP = 10  # HL WebSocket limit: 10 unique users per IP
+    HL_MAX_TRACKED_ADDRESSES = HL_MAX_TRACKED_ADDRESSES_PER_IP  # backward compat alias
     HL_WS_HEARTBEAT_INTERVAL_S = 30.0
     HL_WS_RECONNECT_BACKOFF_MAX_S = 30.0
+    HL_PROXY_SECRET_KEY = "hl_proxy_url"  # key in secrets.json for base proxy URL (without port)
+    HL_PROXY_PORTS_SECRET_KEY = "hl_proxy_ports"  # key in secrets.json for port list/range
+    HL_MAX_PROXY_SHARDS = 20  # safety cap on proxy connections (200 addresses max)
+    HL_SHARD_MAX_CONSECUTIVE_FAILURES = 5  # failures before marking a proxy IP as unhealthy
     HL_ADDRESS_REGEX = r"^0x[a-fA-F0-9]{40}$"
     HL_MIN_USDC_BALANCE = 1_000  # Minimum USDC balance required to process HL trades
     HL_COIN_TO_TRADE_PAIR = {
         "BTC": "BTCUSD", "ETH": "ETHUSD", "SOL": "SOLUSD",
         "XRP": "XRPUSD", "DOGE": "DOGEUSD", "ADA": "ADAUSD",
     }
+    TRADE_PAIR_ID_TO_HL_COIN = {v: k for k, v in HL_COIN_TO_TRADE_PAIR.items()}
+
+    # HL fee constants
+    HL_TAKER_FEE = 0.00045    # 0.045%
+    HL_MAKER_FEE = 0.00015    # 0.015%
+
+    # HL Funding Rate Service
+    RPC_HL_FUNDING_PORT = 50025
+    RPC_HL_FUNDING_SERVICE_NAME = "HLFundingRateServer"
+    HL_FUNDING_DAEMON_INTERVAL_S = 300
+    HL_FUNDING_BACKFILL_HOURS = 4
 
     # Account Size
     COST_PER_THETA = 500  # Account size USD value per theta of collateral
@@ -523,7 +574,6 @@ class ValiConfig:
 
     BLOCKED_TRADE_PAIR_IDS = {
         'SPX', 'DJI', 'NDX', 'VIX', 'FTSE', 'GDAXI',  # Indices
-        'XAUUSD', 'XAGUSD',  # Commodities
         'AUDJPY', 'CADJPY', 'CHFJPY', 'EURJPY', 'NZDJPY', 'GBPJPY', 'USDJPY',  # Forex JPY pairs
         'USDMXN'
     }
@@ -538,7 +588,7 @@ class ValiConfig:
 
     LIMIT_ORDER_PRICE_BUFFER_TOLERANCE = 0.001 # +-0.1% tolerance
     LIMIT_ORDER_PRICE_BUFFER_MS = 30 * 1000
-    MIN_UNIQUE_PRICES_FOR_LIMIT_FILL = 5
+    MIN_UNIQUE_PRICES_FOR_LIMIT_FILL = 10
 
 assert ValiConfig.CRYPTO_MIN_LEVERAGE >= ValiConfig.ORDER_MIN_LEVERAGE
 assert ValiConfig.CRYPTO_MAX_LEVERAGE <= ValiConfig.ORDER_MAX_LEVERAGE
@@ -630,9 +680,9 @@ class TradePair(Enum):
               TradePairCategory.FOREX, ForexSubcategory.G5]
 
 
-    # "Commodities" (Bundle with Forex for now) (temporariliy paused for trading)
-    XAUUSD = ["XAUUSD", "XAU/USD", 0.00007, ValiConfig.FOREX_MIN_LEVERAGE, ValiConfig.FOREX_MAX_LEVERAGE, TradePairCategory.FOREX]
-    XAGUSD = ["XAGUSD", "XAG/USD", 0.00007, ValiConfig.FOREX_MIN_LEVERAGE, ValiConfig.FOREX_MAX_LEVERAGE, TradePairCategory.FOREX]
+    # "Commodities" (Bundle with Forex for now)
+    XAUUSD = ["XAUUSD", "XAU/USD", 0.00007, ValiConfig.COMMODITIES_MIN_LEVERAGE, ValiConfig.COMMODITIES_MAX_LEVERAGE, TradePairCategory.FOREX]
+    XAGUSD = ["XAGUSD", "XAG/USD", 0.00007, ValiConfig.COMMODITIES_MIN_LEVERAGE, ValiConfig.COMMODITIES_MAX_LEVERAGE, TradePairCategory.FOREX]
 
     # Equities - Stocks
     # Technology (10)
@@ -757,6 +807,12 @@ class TradePair(Enum):
 
     @property
     def lot_size(self):
+        trade_pair_lot_size_override = {
+            'XAUUSD': 100,
+            'XAGUSD': 5_000,
+        }
+        if self.trade_pair_id in trade_pair_lot_size_override:
+            return trade_pair_lot_size_override[self.trade_pair_id]
         trade_pair_lot_size = {TradePairCategory.CRYPTO: 1,
                                TradePairCategory.FOREX: 100_000,
                                TradePairCategory.INDICES: 1,

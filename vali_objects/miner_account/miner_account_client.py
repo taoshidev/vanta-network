@@ -115,7 +115,7 @@ class MinerAccountClient(RPCClientBase):
         Reset account fields for a miner.
 
         Resets: total_realized_pnl, capital_used, total_borrowed_amount,
-        total_interest_paid, and last_interest_date_ms to zero/None.
+        and total_fees_paid to zero.
 
         Args:
             hotkey: Miner's hotkey (SS58 address)
@@ -212,6 +212,26 @@ class MinerAccountClient(RPCClientBase):
         """
         return self._server.get_account(hotkey)
 
+    def get_accounts(self, hotkeys: list) -> Dict[str, dict]:
+        """
+        Get accounts for multiple hotkeys in a single RPC call.
+
+        Args:
+            hotkeys: List of miner hotkeys to look up
+
+        Returns:
+            Dict of hotkey -> account dict for existing accounts.
+            Hotkeys without accounts are omitted from the result.
+        """
+        return self._server.get_accounts(hotkeys)
+
+    def get_dashboard(self, hotkey: str) -> dict | None:
+        return self._server.get_dashboard_rpc(hotkey)
+
+    def update_max_returns(self, hotkey_to_return: Dict[str, float]) -> None:
+        """Batch update HWM for multiple hotkeys. Saves to disk once."""
+        self._server.update_max_returns(hotkey_to_return)
+
     def set_miner_bucket(self, hotkey: str, bucket: Optional[MinerBucket]) -> None:
         """Set the miner bucket on an account. Converts MinerBucket to string for RPC."""
         bucket_value = bucket.value if bucket else None
@@ -281,6 +301,19 @@ class MinerAccountClient(RPCClientBase):
         """
         return self._server.can_withdraw_collateral(hotkey, amount_theta)
 
+    def rebuild_account_state_from_positions(self, hotkey: str, positions: list) -> None:
+        """
+        Rebuild a miner's account state from a list of positions.
+
+        Resets capital_used, total_realized_pnl, total_fees_paid, and total_borrowed_amount,
+        then recomputes them from the provided positions.
+
+        Args:
+            hotkey: Miner's hotkey
+            positions: List of Position objects or dicts for this miner
+        """
+        self._server.rebuild_account_state_from_positions(hotkey, positions)
+
     def update_asset_selection(
         self, hotkey: str, asset_selection: TradePairCategory
     ) -> bool:
@@ -290,6 +323,7 @@ class MinerAccountClient(RPCClientBase):
         """
         return self._server.update_asset_selection(hotkey, asset_selection)
 
-    def apply_daily_interest(self) -> int:
-        """Apply daily interest to accounts with outstanding margin loans."""
-        return self._server.apply_daily_interest()
+    def process_fees(self, hotkey_to_fee: Dict[str, float]) -> None:
+        """Batch update total_fees_paid for multiple hotkeys. Saves to disk once."""
+        self._server.process_fees(hotkey_to_fee)
+
