@@ -171,7 +171,7 @@ class HyperliquidTracker:
                                 msg = json.loads(raw)
                             except json.JSONDecodeError:
                                 continue
-                            self.tracker._handle_message(msg)
+                            self.tracker._handle_message(msg, self.shard_id)
                     finally:
                         hb_task.cancel()
                         refresh_task.cancel()
@@ -256,16 +256,29 @@ class HyperliquidTracker:
 
             self.subscribed_addresses = new_addresses
 
-            # First shard (shard_id 0) subscribes to L2 orderbook for all supported coins
+            # Shard 0 subscribes to fine-grained L2 book (nSigFigs=5) for precise
+            # near-spread slippage. Shard 1 subscribes to coarse L2 book (nSigFigs=2)
+            # for deep coverage on large orders. Both are combined during slippage calc.
             if self.shard_id == 0:
+                n_sig = ValiConfig.HL_L2_FINE_SIG_FIGS
+            elif self.shard_id == 1:
+                n_sig = ValiConfig.HL_L2_COARSE_SIG_FIGS
+            else:
+                n_sig = None
+
+            if n_sig is not None:
                 for coin in ValiConfig.HL_COIN_TO_TRADE_PAIR.keys():
                     try:
                         await ws.send(json.dumps({
                             "method": "subscribe",
-                            "subscription": {"type": "l2Book", "coin": coin}
+                            "subscription": {"type": "l2Book", "coin": coin,
+                                             "nSigFigs": n_sig}
                         }))
                     except Exception as e:
-                        bt.logging.warning(f"[HL_{self.label}] Failed to subscribe l2Book for {coin}: {e}")
+                        bt.logging.warning(
+                            f"[HL_{self.label}] Failed to subscribe l2Book "
+                            f"(nSigFigs={n_sig}) for {coin}: {e}"
+                        )
 
         async def _periodic_refresh(self, ws):
             """Periodically sync subscriptions for address changes."""
@@ -308,8 +321,11 @@ class HyperliquidTracker:
             connection_mode=connection_mode
         )
 
-        # L2 orderbook snapshots per coin (updated via WebSocket)
-        self._orderbooks: Dict[str, dict] = {}
+        # L2 orderbook snapshots per coin at two resolutions (updated via WebSocket).
+        # Fine (nSigFigs=5): precise near-spread pricing, subscribed on shard 0.
+        # Coarse (nSigFigs=2): deep coverage for large orders, subscribed on shard 1.
+        self._orderbooks_fine: Dict[str, dict] = {}
+        self._orderbooks_coarse: Dict[str, dict] = {}
 
         # State
         self._thread: Optional[threading.Thread] = None
@@ -630,7 +646,7 @@ class HyperliquidTracker:
 
     # ==================== Message Handling (shared across all shards) ====================
 
-    def _handle_message(self, msg: dict):
+    def _handle_message(self, msg: dict, shard_id: int = 0):
         """Route incoming WebSocket messages."""
         channel = msg.get("channel")
 
@@ -643,7 +659,10 @@ class HyperliquidTracker:
             book = msg.get("data", {})
             coin = book.get("coin")
             if coin:
-                self._orderbooks[coin] = book
+                if shard_id == 0:
+                    self._orderbooks_fine[coin] = book
+                elif shard_id == 1:
+                    self._orderbooks_coarse[coin] = book
 
     def _handle_user_fills(self, msg: dict):
         """Handle userFills channel messages."""
@@ -888,14 +907,22 @@ class HyperliquidTracker:
             order_type = "SHORT"
             leverage = abs(delta)
 
-        # === Step 6: Calculate L2 orderbook slippage ===
+        # === Step 6: Calculate L2 orderbook slippage (multi-resolution) ===
+        # Walk the fine-grained book (nSigFigs=5) first for precise near-spread
+        # pricing, then continue with the coarse book (nSigFigs=2) for remaining
+        # depth if the order penetrates all fine levels.
         is_taker = fill.get("crossed", True)
         slippage_pct = 0.0
 
-        if is_taker and coin in self._orderbooks:
-            book = self._orderbooks[coin]
-            bids = book.get("levels", [[], []])[0]
-            asks = book.get("levels", [[], []])[1]
+        fine_book = self._orderbooks_fine.get(coin, {})
+        coarse_book = self._orderbooks_coarse.get(coin, {})
+        has_book = fine_book or coarse_book
+
+        if is_taker and has_book:
+            # Use fine book for mid-price if available, else coarse
+            primary = fine_book or coarse_book
+            bids = primary.get("levels", [[], []])[0]
+            asks = primary.get("levels", [[], []])[1]
             if asks and bids:
                 mid = (float(asks[0]["px"]) + float(bids[0]["px"])) / 2
                 if mid > 0:
@@ -909,8 +936,28 @@ class HyperliquidTracker:
                         translated_size_usd = leverage * account_size
                         is_buying = order_type == "LONG"
 
-                    levels = asks if is_buying else bids
-                    fills_result, _remaining = simulate_fill(levels, translated_size_usd, "usd")
+                    side_idx = 1 if is_buying else 0  # asks if buying, bids if selling
+                    fine_levels = fine_book.get("levels", [[], []])[side_idx]
+                    coarse_levels = coarse_book.get("levels", [[], []])[side_idx]
+
+                    # Phase 1: walk fine-grained levels
+                    fills_result, remaining = simulate_fill(fine_levels, translated_size_usd, "usd")
+
+                    # Phase 2: if order penetrated all fine levels, continue with
+                    # coarse levels beyond the fine book's price coverage
+                    if remaining > 0 and coarse_levels and fine_levels:
+                        last_fine_px = float(fine_levels[-1]["px"])
+                        if is_buying:
+                            deeper = [l for l in coarse_levels if float(l["px"]) > last_fine_px]
+                        else:
+                            deeper = [l for l in coarse_levels if float(l["px"]) < last_fine_px]
+                        coarse_fills, remaining = simulate_fill(deeper, remaining, "usd")
+                        fills_result.extend(coarse_fills)
+                    elif remaining > 0 and coarse_levels and not fine_levels:
+                        # No fine book available, use coarse only
+                        coarse_fills, remaining = simulate_fill(coarse_levels, remaining, "usd")
+                        fills_result.extend(coarse_fills)
+
                     total_coins = sum(f[1] for f in fills_result)
                     total_usd = sum(f[2] for f in fills_result)
                     avg_price = total_usd / total_coins if total_coins > 0 else mid

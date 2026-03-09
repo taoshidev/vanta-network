@@ -544,6 +544,15 @@ class ValiConfig:
     HL_SHARD_MAX_CONSECUTIVE_FAILURES = 5  # failures before marking a proxy IP as unhealthy
     HL_ADDRESS_REGEX = r"^0x[a-fA-F0-9]{40}$"
     HL_MIN_USDC_BALANCE = 1_000  # Minimum USDC balance required to process HL trades
+
+    # L2 orderbook precision: nSigFigs controls price aggregation granularity.
+    # HL returns max 20 levels per side regardless of nSigFigs.
+    # Fine (5) = precise near-spread pricing but shallow depth.
+    # Coarse (2) = deep coverage but loses granular price distribution.
+    # We subscribe at both resolutions on separate shards and combine them.
+    HL_L2_FINE_SIG_FIGS = 5
+    HL_L2_COARSE_SIG_FIGS = 2
+
     HL_COIN_TO_TRADE_PAIR = {
         "BTC": "BTCUSD", "ETH": "ETHUSD", "SOL": "SOLUSD",
         "XRP": "XRPUSD", "DOGE": "DOGEUSD", "ADA": "ADAUSD",
