@@ -364,6 +364,8 @@ class LimitOrderManager(CacheController):
                     raise SignalException(f"Cannot edit order {order_uuid}: order not found (race condition)")
                 if existing_order.src not in [OrderSource.LIMIT_UNFILLED, OrderSource.BRACKET_UNFILLED, OrderSource.STOP_LIMIT_UNFILLED]:
                     raise SignalException(f"Cannot edit order {order_uuid}: order is no longer unfilled (race condition)")
+
+                order.price = existing_order.price
             else:
                 # NEW ORDER PATH: Check max unfilled orders limit
                 total_unfilled = self._count_unfilled_orders_for_hotkey(miner_hotkey)
