@@ -4,7 +4,7 @@ from copy import deepcopy
 from typing import Dict, Optional, List
 from pydantic import model_validator, BaseModel, Field
 
-from time_util.time_util import TimeUtil, MS_IN_8_HOURS, MS_IN_24_HOURS
+from time_util.time_util import TimeUtil, MS_IN_1_HOUR, MS_IN_8_HOURS, MS_IN_24_HOURS
 from vali_objects.vali_config import TradePair, TradePairCategory, ValiConfig
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.enums.order_source_enum import OrderSource
@@ -63,6 +63,7 @@ class Position(BaseModel):
     # TODO: Replace this with a property that checks if close_ms is None
     is_closed_position: bool = False
     fee_history: List[Dict] = Field(default_factory=list) # [{"fee_type": "carry", "amount": 123, "time_ms": 123}]
+    is_hl: bool = False  # True for Hyperliquid entity miner positions
     last_stock_split_date: Optional[str] = None  # Only set for equities
     unfilled_orders: list = Field(default=[], exclude=True)
 
@@ -192,8 +193,26 @@ class Position(BaseModel):
         assert next_update_time_ms > current_time_ms, (next_update_time_ms, current_time_ms, fee_product, n_intervals_elapsed, time_until_next_interval_ms)
         return fee_product, next_update_time_ms
 
+    def hl_carry_fee(self, current_time_ms: int, funding_rates: dict) -> (float, int):
+        """Carry fee for Hyperliquid positions using actual funding rates.
+
+        funding_rates: dict mapping settlement_ms -> rate (e.g. {1722474000000: 0.001})
+        Returns (fee_product, next_update_time_ms).
+        """
+        sign = 1.0 if self.position_type == OrderType.LONG else -1.0
+        fee_product = 1.0
+        for settlement_ms, rate in sorted(funding_rates.items()):
+            if settlement_ms <= self.open_ms:
+                continue
+            if settlement_ms > current_time_ms:
+                break
+            lev = self.leverage_at_time(settlement_ms)
+            fee_product *= (1 - sign * rate * lev)
+        next_update_ms = current_time_ms + TimeUtil.ms_to_next_hour(current_time_ms)
+        return fee_product, next_update_ms
+
     # TODO update with ledger update
-    def get_carry_fee(self, current_time_ms) -> (float, int):
+    def get_carry_fee(self, current_time_ms, funding_rates=None) -> (float, int):
         # Calculate the number of times a new day occurred (UTC). If a position is opened at 23:59:58 and this function is
         # called at 00:00:02, the carry fee will be calculated as if a day has passed. Another example: if a position is
         # opened at 23:59:58 and this function is called at 23:59:59, the carry fee will be calculated as 0 days have passed
