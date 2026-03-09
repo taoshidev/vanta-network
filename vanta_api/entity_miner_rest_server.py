@@ -19,6 +19,7 @@ import asyncio
 import json
 import os
 import queue
+import re
 import threading
 import time
 import uuid
@@ -31,6 +32,7 @@ from flask import jsonify, request, Response
 
 from miner_config import MinerConfig
 from vali_objects.utils.vali_utils import ValiUtils
+from vali_objects.vali_config import ValiConfig
 from vanta_api.base_rest_server import BaseRestServer
 
 try:
@@ -516,124 +518,373 @@ class EntityMinerRestServer(BaseRestServer):
         )
 
     def create_subaccount_endpoint(self):
-        """POST /api/create-subaccount - Create a standard subaccount via validator."""
-        api_key = self._get_api_key_safe()
-        if not self.is_valid_api_key(api_key):
-            return jsonify({'error': 'Unauthorized access'}), 401
-
-        return self._proxy_subaccount_creation("/entity/create-subaccount")
-
-    def create_hl_subaccount_endpoint(self):
-        """POST /api/create-hl-subaccount - Create an HL-linked subaccount via validator."""
-        api_key = self._get_api_key_safe()
-        if not self.is_valid_api_key(api_key):
-            return jsonify({'error': 'Unauthorized access'}), 401
-
-        return self._proxy_subaccount_creation("/entity/create-hl-subaccount")
-
-    def _proxy_subaccount_creation(self, endpoint: str):
         """
-        Proxy subaccount creation to the validator.
+        POST /api/create-subaccount - Create a standard subaccount via validator.
 
-        Signs the request with the entity coldkey and forwards to the validator REST API.
+        Request body (JSON):
+        {
+            "asset_class": "crypto" | "forex",  // Required
+            "account_size": float,              // Required, must be > 0
+            "admin": bool                       // Optional, default false
+        }
+
+        Response (200 OK):
+        {
+            "status": "success",
+            "message": "...",
+            "subaccount": {
+                "subaccount_id": 0,
+                "subaccount_uuid": "uuid-string",
+                "synthetic_hotkey": "5xxx_0",
+                "account_size": 10000.0,
+                "asset_class": "crypto"
+            }
+        }
         """
         import requests as http_requests
         start_time = time.time()
 
+        # 1. Validate API key
+        api_key = self._get_api_key_safe()
+        if not self.is_valid_api_key(api_key):
+            return jsonify({'error': 'Unauthorized access'}), 401
+
+        # 2. Parse and validate request body
         try:
             request_data = request.get_json()
             if not request_data:
-                return jsonify({'status': 'error', 'message': 'Missing JSON body'}), 400
-        except Exception as e:
-            return jsonify({'status': 'error', 'message': f'Invalid request: {e}'}), 400
+                return jsonify({'status': 'error', 'message': 'Invalid request: missing JSON body'}), 400
 
+            if "asset_class" not in request_data:
+                return jsonify({'status': 'error', 'message': 'Missing required field: asset_class'}), 400
+
+            if "account_size" not in request_data:
+                return jsonify({'status': 'error', 'message': 'Missing required field: account_size'}), 400
+
+            asset_class = request_data["asset_class"]
+            admin = request_data.get("admin", False)
+
+            try:
+                account_size = float(request_data["account_size"])
+            except (ValueError, TypeError):
+                return jsonify({'status': 'error', 'message': 'account_size must be a number'}), 400
+
+            if not isinstance(admin, bool):
+                return jsonify({'status': 'error', 'message': 'admin must be a boolean'}), 400
+
+            if asset_class not in ["crypto", "forex"]:
+                return jsonify({
+                    'status': 'error',
+                    'message': f"Invalid asset_class: {asset_class}. Must be 'crypto' or 'forex'"
+                }), 400
+
+            if account_size <= 0:
+                return jsonify({'status': 'error', 'message': 'account_size must be positive'}), 400
+
+        except Exception as e:
+            bt.logging.error(f"Error parsing request body: {e}")
+            return jsonify({'status': 'error', 'message': f'Invalid request: {str(e)}'}), 400
+
+        # 3. Check wallet is configured
         if not self._coldkey or not self._hotkey or not self._validator_url:
             return jsonify({'status': 'error', 'message': 'Wallet not configured'}), 500
 
-        # Build and sign payload
+        # 4. Sign message
         try:
-            asset_class = request_data.get("asset_class", "crypto")
-            account_size = float(request_data.get("account_size", 0))
-            admin = request_data.get("admin", False)
-            hl_address = request_data.get("hl_address")
-            payout_address = request_data.get("payout_address")
-
             message_dict = {
                 "account_size": account_size,
                 "admin": admin,
+                "asset_class": asset_class,
                 "entity_coldkey": self._coldkey.ss58_address,
                 "entity_hotkey": self._hotkey.ss58_address
             }
-            if hl_address:
-                message_dict["hl_address"] = hl_address
-                if payout_address:
-                    message_dict["payout_address"] = payout_address
-            else:
-                message_dict["asset_class"] = asset_class
-
             message = json.dumps(message_dict, sort_keys=True).encode('utf-8')
             signature = self._coldkey.sign(message).hex()
+        except Exception as e:
+            bt.logging.error(f"Error signing message: {e}")
+            return jsonify({'status': 'error', 'message': f'Wallet error: {str(e)}'}), 500
 
+        # 5. Send request to validator
+        try:
             payload = {
                 "entity_hotkey": self._hotkey.ss58_address,
                 "entity_coldkey": self._coldkey.ss58_address,
                 "account_size": account_size,
+                "asset_class": asset_class,
                 "admin": admin,
                 "signature": signature,
                 "version": "2.0.0"
             }
-            if hl_address:
-                payload["hl_address"] = hl_address
-                if payout_address:
-                    payload["payout_address"] = payout_address
-            else:
-                payload["asset_class"] = asset_class
 
-        except Exception as e:
-            return jsonify({'status': 'error', 'message': f'Signing error: {e}'}), 500
-
-        # Forward to validator
-        try:
             resp = http_requests.post(
-                f"{self._validator_url}{endpoint}",
+                f"{self._validator_url}/entity/create-subaccount",
                 json=payload,
                 headers={"Content-Type": "application/json"},
                 timeout=60
             )
+            elapsed_s = time.time() - start_time
 
             try:
                 response_data = resp.json()
             except json.JSONDecodeError:
-                return jsonify({'status': 'error', 'message': 'Invalid response from validator'}), 500
+                return jsonify({'status': 'error', 'message': 'Invalid JSON response from validator'}), 500
 
             if resp.status_code == 200:
-                # Update HL mappings if this was an HL subaccount
-                subaccount = response_data.get('subaccount', {})
-                new_hl = subaccount.get('hl_address') or hl_address
-                synthetic = subaccount.get('synthetic_hotkey')
-                if new_hl and synthetic:
-                    self._hl_to_synthetic[new_hl] = synthetic
-                    self._synthetic_to_hl[synthetic] = new_hl
-
                 if self.slack_notifier:
-                    elapsed_s = time.time() - start_time
+                    subaccount = response_data.get('subaccount', {})
+                    from datetime import datetime, timezone
+                    timestamp = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
                     self.slack_notifier.send_message(
-                        f"Subaccount created: {subaccount.get('synthetic_hotkey')} "
-                        f"({subaccount.get('asset_class')}, ${subaccount.get('account_size', 0):,.2f}) "
-                        f"in {elapsed_s:.2f}s",
+                        f"Subaccount created successfully!\n"
+                        f"ID: {subaccount.get('subaccount_id')}\n"
+                        f"UUID: {subaccount.get('subaccount_uuid')}\n"
+                        f"Synthetic Hotkey: {subaccount.get('synthetic_hotkey')}\n"
+                        f"Asset Class: {subaccount.get('asset_class')}\n"
+                        f"Account Size: ${subaccount.get('account_size'):,.2f}\n"
+                        f"Message: {response_data.get('message', '')}\n"
+                        f"Created: {timestamp}\n"
+                        f"Time: {elapsed_s:.2f}s",
                         level="success",
                         bypass_cooldown=True
                     )
                 return jsonify(response_data), 200
             else:
-                return jsonify(response_data), resp.status_code
+                error_message = response_data.get('message', 'Unknown error from validator')
+                if self.slack_notifier:
+                    self.slack_notifier.send_message(
+                        f"Subaccount creation failed\n"
+                        f"Asset Class: {asset_class}\n"
+                        f"Account Size: ${account_size:,.2f}\n"
+                        f"Error: {error_message}",
+                        level="error"
+                    )
+                return jsonify({'status': 'error', 'message': error_message}), resp.status_code
 
         except http_requests.exceptions.Timeout:
-            return jsonify({'status': 'error', 'message': 'Validator request timed out'}), 504
+            if self.slack_notifier:
+                self.slack_notifier.send_message(
+                    f"Subaccount creation failed\n"
+                    f"Asset Class: {asset_class}\n"
+                    f"Account Size: ${account_size:,.2f}\n"
+                    f"Error: Request to validator timed out",
+                    level="error"
+                )
+            return jsonify({'status': 'error', 'message': 'Request to validator timed out'}), 504
+
         except http_requests.exceptions.ConnectionError:
-            return jsonify({'status': 'error', 'message': 'Cannot connect to validator'}), 503
+            if self.slack_notifier:
+                self.slack_notifier.send_message(
+                    f"Subaccount creation failed\n"
+                    f"Asset Class: {asset_class}\n"
+                    f"Account Size: ${account_size:,.2f}\n"
+                    f"Error: Could not connect to validator",
+                    level="error"
+                )
+            return jsonify({'status': 'error', 'message': 'Could not connect to validator'}), 503
+
         except Exception as e:
-            return jsonify({'status': 'error', 'message': f'Validator error: {e}'}), 500
+            bt.logging.error(f"Error communicating with validator: {e}")
+            if self.slack_notifier:
+                self.slack_notifier.send_message(
+                    f"Subaccount creation failed\n"
+                    f"Asset Class: {asset_class}\n"
+                    f"Account Size: ${account_size:,.2f}\n"
+                    f"Error: {str(e)}",
+                    level="error"
+                )
+            return jsonify({'status': 'error', 'message': f'Validator communication error: {str(e)}'}), 500
+
+    def create_hl_subaccount_endpoint(self):
+        """
+        POST /api/create-hl-subaccount - Create an HL-linked subaccount via validator.
+
+        Request body (JSON):
+        {
+            "hl_address": "0x...",          // Required, 0x + 40 hex chars
+            "account_size": float,           // Required, must be > 0
+            "payout_address": "0x...",       // Optional, EVM address (0x + 40 hex) for USDC payouts
+            "admin": bool                    // Optional, default false
+        }
+
+        Response (200 OK):
+        {
+            "status": "success",
+            "message": "...",
+            "subaccount": { ... }
+        }
+        """
+        import requests as http_requests
+        start_time = time.time()
+
+        # 1. Validate API key
+        api_key = self._get_api_key_safe()
+        if not self.is_valid_api_key(api_key):
+            return jsonify({'error': 'Unauthorized access'}), 401
+
+        # 2. Parse and validate request body
+        try:
+            request_data = request.get_json()
+            if not request_data:
+                return jsonify({'status': 'error', 'message': 'Invalid request: missing JSON body'}), 400
+
+            if "hl_address" not in request_data:
+                return jsonify({'status': 'error', 'message': 'Missing required field: hl_address'}), 400
+
+            if "account_size" not in request_data:
+                return jsonify({'status': 'error', 'message': 'Missing required field: account_size'}), 400
+
+            hl_address = request_data["hl_address"]
+            admin = request_data.get("admin", False)
+            payout_address = request_data.get("payout_address")
+
+            try:
+                account_size = float(request_data["account_size"])
+            except (ValueError, TypeError):
+                return jsonify({'status': 'error', 'message': 'account_size must be a number'}), 400
+
+            if not isinstance(admin, bool):
+                return jsonify({'status': 'error', 'message': 'admin must be a boolean'}), 400
+
+            if not isinstance(hl_address, str) or not re.match(ValiConfig.HL_ADDRESS_REGEX, hl_address):
+                return jsonify({
+                    'status': 'error',
+                    'message': 'hl_address must be a valid Hyperliquid address (0x followed by 40 hex characters)'
+                }), 400
+
+            if payout_address is not None:
+                if not isinstance(payout_address, str) or not re.match(ValiConfig.HL_ADDRESS_REGEX, payout_address):
+                    return jsonify({
+                        'status': 'error',
+                        'message': 'payout_address must be a valid EVM address (0x followed by 40 hex characters)'
+                    }), 400
+
+            if account_size <= 0:
+                return jsonify({'status': 'error', 'message': 'account_size must be positive'}), 400
+
+        except Exception as e:
+            bt.logging.error(f"Error parsing request body: {e}")
+            return jsonify({'status': 'error', 'message': f'Invalid request: {str(e)}'}), 400
+
+        # 3. Check wallet is configured
+        if not self._coldkey or not self._hotkey or not self._validator_url:
+            return jsonify({'status': 'error', 'message': 'Wallet not configured'}), 500
+
+        # 4. Sign message
+        try:
+            message_dict = {
+                "account_size": account_size,
+                "admin": admin,
+                "entity_coldkey": self._coldkey.ss58_address,
+                "entity_hotkey": self._hotkey.ss58_address,
+                "hl_address": hl_address
+            }
+            if payout_address is not None:
+                message_dict["payout_address"] = payout_address
+            message = json.dumps(message_dict, sort_keys=True).encode('utf-8')
+            signature = self._coldkey.sign(message).hex()
+        except Exception as e:
+            bt.logging.error(f"Error signing message: {e}")
+            return jsonify({'status': 'error', 'message': f'Wallet error: {str(e)}'}), 500
+
+        # 5. Send request to validator
+        try:
+            payload = {
+                "entity_hotkey": self._hotkey.ss58_address,
+                "entity_coldkey": self._coldkey.ss58_address,
+                "account_size": account_size,
+                "hl_address": hl_address,
+                "admin": admin,
+                "signature": signature,
+                "version": "2.0.0"
+            }
+            if payout_address is not None:
+                payload["payout_address"] = payout_address
+
+            resp = http_requests.post(
+                f"{self._validator_url}/entity/create-hl-subaccount",
+                json=payload,
+                headers={"Content-Type": "application/json"},
+                timeout=60
+            )
+            elapsed_s = time.time() - start_time
+
+            try:
+                response_data = resp.json()
+            except json.JSONDecodeError:
+                return jsonify({'status': 'error', 'message': 'Invalid JSON response from validator'}), 500
+
+            if resp.status_code == 200:
+                # Update HL address mappings
+                subaccount = response_data.get('subaccount', {})
+                synthetic = subaccount.get('synthetic_hotkey')
+                if synthetic:
+                    self._hl_to_synthetic[hl_address] = synthetic
+                    self._synthetic_to_hl[synthetic] = hl_address
+
+                if self.slack_notifier:
+                    from datetime import datetime, timezone
+                    timestamp = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
+                    payout_line = f"Payout Address: {payout_address}\n" if payout_address else ""
+                    self.slack_notifier.send_message(
+                        f"HL Subaccount created successfully!\n"
+                        f"ID: {subaccount.get('subaccount_id')}\n"
+                        f"UUID: {subaccount.get('subaccount_uuid')}\n"
+                        f"Synthetic Hotkey: {subaccount.get('synthetic_hotkey')}\n"
+                        f"HL Address: {hl_address}\n"
+                        f"{payout_line}"
+                        f"Account Size: ${subaccount.get('account_size', 0):,.2f}\n"
+                        f"Message: {response_data.get('message', '')}\n"
+                        f"Created: {timestamp}\n"
+                        f"Time: {elapsed_s:.2f}s",
+                        level="success",
+                        bypass_cooldown=True
+                    )
+                return jsonify(response_data), 200
+            else:
+                error_message = response_data.get('message', 'Unknown error from validator')
+                if self.slack_notifier:
+                    self.slack_notifier.send_message(
+                        f"HL Subaccount creation failed\n"
+                        f"HL Address: {hl_address}\n"
+                        f"Account Size: ${account_size:,.2f}\n"
+                        f"Error: {error_message}",
+                        level="error"
+                    )
+                return jsonify({'status': 'error', 'message': error_message}), resp.status_code
+
+        except http_requests.exceptions.Timeout:
+            if self.slack_notifier:
+                self.slack_notifier.send_message(
+                    f"HL Subaccount creation failed\n"
+                    f"HL Address: {hl_address}\n"
+                    f"Account Size: ${account_size:,.2f}\n"
+                    f"Error: Request to validator timed out",
+                    level="error"
+                )
+            return jsonify({'status': 'error', 'message': 'Request to validator timed out'}), 504
+
+        except http_requests.exceptions.ConnectionError:
+            if self.slack_notifier:
+                self.slack_notifier.send_message(
+                    f"HL Subaccount creation failed\n"
+                    f"HL Address: {hl_address}\n"
+                    f"Account Size: ${account_size:,.2f}\n"
+                    f"Error: Could not connect to validator",
+                    level="error"
+                )
+            return jsonify({'status': 'error', 'message': 'Could not connect to validator'}), 503
+
+        except Exception as e:
+            bt.logging.error(f"Error communicating with validator: {e}")
+            if self.slack_notifier:
+                self.slack_notifier.send_message(
+                    f"HL Subaccount creation failed\n"
+                    f"HL Address: {hl_address}\n"
+                    f"Account Size: ${account_size:,.2f}\n"
+                    f"Error: {str(e)}",
+                    level="error"
+                )
+            return jsonify({'status': 'error', 'message': f'Validator communication error: {str(e)}'}), 500
 
     def health_endpoint(self):
         """GET /api/health - Health check."""
