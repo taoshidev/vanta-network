@@ -27,10 +27,12 @@ from vali_objects.utils.asset_selection.asset_selection_client import AssetSelec
 from vali_objects.utils.elimination.elimination_client import EliminationClient
 from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
 from vali_objects.utils.limit_order.market_order_manager import MarketOrderManager
+from vali_objects.miner_account.miner_account_manager import MinerAccountManager
 from vali_objects.utils.limit_order.order_processor import OrderProcessor
 from vali_objects.utils.vali_bkp_utils import CustomEncoder
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
-from vali_objects.vali_config import ValiConfig, RPCConnectionMode
+from vali_objects.enums.miner_bucket_enum import MinerBucket
+from vali_objects.vali_config import TradePairCategory, ValiConfig, RPCConnectionMode
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_client import DebtLedgerClient
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
 from vali_objects.vali_dataclasses.position import Position
@@ -253,6 +255,9 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         self.app.route("/miner-selections", methods=["GET"])(self.get_miner_selections)
         self.app.route("/development/order", methods=["POST"])(self.process_development_order)
 
+        # Account management endpoints
+        self.app.route("/miner-account/rebuild/<hotkey>", methods=["POST"])(self.rebuild_miner_account)
+
         # Collateral endpoints
         self.app.route("/collateral/deposit", methods=["POST"])(self.deposit_collateral)
         self.app.route("/collateral/query-withdraw", methods=["POST"])(self.query_withdraw_collateral)
@@ -270,7 +275,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         self.app.route("/v2/entity/subaccount/<synthetic_hotkey>", methods=["GET"])(self.v2_get_subaccount_dashboard)
         self.app.route("/entity/subaccount/payout", methods=["POST"])(self.calculate_subaccount_payout)
 
-        print(f"[REST-INIT] 29 validator endpoints registered ✓")
+        print(f"[REST-INIT] 30 validator endpoints registered ✓")
 
     # ============================================================================
     # MINER POSITION ENDPOINTS
@@ -1198,6 +1203,95 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
         except Exception as e:
             bt.logging.error(f"Error processing development order: {e}")
+            bt.logging.error(traceback.format_exc())
+            return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+
+    # ============================================================================
+    # ACCOUNT MANAGEMENT ENDPOINTS
+    # ============================================================================
+
+    def rebuild_miner_account(self, hotkey):
+        """
+        Rebuild a miner's account state from position history.
+
+        Supports preview mode (default) which computes the rebuilt state without persisting,
+        and an optional open_ms_after filter to only include positions opened after a timestamp.
+
+        Requires tier 200 access.
+
+        Example:
+        curl -X POST http://localhost:48888/miner-account/rebuild/<hotkey> \\
+          -H "Authorization: Bearer YOUR_API_KEY" \\
+          -H "Content-Type: application/json" \\
+          -d '{"open_ms_after": 1700000000000, "preview": true}'
+        """
+        # Auth check - tier 200 required
+        api_key = self._get_api_key_safe()
+        if not self.is_valid_api_key(api_key):
+            return jsonify({'error': 'Unauthorized access'}), 401
+        if not self.can_access_tier(api_key, 200):
+            return jsonify({'error': 'Rebuild endpoint requires tier 200 access'}), 403
+
+        try:
+            # Parse request body
+            data = request.get_json(silent=True) or {}
+            open_ms_after = data.get('open_ms_after')
+            preview = data.get('preview', True)
+
+            # Snapshot original account
+            original_account = self._miner_account_client.get_account(hotkey)
+            if original_account is None:
+                return jsonify({'error': f'No account found for hotkey {hotkey}'}), 404
+
+            # Fetch positions
+            positions = self._position_client.get_positions_for_one_hotkey(hotkey)
+
+            # Filter by open_ms_after if provided
+            if open_ms_after is not None:
+                positions = [p for p in positions if p.open_ms >= open_ms_after]
+
+            if preview:
+                computed = MinerAccountManager.compute_account_state_from_positions(positions)
+
+                # Mirror reset_account_fields behavior
+                rebuilt_account = dict(original_account)
+                rebuilt_account.update(computed)
+
+                # Recompute balance = account_size + total_realized_pnl - total_fees_paid
+                account_size = original_account.get('account_size', ValiConfig.MIN_CAPITAL)
+                rebuilt_account['balance'] = account_size + computed['total_realized_pnl'] - computed['total_fees_paid']
+
+                # Recompute buying_power = balance * multiplier - capital_used
+                asset_class_str = original_account.get('asset_class')
+                if asset_class_str:
+                    try:
+                        asset_class = TradePairCategory(asset_class_str)
+                        multiplier = ValiConfig.PORTFOLIO_LEVERAGE_CAP.get(asset_class, 1.0)
+                    except ValueError:
+                        multiplier = 1.0
+                else:
+                    multiplier = 1.0
+                rebuilt_account['buying_power'] = rebuilt_account['balance'] * multiplier - computed['capital_used']
+            else:
+                # Actual rebuild - persists to disk, preserving bucket and max_return
+                bucket_str = original_account.get('miner_bucket')
+                bucket = MinerBucket(bucket_str) if bucket_str else None
+                max_return = original_account.get('max_return', 1.0)
+                self._miner_account_client.rebuild_account_state_from_positions(
+                    hotkey, positions, miner_bucket=bucket, max_return=max_return
+                )
+                rebuilt_account = self._miner_account_client.get_account(hotkey)
+
+            return jsonify({
+                'status': 'success',
+                'preview': preview,
+                'position_count': len(positions),
+                'original_account': original_account,
+                'rebuilt_account': rebuilt_account
+            })
+
+        except Exception as e:
+            bt.logging.error(f"Error rebuilding miner account for {hotkey}: {e}")
             bt.logging.error(traceback.format_exc())
             return jsonify({'error': f'Internal server error: {str(e)}'}), 500
 

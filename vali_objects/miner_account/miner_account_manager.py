@@ -819,29 +819,63 @@ class MinerAccountManager(ValidatorBroadcastBase):
 
             return amount_theta <= max(0.0, max_withdrawable_theta)
 
-    def rebuild_account_state_from_positions(self, hotkey: str, positions: List['Position']) -> None:
+    @staticmethod
+    def compute_account_state_from_positions(positions: list) -> dict:
+        """
+        Compute account state fields from a list of positions.
+
+        Returns:
+            dict with total_realized_pnl, total_fees_paid, capital_used, total_borrowed_amount
+        """
+        total_realized_pnl = 0.0
+        total_fees_paid = 0.0
+        capital_used = 0.0
+        total_borrowed_amount = 0.0
+
+        for position in positions:
+            total_realized_pnl += position.realized_pnl
+            total_fees_paid += position.total_fees
+
+            if not position.is_closed_position:
+                capital_used += abs(position.net_value)
+                total_borrowed_amount += position.margin_loan
+
+        return {
+            'total_realized_pnl': total_realized_pnl,
+            'total_fees_paid': total_fees_paid,
+            'capital_used': capital_used,
+            'total_borrowed_amount': total_borrowed_amount,
+        }
+
+    def rebuild_account_state_from_positions(
+        self,
+        hotkey: str,
+        positions: List['Position'],
+        miner_bucket: Optional[MinerBucket] = None,
+        max_return: float = 1.0,
+    ) -> None:
         """
         Rebuild a miner's account state (capital_used, total_realized_pnl, total_fees_paid)
-        from a list of positions. Preserves collateral_records, asset_class, miner_bucket, and max_return.
-
-        For open positions: accumulates capital_used (from net_value) and realized_pnl (from partial closes).
-        For closed positions: accumulates realized_pnl.
-        For all positions: accumulates total_fees_paid from fee_history.
+        from a list of positions. Preserves collateral_records and asset_class.
 
         Args:
             hotkey: Miner's hotkey
             positions: All positions (open and closed) for this miner
+            miner_bucket: Miner bucket to restore after reset
+            max_return: Max return (high water mark) to restore after reset
         """
+        computed = self.compute_account_state_from_positions(positions)
+
         with self._accounts_lock:
             account = self.get_or_create(hotkey)
             account.reset_account_fields()
 
-            for position in positions:
-                account.total_realized_pnl += position.realized_pnl
-                account.total_fees_paid += position.total_fees
-
-                if not position.is_closed_position:
-                    account.capital_used += abs(position.net_value)
+            account.miner_bucket = miner_bucket
+            account.max_return = max_return
+            account.total_realized_pnl = computed['total_realized_pnl']
+            account.total_fees_paid = computed['total_fees_paid']
+            account.capital_used = computed['capital_used']
+            account.total_borrowed_amount = computed['total_borrowed_amount']
 
             self._save_accounts_to_disk()
 

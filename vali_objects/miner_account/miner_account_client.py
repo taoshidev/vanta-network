@@ -301,7 +301,13 @@ class MinerAccountClient(RPCClientBase):
         """
         return self._server.can_withdraw_collateral(hotkey, amount_theta)
 
-    def rebuild_account_state_from_positions(self, hotkey: str, positions: list) -> None:
+    def rebuild_account_state_from_positions(
+        self,
+        hotkey: str,
+        positions: list,
+        miner_bucket: Optional[MinerBucket] = None,
+        max_return: float = 1.0,
+    ) -> None:
         """
         Rebuild a miner's account state from a list of positions.
 
@@ -311,8 +317,11 @@ class MinerAccountClient(RPCClientBase):
         Args:
             hotkey: Miner's hotkey
             positions: List of Position objects or dicts for this miner
+            miner_bucket: Miner bucket to restore after reset
+            max_return: Max return (high water mark) to restore after reset
         """
-        self._server.rebuild_account_state_from_positions(hotkey, positions)
+        bucket_value = miner_bucket.value if miner_bucket else None
+        self._server.rebuild_account_state_from_positions(hotkey, positions, bucket_value, max_return)
 
     def update_asset_selection(
         self, hotkey: str, asset_selection: TradePairCategory
