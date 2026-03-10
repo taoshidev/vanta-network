@@ -26,66 +26,33 @@ with open(ValiBkpUtils.get_meta_json_path(), 'r') as f:
 
 CONNECTION_ERROR_MSG = "Failed to connect to Vanta Network, please try again soon"
 
-# DEPRECATED: No longer used by simplified retry logic
 class SignalMetrics:
     def __init__(self, signal_uuid: str, trade_pair_id: str):
         self.signal_uuid = signal_uuid
         self.trade_pair_id = trade_pair_id
-        self.network_start_time = None
-        self.network_end_time = None
-        self.validators_attempted = 0
-        self.validators_succeeded = 0
-        self.high_trust_total = 0
-        self.high_trust_succeeded = 0
-        self.retry_counts: Dict[str, int] = defaultdict(int)
-        self.validator_errors: Dict[str, List[str]] = defaultdict(list)
-        self.validator_response_times: Dict[str, float] = {}  # Only successful ones
-        self.all_high_trust_succeeded = False
-        self.exception = None
-
-    def mark_network_start(self):
-        self.network_start_time = time.time()
-
-    def mark_network_end(self):
-        self.network_end_time = time.time()
-
-    def complete(self):
-        if self.network_end_time is None:
-            self.network_end_time = time.time()
+        self.timestamp = datetime.now().isoformat()
+        # Mothership result (populated synchronously)
+        self.mothership_success = False
+        self.mothership_error: Optional[str] = None
+        self.mothership_time_ms: float = 0.0
+        self.mothership_retries: int = 0
+        # Exception if entire signal processing failed
+        self.exception: Optional[str] = None
 
     @property
-    def processing_time(self) -> float:
-        if self.network_start_time is None or self.network_end_time is None:
-            return 0.0
-        return self.network_end_time - self.network_start_time
+    def success(self) -> bool:
+        return self.mothership_success
 
-    @property
-    def total_retries(self) -> int:
-        return sum(self.retry_counts.values())
-
-    @property
-    def average_response_time(self) -> float:
-        if not self.validator_response_times:
-            return 0
-        return sum(self.validator_response_times.values()) / len(self.validator_response_times)
-
-    def to_summary(self, miner_hotkey: str) -> Dict[str, Any]:
+    def to_summary(self) -> Dict[str, Any]:
         return {
             "signal_uuid": self.signal_uuid,
             "trade_pair_id": self.trade_pair_id,
-            "miner_hotkey": miner_hotkey,
-            "validators_attempted": self.validators_attempted,
-            "validators_succeeded": self.validators_succeeded,
-            "high_trust_total": self.high_trust_total,
-            "high_trust_succeeded": self.high_trust_succeeded,
-            "all_high_trust_succeeded": self.all_high_trust_succeeded,
-            "total_retries": self.total_retries,
-            "processing_time": self.processing_time,
-            "average_response_time": self.average_response_time,
-            "validator_response_times": self.validator_response_times,
-            "validator_errors": dict(self.validator_errors),
-            "exception": str(self.exception) if self.exception else None,
-            "timestamp": datetime.now().isoformat()
+            "timestamp": self.timestamp,
+            "mothership_success": self.mothership_success,
+            "mothership_error": self.mothership_error,
+            "mothership_time_ms": self.mothership_time_ms,
+            "mothership_retries": self.mothership_retries,
+            "exception": self.exception,
         }
 
 
@@ -153,7 +120,8 @@ class PropNetOrderPlacer:
         monitor_thread.start()
 
     async def _safe_process_signal(self, signal_file_path, signal_data):
-        """Wrapper for process_a_signal with error handling and Slack notifications"""
+        """DEPRECATED: Use REST server (process_a_signal_for_rest) instead.
+        Wrapper for process_a_signal with error handling and Slack notifications"""
         signal_uuid = signal_file_path.split('/')[-1]
         # Support both object {"trade_pair_id": "BTCUSD"} and string "BTCUSD"
         trade_pair = signal_data.get('trade_pair', 'Unknown')
@@ -217,7 +185,8 @@ class PropNetOrderPlacer:
             return None
 
     def _monitor_futures(self, futures):
-        """Monitor futures for completion and handle results"""
+        """DEPRECATED: Use REST server (process_a_signal_for_rest) instead.
+        Monitor futures for completion and handle results"""
         try:
             for future in as_completed(futures, timeout=self.THREAD_POOL_TIMEOUT):
                 with self._lock:
@@ -239,7 +208,8 @@ class PropNetOrderPlacer:
                         self._active_futures.discard(future)
 
     def get_active_tasks_count(self):
-        """Get the number of currently active signal processing tasks"""
+        """DEPRECATED: Use REST server (process_a_signal_for_rest) instead.
+        Get the number of currently active signal processing tasks"""
         with self._lock:
             return len(self._active_futures)
 
@@ -259,25 +229,36 @@ class PropNetOrderPlacer:
 
         return mothership_axon, other_axons
 
-    async def _send_order(self, synapse, mothership_axon, other_axons) -> dict:
+    async def _send_order(self, synapse, mothership_axon, other_axons, metrics: Optional[SignalMetrics] = None) -> dict:
         """
         Send order to mothership (await response) and other validators (fire-and-forget).
         Only retries on network connection failures or transient errors from mothership.
 
+        Args:
+            synapse: The SendSignal synapse to send
+            mothership_axon: Axon for the mothership validator
+            other_axons: List of other validator axons for fire-and-forget
+            metrics: Optional SignalMetrics to populate with mothership timing/retry data
+
         Returns: {success: bool, order_json: str, error_message: str}
         """
         if self.running_unit_tests:
+            if metrics:
+                metrics.mothership_success = True
             return self._send_order_test_mode(synapse)
 
         dendrite = bt.dendrite(wallet=self.wallet)
+        mothership_start = time.time()
         try:
             for attempt in range(self.MAX_NETWORK_RETRIES):
                 try:
                     # Fire-and-forget to other validators on first attempt only
                     if attempt == 0 and other_axons:
+                        signal_uuid = metrics.signal_uuid if metrics else ""
+                        trade_pair_id = metrics.trade_pair_id if metrics else ""
                         thread = threading.Thread(
                             target=self._query_validators_sync,
-                            args=(other_axons, synapse),
+                            args=(other_axons, synapse, signal_uuid, trade_pair_id),
                             daemon=True
                         )
                         thread.start()
@@ -288,10 +269,18 @@ class PropNetOrderPlacer:
 
                     self._log_validator_response(mothership_axon.hotkey, response)
                     if response.successfully_processed:
+                        if metrics:
+                            metrics.mothership_success = True
+                            metrics.mothership_time_ms = (time.time() - mothership_start) * 1000
+                            metrics.mothership_retries = attempt
                         return {"success": True, "order_json": response.order_json, "error_message": ""}
 
                     # Mothership rejected -- check should_retry
                     if not response.should_retry:
+                        if metrics:
+                            metrics.mothership_error = response.error_message
+                            metrics.mothership_time_ms = (time.time() - mothership_start) * 1000
+                            metrics.mothership_retries = attempt
                         return {"success": False, "order_json": "", "error_message": response.error_message}
 
                     # should_retry=True but failed -- transient issue, retry with delay
@@ -304,6 +293,10 @@ class PropNetOrderPlacer:
                     if attempt < self.MAX_NETWORK_RETRIES - 1:
                         await asyncio.sleep(self.NETWORK_RETRY_DELAY_SECONDS)
 
+            if metrics:
+                metrics.mothership_error = CONNECTION_ERROR_MSG
+                metrics.mothership_time_ms = (time.time() - mothership_start) * 1000
+                metrics.mothership_retries = self.MAX_NETWORK_RETRIES
             return {"success": False, "order_json": "", "error_message": CONNECTION_ERROR_MSG}
         finally:
             await dendrite.aclose_session()
@@ -313,7 +306,7 @@ class PropNetOrderPlacer:
         return {"success": True, "order_json": json.dumps({"test": "order"}), "error_message": ""}
 
     async def process_a_signal(self, signal_file_path, signal_data):
-        """
+        """DEPRECATED: Use REST server (process_a_signal_for_rest) instead.
         Processes a signal file by sending it to the mothership validator.
         Other validators receive fire-and-forget copies.
         """
@@ -387,11 +380,15 @@ class PropNetOrderPlacer:
             }
         """
         start_time = time.time()
+        trade_pair_id = signal.trade_pair.trade_pair_id if signal.trade_pair else "Unknown"
+        metrics = SignalMetrics(signal_uuid=order_uuid, trade_pair_id=trade_pair_id)
 
         try:
             mothership_axon, other_axons = self._get_mothership_and_other_axons()
 
             if not mothership_axon and not self.running_unit_tests:
+                metrics.mothership_error = CONNECTION_ERROR_MSG
+                self._notify_slack_for_signal(metrics, subaccount_id)
                 return {
                     "success": False,
                     "order_uuid": order_uuid,
@@ -432,7 +429,7 @@ class PropNetOrderPlacer:
                 order_json=""
             )
 
-            result = asyncio.run(self._send_order(send_signal_request, mothership_axon, other_axons))
+            result = asyncio.run(self._send_order(send_signal_request, mothership_axon, other_axons, metrics))
 
             processing_time = time.time() - start_time
 
@@ -445,6 +442,9 @@ class PropNetOrderPlacer:
                 self.write_signal_to_failure_directory(signal_data, fake_signal_file_path, result["error_message"])
                 message = f"Order failed on Vanta Network: {result['error_message']}"
 
+            # Slack notifications
+            self._notify_slack_for_signal(metrics, subaccount_id)
+
             return {
                 "success": result["success"],
                 "order_uuid": order_uuid,
@@ -456,6 +456,7 @@ class PropNetOrderPlacer:
 
         except Exception as e:
             bt.logging.error(f"Error processing REST order {order_uuid}: {e}")
+            metrics.exception = str(e)
 
             # Archive to failed_signals/ for audit trail
             fake_signal_file_path = f"/rest-api/{order_uuid}"
@@ -466,6 +467,9 @@ class PropNetOrderPlacer:
                 except Exception:
                     pass
 
+            # Slack notifications
+            self._notify_slack_for_signal(metrics, subaccount_id)
+
             return {
                 "success": False,
                 "order_uuid": order_uuid,
@@ -474,6 +478,16 @@ class PropNetOrderPlacer:
                 "processing_time": time.time() - start_time,
                 "message": f"Internal error: {str(e)}"
             }
+
+    def _notify_slack_for_signal(self, metrics: SignalMetrics, subaccount_id: Optional[int] = None):
+        """Send Slack notifications for a processed signal.
+        Always updates daily metrics. Only sends per-signal summary for non-subaccount orders."""
+        if not self.slack_notifier:
+            return
+        summary = metrics.to_summary()
+        self.slack_notifier.update_daily_metrics(summary)
+        if subaccount_id is None:
+            self.slack_notifier.send_signal_summary(summary)
 
     @staticmethod
     def _log_validator_response(hotkey: str, response):
@@ -488,8 +502,9 @@ class PropNetOrderPlacer:
         else:
             bt.logging.error(msg)
 
-    def _query_validators_sync(self, axons, send_signal_request):
-        """Fire-and-forget query to validators (runs in separate thread)."""
+    def _query_validators_sync(self, axons, send_signal_request, signal_uuid: str = "", trade_pair_id: str = ""):
+        """Fire-and-forget query to validators (runs in separate thread).
+        After completion, updates daily metrics via slack_notifier if available."""
 
         async def _query_validators_async(axons, send_signal_request):
             """Async helper for background validator queries."""
@@ -498,11 +513,33 @@ class PropNetOrderPlacer:
                 responses = await dendrite.aquery(axons, send_signal_request)
                 for axon, response in zip(axons, responses):
                     self._log_validator_response(axon.hotkey, response)
+                return responses
             finally:
                 await dendrite.aclose_session()
 
         try:
-            asyncio.run(_query_validators_async(axons, send_signal_request))
+            start_time = time.time()
+            responses = asyncio.run(_query_validators_async(axons, send_signal_request))
+            elapsed_ms = (time.time() - start_time) * 1000
+
+            # Count results and collect errors
+            total = len(axons)
+            succeeded = 0
+            errors = {}
+            for axon, response in zip(axons, responses):
+                if response.successfully_processed:
+                    succeeded += 1
+                else:
+                    errors[axon.hotkey] = response.error_message or "Unknown error"
+
+            # Update daily metrics asynchronously
+            if self.slack_notifier:
+                self.slack_notifier.update_other_validators_metrics(
+                    total=total,
+                    succeeded=succeeded,
+                    errors=errors,
+                    elapsed_ms=elapsed_ms,
+                )
         except Exception as e:
             bt.logging.debug(f"Background validator query error (non-critical): {e}")
 

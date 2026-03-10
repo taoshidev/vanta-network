@@ -376,20 +376,14 @@ class SlackNotifier:
 
     def send_signal_summary(self, summary_data: Dict[str, Any]) -> bool:
         """
-        Send a formatted signal processing summary to appropriate Slack channel.
+        Send a per-signal processing summary to Slack. Only shows mothership data
+        (synchronous). Validator results are tracked asynchronously in daily metrics.
 
         Args:
-            summary_data: Dictionary containing signal processing results with keys:
-                - trade_pair_id: Trading pair identifier
-                - signal_uuid: Unique signal identifier
-                - miner_hotkey: Miner's hotkey
-                - validators_attempted: Number of validators attempted
-                - validators_succeeded: Number of validators that succeeded
-                - validator_response_times: Dict of validator -> response time (ms)
-                - validator_errors: Dict of validator -> error messages
-                - all_high_trust_succeeded: Boolean indicating full success
-                - average_response_time: Average response time in ms
-                - exception: Exception message if failed
+            summary_data: Dictionary from SignalMetrics.to_summary() with keys:
+                - signal_uuid, trade_pair_id, timestamp
+                - mothership_success, mothership_error, mothership_time_ms, mothership_retries
+                - exception
 
         Returns:
             bool: True if sent successfully
@@ -398,121 +392,51 @@ class SlackNotifier:
             return False
 
         try:
-            # Update daily metrics first if enabled
-            if self.enable_metrics:
-                self.update_daily_metrics(summary_data)
-
-            # Determine overall status and which channel to use
-            if summary_data.get("exception") or not summary_data.get('validators_succeeded'):
-                status = "❌ Failed"
+            # Determine status and channel
+            if summary_data.get("exception"):
+                status = "EXCEPTION"
                 color = "#ff0000"
                 webhook_url = self.error_webhook_url
-            elif summary_data.get("all_high_trust_succeeded", False):
-                status = "✅ Success"
+            elif summary_data.get("mothership_success"):
+                status = "SUCCESS"
                 color = "#00ff00"
                 webhook_url = self.webhook_url
             else:
-                status = "⚠️ Partial Success"
-                color = "#ff9900"
+                status = "FAILED"
+                color = "#ff0000"
                 webhook_url = self.error_webhook_url
 
-            # Build enhanced fields
             fields = [
                 {
                     "title": "Status | Trade Pair",
-                    "value": status + " | " + summary_data.get("trade_pair_id", "Unknown"),
+                    "value": f"{status} | {summary_data.get('trade_pair_id', 'Unknown')}",
                     "short": True
                 },
                 {
-                    "title": f"{self.node_type} Hotkey | Order UUID",
-                    "value": "..." + summary_data.get("miner_hotkey", "Unknown")[-8:] + f" | {summary_data.get('signal_uuid', 'Unknown')[:12]}...",
+                    "title": "Order UUID",
+                    "value": summary_data.get("signal_uuid", "Unknown")[:16],
+                    "short": True
+                },
+                {
+                    "title": "Mothership",
+                    "value": f"{summary_data.get('mothership_time_ms', 0):.0f}ms | retries: {summary_data.get('mothership_retries', 0)}",
                     "short": True
                 }
             ]
 
-            # Add VM info if available
-            if self.vm_ip:
+            # Add mothership error if present
+            mothership_error = summary_data.get("mothership_error")
+            if mothership_error:
                 fields.append({
-                    "title": "VM IP | Script Uptime",
-                    "value": f"{self.vm_ip} | {self._get_uptime_str()}",
-                    "short": True
-                })
-
-            fields.append({
-                "title": "Validators (succeeded/attempted)",
-                "value": f"{summary_data.get('validators_succeeded', 0)}/{summary_data.get('validators_attempted', 0)}",
-                "short": True
-            })
-
-            # Add error categorization if present
-            if summary_data.get("validator_errors"):
-                error_categories = defaultdict(int)
-                for validator_errors in summary_data["validator_errors"].values():
-                    for error in validator_errors:
-                        category = self._categorize_error(str(error))
-                        error_categories[category] += 1
-
-                if error_categories:
-                    error_summary = ", ".join([f"{cat}: {count}" for cat, count in error_categories.items()])
-                    error_messages_truncated = []
-                    for e in summary_data.get("validator_errors", {}).values():
-                        e = str(e)
-                        if len(e) > 100:
-                            error_messages_truncated.append(e[100:300])
-                        else:
-                            error_messages_truncated.append(e)
-                    fields.append({
-                        "title": "🔍 Error Info",
-                        "value": error_summary + "\n" + "\n".join(error_messages_truncated),
-                        "short": False
-                    })
-
-            # Add validator response times if present
-            if summary_data.get("validator_response_times"):
-                response_times = summary_data["validator_response_times"]
-                unique_times = set(response_times.values())
-
-                if len(unique_times) > len(response_times) * 0.3:
-                    # Granular per-validator times
-                    sorted_times = sorted(response_times.items(), key=lambda x: x[1], reverse=True)
-                    response_time_str = "Individual validator response times:\n"
-                    for validator, time_taken in sorted_times[:10]:
-                        response_time_str += f"• ...{validator[-8:]}: {time_taken}ms\n"
-                    if len(sorted_times) > 10:
-                        response_time_str += f"... and {len(sorted_times) - 10} more validators"
-                else:
-                    # Batch processing times
-                    time_groups = defaultdict(list)
-                    for validator, time_taken in response_times.items():
-                        time_groups[time_taken].append(validator)
-
-                    sorted_groups = sorted(time_groups.items(), key=lambda x: x[0], reverse=True)
-                    response_time_str = "Response times by retry attempt:\n"
-                    for time_taken, validators in sorted_groups:
-                        validator_count = len(validators)
-                        example_validators = ", ".join(["..." + v[-8:] for v in validators[:3]])
-                        if validator_count > 3:
-                            example_validators += f" (+{validator_count - 3} more)"
-                        response_time_str += f"• {time_taken}ms: {validator_count} validators ({example_validators})\n"
-
-                fields.append({
-                    "title": "⏱️ Validator Response Times",
-                    "value": response_time_str.strip(),
+                    "title": "Mothership Error",
+                    "value": str(mothership_error)[:200],
                     "short": False
                 })
 
-                avg_time = summary_data.get("average_response_time", 0)
-                if avg_time > 0:
-                    fields.append({
-                        "title": "Avg Response",
-                        "value": f"{avg_time}ms",
-                        "short": True
-                    })
-
-            # Add error details if present
+            # Add exception if present
             if summary_data.get("exception"):
                 fields.append({
-                    "title": "💥 Error Details",
+                    "title": "Exception",
                     "value": str(summary_data["exception"])[:200],
                     "short": False
                 })
@@ -520,7 +444,7 @@ class SlackNotifier:
             payload = {
                 "attachments": [{
                     "color": color,
-                    "title": f"Signal Processing Summary - {status}",
+                    "title": f"Signal: {status}",
                     "fields": fields,
                     "footer": f"Taoshi {self.node_type} Monitor",
                     "ts": int(time.time())
@@ -589,49 +513,53 @@ class SlackNotifier:
 
     # ========== Metrics (optional, from miner_objects) ==========
 
-    def update_daily_metrics(self, signal_data: Dict[str, Any]):
+    def update_daily_metrics(self, summary_data: Dict[str, Any]):
         """
-        Update daily metrics with signal processing data.
+        Update daily metrics with signal-level data (mothership + trade pair + success/fail).
 
         Args:
-            signal_data: Dictionary containing signal processing results
+            summary_data: Dictionary from SignalMetrics.to_summary()
         """
         if not self.enable_metrics:
             return
 
         with self.daily_summary_lock:
-            # Update trade pair counts
-            trade_pair_id = signal_data.get("trade_pair_id", "Unknown")
+            trade_pair_id = summary_data.get("trade_pair_id", "Unknown")
             self.daily_metrics["trade_pair_counts"][trade_pair_id] += 1
 
-            # Update validator response times (individual validator times in ms)
-            if "validator_response_times" in signal_data:
-                validator_times = signal_data["validator_response_times"].values()
-                self.daily_metrics["validator_response_times"].extend(validator_times)
+            mothership_time = summary_data.get("mothership_time_ms", 0)
+            if mothership_time > 0:
+                self.daily_metrics["mothership_times_ms"].append(mothership_time)
 
-            # Update validator counts
-            if "validators_attempted" in signal_data:
-                self.daily_metrics["validator_counts"].append(signal_data["validators_attempted"])
+            self.daily_metrics["mothership_retries_total"] += summary_data.get("mothership_retries", 0)
 
-            # Track successful validators
-            if "validator_response_times" in signal_data:
-                self.daily_metrics["successful_validators"].update(signal_data["validator_response_times"].keys())
-
-            # Update error categories
-            if signal_data.get("validator_errors"):
-                for validator_hotkey, errors in signal_data["validator_errors"].items():
-                    for error in errors:
-                        category = self._categorize_error(str(error))
-                        self.daily_metrics["error_categories"][category] += 1
-                        self.daily_metrics["failing_validators"][validator_hotkey] += 1
-
-            # Update signal counts
-            if signal_data.get("exception"):
+            if summary_data.get("exception") or not summary_data.get("mothership_success"):
                 self.daily_metrics["signals_failed"] += 1
             else:
                 self.daily_metrics["signals_processed"] += 1
-                # Update lifetime metrics
                 self.lifetime_metrics["total_lifetime_signals"] += 1
+
+    def update_other_validators_metrics(self, total: int, succeeded: int, errors: Dict[str, str], elapsed_ms: float):
+        """
+        Update daily metrics with async validator results. Called from background thread
+        after fire-and-forget validator queries complete.
+
+        Args:
+            total: Number of validators queried
+            succeeded: Number that succeeded
+            errors: Dict of hotkey -> error message for failures
+            elapsed_ms: Total time for the query batch
+        """
+        if not self.enable_metrics:
+            return
+
+        with self.daily_summary_lock:
+            self.daily_metrics["other_validators_total"] += total
+            self.daily_metrics["other_validators_succeeded"] += succeeded
+            if elapsed_ms > 0:
+                self.daily_metrics["other_validators_times_ms"].append(elapsed_ms)
+            for hotkey, _error_msg in errors.items():
+                self.daily_metrics["other_validators_errors"][hotkey] += 1
 
     # ========== Internal Helper Methods ==========
 
@@ -789,29 +717,6 @@ class SlackNotifier:
             f"*Action:* Check validator logs immediately"
         )
 
-    def _categorize_error(self, error_message: str) -> str:
-        """
-        Categorize error messages for metrics tracking.
-
-        Args:
-            error_message: Error message to categorize
-
-        Returns:
-            str: Error category
-        """
-        error_lower = error_message.lower()
-
-        if any(keyword in error_lower for keyword in ['timeout', 'timed out', 'time out']):
-            return "Timeout"
-        elif any(keyword in error_lower for keyword in ['connection', 'connect', 'refused', 'unreachable']):
-            return "Connection Failed"
-        elif any(keyword in error_lower for keyword in ['invalid', 'decode', 'parse', 'json', 'format']):
-            return "Invalid Response"
-        elif any(keyword in error_lower for keyword in ['network', 'dns', 'resolve']):
-            return "Network Error"
-        else:
-            return "Other"
-
     def _get_uptime_str(self) -> str:
         """
         Get formatted uptime string.
@@ -914,12 +819,14 @@ class SlackNotifier:
         return {
             "signals_processed": 0,
             "signals_failed": 0,
-            "validator_response_times": [],
-            "validator_counts": [],
             "trade_pair_counts": defaultdict(int),
-            "successful_validators": set(),
-            "error_categories": defaultdict(int),
-            "failing_validators": defaultdict(int)
+            "mothership_times_ms": [],
+            "mothership_retries_total": 0,
+            # Updated asynchronously by background thread
+            "other_validators_total": 0,
+            "other_validators_succeeded": 0,
+            "other_validators_errors": defaultdict(int),  # hotkey -> count
+            "other_validators_times_ms": [],
         }
 
     def _send_daily_summary(self):
@@ -929,38 +836,13 @@ class SlackNotifier:
 
         with self.daily_summary_lock:
             try:
-                # Calculate uptime
                 uptime_str = self._get_uptime_str()
 
-                # Validator response time stats
-                response_times = self.daily_metrics["validator_response_times"]
-                if response_times:
-                    best_response_time = min(response_times)
-                    worst_response_time = max(response_times)
-                    avg_response_time = sum(response_times) / len(response_times)
-                    # Calculate median
-                    sorted_times = sorted(response_times)
-                    n = len(sorted_times)
-                    median_response_time = (sorted_times[n // 2] + sorted_times[(n - 1) // 2]) / 2
-                    # Calculate 95th percentile
-                    p95_index = int(0.95 * n)
-                    p95_response_time = sorted_times[min(p95_index, n - 1)]
-                else:
-                    best_response_time = worst_response_time = avg_response_time = median_response_time = p95_response_time = 0
-
-                # Validator count stats
-                val_counts = self.daily_metrics["validator_counts"]
-                if val_counts:
-                    min_validators = min(val_counts)
-                    max_validators = max(val_counts)
-                    avg_validators = sum(val_counts) / len(val_counts)
-                else:
-                    min_validators = max_validators = avg_validators = 0
-
-                # Success rate
-                total_today = self.daily_metrics["signals_processed"]
-                failed_today = self.daily_metrics["signals_failed"]
-                success_rate = ((total_today - failed_today) / max(1, total_today)) * 100
+                # Signal counts
+                total_succeeded = self.daily_metrics["signals_processed"]
+                total_failed = self.daily_metrics["signals_failed"]
+                total_today = total_succeeded + total_failed
+                success_rate = (total_succeeded / max(1, total_today)) * 100
 
                 # Trade pair breakdown (top 10)
                 trade_pairs = sorted(
@@ -970,18 +852,37 @@ class SlackNotifier:
                 )[:10]
                 trade_pair_str = ", ".join([f"{pair}: {count}" for pair, count in trade_pairs]) or "None"
 
-                # Error category breakdown
-                error_categories = dict(self.daily_metrics["error_categories"])
-                error_str = ", ".join([f"{cat}: {count}" for cat, count in error_categories.items()]) or "None"
+                # Mothership response time stats
+                ms_times = self.daily_metrics["mothership_times_ms"]
+                if ms_times:
+                    sorted_times = sorted(ms_times)
+                    n = len(sorted_times)
+                    avg_ms = sum(sorted_times) / n
+                    median_ms = (sorted_times[n // 2] + sorted_times[(n - 1) // 2]) / 2
+                    p95_ms = sorted_times[min(int(0.95 * n), n - 1)]
+                    mothership_str = f"Avg: {avg_ms:.0f}ms | Median: {median_ms:.0f}ms | P95: {p95_ms:.0f}ms\nRetries total: {self.daily_metrics['mothership_retries_total']}"
+                else:
+                    mothership_str = "No data"
+
+                # Other validators stats
+                ov_total = self.daily_metrics["other_validators_total"]
+                ov_succeeded = self.daily_metrics["other_validators_succeeded"]
+                ov_times = self.daily_metrics["other_validators_times_ms"]
+                if ov_total > 0:
+                    ov_rate = (ov_succeeded / max(1, ov_total)) * 100
+                    ov_avg = sum(ov_times) / len(ov_times) if ov_times else 0
+                    other_val_str = f"Reached: {ov_total} | Success: {ov_rate:.0f}% | Avg: {ov_avg:.0f}ms"
+                else:
+                    other_val_str = "No data"
 
                 fields = [
                     {
-                        "title": "📊 Daily Summary Report",
-                        "value": f"Automated daily report for {datetime.now(timezone.utc).strftime('%Y-%m-%d')}",
+                        "title": "Daily Summary Report",
+                        "value": f"Report for {datetime.now(timezone.utc).strftime('%Y-%m-%d')}",
                         "short": False
                     },
                     {
-                        "title": f"🕒 {self.node_type} Hotkey",
+                        "title": f"{self.node_type} Hotkey",
                         "value": f"...{self.hotkey[-8:]}",
                         "short": True
                     },
@@ -991,64 +892,62 @@ class SlackNotifier:
                         "short": True
                     },
                     {
-                        "title": "📈 Lifetime Signals",
+                        "title": "System Info",
+                        "value": f"Host: {self.vm_hostname}\nIP: {self.vm_ip}\nBranch: {self.git_branch}",
+                        "short": True
+                    },
+                    {
+                        "title": "Lifetime Signals",
                         "value": str(self.lifetime_metrics["total_lifetime_signals"]),
                         "short": True
                     },
                     {
-                        "title": "📅 Today's Signals",
-                        "value": str(total_today),
+                        "title": "Today's Signals",
+                        "value": f"{total_today} ({total_succeeded} ok, {total_failed} failed)",
                         "short": True
                     },
                     {
-                        "title": "✅ Success Rate",
+                        "title": "Success Rate",
                         "value": f"{success_rate:.1f}%",
                         "short": True
                     },
                     {
-                        "title": "⚡ Validator Response Times (ms)",
-                        "value": f"Best: {best_response_time:.0f}ms\nWorst: {worst_response_time:.0f}ms\nAvg: {avg_response_time:.0f}ms\nMedian: {median_response_time:.0f}ms\n95th %ile: {p95_response_time:.0f}ms",
-                        "short": True
-                    },
-                    {
-                        "title": "🔗 Validator Counts",
-                        "value": f"Min: {min_validators}\nMax: {max_validators}\nAvg: {avg_validators:.1f}",
-                        "short": True
-                    },
-                    {
-                        "title": "💱 Trade Pairs",
+                        "title": "Trade Pairs",
                         "value": trade_pair_str,
                         "short": False
                     },
                     {
-                        "title": "✨ Unique Validators",
-                        "value": str(len(self.daily_metrics["successful_validators"])),
-                        "short": True
+                        "title": "Mothership Stats",
+                        "value": mothership_str,
+                        "short": False
                     },
                     {
-                        "title": "🖥️ System Info",
-                        "value": f"Host: {self.vm_hostname}\nIP: {self.vm_ip}\nBranch: {self.git_branch}",
-                        "short": True
+                        "title": "Other Validators",
+                        "value": other_val_str,
+                        "short": False
                     }
                 ]
 
-                if error_categories:
+                # Failing validators (top 5 by error count)
+                ov_errors = self.daily_metrics["other_validators_errors"]
+                if ov_errors:
+                    top_failures = sorted(ov_errors.items(), key=lambda x: x[1], reverse=True)[:5]
+                    fail_str = "\n".join([f"...{hk[-8:]}: {cnt} errors" for hk, cnt in top_failures])
                     fields.append({
-                        "title": "❌ Error Categories",
-                        "value": error_str,
+                        "title": "Failing Validators (top 5)",
+                        "value": fail_str,
                         "short": False
                     })
 
                 payload = {
                     "attachments": [{
-                        "color": "#4CAF50",  # Green for summary
+                        "color": "#4CAF50",
                         "fields": fields,
                         "footer": f"Taoshi {self.node_type} Daily Summary",
                         "ts": int(time.time())
                     }]
                 }
 
-                # Send to main channel (not error channel)
                 self._send_payload(self.webhook_url, payload)
 
                 # Reset daily metrics after successful send
