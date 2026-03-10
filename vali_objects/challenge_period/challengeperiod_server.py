@@ -213,7 +213,7 @@ class ChallengePeriodServer(RPCServerBase):
         """Clear all elimination reasons."""
         self._manager.clear_elimination_reasons()
 
-    def pop_elimination_reason_rpc(self, hotkey: str) -> Optional[Tuple[str, float]]:
+    def pop_elimination_reason_rpc(self, hotkey: str) -> Optional[Tuple[str, float, int]]:
         """Atomically get and remove an elimination reason for a single hotkey."""
         return self._manager.pop_elimination_reason(hotkey)
 
