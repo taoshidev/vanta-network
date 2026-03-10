@@ -172,8 +172,8 @@ class MarketOrderManager():
     def _add_order_to_existing_position(self, existing_position: Position, trade_pair: TradePair, signal_order_type: OrderType,
                                         quantity: float, leverage: float, value: float, order_time_ms: int, miner_hotkey: str,
                                         price_sources, miner_order_uuid: str, miner_repo_version: str, src:OrderSource,
-                                        balance=None, usd_base_price=None, execution_type=ExecutionType.MARKET,
-                                        fill_price=None, limit_price=None, stop_loss=None, take_profit=None, bracket_orders=None) -> Order:
+                                        balance=None, usd_base_price=None, execution_type=ExecutionType.MARKET, fill_price=None,
+                                        limit_price=None, stop_loss=None, take_profit=None, bracket_orders=None, trailing_stop=None) -> Order:
         # Must be locked by caller
         step_start = TimeUtil.now_in_millis()
 
@@ -215,6 +215,7 @@ class MarketOrderManager():
             execution_type=execution_type,
             usd_base_rate=usd_base_price,
             bracket_orders=bracket_orders,
+            trailing_stop=trailing_stop
         )
         bt.logging.info(f"[ORDER DETAIL] Using price source {price_sources}")
 
@@ -528,6 +529,7 @@ class MarketOrderManager():
         signal_order_type = OrderType.from_string(signal["order_type"])
         execution_type = ExecutionType.from_string(signal.get("execution_type"))
         bracket_orders = signal.get("bracket_orders")
+        trailing_stop = signal.get("trailing_stop")
         extract_ms = TimeUtil.now_in_millis() - extract_start
         bt.logging.info(f"[TIMING] Extract signal data took {extract_ms}ms")
 
@@ -611,7 +613,7 @@ class MarketOrderManager():
                                                      quantity, leverage, value, now_ms, miner_hotkey,
                                                      price_sources, miner_order_uuid, miner_repo_version,
                                                      new_src, account_balance, usd_base_price, execution_type,
-                                                     fill_price, limit_price, stop_loss, take_profit, bracket_orders)
+                                                     fill_price, limit_price, stop_loss, take_profit, bracket_orders, trailing_stop)
                 add_order_ms = TimeUtil.now_in_millis() - add_order_start
                 bt.logging.info(f"[LOCK_WORK] Add order to position took {add_order_ms}ms")
             else:

@@ -11,7 +11,7 @@ import bittensor as bt
 from dataclasses import dataclass
 from typing import Optional
 from vali_objects.enums.execution_type_enum import ExecutionType
-from vali_objects.enums.order_type_enum import OrderType
+from vali_objects.enums.order_type_enum import OrderType, StopCondition
 from vali_objects.exceptions.bracket_order_exception import BracketOrderException
 from vali_objects.exceptions.signal_exception import SignalException
 from vali_objects.vali_dataclasses.order import Order
@@ -162,6 +162,7 @@ class OrderProcessor:
         limit_price = signal.get("limit_price")
         stop_loss = signal.get("stop_loss")
         take_profit = signal.get("take_profit")
+        trailing_stop = signal.get("trailing_stop")
         bracket_orders = signal.get("bracket_orders")
 
         # Validate required fields
@@ -204,6 +205,7 @@ class OrderProcessor:
             limit_price=float(limit_price),
             stop_loss=stop_loss,
             take_profit=take_profit,
+            trailing_stop=trailing_stop,
             bracket_orders=bracket_orders,
             src=OrderSource.LIMIT_UNFILLED
         )
@@ -212,6 +214,92 @@ class OrderProcessor:
         limit_order_client.process_limit_order(miner_hotkey, order, is_edit=is_edit)
 
         bt.logging.info(f"[ORDER_PROCESSOR] Processed LIMIT order{'(EDIT)' if is_edit else ''}: {order.order_uuid} for {miner_hotkey}")
+        return order
+
+    @staticmethod
+    def process_stop_limit_order(signal: dict, trade_pair, order_uuid: str, now_ms: int,
+                                 miner_hotkey: str, limit_order_client, is_edit: bool = False) -> Order:
+        """
+        Process a STOP_LIMIT order by creating an Order object and calling limit_order_manager.
+
+        A stop-limit order waits for stop_price to be hit (per stop_condition), then spawns
+        a limit order at limit_price.
+
+        Args:
+            signal: Signal dictionary with stop-limit order details
+            trade_pair: Parsed TradePair object
+            order_uuid: Order UUID
+            now_ms: Current timestamp in milliseconds
+            miner_hotkey: Miner's hotkey
+            limit_order_client: Client to process the order
+            is_edit: If True, this is an edit operation
+
+        Returns:
+            The created Order object
+
+        Raises:
+            SignalException: If required fields are missing or processing fails
+        """
+        # Parse size fields
+        leverage, value, quantity = OrderProcessor.parse_size(signal)
+        if not leverage and not value and not quantity:
+            raise SignalException("Order size must be set: leverage, value, or quantity")
+
+        # Extract signal data
+        signal_order_type_str = signal.get("order_type")
+        stop_price = signal.get("stop_price")
+        stop_condition_str = signal.get("stop_condition")
+        limit_price = signal.get("limit_price")
+        bracket_orders = signal.get("bracket_orders")
+
+        # Validate required fields
+        if not signal_order_type_str:
+            raise SignalException("Missing required field: order_type")
+        if not stop_price:
+            raise SignalException("must set stop_price for stop-limit order")
+        if not stop_condition_str:
+            raise SignalException("must set stop_condition for stop-limit order (GTE or LTE)")
+        if not limit_price:
+            raise SignalException("must set limit_price for stop-limit order")
+
+        # Parse order type
+        try:
+            signal_order_type = OrderType.from_string(signal_order_type_str)
+        except ValueError as e:
+            raise SignalException(f"Invalid order_type: {str(e)}")
+
+        # Parse stop condition
+        try:
+            stop_condition = StopCondition.from_string(stop_condition_str)
+        except ValueError as e:
+            raise SignalException(f"Invalid stop_condition: {str(e)}")
+
+        # Convert numeric fields
+        stop_price = float(stop_price)
+        limit_price = float(limit_price)
+
+        # Create order object
+        order = Order(
+            trade_pair=trade_pair,
+            order_uuid=order_uuid,
+            processed_ms=now_ms,
+            price=0.0,
+            order_type=signal_order_type,
+            leverage=leverage,
+            quantity=quantity,
+            value=value,
+            execution_type=ExecutionType.STOP_LIMIT,
+            stop_price=stop_price,
+            stop_condition=stop_condition,
+            limit_price=limit_price,
+            bracket_orders=bracket_orders,
+            src=OrderSource.STOP_LIMIT_UNFILLED
+        )
+
+        # Process via limit order manager
+        limit_order_client.process_limit_order(miner_hotkey, order, is_edit=is_edit)
+
+        bt.logging.info(f"[ORDER_PROCESSOR] Processed STOP_LIMIT order{'(EDIT)' if is_edit else ''}: {order.order_uuid} for {miner_hotkey}")
         return order
 
     @staticmethod
@@ -238,7 +326,7 @@ class OrderProcessor:
         # Call cancel limit order (may throw SignalException)
         result = limit_order_client.cancel_limit_order(
             miner_hotkey,
-            None,  # TODO support cancel by trade pair in v2
+            trade_pair.trade_pair_id if trade_pair else None,
             order_uuid,
             now_ms
         )
@@ -278,23 +366,31 @@ class OrderProcessor:
         # Extract signal data
         stop_loss = signal.get("stop_loss")
         take_profit = signal.get("take_profit")
+        trailing_stop = signal.get("trailing_stop")
         bracket_orders = signal.get("bracket_orders")
 
         # If top-level SL/TP empty but bracket_orders provided, extract from first entry
-        if stop_loss is None and take_profit is None and bracket_orders:
+        if stop_loss is None and take_profit is None and trailing_stop is None and bracket_orders:
             if len(bracket_orders) != 1:
                 raise SignalException("bracket_orders must contain exactly one entry when used for BRACKET orders")
 
             signal = {**signal, **bracket_orders[0]}
             stop_loss = signal.get("stop_loss")
             take_profit = signal.get("take_profit")
+            # Check for trailing fields in bracket entry
+            if signal.get("trailing_percent") is not None or signal.get("trailing_value") is not None:
+                trailing_stop = {}
+                if signal.get("trailing_percent") is not None:
+                    trailing_stop["trailing_percent"] = signal["trailing_percent"]
+                if signal.get("trailing_value") is not None:
+                    trailing_stop["trailing_value"] = signal["trailing_value"]
 
         # Parse size fields using common method
         leverage, value, quantity = OrderProcessor.parse_size(signal)
 
-        # Validate that at least one of SL or TP is set
-        if stop_loss is None and take_profit is None:
-            raise SignalException("Bracket order must specify at least one of stop_loss or take_profit")
+        # Validate that at least one of SL, TP, or trailing_stop is set
+        if stop_loss is None and take_profit is None and trailing_stop is None:
+            raise SignalException("Bracket order must specify at least one of stop_loss, take_profit, or trailing_stop")
 
         # Parse and validate stop_loss
         if stop_loss is not None:
@@ -322,6 +418,7 @@ class OrderProcessor:
             limit_price=None,  # Not used for bracket orders
             stop_loss=stop_loss,
             take_profit=take_profit,
+            trailing_stop=trailing_stop,
             src=OrderSource.BRACKET_UNFILLED
         )
 
@@ -337,7 +434,7 @@ class OrderProcessor:
 
     @staticmethod
     def process_limit_edit(signal: dict, order_uuid: str, now_ms: int,
-                          miner_hotkey: str, limit_order_client) -> Order:
+                          miner_hotkey: str, limit_order_client) -> Optional[Order]:
         """
         Process a LIMIT_EDIT operation by validating the existing order and delegating
         to the appropriate handler based on execution type.
@@ -372,7 +469,7 @@ class OrderProcessor:
             existing_order = Order.from_dict(existing_order_dict)
 
             # VALIDATE order is unfilled
-            if existing_order.src not in [OrderSource.LIMIT_UNFILLED, OrderSource.BRACKET_UNFILLED]:
+            if existing_order.src not in [OrderSource.LIMIT_UNFILLED, OrderSource.BRACKET_UNFILLED, OrderSource.STOP_LIMIT_UNFILLED]:
                 raise SignalException(f"Cannot edit order {order_uuid}: order is not unfilled (status: {existing_order.src})")
 
             # VALIDATE trade pair matches
@@ -390,6 +487,10 @@ class OrderProcessor:
                 return OrderProcessor.process_bracket_order(
                     signal, trade_pair, order_uuid, now_ms, miner_hotkey, limit_order_client, is_edit=True
                 )
+            elif existing_order.execution_type == ExecutionType.STOP_LIMIT:
+                return OrderProcessor.process_stop_limit_order(
+                    signal, trade_pair, order_uuid, now_ms, miner_hotkey, limit_order_client, is_edit=True
+                )
             else:
                 return OrderProcessor.process_limit_order(
                     signal, trade_pair, order_uuid, now_ms, miner_hotkey, limit_order_client, is_edit=True
@@ -403,6 +504,7 @@ class OrderProcessor:
                 raise SignalException("Invalid trade pair in signal for bulk bracket update")
 
             processed_orders = []
+            cancelled_count = 0
             for bracket in bracket_orders:
                 bracket_uuid = bracket.get("order_uuid")
 
@@ -413,14 +515,16 @@ class OrderProcessor:
                         bt.logging.warning(f"Cannot edit order {bracket_uuid}: order not found, skipping")
                         continue
 
-                    # If bracket_uuid exists but both SL and TP are None, cancel the order
-                    if bracket.get("stop_loss") is None and bracket.get("take_profit") is None:
+                    # If bracket_uuid exists but no SL, TP, or trailing fields, cancel the order
+                    has_trailing = bracket.get("trailing_percent") is not None or bracket.get("trailing_value") is not None
+                    if bracket.get("stop_loss") is None and bracket.get("take_profit") is None and not has_trailing:
                         try:
                             OrderProcessor.process_limit_cancel(
                                 None, None, bracket_uuid, now_ms,
                                 miner_hotkey, limit_order_client
                             )
                             bt.logging.info(f"[ORDER_PROCESSOR] Cancelled bracket order {bracket_uuid} (no SL/TP provided)")
+                            cancelled_count += 1
                         except SignalException as e:
                             bt.logging.warning(f"Failed to cancel bracket order {bracket_uuid}: {e}, skipping")
                         continue
@@ -432,10 +536,18 @@ class OrderProcessor:
                     bracket_uuid = str(uuid.uuid4())
 
                 # Build bracket signal
+                # Build trailing_stop dict if trailing fields present in bracket entry
+                bracket_trailing_stop = None
+                if bracket.get("trailing_percent") is not None:
+                    bracket_trailing_stop = {"trailing_percent": bracket["trailing_percent"]}
+                elif bracket.get("trailing_value") is not None:
+                    bracket_trailing_stop = {"trailing_value": bracket["trailing_value"]}
+
                 bracket_signal = {
                     "trade_pair": signal.get("trade_pair"),
                     "stop_loss": bracket.get("stop_loss"),
                     "take_profit": bracket.get("take_profit"),
+                    "trailing_stop": bracket_trailing_stop,
                     "leverage": bracket.get("leverage"),
                     "value": bracket.get("value"),
                     "quantity": bracket.get("quantity"),
@@ -454,6 +566,9 @@ class OrderProcessor:
 
             if processed_orders:
                 return processed_orders[0]
+
+            if cancelled_count > 0:
+                return None
 
             raise SignalException("No bracket edits to process")
 
@@ -552,6 +667,17 @@ class OrderProcessor:
             )
             return OrderProcessingResult(
                 execution_type=ExecutionType.BRACKET,
+                order=order,
+                should_track_uuid=True
+            )
+
+        elif execution_type == ExecutionType.STOP_LIMIT:
+            order = OrderProcessor.process_stop_limit_order(
+                signal, trade_pair, order_uuid, now_ms,
+                miner_hotkey, limit_order_client
+            )
+            return OrderProcessingResult(
+                execution_type=ExecutionType.STOP_LIMIT,
                 order=order,
                 should_track_uuid=True
             )

@@ -6,7 +6,7 @@ import bittensor as bt
 from shared_objects.cache_controller import CacheController
 from time_util.time_util import TimeUtil
 from vali_objects.enums.execution_type_enum import ExecutionType
-from vali_objects.enums.order_type_enum import OrderType
+from vali_objects.enums.order_type_enum import OrderType, StopCondition
 from vali_objects.exceptions.signal_exception import SignalException
 from vali_objects.exceptions.bracket_order_exception import BracketOrderException
 from shared_objects.locks.position_lock import PositionLocks
@@ -80,6 +80,7 @@ class LimitOrderManager(CacheController):
 
         self._read_limit_orders_from_disk()
         self._needs_initial_bracket_sync = True
+        self._last_trailing_disk_write_ms = 0
 
         # Create dedicated locks for protecting self._limit_orders dictionary
         # Convert limit orders structure to format expected by PositionLocks
@@ -134,7 +135,7 @@ class LimitOrderManager(CacheController):
             1 for hotkey_dict in self._limit_orders.values()
             for orders in hotkey_dict.values()
             for order in orders
-            if order.src in [OrderSource.LIMIT_UNFILLED, OrderSource.BRACKET_UNFILLED]
+            if order.src in [OrderSource.LIMIT_UNFILLED, OrderSource.BRACKET_UNFILLED, OrderSource.STOP_LIMIT_UNFILLED]
         )
 
         return {
@@ -210,10 +211,10 @@ class LimitOrderManager(CacheController):
                 f"Invalid bracket order: no open position or previous unfilled limit orders found for {order.trade_pair.trade_pair_id}"
             )
 
-        # Validate that at least one of SL or TP is set
-        if order.stop_loss is None and order.take_profit is None:
+        # Validate that at least one of SL, TP, or trailing_stop is set
+        if order.stop_loss is None and order.take_profit is None and order.trailing_stop is None:
             raise SignalException(
-                f"BRACKET orders must have at least one of stop_loss or take_profit set"
+                f"BRACKET orders must have at least one of stop_loss, take_profit, or trailing_stop set"
             )
 
         # Set order type based on open position, skip validation if there is no position.
@@ -255,6 +256,7 @@ class LimitOrderManager(CacheController):
             for i, bracket in enumerate(order.bracket_orders):
                 stop_loss = bracket.get('stop_loss')
                 take_profit = bracket.get('take_profit')
+                has_trailing = bracket.get('trailing_percent') is not None or bracket.get('trailing_value') is not None
 
                 # Validate SL/TP are positive if provided
                 if stop_loss is not None and stop_loss <= 0:
@@ -262,10 +264,40 @@ class LimitOrderManager(CacheController):
                 if take_profit is not None and take_profit <= 0:
                     raise SignalException(f"bracket_orders[{i}]: take_profit must be greater than 0")
 
-                # Validate SL/TP against limit price
-                self._validate_sltp_against_price(
-                    order.order_type, stop_loss, take_profit, order.limit_price, f"{order.order_uuid}-bracket-{i}"
-                )
+                # Skip SL vs limit_price validation when trailing_stop is set (SL computed at fill time)
+                if not has_trailing:
+                    self._validate_sltp_against_price(
+                        order.order_type, stop_loss, take_profit, order.limit_price, f"{order.order_uuid}-bracket-{i}"
+                    )
+                else:
+                    # For trailing entries, only validate take_profit against limit price
+                    self._validate_sltp_against_price(
+                        order.order_type, None, take_profit, order.limit_price, f"{order.order_uuid}-bracket-{i}"
+                    )
+
+    def _validate_stop_limit_order(self, order):
+        """
+        Validate a STOP_LIMIT order.
+        Checks stop-limit-specific fields, then delegates to _validate_limit_order
+        for limit_price, FLAT rejection, and bracket_orders validation.
+
+        Args:
+            order: Order object to validate
+
+        Raises:
+            SignalException: If validation fails
+        """
+        if order.stop_price is None or order.stop_price <= 0:
+            raise SignalException(
+                f"STOP_LIMIT orders must have a valid stop_price > 0 (got {order.stop_price})"
+            )
+
+        if not isinstance(order.stop_condition, StopCondition):
+            raise SignalException(
+                f"STOP_LIMIT orders must have a valid stop_condition (GTE or LTE), got {order.stop_condition}"
+            )
+
+        self._validate_limit_order(order)
 
     # ==================== Public API Methods ====================
 
@@ -284,7 +316,7 @@ class LimitOrderManager(CacheController):
             if miner_hotkey in hotkey_dict:
                 for order in hotkey_dict[miner_hotkey]:
                     if order.order_uuid == order_uuid:
-                        if order.src in [OrderSource.LIMIT_UNFILLED, OrderSource.BRACKET_UNFILLED]:
+                        if order.src in [OrderSource.LIMIT_UNFILLED, OrderSource.BRACKET_UNFILLED, OrderSource.STOP_LIMIT_UNFILLED]:
                             return order.to_python_dict()
         return None
 
@@ -330,8 +362,10 @@ class LimitOrderManager(CacheController):
                 existing_order = self._find_existing_order_under_lock(miner_hotkey, order_uuid)
                 if not existing_order:
                     raise SignalException(f"Cannot edit order {order_uuid}: order not found (race condition)")
-                if existing_order.src not in [OrderSource.LIMIT_UNFILLED, OrderSource.BRACKET_UNFILLED]:
+                if existing_order.src not in [OrderSource.LIMIT_UNFILLED, OrderSource.BRACKET_UNFILLED, OrderSource.STOP_LIMIT_UNFILLED]:
                     raise SignalException(f"Cannot edit order {order_uuid}: order is no longer unfilled (race condition)")
+
+                order.price = existing_order.price
             else:
                 # NEW ORDER PATH: Check max unfilled orders limit
                 total_unfilled = self._count_unfilled_orders_for_hotkey(miner_hotkey)
@@ -350,6 +384,8 @@ class LimitOrderManager(CacheController):
                 self._validate_bracket_order(order, open_position, unfilled_orders)
             elif order.execution_type == ExecutionType.LIMIT:
                 self._validate_limit_order(order)
+            elif order.execution_type == ExecutionType.STOP_LIMIT:
+                self._validate_stop_limit_order(order)
 
             bt.logging.info(
                 f"{'EDIT' if is_edit else 'INCOMING'} {order.execution_type} ORDER | {trade_pair.trade_pair_id} | "
@@ -357,12 +393,14 @@ class LimitOrderManager(CacheController):
             )
 
             # Check if order can be filled immediately (only if market is open)
-            price_sources = self.live_price_fetcher.get_sorted_price_sources_for_trade_pair(trade_pair, order.processed_ms)
-            if price_sources and self.live_price_fetcher.is_market_open(trade_pair, order.processed_ms):
-                trigger_price = self._evaluate_trigger_price(order, open_position, price_sources[0])
+            # Skip immediate fill for STOP_LIMIT orders - they should only trigger via daemon
+            if order.execution_type != ExecutionType.STOP_LIMIT:
+                price_sources = self.live_price_fetcher.get_sorted_price_sources_for_trade_pair(trade_pair, order.processed_ms)
+                if price_sources and self.live_price_fetcher.is_market_open(trade_pair, order.processed_ms):
+                    trigger_price = self._evaluate_trigger_price(order, open_position, price_sources[0])
 
-                if trigger_price:
-                    should_fill_immediately = True
+                    if trigger_price:
+                        should_fill_immediately = True
 
         # Fill outside the lock to avoid reentrant lock issue
         # Treat order that fills immediately as market order
@@ -435,22 +473,28 @@ class LimitOrderManager(CacheController):
         Returns:
             dict with cancellation details
         """
-        # TODO support cancel by trade pair in v2
         try:
             # Parse trade_pair only if trade_pair_id is provided
-            # trade_pair = TradePair.from_trade_pair_id(trade_pair_id) if trade_pair_id else None
+            cancel_trade_pair = TradePair.from_trade_pair_id(trade_pair_id) if trade_pair_id else None
 
-            # Split order_uuid by commas to support multiple cancellations
-            order_uuids = [uuid.strip() for uuid in order_uuid.split(',')] if order_uuid else []
+            cancel_all = order_uuid and order_uuid.strip().upper() == "ALL"
 
-            # Find orders for each UUID
             orders_to_cancel = []
-            for uuid in order_uuids:
-                orders_to_cancel.extend(self._find_orders_to_cancel_by_uuid(miner_hotkey, uuid))
+            if cancel_all:
+                # Cancel all unfilled limit and bracket orders for this miner
+                for trade_pair, hotkey_dict in self._limit_orders.items():
+                    if cancel_trade_pair and trade_pair != cancel_trade_pair:
+                        continue
 
-            # Only cancel one order at a time with order_uuid
-            # if not orders_to_cancel and trade_pair:
-            #     orders_to_cancel = self._find_orders_to_cancel_by_trade_pair(miner_hotkey, trade_pair)
+                    if miner_hotkey in hotkey_dict:
+                        for order in hotkey_dict[miner_hotkey]:
+                            if order.src in [OrderSource.LIMIT_UNFILLED, OrderSource.BRACKET_UNFILLED, OrderSource.STOP_LIMIT_UNFILLED]:
+                                orders_to_cancel.append(order)
+            else:
+                # Cancel by specific UUID(s) — comma-separated for multiple
+                order_uuids = [uuid.strip() for uuid in order_uuid.split(',')] if order_uuid else []
+                for uuid in order_uuids:
+                    orders_to_cancel.extend(self._find_orders_to_cancel_by_uuid(miner_hotkey, uuid))
 
             if not orders_to_cancel:
                 raise SignalException(
@@ -705,6 +749,7 @@ class LimitOrderManager(CacheController):
         now_ms = TimeUtil.now_in_millis()
         total_checked = 0
         total_filled = 0
+        self._trailing_stop_price_changed = False
 
         if self._needs_initial_bracket_sync:
             self._attach_bracket_orders_to_positions()
@@ -749,8 +794,8 @@ class LimitOrderManager(CacheController):
                     continue
 
                 for order in orders:
-                    # Check both regular limit orders and SL/TP Bracket orders
-                    if order.src not in [OrderSource.LIMIT_UNFILLED, OrderSource.BRACKET_UNFILLED]:
+                    # Check regular limit orders, SL/TP Bracket orders, and stop-limit orders
+                    if order.src not in [OrderSource.LIMIT_UNFILLED, OrderSource.BRACKET_UNFILLED, OrderSource.STOP_LIMIT_UNFILLED]:
                         continue
 
                     total_checked += 1
@@ -771,6 +816,15 @@ class LimitOrderManager(CacheController):
                         # Only one order per trade pair per hotkey can fill within the interval.
                         # This prevents rapid sequential fills and enforces rate limiting.
                         break
+
+                # Persist trailing stop orders whose best price changed (crash recovery)
+                # Rate limited to once per minute to avoid excessive disk I/O
+                if self._trailing_stop_price_changed and now_ms - self._last_trailing_disk_write_ms >= 60_000:
+                    for order in orders:
+                        if order.trailing_stop is not None and order.src == OrderSource.BRACKET_UNFILLED:
+                            self._write_to_disk(miner_hotkey, order)
+                    self._last_trailing_disk_write_ms = now_ms
+                    self._trailing_stop_price_changed = False
 
         if total_filled > 0:
             bt.logging.info(f"Limit order check complete: checked={total_checked}, filled={total_filled}")
@@ -820,8 +874,8 @@ class LimitOrderManager(CacheController):
         for trade_pair, hotkey_dict in self._limit_orders.items():
             if miner_hotkey in hotkey_dict:
                 for order in hotkey_dict[miner_hotkey]:
-                    # Count both regular limit orders and bracket orders
-                    if order.src in [OrderSource.LIMIT_UNFILLED, OrderSource.BRACKET_UNFILLED]:
+                    # Count regular limit orders, bracket orders, and stop-limit orders
+                    if order.src in [OrderSource.LIMIT_UNFILLED, OrderSource.BRACKET_UNFILLED, OrderSource.STOP_LIMIT_UNFILLED]:
                         count += 1
         return count
 
@@ -843,8 +897,8 @@ class LimitOrderManager(CacheController):
         for trade_pair, hotkey_dict in self._limit_orders.items():
             if miner_hotkey in hotkey_dict:
                 for order in hotkey_dict[miner_hotkey]:
-                    # Exact match for regular limit orders
-                    if order.order_uuid == order_uuid and order.src == OrderSource.LIMIT_UNFILLED:
+                    # Exact match for regular limit orders and stop-limit orders
+                    if order.order_uuid == order_uuid and order.src in [OrderSource.LIMIT_UNFILLED, OrderSource.STOP_LIMIT_UNFILLED]:
                         orders_to_cancel.append(order)
                     # Prefix match for bracket orders (allows canceling via parent UUID)
                     elif order.src == OrderSource.BRACKET_UNFILLED and order.order_uuid.startswith(order_uuid):
@@ -878,7 +932,7 @@ class LimitOrderManager(CacheController):
         orders_to_cancel = []
         if trade_pair in self._limit_orders and miner_hotkey in self._limit_orders[trade_pair]:
             for order in self._limit_orders[trade_pair][miner_hotkey]:
-                if order.src in [OrderSource.LIMIT_UNFILLED, OrderSource.BRACKET_UNFILLED]:
+                if order.src in [OrderSource.LIMIT_UNFILLED, OrderSource.BRACKET_UNFILLED, OrderSource.STOP_LIMIT_UNFILLED]:
                     orders_to_cancel.append(order)
         return orders_to_cancel
 
@@ -948,8 +1002,8 @@ class LimitOrderManager(CacheController):
         try:
             # Check if order should be filled (under limit_order_locks)
             with self.limit_order_locks.get_lock(miner_hotkey, trade_pair.trade_pair_id):
-                # Verify order still unfilled (either regular limit or SL/TP)
-                if order.src not in [OrderSource.LIMIT_UNFILLED, OrderSource.BRACKET_UNFILLED]:
+                # Verify order still unfilled (regular limit, SL/TP, or stop-limit)
+                if order.src not in [OrderSource.LIMIT_UNFILLED, OrderSource.BRACKET_UNFILLED, OrderSource.STOP_LIMIT_UNFILLED]:
                     return False
 
                 # Check if limit price triggered
@@ -965,7 +1019,10 @@ class LimitOrderManager(CacheController):
             # Note: There's a small window where order could be cancelled between check and fill,
             # but _fill_limit_order_with_price_source handles this gracefully
             if should_fill:
-                self._fill_limit_order_with_price_source(miner_hotkey, order, best_price_source, trigger_price)
+                if order.execution_type == ExecutionType.STOP_LIMIT:
+                    self._convert_stop_limit_to_limit_order(miner_hotkey, order, TimeUtil.now_in_millis())
+                else:
+                    self._fill_limit_order_with_price_source(miner_hotkey, order, best_price_source, trigger_price)
                 return True
 
             return False
@@ -974,6 +1031,51 @@ class LimitOrderManager(CacheController):
             bt.logging.error(f"Error attempting to fill limit order {order.order_uuid}: {e}")
             bt.logging.error(traceback.format_exc())
             return False
+
+    def _convert_stop_limit_to_limit_order(self, miner_hotkey, order, now_ms):
+        """
+        Convert a triggered stop-limit order into a limit order.
+
+        1. Close stop-limit order as STOP_LIMIT_FILLED
+        2. Create child Order with execution_type=LIMIT, src=LIMIT_UNFILLED
+        3. Forward limit_price, bracket_orders, order_type, sizing from parent
+        4. Call process_limit_order() for the child (reuses all existing limit order logic)
+        """
+        bt.logging.info(
+            f"[STOP_LIMIT] Converting stop-limit order {order.order_uuid} to limit order "
+            f"(stop_price={order.stop_price}, limit_price={order.limit_price})"
+        )
+
+        # 1. Close stop-limit order as STOP_LIMIT_FILLED
+        self._close_limit_order(miner_hotkey, order, OrderSource.STOP_LIMIT_FILLED, now_ms)
+
+        # 2. Create child limit order
+        child_uuid = f"{order.order_uuid}-limit"
+        child_order = Order(
+            trade_pair=order.trade_pair,
+            order_uuid=child_uuid,
+            processed_ms=now_ms,
+            price=0.0,
+            order_type=order.order_type,
+            leverage=order.leverage,
+            quantity=order.quantity,
+            value=order.value,
+            execution_type=ExecutionType.LIMIT,
+            limit_price=order.limit_price,
+            bracket_orders=order.bracket_orders,
+            src=OrderSource.LIMIT_UNFILLED
+        )
+
+        # 3. Process the child limit order (reuses all existing limit order logic including immediate fill check)
+        try:
+            self.process_limit_order(miner_hotkey, child_order)
+            bt.logging.success(
+                f"[STOP_LIMIT] Created child limit order {child_uuid} from stop-limit {order.order_uuid}"
+            )
+        except SignalException as e:
+            bt.logging.error(
+                f"[STOP_LIMIT] Failed to create child limit order from {order.order_uuid}: {e}"
+            )
 
     def _fill_limit_order_with_price_source(self, miner_hotkey, order, price_source, fill_price, enforce_market_cooldown=False):
         """Fill a limit order and update position. Returns error message on failure, None on success."""
@@ -1067,13 +1169,6 @@ class LimitOrderManager(CacheController):
         trade_pair = order.trade_pair
         trade_pair_id = trade_pair.trade_pair_id
 
-        # Orders that were filled immediately are not stored on disk or in memory
-        if src == OrderSource.ORGANIC:
-            order.src = src
-            order.processed_ms = time_ms
-            bt.logging.info(f"Closed ORGANIC limit order [{order_uuid}] [{trade_pair_id}] for [{miner_hotkey}] - no disk cleanup")
-            return
-
         with self.limit_order_locks.get_lock(miner_hotkey, trade_pair_id):
             unfilled_dir = ValiBkpUtils.get_limit_orders_dir(miner_hotkey, trade_pair_id, "unfilled", self.running_unit_tests)
             closed_filename = unfilled_dir + order_uuid
@@ -1135,11 +1230,19 @@ class LimitOrderManager(CacheController):
         for i, bracket in enumerate(parent_order.bracket_orders):
             stop_loss = float(bracket['stop_loss']) if bracket.get('stop_loss') is not None else None
             take_profit = float(bracket['take_profit']) if bracket.get('take_profit') is not None else None
+            trailing_percent = float(bracket['trailing_percent']) if bracket.get('trailing_percent') is not None else None
+            trailing_value = float(bracket['trailing_value']) if bracket.get('trailing_value') is not None else None
+
             leverage = float(bracket['leverage']) if bracket.get('leverage') is not None else None
             value = float(bracket['value']) if bracket.get('value') is not None else None
             quantity = float(bracket['quantity']) if bracket.get('quantity') is not None else None
+            # If no size specified, inherit from parent order
+            if leverage is None and value is None and quantity is None:
+                quantity = parent_order.quantity
 
             bracket_uuid = f"{parent_order.order_uuid}-bracket-{i}"
+
+            has_trailing = trailing_percent is not None or trailing_value is not None
 
             self._validate_sltp_against_price(
                 parent_order.order_type, stop_loss, take_profit,
@@ -1153,6 +1256,9 @@ class LimitOrderManager(CacheController):
                 'leverage': leverage,
                 'value': value,
                 'quantity': quantity,
+                'trailing_percent': trailing_percent,
+                'trailing_value': trailing_value,
+                'best_price': fill_price if has_trailing else None,
             })
 
         try:
@@ -1165,11 +1271,18 @@ class LimitOrderManager(CacheController):
                     self._last_fill_time[trade_pair][miner_hotkey] = 0
 
                 for bracket_data in brackets_to_create:
+                    # Build trailing_stop dict for the Order if trailing fields present
+                    trailing_stop_dict = None
+                    if bracket_data.get('trailing_percent') is not None:
+                        trailing_stop_dict = {'trailing_percent': bracket_data['trailing_percent']}
+                    elif bracket_data.get('trailing_value') is not None:
+                        trailing_stop_dict = {'trailing_value': bracket_data['trailing_value']}
+
                     bracket_order = Order(
                         trade_pair=trade_pair,
                         order_uuid=bracket_data['uuid'],
                         processed_ms=now_ms,
-                        price=0.0,
+                        price=bracket_data.get('best_price') or 0.0,
                         order_type=parent_order.order_type,
                         leverage=bracket_data['leverage'],
                         value=bracket_data['value'],
@@ -1178,6 +1291,7 @@ class LimitOrderManager(CacheController):
                         limit_price=None,
                         stop_loss=bracket_data['stop_loss'],
                         take_profit=bracket_data['take_profit'],
+                        trailing_stop=trailing_stop_dict,
                         src=OrderSource.BRACKET_UNFILLED
                     )
 
@@ -1189,9 +1303,12 @@ class LimitOrderManager(CacheController):
                         miner_hotkey, trade_pair.trade_pair_id, bracket_order.to_python_dict()
                     )
 
+                    trailing_info = ""
+                    if trailing_stop_dict:
+                        trailing_info = f", trailing={trailing_stop_dict}"
                     bt.logging.success(
                         f"Created bracket order [{bracket_order.order_uuid}] "
-                        f"with SL={bracket_data['stop_loss']}, TP={bracket_data['take_profit']}"
+                        f"with SL={bracket_data['stop_loss']}, TP={bracket_data['take_profit']}{trailing_info}"
                     )
 
         except Exception as e:
@@ -1211,6 +1328,9 @@ class LimitOrderManager(CacheController):
         elif order.execution_type == ExecutionType.BRACKET:
             return self._evaluate_bracket_trigger_price(order, position, ps)
 
+        elif order.execution_type == ExecutionType.STOP_LIMIT:
+            return self._evaluate_stop_limit_trigger_price(order, ps)
+
         return None
 
 
@@ -1226,10 +1346,33 @@ class LimitOrderManager(CacheController):
         else:
             return None
 
+    def _evaluate_stop_limit_trigger_price(self, order, ps):
+        """
+        Evaluate trigger price for stop-limit orders.
+        Uses mid price (avg of bid/ask) and stop_condition to determine trigger direction.
+
+        Returns stop_price if triggered, None otherwise.
+        """
+        bid_price = ps.bid if ps.bid > 0 else ps.open
+        ask_price = ps.ask if ps.ask > 0 else ps.open
+        mid_price = (bid_price + ask_price) / 2
+
+        if order.stop_condition == StopCondition.GTE:
+            if mid_price >= order.stop_price:
+                bt.logging.info(f"Stop-limit triggered (GTE): mid={mid_price} >= stop_price={order.stop_price}")
+                return order.stop_price
+        elif order.stop_condition == StopCondition.LTE:
+            if mid_price <= order.stop_price:
+                bt.logging.info(f"Stop-limit triggered (LTE): mid={mid_price} <= stop_price={order.stop_price}")
+                return order.stop_price
+
+        return None
+
     def _evaluate_bracket_trigger_price(self, order, position, ps):
         """
         Evaluate trigger price for bracket orders (SLTP combined).
         Checks both stop_loss and take_profit boundaries.
+        Also handles trailing stop logic: updates best price and computes dynamic SL.
         Returns trigger price when either boundary is hit.
 
         The bracket order has the SAME type as the parent order.
@@ -1247,15 +1390,58 @@ class LimitOrderManager(CacheController):
         order_type = position.position_type
         order.order_type = order_type
 
+        # Trailing stop: update best price and compute trailing SL
+        trailing_sl = None
+        if order.trailing_stop is not None:
+            trailing_percent = order.trailing_stop.get('trailing_percent')
+            trailing_value = order.trailing_stop.get('trailing_value')
+
+            if order_type == OrderType.LONG:
+                new_best = max(order.price, bid_price) if order.price > 0 else bid_price
+                if new_best != order.price:
+                    bt.logging.info(
+                        f"[TRAILING] [{order.order_uuid}] LONG best_price updated: "
+                        f"{order.price:.6f} -> {new_best:.6f} (bid={bid_price:.6f})"
+                    )
+                    order.price = new_best
+                    self._trailing_stop_price_changed = True
+                if trailing_percent is not None:
+                    trailing_sl = order.price * (1 - float(trailing_percent))
+                else:
+                    trailing_sl = order.price - float(trailing_value)
+
+            elif order_type == OrderType.SHORT:
+                new_best = min(order.price, ask_price) if order.price > 0 else ask_price
+                if new_best != order.price:
+                    bt.logging.info(
+                        f"[TRAILING] [{order.order_uuid}] SHORT best_price updated: "
+                        f"{order.price:.6f} -> {new_best:.6f} (ask={ask_price:.6f})"
+                    )
+                    order.price = new_best
+                    self._trailing_stop_price_changed = True
+                if trailing_percent is not None:
+                    trailing_sl = order.price * (1 + float(trailing_percent))
+                else:
+                    trailing_sl = order.price + float(trailing_value)
+
+        # Compute effective stop loss: use the more protective value
+        # LONG: higher SL is more protective, SHORT: lower SL is more protective
+        effective_sl = order.stop_loss
+        if trailing_sl is not None:
+            if effective_sl is None:
+                effective_sl = trailing_sl
+            elif order_type == OrderType.LONG:
+                effective_sl = max(effective_sl, trailing_sl)
+            elif order_type == OrderType.SHORT:
+                effective_sl = min(effective_sl, trailing_sl)
+
         # For LONG orders:
         # - Stop loss: triggers when market price < SL (use bid for selling)
         # - Take profit: triggers when market price > TP (use bid for selling)
         if order_type == OrderType.LONG:
-            # Check stop loss first (higher priority on losses)
-            if order.stop_loss is not None and bid_price < order.stop_loss:
-                bt.logging.info(f"Bracket order stop loss triggered: bid={bid_price} < SL={order.stop_loss}")
-                return order.stop_loss
-            # Check take profit
+            if effective_sl is not None and bid_price < effective_sl:
+                bt.logging.info(f"Bracket order stop loss triggered: bid={bid_price} < SL={effective_sl}")
+                return effective_sl
             if order.take_profit is not None and bid_price > order.take_profit:
                 bt.logging.info(f"Bracket order take profit triggered: bid={bid_price} > TP={order.take_profit}")
                 return order.take_profit
@@ -1264,11 +1450,9 @@ class LimitOrderManager(CacheController):
         # - Stop loss: triggers when market price > SL (use ask for buying)
         # - Take profit: triggers when market price < TP (use ask for buying)
         elif order_type == OrderType.SHORT:
-            # Check stop loss first (higher priority on losses)
-            if order.stop_loss is not None and ask_price > order.stop_loss:
-                bt.logging.info(f"Bracket order stop loss triggered: ask={ask_price} > SL={order.stop_loss}")
-                return order.stop_loss
-            # Check take profit
+            if effective_sl is not None and ask_price > effective_sl:
+                bt.logging.info(f"Bracket order stop loss triggered: ask={ask_price} > SL={effective_sl}")
+                return effective_sl
             if order.take_profit is not None and ask_price < order.take_profit:
                 bt.logging.info(f"Bracket order take profit triggered: ask={ask_price} < TP={order.take_profit}")
                 return order.take_profit
@@ -1410,7 +1594,7 @@ class LimitOrderManager(CacheController):
             return
         try:
             trade_pair_id = order.trade_pair.trade_pair_id
-            if order.src in [OrderSource.LIMIT_UNFILLED, OrderSource.BRACKET_UNFILLED]:
+            if order.src in [OrderSource.LIMIT_UNFILLED, OrderSource.BRACKET_UNFILLED, OrderSource.STOP_LIMIT_UNFILLED]:
                 status = "unfilled"
             else:
                 status = "closed"

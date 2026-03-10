@@ -4,7 +4,7 @@ from typing import Optional
 
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.vali_config import TradePair, ValiConfig
-from vali_objects.enums.order_type_enum import OrderType
+from vali_objects.enums.order_type_enum import OrderType, StopCondition
 from pydantic import BaseModel, model_validator
 
 class Signal(BaseModel):
@@ -17,25 +17,85 @@ class Signal(BaseModel):
     limit_price: Optional[float] = None
     stop_loss: Optional[float] = None
     take_profit: Optional[float] = None
+    stop_price: Optional[float] = None
+    stop_condition: Optional[StopCondition] = None
+    trailing_stop: Optional[dict] = None
     bracket_orders: Optional[list[dict]] = None
+
+    # Pydantic v2 runs mode='before' validators in REVERSE definition order.
+    # normalize_bracket_orders is defined first so it runs LAST.
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_bracket_orders(cls, values):
+        """Convert top-level stop_loss/take_profit/trailing_stop into bracket_orders entries."""
+        bracket_orders = values.get('bracket_orders')
+        stop_loss = values.get('stop_loss')
+        take_profit = values.get('take_profit')
+        trailing_stop = values.get('trailing_stop')
+        has_sl_tp = stop_loss is not None or take_profit is not None
+        has_trailing = trailing_stop is not None
+
+        execution_type = values.get('execution_type', ExecutionType.MARKET)
+        if execution_type not in [ExecutionType.MARKET, ExecutionType.LIMIT, ExecutionType.STOP_LIMIT]:
+            return values
+
+        if (has_sl_tp or has_trailing) and not bracket_orders:
+            bracket_entry = {'stop_loss': stop_loss, 'take_profit': take_profit}
+            if has_trailing:
+                if 'trailing_percent' in trailing_stop:
+                    bracket_entry['trailing_percent'] = trailing_stop['trailing_percent']
+                if 'trailing_value' in trailing_stop:
+                    bracket_entry['trailing_value'] = trailing_stop['trailing_value']
+            values['bracket_orders'] = [bracket_entry]
+            return values
+
+        if not bracket_orders:
+            return values
+
+        price_fields = {'stop_loss', 'take_profit'}
+        trailing_fields = {'trailing_percent', 'trailing_value'}
+
+        for i, bracket in enumerate(bracket_orders):
+            price_present = [f for f in price_fields if bracket.get(f) is not None]
+            trailing_present = [f for f in trailing_fields if bracket.get(f) is not None]
+            if len(price_present) < 1 and len(trailing_present) < 1:
+                raise ValueError(f"bracket_orders[{i}]: at least one of stop_loss/take_profit/trailing_percent/trailing_value required")
+
+        return values
 
     @model_validator(mode='before')
     @classmethod
-    def check_bracket_orders(cls, values):
-        """
-        Validate mutual exclusivity: bracket_orders vs stop_loss/take_profit.
-        """
-        bracket_orders = values.get('bracket_orders')
-        has_sl_tp = values.get('stop_loss') is not None or values.get('take_profit') is not None
+    def validate_trailing_stop(cls, values):
+        """Validate trailing_stop dict structure and range."""
+        trailing_stop = values.get('trailing_stop')
+        if trailing_stop is None:
+            return values
 
-        if bracket_orders and has_sl_tp:
-            raise ValueError("Cannot set both bracket_orders and stop_loss/take_profit on Signal")
+        if not isinstance(trailing_stop, dict):
+            raise ValueError("trailing_stop must be a dict")
+
+        has_percent = 'trailing_percent' in trailing_stop
+        has_value = 'trailing_value' in trailing_stop
+
+        if has_percent == has_value:
+            raise ValueError("trailing_stop must contain exactly one of 'trailing_percent' or 'trailing_value'")
+
+        if has_percent:
+            pct = float(trailing_stop['trailing_percent'])
+            if not (0 < pct < 1):
+                raise ValueError(f"trailing_percent must be between 0 and 1 (exclusive), got {pct}")
+
+        if has_value:
+            val = float(trailing_stop['trailing_value'])
+            if val <= 0:
+                raise ValueError(f"trailing_value must be greater than 0, got {val}")
 
         return values
 
     @model_validator(mode='before')
     def validate_order_type(cls, values):
-        """Validate order type restrictions and normalize size."""
+        """Validate order type restrictions and normalize size sign for SHORT."""
         execution_type = values.get('execution_type')
         if execution_type in [ExecutionType.LIMIT_CANCEL, ExecutionType.FLAT_ALL]:
             return values
@@ -46,7 +106,9 @@ class Signal(BaseModel):
         if execution_type == ExecutionType.LIMIT and is_flat:
             raise ValueError("FLAT order is not supported for LIMIT orders")
 
-        # Normalize size sign based on order_type
+        if execution_type == ExecutionType.STOP_LIMIT and is_flat:
+            raise ValueError("FLAT order is not supported for STOP_LIMIT orders")
+
         for field in ['leverage', 'value', 'quantity']:
             size = values.get(field)
             if size is not None:
@@ -59,17 +121,15 @@ class Signal(BaseModel):
 
     @model_validator(mode='before')
     def validate_size_fields(cls, values):
-        """Validate only one size field is filled (leverage/value/quantity)."""
+        """Exactly one of leverage/value/quantity must be provided."""
         execution_type = values.get('execution_type')
         order_type = values.get('order_type')
-        # Skip size validation for LIMIT_CANCEL, FLAT_ALL, and FLAT orders
         if execution_type in [ExecutionType.LIMIT_CANCEL, ExecutionType.FLAT_ALL] or order_type == OrderType.FLAT:
             return values
 
         fields = ['leverage', 'value', 'quantity']
         filled = [f for f in fields if values.get(f) is not None]
 
-        # BRACKET allows empty size fields (populated from position)
         if execution_type != ExecutionType.BRACKET and len(filled) != 1:
             raise ValueError(f"Exactly one of {fields} must be provided, got {filled}")
 
@@ -88,42 +148,74 @@ class Signal(BaseModel):
 
             sl = values.get('stop_loss')
             tp = values.get('take_profit')
-            if order_type == OrderType.LONG and ((sl and sl >= limit_price) or (tp and tp <= limit_price)):
+            has_trailing = values.get('trailing_stop') is not None
+            if order_type == OrderType.LONG and (((sl and not has_trailing) and sl >= limit_price) or (tp and tp <= limit_price)):
                 raise ValueError(
                     f"LONG LIMIT orders must satisfy: stop_loss < limit_price < take_profit. "
                     f"Got stop_loss={sl}, limit_price={limit_price}, take_profit={tp}"
                 )
-            elif order_type == OrderType.SHORT and ((sl and sl <= limit_price) or (tp and tp >= limit_price)):
+            elif order_type == OrderType.SHORT and (((sl and not has_trailing) and sl <= limit_price) or (tp and tp >= limit_price)):
                 raise ValueError(
                     f"SHORT LIMIT orders must satisfy: take_profit < limit_price < stop_loss. "
+                    f"Got take_profit={tp}, limit_price={limit_price}, stop_loss={sl}"
+                )
+
+        elif execution_type == ExecutionType.STOP_LIMIT:
+            stop_price = values.get('stop_price')
+            limit_price = values.get('limit_price')
+            stop_condition = values.get('stop_condition')
+
+            if not stop_price or float(stop_price) <= 0:
+                raise ValueError("stop_price must be specified and > 0 for STOP_LIMIT orders")
+            if not limit_price or float(limit_price) <= 0:
+                raise ValueError("limit_price must be specified and > 0 for STOP_LIMIT orders")
+            if stop_condition is None:
+                raise ValueError("stop_condition must be specified for STOP_LIMIT orders (GTE or LTE)")
+            # Validate stop_condition is a valid enum value
+            if isinstance(stop_condition, str):
+                try:
+                    StopCondition.from_string(stop_condition)
+                except ValueError:
+                    raise ValueError(f"Invalid stop_condition '{stop_condition}'. Must be GTE or LTE")
+
+            # Validate SL/TP against limit_price (same as LIMIT order validation)
+            sl = values.get('stop_loss')
+            tp = values.get('take_profit')
+            has_trailing = values.get('trailing_stop') is not None
+            if order_type == OrderType.LONG and (((sl and not has_trailing) and sl >= float(limit_price)) or (tp and tp <= float(limit_price))):
+                raise ValueError(
+                    f"LONG STOP_LIMIT orders must satisfy: stop_loss < limit_price < take_profit. "
+                    f"Got stop_loss={sl}, limit_price={limit_price}, take_profit={tp}"
+                )
+            elif order_type == OrderType.SHORT and (((sl and not has_trailing) and sl <= float(limit_price)) or (tp and tp >= float(limit_price))):
+                raise ValueError(
+                    f"SHORT STOP_LIMIT orders must satisfy: take_profit < limit_price < stop_loss. "
                     f"Got take_profit={tp}, limit_price={limit_price}, stop_loss={sl}"
                 )
 
         elif execution_type == ExecutionType.BRACKET:
             sl = values.get('stop_loss')
             tp = values.get('take_profit')
+            trailing_stop = values.get('trailing_stop')
             bracket_orders = values.get('bracket_orders')
 
-            # If top-level SL/TP empty but bracket_orders provided, extract from first entry
-            if sl is None and tp is None and bracket_orders:
+            if sl is None and tp is None and trailing_stop is None and bracket_orders:
                 if len(bracket_orders) != 1:
                     raise ValueError("bracket_orders must contain exactly one entry when used for BRACKET orders")
                 sl = bracket_orders[0].get('stop_loss')
                 tp = bracket_orders[0].get('take_profit')
+                if bracket_orders[0].get('trailing_percent') is not None or bracket_orders[0].get('trailing_value') is not None:
+                    trailing_stop = bracket_orders[0]
 
-            # Validate at least one of SL or TP is set
-            if sl is None and tp is None:
-                raise ValueError("Bracket order must specify at least one of stop_loss or take_profit")
+            if sl is None and tp is None and trailing_stop is None:
+                raise ValueError("Bracket order must specify at least one of stop_loss, take_profit, or trailing_stop")
 
-            # Validate stop_loss > 0 if present
             if sl is not None and float(sl) <= 0:
                 raise ValueError("stop_loss must be greater than 0")
 
-            # Validate take_profit > 0 if present
             if tp is not None and float(tp) <= 0:
                 raise ValueError("take_profit must be greater than 0")
 
-            # Validate SL and TP are unique if both set
             if sl is not None and tp is not None and float(sl) == float(tp):
                 raise ValueError("stop_loss and take_profit must be unique")
 
@@ -162,6 +254,16 @@ class Signal(BaseModel):
 
         elif self.execution_type == ExecutionType.LIMIT:
             base.update({
+                'limit_price': self.limit_price,
+                'stop_loss': self.stop_loss,
+                'take_profit': self.take_profit
+            })
+            return str(base)
+
+        elif self.execution_type == ExecutionType.STOP_LIMIT:
+            base.update({
+                'stop_price': self.stop_price,
+                'stop_condition': str(self.stop_condition) if self.stop_condition else None,
                 'limit_price': self.limit_price,
                 'stop_loss': self.stop_loss,
                 'take_profit': self.take_profit

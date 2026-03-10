@@ -1309,7 +1309,10 @@ curl -H "Authorization: Bearer YOUR_TIER_200_API_KEY" \
               "p": 1770727691818, // processed_ms
               "lp": 83.85, // limit_price (if not null)
               "sl": 78.34, // stop_loss (if not null)
-              "tk": 88.42 // take_profit (if not null)
+              "tk": 88.42, // take_profit (if not null)
+              "tsl": {"pct": 0.02}, // trailing_stop (if not null) — {"pct": <trailing_percent>} or {"val": <trailing_value>}
+              "sp": 80.00, // stop_price (if STOP_LIMIT)
+              "cond": "GTE" // stop_condition (if STOP_LIMIT) — "GTE" or "LTE"
             }
           },
           "uo": { // unfilled_orders (if unfilled orders)
@@ -1323,7 +1326,10 @@ curl -H "Authorization: Bearer YOUR_TIER_200_API_KEY" \
               "p": 1770727691818, // processed_ms
               "lp": 83.85, // limit_price (if not null)
               "sl": 78.34, // stop_loss (if not null)
-              "tk": 88.42 // take_profit (if not null)
+              "tk": 88.42, // take_profit (if not null)
+              "tsl": {"pct": 0.02}, // trailing_stop (if not null) — {"pct": <trailing_percent>} or {"val": <trailing_value>}
+              "sp": 80.00, // stop_price (if STOP_LIMIT)
+              "cond": "GTE" // stop_condition (if STOP_LIMIT) — "GTE" or "LTE"
             }
           },
           "fh": { // fee_history (if fee history)
@@ -1355,7 +1361,10 @@ curl -H "Authorization: Bearer YOUR_TIER_200_API_KEY" \
           "p": 1770727691818, // processed_ms
           "lp": 83.85, // limit_price (if not null)
           "sl": 78.34, // stop_loss (if not null)
-          "tk": 88.42 // take_profit (if not null)
+          "tk": 88.42, // take_profit (if not null)
+          "tsl": {"pct": 0.02}, // trailing_stop (if not null) — {"pct": <trailing_percent>} or {"val": <trailing_value>}
+          "sp": 80.00, // stop_price (if STOP_LIMIT)
+          "cond": "GTE" // stop_condition (if STOP_LIMIT) — "GTE" or "LTE"
         }
       },
       "closed_orders": [
@@ -1437,8 +1446,11 @@ This section is only included if the subaccount is eliminated.
     - `limit_price`: Limit price (if applicable)
     - `stop_loss`: Stop loss price (if applicable)
     - `take_profit`: Take profit price (if applicable)
+    - `trailing_stop`: Trailing stop (if applicable) — `{"pct": <trailing_percent>}` or `{"val": <trailing_value>}`
+    - `stop_price`: Trigger price for STOP_LIMIT orders (if applicable)
+    - `stop_condition`: Trigger direction for STOP_LIMIT orders — `"GTE"` (trigger when price >= stop_price) or `"LTE"` (trigger when price <= stop_price)
   - `unfilled_orders`: Dictionary of unfilled orders within this position
-  - `fee_history`: Dictionary of unfilled orders within this position
+  - `fee_history`: Dictionary of fee events within this position
     - `time_ms`: Timestamp of fee
     - `fee_type`: transaction, carry, or interest
     - `amount`: Amount of fee` 
@@ -1460,6 +1472,9 @@ This section is only included if the subaccount is eliminated.
   - `limit_price`: Limit price (if applicable)
   - `stop_loss`: Stop loss price (if applicable)
   - `take_profit`: Take profit price (if applicable)
+  - `trailing_stop`: Trailing stop (if applicable) — `{"pct": <trailing_percent>}` or `{"val": <trailing_value>}`
+  - `stop_price`: Trigger price for STOP_LIMIT orders (if applicable)
+  - `stop_condition`: Trigger direction for STOP_LIMIT orders — `"GTE"` (trigger when price >= stop_price) or `"LTE"` (trigger when price <= stop_price)
 - `closed_orders`: Array of closed limit orders
   - `order_uuid` Unique identifier for a closed order
 - `limit_orders_time_ms`: Timestamp of last limit order (used as a query parameter in the next request)

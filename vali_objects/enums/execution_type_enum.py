@@ -7,6 +7,7 @@ class ExecutionType(Enum):
     LIMIT_CANCEL = "LIMIT_CANCEL"
     LIMIT_EDIT = "LIMIT_EDIT"
     BRACKET = "BRACKET"
+    STOP_LIMIT = "STOP_LIMIT"
     FLAT_ALL = "FLAT_ALL"
 
     def __str__(self):

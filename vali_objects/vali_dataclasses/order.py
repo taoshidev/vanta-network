@@ -7,6 +7,7 @@ from pydantic import field_validator, model_validator
 from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.vali_config import TradePair
+from vali_objects.enums.order_type_enum import StopCondition
 from vali_objects.vali_dataclasses.order_signal import Signal
 from vali_objects.vali_dataclasses.price_source import PriceSource
 
@@ -45,6 +46,14 @@ class Order(Signal):
         """Convert execution_type string to ExecutionType enum if needed."""
         if isinstance(v, str):
             return ExecutionType.from_string(v)
+        return v
+
+    @field_validator('stop_condition', mode='before')
+    @classmethod
+    def convert_stop_condition(cls, v):
+        """Convert stop_condition string to StopCondition enum if needed."""
+        if isinstance(v, str):
+            return StopCondition.from_string(v)
         return v
 
     @model_validator(mode='before')
@@ -131,62 +140,6 @@ class Order(Signal):
         """
         return values
 
-    @model_validator(mode="before")
-    @classmethod
-    def check_bracket_orders(cls, values):
-        """
-        Overrides inherited check_bracket_orders from Signal.
-        Order allows both bracket_orders and stop_loss/take_profit for display purposes.
-        """
-        return values
-
-    @model_validator(mode="before")
-    @classmethod
-    def normalize_bracket_orders(cls, values):
-        """
-        Convert stop_loss/take_profit to bracket_orders format and validate entries.
-        """
-        bracket_orders = values.get('bracket_orders')
-        stop_loss = values.get('stop_loss')
-        take_profit = values.get('take_profit')
-        has_sl_tp = stop_loss is not None or take_profit is not None
-
-        execution_type = values.get('execution_type')
-        if execution_type not in [ExecutionType.MARKET, ExecutionType.LIMIT]:
-            return values
-
-        # Convert stop_loss/take_profit to bracket_orders
-        if has_sl_tp and not bracket_orders:
-            values['bracket_orders'] = [{
-                'stop_loss': stop_loss,
-                'take_profit': take_profit,
-                'leverage': values.get('leverage'),
-                'value': values.get('value'),
-                'quantity': values.get('quantity'),
-            }]
-            return values
-
-        # Validate bracket_orders entries
-        bracket_orders = values.get('bracket_orders')
-        if not bracket_orders:
-            return values
-
-        size_fields = {'leverage', 'value', 'quantity'}
-        price_fields = {'stop_loss', 'take_profit'}
-
-        for i, bracket in enumerate(bracket_orders):
-            # Exactly one size field required
-            size_present = [f for f in size_fields if bracket.get(f) is not None]
-            if len(size_present) != 1:
-                raise ValueError(f"bracket_orders[{i}]: exactly one of leverage/value/quantity required")
-
-            # At least one price field required
-            price_present = [f for f in price_fields if bracket.get(f) is not None]
-            if len(price_present) < 1:
-                raise ValueError(f"bracket_orders[{i}]: at least one of stop_loss/take_profit required")
-
-        return values
-
     @classmethod
     def from_dict(cls, order_dict):
         """
@@ -226,7 +179,10 @@ class Order(Signal):
                 'stop_loss': self.stop_loss,
                 'take_profit': self.take_profit,
                 'margin_loan': self.margin_loan,
-                'bracket_orders': self.bracket_orders}
+                'trailing_stop': self.trailing_stop,
+                'bracket_orders': self.bracket_orders,
+                'stop_price': self.stop_price,
+                'stop_condition': str(self.stop_condition) if self.stop_condition else None}
 
     def to_dashboard(self, include_trade_pair: bool = False) -> dict:
         results = {
@@ -254,8 +210,20 @@ class Order(Signal):
         if self.stop_loss is not None:
             results["sl"] = self.stop_loss
 
+        if self.trailing_stop is not None:
+            tsl_compact = {}
+            if 'trailing_percent' in self.trailing_stop:
+                tsl_compact["pct"] = self.trailing_stop["trailing_percent"]
+            if 'trailing_value' in self.trailing_stop:
+                tsl_compact["val"] = self.trailing_stop["trailing_value"]
+            results["tsl"] = tsl_compact
+
         if self.take_profit is not None:
             results["tk"] = self.take_profit
+
+        if self.execution_type == ExecutionType.STOP_LIMIT:
+            results["sp"] = self.stop_price
+            results["cond"] = self.stop_condition.name
 
         return results
 
