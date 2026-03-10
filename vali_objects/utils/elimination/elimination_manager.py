@@ -45,6 +45,8 @@ from vali_objects.position_management.position_manager_client import PositionMan
 from vali_objects.vali_dataclasses.price_source import PriceSource
 from shared_objects.rpc.common_data_client import CommonDataClient
 from entity_management.entity_utils import is_synthetic_hotkey
+from vali_objects.enums.order_type_enum import OrderType
+from vali_objects.miner_account.miner_account_client import MinerAccountClient
 
 
 # ==================== Elimination Types ====================
@@ -244,6 +246,12 @@ class EliminationManager(CacheController):
             connection_mode=connection_mode
         )
 
+        self._miner_account_client = MinerAccountClient(
+            connect_immediately=False,
+            connection_mode=connection_mode,
+            running_unit_tests=running_unit_tests
+        )
+
         # Local dicts (no IPC) - much faster!
         # TODO: Fix these using dataclasses with named properties
         self.eliminations: Dict[str, dict] = {}
@@ -417,6 +425,40 @@ class EliminationManager(CacheController):
 
             flat_order = Position.generate_fake_flat_order(position, fake_flat_order_time,
                                                            self.live_price_fetcher_client, source_for_elimination)
+
+            # Skip if price == 0 (price fetch failed) to avoid bogus MinerAccount state.
+            if flat_order.price > 0:
+                trade_pair = position.trade_pair
+                processed_qty = position.net_quantity  # FLAT always closes entire position
+                entry_value = (
+                    abs(processed_qty)
+                    * trade_pair.lot_size
+                    * position.average_entry_price
+                    * flat_order.quote_usd_rate
+                )
+                if position.position_type == OrderType.SHORT:
+                    exit_price = flat_order.price * (1 + flat_order.slippage)
+                    order_realized_pnl = (
+                        (position.average_entry_price - exit_price)
+                        * abs(processed_qty) * trade_pair.lot_size * flat_order.quote_usd_rate
+                    )
+                else:
+                    exit_price = flat_order.price * (1 - flat_order.slippage)
+                    order_realized_pnl = (
+                        (exit_price - position.average_entry_price)
+                        * abs(processed_qty) * trade_pair.lot_size * flat_order.quote_usd_rate
+                    )
+                transaction_fee_rate = ValiConfig.TRANSACTION_FEE_RATE.get(trade_pair.trade_pair_category, 0)
+                transaction_fee = entry_value * transaction_fee_rate
+                bt.logging.info(
+                    f"[ELIM_FLAT] hotkey={hotkey} tp={trade_pair.trade_pair_id} "
+                    f"entry_value=${entry_value:.2f} realized_pnl=${order_realized_pnl:.2f} fee=${transaction_fee:.2f}"
+                )
+                loan_repaid = self._miner_account_client.process_order_sell(
+                    hotkey, entry_value, order_realized_pnl, position.margin_loan, transaction_fee
+                )
+                flat_order.margin_loan = -loan_repaid
+
             position.add_order(flat_order, self.live_price_fetcher_client)
 
             # Epoch-based validation
