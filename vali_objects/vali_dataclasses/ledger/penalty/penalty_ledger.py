@@ -28,6 +28,7 @@ from vali_objects.utils.asset_segmentation import AssetSegmentation
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.vali_config import ValiConfig
 from time_util.time_util import TimeUtil
+from entity_management.entity_utils import is_synthetic_hotkey
 from shared_objects.slack_notifier import SlackNotifier
 import bittensor as bt
 
@@ -864,7 +865,8 @@ class PenaltyLedgerManager:
                             penalty_value = penalty_config.function(miner_positions_at_checkpoint)
 
                         elif penalty_config.input_type == PenaltyInputType.COLLATERAL:
-                            penalty_value = penalty_config.function(miner_account_size)
+                            if not is_synthetic_hotkey(miner_hotkey):
+                                penalty_value = penalty_config.function(miner_account_size)
 
                         elif penalty_config.input_type == PenaltyInputType.ASSET_LEDGER:
                             segmentation_machine = AssetSegmentation({miner_hotkey: ledger_dict})

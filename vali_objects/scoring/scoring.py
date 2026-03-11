@@ -22,6 +22,7 @@ from vali_objects.utils.metrics import Metrics
 from vali_objects.position_management.position_utils import PositionPenalties
 from vali_objects.utils.asset_segmentation import AssetSegmentation
 from vali_objects.vali_config import TradePairCategory
+from entity_management.entity_utils import is_synthetic_hotkey
 import bittensor as bt
 
 
@@ -340,7 +341,8 @@ class Scoring:
                 elif penalty_config.input_type == PenaltyInputType.POSITIONS:
                     penalty = penalty_config.function(positions)
                 elif penalty_config.input_type == PenaltyInputType.COLLATERAL:
-                    penalty = penalty_config.function(miner_account_size)
+                    if not is_synthetic_hotkey(miner):
+                        penalty = penalty_config.function(miner_account_size)
 
                 cumulative_penalty *= penalty
 
