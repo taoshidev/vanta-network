@@ -483,7 +483,7 @@ class ValiConfig:
         TradePairCategory.EQUITIES: 2,
     }
     TRANSACTION_FEE_RATE = {
-        TradePairCategory.CRYPTO: 0.001,
+        TradePairCategory.CRYPTO: 0.0005,
         TradePairCategory.FOREX: 0,
         TradePairCategory.INDICES: 0,
         TradePairCategory.EQUITIES: 0,

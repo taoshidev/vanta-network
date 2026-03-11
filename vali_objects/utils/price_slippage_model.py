@@ -138,7 +138,7 @@ class PriceSlippageModel:
     @classmethod
     def calc_slippage_forex(cls, bid:float, ask:float, order:Order) -> float:
         """
-        V2: 5 bps slippage daily from 5-6 pm EST, and 2 bps slippage otherwise
+        V2: 2 bps slippage daily from 5-6 pm EST, and 1 bps slippage otherwise
 
         V1: Using the direct BB+ model as a stand-in for forex
         slippage percentage = 0.433 * spread/mid_price + 0.335 * sqrt(annualized_volatility**2 / 3 / 250) * sqrt(volume / (0.3 * estimated daily volume))
@@ -147,9 +147,9 @@ class PriceSlippageModel:
             order_datetime = TimeUtil.millis_to_datetime(order.processed_ms).astimezone(cls.eastern_tz)
             hour = order_datetime.hour
             if 17 <= hour < 18:    # Daily 5-6 pm EST. Higher slippage during market open/closing hours
-                return 0.0005       # 5 bps
-            else:
                 return 0.0002       # 2 bps
+            else:
+                return 0.0001       # 1 bps
 
         order_date = TimeUtil.millis_to_short_date_str(order.processed_ms)
 
