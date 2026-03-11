@@ -1106,7 +1106,6 @@ class DebtBasedScoring:
             MinerBucket.MAINCOMP.value: 3,  # 3x dust floor
             MinerBucket.UNKNOWN.value: 0,  # 0x dust (no weight for unknown status)
             MinerBucket.PLAGIARISM.value: 1,  # 1x dust floor
-            # Entity bucket (synthetic hotkeys don't need dust - not in metagraph)
             MinerBucket.ENTITY.value: 4,  # 4x dust floor
         }
 
@@ -1259,7 +1258,6 @@ class DebtBasedScoring:
             MinerBucket.UNKNOWN.value: 0 * DUST,  # 0x dust (no weight for unknown status)
             MinerBucket.PROBATION.value: 2 * DUST,
             MinerBucket.MAINCOMP.value: 3 * DUST,
-            # Entity bucket (synthetic hotkeys don't need dust - not in metagraph)
             MinerBucket.ENTITY.value: 4 * DUST,
         }
 
