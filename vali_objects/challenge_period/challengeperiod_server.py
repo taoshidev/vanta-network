@@ -146,9 +146,9 @@ class ChallengePeriodServer(RPCServerBase):
 
     def get_miner_bucket_rpc(self, hotkey: str) -> Optional[str]:
         """Get the bucket of a miner."""
-        info = self._manager.active_miners.get(hotkey)
-        if info and info[0]:
-            return info[0].value
+        history = self._manager.active_miners.get(hotkey)
+        if history and history[0].bucket:
+            return history[0].bucket.value
         return None
 
     def get_dashboard_rpc(self, hotkey) -> dict | None:
@@ -160,9 +160,9 @@ class ChallengePeriodServer(RPCServerBase):
 
     def get_miner_previous_bucket_rpc(self, hotkey: str) -> Optional[str]:
         """Get the previous bucket of a miner."""
-        info = self._manager.active_miners.get(hotkey)
-        if info and info[2]:
-            return info[2].value
+        history = self._manager.active_miners.get(hotkey)
+        if history and len(history) > 1:
+            return history[1].bucket.value
         return None
 
     def get_miner_previous_time_rpc(self, hotkey: str) -> Optional[int]:

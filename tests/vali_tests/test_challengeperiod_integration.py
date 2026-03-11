@@ -18,7 +18,7 @@ from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.utils.elimination.elimination_manager import EliminationReason
 from vali_objects.vali_dataclasses.ledger.ledger_utils import LedgerUtils
-from vali_objects.enums.miner_bucket_enum import MinerBucket
+from vali_objects.enums.miner_bucket_enum import BucketEntry, MinerBucket
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.vali_dataclasses.order import Order
@@ -244,11 +244,11 @@ class TestChallengePeriodIntegration(TestBase):
     def _populate_active_miners(self, *, maincomp=[], challenge=[], probation=[]):
         miners = {}
         for hotkey in maincomp:
-            miners[hotkey] = (MinerBucket.MAINCOMP, self.HK_TO_OPEN_MS[hotkey], None, None)
+            miners[hotkey] = [BucketEntry(MinerBucket.MAINCOMP, self.HK_TO_OPEN_MS[hotkey])]
         for hotkey in challenge:
-            miners[hotkey] = (MinerBucket.CHALLENGE, self.HK_TO_OPEN_MS[hotkey], None, None)
+            miners[hotkey] = [BucketEntry(MinerBucket.CHALLENGE, self.HK_TO_OPEN_MS[hotkey])]
         for hotkey in probation:
-            miners[hotkey] = (MinerBucket.PROBATION, self.HK_TO_OPEN_MS[hotkey], None, None)
+            miners[hotkey] = [BucketEntry(MinerBucket.PROBATION, self.HK_TO_OPEN_MS[hotkey])]
         self.challenge_period_client.clear_all_miners()
         self.challenge_period_client.update_miners(miners)
         self.challenge_period_client._write_challengeperiod_from_memory_to_disk()  # Ensure disk matches memory

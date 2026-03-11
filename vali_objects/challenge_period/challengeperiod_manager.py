@@ -13,7 +13,7 @@ import time
 import bittensor as bt
 import threading
 import copy
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 
 from vali_objects.enums.order_source_enum import OrderSource
@@ -33,7 +33,7 @@ from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLed
 from vali_objects.vali_dataclasses.ledger.ledger_utils import LedgerUtils
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.utils.elimination.elimination_manager import EliminationReason
-from vali_objects.enums.miner_bucket_enum import MinerBucket
+from vali_objects.enums.miner_bucket_enum import BucketEntry, MinerBucket
 from vali_objects.plagiarism.plagiarism_client import PlagiarismClient
 from vali_objects.miner_account.miner_account_client import MinerAccountClient
 from shared_objects.rpc.common_data_client import CommonDataClient
@@ -113,8 +113,7 @@ class ChallengePeriodManager(CacheController):
         )
 
         self.eliminations_with_reasons: Dict[str, Tuple[str, float, int]] = {}  # (reason, mdd, detection_time_ms)
-        # TODO: Fix this using a dataclass with named properties
-        self.active_miners: Dict[str, Tuple[MinerBucket, int, Optional[MinerBucket], Optional[int]]] = {}
+        self.active_miners: Dict[str, List[BucketEntry]] = {}
 
         # Cached scores for MinerStatisticsManager
         self._cached_asset_softmaxed_scores: Dict[str, Dict[str, float]] = {}
@@ -950,7 +949,7 @@ class ChallengePeriodManager(CacheController):
 
     def get_hotkeys_by_bucket(self, bucket: MinerBucket) -> list[str]:
         """Get all hotkeys in a specific bucket."""
-        return [hotkey for hotkey, (b, _, _, _) in self.active_miners.items() if b == bucket]
+        return [hotkey for hotkey, history in self.active_miners.items() if history[0].bucket == bucket]
 
     def _remove_eliminated_from_memory(self, eliminations: list[dict] = None) -> bool:
         """Remove eliminated miners from memory."""
@@ -1281,27 +1280,35 @@ class ChallengePeriodManager(CacheController):
             hotkey: Miner's hotkey
             bucket: New bucket to assign
             start_time: Start time for new bucket
-            prev_bucket: Optional explicit previous bucket (if None and miner exists, auto-captures current)
-            prev_time: Optional explicit previous time (if None and miner exists, auto-captures current)
+            prev_bucket: Optional explicit previous bucket (used by plagiarism demotion to preserve original state)
+            prev_time: Optional explicit previous time (used by plagiarism demotion)
 
         Returns:
             True if this is a new miner, False if updating existing
         """
         is_new = hotkey not in self.active_miners
-        bucket_changed = False
+        new_entry = BucketEntry(bucket, start_time)
 
-        # Auto-capture previous state if not explicitly provided and miner exists
-        if not is_new and prev_bucket is None and prev_time is None:
-            current_bucket, current_time, _, _ = self.active_miners[hotkey]
-            # Only capture previous state if the bucket is actually changing
+        if is_new:
+            if prev_bucket is not None and prev_time is not None:
+                # Explicit previous state provided for a new miner
+                self.active_miners[hotkey] = [new_entry, BucketEntry(prev_bucket, prev_time)]
+            else:
+                self.active_miners[hotkey] = [new_entry]
+        elif prev_bucket is not None and prev_time is not None:
+            # Explicit previous state (plagiarism demotion) — insert prev as index 1
+            history = self.active_miners[hotkey]
+            history[0] = new_entry
+            history.insert(1, BucketEntry(prev_bucket, prev_time))
+        else:
+            history = self.active_miners[hotkey]
+            current_bucket = history[0].bucket
             if current_bucket != bucket:
-                prev_bucket = current_bucket
-                prev_time = current_time
-                bucket_changed = True
-        elif is_new:
-            bucket_changed = True
-
-        self.active_miners[hotkey] = (bucket, start_time, prev_bucket, prev_time)
+                # Bucket changed — prepend new entry, keeping full history
+                history.insert(0, new_entry)
+            else:
+                # Same bucket — update in place
+                history[0] = new_entry
 
         # Push bucket to MinerAccount
         try:
@@ -1311,20 +1318,20 @@ class ChallengePeriodManager(CacheController):
 
         return is_new
 
-    def get_miner_start_time(self, hotkey: str) -> int:
+    def get_miner_start_time(self, hotkey: str) -> Optional[int]:
         """Get the start time of a miner's current bucket."""
-        info = self.active_miners.get(hotkey)
-        return info[1] if info else None
+        history = self.active_miners.get(hotkey)
+        return history[0].start_time_ms if history else None
 
-    def get_miner_previous_bucket(self, hotkey: str) -> MinerBucket:
+    def get_miner_previous_bucket(self, hotkey: str) -> Optional[MinerBucket]:
         """Get the previous bucket of a miner."""
-        info = self.active_miners.get(hotkey)
-        return info[2] if info else None
+        history = self.active_miners.get(hotkey)
+        return history[1].bucket if history and len(history) > 1 else None
 
-    def get_miner_previous_time(self, hotkey: str) -> int:
+    def get_miner_previous_time(self, hotkey: str) -> Optional[int]:
         """Get the start time of a miner's previous bucket."""
-        info = self.active_miners.get(hotkey)
-        return info[3] if info else None
+        history = self.active_miners.get(hotkey)
+        return history[1].start_time_ms if history and len(history) > 1 else None
 
     def has_miner(self, hotkey: str) -> bool:
         """Fast check if a miner is in active_miners (O(1))."""
@@ -1345,9 +1352,9 @@ class ChallengePeriodManager(CacheController):
     def _sync_all_miner_buckets(self):
         """Push all current miner buckets to MinerAccount on startup."""
         synced = 0
-        for hotkey, (bucket, _, _, _) in self.active_miners.items():
+        for hotkey, history in self.active_miners.items():
             try:
-                self._miner_account_client.set_miner_bucket(hotkey, bucket)
+                self._miner_account_client.set_miner_bucket(hotkey, history[0].bucket)
                 synced += 1
             except Exception as e:
                 bt.logging.warning(f"Failed to sync miner_bucket for {hotkey}: {e}")
@@ -1362,28 +1369,49 @@ class ChallengePeriodManager(CacheController):
         Bulk update active_miners from a dict.
 
         Args:
-            miners_dict: Can be either:
-                - Dict mapping hotkey to tuple (bucket, start_time, prev_bucket, prev_time)
-                - Dict mapping hotkey to dict with keys: bucket, start_time, prev_bucket, prev_time
-                  (for RPC serialization compatibility)
+            miners_dict: Can be any of:
+                - Dict mapping hotkey to List[BucketEntry]
+                - Dict mapping hotkey to tuple (bucket, start_time, prev_bucket, prev_time) (legacy)
+                - Dict mapping hotkey to dict with keys: bucket, start_time, prev_bucket, prev_time (RPC dict)
+                - Dict mapping hotkey to list of dicts [{"bucket": ..., "bucket_start_time": ...}, ...] (RPC list)
 
         Returns:
             Number of miners updated
         """
-        # Handle both tuple format and dict format (for RPC compatibility)
         normalized_dict = {}
         for hotkey, data in miners_dict.items():
-            if isinstance(data, tuple):
-                # Already in tuple format
+            if isinstance(data, list) and len(data) > 0 and isinstance(data[0], BucketEntry):
+                # Already in List[BucketEntry] format
                 normalized_dict[hotkey] = data
+            elif isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
+                # RPC list of dicts format
+                normalized_dict[hotkey] = [
+                    BucketEntry(
+                        bucket=MinerBucket(entry["bucket"]) if isinstance(entry["bucket"], str) else entry["bucket"],
+                        start_time_ms=entry["bucket_start_time"]
+                    )
+                    for entry in data
+                ]
+            elif isinstance(data, tuple):
+                # Legacy tuple format (bucket, start_time, prev_bucket, prev_time)
+                bucket, start_time, prev_bucket, prev_time = data
+                history = [BucketEntry(bucket, start_time)]
+                if prev_bucket is not None and prev_time is not None:
+                    history.append(BucketEntry(prev_bucket, prev_time))
+                normalized_dict[hotkey] = history
             elif isinstance(data, dict):
-                # Convert from RPC dict format to tuple format
+                # RPC dict format with bucket, start_time, prev_bucket, prev_time
                 bucket = MinerBucket(data["bucket"]) if isinstance(data["bucket"], str) else data["bucket"]
                 start_time = data["start_time"]
                 prev_bucket = MinerBucket(data["prev_bucket"]) if (data.get("prev_bucket") and isinstance(data["prev_bucket"], str)) else data.get("prev_bucket")
                 prev_time = data.get("prev_time")
 
-                normalized_dict[hotkey] = (bucket, start_time, prev_bucket, prev_time)
+                history = [BucketEntry(bucket, start_time)]
+                if prev_bucket is not None and prev_time is not None:
+                    history.append(BucketEntry(prev_bucket, prev_time))
+                normalized_dict[hotkey] = history
+            elif isinstance(data, list) and len(data) == 0:
+                normalized_dict[hotkey] = []
             else:
                 raise ValueError(f"Invalid data type for miner {hotkey}: {type(data)}")
 
@@ -1392,8 +1420,12 @@ class ChallengePeriodManager(CacheController):
         return count
 
     def iter_active_miners(self):
-        """Iterate over active miners."""
-        for hotkey, (bucket, start_time, prev_bucket, prev_time) in self.active_miners.items():
+        """Iterate over active miners. Yields (hotkey, bucket, start_time, prev_bucket, prev_time) for compat."""
+        for hotkey, history in self.active_miners.items():
+            bucket = history[0].bucket
+            start_time = history[0].start_time_ms
+            prev_bucket = history[1].bucket if len(history) > 1 else None
+            prev_time = history[1].start_time_ms if len(history) > 1 else None
             yield hotkey, bucket, start_time, prev_bucket, prev_time
 
     def get_all_miner_hotkeys(self) -> list:
@@ -1428,19 +1460,17 @@ class ChallengePeriodManager(CacheController):
 
     def get_miner_bucket(self, hotkey):
         """Get the bucket of a miner."""
-        return self.active_miners.get(hotkey, [None])[0]
+        history = self.active_miners.get(hotkey)
+        return history[0].bucket if history else None
 
     def get_dashboard(self, hotkey) -> dict | None:
-        active_miner = self.active_miners.get(hotkey)
-        if active_miner is None:
+        history = self.active_miners.get(hotkey)
+        if history is None:
             return None
 
-        bucket = active_miner[0]
-        start_time_ms = active_miner[1]
-
         return {
-            "bucket": bucket.value,
-            "start_time_ms": start_time_ms,
+            "bucket": history[0].bucket.value,
+            "start_time_ms": history[0].start_time_ms,
         }
 
     # TODO: revisit to separate regular and subaccount miners
@@ -1468,40 +1498,57 @@ class ChallengePeriodManager(CacheController):
 
     def _bucket_view(self, bucket: MinerBucket):
         """Get all miners in a specific bucket as {hotkey: start_time} dict."""
-        return {hk: ts for hk, (b, ts, _, _) in self.active_miners.items() if b == bucket}
+        return {hk: history[0].start_time_ms for hk, history in self.active_miners.items() if history[0].bucket == bucket}
 
     def to_checkpoint_dict(self):
         """Get challenge period data as a checkpoint dict for serialization."""
-        json_dict = {
-            hotkey: {
-                "bucket": bucket.value,
-                "bucket_start_time": start_time,
-                "previous_bucket": previous_bucket.value if previous_bucket else None,
-                "previous_bucket_start_time": previous_bucket_time
-            }
-            for hotkey, bucket, start_time, previous_bucket, previous_bucket_time in self.iter_active_miners()
-        }
+        json_dict = {}
+        for hotkey, history in self.active_miners.items():
+            json_dict[hotkey] = [
+                {"bucket": entry.bucket.value, "bucket_start_time": entry.start_time_ms}
+                for entry in history
+            ]
         return json_dict
 
     @staticmethod
-    def parse_checkpoint_dict(json_dict):
-        """Parse checkpoint dict from disk."""
+    def parse_checkpoint_dict(json_dict) -> Dict[str, List['BucketEntry']]:
+        """Parse checkpoint dict from disk. Handles 3 formats:
+        1. Legacy testing/success format: {"testing": {hk: time}, "success": {hk: time}}
+        2. Current dict format: {hk: {"bucket": ..., "bucket_start_time": ..., "previous_bucket": ..., ...}}
+        3. New list format: {hk: [{"bucket": ..., "bucket_start_time": ...}, ...]}
+        """
         formatted_dict = {}
 
         if "testing" in json_dict.keys() and "success" in json_dict.keys():
+            # Legacy format
             testing = json_dict.get("testing", {})
             success = json_dict.get("success", {})
             for hotkey, start_time in testing.items():
-                formatted_dict[hotkey] = (MinerBucket.CHALLENGE, start_time, None, None)
+                formatted_dict[hotkey] = [BucketEntry(MinerBucket.CHALLENGE, start_time)]
             for hotkey, start_time in success.items():
-                formatted_dict[hotkey] = (MinerBucket.MAINCOMP, start_time, None, None)
+                formatted_dict[hotkey] = [BucketEntry(MinerBucket.MAINCOMP, start_time)]
         else:
             for hotkey, info in json_dict.items():
-                bucket = MinerBucket(info["bucket"]) if info.get("bucket") else None
-                bucket_start_time = info.get("bucket_start_time")
-                previous_bucket = MinerBucket(info["previous_bucket"]) if info.get("previous_bucket") else None
-                previous_bucket_start_time = info.get("previous_bucket_start_time")
+                if isinstance(info, list):
+                    # New list format
+                    formatted_dict[hotkey] = [
+                        BucketEntry(
+                            bucket=MinerBucket(entry["bucket"]),
+                            start_time_ms=entry["bucket_start_time"]
+                        )
+                        for entry in info
+                    ]
+                elif isinstance(info, dict):
+                    # Current dict format
+                    bucket = MinerBucket(info["bucket"]) if info.get("bucket") else None
+                    bucket_start_time = info.get("bucket_start_time")
+                    history = [BucketEntry(bucket, bucket_start_time)]
 
-                formatted_dict[hotkey] = (bucket, bucket_start_time, previous_bucket, previous_bucket_start_time)
+                    previous_bucket = MinerBucket(info["previous_bucket"]) if info.get("previous_bucket") else None
+                    previous_bucket_start_time = info.get("previous_bucket_start_time")
+                    if previous_bucket is not None and previous_bucket_start_time is not None:
+                        history.append(BucketEntry(previous_bucket, previous_bucket_start_time))
+
+                    formatted_dict[hotkey] = history
 
         return formatted_dict

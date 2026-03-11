@@ -23,7 +23,7 @@ Usage:
 from typing import Optional, List
 
 from shared_objects.rpc.rpc_client_base import RPCClientBase
-from vali_objects.enums.miner_bucket_enum import MinerBucket
+from vali_objects.enums.miner_bucket_enum import BucketEntry, MinerBucket
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 
 
@@ -151,15 +151,25 @@ class ChallengePeriodClient(RPCClientBase):
 
     def update_miners(self, miners_dict: dict) -> int:
         """Bulk update active_miners from a dict."""
-        # Convert tuples to dicts for RPC serialization
+        # Convert List[BucketEntry] to list-of-dicts for RPC serialization
         miners_rpc_dict = {}
-        for hotkey, (bucket, start_time, prev_bucket, prev_time) in miners_dict.items():
-            miners_rpc_dict[hotkey] = {
-                "bucket": bucket.value,
-                "start_time": start_time,
-                "prev_bucket": prev_bucket.value if prev_bucket else None,
-                "prev_time": prev_time
-            }
+        for hotkey, data in miners_dict.items():
+            if isinstance(data, list) and len(data) > 0 and isinstance(data[0], BucketEntry):
+                miners_rpc_dict[hotkey] = [
+                    {"bucket": entry.bucket.value, "bucket_start_time": entry.start_time_ms}
+                    for entry in data
+                ]
+            elif isinstance(data, tuple):
+                # Legacy tuple format support
+                bucket, start_time, prev_bucket, prev_time = data
+                entries = [{"bucket": bucket.value, "bucket_start_time": start_time}]
+                if prev_bucket is not None and prev_time is not None:
+                    entries.append({"bucket": prev_bucket.value, "bucket_start_time": prev_time})
+                miners_rpc_dict[hotkey] = entries
+            elif isinstance(data, list):
+                miners_rpc_dict[hotkey] = data
+            else:
+                raise ValueError(f"Invalid data type for miner {hotkey}: {type(data)}")
 
         return self._server.update_miners_rpc(miners_rpc_dict)
 
