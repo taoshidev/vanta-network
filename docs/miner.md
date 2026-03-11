@@ -284,11 +284,11 @@ A carry fee is charged at each interval based on the current market value of the
 
 **Spread Fee (Transaction Fee):**
 
-| Market             | Spread Fee Rate     | Applied To           |
-|--------------------| ----------------    | -------------------- |
-| Forex, Commodities | None                | N/A                  |
-| Crypto             | 0.1% \* order value | Each order placed    |
-| Equities           | None                | N/A                  |
+| Market             | Spread Fee Rate      | Applied To           |
+|--------------------|----------------------| -------------------- |
+| Forex, Commodities | None                 | N/A                  |
+| Crypto             | 0.05% \* order value | Each order placed    |
+| Equities           | None                 | N/A                  |
 
 ### Leverage Limits
 
