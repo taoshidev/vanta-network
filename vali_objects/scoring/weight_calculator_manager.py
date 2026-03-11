@@ -315,7 +315,8 @@ class WeightCalculatorManager(CacheController):
             miner_account_client=self._miner_account_client,
             current_time_ms=current_time,
             verbose=True,
-            is_testnet=not self.is_mainnet
+            is_testnet=not self.is_mainnet,
+            eligible_hotkeys=hotkeys_to_compute_weights_for
         )
 
         bt.logging.info(f"Debt-based scoring results: [{checkpoint_results}]")

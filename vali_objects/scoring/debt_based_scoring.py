@@ -237,7 +237,8 @@ class DebtBasedScoring:
         miner_account_client: 'MinerAccountClient',
         current_time_ms: int = None,
         verbose: bool = False,
-        is_testnet: bool = False
+        is_testnet: bool = False,
+        eligible_hotkeys: list[str] = None
     ) -> List[Tuple[str, float]]:
         """
         Compute miner weights based on debt ledger information with real-time emission projections.
@@ -276,9 +277,13 @@ class DebtBasedScoring:
         if current_time_ms is None:
             current_time_ms = TimeUtil.now_in_millis()
 
+        # Resolve the full set of hotkeys to produce weights for.
+        if eligible_hotkeys is None:
+            eligible_hotkeys = list(ledger_dict.keys())
+
         # Handle edge cases
-        if not ledger_dict:
-            bt.logging.info("No debt ledgers provided, setting burn address weight to 1.0")
+        if not ledger_dict and not eligible_hotkeys:
+            bt.logging.info("No debt ledgers or hotkeys provided, setting burn address weight to 1.0")
             burn_hotkey = DebtBasedScoring._get_burn_address_hotkey(metagraph_client, is_testnet)
             return [(burn_hotkey, 1.0)]
 
@@ -448,21 +453,26 @@ class DebtBasedScoring:
             daily_target = remaining_payout_usd / days_until_target
             miner_daily_target_payouts_usd[hotkey] = daily_target
 
-        # Enforce minimum weights based on challenge period status
-        # All miners get minimum "dust" weights based on their current status
-        # Dust is a static value from ValiConfig.CHALLENGE_PERIOD_MIN_WEIGHT
-        # Weights are performance-scaled by 30-day PnL within each bucket
-        # NOTE: Weights are unitless proportions, normalized against projected daily emissions
-        # Calculate projected daily emissions in USD
         projected_daily_usd = projected_usd_available / days_until_target
 
+        # Step 3: Convert daily-target USD payouts to unit-less weights normalized against
+        # projected daily emissions. Miners without a ledger are absent here (weight=0.0 default).
+        raw_debt_weights = DebtBasedScoring._compute_raw_weights_from_payouts(
+            miner_daily_target_payouts_usd=miner_daily_target_payouts_usd,
+            projected_daily_emissions_usd=projected_daily_usd,
+            verbose=verbose
+        )
+
+        # Step 4: Apply dust floor for ALL eligible hotkeys (including those without ledgers).
+        # Miners below their bucket's dust floor are raised; miners with no ledger are added
+        # at the static dust floor for their bucket.
         miner_weights_with_minimums = DebtBasedScoring._apply_minimum_weights(
+            eligible_hotkeys=eligible_hotkeys,
+            raw_debt_weights=raw_debt_weights,
             ledger_dict=ledger_dict,
-            miner_remaining_payouts_usd=miner_daily_target_payouts_usd,
             challengeperiod_client=challengeperiod_client,
             miner_account_client=miner_account_client,
             current_time_ms=current_time_ms,
-            projected_daily_emissions_usd=projected_daily_usd,
             verbose=verbose
         )
 
@@ -490,6 +500,56 @@ class DebtBasedScoring:
         )
 
         return result
+
+    @staticmethod
+    def _compute_raw_weights_from_payouts(
+        miner_daily_target_payouts_usd: dict[str, float],
+        projected_daily_emissions_usd: float,
+        verbose: bool = False
+    ) -> dict[str, float]:
+        """
+        Convert daily-target USD payouts to unit-less weight proportions.
+
+        Normalizes each miner's daily payout target against projected daily emissions so that
+        the sum of debt weights reflects the fraction of emissions owed. Excess emissions are
+        left unassigned (burned via _normalize_with_burn_address).
+
+        Args:
+            miner_daily_target_payouts_usd: Dict of {hotkey: daily_target_usd}
+            projected_daily_emissions_usd: Projected daily alpha emissions in USD
+            verbose: Enable detailed logging
+
+        Returns:
+            Dict of {hotkey: raw_weight} — contains only miners who have a debt ledger.
+            Miners without a ledger are absent; _apply_minimum_weights adds them at dust floor.
+        """
+        total_daily_target_payout = sum(miner_daily_target_payouts_usd.values())
+
+        if projected_daily_emissions_usd is None or projected_daily_emissions_usd <= 0:
+            bt.logging.warning(
+                "projected_daily_emissions_usd not provided or invalid. "
+                "Falling back to normalizing against total payouts (may not burn excess emissions)."
+            )
+            if total_daily_target_payout > 0:
+                return {
+                    hotkey: payout_usd / total_daily_target_payout
+                    for hotkey, payout_usd in miner_daily_target_payouts_usd.items()
+                }
+            else:
+                return {hotkey: 0.0 for hotkey in miner_daily_target_payouts_usd}
+
+        if verbose:
+            bt.logging.info(
+                f"Normalizing weights against projected daily emissions: "
+                f"total_daily_target=${total_daily_target_payout:.2f}, "
+                f"projected_daily_emissions=${projected_daily_emissions_usd:.2f}, "
+                f"payout_fraction={total_daily_target_payout / projected_daily_emissions_usd:.4f}"
+            )
+
+        return {
+            hotkey: payout_usd / projected_daily_emissions_usd
+            for hotkey, payout_usd in miner_daily_target_payouts_usd.items()
+        }
 
     @staticmethod
     def _estimate_alpha_emissions_until_target(
@@ -1188,48 +1248,49 @@ class DebtBasedScoring:
 
     @staticmethod
     def _apply_minimum_weights(
+        eligible_hotkeys: list[str],
+        raw_debt_weights: dict[str, float],
         ledger_dict: dict[str, DebtLedger],
-        miner_remaining_payouts_usd: dict[str, float],
         challengeperiod_client: 'ChallengePeriodClient',
         miner_account_client: 'MinerAccountClient',
         current_time_ms: int = None,
-        projected_daily_emissions_usd: float = None,
         verbose: bool = False
     ) -> dict[str, float]:
         """
-        Enforce minimum weights based on challenge period status with performance scaling.
+        Enforce minimum dust weights for ALL eligible hotkeys.
 
-        All miners receive minimum "dust" weights based on their current status:
+        Iterates over eligible_hotkeys (the full metagraph-filtered, bucket-assigned set),
+        which is a superset of ledger_dict. Miners present in ledger_dict get performance-scaled
+        dynamic dust; miners absent from ledger_dict (e.g. entity miners whose subaccount ledger
+        build failed) fall through to static dust for their bucket.
+
+        All miners receive minimum "dust" weights based on their current bucket status:
         - CHALLENGE/PLAGIARISM: 1x dust
         - PROBATION: 2x dust
         - MAINCOMP: 3x dust
+        - ENTITY: 4x dust
         - UNKNOWN: 0x dust (no weight)
 
-        Dust value is a static constant taken from ValiConfig.CHALLENGE_PERIOD_MIN_WEIGHT.
-
-        Performance scaling is always enabled: miners are scaled within bucket based on 30-day
-        penalty-adjusted PnL (in USD), with range [floor, floor+1 DUST], where floor is
-        the bucket's static dust multiplier and ceiling is floor + base dust amount.
-
-        IMPORTANT: Weights are normalized against projected daily emissions (NOT total payouts).
-        This ensures excess emissions are burned when we have surplus capacity.
+        Performance scaling is always enabled for miners with ledger data: miners are ranked
+        within their bucket by 30-day penalty-adjusted PnL, scaled to [floor, floor+1 DUST].
 
         Args:
-            ledger_dict: Dict of {hotkey: DebtLedger}
-            miner_remaining_payouts_usd: Dict of {hotkey: remaining_payout_usd} in USD (daily targets)
+            eligible_hotkeys: All hotkeys to produce weights for (superset of ledger_dict keys)
+            raw_debt_weights: Pre-computed unit-less weights from _compute_raw_weights_from_payouts
+            ledger_dict: Miner ledgers — used only as input to _calculate_dynamic_dust_weights
             challengeperiod_client: Client for querying current challenge period status (required)
             miner_account_client: Client for querying miner account sizes (required)
             current_time_ms: Current timestamp (required for performance scaling)
-            projected_daily_emissions_usd: Projected daily emissions in USD (for normalization)
             verbose: Enable detailed logging
 
         Returns:
             Dict of {hotkey: weight} with minimums applied (weights are unitless proportions)
         """
-        # Use static dust weight from config
         DUST = ValiConfig.CHALLENGE_PERIOD_MIN_WEIGHT
 
-        # Calculate dynamic dust weights (always enabled)
+        # Dynamic dust: performance-scaled within buckets using 30-day PnL from ledger data.
+        # Only miners with ledgers participate in within-bucket ranking; ledger-less miners
+        # fall through to static dust below.
         if current_time_ms is None:
             bt.logging.warning(
                 "current_time_ms not provided. Falling back to static dust weights."
@@ -1251,21 +1312,20 @@ class DebtBasedScoring:
                 bt.logging.error(f"Error calculating performance-scaled dust weights: {e}. Falling back to static floor values.")
                 dynamic_dust_weights = None
 
-        # Static minimum weights (fallback)
+        # Static minimum weights (fallback for ledger-less miners or when dynamic calc fails)
         status_to_minimum_weight = {
             MinerBucket.CHALLENGE.value: 1 * DUST,
             MinerBucket.PLAGIARISM.value: 1 * DUST,
-            MinerBucket.UNKNOWN.value: 0 * DUST,  # 0x dust (no weight for unknown status)
+            MinerBucket.UNKNOWN.value: 0 * DUST,
             MinerBucket.PROBATION.value: 2 * DUST,
             MinerBucket.MAINCOMP.value: 3 * DUST,
             MinerBucket.ENTITY.value: 4 * DUST,
         }
 
-        # Batch read all statuses in one IPC call to minimize overhead
+        # Fetch bucket status for all eligible hotkeys (includes ledger-less miners)
         miner_statuses = {}
-        for hotkey in ledger_dict.keys():
+        for hotkey in eligible_hotkeys:
             bucket = challengeperiod_client.get_miner_bucket(hotkey)
-            # Handle None case - use UNKNOWN as default
             if bucket is None:
                 bt.logging.warning(
                     f"get_miner_bucket returned None for hotkey {hotkey[:16]}...{hotkey[-8:]}. "
@@ -1275,61 +1335,20 @@ class DebtBasedScoring:
             else:
                 miner_statuses[hotkey] = bucket.value
 
-        # Step 1: Convert daily target payouts to weights based on projected daily emissions
-        # CRITICAL FIX: Normalize against projected emissions (NOT total payouts!)
-        # This ensures excess emissions are burned when we have surplus capacity.
-        # Example: If daily targets = $30k but emissions = $1.7M, weights sum to 0.0175 (1.75%)
-        # and burn address gets 0.9825 (98.25%)
-        total_daily_target_payout = sum(miner_remaining_payouts_usd.values())
-
-        if projected_daily_emissions_usd is None or projected_daily_emissions_usd <= 0:
-            # Fallback to old behavior (normalize to 1.0) if projected emissions not provided
-            bt.logging.warning(
-                "projected_daily_emissions_usd not provided or invalid. "
-                "Falling back to normalizing against total payouts (may not burn excess emissions)."
-            )
-            if total_daily_target_payout > 0:
-                normalized_debt_weights = {
-                    hotkey: (payout_usd / total_daily_target_payout)
-                    for hotkey, payout_usd in miner_remaining_payouts_usd.items()
-                }
-            else:
-                normalized_debt_weights = {hotkey: 0.0 for hotkey in ledger_dict.keys()}
-        else:
-            # NEW: Normalize against projected daily emissions (enables burning surplus)
-            if verbose:
-                bt.logging.info(
-                    f"Normalizing weights against projected daily emissions: "
-                    f"total_daily_target=${total_daily_target_payout:.2f}, "
-                    f"projected_daily_emissions=${projected_daily_emissions_usd:.2f}, "
-                    f"payout_fraction={total_daily_target_payout / projected_daily_emissions_usd:.4f}"
-                )
-
-            normalized_debt_weights = {
-                hotkey: (payout_usd / projected_daily_emissions_usd)
-                for hotkey, payout_usd in miner_remaining_payouts_usd.items()
-            }
-
-        # Step 2: Apply minimum weights (now both are in 0-1 range)
+        # Apply max(debt_weight, minimum_weight) for every eligible hotkey.
+        # Miners without a ledger have debt_weight=0.0 and receive their static dust floor.
         miner_weights_with_minimums = {}
 
-        for hotkey, debt_ledger in ledger_dict.items():
-            # Get normalized debt-based weight (proportional, 0-1 range)
-            debt_weight = normalized_debt_weights.get(hotkey, 0.0)
-
-            # Get current status from batch-loaded statuses
+        for hotkey in eligible_hotkeys:
+            debt_weight = raw_debt_weights.get(hotkey, 0.0)
             current_status = miner_statuses.get(hotkey, MinerBucket.UNKNOWN.value)
 
-            # Get minimum weight (dynamic or static)
             if dynamic_dust_weights is not None and hotkey in dynamic_dust_weights:
                 minimum_weight = dynamic_dust_weights[hotkey]
             else:
-                # Fallback to static dust weight
                 minimum_weight = status_to_minimum_weight.get(current_status, 1 * DUST)
 
-            # Apply max(debt_weight, minimum_weight) - now both are in same scale!
             final_weight = max(debt_weight, minimum_weight)
-
             miner_weights_with_minimums[hotkey] = final_weight
 
             if verbose:
@@ -1470,8 +1489,9 @@ class DebtBasedScoring:
         """
         # Apply minimum dust weights only (no debt-based earnings)
         miner_dust_weights = DebtBasedScoring._apply_minimum_weights(
+            eligible_hotkeys=list(ledger_dict.keys()),
+            raw_debt_weights={hotkey: 0.0 for hotkey in ledger_dict.keys()},
             ledger_dict=ledger_dict,
-            miner_remaining_payouts_usd={hotkey: 0.0 for hotkey in ledger_dict.keys()},  # No debt earnings
             challengeperiod_client=challengeperiod_client,
             miner_account_client=miner_account_client,
             current_time_ms=current_time_ms,
