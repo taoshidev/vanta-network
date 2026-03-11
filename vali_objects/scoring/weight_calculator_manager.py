@@ -226,8 +226,9 @@ class WeightCalculatorManager(CacheController):
         probation_hotkeys = list(self._challengeperiod_client.get_hotkeys_by_bucket(MinerBucket.PROBATION))
         plagiarism_hotkeys = list(self._challengeperiod_client.get_hotkeys_by_bucket(MinerBucket.PLAGIARISM))
         success_hotkeys = list(self._challengeperiod_client.get_hotkeys_by_bucket(MinerBucket.MAINCOMP))
+        entity_hotkeys = list(self._challengeperiod_client.get_hotkeys_by_bucket(MinerBucket.ENTITY))
 
-        all_hotkeys = challenge_hotkeys + probation_hotkeys + plagiarism_hotkeys + success_hotkeys
+        all_hotkeys = challenge_hotkeys + probation_hotkeys + plagiarism_hotkeys + success_hotkeys + entity_hotkeys
 
         # Filter out zombie miners (miners in buckets but not in metagraph)
         all_hotkeys_before_filter = len(all_hotkeys)
@@ -240,7 +241,8 @@ class WeightCalculatorManager(CacheController):
         bt.logging.info(
             f"Computing weights for {len(all_hotkeys)} miners: "
             f"{len(success_hotkeys)} MAINCOMP, {len(probation_hotkeys)} PROBATION, "
-            f"{len(challenge_hotkeys)} CHALLENGE, {len(plagiarism_hotkeys)} PLAGIARISM "
+            f"{len(challenge_hotkeys)} CHALLENGE, {len(plagiarism_hotkeys)} PLAGIARISM, "
+            f"{len(entity_hotkeys)} ENTITY "
             f"({zombies_filtered} zombies filtered)"
         )
 
@@ -313,7 +315,8 @@ class WeightCalculatorManager(CacheController):
             miner_account_client=self._miner_account_client,
             current_time_ms=current_time,
             verbose=True,
-            is_testnet=not self.is_mainnet
+            is_testnet=not self.is_mainnet,
+            eligible_hotkeys=hotkeys_to_compute_weights_for
         )
 
         bt.logging.info(f"Debt-based scoring results: [{checkpoint_results}]")

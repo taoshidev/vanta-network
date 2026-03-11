@@ -2204,3 +2204,53 @@ class TestDebtBasedScoring(TestBase):
                          "Miner at threshold should have non-zero weight")
         self.assertGreater(miner_weights["miner_4"], 0.0,
                          "Miner at threshold should have non-zero weight")
+
+    def test_entity_miner_without_ledger_gets_dust_weight(self):
+        """
+        Entity miner with no debt ledger (e.g. subaccount ledger build failed) should still
+        receive a dust weight via eligible_hotkeys, not be silently excluded.
+        """
+        dust = self.expected_dynamic_dust
+        entity_hotkey = "entity_miner_no_ledger"
+        other_hotkey = "other_maincomp_miner"
+
+        # Register entity miner in ENTITY bucket, other miner in MAINCOMP
+        self._set_miner_buckets({
+            entity_hotkey: MinerBucket.ENTITY,
+            other_hotkey: MinerBucket.MAINCOMP,
+        })
+        self._set_miner_collateral({
+            entity_hotkey: 1000.0,
+            other_hotkey: 1000.0,
+        })
+
+        # Only the MAINCOMP miner has a debt ledger; entity miner has none
+        other_ledger = DebtLedger(hotkey=other_hotkey, checkpoints=[])
+
+        result = DebtBasedScoring.compute_results(
+            ledger_dict={other_hotkey: other_ledger},
+            metagraph_client=self.metagraph_client,
+            challengeperiod_client=self.challengeperiod_client,
+            miner_account_client=self.miner_account_client,
+            is_testnet=False,
+            eligible_hotkeys=[entity_hotkey, other_hotkey]
+        )
+
+        weights_dict = dict(result)
+
+        # Entity miner must appear despite having no ledger
+        self.assertIn(entity_hotkey, weights_dict,
+                      "Entity miner with no ledger should still receive a dust weight")
+
+        # Must receive at least the static 4x dust floor for ENTITY bucket
+        entity_weight = weights_dict[entity_hotkey]
+        self.assertGreaterEqual(entity_weight, 4 * dust,
+                                f"Entity miner weight {entity_weight} should be >= 4x dust {4 * dust}")
+
+        # MAINCOMP miner also present with its own dust floor
+        self.assertIn(other_hotkey, weights_dict)
+        self.assertGreaterEqual(weights_dict[other_hotkey], 3 * dust)
+
+        # Weights must still sum to 1.0
+        total = sum(w for _, w in result)
+        self.assertAlmostEqual(total, 1.0, places=10)
