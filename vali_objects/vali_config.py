@@ -545,6 +545,11 @@ class ValiConfig:
     HL_ADDRESS_REGEX = r"^0x[a-fA-F0-9]{40}$"
     HL_MIN_USDC_BALANCE = 1_000  # Minimum USDC balance required to process HL trades
 
+    # Backup REST poll for missed WebSocket fills
+    HL_BACKUP_POLL_INTERVAL_S = 30.0       # Seconds between full backup poll cycles
+    HL_BACKUP_POLL_LOOKBACK_MS = 120_000   # 2-min lookback for first poll of a new address
+    HL_BACKUP_POLL_RATE_BUDGET = 600       # Max REST req/min for backup (half of HL's 1200 limit)
+
     # L2 orderbook precision: nSigFigs controls price aggregation granularity.
     # HL returns max 20 levels per side regardless of nSigFigs.
     # Fine (5) = precise near-spread pricing but shallow depth.

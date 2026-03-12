@@ -349,6 +349,13 @@ class HyperliquidTracker:
         self._fills_processed = 0
         self._last_fill_time: Optional[float] = None
 
+        # Backup REST poll state
+        self._last_poll_time_ms: Dict[str, int] = {}          # hl_address -> watermark (epoch ms)
+        self._backup_poll_task: Optional[asyncio.Task] = None
+        self._backup_fills_caught = 0                          # Fills caught by backup that WS missed
+        self._backup_polls_total = 0                           # Total REST poll requests made
+        self._proxy_index_rest = 0                             # Round-robin index for proxy rotation
+
     # ==================== Lifecycle ====================
 
     def start(self):
@@ -396,6 +403,11 @@ class HyperliquidTracker:
             "proxy_configured": self._proxy_base_url is not None,
             "available_ports": len(self._available_ports),
             "unhealthy_ports": len(self._unhealthy_ports),
+            "backup_poll": {
+                "fills_caught": self._backup_fills_caught,
+                "total_polls": self._backup_polls_total,
+                "tracked_addresses": len(self._last_poll_time_ms),
+            },
         }
 
     # ==================== Thread Entry ====================
@@ -501,19 +513,30 @@ class HyperliquidTracker:
         """Orchestrator: loads proxy config, then loops assigning addresses and managing shards."""
         self._load_proxy_config()
 
-        while not self._stop_event.is_set():
-            try:
-                self._assign_addresses_to_shards()
-                self._ensure_shard_tasks()
-            except Exception as e:
-                bt.logging.error(f"[HL_TRACKER] Orchestrator error: {e}")
-                bt.logging.error(traceback.format_exc())
+        # Launch backup REST poll task
+        self._backup_poll_task = asyncio.ensure_future(self._backup_poll_cycle())
 
-            # Wait before next refresh cycle
-            for _ in range(int(self.ADDRESS_REFRESH_INTERVAL_S)):
-                if self._stop_event.is_set():
-                    return
-                await asyncio.sleep(1.0)
+        try:
+            while not self._stop_event.is_set():
+                try:
+                    self._assign_addresses_to_shards()
+                    self._ensure_shard_tasks()
+                except Exception as e:
+                    bt.logging.error(f"[HL_TRACKER] Orchestrator error: {e}")
+                    bt.logging.error(traceback.format_exc())
+
+                # Wait before next refresh cycle
+                for _ in range(int(self.ADDRESS_REFRESH_INTERVAL_S)):
+                    if self._stop_event.is_set():
+                        break
+                    await asyncio.sleep(1.0)
+        finally:
+            if self._backup_poll_task and not self._backup_poll_task.done():
+                self._backup_poll_task.cancel()
+                try:
+                    await self._backup_poll_task
+                except asyncio.CancelledError:
+                    pass
 
     def _assign_addresses_to_shards(self):
         """
@@ -726,13 +749,16 @@ class HyperliquidTracker:
           - positions: {coin: {"szi": float, "positionValue": float, "weight": float}}
         """
         api_url = ValiConfig.hl_info_url()
+        session = self._make_proxied_session()
         try:
-            perp = requests.post(api_url, json={"type": "clearinghouseState", "user": hl_address}, timeout=10).json()
-            spot = requests.post(api_url, json={"type": "spotClearinghouseState", "user": hl_address}, timeout=10).json()
-            all_mids = requests.post(api_url, json={"type": "allMids"}, timeout=10).json()
+            perp = session.post(api_url, json={"type": "clearinghouseState", "user": hl_address}, timeout=10).json()
+            spot = session.post(api_url, json={"type": "spotClearinghouseState", "user": hl_address}, timeout=10).json()
+            all_mids = session.post(api_url, json={"type": "allMids"}, timeout=10).json()
         except Exception as e:
             bt.logging.error(f"[HL_TRACKER] REST error fetching account state for {hl_address}: {e}")
             return None
+        finally:
+            session.close()
 
         margin = perp.get("crossMarginSummary", perp.get("marginSummary", {}))
         perp_value = float(margin.get("accountValue", 0))
@@ -767,6 +793,141 @@ class HyperliquidTracker:
             positions[coin] = {"szi": szi, "positionValue": pos_value_abs, "weight": weight}
 
         return {"total_portfolio_value": total_portfolio_value, "positions": positions}
+
+    # ==================== Backup REST Poll ====================
+
+    def _make_proxied_session(self) -> requests.Session:
+        """
+        Create a requests.Session with SOCKS5 proxy (round-robin) or plain session.
+        Falls back to direct if PySocks isn't installed.
+        """
+        session = requests.Session()
+
+        if not self._proxy_base_url:
+            return session
+
+        # Collect all usable ports: available pool + ports from active healthy shards
+        all_ports = list(self._available_ports)
+        for shard in self._shards.values():
+            if shard.healthy and shard.port is not None:
+                all_ports.append(shard.port)
+        all_ports = sorted(set(all_ports))
+
+        if not all_ports:
+            return session
+
+        port = all_ports[self._proxy_index_rest % len(all_ports)]
+        self._proxy_index_rest += 1
+
+        proxy_url = self._make_shard_proxy_url(port)
+        try:
+            session.proxies = {"http": proxy_url, "https": proxy_url}
+        except Exception as e:
+            bt.logging.warning(f"[HL_BACKUP] Proxy setup failed (port {port}), falling back to direct: {e}")
+
+        return session
+
+    async def _fetch_fills_by_time(self, hl_address: str, start_time_ms: int) -> Optional[List[dict]]:
+        """Fetch fills for an address since start_time_ms via HL REST API."""
+        api_url = ValiConfig.hl_info_url()
+        payload = {"type": "userFillsByTime", "user": hl_address, "startTime": start_time_ms}
+
+        loop = asyncio.get_event_loop()
+        try:
+            session = self._make_proxied_session()
+
+            def _do_request():
+                try:
+                    resp = session.post(api_url, json=payload, timeout=10)
+                    resp.raise_for_status()
+                    return resp.json()
+                finally:
+                    session.close()
+
+            result = await loop.run_in_executor(None, _do_request)
+            self._backup_polls_total += 1
+            return result if isinstance(result, list) else []
+        except Exception as e:
+            bt.logging.debug(f"[HL_BACKUP] REST error for {hl_address}: {e}")
+            self._backup_polls_total += 1
+            return None
+
+    async def _backup_poll_cycle(self):
+        """Long-lived coroutine that periodically polls HL REST for missed fills."""
+        # Let WS connections establish first
+        await asyncio.sleep(10.0)
+
+        bt.logging.info("[HL_BACKUP] Backup REST poll started")
+
+        while not self._stop_event.is_set():
+            try:
+                tracked_addresses = list(self._address_to_shard.keys())
+                if not tracked_addresses:
+                    await asyncio.sleep(ValiConfig.HL_BACKUP_POLL_INTERVAL_S)
+                    continue
+
+                min_delay_s = 60.0 / ValiConfig.HL_BACKUP_POLL_RATE_BUDGET
+                catches_this_cycle = 0
+                now_ms = int(time.time() * 1000)
+
+                for hl_address in tracked_addresses:
+                    if self._stop_event.is_set():
+                        break
+
+                    # Determine start time
+                    start_ms = self._last_poll_time_ms.get(
+                        hl_address,
+                        now_ms - ValiConfig.HL_BACKUP_POLL_LOOKBACK_MS
+                    )
+
+                    fills = await self._fetch_fills_by_time(hl_address, start_ms)
+
+                    if fills is not None:
+                        for fill in fills:
+                            fill_hash = fill.get("hash") or fill.get("tid")
+                            if not fill_hash:
+                                continue
+                            if fill_hash in self._processed_hashes:
+                                continue
+
+                            # New fill missed by WebSocket
+                            self._record_hash(fill_hash)
+                            try:
+                                self._process_fill(hl_address, fill)
+                                self._backup_fills_caught += 1
+                                catches_this_cycle += 1
+                                bt.logging.info(
+                                    f"[HL_BACKUP] Caught missed fill: {fill_hash} "
+                                    f"for {hl_address} coin={fill.get('coin')}"
+                                )
+                            except Exception as e:
+                                bt.logging.error(f"[HL_BACKUP] Error processing fill {fill_hash}: {e}")
+                                bt.logging.error(traceback.format_exc())
+
+                        # Advance watermark on success
+                        self._last_poll_time_ms[hl_address] = int(time.time() * 1000)
+                    # On failure (fills is None), do NOT advance watermark
+
+                    await asyncio.sleep(min_delay_s)
+
+                # Clean up watermarks for addresses no longer tracked
+                active_set = set(self._address_to_shard.keys())
+                stale_addrs = [a for a in self._last_poll_time_ms if a not in active_set]
+                for a in stale_addrs:
+                    del self._last_poll_time_ms[a]
+
+                if catches_this_cycle > 0:
+                    bt.logging.info(
+                        f"[HL_BACKUP] Cycle complete: caught {catches_this_cycle} missed fill(s), "
+                        f"total backup catches: {self._backup_fills_caught}"
+                    )
+
+            except Exception as e:
+                bt.logging.error(f"[HL_BACKUP] Poll cycle error: {e}")
+                bt.logging.error(traceback.format_exc())
+
+            # Wait for next cycle
+            await asyncio.sleep(ValiConfig.HL_BACKUP_POLL_INTERVAL_S)
 
     # ==================== Fill Processing ====================
 
