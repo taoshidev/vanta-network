@@ -542,6 +542,9 @@ class ValiConfig:
     HL_PROXY_PORTS_SECRET_KEY = "hl_proxy_ports"  # key in secrets.json for port list/range
     HL_MAX_PROXY_SHARDS = 20  # safety cap on proxy connections (200 addresses max)
     HL_SHARD_MAX_CONSECUTIVE_FAILURES = 5  # failures before marking a proxy IP as unhealthy
+    HL_PORT_HEALTH_PROBE_INTERVAL_S = 300.0   # Base cooldown before rechecking an unhealthy port (5 min)
+    HL_PORT_HEALTH_MAX_COOLDOWN_S = 3600.0    # Max cooldown cap for exponential backoff (1 hour)
+    HL_PORT_REST_FAILURE_THRESHOLD = 3        # Consecutive REST failures before marking port unhealthy
     HL_ADDRESS_REGEX = r"^0x[a-fA-F0-9]{40}$"
     HL_MIN_USDC_BALANCE = 1_000  # Minimum USDC balance required to process HL trades
 

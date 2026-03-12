@@ -1757,5 +1757,279 @@ class TestHyperliquidTrackerBackupPoll(TestBase):
         self.assertEqual(result['total_portfolio_value'], 10000.0)
 
 
+class TestProxyPortHealth(TestBase):
+    """Tests for proxy port health management with exponential backoff probing."""
+
+    def setUp(self):
+        """Create HyperliquidTracker with all mocked dependencies."""
+        self.entity_client = MagicMock()
+        self.elimination_client = MagicMock()
+        self.price_fetcher_client = MagicMock()
+        self.asset_selection_client = MagicMock()
+        self.market_order_manager = MagicMock()
+        self.limit_order_client = MagicMock()
+        self.uuid_tracker = MagicMock()
+        self.rate_limiter = MagicMock()
+
+        self.tracker = HyperliquidTracker(
+            entity_client=self.entity_client,
+            elimination_client=self.elimination_client,
+            price_fetcher_client=self.price_fetcher_client,
+            asset_selection_client=self.asset_selection_client,
+            market_order_manager=self.market_order_manager,
+            limit_order_client=self.limit_order_client,
+            uuid_tracker=self.uuid_tracker,
+            rate_limiter=self.rate_limiter,
+        )
+
+    def _setup_proxy_ports(self, ports):
+        """Configure tracker with proxy ports and initialize health records."""
+        from entity_management.hyperliquid_tracker import _PortHealthRecord
+        self.tracker._proxy_base_url = "socks5://user:pass@proxy.example.com"
+        self.tracker._available_ports = list(ports)
+        self.tracker._port_health = {p: _PortHealthRecord(p) for p in ports}
+
+    def test_health_records_initialized_on_proxy_config_load(self):
+        """Health records should be created for all ports during _load_proxy_config."""
+        from entity_management.hyperliquid_tracker import _PortHealthRecord
+        with patch('entity_management.hyperliquid_tracker.ValiUtils') as mock_vali:
+            mock_vali.get_secrets.return_value = {
+                ValiConfig.HL_PROXY_SECRET_KEY: "socks5://user:pass@host",
+                ValiConfig.HL_PROXY_PORTS_SECRET_KEY: "10001-10003",
+            }
+            with patch('entity_management.hyperliquid_tracker.SocksProxy', create=True):
+                self.tracker._load_proxy_config()
+
+        self.assertEqual(len(self.tracker._port_health), 3)
+        for port in [10001, 10002, 10003]:
+            self.assertIn(port, self.tracker._port_health)
+            rec = self.tracker._port_health[port]
+            self.assertTrue(rec.healthy)
+            self.assertEqual(rec.rest_consecutive_failures, 0)
+            self.assertEqual(rec.consecutive_probe_failures, 0)
+
+    def test_unhealthy_ports_property_backward_compat(self):
+        """_unhealthy_ports property should return set of unhealthy port numbers."""
+        self._setup_proxy_ports([10001, 10002, 10003])
+
+        # All healthy initially
+        self.assertEqual(self.tracker._unhealthy_ports, set())
+
+        # Mark one unhealthy
+        self.tracker._port_health[10002].mark_unhealthy()
+        self.assertEqual(self.tracker._unhealthy_ports, {10002})
+
+        # Mark another unhealthy
+        self.tracker._port_health[10001].mark_unhealthy()
+        self.assertEqual(self.tracker._unhealthy_ports, {10001, 10002})
+
+        # Recover one
+        self.tracker._port_health[10002].mark_healthy()
+        self.assertEqual(self.tracker._unhealthy_ports, {10001})
+
+    def test_exponential_backoff_schedule(self):
+        """Cooldown should follow 300, 600, 1200, 2400, 3600, 3600 (capped)."""
+        from entity_management.hyperliquid_tracker import _PortHealthRecord
+        rec = _PortHealthRecord(10001)
+        rec.mark_unhealthy()
+
+        expected_cooldowns = [300.0, 600.0, 1200.0, 2400.0, 3600.0, 3600.0]
+        for i, expected in enumerate(expected_cooldowns):
+            rec.consecutive_probe_failures = i
+            self.assertEqual(rec.cooldown_seconds(), expected,
+                             f"Cooldown at attempt {i} should be {expected}")
+
+    def test_probe_respects_cooldown_timing(self):
+        """is_probe_due should return False during cooldown, True after."""
+        from entity_management.hyperliquid_tracker import _PortHealthRecord
+        rec = _PortHealthRecord(10001)
+
+        # Healthy port — never due
+        self.assertFalse(rec.is_probe_due())
+
+        # Mark unhealthy just now
+        rec.mark_unhealthy()
+        # With 300s cooldown and unhealthy_since = now, should NOT be due
+        self.assertFalse(rec.is_probe_due())
+
+        # Simulate unhealthy_since was 301s ago
+        rec.unhealthy_since = time.time() - 301
+        self.assertTrue(rec.is_probe_due())
+
+    def test_probe_recovers_port_on_success(self):
+        """Successful probe should mark port healthy and return it to available pool."""
+        self._setup_proxy_ports([10001, 10002])
+        self.tracker._port_health[10002].mark_unhealthy()
+        self.tracker._port_health[10002].unhealthy_since = time.time() - 400  # past cooldown
+        self.tracker._available_ports.remove(10002)
+
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+
+        with patch('entity_management.hyperliquid_tracker.requests.Session') as mock_session_cls:
+            mock_session = MagicMock()
+            mock_session.post.return_value = mock_resp
+            mock_session_cls.return_value = mock_session
+
+            self.tracker._probe_unhealthy_ports()
+
+        self.assertTrue(self.tracker._port_health[10002].healthy)
+        self.assertIn(10002, self.tracker._available_ports)
+
+    def test_probe_increments_failure_on_error(self):
+        """Failed probe should increment consecutive_probe_failures."""
+        self._setup_proxy_ports([10001])
+        self.tracker._port_health[10001].mark_unhealthy()
+        self.tracker._port_health[10001].unhealthy_since = time.time() - 400  # past cooldown
+
+        with patch('entity_management.hyperliquid_tracker.requests.Session') as mock_session_cls:
+            mock_session = MagicMock()
+            mock_session.post.side_effect = Exception("connection refused")
+            mock_session_cls.return_value = mock_session
+
+            self.tracker._probe_unhealthy_ports()
+
+        self.assertFalse(self.tracker._port_health[10001].healthy)
+        self.assertEqual(self.tracker._port_health[10001].consecutive_probe_failures, 1)
+
+    def test_make_proxied_session_excludes_unhealthy_ports(self):
+        """_make_proxied_session should skip unhealthy ports in round-robin."""
+        self._setup_proxy_ports([10001, 10002, 10003])
+        self.tracker._port_health[10002].mark_unhealthy()
+
+        # Collect ports used across multiple calls
+        used_ports = set()
+        for _ in range(10):
+            session = self.tracker._make_proxied_session()
+            port = getattr(session, '_hl_proxy_port', None)
+            if port is not None:
+                used_ports.add(port)
+
+        self.assertNotIn(10002, used_ports)
+        self.assertTrue(used_ports.issubset({10001, 10003}))
+
+    def test_make_proxied_session_all_unhealthy_falls_back_to_direct(self):
+        """When all ports are unhealthy, fall back to direct (no proxy)."""
+        self._setup_proxy_ports([10001, 10002])
+        self.tracker._port_health[10001].mark_unhealthy()
+        self.tracker._port_health[10002].mark_unhealthy()
+
+        session = self.tracker._make_proxied_session()
+        self.assertIsNone(getattr(session, '_hl_proxy_port', None))
+        self.assertEqual(session.proxies, {})
+
+    def test_rest_failure_tracking_triggers_unhealthy(self):
+        """Port should be marked unhealthy after HL_PORT_REST_FAILURE_THRESHOLD consecutive failures."""
+        self._setup_proxy_ports([10001])
+        threshold = ValiConfig.HL_PORT_REST_FAILURE_THRESHOLD
+
+        for i in range(threshold - 1):
+            self.tracker._report_rest_proxy_failure(10001)
+            self.assertTrue(self.tracker._port_health[10001].healthy,
+                            f"Should still be healthy after {i+1} failures")
+
+        self.tracker._report_rest_proxy_failure(10001)
+        self.assertFalse(self.tracker._port_health[10001].healthy)
+
+    def test_rest_success_resets_failure_counter(self):
+        """Successful REST call should reset the failure counter."""
+        self._setup_proxy_ports([10001])
+
+        # Accumulate failures just below threshold
+        for _ in range(ValiConfig.HL_PORT_REST_FAILURE_THRESHOLD - 1):
+            self.tracker._report_rest_proxy_failure(10001)
+        self.assertEqual(
+            self.tracker._port_health[10001].rest_consecutive_failures,
+            ValiConfig.HL_PORT_REST_FAILURE_THRESHOLD - 1
+        )
+
+        # Success resets counter
+        self.tracker._report_rest_proxy_success(10001)
+        self.assertEqual(self.tracker._port_health[10001].rest_consecutive_failures, 0)
+        self.assertTrue(self.tracker._port_health[10001].healthy)
+
+    def test_rest_failure_with_none_port_is_noop(self):
+        """_report_rest_proxy_failure with None port should be a no-op."""
+        self._setup_proxy_ports([10001])
+        # Should not raise
+        self.tracker._report_rest_proxy_failure(None)
+        self.tracker._report_rest_proxy_success(None)
+        self.assertTrue(self.tracker._port_health[10001].healthy)
+
+    def test_get_status_includes_port_health(self):
+        """get_status should include port_health list with per-port details."""
+        self._setup_proxy_ports([10001, 10002])
+        self.tracker._port_health[10002].mark_unhealthy()
+        self.tracker._port_health[10002].rest_consecutive_failures = 2
+
+        status = self.tracker.get_status()
+        self.assertIn("port_health", status)
+        self.assertEqual(len(status["port_health"]), 2)
+
+        # Find the unhealthy port entry
+        unhealthy_entry = [e for e in status["port_health"] if e["port"] == 10002][0]
+        self.assertFalse(unhealthy_entry["healthy"])
+        self.assertEqual(unhealthy_entry["rest_failures"], 2)
+        self.assertIn("next_probe_in_s", unhealthy_entry)
+
+        # Find the healthy port entry
+        healthy_entry = [e for e in status["port_health"] if e["port"] == 10001][0]
+        self.assertTrue(healthy_entry["healthy"])
+        self.assertNotIn("next_probe_in_s", healthy_entry)
+
+    def test_mark_unhealthy_idempotent(self):
+        """Calling mark_unhealthy multiple times shouldn't reset unhealthy_since."""
+        from entity_management.hyperliquid_tracker import _PortHealthRecord
+        rec = _PortHealthRecord(10001)
+        rec.mark_unhealthy()
+        first_timestamp = rec.unhealthy_since
+        self.assertIsNotNone(first_timestamp)
+
+        # Small delay to ensure time difference
+        rec.consecutive_probe_failures = 3
+        rec.mark_unhealthy()
+        # unhealthy_since should NOT be reset, probe failures should NOT be reset
+        self.assertEqual(rec.unhealthy_since, first_timestamp)
+        self.assertEqual(rec.consecutive_probe_failures, 3)
+
+    def test_mark_healthy_resets_all_state(self):
+        """mark_healthy should reset all failure counters and timestamps."""
+        from entity_management.hyperliquid_tracker import _PortHealthRecord
+        rec = _PortHealthRecord(10001)
+        rec.mark_unhealthy()
+        rec.consecutive_probe_failures = 5
+        rec.rest_consecutive_failures = 3
+        rec.last_probe_time = time.time()
+
+        rec.mark_healthy()
+        self.assertTrue(rec.healthy)
+        self.assertIsNone(rec.unhealthy_since)
+        self.assertIsNone(rec.last_probe_time)
+        self.assertEqual(rec.consecutive_probe_failures, 0)
+        self.assertEqual(rec.rest_consecutive_failures, 0)
+
+    def test_teardown_empty_shards_uses_unhealthy_ports_property(self):
+        """_teardown_empty_shards should not return unhealthy ports to available pool."""
+        self._setup_proxy_ports([10001, 10002])
+
+        # Simulate: port 10001 was consumed by a shard, so remove from available
+        self.tracker._available_ports.remove(10001)
+
+        # Create a shard with an unhealthy port and no addresses
+        shard = MagicMock()
+        shard.addresses = set()
+        shard.port = 10001
+        shard.task = None
+        self.tracker._shards = {0: shard}
+
+        # Mark port 10001 unhealthy
+        self.tracker._port_health[10001].mark_unhealthy()
+
+        self.tracker._teardown_empty_shards()
+
+        # Port should NOT be returned to available pool since it's unhealthy
+        self.assertNotIn(10001, self.tracker._available_ports)
+
+
 if __name__ == '__main__':
     unittest.main()
