@@ -101,15 +101,6 @@ class ChallengePeriodClient(RPCClientBase):
         """Get the start time of a miner's current bucket."""
         return self._server.get_miner_start_time_rpc(hotkey)
 
-    def get_miner_previous_bucket(self, hotkey: str) -> Optional[MinerBucket]:
-        """Get the previous bucket of a miner (used for plagiarism demotions)."""
-        prev_bucket_value = self._server.get_miner_previous_bucket_rpc(hotkey)
-        return MinerBucket(prev_bucket_value) if prev_bucket_value else None
-
-    def get_miner_previous_time(self, hotkey: str) -> Optional[int]:
-        """Get the start time of a miner's previous bucket."""
-        return self._server.get_miner_previous_time_rpc(hotkey)
-
     def get_hotkeys_by_bucket(self, bucket: MinerBucket) -> List[str]:
         """Get all hotkeys in a specific bucket."""
         return self._server.get_hotkeys_by_bucket_rpc(bucket.value)
@@ -164,32 +155,6 @@ class ChallengePeriodClient(RPCClientBase):
                 raise ValueError(f"Invalid data type for miner {hotkey}: {type(data)}")
 
         return self._server.update_miners_rpc(miners_rpc_dict)
-
-    def iter_active_miners(self):
-        """
-        Iterate over active miners.
-        Note: This fetches ALL miners and iterates locally.
-        """
-
-        for hotkey, start_time in self.get_testing_miners().items():
-            prev_bucket = self.get_miner_previous_bucket(hotkey)
-            prev_time = self.get_miner_previous_time(hotkey)
-            yield hotkey, MinerBucket.CHALLENGE, start_time, prev_bucket, prev_time
-
-        for hotkey, start_time in self.get_success_miners().items():
-            prev_bucket = self.get_miner_previous_bucket(hotkey)
-            prev_time = self.get_miner_previous_time(hotkey)
-            yield hotkey, MinerBucket.MAINCOMP, start_time, prev_bucket, prev_time
-
-        for hotkey, start_time in self.get_probation_miners().items():
-            prev_bucket = self.get_miner_previous_bucket(hotkey)
-            prev_time = self.get_miner_previous_time(hotkey)
-            yield hotkey, MinerBucket.PROBATION, start_time, prev_bucket, prev_time
-
-        for hotkey, start_time in self.get_plagiarism_miners().items():
-            prev_bucket = self.get_miner_previous_bucket(hotkey)
-            prev_time = self.get_miner_previous_time(hotkey)
-            yield hotkey, MinerBucket.PLAGIARISM, start_time, prev_bucket, prev_time
 
     def get_testing_miners(self) -> dict:
         """Get all CHALLENGE bucket miners as dict {hotkey: start_time}."""

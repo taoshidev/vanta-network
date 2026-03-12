@@ -156,17 +156,6 @@ class ChallengePeriodServer(RPCServerBase):
         """Get the start time of a miner's current bucket."""
         return self._manager.get_miner_start_time(hotkey)
 
-    def get_miner_previous_bucket_rpc(self, hotkey: str) -> Optional[str]:
-        """Get the previous bucket of a miner."""
-        history = self._manager.active_miners.get(hotkey)
-        if history and len(history) > 1:
-            return history[1].bucket.value
-        return None
-
-    def get_miner_previous_time_rpc(self, hotkey: str) -> Optional[int]:
-        """Get the start time of a miner's previous bucket."""
-        return self._manager.get_miner_previous_time(hotkey)
-
     def get_hotkeys_by_bucket_rpc(self, bucket_value: str) -> List[str]:
         """Get all hotkeys in a specific bucket."""
         from vali_objects.enums.miner_bucket_enum import MinerBucket

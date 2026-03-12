@@ -1404,15 +1404,6 @@ class ChallengePeriodManager(CacheController):
         self.active_miners.update(normalized_dict)
         return count
 
-    def iter_active_miners(self):
-        """Iterate over active miners. Yields (hotkey, bucket, start_time, prev_bucket, prev_time) for compat."""
-        for hotkey, history in self.active_miners.items():
-            bucket = history[0].bucket
-            start_time = history[0].start_time_ms
-            prev_bucket = history[1].bucket if len(history) > 1 else None
-            prev_time = history[1].start_time_ms if len(history) > 1 else None
-            yield hotkey, bucket, start_time, prev_bucket, prev_time
-
     def get_all_miner_hotkeys(self) -> list:
         """Get list of all active miner hotkeys."""
         return list(self.active_miners.keys())
