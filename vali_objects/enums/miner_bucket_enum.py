@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from enum import Enum
 
 
@@ -12,3 +13,9 @@ class MinerBucket(Enum):
     SUBACCOUNT_CHALLENGE = "SUBACCOUNT_CHALLENGE"
     SUBACCOUNT_FUNDED = "SUBACCOUNT_FUNDED"
     SUBACCOUNT_ALPHA = "SUBACCOUNT_ALPHA"
+
+
+@dataclass
+class BucketEntry:
+    bucket: MinerBucket
+    start_time_ms: int

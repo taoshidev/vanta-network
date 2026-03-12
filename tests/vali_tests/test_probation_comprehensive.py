@@ -19,7 +19,7 @@ from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.challenge_period import ChallengePeriodManager
 from vali_objects.utils.elimination.elimination_manager import EliminationReason
-from vali_objects.enums.miner_bucket_enum import MinerBucket
+from vali_objects.enums.miner_bucket_enum import BucketEntry, MinerBucket
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.vali_dataclasses.order import Order
@@ -170,13 +170,13 @@ class TestProbationComprehensive(TestBase):
         """Setup initial miner bucket assignments"""
         miners = {}
         for hotkey in self.SUCCESS_MINER_NAMES:
-            miners[hotkey] = (MinerBucket.MAINCOMP, self.START_TIME, None, None)
+            miners[hotkey] = [BucketEntry(MinerBucket.MAINCOMP, self.START_TIME)]
         for hotkey in self.CHALLENGE_MINER_NAMES:
-            miners[hotkey] = (MinerBucket.CHALLENGE, self.START_TIME, None, None)
+            miners[hotkey] = [BucketEntry(MinerBucket.CHALLENGE, self.START_TIME)]
         for hotkey in self.PROBATION_MINER_NAMES:
-            miners[hotkey] = (MinerBucket.PROBATION, self.PROBATION_START_TIME, None, None)
+            miners[hotkey] = [BucketEntry(MinerBucket.PROBATION, self.PROBATION_START_TIME)]
         for hotkey in self.ELIMINATED_MINER_NAMES:
-            miners[hotkey] = (MinerBucket.CHALLENGE, self.START_TIME, None, None)
+            miners[hotkey] = [BucketEntry(MinerBucket.CHALLENGE, self.START_TIME)]
 
         # Initialize metagraph with all test miners (CRITICAL - needed for scoring)
         # Note: Metagraph is already cleared by orchestrator.clear_all_test_data() in setUp

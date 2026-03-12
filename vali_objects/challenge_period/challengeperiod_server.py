@@ -144,12 +144,10 @@ class ChallengePeriodServer(RPCServerBase):
         """Fast check if a miner is in active_miners (O(1))."""
         return self._manager.has_miner(hotkey)
 
-    def get_miner_bucket_rpc(self, hotkey: str) -> Optional[str]:
-        """Get the bucket of a miner."""
-        info = self._manager.active_miners.get(hotkey)
-        if info and info[0]:
-            return info[0].value
-        return None
+    def get_miner_bucket_rpc(self, hotkey: str, timestamp_ms: Optional[int] = None) -> Optional[str]:
+        """Get the bucket of a miner, optionally at a specific timestamp."""
+        bucket = self._manager.get_miner_bucket(hotkey, timestamp_ms)
+        return bucket.value if bucket else None
 
     def get_dashboard_rpc(self, hotkey) -> dict | None:
         return self._manager.get_dashboard(hotkey)
@@ -157,17 +155,6 @@ class ChallengePeriodServer(RPCServerBase):
     def get_miner_start_time_rpc(self, hotkey: str) -> Optional[int]:
         """Get the start time of a miner's current bucket."""
         return self._manager.get_miner_start_time(hotkey)
-
-    def get_miner_previous_bucket_rpc(self, hotkey: str) -> Optional[str]:
-        """Get the previous bucket of a miner."""
-        info = self._manager.active_miners.get(hotkey)
-        if info and info[2]:
-            return info[2].value
-        return None
-
-    def get_miner_previous_time_rpc(self, hotkey: str) -> Optional[int]:
-        """Get the start time of a miner's previous bucket."""
-        return self._manager.get_miner_previous_time(hotkey)
 
     def get_hotkeys_by_bucket_rpc(self, bucket_value: str) -> List[str]:
         """Get all hotkeys in a specific bucket."""
@@ -228,13 +215,10 @@ class ChallengePeriodServer(RPCServerBase):
         hotkey: str,
         bucket_value: str,
         start_time: int,
-        prev_bucket_value: Optional[str] = None,
-        prev_time: Optional[int] = None
     ) -> bool:
         """Set or update a miner's bucket information."""
         bucket = MinerBucket(bucket_value)
-        prev_bucket = MinerBucket(prev_bucket_value) if prev_bucket_value else None
-        return self._manager.set_miner_bucket(hotkey, bucket, start_time, prev_bucket, prev_time)
+        return self._manager.set_miner_bucket(hotkey, bucket, start_time)
 
     def remove_miner_rpc(self, hotkey: str) -> bool:
         """Remove a miner from active_miners."""
@@ -249,16 +233,12 @@ class ChallengePeriodServer(RPCServerBase):
         Bulk update active_miners from a dict.
 
         Args:
-            miners_dict: Dict mapping hotkey to dict with keys:
-                - bucket: str (bucket value like "MAINCOMP")
-                - start_time: int
-                - prev_bucket: str or None
-                - prev_time: int or None
+            miners_dict: Dict mapping hotkey to list of dicts
+                [{"bucket": str, "bucket_start_time": int}, ...]
 
         Returns:
             Number of miners updated
         """
-        # Manager's update_miners now handles both tuple and dict formats
         return self._manager.update_active_miners(miners_dict)
 
     # ==================== Management RPC Methods ====================

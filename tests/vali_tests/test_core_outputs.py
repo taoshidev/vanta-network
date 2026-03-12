@@ -191,9 +191,9 @@ class TestCoreOutputs(TestBase):
         for hotkey in self.test_hotkeys:
             self.assertIn(hotkey, challengeperiod)
             miner_data = challengeperiod[hotkey]
-            self.assertIn('bucket', miner_data)
-            self.assertIn('bucket_start_time', miner_data)
-            self.assertEqual(miner_data['bucket'], 'CHALLENGE')
+            self.assertIn('bucket', miner_data[0])
+            self.assertIn('bucket_start_time', miner_data[0])
+            self.assertEqual(miner_data[0]['bucket'], 'CHALLENGE')
 
         # Verify positions data structure
         positions = checkpoint_dict.get('positions', {})

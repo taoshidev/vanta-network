@@ -23,7 +23,7 @@ Usage:
 from typing import Optional, List
 
 from shared_objects.rpc.rpc_client_base import RPCClientBase
-from vali_objects.enums.miner_bucket_enum import MinerBucket
+from vali_objects.enums.miner_bucket_enum import BucketEntry, MinerBucket
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 
 
@@ -92,23 +92,14 @@ class ChallengePeriodClient(RPCClientBase):
         """Fast check if a miner is in active_miners (O(1))."""
         return self._server.has_miner_rpc(hotkey)
 
-    def get_miner_bucket(self, hotkey: str) -> Optional[MinerBucket]:
-        """Get the bucket of a miner."""
-        bucket_value = self._server.get_miner_bucket_rpc(hotkey)
+    def get_miner_bucket(self, hotkey: str, timestamp_ms: Optional[int] = None) -> Optional[MinerBucket]:
+        """Get the bucket of a miner, optionally at a specific timestamp."""
+        bucket_value = self._server.get_miner_bucket_rpc(hotkey, timestamp_ms)
         return MinerBucket(bucket_value) if bucket_value else None
 
     def get_miner_start_time(self, hotkey: str) -> Optional[int]:
         """Get the start time of a miner's current bucket."""
         return self._server.get_miner_start_time_rpc(hotkey)
-
-    def get_miner_previous_bucket(self, hotkey: str) -> Optional[MinerBucket]:
-        """Get the previous bucket of a miner (used for plagiarism demotions)."""
-        prev_bucket_value = self._server.get_miner_previous_bucket_rpc(hotkey)
-        return MinerBucket(prev_bucket_value) if prev_bucket_value else None
-
-    def get_miner_previous_time(self, hotkey: str) -> Optional[int]:
-        """Get the start time of a miner's previous bucket."""
-        return self._server.get_miner_previous_time_rpc(hotkey)
 
     def get_hotkeys_by_bucket(self, bucket: MinerBucket) -> List[str]:
         """Get all hotkeys in a specific bucket."""
@@ -123,17 +114,9 @@ class ChallengePeriodClient(RPCClientBase):
         hotkey: str,
         bucket: MinerBucket,
         start_time: int,
-        prev_bucket: Optional[MinerBucket] = None,
-        prev_time: Optional[int] = None
     ) -> bool:
         """Set or update a miner's bucket information."""
-        return self._server.set_miner_bucket_rpc(
-            hotkey,
-            bucket.value,
-            start_time,
-            prev_bucket.value if prev_bucket else None,
-            prev_time
-        )
+        return self._server.set_miner_bucket_rpc(hotkey, bucket.value, start_time)
 
     def get_dashboard(self, hotkey) -> dict | None:
         return self._server.get_dashboard_rpc(hotkey)
@@ -151,43 +134,20 @@ class ChallengePeriodClient(RPCClientBase):
 
     def update_miners(self, miners_dict: dict) -> int:
         """Bulk update active_miners from a dict."""
-        # Convert tuples to dicts for RPC serialization
+        # Convert List[BucketEntry] to list-of-dicts for RPC serialization
         miners_rpc_dict = {}
-        for hotkey, (bucket, start_time, prev_bucket, prev_time) in miners_dict.items():
-            miners_rpc_dict[hotkey] = {
-                "bucket": bucket.value,
-                "start_time": start_time,
-                "prev_bucket": prev_bucket.value if prev_bucket else None,
-                "prev_time": prev_time
-            }
+        for hotkey, data in miners_dict.items():
+            if isinstance(data, list) and len(data) > 0 and isinstance(data[0], BucketEntry):
+                miners_rpc_dict[hotkey] = [
+                    {"bucket": entry.bucket.value, "bucket_start_time": entry.start_time_ms}
+                    for entry in data
+                ]
+            elif isinstance(data, list):
+                miners_rpc_dict[hotkey] = data
+            else:
+                raise ValueError(f"Invalid data type for miner {hotkey}: {type(data)}")
 
         return self._server.update_miners_rpc(miners_rpc_dict)
-
-    def iter_active_miners(self):
-        """
-        Iterate over active miners.
-        Note: This fetches ALL miners and iterates locally.
-        """
-
-        for hotkey, start_time in self.get_testing_miners().items():
-            prev_bucket = self.get_miner_previous_bucket(hotkey)
-            prev_time = self.get_miner_previous_time(hotkey)
-            yield hotkey, MinerBucket.CHALLENGE, start_time, prev_bucket, prev_time
-
-        for hotkey, start_time in self.get_success_miners().items():
-            prev_bucket = self.get_miner_previous_bucket(hotkey)
-            prev_time = self.get_miner_previous_time(hotkey)
-            yield hotkey, MinerBucket.MAINCOMP, start_time, prev_bucket, prev_time
-
-        for hotkey, start_time in self.get_probation_miners().items():
-            prev_bucket = self.get_miner_previous_bucket(hotkey)
-            prev_time = self.get_miner_previous_time(hotkey)
-            yield hotkey, MinerBucket.PROBATION, start_time, prev_bucket, prev_time
-
-        for hotkey, start_time in self.get_plagiarism_miners().items():
-            prev_bucket = self.get_miner_previous_bucket(hotkey)
-            prev_time = self.get_miner_previous_time(hotkey)
-            yield hotkey, MinerBucket.PLAGIARISM, start_time, prev_bucket, prev_time
 
     def get_testing_miners(self) -> dict:
         """Get all CHALLENGE bucket miners as dict {hotkey: start_time}."""

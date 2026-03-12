@@ -706,63 +706,28 @@ class PenaltyLedgerManager:
 
         bt.logging.info("[PENALTY_LEDGER] Penalty Ledger Manager daemon stopped")
 
-    def _get_status_for_checkpoint(self, checkpoint_ms: int, bucket_data: dict) -> str:
+    def _get_status_for_checkpoint(self, checkpoint_ms: int, bucket_history: list) -> str:
         """
-        Determine the challenge period status for a checkpoint based on bucket transitions.
+        Determine the challenge period status for a checkpoint from pre-fetched bucket history.
 
-        Dict structure: {"bucket": str, "bucket_start_time": int, "previous_bucket": str, "previous_bucket_start_time": int}
-
-        Logic:
-        - CHALLENGE: all checkpoints → CHALLENGE
-        - MAINCOMP: checkpoints before bucket_start_time → CHALLENGE, after → MAINCOMP
-        - PROBATION: checkpoints before bucket_start_time → UNKNOWN, after → PROBATION
-        - PLAGIARISM: checkpoints before bucket_start_time → UNKNOWN, after → PLAGIARISM
+        Duplicates the logic of ChallengePeriodManager.get_miner_bucket(timestamp_ms) against
+        locally pre-fetched data to avoid per-checkpoint RPC calls.
 
         Args:
             checkpoint_ms: The checkpoint timestamp in milliseconds
-            bucket_data: Dict containing bucket information from to_checkpoint_dict()
+            bucket_history: Newest-first list of dicts [{"bucket": str, "bucket_start_time": int}, ...]
+                            as returned by to_checkpoint_dict()
 
         Returns:
             Status string for this checkpoint
         """
-        if not bucket_data or not isinstance(bucket_data, dict):
+        if not bucket_history or not isinstance(bucket_history, list):
             return MinerBucket.UNKNOWN.value
 
-        bucket_str = bucket_data.get("bucket")
-        bucket_start_time_ms = bucket_data.get("bucket_start_time")
-
-        if not bucket_str:
-            return MinerBucket.UNKNOWN.value
-
-        current_status = bucket_str
-
-        # CHALLENGE status: all checkpoints are CHALLENGE
-        if current_status == MinerBucket.CHALLENGE.value:
-            return MinerBucket.CHALLENGE.value
-
-        # MAINCOMP status: before bucket_start_time → CHALLENGE, after → MAINCOMP
-        elif current_status == MinerBucket.MAINCOMP.value:
-            if bucket_start_time_ms and checkpoint_ms >= bucket_start_time_ms:
-                return MinerBucket.MAINCOMP.value
-            else:
-                # Before the transition to MAINCOMP, miner was in CHALLENGE
-                return MinerBucket.CHALLENGE.value
-
-        # PROBATION status: before bucket_start_time → UNKNOWN, after → PROBATION
-        elif current_status == MinerBucket.PROBATION.value:
-            if bucket_start_time_ms and checkpoint_ms >= bucket_start_time_ms:
-                return MinerBucket.PROBATION.value
-            else:
-                # Before entering probation, status is unknown (could be MAINCOMP or CHALLENGE)
-                return MinerBucket.UNKNOWN.value
-
-        # PLAGIARISM status: before bucket_start_time → UNKNOWN, after → PLAGIARISM
-        elif current_status == MinerBucket.PLAGIARISM.value:
-            if bucket_start_time_ms and checkpoint_ms >= bucket_start_time_ms:
-                return MinerBucket.PLAGIARISM.value
-            else:
-                # Before being marked as plagiarism, status is unknown
-                return MinerBucket.UNKNOWN.value
+        for entry in bucket_history:
+            start_time_ms = entry.get("bucket_start_time")
+            if start_time_ms is not None and checkpoint_ms >= start_time_ms:
+                return entry.get("bucket", MinerBucket.UNKNOWN.value)
 
         return MinerBucket.UNKNOWN.value
 

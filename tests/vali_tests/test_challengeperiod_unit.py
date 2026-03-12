@@ -16,7 +16,7 @@ from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.challenge_period import ChallengePeriodManager
 from vali_objects.vali_dataclasses.ledger.ledger_utils import LedgerUtils
-from vali_objects.enums.miner_bucket_enum import MinerBucket
+from vali_objects.enums.miner_bucket_enum import BucketEntry, MinerBucket
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.vali_dataclasses.order import Order
@@ -896,13 +896,7 @@ class TestChallengePeriodUnit(TestBase):
             try:
                 miners_dict = {}
                 for i in range(10, 20):
-                    # Client expects tuples: (bucket, start_time, prev_bucket, prev_time)
-                    miners_dict[f"writer1_miner_{i}"] = (
-                        MinerBucket.CHALLENGE,
-                        self.START_TIME,
-                        None,
-                        None
-                    )
+                    miners_dict[f"writer1_miner_{i}"] = [BucketEntry(MinerBucket.CHALLENGE, self.START_TIME)]
                 self.challenge_period_client.update_miners(miners_dict)
                 # Explicit file write to increase contention
                 self.challenge_period_client._write_challengeperiod_from_memory_to_disk()
@@ -1077,13 +1071,7 @@ class TestChallengePeriodUnit(TestBase):
             """Simulates sync_challenge_period_data with 100 miners"""
             miners_dict = {}
             for i in range(100):
-                # Client expects tuples: (bucket, start_time, prev_bucket, prev_time)
-                miners_dict[f"bulk_miner_{i}"] = (
-                    MinerBucket.CHALLENGE,
-                    self.START_TIME,
-                    None,
-                    None
-                )
+                miners_dict[f"bulk_miner_{i}"] = [BucketEntry(MinerBucket.CHALLENGE, self.START_TIME)]
             # This updates dict one-by-one internally (dict.update is not atomic)
             self.challenge_period_client.update_miners(miners_dict)
 

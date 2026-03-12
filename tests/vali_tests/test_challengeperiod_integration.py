@@ -18,7 +18,7 @@ from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.utils.elimination.elimination_manager import EliminationReason
 from vali_objects.vali_dataclasses.ledger.ledger_utils import LedgerUtils
-from vali_objects.enums.miner_bucket_enum import MinerBucket
+from vali_objects.enums.miner_bucket_enum import BucketEntry, MinerBucket
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.vali_dataclasses.order import Order
@@ -244,11 +244,11 @@ class TestChallengePeriodIntegration(TestBase):
     def _populate_active_miners(self, *, maincomp=[], challenge=[], probation=[]):
         miners = {}
         for hotkey in maincomp:
-            miners[hotkey] = (MinerBucket.MAINCOMP, self.HK_TO_OPEN_MS[hotkey], None, None)
+            miners[hotkey] = [BucketEntry(MinerBucket.MAINCOMP, self.HK_TO_OPEN_MS[hotkey])]
         for hotkey in challenge:
-            miners[hotkey] = (MinerBucket.CHALLENGE, self.HK_TO_OPEN_MS[hotkey], None, None)
+            miners[hotkey] = [BucketEntry(MinerBucket.CHALLENGE, self.HK_TO_OPEN_MS[hotkey])]
         for hotkey in probation:
-            miners[hotkey] = (MinerBucket.PROBATION, self.HK_TO_OPEN_MS[hotkey], None, None)
+            miners[hotkey] = [BucketEntry(MinerBucket.PROBATION, self.HK_TO_OPEN_MS[hotkey])]
         self.challenge_period_client.clear_all_miners()
         self.challenge_period_client.update_miners(miners)
         self.challenge_period_client._write_challengeperiod_from_memory_to_disk()  # Ensure disk matches memory
@@ -364,7 +364,7 @@ class TestChallengePeriodIntegration(TestBase):
 
         self.position_client.save_miner_position(position)
         self.challenge_period_client.clear_all_miners()
-        self.challenge_period_client.update_miners({self.DEFAULT_MINER_HOTKEY: (MinerBucket.CHALLENGE, self.DEFAULT_OPEN_MS, None, None)})
+        self.challenge_period_client.update_miners({self.DEFAULT_MINER_HOTKEY: [BucketEntry(MinerBucket.CHALLENGE, self.DEFAULT_OPEN_MS)]})
         self.challenge_period_client._write_challengeperiod_from_memory_to_disk()
 
         # Now loading the data
@@ -618,14 +618,14 @@ class TestChallengePeriodIntegration(TestBase):
 
     def test_clear_challengeperiod_in_memory_and_disk(self):
         miners = {
-                "test_miner1": (MinerBucket.CHALLENGE, 1, None, None),
-                "test_miner2": (MinerBucket.CHALLENGE, 1, None, None),
-                "test_miner3": (MinerBucket.CHALLENGE, 1, None, None),
-                "test_miner4": (MinerBucket.CHALLENGE, 1, None, None),
-                "test_miner5": (MinerBucket.MAINCOMP, 1, None, None),
-                "test_miner6": (MinerBucket.MAINCOMP, 1, None, None),
-                "test_miner7": (MinerBucket.MAINCOMP, 1, None, None),
-                "test_miner8": (MinerBucket.MAINCOMP, 1, None, None),
+                "test_miner1": [BucketEntry(MinerBucket.CHALLENGE, 1)],
+                "test_miner2": [BucketEntry(MinerBucket.CHALLENGE, 1)],
+                "test_miner3": [BucketEntry(MinerBucket.CHALLENGE, 1)],
+                "test_miner4": [BucketEntry(MinerBucket.CHALLENGE, 1)],
+                "test_miner5": [BucketEntry(MinerBucket.MAINCOMP, 1)],
+                "test_miner6": [BucketEntry(MinerBucket.MAINCOMP, 1)],
+                "test_miner7": [BucketEntry(MinerBucket.MAINCOMP, 1)],
+                "test_miner8": [BucketEntry(MinerBucket.MAINCOMP, 1)],
                 }
 
         self.challenge_period_client.clear_all_miners()
@@ -804,16 +804,12 @@ class TestChallengePeriodIntegration(TestBase):
             hotkey=test_hotkey_1,
             bucket=MinerBucket.CHALLENGE,
             start_time=test_time,
-            prev_bucket=None,
-            prev_time=None
         )
 
         self.challenge_period_client.set_miner_bucket(
             hotkey=test_hotkey_2,
             bucket=MinerBucket.MAINCOMP,
             start_time=test_time,
-            prev_bucket=None,
-            prev_time=None
         )
 
         # Verify data is accessible via client
@@ -868,8 +864,6 @@ class TestChallengePeriodIntegration(TestBase):
             hotkey=test_hotkey_1,
             bucket=MinerBucket.CHALLENGE,
             start_time=test_time,
-            prev_bucket=None,
-            prev_time=None
         )
 
         # Test 2: Read data back via client RPC
@@ -890,16 +884,12 @@ class TestChallengePeriodIntegration(TestBase):
             hotkey=test_hotkey_2,
             bucket=MinerBucket.MAINCOMP,
             start_time=test_time,
-            prev_bucket=None,
-            prev_time=None
         )
 
         self.challenge_period_client.set_miner_bucket(
             hotkey=test_hotkey_3,
             bucket=MinerBucket.PROBATION,
             start_time=test_time,
-            prev_bucket=None,
-            prev_time=None
         )
 
         # Test 4: Verify all miners exist via client
@@ -921,8 +911,6 @@ class TestChallengePeriodIntegration(TestBase):
             hotkey=test_hotkey_1,
             bucket=MinerBucket.MAINCOMP,
             start_time=test_time + 1000,
-            prev_bucket=MinerBucket.CHALLENGE,
-            prev_time=test_time
         )
 
         # Verify update worked

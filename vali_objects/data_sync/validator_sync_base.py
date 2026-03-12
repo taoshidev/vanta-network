@@ -161,12 +161,12 @@ class ValidatorSyncBase():
 
             challengeperiod_dict = ChallengePeriodManager.parse_checkpoint_dict(challengeperiod_data)
             new_testing_keys = {
-                    hotkey for hotkey, (bucket, _, _, _) in challengeperiod_dict.items()
-                    if bucket is MinerBucket.CHALLENGE
+                    hotkey for hotkey, history in challengeperiod_dict.items()
+                    if history[0].bucket is MinerBucket.CHALLENGE
                     }
             new_success_keys = {
-                    hotkey for hotkey, (bucket, _, _, _) in challengeperiod_dict.items()
-                    if bucket is MinerBucket.MAINCOMP
+                    hotkey for hotkey, history in challengeperiod_dict.items()
+                    if history[0].bucket is MinerBucket.MAINCOMP
                     }
 
             bt.logging.info(f"Challengeperiod testing sync keys added: {new_testing_keys-orig_testing_keys}\n"
