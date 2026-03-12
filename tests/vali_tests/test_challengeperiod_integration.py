@@ -364,7 +364,7 @@ class TestChallengePeriodIntegration(TestBase):
 
         self.position_client.save_miner_position(position)
         self.challenge_period_client.clear_all_miners()
-        self.challenge_period_client.update_miners({self.DEFAULT_MINER_HOTKEY: (MinerBucket.CHALLENGE, self.DEFAULT_OPEN_MS, None, None)})
+        self.challenge_period_client.update_miners({self.DEFAULT_MINER_HOTKEY: [BucketEntry(MinerBucket.CHALLENGE, self.DEFAULT_OPEN_MS)]})
         self.challenge_period_client._write_challengeperiod_from_memory_to_disk()
 
         # Now loading the data
@@ -618,14 +618,14 @@ class TestChallengePeriodIntegration(TestBase):
 
     def test_clear_challengeperiod_in_memory_and_disk(self):
         miners = {
-                "test_miner1": (MinerBucket.CHALLENGE, 1, None, None),
-                "test_miner2": (MinerBucket.CHALLENGE, 1, None, None),
-                "test_miner3": (MinerBucket.CHALLENGE, 1, None, None),
-                "test_miner4": (MinerBucket.CHALLENGE, 1, None, None),
-                "test_miner5": (MinerBucket.MAINCOMP, 1, None, None),
-                "test_miner6": (MinerBucket.MAINCOMP, 1, None, None),
-                "test_miner7": (MinerBucket.MAINCOMP, 1, None, None),
-                "test_miner8": (MinerBucket.MAINCOMP, 1, None, None),
+                "test_miner1": [BucketEntry(MinerBucket.CHALLENGE, 1)],
+                "test_miner2": [BucketEntry(MinerBucket.CHALLENGE, 1)],
+                "test_miner3": [BucketEntry(MinerBucket.CHALLENGE, 1)],
+                "test_miner4": [BucketEntry(MinerBucket.CHALLENGE, 1)],
+                "test_miner5": [BucketEntry(MinerBucket.MAINCOMP, 1)],
+                "test_miner6": [BucketEntry(MinerBucket.MAINCOMP, 1)],
+                "test_miner7": [BucketEntry(MinerBucket.MAINCOMP, 1)],
+                "test_miner8": [BucketEntry(MinerBucket.MAINCOMP, 1)],
                 }
 
         self.challenge_period_client.clear_all_miners()
