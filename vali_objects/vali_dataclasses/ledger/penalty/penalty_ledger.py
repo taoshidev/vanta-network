@@ -865,8 +865,7 @@ class PenaltyLedgerManager:
                             penalty_value = penalty_config.function(miner_positions_at_checkpoint)
 
                         elif penalty_config.input_type == PenaltyInputType.COLLATERAL:
-                            if not is_synthetic_hotkey(miner_hotkey):
-                                penalty_value = penalty_config.function(miner_account_size)
+                            penalty_value = penalty_config.function(miner_account_size)
 
                         elif penalty_config.input_type == PenaltyInputType.ASSET_LEDGER:
                             segmentation_machine = AssetSegmentation({miner_hotkey: ledger_dict})
@@ -921,6 +920,9 @@ class PenaltyLedgerManager:
                         # and bucket transition timestamps
                         bucket_data = challenge_period_data[miner_hotkey]
                         challenge_period_status = self._get_status_for_checkpoint(checkpoint_ms, bucket_data)
+
+                if is_synthetic_hotkey(miner_hotkey):
+                    total_penalty = 1
 
                 # Create penalty checkpoint
                 penalty_checkpoint = PenaltyCheckpoint(
