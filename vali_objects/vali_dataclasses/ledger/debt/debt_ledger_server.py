@@ -144,7 +144,7 @@ class DebtLedgerServer(RPCServerBase):
         # Step 3: Build debt ledgers (full rebuild)
         bt.logging.info("Step 3/3: Building debt ledgers (full rebuild)...")
         debt_start = time.time()
-        self._manager.build_debt_ledgers(verbose=False, delta_update=False)
+        self._manager.build_debt_ledgers(verbose=True, delta_update=False)
         bt.logging.info(f"Debt ledgers built in {time.time() - debt_start:.2f}s")
 
         elapsed = time.time() - start_time

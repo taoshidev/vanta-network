@@ -719,7 +719,11 @@ class DebtLedgerManager():
         # Direct assignment to normal dict (no IPC overhead!)
         self.debt_ledgers = candidate_ledgers
 
-        # Save to disk after atomic swap
+        # Aggregate entity debt ledgers before saving so entity ledgers are persisted and cached
+        bt.logging.info("Aggregating entity debt ledgers...")
+        self.aggregate_entity_debt_ledgers(target_cp_duration_ms, verbose=verbose)
+
+        # Save to disk after atomic swap and aggregation
         bt.logging.info(f"Saving {len(self.debt_ledgers)} debt ledgers to disk...")
         self.save_to_disk(create_backup=False)
 
@@ -733,10 +737,6 @@ class DebtLedgerManager():
             f"{len(self.debt_ledgers)} hotkeys tracked "
             f"(target_cp_duration_ms: {target_cp_duration_ms}ms)"
         )
-
-        # Aggregate entity debt ledgers after build completes
-        bt.logging.info("Aggregating entity debt ledgers...")
-        self.aggregate_entity_debt_ledgers(target_cp_duration_ms, verbose=verbose)
 
     def aggregate_entity_debt_ledgers(self, target_cp_duration_ms: int, verbose: bool = False):
         """
