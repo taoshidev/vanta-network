@@ -1064,7 +1064,7 @@ class ChallengePeriodManager(CacheController):
             except Exception as e:
                 bt.logging.error(f"Failed to promote {hotkey} from plagiarism at time {current_time}: {e}")
 
-    def _eliminate_challengeperiod_in_memory(self, eliminations_with_reasons: dict[str, tuple[str, float]]):
+    def _eliminate_challengeperiod_in_memory(self, eliminations_with_reasons: dict[str, tuple[str, float, int]]):
         """Eliminate miners from challenge period."""
         hotkeys = eliminations_with_reasons.keys()
         if hotkeys:
@@ -1105,10 +1105,8 @@ class ChallengePeriodManager(CacheController):
                 prev_bucket_value = self.get_miner_bucket(hotkey)
                 if prev_bucket_value is None:
                     continue
-                prev_bucket_time = self.get_miner_start_time(hotkey)
                 bt.logging.info(f"Demoting {hotkey} to PLAGIARISM from {prev_bucket_value}")
-                # Maintain previous state to make reverting easier
-                self.set_miner_bucket(hotkey, MinerBucket.PLAGIARISM, current_time, prev_bucket_value, prev_bucket_time)
+                self.set_miner_bucket(hotkey, MinerBucket.PLAGIARISM, current_time)
 
                 # Send Slack notification
                 self._plagiarism_client.send_plagiarism_demotion_notification(hotkey)
@@ -1268,20 +1266,17 @@ class ChallengePeriodManager(CacheController):
         hotkey: str,
         bucket: MinerBucket,
         start_time: int,
-        prev_bucket: MinerBucket = None,
-        prev_time: int = None
     ) -> bool:
         """
         Set or update a miner's bucket information.
 
-        Automatically preserves previous bucket state on transitions unless explicitly overridden.
+        Prepends a new BucketEntry to the history on bucket change; updates in-place for
+        same-bucket refreshes. The previous bucket is always preserved as history[1].
 
         Args:
             hotkey: Miner's hotkey
             bucket: New bucket to assign
             start_time: Start time for new bucket
-            prev_bucket: Optional explicit previous bucket (used by plagiarism demotion to preserve original state)
-            prev_time: Optional explicit previous time (used by plagiarism demotion)
 
         Returns:
             True if this is a new miner, False if updating existing
@@ -1290,20 +1285,10 @@ class ChallengePeriodManager(CacheController):
         new_entry = BucketEntry(bucket, start_time)
 
         if is_new:
-            if prev_bucket is not None and prev_time is not None:
-                # Explicit previous state provided for a new miner
-                self.active_miners[hotkey] = [new_entry, BucketEntry(prev_bucket, prev_time)]
-            else:
-                self.active_miners[hotkey] = [new_entry]
-        elif prev_bucket is not None and prev_time is not None:
-            # Explicit previous state (plagiarism demotion) — insert prev as index 1
-            history = self.active_miners[hotkey]
-            history[0] = new_entry
-            history.insert(1, BucketEntry(prev_bucket, prev_time))
+            self.active_miners[hotkey] = [new_entry]
         else:
             history = self.active_miners[hotkey]
-            current_bucket = history[0].bucket
-            if current_bucket != bucket:
+            if history[0].bucket != bucket:
                 # Bucket changed — prepend new entry, keeping full history
                 history.insert(0, new_entry)
             else:
@@ -1458,10 +1443,27 @@ class ChallengePeriodManager(CacheController):
             self.eliminations_with_reasons.update(reasons_dict)
         return len(self.eliminations_with_reasons)
 
-    def get_miner_bucket(self, hotkey):
-        """Get the bucket of a miner."""
+    def get_miner_bucket(self, hotkey, timestamp_ms: Optional[int] = None) -> Optional[MinerBucket]:
+        """Get the bucket of a miner, optionally at a specific timestamp.
+
+        Args:
+            hotkey: Miner's hotkey
+            timestamp_ms: If provided, returns the bucket active at that time.
+                          If None, returns the current bucket (history[0]).
+
+        Returns:
+            The MinerBucket active at timestamp_ms, or None if not found.
+        """
         history = self.active_miners.get(hotkey)
-        return history[0].bucket if history else None
+        if not history:
+            return None
+        if timestamp_ms is None:
+            return history[0].bucket
+        # History is newest-first; find the first entry whose start_time_ms <= timestamp_ms
+        for entry in history:
+            if entry.start_time_ms <= timestamp_ms:
+                return entry.bucket
+        return None
 
     def get_dashboard(self, hotkey) -> dict | None:
         history = self.active_miners.get(hotkey)

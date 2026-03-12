@@ -92,9 +92,9 @@ class ChallengePeriodClient(RPCClientBase):
         """Fast check if a miner is in active_miners (O(1))."""
         return self._server.has_miner_rpc(hotkey)
 
-    def get_miner_bucket(self, hotkey: str) -> Optional[MinerBucket]:
-        """Get the bucket of a miner."""
-        bucket_value = self._server.get_miner_bucket_rpc(hotkey)
+    def get_miner_bucket(self, hotkey: str, timestamp_ms: Optional[int] = None) -> Optional[MinerBucket]:
+        """Get the bucket of a miner, optionally at a specific timestamp."""
+        bucket_value = self._server.get_miner_bucket_rpc(hotkey, timestamp_ms)
         return MinerBucket(bucket_value) if bucket_value else None
 
     def get_miner_start_time(self, hotkey: str) -> Optional[int]:
@@ -123,17 +123,9 @@ class ChallengePeriodClient(RPCClientBase):
         hotkey: str,
         bucket: MinerBucket,
         start_time: int,
-        prev_bucket: Optional[MinerBucket] = None,
-        prev_time: Optional[int] = None
     ) -> bool:
         """Set or update a miner's bucket information."""
-        return self._server.set_miner_bucket_rpc(
-            hotkey,
-            bucket.value,
-            start_time,
-            prev_bucket.value if prev_bucket else None,
-            prev_time
-        )
+        return self._server.set_miner_bucket_rpc(hotkey, bucket.value, start_time)
 
     def get_dashboard(self, hotkey) -> dict | None:
         return self._server.get_dashboard_rpc(hotkey)

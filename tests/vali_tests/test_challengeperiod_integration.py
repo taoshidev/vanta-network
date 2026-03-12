@@ -804,16 +804,12 @@ class TestChallengePeriodIntegration(TestBase):
             hotkey=test_hotkey_1,
             bucket=MinerBucket.CHALLENGE,
             start_time=test_time,
-            prev_bucket=None,
-            prev_time=None
         )
 
         self.challenge_period_client.set_miner_bucket(
             hotkey=test_hotkey_2,
             bucket=MinerBucket.MAINCOMP,
             start_time=test_time,
-            prev_bucket=None,
-            prev_time=None
         )
 
         # Verify data is accessible via client
@@ -868,8 +864,6 @@ class TestChallengePeriodIntegration(TestBase):
             hotkey=test_hotkey_1,
             bucket=MinerBucket.CHALLENGE,
             start_time=test_time,
-            prev_bucket=None,
-            prev_time=None
         )
 
         # Test 2: Read data back via client RPC
@@ -890,16 +884,12 @@ class TestChallengePeriodIntegration(TestBase):
             hotkey=test_hotkey_2,
             bucket=MinerBucket.MAINCOMP,
             start_time=test_time,
-            prev_bucket=None,
-            prev_time=None
         )
 
         self.challenge_period_client.set_miner_bucket(
             hotkey=test_hotkey_3,
             bucket=MinerBucket.PROBATION,
             start_time=test_time,
-            prev_bucket=None,
-            prev_time=None
         )
 
         # Test 4: Verify all miners exist via client
@@ -921,8 +911,6 @@ class TestChallengePeriodIntegration(TestBase):
             hotkey=test_hotkey_1,
             bucket=MinerBucket.MAINCOMP,
             start_time=test_time + 1000,
-            prev_bucket=MinerBucket.CHALLENGE,
-            prev_time=test_time
         )
 
         # Verify update worked

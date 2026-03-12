@@ -144,12 +144,10 @@ class ChallengePeriodServer(RPCServerBase):
         """Fast check if a miner is in active_miners (O(1))."""
         return self._manager.has_miner(hotkey)
 
-    def get_miner_bucket_rpc(self, hotkey: str) -> Optional[str]:
-        """Get the bucket of a miner."""
-        history = self._manager.active_miners.get(hotkey)
-        if history and history[0].bucket:
-            return history[0].bucket.value
-        return None
+    def get_miner_bucket_rpc(self, hotkey: str, timestamp_ms: Optional[int] = None) -> Optional[str]:
+        """Get the bucket of a miner, optionally at a specific timestamp."""
+        bucket = self._manager.get_miner_bucket(hotkey, timestamp_ms)
+        return bucket.value if bucket else None
 
     def get_dashboard_rpc(self, hotkey) -> dict | None:
         return self._manager.get_dashboard(hotkey)
@@ -228,13 +226,10 @@ class ChallengePeriodServer(RPCServerBase):
         hotkey: str,
         bucket_value: str,
         start_time: int,
-        prev_bucket_value: Optional[str] = None,
-        prev_time: Optional[int] = None
     ) -> bool:
         """Set or update a miner's bucket information."""
         bucket = MinerBucket(bucket_value)
-        prev_bucket = MinerBucket(prev_bucket_value) if prev_bucket_value else None
-        return self._manager.set_miner_bucket(hotkey, bucket, start_time, prev_bucket, prev_time)
+        return self._manager.set_miner_bucket(hotkey, bucket, start_time)
 
     def remove_miner_rpc(self, hotkey: str) -> bool:
         """Remove a miner from active_miners."""
