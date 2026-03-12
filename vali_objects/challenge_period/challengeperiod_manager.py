@@ -1042,22 +1042,32 @@ class ChallengePeriodManager(CacheController):
             self.set_miner_bucket(hotkey, target_bucket, current_time)
 
     def _promote_plagiarism_to_previous_bucket_in_memory(self, hotkeys: list[str], current_time):
-        """Promote plagiarism miners to their previous bucket."""
+        """Promote plagiarism miners back to their most recent non-plagiarism bucket."""
         if len(hotkeys) > 0:
             bt.logging.info(f"Promoting {len(hotkeys)} plagiarism miners to probation.")
 
         for hotkey in hotkeys:
             try:
-                bucket_value = self.get_miner_bucket(hotkey)
-                if bucket_value is None or bucket_value != MinerBucket.PLAGIARISM:
-                    bt.logging.error(f"Hotkey {hotkey} is not an active miner. Skipping promotion")
+                history = self.active_miners.get(hotkey)
+                if not history or history[0].bucket != MinerBucket.PLAGIARISM:
+                    bt.logging.error(f"Hotkey {hotkey} is not an active plagiarism miner. Skipping promotion")
                     continue
 
-                previous_bucket = self.get_miner_previous_bucket(hotkey)
-                previous_time = self.get_miner_previous_time(hotkey)
+                # Remove the most recent plagiarism entry, restoring the previous bucket
+                history.pop(0)
 
-                bt.logging.info(f"Promoting {hotkey} from {bucket_value.value} to {previous_bucket.value} with time {previous_time}")
-                self.set_miner_bucket(hotkey, previous_bucket, previous_time)
+                if not history:
+                    bt.logging.error(f"No previous bucket found for {hotkey} after removing PLAGIARISM entry. Skipping promotion")
+                    self.remove_miner(hotkey)
+                    continue
+
+                bt.logging.info(f"Promoting {hotkey} from PLAGIARISM to {history[0].bucket.value}")
+
+                # Push restored bucket to MinerAccount
+                try:
+                    self._miner_account_client.set_miner_bucket(hotkey, history[0].bucket)
+                except Exception as e:
+                    bt.logging.warning(f"Failed to push miner_bucket to MinerAccount for {hotkey}: {e}")
 
                 # Send Slack notification
                 self._plagiarism_client.send_plagiarism_promotion_notification(hotkey)
@@ -1307,16 +1317,6 @@ class ChallengePeriodManager(CacheController):
         """Get the start time of a miner's current bucket."""
         history = self.active_miners.get(hotkey)
         return history[0].start_time_ms if history else None
-
-    def get_miner_previous_bucket(self, hotkey: str) -> Optional[MinerBucket]:
-        """Get the previous bucket of a miner."""
-        history = self.active_miners.get(hotkey)
-        return history[1].bucket if history and len(history) > 1 else None
-
-    def get_miner_previous_time(self, hotkey: str) -> Optional[int]:
-        """Get the start time of a miner's previous bucket."""
-        history = self.active_miners.get(hotkey)
-        return history[1].start_time_ms if history and len(history) > 1 else None
 
     def has_miner(self, hotkey: str) -> bool:
         """Fast check if a miner is in active_miners (O(1))."""
