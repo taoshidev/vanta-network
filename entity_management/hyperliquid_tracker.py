@@ -584,12 +584,21 @@ class HyperliquidTracker:
 
         # 3. Addresses that need assignment (new + orphaned)
         already_assigned = set(self._address_to_shard.keys())
-        to_assign = (active_addresses - already_assigned) | orphaned
+        new_addresses = active_addresses - already_assigned
+        to_assign = new_addresses | orphaned
 
         if not to_assign:
             # 5. Tear down empty shards
             self._teardown_empty_shards()
             return
+
+        # Seed backup-poll watermarks for genuinely new addresses so the
+        # backup REST poll only looks forward from when tracking begins,
+        # preventing pre-registration fills from entering the system.
+        now_ms = int(time.time() * 1000)
+        for addr in new_addresses:
+            if addr not in self._last_poll_time_ms:
+                self._last_poll_time_ms[addr] = now_ms
 
         for addr in to_assign:
             assigned = False
