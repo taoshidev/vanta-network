@@ -10,10 +10,12 @@ Hyperliquid integration tests covering:
 - HyperliquidTracker fill processing, dedup, coin mapping, leverage calculation
 - Sync entity data with HL addresses
 """
+import asyncio
 import re
+import time
 import unittest
 from collections import OrderedDict
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
@@ -1244,6 +1246,515 @@ class TestHyperliquidTracker(TestBase):
             mock_process.assert_called_once()
 
         self.assertIn("tid_hash_1", self.tracker._processed_hashes)
+
+
+class TestHyperliquidTrackerBackupPoll(TestBase):
+    """
+    Tests for the backup REST poll feature: _make_proxied_session, _fetch_fills_by_time,
+    _backup_poll_cycle, get_status backup_poll stats, and ValiConfig backup constants.
+    """
+
+    def setUp(self):
+        """Create HyperliquidTracker with all mocked dependencies."""
+        self.entity_client = MagicMock()
+        self.elimination_client = MagicMock()
+        self.price_fetcher_client = MagicMock()
+        self.asset_selection_client = MagicMock()
+        self.market_order_manager = MagicMock()
+        self.limit_order_client = MagicMock()
+        self.uuid_tracker = MagicMock()
+        self.rate_limiter = MagicMock()
+
+        self.tracker = HyperliquidTracker(
+            entity_client=self.entity_client,
+            elimination_client=self.elimination_client,
+            price_fetcher_client=self.price_fetcher_client,
+            asset_selection_client=self.asset_selection_client,
+            market_order_manager=self.market_order_manager,
+            limit_order_client=self.limit_order_client,
+            uuid_tracker=self.uuid_tracker,
+            rate_limiter=self.rate_limiter,
+        )
+
+    def _make_fill(self, coin="BTC", side="B", sz="1.0", px="50000.0", fill_hash="hash_1"):
+        """Helper to create a fill dict."""
+        return {
+            "coin": coin,
+            "side": side,
+            "sz": sz,
+            "px": px,
+            "hash": fill_hash,
+        }
+
+    # ==================== Init State ====================
+
+    def test_backup_poll_init_state(self):
+        """Test that backup poll state is properly initialized."""
+        self.assertEqual(self.tracker._last_poll_time_ms, {})
+        self.assertIsNone(self.tracker._backup_poll_task)
+        self.assertEqual(self.tracker._backup_fills_caught, 0)
+        self.assertEqual(self.tracker._backup_polls_total, 0)
+        self.assertEqual(self.tracker._proxy_index_rest, 0)
+
+    # ==================== ValiConfig Backup Constants ====================
+
+    def test_backup_config_constants_exist(self):
+        """Test that backup poll config constants are defined in ValiConfig."""
+        self.assertEqual(ValiConfig.HL_BACKUP_POLL_INTERVAL_S, 30.0)
+        self.assertEqual(ValiConfig.HL_BACKUP_POLL_LOOKBACK_MS, 120_000)
+        self.assertEqual(ValiConfig.HL_BACKUP_POLL_RATE_BUDGET, 600)
+
+    # ==================== get_status Backup Section ====================
+
+    def test_get_status_includes_backup_poll(self):
+        """Test that get_status includes backup_poll section with correct initial values."""
+        status = self.tracker.get_status()
+        self.assertIn('backup_poll', status)
+        bp = status['backup_poll']
+        self.assertEqual(bp['fills_caught'], 0)
+        self.assertEqual(bp['total_polls'], 0)
+        self.assertEqual(bp['tracked_addresses'], 0)
+
+    def test_get_status_backup_poll_reflects_state(self):
+        """Test that get_status backup_poll section reflects updated state."""
+        self.tracker._backup_fills_caught = 5
+        self.tracker._backup_polls_total = 42
+        self.tracker._last_poll_time_ms = {"0xaaa": 1000, "0xbbb": 2000}
+
+        status = self.tracker.get_status()
+        bp = status['backup_poll']
+        self.assertEqual(bp['fills_caught'], 5)
+        self.assertEqual(bp['total_polls'], 42)
+        self.assertEqual(bp['tracked_addresses'], 2)
+
+    # ==================== _make_proxied_session ====================
+
+    def test_make_proxied_session_no_proxy_returns_plain(self):
+        """Test that _make_proxied_session returns a plain session when no proxy configured."""
+        self.tracker._proxy_base_url = None
+        session = self.tracker._make_proxied_session()
+        self.assertIsNotNone(session)
+        self.assertEqual(session.proxies, {})
+        session.close()
+
+    def test_make_proxied_session_no_ports_returns_plain(self):
+        """Test that _make_proxied_session returns a plain session when proxy is set but no ports."""
+        self.tracker._proxy_base_url = "socks5://user:pass@host"
+        self.tracker._available_ports = []
+        self.tracker._shards = {}
+        session = self.tracker._make_proxied_session()
+        self.assertEqual(session.proxies, {})
+        session.close()
+
+    def test_make_proxied_session_with_available_ports(self):
+        """Test that _make_proxied_session sets proxy from available ports."""
+        self.tracker._proxy_base_url = "socks5://user:pass@host"
+        self.tracker._available_ports = [10001, 10002]
+        self.tracker._shards = {}
+
+        session = self.tracker._make_proxied_session()
+        # Port should be 10001 (first in sorted set, index 0 % 2 = 0)
+        expected_url = "socks5://user:pass@host:10001"
+        self.assertEqual(session.proxies.get("http"), expected_url)
+        self.assertEqual(session.proxies.get("https"), expected_url)
+        session.close()
+
+    def test_make_proxied_session_round_robin(self):
+        """Test that successive calls rotate through ports."""
+        self.tracker._proxy_base_url = "socks5://user:pass@host"
+        self.tracker._available_ports = [10001, 10002, 10003]
+        self.tracker._shards = {}
+
+        ports_used = []
+        for _ in range(6):
+            session = self.tracker._make_proxied_session()
+            proxy = session.proxies.get("http", "")
+            port = int(proxy.rsplit(":", 1)[-1]) if proxy else None
+            ports_used.append(port)
+            session.close()
+
+        # Should round-robin: 10001, 10002, 10003, 10001, 10002, 10003
+        self.assertEqual(ports_used, [10001, 10002, 10003, 10001, 10002, 10003])
+
+    def test_make_proxied_session_includes_healthy_shard_ports(self):
+        """Test that ports from healthy shards are included in the pool."""
+        self.tracker._proxy_base_url = "socks5://user:pass@host"
+        self.tracker._available_ports = [10001]
+
+        # Create a mock shard with a port
+        mock_shard = MagicMock()
+        mock_shard.healthy = True
+        mock_shard.port = 10005
+        self.tracker._shards = {0: mock_shard}
+
+        session = self.tracker._make_proxied_session()
+        proxy = session.proxies.get("http", "")
+        port = int(proxy.rsplit(":", 1)[-1])
+        # Sorted set of [10001, 10005], first call -> 10001
+        self.assertEqual(port, 10001)
+        session.close()
+
+        session2 = self.tracker._make_proxied_session()
+        proxy2 = session2.proxies.get("http", "")
+        port2 = int(proxy2.rsplit(":", 1)[-1])
+        # Second call -> 10005
+        self.assertEqual(port2, 10005)
+        session2.close()
+
+    def test_make_proxied_session_skips_unhealthy_shard_ports(self):
+        """Test that unhealthy shard ports are NOT included in the pool."""
+        self.tracker._proxy_base_url = "socks5://user:pass@host"
+        self.tracker._available_ports = [10001]
+
+        mock_shard = MagicMock()
+        mock_shard.healthy = False
+        mock_shard.port = 10005
+        self.tracker._shards = {0: mock_shard}
+
+        session = self.tracker._make_proxied_session()
+        proxy = session.proxies.get("http", "")
+        port = int(proxy.rsplit(":", 1)[-1])
+        # Only 10001 in pool (unhealthy shard excluded)
+        self.assertEqual(port, 10001)
+        session.close()
+
+    # ==================== _fetch_fills_by_time ====================
+
+    @patch('entity_management.hyperliquid_tracker.requests.Session')
+    def test_fetch_fills_by_time_success(self, mock_session_cls):
+        """Test successful REST fill fetch returns list of fills."""
+        mock_session = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = [
+            {"hash": "h1", "coin": "BTC", "side": "B", "sz": "1", "px": "50000"},
+            {"hash": "h2", "coin": "ETH", "side": "A", "sz": "2", "px": "3000"},
+        ]
+        mock_resp.raise_for_status = MagicMock()
+        mock_session.post.return_value = mock_resp
+        mock_session_cls.return_value = mock_session
+
+        loop = asyncio.new_event_loop()
+        try:
+            result = loop.run_until_complete(
+                self.tracker._fetch_fills_by_time(VALID_HL_ADDRESS, 1000)
+            )
+        finally:
+            loop.close()
+
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[0]["hash"], "h1")
+        self.assertEqual(self.tracker._backup_polls_total, 1)
+
+    @patch('entity_management.hyperliquid_tracker.requests.Session')
+    def test_fetch_fills_by_time_non_list_response(self, mock_session_cls):
+        """Test that non-list response is converted to empty list."""
+        mock_session = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"error": "something"}
+        mock_resp.raise_for_status = MagicMock()
+        mock_session.post.return_value = mock_resp
+        mock_session_cls.return_value = mock_session
+
+        loop = asyncio.new_event_loop()
+        try:
+            result = loop.run_until_complete(
+                self.tracker._fetch_fills_by_time(VALID_HL_ADDRESS, 1000)
+            )
+        finally:
+            loop.close()
+
+        self.assertEqual(result, [])
+        self.assertEqual(self.tracker._backup_polls_total, 1)
+
+    @patch('entity_management.hyperliquid_tracker.requests.Session')
+    def test_fetch_fills_by_time_exception_returns_none(self, mock_session_cls):
+        """Test that REST errors return None."""
+        mock_session = MagicMock()
+        mock_session.post.side_effect = Exception("connection timeout")
+        mock_session_cls.return_value = mock_session
+
+        loop = asyncio.new_event_loop()
+        try:
+            result = loop.run_until_complete(
+                self.tracker._fetch_fills_by_time(VALID_HL_ADDRESS, 1000)
+            )
+        finally:
+            loop.close()
+
+        self.assertIsNone(result)
+        self.assertEqual(self.tracker._backup_polls_total, 1)
+
+    # ==================== _backup_poll_cycle ====================
+
+    def test_backup_poll_cycle_processes_missed_fill(self):
+        """Test that backup poll catches a fill that WS missed (not in _processed_hashes)."""
+        # Set up tracker state: one tracked address
+        self.tracker._address_to_shard = {VALID_HL_ADDRESS: 0}
+        self.tracker._stop_event = MagicMock()
+        # Stop after first iteration
+        self.tracker._stop_event.is_set = MagicMock(side_effect=[False, False, True])
+
+        missed_fill = {"hash": "missed_hash_1", "coin": "BTC", "side": "B", "sz": "1", "px": "50000"}
+
+        with patch.object(self.tracker, '_fetch_fills_by_time', new_callable=AsyncMock,
+                          return_value=[missed_fill]) as mock_fetch, \
+             patch.object(self.tracker, '_process_fill') as mock_process, \
+             patch('asyncio.sleep', new_callable=AsyncMock):
+
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(self.tracker._backup_poll_cycle())
+            finally:
+                loop.close()
+
+            mock_process.assert_called_once_with(VALID_HL_ADDRESS, missed_fill)
+            self.assertEqual(self.tracker._backup_fills_caught, 1)
+            self.assertIn("missed_hash_1", self.tracker._processed_hashes)
+
+    def test_backup_poll_cycle_skips_already_processed(self):
+        """Test that backup poll skips fills already in _processed_hashes."""
+        self.tracker._address_to_shard = {VALID_HL_ADDRESS: 0}
+        self.tracker._stop_event = MagicMock()
+        self.tracker._stop_event.is_set = MagicMock(side_effect=[False, False, True])
+
+        # Pre-record the hash (simulating WS already processed it)
+        self.tracker._record_hash("existing_hash")
+
+        fill = {"hash": "existing_hash", "coin": "BTC", "side": "B", "sz": "1", "px": "50000"}
+
+        with patch.object(self.tracker, '_fetch_fills_by_time', new_callable=AsyncMock,
+                          return_value=[fill]), \
+             patch.object(self.tracker, '_process_fill') as mock_process, \
+             patch('asyncio.sleep', new_callable=AsyncMock):
+
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(self.tracker._backup_poll_cycle())
+            finally:
+                loop.close()
+
+            mock_process.assert_not_called()
+            self.assertEqual(self.tracker._backup_fills_caught, 0)
+
+    def test_backup_poll_cycle_skips_fill_without_hash(self):
+        """Test that fills without hash or tid are skipped."""
+        self.tracker._address_to_shard = {VALID_HL_ADDRESS: 0}
+        self.tracker._stop_event = MagicMock()
+        self.tracker._stop_event.is_set = MagicMock(side_effect=[False, False, True])
+
+        fill_no_hash = {"coin": "BTC", "side": "B", "sz": "1", "px": "50000"}
+
+        with patch.object(self.tracker, '_fetch_fills_by_time', new_callable=AsyncMock,
+                          return_value=[fill_no_hash]), \
+             patch.object(self.tracker, '_process_fill') as mock_process, \
+             patch('asyncio.sleep', new_callable=AsyncMock):
+
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(self.tracker._backup_poll_cycle())
+            finally:
+                loop.close()
+
+            mock_process.assert_not_called()
+            self.assertEqual(self.tracker._backup_fills_caught, 0)
+
+    def test_backup_poll_cycle_uses_tid_as_fallback(self):
+        """Test that backup poll uses tid as hash when hash field is missing."""
+        self.tracker._address_to_shard = {VALID_HL_ADDRESS: 0}
+        self.tracker._stop_event = MagicMock()
+        self.tracker._stop_event.is_set = MagicMock(side_effect=[False, False, True])
+
+        fill_with_tid = {"tid": "tid_123", "coin": "BTC", "side": "B", "sz": "1", "px": "50000"}
+
+        with patch.object(self.tracker, '_fetch_fills_by_time', new_callable=AsyncMock,
+                          return_value=[fill_with_tid]), \
+             patch.object(self.tracker, '_process_fill') as mock_process, \
+             patch('asyncio.sleep', new_callable=AsyncMock):
+
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(self.tracker._backup_poll_cycle())
+            finally:
+                loop.close()
+
+            mock_process.assert_called_once_with(VALID_HL_ADDRESS, fill_with_tid)
+            self.assertIn("tid_123", self.tracker._processed_hashes)
+            self.assertEqual(self.tracker._backup_fills_caught, 1)
+
+    def test_backup_poll_cycle_advances_watermark_on_success(self):
+        """Test that watermark advances after successful poll."""
+        self.tracker._address_to_shard = {VALID_HL_ADDRESS: 0}
+        self.tracker._stop_event = MagicMock()
+        self.tracker._stop_event.is_set = MagicMock(side_effect=[False, False, True])
+
+        with patch.object(self.tracker, '_fetch_fills_by_time', new_callable=AsyncMock,
+                          return_value=[]), \
+             patch('asyncio.sleep', new_callable=AsyncMock):
+
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(self.tracker._backup_poll_cycle())
+            finally:
+                loop.close()
+
+        # Watermark should be set for the address
+        self.assertIn(VALID_HL_ADDRESS, self.tracker._last_poll_time_ms)
+        self.assertGreater(self.tracker._last_poll_time_ms[VALID_HL_ADDRESS], 0)
+
+    def test_backup_poll_cycle_no_watermark_advance_on_failure(self):
+        """Test that watermark does NOT advance when fetch returns None."""
+        self.tracker._address_to_shard = {VALID_HL_ADDRESS: 0}
+        self.tracker._stop_event = MagicMock()
+        self.tracker._stop_event.is_set = MagicMock(side_effect=[False, False, True])
+
+        with patch.object(self.tracker, '_fetch_fills_by_time', new_callable=AsyncMock,
+                          return_value=None), \
+             patch('asyncio.sleep', new_callable=AsyncMock):
+
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(self.tracker._backup_poll_cycle())
+            finally:
+                loop.close()
+
+        # Watermark should NOT be set
+        self.assertNotIn(VALID_HL_ADDRESS, self.tracker._last_poll_time_ms)
+
+    def test_backup_poll_cycle_cleans_stale_watermarks(self):
+        """Test that watermarks for no-longer-tracked addresses are cleaned up."""
+        self.tracker._address_to_shard = {VALID_HL_ADDRESS: 0}
+        # Pre-set a watermark for an address no longer tracked
+        stale_addr = "0x" + "dead" * 10
+        self.tracker._last_poll_time_ms = {stale_addr: 999}
+        self.tracker._stop_event = MagicMock()
+        self.tracker._stop_event.is_set = MagicMock(side_effect=[False, False, True])
+
+        with patch.object(self.tracker, '_fetch_fills_by_time', new_callable=AsyncMock,
+                          return_value=[]), \
+             patch('asyncio.sleep', new_callable=AsyncMock):
+
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(self.tracker._backup_poll_cycle())
+            finally:
+                loop.close()
+
+        # Stale address watermark should be removed
+        self.assertNotIn(stale_addr, self.tracker._last_poll_time_ms)
+        # Active address should have a watermark
+        self.assertIn(VALID_HL_ADDRESS, self.tracker._last_poll_time_ms)
+
+    def test_backup_poll_cycle_skips_when_no_tracked_addresses(self):
+        """Test that backup poll cycle does nothing when no addresses are tracked."""
+        self.tracker._address_to_shard = {}
+        self.tracker._stop_event = MagicMock()
+        self.tracker._stop_event.is_set = MagicMock(side_effect=[False, True])
+
+        with patch.object(self.tracker, '_fetch_fills_by_time', new_callable=AsyncMock) as mock_fetch, \
+             patch('asyncio.sleep', new_callable=AsyncMock):
+
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(self.tracker._backup_poll_cycle())
+            finally:
+                loop.close()
+
+            mock_fetch.assert_not_called()
+
+    def test_backup_poll_cycle_handles_process_fill_exception(self):
+        """Test that exception in _process_fill doesn't crash the poll cycle."""
+        self.tracker._address_to_shard = {VALID_HL_ADDRESS: 0}
+        self.tracker._stop_event = MagicMock()
+        self.tracker._stop_event.is_set = MagicMock(side_effect=[False, False, True])
+
+        fill = {"hash": "crash_hash", "coin": "BTC", "side": "B", "sz": "1", "px": "50000"}
+
+        with patch.object(self.tracker, '_fetch_fills_by_time', new_callable=AsyncMock,
+                          return_value=[fill]), \
+             patch.object(self.tracker, '_process_fill', side_effect=Exception("boom")), \
+             patch('asyncio.sleep', new_callable=AsyncMock):
+
+            loop = asyncio.new_event_loop()
+            try:
+                # Should not raise
+                loop.run_until_complete(self.tracker._backup_poll_cycle())
+            finally:
+                loop.close()
+
+        # Fill was not successfully processed, so counter should NOT increment
+        self.assertEqual(self.tracker._backup_fills_caught, 0)
+        # But hash should still be recorded for dedup
+        self.assertIn("crash_hash", self.tracker._processed_hashes)
+
+    def test_backup_poll_cycle_uses_lookback_for_new_address(self):
+        """Test that first poll for an address uses HL_BACKUP_POLL_LOOKBACK_MS."""
+        self.tracker._address_to_shard = {VALID_HL_ADDRESS: 0}
+        self.tracker._stop_event = MagicMock()
+        self.tracker._stop_event.is_set = MagicMock(side_effect=[False, False, True])
+
+        with patch.object(self.tracker, '_fetch_fills_by_time', new_callable=AsyncMock,
+                          return_value=[]) as mock_fetch, \
+             patch('asyncio.sleep', new_callable=AsyncMock):
+
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(self.tracker._backup_poll_cycle())
+            finally:
+                loop.close()
+
+            # Check that start_time_ms was approximately now - lookback
+            call_args = mock_fetch.call_args
+            start_ms = call_args[0][1]  # second positional arg
+            expected_approx = int(time.time() * 1000) - ValiConfig.HL_BACKUP_POLL_LOOKBACK_MS
+            # Allow 5 seconds of tolerance
+            self.assertAlmostEqual(start_ms, expected_approx, delta=5000)
+
+    def test_backup_poll_cycle_uses_existing_watermark(self):
+        """Test that subsequent polls for an address use the stored watermark."""
+        self.tracker._address_to_shard = {VALID_HL_ADDRESS: 0}
+        self.tracker._last_poll_time_ms = {VALID_HL_ADDRESS: 1234567890000}
+        self.tracker._stop_event = MagicMock()
+        self.tracker._stop_event.is_set = MagicMock(side_effect=[False, False, True])
+
+        with patch.object(self.tracker, '_fetch_fills_by_time', new_callable=AsyncMock,
+                          return_value=[]) as mock_fetch, \
+             patch('asyncio.sleep', new_callable=AsyncMock):
+
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(self.tracker._backup_poll_cycle())
+            finally:
+                loop.close()
+
+            call_args = mock_fetch.call_args
+            start_ms = call_args[0][1]
+            self.assertEqual(start_ms, 1234567890000)
+
+    # ==================== get_account_state uses proxied session ====================
+
+    @patch('entity_management.hyperliquid_tracker.requests.Session')
+    def test_fetch_hl_account_state_uses_proxied_session(self, mock_session_cls):
+        """Test that _fetch_hl_account_state creates a proxied session and closes it."""
+        mock_session = MagicMock()
+        perp_resp = MagicMock()
+        perp_resp.json.return_value = {
+            "crossMarginSummary": {"accountValue": "10000"},
+            "assetPositions": []
+        }
+        spot_resp = MagicMock()
+        spot_resp.json.return_value = {"balances": []}
+        mids_resp = MagicMock()
+        mids_resp.json.return_value = {}
+
+        mock_session.post.side_effect = [perp_resp, spot_resp, mids_resp]
+
+        with patch.object(self.tracker, '_make_proxied_session', return_value=mock_session):
+            result = self.tracker._fetch_hl_account_state(VALID_HL_ADDRESS)
+
+        # Session should be closed after use
+        mock_session.close.assert_called_once()
+        self.assertIsNotNone(result)
+        self.assertEqual(result['total_portfolio_value'], 10000.0)
 
 
 if __name__ == '__main__':
