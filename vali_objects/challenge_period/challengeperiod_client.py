@@ -142,13 +142,6 @@ class ChallengePeriodClient(RPCClientBase):
                     {"bucket": entry.bucket.value, "bucket_start_time": entry.start_time_ms}
                     for entry in data
                 ]
-            elif isinstance(data, tuple):
-                # Legacy tuple format support
-                bucket, start_time, prev_bucket, prev_time = data
-                entries = [{"bucket": bucket.value, "bucket_start_time": start_time}]
-                if prev_bucket is not None and prev_time is not None:
-                    entries.append({"bucket": prev_bucket.value, "bucket_start_time": prev_time})
-                miners_rpc_dict[hotkey] = entries
             elif isinstance(data, list):
                 miners_rpc_dict[hotkey] = data
             else:

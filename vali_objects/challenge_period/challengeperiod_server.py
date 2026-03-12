@@ -233,16 +233,12 @@ class ChallengePeriodServer(RPCServerBase):
         Bulk update active_miners from a dict.
 
         Args:
-            miners_dict: Dict mapping hotkey to dict with keys:
-                - bucket: str (bucket value like "MAINCOMP")
-                - start_time: int
-                - prev_bucket: str or None
-                - prev_time: int or None
+            miners_dict: Dict mapping hotkey to list of dicts
+                [{"bucket": str, "bucket_start_time": int}, ...]
 
         Returns:
             Number of miners updated
         """
-        # Manager's update_miners now handles both tuple and dict formats
         return self._manager.update_active_miners(miners_dict)
 
     # ==================== Management RPC Methods ====================

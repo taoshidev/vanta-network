@@ -1354,11 +1354,9 @@ class ChallengePeriodManager(CacheController):
         Bulk update active_miners from a dict.
 
         Args:
-            miners_dict: Can be any of:
+            miners_dict: Can be either:
                 - Dict mapping hotkey to List[BucketEntry]
-                - Dict mapping hotkey to tuple (bucket, start_time, prev_bucket, prev_time) (legacy)
-                - Dict mapping hotkey to dict with keys: bucket, start_time, prev_bucket, prev_time (RPC dict)
-                - Dict mapping hotkey to list of dicts [{"bucket": ..., "bucket_start_time": ...}, ...] (RPC list)
+                - Dict mapping hotkey to list of dicts [{"bucket": ..., "bucket_start_time": ...}, ...] (RPC)
 
         Returns:
             Number of miners updated
@@ -1368,8 +1366,8 @@ class ChallengePeriodManager(CacheController):
             if isinstance(data, list) and len(data) > 0 and isinstance(data[0], BucketEntry):
                 # Already in List[BucketEntry] format
                 normalized_dict[hotkey] = data
-            elif isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
-                # RPC list of dicts format
+            elif isinstance(data, list):
+                # RPC list of dicts format (or empty list)
                 normalized_dict[hotkey] = [
                     BucketEntry(
                         bucket=MinerBucket(entry["bucket"]) if isinstance(entry["bucket"], str) else entry["bucket"],
@@ -1377,26 +1375,6 @@ class ChallengePeriodManager(CacheController):
                     )
                     for entry in data
                 ]
-            elif isinstance(data, tuple):
-                # Legacy tuple format (bucket, start_time, prev_bucket, prev_time)
-                bucket, start_time, prev_bucket, prev_time = data
-                history = [BucketEntry(bucket, start_time)]
-                if prev_bucket is not None and prev_time is not None:
-                    history.append(BucketEntry(prev_bucket, prev_time))
-                normalized_dict[hotkey] = history
-            elif isinstance(data, dict):
-                # RPC dict format with bucket, start_time, prev_bucket, prev_time
-                bucket = MinerBucket(data["bucket"]) if isinstance(data["bucket"], str) else data["bucket"]
-                start_time = data["start_time"]
-                prev_bucket = MinerBucket(data["prev_bucket"]) if (data.get("prev_bucket") and isinstance(data["prev_bucket"], str)) else data.get("prev_bucket")
-                prev_time = data.get("prev_time")
-
-                history = [BucketEntry(bucket, start_time)]
-                if prev_bucket is not None and prev_time is not None:
-                    history.append(BucketEntry(prev_bucket, prev_time))
-                normalized_dict[hotkey] = history
-            elif isinstance(data, list) and len(data) == 0:
-                normalized_dict[hotkey] = []
             else:
                 raise ValueError(f"Invalid data type for miner {hotkey}: {type(data)}")
 
