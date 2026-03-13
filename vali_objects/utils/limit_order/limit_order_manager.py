@@ -412,9 +412,6 @@ class LimitOrderManager(CacheController):
                     if o.order_uuid == order_uuid:
                         orders_list.pop(i)
                         break
-
-            order.execution_type = ExecutionType.MARKET
-            order.src = OrderSource.ORGANIC
             fill_error = self._fill_limit_order_with_price_source(miner_hotkey, order, price_sources[0], None, enforce_market_cooldown=True)
             if fill_error:
                 raise SignalException(fill_error)
@@ -1387,8 +1384,8 @@ class LimitOrderManager(CacheController):
         bid_price = ps.bid if ps.bid > 0 else ps.open
         ask_price = ps.ask if ps.ask > 0 else ps.open
 
-        order_type = position.position_type
-        order.order_type = order_type
+        position_type = position.position_type
+        order.order_type = position_type
 
         # Trailing stop: update best price and compute trailing SL
         trailing_sl = None
@@ -1396,7 +1393,7 @@ class LimitOrderManager(CacheController):
             trailing_percent = order.trailing_stop.get('trailing_percent')
             trailing_value = order.trailing_stop.get('trailing_value')
 
-            if order_type == OrderType.LONG:
+            if position_type == OrderType.LONG:
                 new_best = max(order.price, bid_price) if order.price > 0 else bid_price
                 if new_best != order.price:
                     bt.logging.info(
@@ -1410,7 +1407,7 @@ class LimitOrderManager(CacheController):
                 else:
                     trailing_sl = order.price - float(trailing_value)
 
-            elif order_type == OrderType.SHORT:
+            elif position_type == OrderType.SHORT:
                 new_best = min(order.price, ask_price) if order.price > 0 else ask_price
                 if new_best != order.price:
                     bt.logging.info(
@@ -1430,15 +1427,15 @@ class LimitOrderManager(CacheController):
         if trailing_sl is not None:
             if effective_sl is None:
                 effective_sl = trailing_sl
-            elif order_type == OrderType.LONG:
+            elif position_type == OrderType.LONG:
                 effective_sl = max(effective_sl, trailing_sl)
-            elif order_type == OrderType.SHORT:
+            elif position_type == OrderType.SHORT:
                 effective_sl = min(effective_sl, trailing_sl)
 
-        # For LONG orders:
+        # For LONG positions:
         # - Stop loss: triggers when market price < SL (use bid for selling)
         # - Take profit: triggers when market price > TP (use bid for selling)
-        if order_type == OrderType.LONG:
+        if position_type == OrderType.LONG:
             if effective_sl is not None and bid_price < effective_sl:
                 bt.logging.info(f"Bracket order stop loss triggered: bid={bid_price} < SL={effective_sl}")
                 return effective_sl
@@ -1446,10 +1443,10 @@ class LimitOrderManager(CacheController):
                 bt.logging.info(f"Bracket order take profit triggered: bid={bid_price} > TP={order.take_profit}")
                 return order.take_profit
 
-        # For SHORT orders:
+        # For SHORT positions:
         # - Stop loss: triggers when market price > SL (use ask for buying)
         # - Take profit: triggers when market price < TP (use ask for buying)
-        elif order_type == OrderType.SHORT:
+        elif position_type == OrderType.SHORT:
             if effective_sl is not None and ask_price > effective_sl:
                 bt.logging.info(f"Bracket order stop loss triggered: ask={ask_price} > SL={effective_sl}")
                 return effective_sl
