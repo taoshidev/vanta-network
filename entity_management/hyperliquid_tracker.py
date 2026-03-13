@@ -154,6 +154,10 @@ class HyperliquidTracker:
                     self.connected = True
                     backoff_s = 1.0
 
+                    # New socket starts with no server-side subscriptions. Clear local
+                    # cache so _sync_subscriptions replays all address subscriptions.
+                    self.subscribed_addresses.clear()
+
                     # Subscribe to current addresses
                     await self._sync_subscriptions(ws)
 
@@ -770,6 +774,31 @@ class HyperliquidTracker:
         except Exception as e:
             bt.logging.debug(f"[HL_TRACKER] Rejection broadcast failed for {synthetic_hotkey}: {e}")
 
+    def _broadcast_accepted_fill(
+        self,
+        synthetic_hotkey: str,
+        trade_pair: str,
+        order_type: str,
+        fill_hash: str = "",
+    ) -> None:
+        """Broadcast an accepted fill event to WebSocket subscribers for a subaccount."""
+        if not self._ws_notifier_client:
+            return
+        try:
+            self._ws_notifier_client.broadcast_subaccount_dashboard(
+                synthetic_hotkey,
+                {
+                    "order_event": {
+                        "status": "accepted",
+                        "trade_pair": trade_pair,
+                        "order_type": order_type,
+                        "fill_hash": fill_hash or "",
+                    }
+                },
+            )
+        except Exception as e:
+            bt.logging.debug(f"[HL_TRACKER] Accepted event broadcast failed for {synthetic_hotkey}: {e}")
+
     # ==================== HL Account State ====================
 
     def _fetch_hl_account_state(self, hl_address: str) -> Optional[dict]:
@@ -1057,6 +1086,12 @@ class HyperliquidTracker:
 
             self._fills_processed += 1
             self._last_fill_time = time.time()
+            self._broadcast_accepted_fill(
+                synthetic_hotkey=synthetic_hotkey,
+                trade_pair=trade_pair_id,
+                order_type=order_type,
+                fill_hash=fill.get("hash") or fill.get("tid") or "",
+            )
 
             bt.logging.info(
                 f"[HL_TRACKER] Processed fill: {coin} target_weight={target_signed_weight:+.4f} "
