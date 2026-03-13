@@ -1943,6 +1943,73 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             drawdown['ledger_max_drawdown'] = last_perf.get('max_drawdown')
 
         subaccount_info = dashboard.get('subaccount_info') or {}
+        challenge_period = dashboard.get('challenge_period') or {}
+        account_size_data = dashboard.get('account_size_data') or {}
+
+        # Build challenge progress metrics for subaccounts in SUBACCOUNT_CHALLENGE.
+        challenge_bucket = challenge_period.get('bucket')
+        challenge_start_time_ms = challenge_period.get('start_time_ms')
+        now_ms = TimeUtil.now_in_millis()
+        in_challenge_period = challenge_bucket == 'SUBACCOUNT_CHALLENGE'
+
+        elapsed_time_ms = None
+        time_progress_percent = None
+        if isinstance(challenge_start_time_ms, int):
+            elapsed_time_ms = max(0, now_ms - challenge_start_time_ms)
+            if ValiConfig.CHALLENGE_PERIOD_MAXIMUM_MS > 0:
+                time_progress_percent = min(
+                    100.0,
+                    (elapsed_time_ms / ValiConfig.CHALLENGE_PERIOD_MAXIMUM_MS) * 100.0
+                )
+
+        account_size = subaccount_info.get('account_size')
+        balance = account_size_data.get('balance')
+        max_return = account_size_data.get('max_return')
+        asset_class = (subaccount_info.get('asset_class') or '').lower()
+
+        target_return_threshold = (
+            ValiConfig.SUBACCOUNT_CRYPTO_CHALLENGE_RETURNS_THRESHOLD
+            if asset_class == TradePairCategory.CRYPTO.value
+            else ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD
+        )
+        target_return_percent = target_return_threshold * 100.0
+        drawdown_limit_percent = ValiConfig.SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD * 100.0
+
+        current_return = None
+        returns_percent = None
+        returns_progress_percent = None
+        challenge_completion_percent = None
+        drawdown_percent = None
+        drawdown_usage_percent = None
+
+        if isinstance(account_size, (int, float)) and account_size > 0 and isinstance(balance, (int, float)):
+            current_return = balance / account_size
+            returns_percent = (current_return - 1.0) * 100.0
+            if in_challenge_period and target_return_percent > 0:
+                raw_returns_progress = (returns_percent / target_return_percent) * 100.0
+                returns_progress_percent = min(max(raw_returns_progress, 0.0), 100.0)
+                challenge_completion_percent = returns_progress_percent
+
+            if isinstance(max_return, (int, float)) and max_return > 0:
+                drawdown_percent = max((1.0 - (current_return / max_return)) * 100.0, 0.0)
+                if drawdown_limit_percent > 0:
+                    drawdown_usage_percent = min(max((drawdown_percent / drawdown_limit_percent) * 100.0, 0.0), 100.0)
+
+        challenge_progress = {
+            'in_challenge_period': in_challenge_period,
+            'bucket': challenge_bucket,
+            'start_time_ms': challenge_start_time_ms,
+            'elapsed_time_ms': elapsed_time_ms,
+            'time_progress_percent': time_progress_percent,
+            'current_return': current_return,
+            'returns_percent': returns_percent,
+            'target_return_percent': target_return_percent,
+            'returns_progress_percent': returns_progress_percent,
+            'challenge_completion_percent': challenge_completion_percent,
+            'drawdown_percent': drawdown_percent,
+            'drawdown_limit_percent': drawdown_limit_percent,
+            'drawdown_usage_percent': drawdown_usage_percent,
+        }
 
         response_body = json.dumps(
             {
@@ -1953,7 +2020,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 'payout_address': subaccount_info.get('payout_address'),  # EVM address for USDC
                 'positions': dashboard.get('positions'),
                 'drawdown': drawdown or None,
-                'timestamp': TimeUtil.now_in_millis(),
+                'challenge_progress': challenge_progress,
+                'timestamp': now_ms,
             },
             cls=CustomEncoder,
         )

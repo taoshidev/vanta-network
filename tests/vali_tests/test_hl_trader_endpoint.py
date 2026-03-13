@@ -17,6 +17,7 @@ from unittest.mock import MagicMock, patch, PropertyMock
 from flask import Flask, jsonify, Response
 from time_util.time_util import TimeUtil
 from vali_objects.utils.vali_bkp_utils import CustomEncoder
+from vali_objects.vali_config import ValiConfig
 
 
 # ==================== Test constants ====================
@@ -32,6 +33,8 @@ def _build_dashboard(
     positions=None,
     statistics=None,
     ledger=None,
+    challenge_period=None,
+    account_size_data=None,
 ):
     """Build a dashboard dict matching the shape returned by get_subaccount_dashboard_data."""
     return {
@@ -47,9 +50,10 @@ def _build_dashboard(
             'hl_address': VALID_HL_ADDRESS,
             'payout_address': payout_address,
         },
-        'challenge_period': None,
+        'challenge_period': challenge_period,
         'ledger': ledger,
         'positions': positions,
+        'account_size_data': account_size_data,
         'statistics': statistics,
         'elimination': None,
     }
@@ -256,6 +260,72 @@ class TestHlTraderEndpoint(unittest.TestCase):
         # ledger_max_drawdown should be None since no performance key
         self.assertIsNotNone(data['drawdown'])
         self.assertIsNone(data['drawdown']['ledger_max_drawdown'])
+
+    # ==================== Challenge progress ====================
+
+    def test_challenge_progress_for_subaccount_challenge(self):
+        """
+        Challenge progress is populated for SUBACCOUNT_CHALLENGE subaccounts.
+        """
+        self.mock_entity.get_synthetic_hotkey_for_hl_address.return_value = SYNTHETIC_HOTKEY
+        self.mock_entity.get_subaccount_dashboard_data.return_value = _build_dashboard(
+            account_size=50_000,
+            challenge_period={
+                'bucket': 'SUBACCOUNT_CHALLENGE',
+                'start_time_ms': 1_700_000_000_000,
+            },
+            account_size_data={
+                'balance': 53_000,   # current_return = 1.06
+                'max_return': 1.08,
+            },
+        )
+
+        now_ms = 1_700_864_000_000  # +10 days
+        with patch("vanta_api.validator_rest_server.TimeUtil.now_in_millis", return_value=now_ms):
+            status, data = self._get(VALID_HL_ADDRESS)
+
+        self.assertEqual(status, 200)
+        challenge_progress = data['challenge_progress']
+        self.assertIsNotNone(challenge_progress)
+        self.assertTrue(challenge_progress['in_challenge_period'])
+        self.assertEqual(challenge_progress['bucket'], 'SUBACCOUNT_CHALLENGE')
+        self.assertEqual(challenge_progress['elapsed_time_ms'], now_ms - 1_700_000_000_000)
+        self.assertAlmostEqual(challenge_progress['time_progress_percent'], (10 / ValiConfig.CHALLENGE_PERIOD_MAXIMUM_DAYS) * 100.0)
+        self.assertAlmostEqual(challenge_progress['current_return'], 1.06)
+        self.assertAlmostEqual(challenge_progress['returns_percent'], 6.0)
+        self.assertAlmostEqual(
+            challenge_progress['target_return_percent'],
+            ValiConfig.SUBACCOUNT_CRYPTO_CHALLENGE_RETURNS_THRESHOLD * 100.0
+        )
+        self.assertAlmostEqual(challenge_progress['returns_progress_percent'], 60.0)
+        self.assertAlmostEqual(challenge_progress['challenge_completion_percent'], 60.0)
+        self.assertAlmostEqual(challenge_progress['drawdown_limit_percent'], 5.0)
+        self.assertAlmostEqual(challenge_progress['drawdown_percent'], (1 - (1.06 / 1.08)) * 100.0)
+
+    def test_challenge_progress_for_non_challenge_bucket(self):
+        """
+        Challenge completion percent is None when not in SUBACCOUNT_CHALLENGE.
+        """
+        self.mock_entity.get_synthetic_hotkey_for_hl_address.return_value = SYNTHETIC_HOTKEY
+        self.mock_entity.get_subaccount_dashboard_data.return_value = _build_dashboard(
+            challenge_period={
+                'bucket': 'SUBACCOUNT_FUNDED',
+                'start_time_ms': 1_700_000_000_000,
+            },
+            account_size_data={
+                'balance': 52_000,
+                'max_return': 1.08,
+            },
+        )
+
+        status, data = self._get(VALID_HL_ADDRESS)
+
+        self.assertEqual(status, 200)
+        challenge_progress = data['challenge_progress']
+        self.assertFalse(challenge_progress['in_challenge_period'])
+        self.assertEqual(challenge_progress['bucket'], 'SUBACCOUNT_FUNDED')
+        self.assertIsNone(challenge_progress['returns_progress_percent'])
+        self.assertIsNone(challenge_progress['challenge_completion_percent'])
 
     # ==================== 404 paths ====================
 
