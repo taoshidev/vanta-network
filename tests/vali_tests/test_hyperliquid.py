@@ -721,6 +721,18 @@ class TestHyperliquidTracker(TestBase):
         # Mock USDC balance check to pass by default
         self.tracker._get_hl_usdc_balance = MagicMock(return_value=5000.0)
 
+        # Mock HL account state with default BTC position
+        self.tracker._fetch_hl_account_state = MagicMock(return_value={
+            "total_portfolio_value": account_size,
+            "positions": {
+                "BTC": {"szi": 1.0, "positionValue": 50000, "weight": 0.5}
+            }
+        })
+
+        # Mock position client - no existing Vanta position by default
+        self.tracker._position_client = MagicMock()
+        self.tracker._position_client.get_open_position_for_trade_pair.return_value = None
+
         # OrderProcessor mock
         mock_result = MagicMock()
         mock_result.should_track_uuid = True

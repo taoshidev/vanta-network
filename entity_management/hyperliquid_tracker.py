@@ -846,6 +846,28 @@ class HyperliquidTracker:
         except Exception as e:
             bt.logging.debug(f"[HL_TRACKER] Rejection broadcast failed for {synthetic_hotkey}: {e}")
 
+    # ==================== HL USDC Balance ====================
+
+    def _get_hl_usdc_balance(self, hl_address: str) -> Optional[float]:
+        """
+        Fetch the withdrawable USDC balance for a Hyperliquid address.
+
+        Returns the withdrawable amount as a float, 0.0 if the field is missing,
+        or None on API error.
+        """
+        try:
+            resp = requests.post(
+                ValiConfig.HL_MAINNET_INFO,
+                json={"type": "clearinghouseState", "user": hl_address},
+                timeout=5,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return float(data.get("withdrawable", 0))
+        except Exception as e:
+            bt.logging.error(f"[HL_TRACKER] Failed to fetch USDC balance for {hl_address}: {e}")
+            return None
+
     # ==================== HL Account State ====================
 
     def _fetch_hl_account_state(self, hl_address: str) -> Optional[dict]:
@@ -1149,6 +1171,21 @@ class HyperliquidTracker:
         if not is_market_open:
             bt.logging.debug(f"[HL_TRACKER] Market closed for {trade_pair_id}")
             self._broadcast_rejection(synthetic_hotkey, f"Market is closed for {trade_pair_id}.")
+            return
+
+        # USDC balance check
+        usdc_balance = self._get_hl_usdc_balance(hl_address)
+        if usdc_balance is None or usdc_balance < ValiConfig.HL_MIN_USDC_BALANCE:
+            balance_str = f"${usdc_balance:,.2f}" if usdc_balance is not None else "unknown"
+            bt.logging.warning(
+                f"[HL_TRACKER] Insufficient USDC balance for {synthetic_hotkey}: "
+                f"{balance_str} (minimum ${ValiConfig.HL_MIN_USDC_BALANCE:,} required)"
+            )
+            self._broadcast_rejection(
+                synthetic_hotkey,
+                f"Insufficient free USDC balance: {balance_str}. "
+                f"Minimum ${ValiConfig.HL_MIN_USDC_BALANCE:,} required after each trade."
+            )
             return
 
         # === Step 1: Fetch HL account state -> compute target weight ===
