@@ -941,8 +941,9 @@ class PositionManager:
         miners_to_wipe = []
         miners_to_promote = []
         position_uuids_to_delete = []
+        position_uuids_to_archive = []
         wipe_positions = False
-        reopen_force_closed_orders = True
+        reopen_force_closed_orders = False
         miners_to_wipe_perf_ledger = []
 
         current_eliminations = self._elimination_client.get_eliminations_from_memory() if self._elimination_client else []
@@ -973,6 +974,7 @@ class PositionManager:
             # All miners that wanted their challenge period restarted
             miners_to_wipe = ["5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_2", "5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_3", "5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_5", "5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_8", "5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_12", "5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_16", "5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_15", "5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_19"]
             position_uuids_to_delete = []
+            position_uuids_to_archive = []
             miners_to_promote = []
 
             for p in positions_to_snap:
@@ -1034,6 +1036,8 @@ class PositionManager:
                     elif pos.position_uuid in position_uuids_to_delete:
                         print(f'Deleting position {pos.position_uuid} for trade pair {pos.trade_pair.trade_pair_id} for hk {pos.miner_hotkey}')
                         self.delete_position(pos.miner_hotkey, pos.position_uuid)
+                    elif pos.position_uuid in position_uuids_to_archive:
+                        self.archive_positions_for_hotkey(pos.miner_hotkey, [pos])
                     elif reopen_force_closed_orders:
                         if any((o.src in (1, 3, 12)) for o in pos.orders):
                             pos.orders = [o for o in pos.orders if (o.src not in (1, 3, 12))]
