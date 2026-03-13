@@ -31,7 +31,7 @@ from vali_objects.price_fetcher.live_price_client import LivePriceFetcherClient
 from vali_objects.utils.elimination.elimination_client import EliminationClient
 from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
 
-TARGET_MS = 1772128740000 + (1000 * 60 * 60 * 6)  # + 6 hours
+TARGET_MS = 1773446400000 + (1000 * 60 * 60 * 6)  # + 6 hours
 
 
 class PositionManager:
@@ -980,9 +980,9 @@ class PositionManager:
             # bt.logging.info(f"Applied {n_slippage_corrections} forex slippage corrections")
 
             # All miners that wanted their challenge period restarted
-            miners_to_wipe = ["5FCPYqbYEq2y7NwQTCLxNApP2UjUE86J8QnhdWTHFkzzFWL1"]
+            miners_to_wipe = ["5FCPYqbYEq2y7NwQTCLxNApP2UjUE86J8QnhdWTHFkzzFWL1", "5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_9"]
             position_uuids_to_delete = ["f366bb3e-11a8-40ae-b6bd-ec941ceab193", "ad853341-617e-4b76-8a4d-794b7eecf7f5"]
-            position_uuids_to_archive = []
+            position_uuids_to_archive = ["2811e675-c8cd-41e1-894c-419fc06cafc0", "a0a451f4-de1a-4c82-ac63-156e42ec4902", "6fa7d1f6-d71f-4aa3-9a2a-94d8741738a6", "014e5ff2-56d6-4508-b26c-28cf60b79903", "3ede8965-caa9-4991-a453-e201db3f3e6f", "7b3158ae-3afa-43ee-8ccf-8d946a4abfd1", "262a8385-64bb-45f4-932b-1a6c72a7d77e", "e744235f-eeeb-4c3b-b0a2-2f616bff2e2f"]
             miners_to_promote = []
 
             for p in positions_to_snap:
@@ -1053,12 +1053,13 @@ class PositionManager:
                             self.save_miner_position(pos, validate=False)
                             print(f'Removed eliminated orders from position {pos}')
 
-                if self._challenge_period_client and self._challenge_period_client.has_miner(miner_hotkey):
-                    self._challenge_period_client.remove_miner(miner_hotkey)
-                    print(f'Removed challengeperiod status for {miner_hotkey}')
+                # NOTE undo for
+                # if self._challenge_period_client and self._challenge_period_client.has_miner(miner_hotkey):
+                #     self._challenge_period_client.remove_miner(miner_hotkey)
+                #     print(f'Removed challengeperiod status for {miner_hotkey}')
 
-                if self._challenge_period_client:
-                    self._challenge_period_client._write_challengeperiod_from_memory_to_disk()
+                # if self._challenge_period_client:
+                #     self._challenge_period_client._write_challengeperiod_from_memory_to_disk()
 
                 # Rebuild account state from current positions after corrections
                 current_positions = self.get_positions_for_one_hotkey(miner_hotkey)
