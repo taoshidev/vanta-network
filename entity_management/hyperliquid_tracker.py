@@ -68,6 +68,8 @@ class HyperliquidTracker:
     MAX_DEDUP_HASHES = 50_000
     # How often to refresh the list of subscribed addresses (seconds)
     ADDRESS_REFRESH_INTERVAL_S = 60.0
+    # Cache TTL for dynamic HL coin discovery used by L2 subscriptions.
+    L2_COIN_CACHE_TTL_S = 300.0
 
     # ==================== Inner class: _WebSocketShard ====================
 
@@ -165,7 +167,11 @@ class HyperliquidTracker:
                                 raw = await asyncio.wait_for(ws.recv(), timeout=5.0)
                             except asyncio.TimeoutError:
                                 continue
-                            except websockets.exceptions.ConnectionClosed:
+                            except websockets.exceptions.ConnectionClosed as e:
+                                bt.logging.warning(
+                                    f"[HL_{self.label}] WebSocket closed: code={getattr(e, 'code', None)} "
+                                    f"reason={getattr(e, 'reason', '')!r}"
+                                )
                                 break
                             try:
                                 msg = json.loads(raw)
@@ -234,7 +240,7 @@ class HyperliquidTracker:
             for addr in new_addresses - self.subscribed_addresses:
                 msg = {
                     "method": "subscribe",
-                    "subscription": {"type": "userFills", "user": addr},
+                    "subscription": {"type": "userFills", "user": addr.lower()},
                 }
                 try:
                     await ws.send(json.dumps(msg))
@@ -267,7 +273,7 @@ class HyperliquidTracker:
                 n_sig = None
 
             if n_sig is not None:
-                for coin in ValiConfig.HL_COIN_TO_TRADE_PAIR.keys():
+                for coin in self.tracker._get_l2_subscription_coins():
                     try:
                         await ws.send(json.dumps({
                             "method": "subscribe",
@@ -348,6 +354,8 @@ class HyperliquidTracker:
         # Metrics
         self._fills_processed = 0
         self._last_fill_time: Optional[float] = None
+        self._l2_coin_cache: Optional[Set[str]] = None
+        self._l2_coin_cache_ts: float = 0.0
 
     # ==================== Lifecycle ====================
 
@@ -421,6 +429,53 @@ class HyperliquidTracker:
                 except Exception:
                     pass
             self._loop.close()
+
+    def _get_l2_subscription_coins(self) -> List[str]:
+        """
+        Return HL coins that should be used for l2Book subscriptions.
+
+        We dynamically intersect configured coins with HL `allMids` to avoid sending
+        unsupported testnet subscriptions that can cause abrupt socket closes.
+        """
+        configured_coins = set(ValiConfig.HL_COIN_TO_TRADE_PAIR.keys())
+        now = time.time()
+        if (
+            self._l2_coin_cache is not None
+            and (now - self._l2_coin_cache_ts) < self.L2_COIN_CACHE_TTL_S
+        ):
+            return sorted(self._l2_coin_cache)
+
+        try:
+            resp = requests.post(
+                ValiConfig.hl_info_url(),
+                json={"type": "allMids"},
+                timeout=5,
+            )
+            mids = resp.json()
+            if isinstance(mids, dict):
+                supported = configured_coins.intersection(mids.keys())
+            else:
+                supported = configured_coins
+
+            if not supported:
+                supported = configured_coins
+            elif supported != configured_coins:
+                skipped = sorted(configured_coins - supported)
+                bt.logging.info(
+                    f"[HL_TRACKER] Skipping unsupported l2Book coins on current HL env: {skipped}"
+                )
+
+            self._l2_coin_cache = supported
+            self._l2_coin_cache_ts = now
+            return sorted(supported)
+        except Exception as e:
+            bt.logging.warning(
+                f"[HL_TRACKER] Failed to fetch dynamic l2Book coin list: {e}. "
+                "Falling back to configured coins."
+            )
+            if self._l2_coin_cache:
+                return sorted(self._l2_coin_cache)
+            return sorted(configured_coins)
 
     # ==================== Proxy Config ====================
 
@@ -797,6 +852,10 @@ class HyperliquidTracker:
 
         # Resolve synthetic hotkey
         synthetic_hotkey = self._entity_client.get_synthetic_hotkey_for_hl_address(hl_address)
+        if not synthetic_hotkey and isinstance(hl_address, str):
+            synthetic_hotkey = self._entity_client.get_synthetic_hotkey_for_hl_address(
+                hl_address.lower()
+            )
         if not synthetic_hotkey:
             bt.logging.warning(f"[HL_TRACKER] No synthetic hotkey for HL address {hl_address}")
             return
