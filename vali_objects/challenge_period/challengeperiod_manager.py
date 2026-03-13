@@ -1358,14 +1358,17 @@ class ChallengePeriodManager(CacheController):
 
         if is_new:
             self.active_miners[hotkey] = [new_entry]
+            bucket_changed = True
         else:
             history = self.active_miners[hotkey]
             if history[0].bucket != bucket:
                 # Bucket changed — prepend new entry, keeping full history
                 history.insert(0, new_entry)
+                bucket_changed = True
             else:
                 # Same bucket — update in place
                 history[0] = new_entry
+                bucket_changed = False
 
         # Push bucket to MinerAccount
         try:
