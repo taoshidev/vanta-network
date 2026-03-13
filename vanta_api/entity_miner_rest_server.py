@@ -434,8 +434,25 @@ class EntityMinerRestServer(MinerRestServer):
             return
 
         if msg_type == "subaccount_dashboard":
-            # Update dashboard cache
             data = msg.get("data", {})
+
+            # Accepted fill event payloads are sent through the dashboard channel.
+            order_event_data = data.get("order_event") if isinstance(data, dict) else None
+            if isinstance(order_event_data, dict) and order_event_data.get("status") == "accepted":
+                event = OrderEvent(
+                    timestamp_ms=msg.get("timestamp", int(time.time() * 1000)),
+                    hl_address=hl_address,
+                    trade_pair=order_event_data.get("trade_pair", ""),
+                    order_type=order_event_data.get("order_type", ""),
+                    status="accepted",
+                    fill_hash=order_event_data.get("fill_hash", ""),
+                    synthetic_hotkey=synthetic_hotkey
+                )
+                self._event_store.add(event)
+                self._push_sse(hl_address, {"type": "event", "data": event.to_dict()})
+                return
+
+            # Update dashboard cache
             self._dashboard_cache[hl_address] = {
                 "timestamp_ms": msg.get("timestamp", int(time.time() * 1000)),
                 "synthetic_hotkey": synthetic_hotkey,

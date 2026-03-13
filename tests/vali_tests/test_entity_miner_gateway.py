@@ -749,6 +749,29 @@ class TestHLTrackerRejectionBroadcasts(TestBase):
         # Should not raise
         tracker._broadcast_rejection("5Entity_0", "No crash")
 
+    def test_broadcast_accepted_fill_calls_notifier(self):
+        """Accepted fills are broadcast as order_event payloads."""
+        tracker = self._make_tracker()
+
+        tracker._broadcast_accepted_fill(
+            synthetic_hotkey="5Entity_0",
+            trade_pair="BTCUSD",
+            order_type="LONG",
+            fill_hash="0xabc123",
+        )
+
+        tracker._ws_notifier_client.broadcast_subaccount_dashboard.assert_called_once_with(
+            "5Entity_0",
+            {
+                "order_event": {
+                    "status": "accepted",
+                    "trade_pair": "BTCUSD",
+                    "order_type": "LONG",
+                    "fill_hash": "0xabc123",
+                }
+            },
+        )
+
     def test_rate_limit_rejection_broadcasts(self):
         """Rate limiting rejection triggers broadcast with wait time."""
         tracker = self._make_tracker()
@@ -878,6 +901,34 @@ class TestEntityMinerRestServerMessageHandling(TestBase):
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0]["status"], "rejected")
         self.assertEqual(events[0]["error_message"], "Market is closed for BTCUSD.")
+        gw._push_sse.assert_called_once()
+
+    def test_handle_accepted_order_event_message(self):
+        """Accepted order_event payloads create OrderEvents and SSE updates."""
+        gw = self._make_gateway()
+        gw._push_sse = MagicMock()
+
+        gw._handle_ws_message({
+            "type": "subaccount_dashboard",
+            "synthetic_hotkey": "5Entity_0",
+            "timestamp": 1700000000000,
+            "data": {
+                "order_event": {
+                    "status": "accepted",
+                    "trade_pair": "BTCUSD",
+                    "order_type": "LONG",
+                    "fill_hash": "0xfill",
+                }
+            }
+        })
+
+        events = gw._event_store.get_events("0xHL1")
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["status"], "accepted")
+        self.assertEqual(events[0]["trade_pair"], "BTCUSD")
+        self.assertEqual(events[0]["order_type"], "LONG")
+        self.assertEqual(events[0]["fill_hash"], "0xfill")
+        self.assertNotIn("0xHL1", gw._dashboard_cache)
         gw._push_sse.assert_called_once()
 
     def test_handle_message_unknown_synthetic(self):
