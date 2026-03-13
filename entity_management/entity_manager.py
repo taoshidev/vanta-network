@@ -918,6 +918,33 @@ class EntityManager(ValidatorBroadcastBase):
         with entity_lock:
             return self.entities.get(entity_hotkey)
 
+    def get_subaccount_dashboard(self, synthetic_hotkey: str) -> dict | None:
+        entity_hotkey, subaccount_id = parse_synthetic_hotkey(synthetic_hotkey)
+        if not entity_hotkey:
+            return None
+
+        entity_lock = self._get_entity_lock(entity_hotkey)
+        with entity_lock:
+            entity_data = self.entities.get(entity_hotkey)
+
+            if entity_data is None:
+                return None
+
+            subaccount = entity_data.subaccounts.get(subaccount_id)
+            if subaccount is None:
+                return None
+
+            return {
+                "synthetic_hotkey": synthetic_hotkey,
+                "subaccount_uuid": subaccount.subaccount_uuid,
+                "subaccount_id": subaccount.subaccount_id,
+                "asset_class": subaccount.asset_class,
+                "account_size": subaccount.account_size,
+                "status": subaccount.status,
+                "created_at_ms": subaccount.created_at_ms,
+                "eliminated_at_ms": subaccount.eliminated_at_ms,
+            }
+
     def get_synthetic_hotkey_from_uuid(self, subaccount_uuid: str) -> Optional[str]:
         """
         Translate subaccount UUID to synthetic hotkey using O(1) reverse index.

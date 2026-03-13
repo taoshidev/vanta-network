@@ -1510,20 +1510,18 @@ class ChallengePeriodManager(CacheController):
             True if this is a new miner, False if updating existing
         """
         is_new = hotkey not in self.active_miners
-        bucket_changed = False
+        new_entry = BucketEntry(bucket, start_time)
 
-        # Auto-capture previous state if not explicitly provided and miner exists
-        if not is_new and prev_bucket is None and prev_time is None:
-            current_bucket, current_time, _, _ = self.active_miners[hotkey]
-            # Only capture previous state if the bucket is actually changing
-            if current_bucket != bucket:
-                prev_bucket = current_bucket
-                prev_time = current_time
-                bucket_changed = True
-        elif is_new:
-            bucket_changed = True
-
-        self.active_miners[hotkey] = (bucket, start_time, prev_bucket, prev_time)
+        if is_new:
+            self.active_miners[hotkey] = [new_entry]
+        else:
+            history = self.active_miners[hotkey]
+            if history[0].bucket != bucket:
+                # Bucket changed — prepend new entry, keeping full history
+                history.insert(0, new_entry)
+            else:
+                # Same bucket — update in place
+                history[0] = new_entry
 
         # Push bucket to MinerAccount
         try:
