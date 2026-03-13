@@ -845,6 +845,34 @@ class TestHLTrackerRejectionBroadcasts(TestBase):
         self.assertIn("Order rejected", call_args[0][1]["error_msg"])
         self.assertIn("Leverage too high", call_args[0][1]["error_msg"])
 
+    def test_unexpected_exception_rejection_broadcasts(self):
+        """Unexpected exceptions during order processing also trigger rejection broadcast."""
+        tracker = self._make_tracker()
+        self._setup_valid_fill_path(tracker)
+
+        tracker._rate_limiter = MagicMock()
+        tracker._rate_limiter.is_allowed.return_value = (True, 0)
+        tracker._elimination_client.get_elimination_local_cache.return_value = None
+        tracker._entity_client.validate_hotkey_for_orders.return_value = {"is_valid": True}
+
+        with patch('entity_management.hyperliquid_tracker.ValiConfig') as mock_config, \
+             patch('entity_management.hyperliquid_tracker.TRADE_PAIR_ID_TO_TRADE_PAIR') as mock_tp, \
+             patch('entity_management.hyperliquid_tracker.OrderProcessor') as mock_op:
+            mock_config.HL_COIN_TO_TRADE_PAIR = {"BTC": "BTCUSD"}
+            mock_config.CRYPTO_MIN_LEVERAGE = 0.01
+            mock_config.CRYPTO_MAX_LEVERAGE = 0.5
+            tp_mock = MagicMock(is_blocked=False)
+            mock_tp.get = MagicMock(return_value=tp_mock)
+            tracker._price_fetcher_client.is_market_open.return_value = True
+
+            mock_op.process_order.side_effect = ValueError("Position at max $1000.00 (limit: $1000.00)")
+
+            tracker._process_fill("0xaddr", self._make_fill())
+
+        call_args = tracker._ws_notifier_client.broadcast_subaccount_dashboard.call_args
+        self.assertIn("Order rejected", call_args[0][1]["error_msg"])
+        self.assertIn("Position at max", call_args[0][1]["error_msg"])
+
 
 # ==================== EntityMinerRestServer WS Message Handling Tests ====================
 
