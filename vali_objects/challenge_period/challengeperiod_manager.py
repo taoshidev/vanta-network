@@ -262,8 +262,9 @@ class ChallengePeriodManager(CacheController):
         any_changes = False
         for hotkey in self.get_all_miner_hotkeys():
             if hotkey not in hotkeys:
+                bucket = self.get_miner_bucket(hotkey)
                 # Entity miners do not have positions. skip pruning
-                if self.get_miner_bucket(hotkey) == MinerBucket.ENTITY:
+                if bucket in [MinerBucket.ENTITY, MinerBucket.SUBACCOUNT_FUNDED]:
                     continue
                 self.remove_miner(hotkey)
                 any_changes = True
