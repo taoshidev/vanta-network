@@ -504,11 +504,7 @@ class EntityMinerRestServer(MinerRestServer):
     # ==================== Endpoints ====================
 
     def dashboard_endpoint(self, hl_address):
-        """GET /api/hl/<hl_address>/dashboard - Return cached dashboard data."""
-        api_key = self._get_api_key_safe()
-        if not self.is_valid_api_key(api_key):
-            return jsonify({'error': 'Unauthorized access'}), 401
-
+        """GET /api/hl/<hl_address>/dashboard - Return cached dashboard data (no API key required)."""
         dashboard = self._dashboard_cache.get(hl_address)
         if not dashboard:
             return jsonify({'status': 'no_data', 'hl_address': hl_address}), 404
@@ -516,21 +512,13 @@ class EntityMinerRestServer(MinerRestServer):
         return jsonify(dashboard), 200
 
     def events_endpoint(self, hl_address):
-        """GET /api/hl/<hl_address>/events?since=<ms> - Return order events."""
-        api_key = self._get_api_key_safe()
-        if not self.is_valid_api_key(api_key):
-            return jsonify({'error': 'Unauthorized access'}), 401
-
+        """GET /api/hl/<hl_address>/events?since=<ms> - Return order events (no API key required)."""
         since_ms = request.args.get('since', 0, type=int)
         events = self._event_store.get_events(hl_address, since_ms=since_ms)
         return jsonify({'hl_address': hl_address, 'events': events, 'count': len(events)}), 200
 
     def stream_endpoint(self, hl_address):
-        """GET /api/hl/<hl_address>/stream - SSE real-time stream."""
-        api_key = self._get_api_key_safe()
-        if not self.is_valid_api_key(api_key):
-            return jsonify({'error': 'Unauthorized access'}), 401
-
+        """GET /api/hl/<hl_address>/stream - SSE real-time stream (no API key required)."""
         subscriber_queue = self._subscribe_sse(hl_address)
 
         def event_stream():
