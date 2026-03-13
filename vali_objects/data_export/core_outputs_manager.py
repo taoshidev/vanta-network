@@ -294,6 +294,7 @@ class CoreOutputsManager:
         challengeperiod_dict,
         miner_account_sizes_dict,
         limit_orders_dict,
+        archived_positions=None,
         save_to_disk=True,
         upload_to_gcloud=True
     ):
@@ -327,7 +328,8 @@ class CoreOutputsManager:
             'positions': ord_dict_hotkey_position_map,
             'perf_ledgers': perf_ledgers,
             'asset_selections': asset_selections,
-            'limit_orders': limit_orders_dict
+            'limit_orders': limit_orders_dict,
+            'archived_positions': archived_positions or {}
         }
 
         if save_to_disk:
@@ -407,13 +409,23 @@ class CoreOutputsManager:
                 ValiBkpUtils.get_miner_dir(running_unit_tests=self.running_unit_tests)
             )
 
-        # Query positions
+        # Query live positions
         hotkey_positions = self.position_manager.get_positions_for_hotkeys(
             all_miner_hotkeys,
             sort_positions=True
         )
 
         time_now_ms = TimeUtil.now_in_millis()
+
+        # Build archived_positions in the same dashboard dict format as positions
+        archived_positions_map = {
+            hotkey: self.position_manager.positions_to_dashboard_dict(
+                sorted(list(uuid_to_pos.values()), key=lambda p: p.close_ms if p.is_closed_position else float('inf')),
+                time_now_ms
+            )
+            for hotkey, uuid_to_pos in self.position_manager.get_hotkey_to_archived_positions().items()
+            if uuid_to_pos
+        }
 
         dict_hotkey_position_map = {}
 
@@ -473,6 +485,7 @@ class CoreOutputsManager:
                     eliminations, ord_dict_hotkey_position_map, time_now_ms,
                     youngest_order_processed_ms, oldest_order_processed_ms,
                     challengeperiod_dict, miner_account_sizes_dict, limit_orders_dict,
+                    archived_positions=archived_positions_map,
                     save_to_disk=save_production_files,
                     upload_to_gcloud=upload_production_files
                 )
@@ -480,6 +493,7 @@ class CoreOutputsManager:
         checkpoint_dict = {
             'challengeperiod': challengeperiod_dict,
             'miner_account_sizes': miner_account_sizes_dict,
-            'positions': unfiltered_positions
+            'positions': unfiltered_positions,
+            'archived_positions': archived_positions_map
         }
         return checkpoint_dict

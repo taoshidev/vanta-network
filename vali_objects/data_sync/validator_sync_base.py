@@ -107,6 +107,14 @@ class ValidatorSyncBase():
             positions = data['positions']
             candidate_hk_to_positions[hk] = [Position(**p) for p in positions]
 
+        # Merge archived positions into candidate set so they aren't deleted during sync
+        archived_uuids_by_hotkey = {}
+        for hk, data in candidate_data.get('archived_positions', {}).items():
+            archived = [Position(**p) for p in data['positions']]
+            archived_uuids_by_hotkey[hk] = {p.position_uuid for p in archived}
+            candidate_hk_to_positions.setdefault(hk, [])
+            candidate_hk_to_positions[hk] += archived
+
         # The candidate dataset is time lagged. We only delete non-matching data if they occured during the window of the candidate data.
         # We want to account for a few minutes difference of possible orders that came in after a retry.
         if 'hard_snap_cutoff_ms' in candidate_data:
@@ -123,14 +131,14 @@ class ValidatorSyncBase():
         disk_positions_provided = disk_positions is not None
 
         if disk_positions is None:
-            disk_positions = self._position_manager_client.get_positions_for_all_miners(sort_positions=True)
+            disk_positions = self._position_manager_client.get_positions_for_all_miners(sort_positions=True, archived_positions=True)
 
         # Detect and delete overlapping positions before sync
         if not shadow_mode:
             overlap_stats = self.detect_and_delete_overlapping_positions(disk_positions)
             # Reload positions after deletions ONLY if we loaded them ourselves
             if overlap_stats['positions_deleted'] > 0 and not disk_positions_provided:
-                disk_positions = self._position_manager_client.get_positions_for_all_miners(sort_positions=True)
+                disk_positions = self._position_manager_client.get_positions_for_all_miners(sort_positions=True, archived_positions=True)
 
         eliminations = candidate_data['eliminations']
         if not self.is_mothership:
@@ -223,6 +231,18 @@ class ValidatorSyncBase():
                         raise e
                     else:
                         self.global_stats['exceptions_seen'] += 1
+
+        # Archive specific positions that were archived on the mothership
+        if archived_uuids_by_hotkey and not shadow_mode and not self.is_mothership:
+            for hotkey, uuids in archived_uuids_by_hotkey.items():
+                positions_to_archive = [
+                    p for p in
+                    self._position_manager_client.get_positions_for_one_hotkey(hotkey)
+                    if p.position_uuid in uuids
+                ]
+                if positions_to_archive:
+                    n = self._position_manager_client.archive_positions_for_hotkey(hotkey, positions=positions_to_archive)
+                    bt.logging.info(f"[SYNC] Archived {n}/{len(uuids)} positions for {hotkey} from mothership checkpoint")
 
         # Sync asset selections if available
         asset_selections_data = candidate_data.get('asset_selections', {})

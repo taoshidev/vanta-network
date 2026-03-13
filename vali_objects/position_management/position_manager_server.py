@@ -166,11 +166,13 @@ class PositionManagerServer(RPCServerBase):
         only_open_positions=False,
         filter_eliminations: bool = False,
         acceptable_position_end_ms: int = None,
-        sort_positions: bool = False
+        sort_positions: bool = False,
+        archived_positions: bool = False
     ) -> Dict[str, List[Position]]:
         """Get positions for multiple hotkeys - delegates to manager."""
         return self._manager.get_positions_for_hotkeys(
-            hotkeys, only_open_positions, filter_eliminations, acceptable_position_end_ms, sort_positions
+            hotkeys, only_open_positions, filter_eliminations, acceptable_position_end_ms, sort_positions,
+            archived_positions=archived_positions
         )
 
     def clear_all_miner_positions_rpc(self):
@@ -199,6 +201,10 @@ class PositionManagerServer(RPCServerBase):
     def get_all_hotkeys_rpc(self):
         """Get all hotkeys that have positions - delegates to manager."""
         return self._manager.get_all_hotkeys()
+
+    def get_hotkey_to_archived_positions_rpc(self):
+        """Get hotkey -> {uuid -> Position} dict for all archived positions."""
+        return self._manager.get_hotkey_to_archived_positions()
 
     def get_extreme_position_order_processed_on_disk_ms_rpc(self):
         """

@@ -328,7 +328,8 @@ class PositionManager:
         only_open_positions=False,
         filter_eliminations: bool = False,
         acceptable_position_end_ms: int = None,
-        sort_positions: bool = False
+        sort_positions: bool = False,
+        archived_positions: bool = False
     ) -> Dict[str, List[Position]]:
         """
         Get positions for multiple hotkeys (bulk operation).
@@ -342,6 +343,7 @@ class PositionManager:
             filter_eliminations: If True, fetch eliminations internally and filter them out
             acceptable_position_end_ms: Minimum timestamp for positions
             sort_positions: If True, sort positions by close_ms (closed first, then open)
+            archived_positions: If True, include archived positions alongside live positions
 
         Returns:
             Dict mapping hotkey to list of positions
@@ -356,12 +358,14 @@ class PositionManager:
 
         result = {}
         for hotkey in hotkeys:
-            if hotkey not in self.hotkey_to_positions:
+            positions = list(self.hotkey_to_positions.get(hotkey, {}).values())
+
+            if archived_positions:
+                positions += list(self.hotkey_to_archived_positions.get(hotkey, {}).values())
+
+            if not positions:
                 result[hotkey] = []
                 continue
-
-            positions_dict = self.hotkey_to_positions[hotkey]
-            positions = list(positions_dict.values())  # Convert dict values to list
 
             # Filters
             if only_open_positions:
@@ -655,8 +659,12 @@ class PositionManager:
         return total_unrealized_pnl
 
     def get_all_hotkeys(self):
-        """Get all hotkeys that have positions."""
+        """Get all hotkeys that have live positions."""
         return list(self.hotkey_to_positions.keys())
+
+    def get_hotkey_to_archived_positions(self):
+        """Get hotkey -> {uuid -> Position} dict for all archived positions."""
+        return self.hotkey_to_archived_positions
 
     def get_extreme_position_order_processed_on_disk_ms(self) -> tuple:
         """
@@ -972,8 +980,8 @@ class PositionManager:
             # bt.logging.info(f"Applied {n_slippage_corrections} forex slippage corrections")
 
             # All miners that wanted their challenge period restarted
-            miners_to_wipe = ["5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_2", "5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_3", "5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_5", "5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_8", "5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_12", "5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_16", "5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_15", "5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_19"]
-            position_uuids_to_delete = []
+            miners_to_wipe = ["5FCPYqbYEq2y7NwQTCLxNApP2UjUE86J8QnhdWTHFkzzFWL1"]
+            position_uuids_to_delete = ["f366bb3e-11a8-40ae-b6bd-ec941ceab193", "ad853341-617e-4b76-8a4d-794b7eecf7f5"]
             position_uuids_to_archive = []
             miners_to_promote = []
 
@@ -1061,19 +1069,27 @@ class PositionManager:
 
         return miners_to_wipe_perf_ledger
 
-    def get_positions_for_all_miners(self, sort_positions: bool = False) -> Dict[str, List[Position]]:
+    def get_positions_for_all_miners(self, sort_positions: bool = False, archived_positions: bool = False) -> Dict[str, List[Position]]:
         """
         Get all positions for all miners.
 
         Args:
             sort_positions: If True, sort positions by close_ms (closed first, then open)
+            archived_positions: If True, include archived positions alongside live positions
 
         Returns:
             Dict mapping hotkey to list of positions
         """
+        if archived_positions:
+            all_hotkeys = set(self.hotkey_to_positions.keys()) | set(self.hotkey_to_archived_positions.keys())
+        else:
+            all_hotkeys = set(self.hotkey_to_positions.keys())
+
         result = {}
-        for hotkey, positions_dict in self.hotkey_to_positions.items():
-            positions = list(positions_dict.values())
+        for hotkey in all_hotkeys:
+            positions = list(self.hotkey_to_positions.get(hotkey, {}).values())
+            if archived_positions:
+                positions += list(self.hotkey_to_archived_positions.get(hotkey, {}).values())
             if sort_positions:
                 positions = sorted(positions, key=lambda p: p.close_ms if p.is_closed_position else float("inf"))
             result[hotkey] = positions
