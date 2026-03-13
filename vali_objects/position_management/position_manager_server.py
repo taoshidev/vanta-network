@@ -311,6 +311,17 @@ class PositionManagerServer(RPCServerBase):
         """
         return self._manager.attach_bracket_order_to_position(miner_hotkey, trade_pair_id, order_dict)
 
+    def archive_positions_for_hotkey_rpc(
+        self,
+        hotkey: str,
+        positions: list = None,
+        archive_all: bool = False
+    ) -> int:
+        """Archive positions to archived_positions/ dir - delegates to manager."""
+        return self._manager.archive_positions_for_hotkey(
+            hotkey, positions=positions, archive_all=archive_all
+        )
+
     def remove_bracket_order_from_position_rpc(self, miner_hotkey: str, trade_pair_id: str, order_uuid: str) -> bool:
         """
         Remove a bracket order from a position - delegates to manager.

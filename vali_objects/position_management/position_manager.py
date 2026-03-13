@@ -396,6 +396,36 @@ class PositionManager:
             for p in self.get_positions_for_one_hotkey(hotkey):
                 self.delete_position(p.miner_hotkey, p.position_uuid)
 
+    def archive_positions_for_hotkey(
+        self,
+        hotkey: str,
+        positions: Optional[list] = None,
+        archive_all: bool = False
+    ) -> int:
+        """Archive positions to archived_positions/ dir and remove from memory.
+
+        Returns:
+            Number of files archived
+        """
+        if archive_all:
+            target_positions = self.get_positions_for_one_hotkey(hotkey)
+        else:
+            target_positions = positions or []
+
+        bt.logging.info(f"[POSITION ARCHIVE] Archiving {len(target_positions)} positions for {hotkey}")
+
+        n_archived = 0
+        for position in target_positions:
+            if ValiBkpUtils.archive_position(hotkey, position, running_unit_tests=self.running_unit_tests):
+                n_archived += 1
+                bt.logging.info(f"[POSITION ARCHIVE] {position.position_uuid} archived successfully")
+                self.delete_position(hotkey, position.position_uuid)
+            else:
+                bt.logging.error(f"[POSITION ARCHIVE] {position.position_uuid} already archived or could not archive")
+
+        bt.logging.info(f"[POSITION ARCHIVE] Archive complete")
+        return n_archived
+
     def delete_position(self, hotkey: str, position_uuid: str):
         """
         Delete a specific position with O(1) deletion.

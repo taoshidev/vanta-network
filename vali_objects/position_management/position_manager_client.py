@@ -522,6 +522,26 @@ class PositionManagerClient(RPCClientBase):
         """
         return self._server.attach_bracket_order_to_position_rpc(miner_hotkey, trade_pair_id, order_dict)
 
+    def archive_positions_for_hotkey(
+        self,
+        hotkey: str,
+        positions: list = None,
+        archive_all: bool = False
+    ) -> int:
+        """Archive positions to archived_positions/ dir and remove from memory.
+
+        Args:
+            hotkey: Miner hotkey
+            positions: Specific Position objects to archive (archive_all=False)
+            archive_all: If True, archive all positions for this hotkey
+
+        Returns:
+            Number of files archived
+        """
+        return self._server.archive_positions_for_hotkey_rpc(
+            hotkey, positions=positions, archive_all=archive_all
+        )
+
     def remove_bracket_order_from_position(self, miner_hotkey: str, trade_pair_id: str, order_uuid: str) -> bool:
         """
         Remove a bracket order from a position.

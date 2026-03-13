@@ -976,6 +976,48 @@ class TestPositionManager(TestBase):
                         f"Should have exactly 1 open position, got {len(open_positions)}")
 
 
+    def test_archive_positions_for_hotkey(self):
+        """archive_positions_for_hotkey moves files to archived_positions/ and clears memory."""
+        import os
+        from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
+
+        hotkey = self.DEFAULT_MINER_HOTKEY
+
+        # Save one closed and one open position for BTC
+        closed_pos = deepcopy(self.default_position)
+        closed_pos.position_uuid = "archive_test_closed"
+        closed_pos.close_out_position(self.DEFAULT_OPEN_MS + 1)
+        self.position_client.save_miner_position(closed_pos)
+
+        open_pos = deepcopy(self.default_position)
+        open_pos.position_uuid = "archive_test_open"
+        open_pos.open_ms = self.DEFAULT_OPEN_MS + 100
+        self.position_client.save_miner_position(open_pos)
+
+        self.assertEqual(len(self.position_client.get_positions_for_one_hotkey(hotkey)), 2)
+
+        # Archive all positions
+        n_archived = self.position_client.archive_positions_for_hotkey(hotkey, archive_all=True)
+
+        # Memory should be empty
+        self.assertEqual(self.position_client.get_positions_for_one_hotkey(hotkey), [])
+
+        # Positions/ directory should have no position files remaining
+        positions_dir = ValiBkpUtils.get_miner_all_positions_dir(hotkey, running_unit_tests=True)
+        remaining_files = ValiBkpUtils.get_all_files_in_dir(positions_dir) if os.path.exists(positions_dir) else []
+        self.assertEqual(remaining_files, [])
+
+        # archived_positions/ should contain exactly the files that were moved
+        archive_dir = ValiBkpUtils.get_miner_archived_positions_dir(hotkey, running_unit_tests=True)
+        archived_files = ValiBkpUtils.get_all_files_in_dir(archive_dir)
+        self.assertEqual(len(archived_files), n_archived)
+        self.assertEqual(n_archived, 2)
+
+        archived_uuids = {os.path.basename(f) for f in archived_files}
+        self.assertIn("archive_test_closed", archived_uuids)
+        self.assertIn("archive_test_open", archived_uuids)
+
+
 if __name__ == '__main__':
     import unittest
 

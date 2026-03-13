@@ -105,6 +105,40 @@ class ValiBkpUtils:
         return f"{ValiBkpUtils.get_miner_dir(running_unit_tests=running_unit_tests)}{miner_hotkey}/positions/"
 
     @staticmethod
+    def get_miner_archived_positions_dir(miner_hotkey, running_unit_tests=False) -> str:
+        return f"{ValiBkpUtils.get_miner_dir(running_unit_tests=running_unit_tests)}{miner_hotkey}/archived_positions/"
+
+    @staticmethod
+    def archive_position(
+        hotkey: str,
+        position,
+        running_unit_tests: bool = False
+    ) -> bool:
+        """Move a single position file to archived_positions/ directory on disk.
+
+        Returns:
+            True if the file was moved, False if it did not exist or was already archived
+        """
+        dst_base = ValiBkpUtils.get_miner_archived_positions_dir(hotkey, running_unit_tests=running_unit_tests)
+        positions_base = ValiBkpUtils.get_miner_all_positions_dir(hotkey, running_unit_tests=running_unit_tests)
+
+        trade_pair_id = position.trade_pair.trade_pair_id
+        order_status = OrderStatus.OPEN if position.is_open_position else OrderStatus.CLOSED
+        src_dir = ValiBkpUtils.get_partitioned_miner_positions_dir(
+            hotkey, trade_pair_id, order_status, running_unit_tests=running_unit_tests
+        )
+        src_file = os.path.join(src_dir, position.position_uuid)
+        if not os.path.exists(src_file):
+            return False
+        rel = os.path.relpath(src_file, positions_base)
+        dst_file = os.path.join(dst_base, rel)
+        if os.path.exists(dst_file):
+            return False
+        os.makedirs(os.path.dirname(dst_file), exist_ok=True)
+        shutil.move(src_file, dst_file)
+        return True
+
+    @staticmethod
     def get_miner_transactions_path(miner_hotkey: str, running_unit_tests=False) -> str:
         """Get path to miner's transactions.jsonl file."""
         return f"{ValiBkpUtils.get_miner_dir(running_unit_tests=running_unit_tests)}{miner_hotkey}/transactions.jsonl"

@@ -1031,6 +1031,10 @@ class ChallengePeriodManager(CacheController):
                 )
                 # Reset account fields (PnL, capital used, borrowed amount, interest)
                 self._miner_account_client.reset_account_fields(hotkey)
+                # Archive all positions (disk move + memory removal)
+                self._position_client.archive_positions_for_hotkey(hotkey, archive_all=True)
+                # Wipe perf ledgers so funded-period performance is tracked from scratch
+                self._perf_ledger_client.wipe_miners_perf_ledgers([hotkey])
 
             elif bucket_value == MinerBucket.SUBACCOUNT_FUNDED:
                 target_bucket = MinerBucket.SUBACCOUNT_ALPHA
