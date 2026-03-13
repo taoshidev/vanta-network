@@ -50,7 +50,8 @@ class MinerRestServer(BaseRestServer):
 
     def __init__(self, prop_net_order_placer, api_keys_file,
                  refresh_interval=15, metrics_interval_minutes=5,
-                 flask_host=None, flask_port=None, slack_notifier=None, **kwargs):
+                 flask_host=None, flask_port=None, slack_notifier=None,
+                 service_name="MinerRestServer", **kwargs):
         """
         Initialize miner REST server with direct PropNetOrderPlacer reference.
 
@@ -62,17 +63,18 @@ class MinerRestServer(BaseRestServer):
             flask_host: Host address for Flask server (default: "0.0.0.0")
             flask_port: Port for Flask server (default: 8088)
             slack_notifier: Optional SlackNotifier for notifications
+            service_name: Service name for logging (default: "MinerRestServer")
         """
         # Store direct reference to order placer (no IPC, no RPC!)
         self.order_placer = prop_net_order_placer
         self.slack_notifier = slack_notifier
 
-        print(f"[MINER-REST-INIT] Initializing MinerRestServer...")
+        print(f"[MINER-REST-INIT] Initializing {service_name}...")
 
         # Call BaseRestServer.__init__ (Flask only, no RPC)
         super().__init__(
             api_keys_file=api_keys_file,
-            service_name="MinerRestServer",
+            service_name=service_name,
             refresh_interval=refresh_interval,
             metrics_interval_minutes=metrics_interval_minutes,
             flask_host=flask_host or "0.0.0.0",
@@ -80,7 +82,7 @@ class MinerRestServer(BaseRestServer):
             **kwargs
         )
 
-        print(f"[MINER-REST-INIT] MinerRestServer initialized on {self.flask_host}:{self.flask_port}")
+        print(f"[MINER-REST-INIT] {service_name} initialized on {self.flask_host}:{self.flask_port}")
 
     # ============================================================================
     # ABSTRACT METHOD IMPLEMENTATIONS (from BaseRestServer)
