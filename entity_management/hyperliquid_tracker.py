@@ -1104,4 +1104,5 @@ class HyperliquidTracker:
             self._broadcast_rejection(synthetic_hotkey, f"Order rejected: {e}")
         except Exception as e:
             bt.logging.error(f"[HL_TRACKER] Order processing error for {synthetic_hotkey}: {e}")
+            self._broadcast_rejection(synthetic_hotkey, f"Order rejected: {e}")
             bt.logging.error(traceback.format_exc())
