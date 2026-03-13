@@ -121,6 +121,28 @@ class TestHyperliquidSubaccounts(TestBase):
         self.assertFalse(success)
         self.assertIn("already registered", message.lower())
 
+    def test_create_hl_subaccount_duplicate_address_case_insensitive(self):
+        """Test HL address uniqueness is case-insensitive."""
+        self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
+
+        mixed_case_address = "0x7939aF2C9889F59A96C3921B515300A9a70898BB"
+        lower_case_address = mixed_case_address.lower()
+
+        success, _, _ = self.entity_client.create_hl_subaccount(
+            entity_hotkey=self.ENTITY_HOTKEY_1,
+            account_size=50_000,
+            hl_address=mixed_case_address
+        )
+        self.assertTrue(success)
+
+        success, _, message = self.entity_client.create_hl_subaccount(
+            entity_hotkey=self.ENTITY_HOTKEY_1,
+            account_size=50_000,
+            hl_address=lower_case_address
+        )
+        self.assertFalse(success)
+        self.assertIn("already registered", message.lower())
+
     def test_create_hl_subaccount_duplicate_address_across_entities(self):
         """Test HL address uniqueness is enforced across different entities."""
         self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
@@ -252,6 +274,22 @@ class TestHyperliquidSubaccounts(TestBase):
 
         # Lookup by HL address
         synthetic_hotkey = self.entity_client.get_synthetic_hotkey_for_hl_address(VALID_HL_ADDRESS)
+        self.assertEqual(synthetic_hotkey, subaccount_info['synthetic_hotkey'])
+
+    def test_get_synthetic_hotkey_for_hl_address_case_insensitive(self):
+        """Test reverse lookup succeeds regardless of address casing."""
+        self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
+        mixed_case_address = "0x7939aF2C9889F59A96C3921B515300A9a70898BB"
+        success, subaccount_info, _ = self.entity_client.create_hl_subaccount(
+            entity_hotkey=self.ENTITY_HOTKEY_1,
+            account_size=50_000,
+            hl_address=mixed_case_address
+        )
+        self.assertTrue(success)
+
+        synthetic_hotkey = self.entity_client.get_synthetic_hotkey_for_hl_address(
+            mixed_case_address.lower()
+        )
         self.assertEqual(synthetic_hotkey, subaccount_info['synthetic_hotkey'])
 
     def test_get_synthetic_hotkey_for_unknown_hl_address(self):

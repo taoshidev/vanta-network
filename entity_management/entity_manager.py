@@ -240,7 +240,9 @@ class EntityManager(ValidatorBroadcastBase):
                 for subaccount in entity_data.subaccounts.values():
                     self._uuid_to_hotkey[subaccount.subaccount_uuid] = subaccount.synthetic_hotkey
                     if subaccount.hl_address and subaccount.status in ('active', 'admin', 'pending'):
-                        self._hl_address_to_synthetic[subaccount.hl_address] = subaccount.synthetic_hotkey
+                        normalized_hl = self._normalize_hl_address(subaccount.hl_address)
+                        if normalized_hl:
+                            self._hl_address_to_synthetic[normalized_hl] = subaccount.synthetic_hotkey
 
             # Recreate locks for all loaded entities
             for entity_hotkey in self.entities.keys():
@@ -250,6 +252,13 @@ class EntityManager(ValidatorBroadcastBase):
         bt.logging.info("[ENTITY_MANAGER] EntityManager initialized")
 
     # ==================== Lock Management ====================
+
+    @staticmethod
+    def _normalize_hl_address(hl_address: Optional[str]) -> Optional[str]:
+        """Canonical key form for HL address lookups/indexing."""
+        if not isinstance(hl_address, str):
+            return None
+        return hl_address.lower()
 
     def _get_entity_lock(self, entity_hotkey: str) -> threading.RLock:
         """
@@ -662,6 +671,7 @@ class EntityManager(ValidatorBroadcastBase):
         # Validate HL address format
         if not re.match(ValiConfig.HL_ADDRESS_REGEX, hl_address):
             return False, None, f"Invalid Hyperliquid address format: {hl_address}. Must be 0x followed by 40 hex characters."
+        normalized_hl_address = self._normalize_hl_address(hl_address)
 
         # Validate payout_address format if provided
         if payout_address is not None:
@@ -670,8 +680,8 @@ class EntityManager(ValidatorBroadcastBase):
 
         # Check for duplicate HL address across all entities
         with self._entities_lock:
-            if hl_address in self._hl_address_to_synthetic:
-                existing = self._hl_address_to_synthetic[hl_address]
+            if normalized_hl_address in self._hl_address_to_synthetic:
+                existing = self._hl_address_to_synthetic[normalized_hl_address]
                 return False, None, f"Hyperliquid address {hl_address} is already registered to subaccount {existing}"
 
             # Check total active HL subaccounts < max limit
@@ -703,7 +713,7 @@ class EntityManager(ValidatorBroadcastBase):
                         subaccount.payout_address = payout_address
                     # Update HL reverse index
                     with self._entities_lock:
-                        self._hl_address_to_synthetic[hl_address] = subaccount.synthetic_hotkey
+                        self._hl_address_to_synthetic[normalized_hl_address] = subaccount.synthetic_hotkey
                     self._write_entities_from_memory_to_disk()
 
         return True, subaccount_info, message
@@ -733,8 +743,11 @@ class EntityManager(ValidatorBroadcastBase):
         Returns:
             Synthetic hotkey if found, None otherwise
         """
+        normalized_hl_address = self._normalize_hl_address(hl_address)
+        if not normalized_hl_address:
+            return None
         with self._entities_lock:
-            return self._hl_address_to_synthetic.get(hl_address)
+            return self._hl_address_to_synthetic.get(normalized_hl_address)
 
     def get_subaccount_info_for_synthetic(self, synthetic_hotkey: str) -> Optional[SubaccountInfo]:
         """
@@ -1391,7 +1404,9 @@ class EntityManager(ValidatorBroadcastBase):
                     # Update HL address reverse index for all subaccounts
                     for sub in incoming_entity.subaccounts.values():
                         if sub.hl_address:
-                            self._hl_address_to_synthetic[sub.hl_address] = sub.synthetic_hotkey
+                            normalized_hl = self._normalize_hl_address(sub.hl_address)
+                            if normalized_hl:
+                                self._hl_address_to_synthetic[normalized_hl] = sub.synthetic_hotkey
 
                     stats['entities_added'] += 1
                     stats['subaccounts_added'] += len(incoming_entity.subaccounts)
@@ -1414,7 +1429,9 @@ class EntityManager(ValidatorBroadcastBase):
 
                                 # Update HL address reverse index
                                 if incoming_sub.hl_address:
-                                    self._hl_address_to_synthetic[incoming_sub.hl_address] = incoming_sub.synthetic_hotkey
+                                    normalized_hl = self._normalize_hl_address(incoming_sub.hl_address)
+                                    if normalized_hl:
+                                        self._hl_address_to_synthetic[normalized_hl] = incoming_sub.synthetic_hotkey
 
                                 stats['subaccounts_added'] += 1
                                 bt.logging.info(f"[ENTITY_MANAGER] Added subaccount {incoming_sub.synthetic_hotkey} from sync")
@@ -1430,7 +1447,9 @@ class EntityManager(ValidatorBroadcastBase):
                                 # Update HL address if added
                                 if incoming_sub.hl_address and not local_sub.hl_address:
                                     local_sub.hl_address = incoming_sub.hl_address
-                                    self._hl_address_to_synthetic[incoming_sub.hl_address] = incoming_sub.synthetic_hotkey
+                                    normalized_hl = self._normalize_hl_address(incoming_sub.hl_address)
+                                    if normalized_hl:
+                                        self._hl_address_to_synthetic[normalized_hl] = incoming_sub.synthetic_hotkey
                                     stats['subaccounts_updated'] += 1
 
                                 # Update payout_address if added
@@ -1562,6 +1581,7 @@ class EntityManager(ValidatorBroadcastBase):
                 asset_class = subaccount_data.get("asset_class")
                 status = subaccount_data.get("status", "active")  # Default to active for backwards compatibility
                 hl_address = subaccount_data.get("hl_address")
+                normalized_hl = self._normalize_hl_address(hl_address)
                 payout_address = subaccount_data.get("payout_address")
 
                 bt.logging.info(
@@ -1607,7 +1627,8 @@ class EntityManager(ValidatorBroadcastBase):
                         # Update hl_address if previously None and now provided
                         if hl_address and not existing_sub.hl_address:
                             existing_sub.hl_address = hl_address
-                            self._hl_address_to_synthetic[hl_address] = synthetic_hotkey
+                            if normalized_hl:
+                                self._hl_address_to_synthetic[normalized_hl] = synthetic_hotkey
                             bt.logging.info(
                                 f"[ENTITY_MANAGER] Set hl_address {hl_address} for subaccount {synthetic_hotkey}"
                             )
@@ -1654,8 +1675,8 @@ class EntityManager(ValidatorBroadcastBase):
                 # Update reverse indices
                 with self._entities_lock:
                     self._uuid_to_hotkey[subaccount_uuid] = synthetic_hotkey
-                    if hl_address:
-                        self._hl_address_to_synthetic[hl_address] = synthetic_hotkey
+                    if normalized_hl:
+                        self._hl_address_to_synthetic[normalized_hl] = synthetic_hotkey
 
                 # Update next_subaccount_id if needed
                 if subaccount_id >= entity_data.next_subaccount_id:
@@ -1728,8 +1749,9 @@ class EntityManager(ValidatorBroadcastBase):
 
         if hl_address:
             # HL address -> synthetic hotkey -> entity_hotkey
+            normalized_hl = self._normalize_hl_address(hl_address)
             with self._entities_lock:
-                synthetic = self._hl_address_to_synthetic.get(hl_address)
+                synthetic = self._hl_address_to_synthetic.get(normalized_hl) if normalized_hl else None
             if synthetic:
                 parsed = parse_synthetic_hotkey(synthetic)
                 if parsed[0]:
