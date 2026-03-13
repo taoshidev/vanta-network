@@ -498,7 +498,7 @@ class PositionManager:
 
             dashboard_unfilled_orders = []
             for order in position.unfilled_orders:
-                dashboard_unfilled_orders.append(order.order_uuid)
+                dashboard_unfilled_orders.append(order['order_uuid'])
 
             dashboard_position = position.to_dashboard(
                 positions_time_ms,
