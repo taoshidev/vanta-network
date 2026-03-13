@@ -137,9 +137,8 @@ class MinerAccount:
         self.capital_used = 0
         self.total_borrowed_amount = 0
         self.total_fees_paid = 0
-        self.total_interest_paid = 0
-        self.last_interest_date_ms = None
         self.miner_bucket = None
+        self.max_return = 1.0
 
 
     def to_dict(self, include_collateral_records: bool = False) -> dict:

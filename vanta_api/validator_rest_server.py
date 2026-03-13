@@ -1958,66 +1958,52 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             cls=CustomEncoder,
         )
         return Response(response_body, content_type='application/json'), 200
-
-    def get_hl_trader_limits(self, hl_address: str):
-        """
-        Public endpoint — no authentication required.
-        Returns trading limits for a Hyperliquid subaccount: account size,
-        max position per pair, max portfolio value, and challenge period status.
-
-        Example:
-        curl http://localhost:48888/hl-traders/0xabcd1234.../limits
-        """
-        from vali_objects.enums.miner_bucket_enum import MinerBucket
-
-        if not self._entity_client:
-            return jsonify({'error': 'Entity management not available'}), 503
+    def v2_get_subaccount_dashboard(self, synthetic_hotkey: str):
+        access_error_response = self._get_access_error_response()
+        if access_error_response is not None:
+            return access_error_response
 
         try:
-            limits_data = self._entity_client.get_hl_subaccount_limits_data(hl_address)
+            subaccount_dashboard = self._entity_client.get_subaccount_dashboard(synthetic_hotkey)
+            if subaccount_dashboard is None:
+                return jsonify({'error': f'Subaccount {synthetic_hotkey} not found'}), HTTPStatus.NOT_FOUND
         except Exception as e:
-            bt.logging.error(f"get_hl_trader_limits: lookup failed for {hl_address}: {e}")
-            return jsonify({'status': 'error', 'message': 'Internal error'}), 500
+            bt.logging.error(f"Error retrieving dashboard for {synthetic_hotkey}: {e}")
+            return jsonify({'error': 'Internal server error retrieving dashboard'}), HTTPStatus.INTERNAL_SERVER_ERROR
 
-        if limits_data is None:
-            return jsonify({'status': 'error', 'message': 'HL address not found'}), 404
+        dashboard = {"subaccount_info": subaccount_dashboard}
 
-        account_size = limits_data['account_size']
-        asset_class = limits_data['asset_class']
-        challenge_bucket = limits_data['challenge_bucket']
+        # Fail gracefully if other services are not available
+        def add_to_dashboard(section, function, *args, **kwargs):
+            try:
+                # Assume the first parameter is the synthetic_hotkey
+                section_data = function(synthetic_hotkey, *args, **kwargs)
+                if section_data is not None:
+                    dashboard[section] = section_data
+            except Exception as ex:
+                bt.logging.error(f"Error retrieving {section} for {synthetic_hotkey}: {ex}")
 
-        # HL subaccounts are always crypto
-        try:
-            category = TradePairCategory(asset_class)
-        except ValueError:
-            category = TradePairCategory.CRYPTO
+        query_args = request.args
+        positions_time_ms = int(query_args.get("positions_time_ms", 0))
+        limit_orders_time_ms = int(query_args.get("limit_orders_time_ms", 0))
+        checkpoints_time_ms = int(query_args.get("checkpoints_time_ms", 0))
+        daily_returns_time_ms = int(query_args.get("daily_returns_time_ms", 0))
 
-        max_leverage = ValiConfig.CRYPTO_MAX_LEVERAGE
-        portfolio_cap = ValiConfig.PORTFOLIO_LEVERAGE_CAP.get(category, ValiConfig.PORTFOLIO_LEVERAGE_CAP[TradePairCategory.CRYPTO])
+        add_to_dashboard("challenge_period", self._challenge_period_client.get_dashboard)
+        add_to_dashboard("elimination", self._elimination_client.get_dashboard)
+        add_to_dashboard("account_size_data", self._miner_account_client.get_dashboard)
+        add_to_dashboard("positions", self._position_client.get_dashboard, positions_time_ms)
+        add_to_dashboard("limit_orders", self._limit_order_client.get_dashboard, limit_orders_time_ms)
+        add_to_dashboard("ledger", self._debt_ledger_client.get_dashboard, checkpoints_time_ms)
+        add_to_dashboard("statistics", self._statistics_client.get_dashboard, daily_returns_time_ms)
 
-        max_position_per_pair_usd = account_size * max_leverage
-        max_portfolio_usd = account_size * portfolio_cap
+        response = {
+            'status': 'success',
+            'dashboard': dashboard,
+            'timestamp': TimeUtil.now_in_millis()
+        }
+        return jsonify(response)
 
-        # Challenge period miners get reduced limits
-        in_challenge = challenge_bucket == MinerBucket.SUBACCOUNT_CHALLENGE.value
-        if in_challenge:
-            divisor = ValiConfig.SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR
-            max_position_per_pair_usd /= divisor
-            max_portfolio_usd /= divisor
-
-        response_body = json.dumps(
-            {
-                'status': 'success',
-                'hl_address': hl_address,
-                'account_size': account_size,
-                'max_position_per_pair_usd': max_position_per_pair_usd,
-                'max_portfolio_usd': max_portfolio_usd,
-                'in_challenge_period': in_challenge,
-                'timestamp': TimeUtil.now_in_millis(),
-            },
-            cls=CustomEncoder,
-        )
-        return Response(response_body, content_type='application/json'), 200
 
     def get_hl_trader_limits(self, hl_address: str):
         """

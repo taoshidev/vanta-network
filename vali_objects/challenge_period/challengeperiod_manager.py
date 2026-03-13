@@ -522,40 +522,35 @@ class ChallengePeriodManager(CacheController):
             if not has_minimum_ledger or not ledger:
                 continue
 
-            # Check drawdown from high water mark (same as rank-based miners)
-            # SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD = 0.05 (5%) -> convert to 5.0 for percentage scale
-            should_eliminate, reason = self._check_drawdown_limit(
-                hotkey=hotkey,
-                ledger=ledger,
-                drawdown_threshold_percentage=ValiConfig.SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD * 100
-            )
-            if should_eliminate:
-                miners_to_eliminate[hotkey] = reason
+            # Compute portfolio return: (balance + unrealized_pnl) / account_size
+            current_return = self._compute_portfolio_return(hotkey, accounts.get(hotkey))
+            if current_return is None:
                 continue
 
-            # Calculate current equity from MinerAccount balance + unrealized PnL
-            balance = self._miner_account_client.get_balance(hotkey)
-            if balance is None:
+            # Check drawdown from MinerAccount HWM (resets on promotion)
+            account = accounts.get(hotkey, {})
+            max_return = account.get('max_return', 1.0)
+            drawdown_pct = (1 - current_return / max_return) * 100
+            threshold_pct = ValiConfig.SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD * 100
+
+            # returns_percentage = current_return - 1.0 (e.g. 1.08 -> 8%)
+            returns_percentage = current_return - 1.0
+
+            subaccount_asset_class = asset_classes.get(hotkey)
+            if subaccount_asset_class is None:
+                bt.logging.error(f"[SYNTH_EVAL {hotkey}] Subaccount does not have asset class - unexpected")
                 continue
 
-            unrealized_pnl = self._position_client.get_unrealized_pnl(hotkey)
-            total_equity = balance + unrealized_pnl
-
-            # Get account size for calculating returns percentage
-            subaccount_account_size = self._miner_account_client.get_miner_account_size(hotkey, use_account_floor=True)
-            if subaccount_account_size is None or subaccount_account_size <= 0:
-                continue
-
-            # Calculate returns percentage: (current_equity - starting_equity) / starting_equity
-            returns_percentage = (total_equity - subaccount_account_size) / subaccount_account_size
-
-            bt.logging.info(
-                f"[SYNTH_EVAL {hotkey}] total_equity={total_equity:.2f}, account_size={subaccount_account_size:.2f}, returns={returns_percentage:.2%}"
-            )
+            returns_threshold = ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD
+            if subaccount_asset_class == TradePairCategory.CRYPTO:
+                returns_threshold = ValiConfig.SUBACCOUNT_CRYPTO_CHALLENGE_RETURNS_THRESHOLD
 
             # Promote if returns meet threshold
-            should_promote = returns_percentage >= ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD
-            if should_promote:
+            if returns_percentage >= returns_threshold:
+                bt.logging.info(
+                    f"[SYNTHETIC_CP] {hotkey} promoted - "
+                    f"returns {returns_percentage:.2f}% >= {returns_threshold}%"
+                )
                 hotkeys_to_promote.append(hotkey)
                 continue
 
