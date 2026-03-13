@@ -765,12 +765,15 @@ class HyperliquidTracker:
 
     def _broadcast_rejection(self, synthetic_hotkey: str, error_msg: str) -> None:
         """Broadcast a rejection/error message to WebSocket subscribers for a subaccount."""
+        bt.logging.info(f"[HL_TRACKER] Broadcasting rejection for {synthetic_hotkey}: {error_msg}")
         if not self._ws_notifier_client:
+            bt.logging.debug(f"[HL_TRACKER] No WS notifier client, skipping rejection broadcast")
             return
         try:
             self._ws_notifier_client.broadcast_subaccount_dashboard(
                 synthetic_hotkey, {"error_msg": error_msg}
             )
+            bt.logging.debug(f"[HL_TRACKER] Rejection broadcast sent for {synthetic_hotkey}")
         except Exception as e:
             bt.logging.debug(f"[HL_TRACKER] Rejection broadcast failed for {synthetic_hotkey}: {e}")
 
