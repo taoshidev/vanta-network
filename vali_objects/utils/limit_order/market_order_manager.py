@@ -174,7 +174,7 @@ class MarketOrderManager():
                                         price_sources, miner_order_uuid: str, miner_repo_version: str, src:OrderSource,
                                         balance=None, usd_base_price=None, execution_type=ExecutionType.MARKET,
                                         fill_price=None, limit_price=None, stop_loss=None, take_profit=None, bracket_orders=None,
-                                        hl_slippage=None, is_hl_taker=None) -> Order:
+                                        hl_slippage=None, is_hl_taker=None, trailing_stop=None) -> Order:
         # Must be locked by caller
         step_start = TimeUtil.now_in_millis()
 
@@ -640,7 +640,8 @@ class MarketOrderManager():
                                                      new_src, account_balance, usd_base_price, execution_type,
                                                      fill_price, limit_price, stop_loss, take_profit, bracket_orders,
                                                      hl_slippage=signal.get("hl_slippage"),
-                                                     is_hl_taker=signal.get("is_hl_taker"))
+                                                     is_hl_taker=signal.get("is_hl_taker"),
+                                                     trailing_stop=trailing_stop)
                 add_order_ms = TimeUtil.now_in_millis() - add_order_start
                 bt.logging.info(f"[LOCK_WORK] Add order to position took {add_order_ms}ms")
             else:
