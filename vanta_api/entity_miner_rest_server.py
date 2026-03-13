@@ -7,13 +7,17 @@ Connects to the validator WebSocket as an entity-authenticated client,
 receives dashboard data and rejection notifications for all subaccounts,
 and exposes REST/SSE endpoints for Chrome extensions and other consumers.
 
-Endpoints:
+Inherits from MinerRestServer:
+    POST /api/submit-order               - Synchronous order submission
+    GET  /api/order-status/<order_uuid>   - Query order status
+
+Entity-specific endpoints:
     GET  /api/hl/<hl_address>/dashboard  - Cached dashboard data
     GET  /api/hl/<hl_address>/events     - Ring buffer of order events
     GET  /api/hl/<hl_address>/stream     - SSE real-time stream
     POST /api/create-subaccount          - Create standard subaccount
     POST /api/create-hl-subaccount       - Create HL-linked subaccount
-    GET  /api/health                     - Health check
+    GET  /api/health                     - Health check (extended with WS status)
 """
 import asyncio
 import json
@@ -33,7 +37,7 @@ from flask import jsonify, request, Response
 from miner_config import MinerConfig
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import ValiConfig
-from vanta_api.base_rest_server import BaseRestServer
+from vanta_api.miner_rest_server import MinerRestServer
 
 try:
     import websockets
@@ -91,18 +95,22 @@ class OrderEventStore:
 
 # ==================== Entity Miner REST Server ====================
 
-class EntityMinerRestServer(BaseRestServer):
+class EntityMinerRestServer(MinerRestServer):
     """
     Gateway server for entity miners.
 
-    Connects to the validator WebSocket using entity hotkey auth,
-    receives dashboard + rejection data, and exposes REST/SSE endpoints.
+    Extends MinerRestServer with entity-specific functionality:
+    - WebSocket connection to validator for dashboard/rejection data
+    - SSE real-time streaming to Chrome extensions and consumers
+    - HL address mapping and subaccount management
+
+    Inherits all MinerRestServer endpoints (submit-order, order-status)
+    and adds entity-specific endpoints (dashboard, events, stream,
+    create-subaccount, create-hl-subaccount).
     """
 
     def __init__(self, api_keys_file, flask_host="0.0.0.0", flask_port=8089,
-                 slack_notifier=None, **kwargs):
-        self.slack_notifier = slack_notifier
-
+                 slack_notifier=None, prop_net_order_placer=None, **kwargs):
         # Internal state (initialized before super().__init__ calls _initialize_clients)
         self._event_store = OrderEventStore()
         self._dashboard_cache: Dict[str, dict] = {}  # hl_address -> latest dashboard
@@ -126,17 +134,20 @@ class EntityMinerRestServer(BaseRestServer):
         self._validator_ws_port = None
 
         super().__init__(
+            prop_net_order_placer=prop_net_order_placer,
             api_keys_file=api_keys_file,
             service_name="EntityMinerRestServer",
             refresh_interval=15,
             metrics_interval_minutes=5,
             flask_host=flask_host,
             flask_port=flask_port,
+            slack_notifier=slack_notifier,
             **kwargs
         )
 
     def _initialize_clients(self, **kwargs):
         """Load wallet secrets and start WebSocket listener."""
+        super()._initialize_clients(**kwargs)
         try:
             secrets = ValiUtils.get_secrets(secrets_path=MinerConfig.get_secrets_file_path())
             wallet_name = secrets.get('wallet_name')
@@ -167,14 +178,19 @@ class EntityMinerRestServer(BaseRestServer):
         self._start_ws_listener()
 
     def _register_routes(self):
-        """Register entity miner gateway endpoints."""
+        """Register miner endpoints (inherited) plus entity-specific endpoints."""
+        # Register all MinerRestServer routes (submit-order, order-status, health).
+        # health_endpoint is overridden in this class, so the parent's registration
+        # will use our version via Python MRO.
+        super()._register_routes()
+
+        # Register entity-specific endpoints
         self.app.route("/api/hl/<hl_address>/dashboard", methods=["GET"])(self.dashboard_endpoint)
         self.app.route("/api/hl/<hl_address>/events", methods=["GET"])(self.events_endpoint)
         self.app.route("/api/hl/<hl_address>/stream", methods=["GET"])(self.stream_endpoint)
         self.app.route("/api/create-subaccount", methods=["POST"])(self.create_subaccount_endpoint)
         self.app.route("/api/create-hl-subaccount", methods=["POST"])(self.create_hl_subaccount_endpoint)
-        self.app.route("/api/health", methods=["GET"])(self.health_endpoint)
-        print(f"[ENTITY-GW-INIT] 6 endpoints registered")
+        print(f"[ENTITY-GW-INIT] 8 endpoints registered (3 inherited + 5 entity-specific)")
 
     # ==================== HL Address Mapping ====================
 
@@ -347,6 +363,7 @@ class EntityMinerRestServer(BaseRestServer):
                         f"(subscribed to {auth_resp.get('subscribed_subaccounts', 0)} subaccounts)")
 
                     # Message receive loop
+                    loop = asyncio.get_running_loop()
                     while not self._ws_stop_event.is_set():
                         try:
                             raw = await asyncio.wait_for(ws.recv(), timeout=5.0)
@@ -355,7 +372,7 @@ class EntityMinerRestServer(BaseRestServer):
 
                         try:
                             msg = json.loads(raw)
-                            self._handle_ws_message(msg)
+                            await loop.run_in_executor(None, self._handle_ws_message, msg)
                         except json.JSONDecodeError:
                             continue
 
