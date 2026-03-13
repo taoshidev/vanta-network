@@ -77,9 +77,17 @@ class OrderEventStore:
         self._events: Dict[str, deque] = {}
         self._lock = threading.Lock()
 
+    @staticmethod
+    def _normalize_hl_address(hl_address: str) -> str:
+        if not isinstance(hl_address, str):
+            return ""
+        return hl_address.lower()
+
     def add(self, event: OrderEvent) -> None:
         with self._lock:
-            addr = event.hl_address
+            addr = self._normalize_hl_address(event.hl_address)
+            if not addr:
+                return
             if addr not in self._events:
                 self._events[addr] = deque(maxlen=self.MAX_EVENTS_PER_ADDRESS)
             self._events[addr].append(event)
@@ -87,7 +95,8 @@ class OrderEventStore:
     def get_events(self, hl_address: str, since_ms: int = 0) -> list:
         """Get events for an address, optionally filtered by timestamp."""
         with self._lock:
-            events = self._events.get(hl_address, deque())
+            normalized = self._normalize_hl_address(hl_address)
+            events = self._events.get(normalized, deque())
             if since_ms > 0:
                 return [e.to_dict() for e in events if e.timestamp_ms > since_ms]
             return [e.to_dict() for e in events]
@@ -182,6 +191,12 @@ class EntityMinerRestServer(MinerRestServer):
         # Start WebSocket listener thread
         self._start_ws_listener()
 
+    @staticmethod
+    def _normalize_hl_address(hl_address: str) -> str:
+        if not isinstance(hl_address, str):
+            return ""
+        return hl_address.lower()
+
     def _register_routes(self):
         """Register miner endpoints (inherited) plus entity-specific endpoints."""
         # Register all MinerRestServer routes (submit-order, order-status, health).
@@ -212,8 +227,27 @@ class EntityMinerRestServer(MinerRestServer):
             with open(self._mappings_file, "r") as f:
                 data = json.load(f)
 
-            self._hl_to_synthetic = data.get("hl_to_synthetic", {})
-            self._synthetic_to_hl = data.get("synthetic_to_hl", {})
+            raw_hl_to_synthetic = data.get("hl_to_synthetic", {})
+            raw_synthetic_to_hl = data.get("synthetic_to_hl", {})
+
+            # Normalize stored addresses so lookup is case-insensitive.
+            normalized_hl_to_synthetic = {}
+            normalized_synthetic_to_hl = {}
+
+            for hl_addr, synthetic in raw_hl_to_synthetic.items():
+                normalized_hl = self._normalize_hl_address(hl_addr)
+                if normalized_hl and synthetic:
+                    normalized_hl_to_synthetic[normalized_hl] = synthetic
+                    normalized_synthetic_to_hl[synthetic] = normalized_hl
+
+            for synthetic, hl_addr in raw_synthetic_to_hl.items():
+                normalized_hl = self._normalize_hl_address(hl_addr)
+                if normalized_hl and synthetic:
+                    normalized_synthetic_to_hl[synthetic] = normalized_hl
+                    normalized_hl_to_synthetic[normalized_hl] = synthetic
+
+            self._hl_to_synthetic = normalized_hl_to_synthetic
+            self._synthetic_to_hl = normalized_synthetic_to_hl
             bt.logging.info(f"[ENTITY-GW] Loaded {len(self._hl_to_synthetic)} HL address mappings from disk")
         except Exception as e:
             bt.logging.error(f"[ENTITY-GW] Error loading HL mappings: {e}")
@@ -235,8 +269,11 @@ class EntityMinerRestServer(MinerRestServer):
     def _apply_hl_mappings(self, hl_mappings: dict):
         """Apply HL address -> synthetic hotkey mappings received from validator (e.g. WS auth response)."""
         for hl_addr, synthetic in hl_mappings.items():
-            self._hl_to_synthetic[hl_addr] = synthetic
-            self._synthetic_to_hl[synthetic] = hl_addr
+            normalized_hl = self._normalize_hl_address(hl_addr)
+            if not normalized_hl or not synthetic:
+                continue
+            self._hl_to_synthetic[normalized_hl] = synthetic
+            self._synthetic_to_hl[synthetic] = normalized_hl
         self._save_hl_mappings()
         bt.logging.info(f"[ENTITY-GW] Applied {len(hl_mappings)} HL mappings from validator")
 
@@ -431,6 +468,10 @@ class EntityMinerRestServer(MinerRestServer):
         # Resolve HL address
         hl_address = self._synthetic_to_hl.get(synthetic_hotkey)
         if not hl_address:
+            bt.logging.debug(
+                f"[ENTITY-GW] Dropping WS message for {synthetic_hotkey}: "
+                f"no HL mapping (known mappings={len(self._synthetic_to_hl)})"
+            )
             return
 
         if msg_type == "subaccount_dashboard":
@@ -522,21 +563,24 @@ class EntityMinerRestServer(MinerRestServer):
 
     def dashboard_endpoint(self, hl_address):
         """GET /api/hl/<hl_address>/dashboard - Return cached dashboard data (no API key required)."""
-        dashboard = self._dashboard_cache.get(hl_address)
+        normalized_hl = self._normalize_hl_address(hl_address)
+        dashboard = self._dashboard_cache.get(normalized_hl)
         if not dashboard:
-            return jsonify({'status': 'no_data', 'hl_address': hl_address}), 404
+            return jsonify({'status': 'no_data', 'hl_address': normalized_hl}), 404
 
         return jsonify(dashboard), 200
 
     def events_endpoint(self, hl_address):
         """GET /api/hl/<hl_address>/events?since=<ms> - Return order events (no API key required)."""
         since_ms = request.args.get('since', 0, type=int)
-        events = self._event_store.get_events(hl_address, since_ms=since_ms)
-        return jsonify({'hl_address': hl_address, 'events': events, 'count': len(events)}), 200
+        normalized_hl = self._normalize_hl_address(hl_address)
+        events = self._event_store.get_events(normalized_hl, since_ms=since_ms)
+        return jsonify({'hl_address': normalized_hl, 'events': events, 'count': len(events)}), 200
 
     def stream_endpoint(self, hl_address):
         """GET /api/hl/<hl_address>/stream - SSE real-time stream (no API key required)."""
-        subscriber_queue = self._subscribe_sse(hl_address)
+        normalized_hl = self._normalize_hl_address(hl_address)
+        subscriber_queue = self._subscribe_sse(normalized_hl)
 
         def event_stream():
             try:
@@ -550,7 +594,7 @@ class EntityMinerRestServer(MinerRestServer):
             except GeneratorExit:
                 pass
             finally:
-                self._unsubscribe_sse(hl_address, subscriber_queue)
+                self._unsubscribe_sse(normalized_hl, subscriber_queue)
 
         return Response(
             event_stream(),
@@ -862,9 +906,10 @@ class EntityMinerRestServer(MinerRestServer):
                 # Update HL address mappings and persist to disk
                 subaccount = response_data.get('subaccount', {})
                 synthetic = subaccount.get('synthetic_hotkey')
-                if synthetic:
-                    self._hl_to_synthetic[hl_address] = synthetic
-                    self._synthetic_to_hl[synthetic] = hl_address
+                normalized_hl = self._normalize_hl_address(hl_address)
+                if synthetic and normalized_hl:
+                    self._hl_to_synthetic[normalized_hl] = synthetic
+                    self._synthetic_to_hl[synthetic] = normalized_hl
                     self._save_hl_mappings()
 
                 if self.slack_notifier:
