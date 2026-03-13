@@ -24,19 +24,16 @@ class HLFundingRateServer(RPCServerBase):
     def __init__(
         self,
         *,
-        config=None,
+        slack_notifier=None,
         start_server=True,
         start_daemon=False,
         running_unit_tests: bool = False,
         connection_mode: RPCConnectionMode = RPCConnectionMode.RPC,
-        **kwargs,
     ):
         self.running_unit_tests = running_unit_tests
 
-        if running_unit_tests:
-            from shared_objects.rpc.test_mock_factory import TestMockFactory
-            config = TestMockFactory.create_mock_config_if_needed(config, netuid=116, network="test")
-
+        # Create manager FIRST before RPCServerBase.__init__
+        # CRITICAL: Prevents race condition where RPC calls fail with AttributeError during initialization
         self._manager = HLFundingRateManager(running_unit_tests=running_unit_tests)
 
         daemon_interval_s = ValiConfig.HL_FUNDING_DAEMON_INTERVAL_S
@@ -45,13 +42,12 @@ class HLFundingRateServer(RPCServerBase):
         super().__init__(
             service_name=self.service_name,
             port=self.service_port,
-            config=config,
+            slack_notifier=slack_notifier,
             start_server=start_server,
             start_daemon=start_daemon,
             connection_mode=connection_mode,
             daemon_interval_s=daemon_interval_s,
             hang_timeout_s=hang_timeout_s,
-            running_unit_tests=running_unit_tests,
         )
 
         # Backfill on startup
@@ -72,9 +68,6 @@ class HLFundingRateServer(RPCServerBase):
         start_ms = now_ms - 2 * 3600 * 1000  # 2 hours back
         coins = list(ValiConfig.HL_COIN_TO_TRADE_PAIR.keys())
         self._manager.fetch_and_store_rates(coins, start_ms, now_ms)
-
-    def get_daemon_name(self) -> str:
-        return "vali_HLFundingRateDaemon"
 
     # === RPC methods ===
 
