@@ -19,7 +19,8 @@ from vanta_api.entity_miner_rest_server import EntityMinerRestServer
 class EntityMinerAPIManager:
     """Manages entity miner gateway server lifecycle."""
 
-    def __init__(self, api_host="0.0.0.0", api_port=8089, slack_notifier=None):
+    def __init__(self, api_host="0.0.0.0", api_port=8089, slack_notifier=None,
+                 prop_net_order_placer=None):
         """
         Initialize entity miner API manager.
 
@@ -27,10 +28,12 @@ class EntityMinerAPIManager:
             api_host: REST server host address
             api_port: REST server port
             slack_notifier: Optional SlackNotifier for notifications
+            prop_net_order_placer: Optional PropNetOrderPlacer for order submission endpoints
         """
         self.api_host = api_host
         self.api_port = api_port
         self.slack_notifier = slack_notifier
+        self.prop_net_order_placer = prop_net_order_placer
 
         # Get API keys file path (reuse miner's API keys)
         self.api_keys_file = ValiBkpUtils.get_api_keys_file_path()
@@ -60,19 +63,22 @@ class EntityMinerAPIManager:
                 api_keys_file=self.api_keys_file,
                 flask_host=self.api_host,
                 flask_port=self.api_port,
-                slack_notifier=self.slack_notifier
+                slack_notifier=self.slack_notifier,
+                prop_net_order_placer=self.prop_net_order_placer
             )
 
             bt.logging.success(
                 f"Entity Miner Gateway started at http://{self.api_host}:{self.api_port}"
             )
             bt.logging.info(f"Endpoints available:")
-            bt.logging.info(f"  GET    /api/hl/<addr>/dashboard  - Cached dashboard")
-            bt.logging.info(f"  GET    /api/hl/<addr>/events     - Order events")
-            bt.logging.info(f"  GET    /api/hl/<addr>/stream     - SSE stream")
-            bt.logging.info(f"  POST   /api/create-subaccount    - Create subaccount")
-            bt.logging.info(f"  POST   /api/create-hl-subaccount - Create HL subaccount")
-            bt.logging.info(f"  GET    /api/health               - Health check")
+            bt.logging.info(f"  POST   /api/submit-order         - Synchronous order submission (inherited)")
+            bt.logging.info(f"  GET    /api/order-status/<uuid>   - Query order status (inherited)")
+            bt.logging.info(f"  GET    /api/hl/<addr>/dashboard   - Cached dashboard")
+            bt.logging.info(f"  GET    /api/hl/<addr>/events      - Order events")
+            bt.logging.info(f"  GET    /api/hl/<addr>/stream      - SSE stream")
+            bt.logging.info(f"  POST   /api/create-subaccount     - Create subaccount")
+            bt.logging.info(f"  POST   /api/create-hl-subaccount  - Create HL subaccount")
+            bt.logging.info(f"  GET    /api/health                - Health check")
 
         except Exception as e:
             bt.logging.error(f"Failed to start Entity Miner Gateway: {e}")

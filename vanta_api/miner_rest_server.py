@@ -82,7 +82,7 @@ class MinerRestServer(BaseRestServer):
             **kwargs
         )
 
-        print(f"[MINER-REST-INIT] MinerRestServer initialized on {self.flask_host}:{self.flask_port}")
+        print(f"[MINER-REST-INIT] {service_name} initialized on {self.flask_host}:{self.flask_port}")
 
     # ============================================================================
     # ABSTRACT METHOD IMPLEMENTATIONS (from BaseRestServer)

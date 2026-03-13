@@ -793,10 +793,13 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
 
         The task exits automatically when no subscribers remain.
         """
+        loop = asyncio.get_running_loop()
         try:
             while self.subaccount_subscriptions.get(synthetic_hotkey):
                 try:
-                    dashboard_data = self._entity_client.get_subaccount_dashboard_data(synthetic_hotkey)
+                    dashboard_data = await loop.run_in_executor(
+                        None, self._entity_client.get_subaccount_dashboard_data, synthetic_hotkey
+                    )
                     if dashboard_data:
                         self.sequence_number += 1
                         envelope = {
@@ -1128,7 +1131,10 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
 
         # 4. Entity registered check
         try:
-            entity_data = self._entity_client.get_entity_data(entity_hotkey)
+            loop = asyncio.get_running_loop()
+            entity_data = await loop.run_in_executor(
+                None, self._entity_client.get_entity_data, entity_hotkey
+            )
         except Exception as e:
             bt.logging.error(f"WebSocketServer: Entity lookup failed for {entity_hotkey}: {e}")
             await websocket.send(json.dumps({
