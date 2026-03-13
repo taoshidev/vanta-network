@@ -893,9 +893,9 @@ class Position(BaseModel):
         # Flatten order
         flatten = False
         if self.position_type == OrderType.LONG:
-            flatten = proposed_quantity <= 0
+            flatten = proposed_quantity <= 0 or proposed_value <= 0
         elif self.position_type == OrderType.SHORT:
-            flatten = proposed_quantity >= 0
+            flatten = proposed_quantity >= 0 or proposed_value >= 0
 
         if flatten:
             order.order_type = OrderType.FLAT
@@ -905,7 +905,8 @@ class Position(BaseModel):
             return False
 
         # If order increases position size, validate max position size
-        if order.order_type == self.position_type:
+        clamped = False
+        if order.order_type == self.position_type and max_position_value is not None:
             if abs(self.net_value + self.unrealized_pnl) >= max_position_value:
                 raise ValueError(f"Position at max ${abs(self.net_value):.2f} (limit: ${max_position_value:.2f})")
 
