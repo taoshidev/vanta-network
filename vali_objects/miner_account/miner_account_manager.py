@@ -758,7 +758,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
             self._save_accounts_to_disk()
 
             bt.logging.info(
-                f"[PROCESS ORDER BUY {hotkey}] entry_value=${entry_value_usd:.2f}, pnl=${realized_pnl:.2f}, "
+                f"[PROCESS ORDER SELL {hotkey}] entry_value=${entry_value_usd:.2f}, pnl=${realized_pnl:.2f}, "
                 f"loan_repaid=${loan_repaid:.2f}, balance=${account.balance:.2f}, buying_power=${account.buying_power:.2f}"
             )
             return loan_repaid
