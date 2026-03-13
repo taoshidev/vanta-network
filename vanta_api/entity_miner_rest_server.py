@@ -132,6 +132,7 @@ class EntityMinerRestServer(MinerRestServer):
         self._validator_url = None
         self._validator_ws_host = None
         self._validator_ws_port = None
+        self._mappings_file: Optional[str] = None
 
         super().__init__(
             prop_net_order_placer=prop_net_order_placer,
@@ -165,10 +166,14 @@ class EntityMinerRestServer(MinerRestServer):
                 print(f"[ENTITY-GW-INIT] Wallet loaded: {self._hotkey.ss58_address}")
             else:
                 print(f"[ENTITY-GW-INIT] WARNING: Could not load wallet")
+
+            # Derive mappings file path alongside the secrets file
+            secrets_dir = os.path.dirname(MinerConfig.get_secrets_file_path())
+            self._mappings_file = os.path.join(secrets_dir, "entity_hl_mappings.json")
         except Exception as e:
             bt.logging.error(f"[ENTITY-GW-INIT] Failed to load wallet secrets: {e}")
 
-        # Load HL address mappings from validator
+        # Load HL address mappings from local persistence file
         self._load_hl_mappings()
 
         # Send endpoint URL to validator if configured
@@ -195,35 +200,45 @@ class EntityMinerRestServer(MinerRestServer):
     # ==================== HL Address Mapping ====================
 
     def _load_hl_mappings(self):
-        """Load HL address -> synthetic hotkey mappings from validator."""
-        if not self._validator_url or not self._hotkey:
+        """Load HL address -> synthetic hotkey mappings from local persistence file."""
+        if not self._mappings_file:
             return
 
         try:
-            import requests
-            resp = requests.get(
-                f"{self._validator_url}/entity/data",
-                params={"entity_hotkey": self._hotkey.ss58_address},
-                timeout=15
-            )
-            if resp.status_code != 200:
-                bt.logging.warning(f"[ENTITY-GW] Failed to load entity data: {resp.status_code}")
+            if not os.path.exists(self._mappings_file):
+                bt.logging.info(f"[ENTITY-GW] No mappings file found at {self._mappings_file}, starting fresh")
                 return
 
-            data = resp.json()
-            entity_data = data.get("entity_data", data)
-            subaccounts = entity_data.get("subaccounts", {})
+            with open(self._mappings_file, "r") as f:
+                data = json.load(f)
 
-            for sub_id, sub_info in subaccounts.items():
-                hl_addr = sub_info.get("hl_address")
-                synthetic = sub_info.get("synthetic_hotkey", f"{self._hotkey.ss58_address}_{sub_id}")
-                if hl_addr:
-                    self._hl_to_synthetic[hl_addr] = synthetic
-                    self._synthetic_to_hl[synthetic] = hl_addr
-
-            bt.logging.info(f"[ENTITY-GW] Loaded {len(self._hl_to_synthetic)} HL address mappings")
+            self._hl_to_synthetic = data.get("hl_to_synthetic", {})
+            self._synthetic_to_hl = data.get("synthetic_to_hl", {})
+            bt.logging.info(f"[ENTITY-GW] Loaded {len(self._hl_to_synthetic)} HL address mappings from disk")
         except Exception as e:
             bt.logging.error(f"[ENTITY-GW] Error loading HL mappings: {e}")
+
+    def _save_hl_mappings(self):
+        """Persist HL address -> synthetic hotkey mappings to disk."""
+        if not self._mappings_file:
+            return
+
+        try:
+            with open(self._mappings_file, "w") as f:
+                json.dump({
+                    "hl_to_synthetic": self._hl_to_synthetic,
+                    "synthetic_to_hl": self._synthetic_to_hl,
+                }, f, indent=2)
+        except Exception as e:
+            bt.logging.error(f"[ENTITY-GW] Error saving HL mappings: {e}")
+
+    def _apply_hl_mappings(self, hl_mappings: dict):
+        """Apply HL address -> synthetic hotkey mappings received from validator (e.g. WS auth response)."""
+        for hl_addr, synthetic in hl_mappings.items():
+            self._hl_to_synthetic[hl_addr] = synthetic
+            self._synthetic_to_hl[synthetic] = hl_addr
+        self._save_hl_mappings()
+        bt.logging.info(f"[ENTITY-GW] Applied {len(hl_mappings)} HL mappings from validator")
 
     # ==================== Endpoint URL Registration ====================
 
@@ -358,9 +373,17 @@ class EntityMinerRestServer(MinerRestServer):
 
                     self._ws_connected = True
                     backoff_s = 1.0
+
+                    # Populate HL mappings from auth response (validator sends these on every connect)
+                    hl_mappings = auth_resp.get("hl_mappings", {})
+                    if hl_mappings:
+                        loop_ref = asyncio.get_running_loop()
+                        await loop_ref.run_in_executor(None, self._apply_hl_mappings, hl_mappings)
+
                     bt.logging.info(
                         f"[ENTITY-GW] WS connected and authenticated "
-                        f"(subscribed to {auth_resp.get('subscribed_subaccounts', 0)} subaccounts)")
+                        f"(subscribed to {auth_resp.get('subscribed_subaccounts', 0)} subaccounts, "
+                        f"hl_mappings={len(hl_mappings)})")
 
                     # Message receive loop
                     loop = asyncio.get_running_loop()
@@ -831,12 +854,13 @@ class EntityMinerRestServer(MinerRestServer):
                 return jsonify({'status': 'error', 'message': 'Invalid JSON response from validator'}), 500
 
             if resp.status_code == 200:
-                # Update HL address mappings
+                # Update HL address mappings and persist to disk
                 subaccount = response_data.get('subaccount', {})
                 synthetic = subaccount.get('synthetic_hotkey')
                 if synthetic:
                     self._hl_to_synthetic[hl_address] = synthetic
                     self._synthetic_to_hl[synthetic] = hl_address
+                    self._save_hl_mappings()
 
                 if self.slack_notifier:
                     from datetime import datetime, timezone

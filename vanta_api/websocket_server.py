@@ -1210,13 +1210,23 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
         # Auto-subscribe to all active subaccounts
         subscribed_count = await self._auto_subscribe_entity_subaccounts(client_id, entity_hotkey, entity_data)
 
+        # Build HL address mappings to include in auth response
+        subaccounts = entity_data.get('subaccounts', {})
+        hl_mappings = {}
+        for sub_id, sub_info in subaccounts.items():
+            hl_addr = sub_info.get('hl_address')
+            synthetic = sub_info.get('synthetic_hotkey', f"{entity_hotkey}_{sub_id}")
+            if hl_addr and synthetic:
+                hl_mappings[hl_addr] = synthetic
+
         await websocket.send(json.dumps({
             "status": "success",
             "message": "Entity authentication successful.",
             "auth_type": "entity",
             "current_sequence": self.sequence_number,
             "entity_hotkey": entity_hotkey,
-            "subscribed_subaccounts": subscribed_count
+            "subscribed_subaccounts": subscribed_count,
+            "hl_mappings": hl_mappings
         }))
 
         return True
