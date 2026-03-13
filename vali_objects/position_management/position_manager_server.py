@@ -147,11 +147,13 @@ class PositionManagerServer(RPCServerBase):
         hotkey: str,
         only_open_positions=False,
         acceptable_position_end_ms=None,
-        sort_positions=False
+        sort_positions=False,
+        archived_positions=False
     ):
         """Get positions for a specific hotkey - delegates to manager."""
         return self._manager.get_positions_for_one_hotkey(
-            hotkey, only_open_positions, acceptable_position_end_ms, sort_positions
+            hotkey, only_open_positions, acceptable_position_end_ms, sort_positions,
+            archived_positions=archived_positions
         )
 
     def save_miner_position_rpc(self, position: Position, delete_open_position_if_exists: bool = True):

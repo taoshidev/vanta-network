@@ -149,7 +149,8 @@ class PositionManagerClient(RPCClientBase):
         hotkey: str,
         only_open_positions: bool = False,
         acceptable_position_end_ms: int = None,
-        sort_positions: bool = False
+        sort_positions: bool = False,
+        archived_positions: bool = False
     ) -> List[Position]:
         """
         Get positions for a hotkey from the RPC server.
@@ -159,6 +160,7 @@ class PositionManagerClient(RPCClientBase):
             only_open_positions: If True, only return open positions
             acceptable_position_end_ms: Optional timestamp filter
             sort_positions: If True, sort positions by close_ms (closed first, then open)
+            archived_positions: If True, read from archived_positions/ on disk instead of memory
 
         Returns:
             List of Position objects
@@ -167,7 +169,8 @@ class PositionManagerClient(RPCClientBase):
             hotkey,
             only_open_positions,
             acceptable_position_end_ms,
-            sort_positions
+            sort_positions,
+            archived_positions=archived_positions
         )
 
     def get_positions_for_hotkeys(

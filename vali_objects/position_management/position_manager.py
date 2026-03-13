@@ -75,6 +75,10 @@ class PositionManager:
         # Benefits: O(1) lookup instead of O(N) scan for get_open_position_for_trade_pair
         self.hotkey_to_open_positions: Dict[str, Dict[str, Position]] = {}
 
+        # ARCHIVED POSITIONS: Positions moved out of active tracking on subaccount promotion
+        # Structure: hotkey -> position_uuid -> Position
+        self.hotkey_to_archived_positions: Dict[str, Dict[str, Position]] = {}
+
         self.running_unit_tests = running_unit_tests
         self.is_backtesting = is_backtesting
         self.load_from_disk = load_from_disk
@@ -138,7 +142,8 @@ class PositionManager:
         hotkey: str,
         only_open_positions=False,
         acceptable_position_end_ms=None,
-        sort_positions=False
+        sort_positions=False,
+        archived_positions=False
     ):
         """
         Get positions for a specific hotkey.
@@ -148,15 +153,18 @@ class PositionManager:
             only_open_positions: Whether to return only open positions
             acceptable_position_end_ms: Minimum timestamp for positions (filters out older positions)
             sort_positions: Whether to sort positions by close_ms (closed first, then open)
+            archived_positions: If True, read from archived_positions/ on disk instead of memory
 
         Returns:
             List of positions matching the filters
         """
-        if hotkey not in self.hotkey_to_positions:
+        if hotkey not in self.hotkey_to_positions and not archived_positions:
             return []
 
-        positions_dict = self.hotkey_to_positions[hotkey]
-        positions = list(positions_dict.values())  # Convert dict values to list
+        positions = list(self.hotkey_to_positions.get(hotkey, {}).values())
+
+        if archived_positions:
+            positions += list(self.hotkey_to_archived_positions.get(hotkey, {}).values())
 
         # Filters
         if only_open_positions:
@@ -419,6 +427,7 @@ class PositionManager:
             if ValiBkpUtils.archive_position(hotkey, position, running_unit_tests=self.running_unit_tests):
                 n_archived += 1
                 bt.logging.info(f"[POSITION ARCHIVE] {position.position_uuid} archived successfully")
+                self.hotkey_to_archived_positions.setdefault(hotkey, {})[position.position_uuid] = position
                 self.delete_position(hotkey, position.position_uuid)
             else:
                 bt.logging.error(f"[POSITION ARCHIVE] {position.position_uuid} already archived or could not archive")
@@ -462,7 +471,7 @@ class PositionManager:
     def get_dashboard(self, hotkey: str, positions_time_ms: int) -> dict | None:
         snapshot_time_ms = positions_time_ms
 
-        positions = self.get_positions_for_one_hotkey(hotkey, sort_positions=True)
+        positions = self.get_positions_for_one_hotkey(hotkey, sort_positions=True, archived_positions=True)
         if not positions:
             return None
 
@@ -1394,6 +1403,38 @@ class PositionManager:
 
         # Rebuild the open positions index after loading
         self._rebuild_open_index()
+
+        # Load archived positions
+        for hotkey_dir in base_dir.iterdir():
+            if not hotkey_dir.is_dir():
+                continue
+
+            hotkey = hotkey_dir.name
+            archive_dir = ValiBkpUtils.get_miner_archived_positions_dir(
+                hotkey, running_unit_tests=self.running_unit_tests
+            )
+            all_files = ValiBkpUtils.get_all_files_in_dir(archive_dir)
+
+            if not all_files:
+                continue
+
+            archived_dict = {}
+            for position_file in all_files:
+                try:
+                    file_string = ValiBkpUtils.get_file(position_file)
+                    position = Position.model_validate_json(file_string)
+                    archived_dict[position.position_uuid] = position
+                except Exception as e:
+                    bt.logging.error(f"Error loading archived position file {position_file} for {hotkey}: {e}")
+
+            if archived_dict:
+                self.hotkey_to_archived_positions[hotkey] = archived_dict
+                bt.logging.debug(f"Loaded {len(archived_dict)} archived positions for {hotkey}")
+
+        total_archived = sum(len(d) for d in self.hotkey_to_archived_positions.values())
+        bt.logging.success(
+            f"Loaded {total_archived} archived positions for {len(self.hotkey_to_archived_positions)} hotkeys from disk"
+        )
 
 
     @timeme
