@@ -13,6 +13,7 @@ from time_util.time_util import TimeUtil
 from vali_objects.utils.vali_bkp_utils import CustomEncoder
 from vali_objects.vali_config import RPCConnectionMode
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger import DebtLedger, DebtCheckpoint
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 from entity_management import entity_utils
 
 
@@ -783,6 +784,7 @@ class DebtLedgerManager():
                     continue
 
                 # Get debt ledgers for all active subaccounts
+                _earning_statuses = {MinerBucket.SUBACCOUNT_FUNDED.value, MinerBucket.SUBACCOUNT_ALPHA.value}
                 subaccount_ledgers = []
                 for subaccount in active_subaccounts:
                     synthetic_hotkey = subaccount.get('synthetic_hotkey')
@@ -818,11 +820,11 @@ class DebtLedgerManager():
                 # Create aggregated checkpoints for each timestamp
                 aggregated_checkpoints = []
                 for timestamp_ms in sorted_timestamps:
-                    # Collect checkpoints from all subaccounts at this timestamp
+                    # Collect earning checkpoints from all subaccounts at this timestamp
                     checkpoints_at_time = []
                     for synthetic_hotkey, ledger in subaccount_ledgers:
                         checkpoint = ledger.get_checkpoint_at_time(timestamp_ms, target_cp_duration_ms)
-                        if checkpoint:
+                        if checkpoint and checkpoint.challenge_period_status in _earning_statuses:
                             checkpoints_at_time.append(checkpoint)
 
                     if not checkpoints_at_time:

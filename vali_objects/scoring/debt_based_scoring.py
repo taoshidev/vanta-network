@@ -349,7 +349,8 @@ class DebtBasedScoring:
                     MinerBucket.MAINCOMP.value,
                     MinerBucket.PROBATION.value,
                     MinerBucket.SUBACCOUNT_FUNDED.value,
-                    MinerBucket.SUBACCOUNT_ALPHA.value
+                    MinerBucket.SUBACCOUNT_ALPHA.value,
+                    MinerBucket.ENTITY.value
                 )
             ]
 
