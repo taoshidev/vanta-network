@@ -308,6 +308,15 @@ class EntityServer(RPCServerBase):
         all_entities = self._manager.get_all_entities()
         return {hotkey: entity.model_dump() for hotkey, entity in all_entities.items()}
 
+    def get_hl_leaderboard_data_rpc(self) -> dict:
+        """
+        Get aggregated HL leaderboard data (summary, funded traders, challenge traders).
+
+        Returns:
+            Dict with summary, fundedTraders, challengeTraders, timestamp
+        """
+        return self._manager.get_hl_leaderboard_data()
+
     def validate_hotkey_for_orders_rpc(self, hotkey: str) -> dict:
         """
         Validate a hotkey for order placement in a single RPC call.

@@ -234,6 +234,15 @@ class EntityClient(RPCClientBase):
         """
         return self._server.get_all_entities_rpc()
 
+    def get_hl_leaderboard_data(self) -> dict:
+        """
+        Get aggregated HL leaderboard data.
+
+        Returns:
+            Dict with summary, fundedTraders, challengeTraders, timestamp
+        """
+        return self._server.get_hl_leaderboard_data_rpc()
+
     def validate_hotkey_for_orders(self, hotkey: str) -> dict:
         """
         Validate a hotkey for order placement in a single RPC call.
