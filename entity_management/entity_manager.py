@@ -33,7 +33,8 @@ from vali_objects.miner_account import MinerAccountClient
 from vali_objects.scoring.debt_based_scoring import DebtBasedScoring
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
-from vali_objects.vali_config import ValiConfig, RPCConnectionMode
+from datetime import datetime, timezone
+from vali_objects.vali_config import ValiConfig, RPCConnectionMode, TradePairCategory
 from shared_objects.cache_controller import CacheController
 from vali_objects.validator_broadcast_base import ValidatorBroadcastBase
 from vali_objects.utils.elimination.elimination_client import EliminationClient
@@ -1282,6 +1283,180 @@ class EntityManager(ValidatorBroadcastBase):
         # Use master lock: copying entire dict
         with self._entities_lock:
             return dict(self.entities)
+
+    def get_hl_leaderboard_data(self) -> dict:
+        """
+        Build leaderboard data for all HL subaccounts using batch queries.
+
+        Returns a dict with:
+        - summary: global metrics (totalTraders, fundedTraders, inChallenge, eliminated, totalVolume)
+        - fundedTraders: list of funded trader dicts sorted by PnL descending
+        - challengeTraders: list of in-challenge trader dicts sorted by progress descending
+        """
+        time_now_ms = TimeUtil.now_in_millis()
+
+        # 1. Collect all HL subaccounts (active + eliminated) from entities
+        all_hl_subaccounts = []  # (hl_address, subaccount_info, synthetic_hotkey)
+        with self._entities_lock:
+            for entity_data in self.entities.values():
+                for subaccount in entity_data.subaccounts.values():
+                    if subaccount.hl_address:
+                        all_hl_subaccounts.append((
+                            subaccount.hl_address,
+                            subaccount,
+                            subaccount.synthetic_hotkey
+                        ))
+
+        active_subaccounts = [
+            (addr, sa, shk) for addr, sa, shk in all_hl_subaccounts
+            if sa.status in ('active', 'admin')
+        ]
+        eliminated_subaccounts = [
+            (addr, sa, shk) for addr, sa, shk in all_hl_subaccounts
+            if sa.status == 'eliminated'
+        ]
+        active_hotkeys = [shk for _, _, shk in active_subaccounts]
+
+        # 2. Batch fetch from RPC services
+        # Challenge period buckets
+        challenge_buckets = {}  # hotkey -> (bucket_str, start_time_ms)
+        try:
+            testing_miners = self._challenge_period_client.get_testing_miners()
+            success_miners = self._challenge_period_client.get_success_miners()
+            for hk, start_time in testing_miners.items():
+                challenge_buckets[hk] = ('testing', start_time)
+            for hk, start_time in success_miners.items():
+                challenge_buckets[hk] = ('funded', start_time)
+        except Exception as e:
+            bt.logging.error(f"[LEADERBOARD] Challenge period fetch failed: {e}")
+
+        # Batch statistics
+        batch_stats = {}
+        try:
+            batch_stats = self._statistics_client.get_miner_statistics_for_hotkeys(active_hotkeys)
+        except Exception as e:
+            bt.logging.error(f"[LEADERBOARD] Batch statistics fetch failed: {e}")
+
+        # Batch account data
+        batch_accounts = {}
+        try:
+            batch_accounts = self._miner_account_client.get_accounts(active_hotkeys)
+        except Exception as e:
+            bt.logging.error(f"[LEADERBOARD] Batch accounts fetch failed: {e}")
+
+        # 3. Build trader entries
+        funded_traders = []
+        challenge_traders = []
+        total_volume = 0.0
+        total_payouts = 0.0
+
+        for hl_address, subaccount, synthetic_hotkey in active_subaccounts:
+            bucket_info = challenge_buckets.get(synthetic_hotkey)
+            if not bucket_info:
+                continue
+
+            bucket_str, bucket_start_time = bucket_info
+            stats = batch_stats.get(synthetic_hotkey) or {}
+            account = batch_accounts.get(synthetic_hotkey) or {}
+
+            # Extract common fields
+            engagement = stats.get('engagement') or {}
+            n_positions = engagement.get('n_positions') or 0
+            percentage_profitable = engagement.get('percentage_profitable')
+            win_rate = round(percentage_profitable * 100, 1) if percentage_profitable is not None else None
+            drawdowns = stats.get('drawdowns') or {}
+            pnl_info = stats.get('pnl_info') or {}
+            raw_pnl = pnl_info.get('raw_pnl', 0.0) if isinstance(pnl_info, dict) else 0.0
+
+            # Sharpe: extract from scores
+            sharpe = None
+            scores = stats.get('scores') or {}
+            for asset_class_scores in scores.values():
+                sharpe_data = asset_class_scores.get('sharpe') or {}
+                if 'value' in sharpe_data:
+                    sharpe = round(sharpe_data['value'], 2)
+                    break
+
+            account_size = subaccount.account_size
+            balance = account.get('balance', account_size) if isinstance(account, dict) else account_size
+            total_realized_pnl = account.get('total_realized_pnl', 0.0) if isinstance(account, dict) else 0.0
+
+            # Since date from created_at_ms
+            since = datetime.fromtimestamp(
+                subaccount.created_at_ms / 1000, tz=timezone.utc
+            ).strftime('%b %Y')
+
+            if bucket_str == 'funded':
+                weight_info = stats.get('weight') or {}
+                funded_traders.append({
+                    'address': hl_address,
+                    'pnl': round(total_realized_pnl, 2),
+                    'funding': account_size,
+                    'sharpe': sharpe,
+                    'trades': n_positions,
+                    'winRate': win_rate,
+                    'payouts': 0,
+                    'since': since,
+                    'rank': weight_info.get('rank'),
+                })
+            elif bucket_str == 'testing':
+                # Calculate challenge progress
+                asset_class = (subaccount.asset_class or '').lower()
+                target_return = (
+                    ValiConfig.SUBACCOUNT_CRYPTO_CHALLENGE_RETURNS_THRESHOLD
+                    if asset_class == TradePairCategory.CRYPTO.value
+                    else ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD
+                )
+
+                current_return = None
+                progress = 0.0
+                drawdown_percent = 0.0
+
+                if isinstance(account_size, (int, float)) and account_size > 0 and isinstance(balance, (int, float)):
+                    current_return = balance / account_size
+                    returns_pct = (current_return - 1.0) * 100.0
+                    target_pct = target_return * 100.0
+                    if target_pct > 0:
+                        progress = round(min(max((returns_pct / target_pct) * 100.0, 0.0), 100.0), 1)
+
+                    max_return = account.get('max_return', current_return) if isinstance(account, dict) else current_return
+                    if isinstance(max_return, (int, float)) and max_return > 0:
+                        drawdown_percent = round(max((1.0 - (current_return / max_return)) * 100.0, 0.0), 1)
+
+                challenge_traders.append({
+                    'address': hl_address,
+                    'pnl': round(total_realized_pnl, 2),
+                    'progress': progress,
+                    'sharpe': sharpe,
+                    'trades': n_positions,
+                    'winRate': win_rate,
+                    'drawdown': drawdown_percent,
+                    'since': since,
+                })
+
+        # 4. Sort
+        funded_traders.sort(key=lambda t: t.get('rank') or float('inf'))
+        for i, trader in enumerate(funded_traders, 1):
+            trader['rank'] = i
+
+        challenge_traders.sort(key=lambda t: t.get('progress', 0), reverse=True)
+
+        # 5. Build summary
+        summary = {
+            'totalPaidOut': 0,
+            'totalTraders': len(all_hl_subaccounts),
+            'fundedTraders': len(funded_traders),
+            'inChallenge': len(challenge_traders),
+            'eliminated': len(eliminated_subaccounts),
+            'totalVolume': 0,
+        }
+
+        return {
+            'summary': summary,
+            'fundedTraders': funded_traders,
+            'challengeTraders': challenge_traders,
+            'timestamp': time_now_ms,
+        }
 
     # ==================== Challenge Period & Elimination Assessment ====================
 

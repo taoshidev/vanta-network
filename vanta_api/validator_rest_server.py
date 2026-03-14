@@ -284,7 +284,10 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         self.app.route("/hl-traders/<hl_address>", methods=["GET"])(self.get_hl_trader)
         self.app.route("/hl-traders/<hl_address>/limits", methods=["GET"])(self.get_hl_trader_limits)
 
-        print(f"[REST-INIT] 31 validator endpoints registered ✓")
+        # Public HL leaderboard (no auth required)
+        self.app.route("/hl-leaderboard", methods=["GET"])(self.get_hl_leaderboard)
+
+        print(f"[REST-INIT] 32 validator endpoints registered ✓")
 
     # ============================================================================
     # MINER POSITION ENDPOINTS
@@ -2131,6 +2134,27 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             },
             cls=CustomEncoder,
         )
+        return Response(response_body, content_type='application/json'), 200
+
+    def get_hl_leaderboard(self):
+        """
+        Public endpoint — no authentication required.
+        Returns aggregated leaderboard data for all Hyperliquid traders:
+        summary metrics, funded traders table, and in-challenge traders table.
+
+        Example:
+        curl http://localhost:48888/hl-leaderboard
+        """
+        if not self._entity_client:
+            return jsonify({'error': 'Entity management not available'}), 503
+
+        try:
+            leaderboard = self._entity_client.get_hl_leaderboard_data()
+        except Exception as e:
+            bt.logging.error(f"get_hl_leaderboard: failed: {e}")
+            return jsonify({'status': 'error', 'message': 'Internal error'}), 500
+
+        response_body = json.dumps(leaderboard, cls=CustomEncoder)
         return Response(response_body, content_type='application/json'), 200
 
     def calculate_subaccount_payout(self):
