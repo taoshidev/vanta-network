@@ -117,7 +117,7 @@ class ValiBkpUtils:
         """Move a single position file to archived_positions/ directory on disk.
 
         Returns:
-            True if the file was moved, False if it did not exist or was already archived
+            True if the file was moved, False if the source file did not exist
         """
         dst_base = ValiBkpUtils.get_miner_archived_positions_dir(hotkey, running_unit_tests=running_unit_tests)
         positions_base = ValiBkpUtils.get_miner_all_positions_dir(hotkey, running_unit_tests=running_unit_tests)
@@ -132,8 +132,6 @@ class ValiBkpUtils:
             return False
         rel = os.path.relpath(src_file, positions_base)
         dst_file = os.path.join(dst_base, rel)
-        if os.path.exists(dst_file):
-            return False
         os.makedirs(os.path.dirname(dst_file), exist_ok=True)
         shutil.move(src_file, dst_file)
         return True

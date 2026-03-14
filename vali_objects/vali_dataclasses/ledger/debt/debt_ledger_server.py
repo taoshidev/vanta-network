@@ -75,7 +75,7 @@ class DebtLedgerServer(RPCServerBase):
             start_daemon=start_daemon,
             daemon_interval_s=daemon_interval_s,
             hang_timeout_s=hang_timeout_s,
-            daemon_stagger_s=120.0    # Stagger startup by 2 minutes to avoid IPC contention
+            daemon_stagger_s=180.0    # Stagger startup by 3 minutes to avoid IPC contention and perf ledger rebuild
         )
 
         self.running_unit_tests = running_unit_tests
