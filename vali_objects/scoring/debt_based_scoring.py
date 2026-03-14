@@ -78,6 +78,15 @@ class DebtBasedScoring:
     BURN_UID_MAINNET = 229
     BURN_UID_TESTNET = 220
 
+    # Miner statuses that count as earning periods (eligible for payout)
+    EARNING_MINER_BUCKETS = {
+        MinerBucket.MAINCOMP.value,
+        MinerBucket.PROBATION.value,
+        MinerBucket.SUBACCOUNT_FUNDED.value,
+        MinerBucket.SUBACCOUNT_ALPHA.value,
+        MinerBucket.ENTITY.value,
+    }
+
     @staticmethod
     def get_burn_uid(is_testnet: bool = False) -> int:
         """
@@ -345,13 +354,7 @@ class DebtBasedScoring:
             # Only include checkpoints where status is MAINCOMP or PROBATION (earning periods)
             earning_checkpoints = [
                 cp for cp in cumulative_checkpoints
-                if cp.challenge_period_status in (
-                    MinerBucket.MAINCOMP.value,
-                    MinerBucket.PROBATION.value,
-                    MinerBucket.SUBACCOUNT_FUNDED.value,
-                    MinerBucket.SUBACCOUNT_ALPHA.value,
-                    MinerBucket.ENTITY.value
-                )
+                if cp.challenge_period_status in DebtBasedScoring.EARNING_MINER_BUCKETS
             ]
 
             # Calculate needed payout from activation through end of previous pay period (in USD)
@@ -382,12 +385,7 @@ class DebtBasedScoring:
             cumulative_payout_checkpoints = [
                 cp for cp in debt_ledger.checkpoints
                 if payout_calc_start_ms <= cp.timestamp_ms <= current_time_ms
-                and cp.challenge_period_status in (
-                    MinerBucket.MAINCOMP.value,
-                    MinerBucket.PROBATION.value,
-                    MinerBucket.SUBACCOUNT_FUNDED.value,
-                    MinerBucket.SUBACCOUNT_ALPHA.value
-                )
+                and cp.challenge_period_status in DebtBasedScoring.EARNING_MINER_BUCKETS
             ]
             actual_payout_usd = sum(cp.chunk_emissions_usd for cp in cumulative_payout_checkpoints)
 
@@ -762,12 +760,7 @@ class DebtBasedScoring:
         """
         # Default to earning statuses
         if earning_statuses is None:
-            earning_statuses = {
-                MinerBucket.MAINCOMP.value,
-                MinerBucket.PROBATION.value,
-                MinerBucket.SUBACCOUNT_FUNDED.value,
-                MinerBucket.SUBACCOUNT_ALPHA.value
-            }
+            earning_statuses = DebtBasedScoring.EARNING_MINER_BUCKETS
 
         if not ledger.checkpoints:
             return 0.0
