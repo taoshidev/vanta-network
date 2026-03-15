@@ -450,7 +450,8 @@ class ValiConfig:
     # Challenge Period Configuration
     SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD = 0.08  # 8% returns required to pass evaluation
     SUBACCOUNT_CRYPTO_CHALLENGE_RETURNS_THRESHOLD = 0.1  # 10% returns required to pass crypto evaluation
-    SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD = 0.05  # 5% max drawdown allowed during challenge period
+    SUBACCOUNT_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD = 0.05    # Rule 1: 5% intraday drop from day-open equity eliminates
+    SUBACCOUNT_CHALLENGE_EOD_DRAWDOWN_THRESHOLD = 0.05  # Rule 2: 5% drop from highest-ever EOD equity eliminates
 
     # Subaccount promotion requirements
     SUBACCOUNT_FUNDED_MINIMUM_DAYS = 90  # Minimum days in FUNDED before promoting to ALPHA

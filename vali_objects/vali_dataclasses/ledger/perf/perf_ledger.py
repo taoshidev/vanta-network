@@ -78,6 +78,8 @@ class PerfCheckpoint:
         mpv: float = 0.0,
         realized_pnl: float = 0.0,
         unrealized_pnl: float = 0.0,
+        equity_ret: float = 0.0,        # (account_size + prev_portfolio_realized_pnl - cumulative_fees_usd + unrealized_pnl) / account_size
+        cumulative_fees_usd: float = 0.0,  # Running total of all fees paid up to this checkpoint
         **kwargs  # Support extra fields like BaseModel's extra="allow"
     ):
         # Type coercion to match BaseModel behavior (handles numpy types and ensures correct types)
@@ -98,6 +100,8 @@ class PerfCheckpoint:
         self.mpv = float(mpv)
         self.realized_pnl = float(realized_pnl)
         self.unrealized_pnl = float(unrealized_pnl)
+        self.equity_ret = float(equity_ret)
+        self.cumulative_fees_usd = float(cumulative_fees_usd)
 
         # Store any extra fields (equivalent to model_config extra="allow")
         for key, value in kwargs.items():
@@ -260,7 +264,8 @@ class PerfLedger():
 
     def update_pl(self, current_portfolio_value: float, now_ms: int, miner_hotkey: str, any_open: TradePairReturnStatus,
                   current_portfolio_fee_spread: float, current_portfolio_carry: float, current_realized_pnl_usd: float, current_unrealized_pnl_usd: float,
-                  tp_debug=None, debug_dict=None):
+                  tp_debug=None, debug_dict=None,
+                  account_size: float = None, cumulative_fees_usd: float = None):
         # Skip gap validation during void filling, shortcuts, or when no debug info
         # The absence of tp_debug typically means this is a high-level update that may span time
         skip_gap_check = (not tp_debug or '_shortcut' in tp_debug or 'void' in tp_debug)
@@ -345,7 +350,9 @@ class PerfLedger():
                     accum_ms=self.target_cp_duration_ms,
                     open_ms=0,  # No market data for void periods
                     mdd=prev_mdd,
-                    mpv=last_portfolio_return
+                    mpv=last_portfolio_return,
+                    equity_ret=self.cps[-1].equity_ret,
+                    cumulative_fees_usd=self.cps[-1].cumulative_fees_usd,
                 )
                 assert new_cp.last_update_ms % self.target_cp_duration_ms == 0, f"Checkpoint not aligned: {new_cp.last_update_ms}"
                 self.cps.append(new_cp)
@@ -374,6 +381,8 @@ class PerfLedger():
                 mpv=last_portfolio_return, # old for now, update below
                 accum_ms=time_since_boundary,
                 open_ms=final_open_ms,
+                equity_ret=self.cps[-1].equity_ret,          # carried forward, updated below
+                cumulative_fees_usd=self.cps[-1].cumulative_fees_usd,  # carried forward, updated below
             )
             self.cps.append(new_cp)
         else:
@@ -428,6 +437,12 @@ class PerfLedger():
         current_cp.prev_portfolio_carry_fee = current_portfolio_carry
         current_cp.mpv = max(current_cp.mpv, current_portfolio_value)
         current_cp.n_updates += n_updates
+
+        # Update equity-based return fields (only for portfolio ledger on synthetic miners)
+        if account_size is not None and account_size > 0 and cumulative_fees_usd is not None:
+            current_cp.cumulative_fees_usd = cumulative_fees_usd
+            equity = account_size + current_realized_pnl_usd - cumulative_fees_usd + current_unrealized_pnl_usd
+            current_cp.equity_ret = equity / account_size
 
 
     def count_events(self):

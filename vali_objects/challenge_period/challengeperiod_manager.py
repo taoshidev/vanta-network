@@ -441,8 +441,11 @@ class ChallengePeriodManager(CacheController):
         Evaluate synthetic hotkeys in CHALLENGE bucket with instantaneous pass criteria.
 
         Elimination criteria:
-        - Drawdown > 5% from peak equity (SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD)
-          Uses high water mark methodology, same as rank-based miners
+        **Rule 1: Daily Loss Limit (5% for CHALLENGE, 8% for FUNDED)** - Account equity cannot drop more than 5% from the day's opening equity at any point during the day.
+
+        **Rule 2: EOD Trailing Loss Limit (5% for CHALLENGE, 8% for FUNDED)** - End-of-day account equity cannot drop more than 5% from the end-of-day high water mark.
+
+        The trading day resets at 00:00 UTC for both crypto and forex. Breaching either rule results in immediate elimination.
 
         Promotion criteria:
         - Returns >= 8% (SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD)
@@ -469,12 +472,6 @@ class ChallengePeriodManager(CacheController):
             if current_return is None:
                 continue
 
-            # Check drawdown from MinerAccount HWM (resets on promotion)
-            account = accounts.get(hotkey, {})
-            max_return = account.get('max_return', 1.0)
-            drawdown_pct = (1 - current_return / max_return) * 100
-            threshold_pct = ValiConfig.SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD * 100
-
             # returns_percentage = current_return - 1.0 (e.g. 1.08 -> 8%)
             returns_percentage = current_return - 1.0
 
@@ -496,26 +493,58 @@ class ChallengePeriodManager(CacheController):
                 hotkeys_to_promote.append(hotkey)
                 continue
 
-            # Eliminate if returns exceed max drawdown
-            if drawdown_pct >= threshold_pct:
+            now_ms = current_time if current_time is not None else TimeUtil.now_in_millis()
+            today_midnight_ms = (now_ms // 86400000) * 86400000
+            midnight_cps = [cp for cp in ledger.cps if cp.last_update_ms % 86400000 == 0 and cp.equity_ret > 0]
+
+            # Rule 1: Intraday drawdown — current equity cannot drop >5% from today's opening equity
+            today_open_cp = next((cp for cp in midnight_cps if cp.last_update_ms == today_midnight_ms), None)
+            daily_open_equity = today_open_cp.equity_ret if today_open_cp else 1.0
+            intraday_floor = daily_open_equity * (1.0 - ValiConfig.SUBACCOUNT_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD)
+            intraday_drawdown_pct = (1.0 - current_return / daily_open_equity) * 100.0
+            if current_return < intraday_floor:
                 bt.logging.info(
-                    f"[SYNTHETIC_CP] {hotkey} failed challenge period - "
-                    f"drawdown {drawdown_pct:.2f}% >= {threshold_pct}%"
+                    f"[SYNTHETIC_CP] {hotkey} intraday drawdown violation, failed challenge period - "
+                    f"current_equity={current_return:.6f} < floor={intraday_floor:.6f} "
+                    f"(day_open={daily_open_equity:.6f}, drawdown={intraday_drawdown_pct:.2f}%)"
                 )
-                t_ms = current_time if current_time is not None else TimeUtil.now_in_millis()
                 miners_to_eliminate[hotkey] = (
-                    EliminationReason.FAILED_CHALLENGE_PERIOD_DRAWDOWN.value,
-                    drawdown_pct,
-                    t_ms
+                    EliminationReason.FAILED_CHALLENGE_PERIOD_INTRADAY_DRAWDOWN.value,
+                    intraday_drawdown_pct,
+                    now_ms
                 )
                 continue
 
-            near_elimination = drawdown_pct >= threshold_pct * 0.75
+            # Rule 2: EOD trailing drawdown — last EOD equity cannot drop >5% from highest-ever EOD equity
+            eod_drawdown_pct = 0.0
+            if midnight_cps:
+                eod_hwm = max(cp.equity_ret for cp in midnight_cps)
+                last_eod = midnight_cps[-1].equity_ret
+                eod_floor = eod_hwm * (1.0 - ValiConfig.SUBACCOUNT_CHALLENGE_EOD_DRAWDOWN_THRESHOLD)
+                eod_drawdown_pct = (1.0 - last_eod / eod_hwm) * 100.0
+                if last_eod < eod_floor:
+                    bt.logging.info(
+                        f"[SYNTHETIC_CP] {hotkey} EOD drawdown violation, failed challenge period - "
+                        f"last_eod={last_eod:.6f} < floor={eod_floor:.6f} "
+                        f"(hwm={eod_hwm:.6f}, drawdown={eod_drawdown_pct:.2f}%)"
+                    )
+                    miners_to_eliminate[hotkey] = (
+                        EliminationReason.FAILED_CHALLENGE_PERIOD_EOD_DRAWDOWN.value,
+                        eod_drawdown_pct,
+                        midnight_cps[-1].last_update_ms
+                    )
+                    continue
+
+            threshold_pct = max(ValiConfig.SUBACCOUNT_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD,
+                                ValiConfig.SUBACCOUNT_CHALLENGE_EOD_DRAWDOWN_THRESHOLD) * 100.0
+            worst_drawdown_pct = max(intraday_drawdown_pct, eod_drawdown_pct)
+            near_elimination = worst_drawdown_pct >= threshold_pct * 0.75
             near_promotion = returns_percentage >= returns_threshold * 0.75
             if near_elimination or near_promotion:
                 bt.logging.info(
                     f"[SYNTH_EVAL {hotkey}] current_return={current_return:.6f}, returns={returns_percentage:.2%}, "
-                    f"drawdown={drawdown_pct:.2f}% (elim threshold={threshold_pct:.1f}%)"
+                    f"intraday_drawdown={intraday_drawdown_pct:.2f}% eod_drawdown={eod_drawdown_pct:.2f}% "
+                    f"(elim threshold={threshold_pct:.1f}%)"
                 )
 
         bt.logging.info(
@@ -717,8 +746,8 @@ class ChallengePeriodManager(CacheController):
                 current_time
             )
             bt.logging.info("DRYRUN: skipping actual challenge period promotion and elimination")
-            hotkeys_to_promote.extend(synthetic_promotions)
-            miners_to_eliminate.update(synthetic_eliminations)
+            # hotkeys_to_promote.extend(synthetic_promotions)
+            # miners_to_eliminate.update(synthetic_eliminations)
 
         # PHASE 2: Process rank-based hotkeys (regular flow for all others)
         if rank_based_hotkeys:
