@@ -1273,12 +1273,15 @@ class PerfLedgerManager(CacheController):
                                   current_spread_fee, current_carry_fee, tp_to_closed_pos_realized_pnl[tp_id], tp_to_closed_pos_unrealized_pnl[tp_id])
 
 
-        # Collect all fee events once for equity_ret computation (synthetic miners only)
+        # Collect and sort all fee events once for equity_ret computation
         _all_fee_events = []
+        _fee_cursor = 0
+        _cumulative_fees = 0.0
         if account_size is not None:
             for positions_list in tp_to_historical_positions.values():
                 for pos in positions_list:
                     _all_fee_events.extend(pos.fee_history)
+            _all_fee_events.sort(key=lambda e: e["time_ms"])
 
         # Check if the while loop will execute at all
         if start_time_ms + accumulated_time_ms >= end_time_ms:
@@ -1365,16 +1368,19 @@ class PerfLedgerManager(CacheController):
                 )
 
                 if tp_id == TP_ID_PORTFOLIO and account_size is not None:
-                    _cumulative_fees = sum(e["amount"] for e in _all_fee_events if e["time_ms"] <= t_ms)
+                    while _fee_cursor < len(_all_fee_events) and _all_fee_events[_fee_cursor]["time_ms"] <= t_ms:
+                        _cumulative_fees += _all_fee_events[_fee_cursor]["amount"]
+                        _fee_cursor += 1
+                    _tp_cumulative_fees = _cumulative_fees
                 else:
-                    _cumulative_fees = None
+                    _tp_cumulative_fees = None
 
                 perf_ledger.update_pl(current_return, t_ms, miner_hotkey, tp_to_any_open[tp_id],
                                       current_spread_fee, current_carry_fee,
                                       tp_to_realized_pnl[tp_id], tp_to_unrealized_pnl[tp_id],
                                       tp_debug=tp_id,
                                       account_size=account_size if tp_id == TP_ID_PORTFOLIO else None,
-                                      cumulative_fees_usd=_cumulative_fees)
+                                      cumulative_fees_usd=_tp_cumulative_fees)
 
 
                 # Verify the ledger was updated to current t_ms
