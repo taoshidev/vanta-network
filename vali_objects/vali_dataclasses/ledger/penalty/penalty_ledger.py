@@ -28,6 +28,7 @@ from vali_objects.utils.asset_segmentation import AssetSegmentation
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.vali_config import ValiConfig
 from time_util.time_util import TimeUtil
+from entity_management.entity_utils import is_synthetic_hotkey
 from shared_objects.slack_notifier import SlackNotifier
 import bittensor as bt
 
@@ -919,6 +920,9 @@ class PenaltyLedgerManager:
                         # and bucket transition timestamps
                         bucket_data = challenge_period_data[miner_hotkey]
                         challenge_period_status = self._get_status_for_checkpoint(checkpoint_ms, bucket_data)
+
+                if is_synthetic_hotkey(miner_hotkey):
+                    total_penalty = 1
 
                 # Create penalty checkpoint
                 penalty_checkpoint = PenaltyCheckpoint(

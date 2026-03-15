@@ -149,7 +149,8 @@ class PositionManagerClient(RPCClientBase):
         hotkey: str,
         only_open_positions: bool = False,
         acceptable_position_end_ms: int = None,
-        sort_positions: bool = False
+        sort_positions: bool = False,
+        archived_positions: bool = False
     ) -> List[Position]:
         """
         Get positions for a hotkey from the RPC server.
@@ -159,6 +160,7 @@ class PositionManagerClient(RPCClientBase):
             only_open_positions: If True, only return open positions
             acceptable_position_end_ms: Optional timestamp filter
             sort_positions: If True, sort positions by close_ms (closed first, then open)
+            archived_positions: If True, read from archived_positions/ on disk instead of memory
 
         Returns:
             List of Position objects
@@ -167,7 +169,8 @@ class PositionManagerClient(RPCClientBase):
             hotkey,
             only_open_positions,
             acceptable_position_end_ms,
-            sort_positions
+            sort_positions,
+            archived_positions=archived_positions
         )
 
     def get_positions_for_hotkeys(
@@ -176,7 +179,8 @@ class PositionManagerClient(RPCClientBase):
         only_open_positions: bool = False,
         filter_eliminations: bool = False,
         acceptable_position_end_ms: int = None,
-        sort_positions: bool = False
+        sort_positions: bool = False,
+        archived_positions: bool = False
     ) -> Dict[str, List[Position]]:
         """
         Get positions for multiple hotkeys from the RPC server.
@@ -187,6 +191,7 @@ class PositionManagerClient(RPCClientBase):
             filter_eliminations: If True, server will filter eliminations internally
             acceptable_position_end_ms: Optional timestamp filter
             sort_positions: If True, sort positions by close_ms (closed first, then open)
+            archived_positions: If True, include archived positions alongside live positions
 
         Returns:
             Dict mapping hotkey to list of Position objects
@@ -196,7 +201,8 @@ class PositionManagerClient(RPCClientBase):
             only_open_positions=only_open_positions,
             filter_eliminations=filter_eliminations,
             acceptable_position_end_ms=acceptable_position_end_ms,
-            sort_positions=sort_positions
+            sort_positions=sort_positions,
+            archived_positions=archived_positions
         )
 
     def get_position(self, hotkey: str, position_uuid: str) -> Optional[Position]:
@@ -242,6 +248,10 @@ class PositionManagerClient(RPCClientBase):
         """Get all hotkeys that have at least one position."""
         return self._server.get_all_hotkeys_rpc()
 
+    def get_hotkey_to_archived_positions(self):
+        """Get hotkey -> {uuid -> Position} dict for all archived positions."""
+        return self._server.get_hotkey_to_archived_positions_rpc()
+
     def get_extreme_position_order_processed_on_disk_ms(self) -> tuple:
         """
         Get the minimum and maximum processed_ms timestamps across all orders in all positions.
@@ -265,7 +275,8 @@ class PositionManagerClient(RPCClientBase):
         self,
         include_development_positions: bool = False,
         sort_positions: bool = False,
-        filter_eliminations: bool = False
+        filter_eliminations: bool = False,
+        archived_positions: bool = False
     ) -> Dict[str, List[Position]]:
         """
         Get positions for all miners from the RPC server.
@@ -273,6 +284,8 @@ class PositionManagerClient(RPCClientBase):
         Args:
             include_development_positions: If True, include development hotkey positions
             sort_positions: If True, sort positions by close_ms
+            filter_eliminations: If True, filter out eliminated miners
+            archived_positions: If True, include archived positions alongside live positions
 
         Returns:
             Dict mapping hotkey to list of Position objects
@@ -288,6 +301,7 @@ class PositionManagerClient(RPCClientBase):
             only_open_positions=False,
             filter_eliminations=filter_eliminations,
             sort_positions=sort_positions,
+            archived_positions=archived_positions,
         )
 
     def get_number_of_miners_with_any_positions(self) -> int:
@@ -521,6 +535,26 @@ class PositionManagerClient(RPCClientBase):
             True if successfully attached, False if no open position found
         """
         return self._server.attach_bracket_order_to_position_rpc(miner_hotkey, trade_pair_id, order_dict)
+
+    def archive_positions_for_hotkey(
+        self,
+        hotkey: str,
+        positions: list = None,
+        archive_all: bool = False
+    ) -> int:
+        """Archive positions to archived_positions/ dir and remove from memory.
+
+        Args:
+            hotkey: Miner hotkey
+            positions: Specific Position objects to archive (archive_all=False)
+            archive_all: If True, archive all positions for this hotkey
+
+        Returns:
+            Number of files archived
+        """
+        return self._server.archive_positions_for_hotkey_rpc(
+            hotkey, positions=positions, archive_all=archive_all
+        )
 
     def remove_bracket_order_from_position(self, miner_hotkey: str, trade_pair_id: str, order_uuid: str) -> bool:
         """

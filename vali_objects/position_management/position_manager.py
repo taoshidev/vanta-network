@@ -31,7 +31,7 @@ from vali_objects.price_fetcher.live_price_client import LivePriceFetcherClient
 from vali_objects.utils.elimination.elimination_client import EliminationClient
 from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
 
-TARGET_MS = 1772128740000 + (1000 * 60 * 60 * 6)  # + 6 hours
+TARGET_MS = 1773590400000 + (1000 * 60 * 60 * 6)  # + 6 hours
 
 
 class PositionManager:
@@ -74,6 +74,10 @@ class PositionManager:
         # Invariant: Must always be in sync with open positions in hotkey_to_positions
         # Benefits: O(1) lookup instead of O(N) scan for get_open_position_for_trade_pair
         self.hotkey_to_open_positions: Dict[str, Dict[str, Position]] = {}
+
+        # ARCHIVED POSITIONS: Positions moved out of active tracking on subaccount promotion
+        # Structure: hotkey -> position_uuid -> Position
+        self.hotkey_to_archived_positions: Dict[str, Dict[str, Position]] = {}
 
         self.running_unit_tests = running_unit_tests
         self.is_backtesting = is_backtesting
@@ -138,7 +142,8 @@ class PositionManager:
         hotkey: str,
         only_open_positions=False,
         acceptable_position_end_ms=None,
-        sort_positions=False
+        sort_positions=False,
+        archived_positions=False
     ):
         """
         Get positions for a specific hotkey.
@@ -148,15 +153,18 @@ class PositionManager:
             only_open_positions: Whether to return only open positions
             acceptable_position_end_ms: Minimum timestamp for positions (filters out older positions)
             sort_positions: Whether to sort positions by close_ms (closed first, then open)
+            archived_positions: If True, read from archived_positions/ on disk instead of memory
 
         Returns:
             List of positions matching the filters
         """
-        if hotkey not in self.hotkey_to_positions:
+        if hotkey not in self.hotkey_to_positions and not archived_positions:
             return []
 
-        positions_dict = self.hotkey_to_positions[hotkey]
-        positions = list(positions_dict.values())  # Convert dict values to list
+        positions = list(self.hotkey_to_positions.get(hotkey, {}).values())
+
+        if archived_positions:
+            positions += list(self.hotkey_to_archived_positions.get(hotkey, {}).values())
 
         # Filters
         if only_open_positions:
@@ -320,7 +328,8 @@ class PositionManager:
         only_open_positions=False,
         filter_eliminations: bool = False,
         acceptable_position_end_ms: int = None,
-        sort_positions: bool = False
+        sort_positions: bool = False,
+        archived_positions: bool = False
     ) -> Dict[str, List[Position]]:
         """
         Get positions for multiple hotkeys (bulk operation).
@@ -334,6 +343,7 @@ class PositionManager:
             filter_eliminations: If True, fetch eliminations internally and filter them out
             acceptable_position_end_ms: Minimum timestamp for positions
             sort_positions: If True, sort positions by close_ms (closed first, then open)
+            archived_positions: If True, include archived positions alongside live positions
 
         Returns:
             Dict mapping hotkey to list of positions
@@ -348,12 +358,14 @@ class PositionManager:
 
         result = {}
         for hotkey in hotkeys:
-            if hotkey not in self.hotkey_to_positions:
+            positions = list(self.hotkey_to_positions.get(hotkey, {}).values())
+
+            if archived_positions:
+                positions += list(self.hotkey_to_archived_positions.get(hotkey, {}).values())
+
+            if not positions:
                 result[hotkey] = []
                 continue
-
-            positions_dict = self.hotkey_to_positions[hotkey]
-            positions = list(positions_dict.values())  # Convert dict values to list
 
             # Filters
             if only_open_positions:
@@ -396,6 +408,37 @@ class PositionManager:
             for p in self.get_positions_for_one_hotkey(hotkey):
                 self.delete_position(p.miner_hotkey, p.position_uuid)
 
+    def archive_positions_for_hotkey(
+        self,
+        hotkey: str,
+        positions: Optional[list] = None,
+        archive_all: bool = False
+    ) -> int:
+        """Archive positions to archived_positions/ dir and remove from memory.
+
+        Returns:
+            Number of files archived
+        """
+        if archive_all:
+            target_positions = self.get_positions_for_one_hotkey(hotkey)
+        else:
+            target_positions = positions or []
+
+        bt.logging.info(f"[POSITION ARCHIVE] Archiving {len(target_positions)} positions for {hotkey}")
+
+        n_archived = 0
+        for position in target_positions:
+            if ValiBkpUtils.archive_position(hotkey, position, running_unit_tests=self.running_unit_tests):
+                n_archived += 1
+                bt.logging.info(f"[POSITION ARCHIVE] {position.position_uuid} archived successfully")
+                self.hotkey_to_archived_positions.setdefault(hotkey, {})[position.position_uuid] = position
+                self.delete_position(hotkey, position.position_uuid)
+            else:
+                bt.logging.error(f"[POSITION ARCHIVE] {position.position_uuid} already archived or could not archive")
+
+        bt.logging.info(f"[POSITION ARCHIVE] Archive complete")
+        return n_archived
+
     def delete_position(self, hotkey: str, position_uuid: str):
         """
         Delete a specific position with O(1) deletion.
@@ -432,7 +475,7 @@ class PositionManager:
     def get_dashboard(self, hotkey: str, positions_time_ms: int) -> dict | None:
         snapshot_time_ms = positions_time_ms
 
-        positions = self.get_positions_for_one_hotkey(hotkey, sort_positions=True)
+        positions = self.get_positions_for_one_hotkey(hotkey, sort_positions=True, archived_positions=True)
         if not positions:
             return None
 
@@ -616,8 +659,12 @@ class PositionManager:
         return total_unrealized_pnl
 
     def get_all_hotkeys(self):
-        """Get all hotkeys that have positions."""
+        """Get all hotkeys that have live positions."""
         return list(self.hotkey_to_positions.keys())
+
+    def get_hotkey_to_archived_positions(self):
+        """Get hotkey -> {uuid -> Position} dict for all archived positions."""
+        return self.hotkey_to_archived_positions
 
     def get_extreme_position_order_processed_on_disk_ms(self) -> tuple:
         """
@@ -902,8 +949,9 @@ class PositionManager:
         miners_to_wipe = []
         miners_to_promote = []
         position_uuids_to_delete = []
+        position_uuids_to_archive = []
         wipe_positions = False
-        reopen_force_closed_orders = True
+        reopen_force_closed_orders = False
         miners_to_wipe_perf_ledger = []
 
         current_eliminations = self._elimination_client.get_eliminations_from_memory() if self._elimination_client else []
@@ -932,8 +980,9 @@ class PositionManager:
             # bt.logging.info(f"Applied {n_slippage_corrections} forex slippage corrections")
 
             # All miners that wanted their challenge period restarted
-            miners_to_wipe = ["5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_2", "5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_3", "5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_5", "5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_8", "5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_12", "5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_16", "5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_15", "5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_19"]
-            position_uuids_to_delete = []
+            miners_to_wipe = ["5FCPYqbYEq2y7NwQTCLxNApP2UjUE86J8QnhdWTHFkzzFWL1", "5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_9"]
+            position_uuids_to_delete = ["f366bb3e-11a8-40ae-b6bd-ec941ceab193", "ad853341-617e-4b76-8a4d-794b7eecf7f5"]
+            position_uuids_to_archive = ["2811e675-c8cd-41e1-894c-419fc06cafc0", "a0a451f4-de1a-4c82-ac63-156e42ec4902", "6fa7d1f6-d71f-4aa3-9a2a-94d8741738a6", "014e5ff2-56d6-4508-b26c-28cf60b79903", "3ede8965-caa9-4991-a453-e201db3f3e6f", "7b3158ae-3afa-43ee-8ccf-8d946a4abfd1", "262a8385-64bb-45f4-932b-1a6c72a7d77e", "e744235f-eeeb-4c3b-b0a2-2f616bff2e2f"]
             miners_to_promote = []
 
             for p in positions_to_snap:
@@ -995,6 +1044,8 @@ class PositionManager:
                     elif pos.position_uuid in position_uuids_to_delete:
                         print(f'Deleting position {pos.position_uuid} for trade pair {pos.trade_pair.trade_pair_id} for hk {pos.miner_hotkey}')
                         self.delete_position(pos.miner_hotkey, pos.position_uuid)
+                    elif pos.position_uuid in position_uuids_to_archive:
+                        self.archive_positions_for_hotkey(pos.miner_hotkey, [pos])
                     elif reopen_force_closed_orders:
                         if any((o.src in (1, 3, 12)) for o in pos.orders):
                             pos.orders = [o for o in pos.orders if (o.src not in (1, 3, 12))]
@@ -1002,35 +1053,46 @@ class PositionManager:
                             self.save_miner_position(pos, validate=False)
                             print(f'Removed eliminated orders from position {pos}')
 
-                if self._challenge_period_client and self._challenge_period_client.has_miner(miner_hotkey):
-                    self._challenge_period_client.remove_miner(miner_hotkey)
-                    print(f'Removed challengeperiod status for {miner_hotkey}')
+                # NOTE undo for
+                # if self._challenge_period_client and self._challenge_period_client.has_miner(miner_hotkey):
+                #     self._challenge_period_client.remove_miner(miner_hotkey)
+                #     print(f'Removed challengeperiod status for {miner_hotkey}')
 
-                if self._challenge_period_client:
-                    self._challenge_period_client._write_challengeperiod_from_memory_to_disk()
+                # if self._challenge_period_client:
+                #     self._challenge_period_client._write_challengeperiod_from_memory_to_disk()
 
                 # Rebuild account state from current positions after corrections
                 current_positions = self.get_positions_for_one_hotkey(miner_hotkey)
-                self._miner_account_client.rebuild_account_state_from_positions(miner_hotkey, current_positions)
+                original_account = self._miner_account_client.get_account(miner_hotkey)
+                max_return = original_account.get('max_return', 1)
+                self._miner_account_client.rebuild_account_state_from_positions(miner_hotkey, current_positions, max_return=max_return)
 
         bt.logging.warning(
             f"Applied {n_corrections} order corrections out of {n_attempts} attempts. unique positions corrected: {len(unique_corrections)}")
 
         return miners_to_wipe_perf_ledger
 
-    def get_positions_for_all_miners(self, sort_positions: bool = False) -> Dict[str, List[Position]]:
+    def get_positions_for_all_miners(self, sort_positions: bool = False, archived_positions: bool = False) -> Dict[str, List[Position]]:
         """
         Get all positions for all miners.
 
         Args:
             sort_positions: If True, sort positions by close_ms (closed first, then open)
+            archived_positions: If True, include archived positions alongside live positions
 
         Returns:
             Dict mapping hotkey to list of positions
         """
+        if archived_positions:
+            all_hotkeys = set(self.hotkey_to_positions.keys()) | set(self.hotkey_to_archived_positions.keys())
+        else:
+            all_hotkeys = set(self.hotkey_to_positions.keys())
+
         result = {}
-        for hotkey, positions_dict in self.hotkey_to_positions.items():
-            positions = list(positions_dict.values())
+        for hotkey in all_hotkeys:
+            positions = list(self.hotkey_to_positions.get(hotkey, {}).values())
+            if archived_positions:
+                positions += list(self.hotkey_to_archived_positions.get(hotkey, {}).values())
             if sort_positions:
                 positions = sorted(positions, key=lambda p: p.close_ms if p.is_closed_position else float("inf"))
             result[hotkey] = positions
@@ -1364,6 +1426,38 @@ class PositionManager:
 
         # Rebuild the open positions index after loading
         self._rebuild_open_index()
+
+        # Load archived positions
+        for hotkey_dir in base_dir.iterdir():
+            if not hotkey_dir.is_dir():
+                continue
+
+            hotkey = hotkey_dir.name
+            archive_dir = ValiBkpUtils.get_miner_archived_positions_dir(
+                hotkey, running_unit_tests=self.running_unit_tests
+            )
+            all_files = ValiBkpUtils.get_all_files_in_dir(archive_dir)
+
+            if not all_files:
+                continue
+
+            archived_dict = {}
+            for position_file in all_files:
+                try:
+                    file_string = ValiBkpUtils.get_file(position_file)
+                    position = Position.model_validate_json(file_string)
+                    archived_dict[position.position_uuid] = position
+                except Exception as e:
+                    bt.logging.error(f"Error loading archived position file {position_file} for {hotkey}: {e}")
+
+            if archived_dict:
+                self.hotkey_to_archived_positions[hotkey] = archived_dict
+                bt.logging.debug(f"Loaded {len(archived_dict)} archived positions for {hotkey}")
+
+        total_archived = sum(len(d) for d in self.hotkey_to_archived_positions.values())
+        bt.logging.success(
+            f"Loaded {total_archived} archived positions for {len(self.hotkey_to_archived_positions)} hotkeys from disk"
+        )
 
 
     @timeme

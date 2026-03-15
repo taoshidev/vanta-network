@@ -753,14 +753,6 @@ class EntityManager(ValidatorBroadcastBase):
         if not subaccount:
             return None
 
-        if subaccount.status == "admin":
-            return {
-                'hotkey': synthetic_hotkey,
-                'total_checkpoints': 0,
-                'checkpoints': {},
-                'payout': 0
-            }
-
         # Get debt ledger for this hotkey
         try:
             debt_ledger = self._debt_ledger_client.get_ledger(synthetic_hotkey)
@@ -929,7 +921,7 @@ class EntityManager(ValidatorBroadcastBase):
         # Position data
         positions_data = None
         try:
-            positions = self._position_client.get_positions_for_one_hotkey(synthetic_hotkey, sort_positions=True)
+            positions = self._position_client.get_positions_for_one_hotkey(synthetic_hotkey, sort_positions=True, archived_positions=True)
             if positions:
                 positions_data = PositionManagerClient.positions_to_dashboard_dict(positions, time_now_ms)
                 # Add total leverage

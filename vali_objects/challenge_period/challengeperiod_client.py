@@ -132,7 +132,7 @@ class ChallengePeriodClient(RPCClientBase):
         """Clear all miners from active_miners."""
         self._server.clear_all_miners_rpc()
 
-    def update_miners(self, miners_dict: dict) -> int:
+    def update_miners(self, miners_dict) -> int:
         """Bulk update active_miners from a dict."""
         # Convert List[BucketEntry] to list-of-dicts for RPC serialization
         miners_rpc_dict = {}
@@ -144,6 +144,11 @@ class ChallengePeriodClient(RPCClientBase):
                 ]
             elif isinstance(data, list):
                 miners_rpc_dict[hotkey] = data
+            elif isinstance(data, tuple): # support for testing
+                miners_rpc_dict[hotkey] = [
+                    BucketEntry(data[0], data[1]),
+                    BucketEntry(data[2], data[3])
+                ]
             else:
                 raise ValueError(f"Invalid data type for miner {hotkey}: {type(data)}")
 

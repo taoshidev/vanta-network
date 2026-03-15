@@ -13,6 +13,7 @@ from time_util.time_util import TimeUtil
 from vali_objects.utils.vali_bkp_utils import CustomEncoder
 from vali_objects.vali_config import RPCConnectionMode
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger import DebtLedger, DebtCheckpoint
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 from entity_management import entity_utils
 
 
@@ -719,7 +720,11 @@ class DebtLedgerManager():
         # Direct assignment to normal dict (no IPC overhead!)
         self.debt_ledgers = candidate_ledgers
 
-        # Save to disk after atomic swap
+        # Aggregate entity debt ledgers before saving so entity ledgers are persisted and cached
+        bt.logging.info("Aggregating entity debt ledgers...")
+        self.aggregate_entity_debt_ledgers(target_cp_duration_ms, verbose=verbose)
+
+        # Save to disk after atomic swap and aggregation
         bt.logging.info(f"Saving {len(self.debt_ledgers)} debt ledgers to disk...")
         self.save_to_disk(create_backup=False)
 
@@ -733,10 +738,6 @@ class DebtLedgerManager():
             f"{len(self.debt_ledgers)} hotkeys tracked "
             f"(target_cp_duration_ms: {target_cp_duration_ms}ms)"
         )
-
-        # Aggregate entity debt ledgers after build completes
-        bt.logging.info("Aggregating entity debt ledgers...")
-        self.aggregate_entity_debt_ledgers(target_cp_duration_ms, verbose=verbose)
 
     def aggregate_entity_debt_ledgers(self, target_cp_duration_ms: int, verbose: bool = False):
         """
@@ -783,6 +784,7 @@ class DebtLedgerManager():
                     continue
 
                 # Get debt ledgers for all active subaccounts
+                _earning_statuses = {MinerBucket.SUBACCOUNT_FUNDED.value, MinerBucket.SUBACCOUNT_ALPHA.value}
                 subaccount_ledgers = []
                 for subaccount in active_subaccounts:
                     synthetic_hotkey = subaccount.get('synthetic_hotkey')
@@ -818,11 +820,11 @@ class DebtLedgerManager():
                 # Create aggregated checkpoints for each timestamp
                 aggregated_checkpoints = []
                 for timestamp_ms in sorted_timestamps:
-                    # Collect checkpoints from all subaccounts at this timestamp
+                    # Collect earning checkpoints from all subaccounts at this timestamp
                     checkpoints_at_time = []
                     for synthetic_hotkey, ledger in subaccount_ledgers:
                         checkpoint = ledger.get_checkpoint_at_time(timestamp_ms, target_cp_duration_ms)
-                        if checkpoint:
+                        if checkpoint and checkpoint.challenge_period_status in _earning_statuses:
                             checkpoints_at_time.append(checkpoint)
 
                     if not checkpoints_at_time:

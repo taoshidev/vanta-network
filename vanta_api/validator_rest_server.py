@@ -340,8 +340,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         # Use the API key's tier for access
         api_key_tier = self.get_api_key_tier(api_key)
         if self.can_access_tier(api_key, 100) and self.position_manager:
-            existing_positions: list[Position] = self.position_manager.get_positions_for_one_hotkey(minerid,
-                                                                                                    sort_positions=True)
+            existing_positions = self.position_manager.get_positions_for_one_hotkey(minerid, sort_positions=True, archived_positions=True)
             if not existing_positions:
                 return jsonify({'error': f'Miner ID {minerid} not found', 'positions':[]}), 404
             filtered_data = self._position_client.positions_to_dashboard_dict(existing_positions,
@@ -693,7 +692,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
             # Get filled orders from positions
             if 'filled' in status_filter and self.position_manager:
-                positions = self.position_manager.get_positions_for_one_hotkey(minerid, sort_positions=True)
+                positions = self.position_manager.get_positions_for_one_hotkey(minerid, sort_positions=True, archived_positions=True)
                 if positions:
                     for position in positions:
                         for order in position.orders:

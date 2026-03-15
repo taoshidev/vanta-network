@@ -75,7 +75,7 @@ class DebtLedgerServer(RPCServerBase):
             start_daemon=start_daemon,
             daemon_interval_s=daemon_interval_s,
             hang_timeout_s=hang_timeout_s,
-            daemon_stagger_s=120.0    # Stagger startup by 2 minutes to avoid IPC contention
+            daemon_stagger_s=180.0    # Stagger startup by 3 minutes to avoid IPC contention and perf ledger rebuild
         )
 
         self.running_unit_tests = running_unit_tests
@@ -132,7 +132,7 @@ class DebtLedgerServer(RPCServerBase):
         # Step 1: Update penalty ledgers
         bt.logging.info("Step 1/3: Updating penalty ledgers...")
         penalty_start = time.time()
-        self._manager.penalty_ledger_manager.build_penalty_ledgers(delta_update=True)
+        self._manager.penalty_ledger_manager.build_penalty_ledgers(delta_update=False)
         bt.logging.info(f"Penalty ledgers updated in {time.time() - penalty_start:.2f}s")
 
         # Step 2: Update emissions ledgers
@@ -144,7 +144,7 @@ class DebtLedgerServer(RPCServerBase):
         # Step 3: Build debt ledgers (full rebuild)
         bt.logging.info("Step 3/3: Building debt ledgers (full rebuild)...")
         debt_start = time.time()
-        self._manager.build_debt_ledgers(verbose=False, delta_update=False)
+        self._manager.build_debt_ledgers(verbose=True, delta_update=False)
         bt.logging.info(f"Debt ledgers built in {time.time() - debt_start:.2f}s")
 
         elapsed = time.time() - start_time
