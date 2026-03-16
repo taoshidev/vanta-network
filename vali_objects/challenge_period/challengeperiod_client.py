@@ -309,3 +309,7 @@ class ChallengePeriodClient(RPCClientBase):
     def set_last_update_time(self, timestamp_ms: int = 0) -> None:
         """Set the last update time (for testing - to force-allow refresh)."""
         self._server.set_last_update_time_rpc(timestamp_ms)
+
+    def get_drawdown_stats(self, synthetic_hotkey: str) -> Optional[dict]:
+        """Get drawdown statistics for a synthetic hotkey for dashboard display."""
+        return self._server.get_drawdown_stats_rpc(synthetic_hotkey)

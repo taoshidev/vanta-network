@@ -119,6 +119,10 @@ class ChallengePeriodManager(CacheController):
         self._cached_asset_softmaxed_scores: Dict[str, Dict[str, float]] = {}
         self._cached_asset_competitiveness: Dict[str, float] = {}
 
+        # Cached drawdown stats per synthetic hotkey — updated by _evaluate_synthetic_challenge,
+        # read by get_drawdown_stats so dashboard values match the evaluation loop exactly.
+        self._drawdown_stats_cache: Dict[str, dict] = {}
+
         # Local lock (NOT shared across processes) - RPC methods are auto-serialized
         self.eliminations_lock = threading.Lock()
 
@@ -415,6 +419,17 @@ class ChallengePeriodManager(CacheController):
             bt.logging.warning(f"[SYNTHETIC_CP] Error checking returns for {hotkey}: {e}")
             return False
 
+    def get_drawdown_stats(self, synthetic_hotkey: str) -> Optional[dict]:
+        """
+        Return drawdown statistics for a synthetic hotkey for dashboard display.
+
+        Values are populated by _evaluate_synthetic_challenge so the dashboard
+        always reflects the same state as the evaluation loop — no live recomputation.
+
+        Returns None if the hotkey has not been evaluated yet.
+        """
+        return self._drawdown_stats_cache.get(synthetic_hotkey)
+
     def _compute_portfolio_return(self, hotkey: str, account: Optional[dict] = None) -> Optional[float]:
         """Compute current portfolio return as (balance + unrealized_pnl) / account_size.
 
@@ -497,11 +512,28 @@ class ChallengePeriodManager(CacheController):
             today_midnight_ms = (now_ms // 86400000) * 86400000
             midnight_cps = [cp for cp in ledger.cps if cp.last_update_ms % 86400000 == 0 and cp.equity_ret > 0]
 
-            # Rule 1: Intraday drawdown — current equity cannot drop >5% from today's opening equity
+            # Compute all checkpoint-derived values upfront
             today_open_cp = next((cp for cp in midnight_cps if cp.last_update_ms == today_midnight_ms), None)
             daily_open_equity = today_open_cp.equity_ret if today_open_cp else 1.0
             intraday_floor = daily_open_equity * (1.0 - ValiConfig.SUBACCOUNT_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD)
             intraday_drawdown_pct = (1.0 - current_return / daily_open_equity) * 100.0
+
+            eod_hwm = max(cp.equity_ret for cp in midnight_cps) if midnight_cps else 1.0
+            last_eod = midnight_cps[-1].equity_ret if midnight_cps else None
+            eod_floor = eod_hwm * (1.0 - ValiConfig.SUBACCOUNT_CHALLENGE_EOD_DRAWDOWN_THRESHOLD) if midnight_cps else None
+            eod_drawdown_pct = (1.0 - last_eod / eod_hwm) * 100.0 if midnight_cps else 0.0
+
+            # Cache stats before rule checks so dashboard reflects what triggered elimination
+            self._drawdown_stats_cache[hotkey] = {
+                'current_equity': current_return,
+                'daily_open_equity': daily_open_equity,
+                'eod_hwm': eod_hwm,
+                'last_eod_equity': last_eod,
+                'intraday_drawdown_pct': intraday_drawdown_pct,
+                'eod_drawdown_pct': eod_drawdown_pct,
+            }
+
+            # Rule 1: Intraday drawdown — current equity cannot drop >5% from today's opening equity
             if current_return < intraday_floor:
                 bt.logging.info(
                     f"[SYNTHETIC_CP] {hotkey} intraday drawdown violation, failed challenge period - "
@@ -516,24 +548,18 @@ class ChallengePeriodManager(CacheController):
                 continue
 
             # Rule 2: EOD trailing drawdown — last EOD equity cannot drop >5% from highest-ever EOD equity
-            eod_drawdown_pct = 0.0
-            if midnight_cps:
-                eod_hwm = max(cp.equity_ret for cp in midnight_cps)
-                last_eod = midnight_cps[-1].equity_ret
-                eod_floor = eod_hwm * (1.0 - ValiConfig.SUBACCOUNT_CHALLENGE_EOD_DRAWDOWN_THRESHOLD)
-                eod_drawdown_pct = (1.0 - last_eod / eod_hwm) * 100.0
-                if last_eod < eod_floor:
-                    bt.logging.info(
-                        f"[SYNTHETIC_CP] {hotkey} EOD drawdown violation, failed challenge period - "
-                        f"last_eod={last_eod:.6f} < floor={eod_floor:.6f} "
-                        f"(hwm={eod_hwm:.6f}, drawdown={eod_drawdown_pct:.2f}%)"
-                    )
-                    miners_to_eliminate[hotkey] = (
-                        EliminationReason.FAILED_CHALLENGE_PERIOD_EOD_DRAWDOWN.value,
-                        eod_drawdown_pct,
-                        midnight_cps[-1].last_update_ms
-                    )
-                    continue
+            if midnight_cps and last_eod < eod_floor:
+                bt.logging.info(
+                    f"[SYNTHETIC_CP] {hotkey} EOD drawdown violation, failed challenge period - "
+                    f"last_eod={last_eod:.6f} < floor={eod_floor:.6f} "
+                    f"(hwm={eod_hwm:.6f}, drawdown={eod_drawdown_pct:.2f}%)"
+                )
+                miners_to_eliminate[hotkey] = (
+                    EliminationReason.FAILED_CHALLENGE_PERIOD_EOD_DRAWDOWN.value,
+                    eod_drawdown_pct,
+                    midnight_cps[-1].last_update_ms
+                )
+                continue
 
             threshold_pct = max(ValiConfig.SUBACCOUNT_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD,
                                 ValiConfig.SUBACCOUNT_CHALLENGE_EOD_DRAWDOWN_THRESHOLD) * 100.0
