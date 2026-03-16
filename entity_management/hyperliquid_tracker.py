@@ -1083,22 +1083,47 @@ class HyperliquidTracker:
         loop = asyncio.get_event_loop()
         session = self._make_proxied_session()
         proxy_port = getattr(session, "_hl_proxy_port", None)
+        bt.logging.info(
+            f"[HL_BACKUP] userFillsByTime request address={hl_address} "
+            f"start_ms={start_time_ms} url={api_url} "
+            f"hl_use_testnet={ValiConfig.HL_USE_TESTNET} proxy_port={proxy_port}"
+        )
 
         try:
             def _do_request():
                 try:
                     resp = session.post(api_url, json=payload, timeout=10)
                     resp.raise_for_status()
-                    return resp.json()
+                    try:
+                        return resp.json()
+                    except Exception:
+                        body_preview = (resp.text or "")[:400]
+                        bt.logging.warning(
+                            f"[HL_BACKUP] Non-JSON response for address={hl_address} "
+                            f"status={resp.status_code} body_preview={body_preview!r}"
+                        )
+                        raise
                 finally:
                     session.close()
 
             result = await loop.run_in_executor(None, _do_request)
             self._backup_polls_total += 1
             self._report_rest_proxy_success(proxy_port)
-            return result if isinstance(result, list) else []
+            if isinstance(result, list):
+                return result
+
+            bt.logging.warning(
+                f"[HL_BACKUP] Unexpected non-list userFillsByTime response "
+                f"address={hl_address} type={type(result).__name__} "
+                f"response_preview={json.dumps(result, default=str)[:400] if result is not None else 'None'}"
+            )
+            return []
         except Exception as e:
-            bt.logging.debug(f"[HL_BACKUP] userFillsByTime failed for {hl_address}: {e}")
+            bt.logging.warning(
+                f"[HL_BACKUP] userFillsByTime failed address={hl_address} "
+                f"start_ms={start_time_ms} url={api_url} "
+                f"hl_use_testnet={ValiConfig.HL_USE_TESTNET} proxy_port={proxy_port} error={e}"
+            )
             self._backup_polls_total += 1
             self._report_rest_proxy_failure(proxy_port)
             return None
