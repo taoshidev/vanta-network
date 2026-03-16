@@ -499,8 +499,11 @@ class ChallengePeriodManager(CacheController):
         Evaluate synthetic hotkeys in CHALLENGE bucket with instantaneous pass criteria.
 
         Elimination criteria:
-        - Drawdown > 5% from peak equity (SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD)
-          Uses high water mark methodology, same as rank-based miners
+        **Rule 1: Daily Loss Limit (5% for CHALLENGE, 8% for FUNDED)** - Account equity cannot drop more than 5% from the day's opening equity at any point during the day.
+
+        **Rule 2: EOD Trailing Loss Limit (5% for CHALLENGE, 8% for FUNDED)** - End-of-day account equity cannot drop more than 5% from the end-of-day high water mark.
+
+        The trading day resets at 00:00 UTC for both crypto and forex. Breaching either rule results in immediate elimination.
 
         Promotion criteria:
         - Returns >= 8% (SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD)
@@ -526,12 +529,6 @@ class ChallengePeriodManager(CacheController):
             current_return = self._compute_portfolio_return(hotkey, accounts.get(hotkey))
             if current_return is None:
                 continue
-
-            # Check drawdown from MinerAccount HWM (resets on promotion)
-            account = accounts.get(hotkey, {})
-            max_return = account.get('max_return', 1.0)
-            drawdown_pct = (1 - current_return / max_return) * 100
-            threshold_pct = ValiConfig.SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD * 100
 
             # returns_percentage = current_return - 1.0 (e.g. 1.08 -> 8%)
             returns_percentage = current_return - 1.0

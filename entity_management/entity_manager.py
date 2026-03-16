@@ -1007,14 +1007,6 @@ class EntityManager(ValidatorBroadcastBase):
         if not subaccount:
             return None
 
-        if subaccount.status == "admin":
-            return {
-                'hotkey': synthetic_hotkey,
-                'total_checkpoints': 0,
-                'checkpoints': {},
-                'payout': 0
-            }
-
         # Get debt ledger for this hotkey
         try:
             debt_ledger = self._debt_ledger_client.get_ledger(synthetic_hotkey)

@@ -29,7 +29,7 @@ from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from miner_config import MinerConfig
 from vali_objects.vali_dataclasses.order_signal import Signal
 from vali_objects.vali_config import TradePair
-from vali_objects.enums.order_type_enum import OrderType
+from vali_objects.enums.order_type_enum import OrderType, StopCondition
 from vali_objects.enums.execution_type_enum import ExecutionType
 
 
