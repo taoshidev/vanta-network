@@ -545,6 +545,7 @@ class ValiConfig:
     HL_BACKUP_POLL_INTERVAL_S = 10.0
     HL_BACKUP_POLL_RATE_BUDGET = 60
     HL_BACKUP_POLL_LOOKBACK_MS = 2 * 60 * 1000
+    HL_BACKUP_RESTART_LOOKBACK_MS = 30 * 60 * 1000
 
     # L2 orderbook precision: nSigFigs controls price aggregation granularity.
     # HL returns max 20 levels per side regardless of nSigFigs.
