@@ -625,15 +625,17 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
             if not self.subaccount_subscriptions[synthetic_hotkey]:
                 return True
 
-            # Throttle check
-            now_ms = TimeUtil.now_in_millis()
-            last_broadcast = self.subaccount_last_broadcast_ms.get(synthetic_hotkey, 0)
-            if now_ms - last_broadcast < SUBACCOUNT_BROADCAST_THROTTLE_MS:
-                bt.logging.warning(f"WebSocketServer: Throttling dashboard broadcast for {synthetic_hotkey}")
-                return True
+            # Throttle check (skip for order events - accepted/rejected fills must never be dropped)
+            is_order_event = "order_event" in data or "error_msg" in data
+            if not is_order_event:
+                now_ms = TimeUtil.now_in_millis()
+                last_broadcast = self.subaccount_last_broadcast_ms.get(synthetic_hotkey, 0)
+                if now_ms - last_broadcast < SUBACCOUNT_BROADCAST_THROTTLE_MS:
+                    bt.logging.warning(f"WebSocketServer: Throttling dashboard broadcast for {synthetic_hotkey}")
+                    return True
 
-            # Update throttle timestamp
-            self.subaccount_last_broadcast_ms[synthetic_hotkey] = now_ms
+                # Update throttle timestamp
+                self.subaccount_last_broadcast_ms[synthetic_hotkey] = now_ms
 
             message_type = "error" if "error_msg" in data else "subaccount_dashboard"
 
