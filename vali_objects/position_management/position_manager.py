@@ -31,7 +31,7 @@ from vali_objects.price_fetcher.live_price_client import LivePriceFetcherClient
 from vali_objects.utils.elimination.elimination_client import EliminationClient
 from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
 
-TARGET_MS = 1773590400000 + (1000 * 60 * 60 * 6)  # + 6 hours
+TARGET_MS = 1773644400000 + (1000 * 60 * 60 * 6)  # + 6 hours
 
 
 class PositionManager:
