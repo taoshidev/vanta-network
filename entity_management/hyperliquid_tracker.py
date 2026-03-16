@@ -1183,6 +1183,10 @@ class HyperliquidTracker:
                         # Advance only on successful fetch to avoid skipping gaps.
                         self._last_poll_time_ms[hl_address] = int(time.time() * 1000)
                         self._save_backup_poll_watermarks()
+                        if len(fills) == 0:
+                            # Reconcile from current account state when no new fills are returned.
+                            # This catches offline drift even if a historical fill was missed.
+                            self._reconcile_address_positions(hl_address)
 
                     await asyncio.sleep(min_delay_s)
 
@@ -1205,9 +1209,51 @@ class HyperliquidTracker:
 
             await asyncio.sleep(ValiConfig.HL_BACKUP_POLL_INTERVAL_S)
 
+    def _reconcile_address_positions(self, hl_address: str):
+        """Reconcile all relevant HL coins for an address using current account state."""
+        account_state = self._fetch_hl_account_state(hl_address)
+        if not account_state:
+            return
+
+        # Resolve synthetic hotkey to include currently open Vanta positions in reconciliation.
+        synthetic_hotkey = self._entity_client.get_synthetic_hotkey_for_hl_address(hl_address)
+        if not synthetic_hotkey and isinstance(hl_address, str):
+            synthetic_hotkey = self._entity_client.get_synthetic_hotkey_for_hl_address(hl_address.lower())
+        if not synthetic_hotkey:
+            return
+
+        coins_to_check = set(account_state.get("positions", {}).keys())
+        trade_pair_to_coin = {v: k for k, v in ValiConfig.HL_COIN_TO_TRADE_PAIR.items()}
+        try:
+            open_positions = self._position_client.get_positions_for_one_hotkey(
+                synthetic_hotkey, only_open_positions=True
+            )
+        except Exception as e:
+            bt.logging.debug(f"[HL_BACKUP] Failed to fetch open positions for reconcile {synthetic_hotkey}: {e}")
+            open_positions = []
+
+        for pos in open_positions or []:
+            if pos and not pos.is_closed_position:
+                coin = trade_pair_to_coin.get(pos.trade_pair.trade_pair_id)
+                if coin:
+                    coins_to_check.add(coin)
+
+        if not coins_to_check:
+            return
+
+        for coin in sorted(coins_to_check):
+            try:
+                self._process_fill(
+                    hl_address,
+                    {"coin": coin, "crossed": False},
+                    account_state=account_state,
+                )
+            except Exception as e:
+                bt.logging.debug(f"[HL_BACKUP] Reconcile failed address={hl_address} coin={coin}: {e}")
+
     # ==================== Fill Processing ====================
 
-    def _process_fill(self, hl_address: str, fill: dict):
+    def _process_fill(self, hl_address: str, fill: dict, account_state: Optional[dict] = None):
         """
         Convert a Hyperliquid fill to a Vanta signal and process it.
 
@@ -1293,7 +1339,8 @@ class HyperliquidTracker:
             return
 
         # === Step 1: Fetch HL account state -> compute target weight ===
-        account_state = self._fetch_hl_account_state(hl_address)
+        if account_state is None:
+            account_state = self._fetch_hl_account_state(hl_address)
         if not account_state or account_state["total_portfolio_value"] <= 0:
             bt.logging.warning(f"[HL_TRACKER] Zero/missing portfolio value for {hl_address}")
             return
