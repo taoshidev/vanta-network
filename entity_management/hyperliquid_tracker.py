@@ -50,6 +50,7 @@ from time_util.time_util import TimeUtil
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.exceptions.signal_exception import SignalException
 from vali_objects.position_management.position_manager_client import PositionManagerClient
+from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.limit_order.order_processor import OrderProcessor
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import ValiConfig, TradePair, TRADE_PAIR_ID_TO_TRADE_PAIR, RPCConnectionMode
@@ -115,6 +116,8 @@ class HyperliquidTracker:
     ADDRESS_REFRESH_INTERVAL_S = 60.0
     # Cache TTL for dynamic HL coin discovery used by L2 subscriptions.
     L2_COIN_CACHE_TTL_S = 300.0
+    # Persistent backup watermark file (under validator state dir).
+    BACKUP_WATERMARK_FILE = "hl_backup_poll_watermarks.json"
 
     # ==================== Inner class: _WebSocketShard ====================
 
@@ -412,6 +415,7 @@ class HyperliquidTracker:
         self._backup_fills_caught = 0
         self._backup_polls_total = 0
         self._proxy_index_rest = 0
+        self._load_backup_poll_watermarks()
 
     @property
     def _unhealthy_ports(self) -> Set[int]:
@@ -661,6 +665,7 @@ class HyperliquidTracker:
                     await self._backup_poll_task
                 except asyncio.CancelledError:
                     pass
+            self._save_backup_poll_watermarks()
 
     def _assign_addresses_to_shards(self):
         """
@@ -716,12 +721,17 @@ class HyperliquidTracker:
             self._teardown_empty_shards()
             return
 
-        # Start backup poll for newly tracked addresses "from now" to avoid
-        # replaying historical fills before this tracker began tracking.
+        # For addresses without persisted watermark, start with restart lookback.
+        # This allows catching fills that occurred while validator was down.
         now_ms = int(time.time() * 1000)
+        watermark_changed = False
         for addr in new_addresses:
             if addr not in self._last_poll_time_ms:
-                self._last_poll_time_ms[addr] = now_ms
+                self._last_poll_time_ms[addr] = max(
+                    0,
+                    now_ms - ValiConfig.HL_BACKUP_RESTART_LOOKBACK_MS,
+                )
+                watermark_changed = True
 
         for addr in to_assign:
             assigned = False
@@ -753,6 +763,8 @@ class HyperliquidTracker:
 
         # 5. Tear down empty shards
         self._teardown_empty_shards()
+        if watermark_changed:
+            self._save_backup_poll_watermarks()
 
         # Log summary
         total = len(self._address_to_shard)
@@ -1031,6 +1043,39 @@ class HyperliquidTracker:
 
     # ==================== Backup REST Poll ====================
 
+    def _load_backup_poll_watermarks(self):
+        """Load persisted HL backup watermarks for restart continuity."""
+        try:
+            data = ValiBkpUtils.safe_load_dict_from_disk(
+                self.BACKUP_WATERMARK_FILE,
+                {},
+            )
+            if not isinstance(data, dict):
+                return
+            loaded: Dict[str, int] = {}
+            for addr, ts in data.items():
+                if not isinstance(addr, str):
+                    continue
+                try:
+                    loaded[addr] = int(ts)
+                except (TypeError, ValueError):
+                    continue
+            self._last_poll_time_ms = loaded
+            if loaded:
+                bt.logging.info(
+                    f"[HL_BACKUP] Loaded {len(loaded)} persisted watermark(s)"
+                )
+        except Exception as e:
+            bt.logging.warning(f"[HL_BACKUP] Failed to load watermarks: {e}")
+
+    def _save_backup_poll_watermarks(self):
+        """Persist HL backup watermarks for restart continuity."""
+        try:
+            serializable = {k: int(v) for k, v in self._last_poll_time_ms.items()}
+            ValiBkpUtils.safe_save_dict_to_disk(self.BACKUP_WATERMARK_FILE, serializable)
+        except Exception as e:
+            bt.logging.warning(f"[HL_BACKUP] Failed to persist watermarks: {e}")
+
     async def _fetch_fills_by_time(self, hl_address: str, start_time_ms: int) -> Optional[List[dict]]:
         """Fetch fills for a tracked address via userFillsByTime REST endpoint."""
         api_url = ValiConfig.hl_info_url()
@@ -1112,6 +1157,7 @@ class HyperliquidTracker:
 
                         # Advance only on successful fetch to avoid skipping gaps.
                         self._last_poll_time_ms[hl_address] = int(time.time() * 1000)
+                        self._save_backup_poll_watermarks()
 
                     await asyncio.sleep(min_delay_s)
 
@@ -1120,6 +1166,8 @@ class HyperliquidTracker:
                 stale = [addr for addr in self._last_poll_time_ms if addr not in active_set]
                 for addr in stale:
                     del self._last_poll_time_ms[addr]
+                if stale:
+                    self._save_backup_poll_watermarks()
 
                 if catches_this_cycle > 0:
                     bt.logging.info(
