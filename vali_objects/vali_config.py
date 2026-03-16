@@ -547,8 +547,14 @@ class ValiConfig:
     HL_PROXY_PORTS_SECRET_KEY = "hl_proxy_ports"  # key in secrets.json for port list/range
     HL_MAX_PROXY_SHARDS = 20  # safety cap on proxy connections (200 addresses max)
     HL_SHARD_MAX_CONSECUTIVE_FAILURES = 5  # failures before marking a proxy IP as unhealthy
+    HL_PORT_REST_FAILURE_THRESHOLD = 3
+    HL_PORT_HEALTH_PROBE_INTERVAL_S = 30.0
+    HL_PORT_HEALTH_MAX_COOLDOWN_S = 600.0
     HL_ADDRESS_REGEX = r"^0x[a-fA-F0-9]{40}$"
     HL_MIN_USDC_BALANCE = 1_000  # Minimum USDC balance required to process HL trades
+    HL_BACKUP_POLL_INTERVAL_S = 10.0
+    HL_BACKUP_POLL_RATE_BUDGET = 60
+    HL_BACKUP_POLL_LOOKBACK_MS = 2 * 60 * 1000
 
     # L2 orderbook precision: nSigFigs controls price aggregation granularity.
     # HL returns max 20 levels per side regardless of nSigFigs.

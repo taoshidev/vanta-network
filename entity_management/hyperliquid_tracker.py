@@ -56,6 +56,51 @@ from vali_objects.vali_config import ValiConfig, TradePair, TRADE_PAIR_ID_TO_TRA
 from vanta_api.websocket_notifier import WebSocketNotifierClient
 
 
+class _PortHealthRecord:
+    """Tracks health state for a single proxy port with exponential backoff probing."""
+
+    __slots__ = (
+        "port",
+        "healthy",
+        "unhealthy_since",
+        "last_probe_time",
+        "consecutive_probe_failures",
+        "rest_consecutive_failures",
+    )
+
+    def __init__(self, port: int):
+        self.port = port
+        self.healthy = True
+        self.unhealthy_since: Optional[float] = None
+        self.last_probe_time: Optional[float] = None
+        self.consecutive_probe_failures = 0
+        self.rest_consecutive_failures = 0
+
+    def mark_unhealthy(self):
+        if self.healthy:
+            self.unhealthy_since = time.time()
+            self.consecutive_probe_failures = 0
+        self.healthy = False
+
+    def mark_healthy(self):
+        self.healthy = True
+        self.unhealthy_since = None
+        self.last_probe_time = None
+        self.consecutive_probe_failures = 0
+        self.rest_consecutive_failures = 0
+
+    def cooldown_seconds(self) -> float:
+        base = ValiConfig.HL_PORT_HEALTH_PROBE_INTERVAL_S
+        cap = ValiConfig.HL_PORT_HEALTH_MAX_COOLDOWN_S
+        return min(base * (2 ** self.consecutive_probe_failures), cap)
+
+    def is_probe_due(self) -> bool:
+        if self.healthy:
+            return False
+        ref_time = self.last_probe_time or self.unhealthy_since or 0
+        return (time.time() - ref_time) >= self.cooldown_seconds()
+
+
 class HyperliquidTracker:
     """
     Tracks Hyperliquid trader fills via WebSocket and forwards them as Vanta signals.
@@ -353,13 +398,24 @@ class HyperliquidTracker:
         # Proxy config (populated in _load_proxy_config)
         self._proxy_base_url: Optional[str] = None  # e.g. "socks5://user:pass@host"
         self._available_ports: List[int] = []
-        self._unhealthy_ports: Set[int] = set()
+        self._port_health: Dict[int, _PortHealthRecord] = {}
 
         # Metrics
         self._fills_processed = 0
         self._last_fill_time: Optional[float] = None
         self._l2_coin_cache: Optional[Set[str]] = None
         self._l2_coin_cache_ts: float = 0.0
+
+        # Backup REST poll state
+        self._last_poll_time_ms: Dict[str, int] = {}  # hl_address -> watermark (epoch ms)
+        self._backup_poll_task: Optional[asyncio.Task] = None
+        self._backup_fills_caught = 0
+        self._backup_polls_total = 0
+        self._proxy_index_rest = 0
+
+    @property
+    def _unhealthy_ports(self) -> Set[int]:
+        return {p for p, rec in self._port_health.items() if not rec.healthy}
 
     # ==================== Lifecycle ====================
 
@@ -399,6 +455,20 @@ class HyperliquidTracker:
                 "connected": shard.connected,
                 "address_count": len(shard.addresses),
             })
+        port_health_list = []
+        now = time.time()
+        for port, rec in sorted(self._port_health.items()):
+            entry = {
+                "port": port,
+                "healthy": rec.healthy,
+                "rest_failures": rec.rest_consecutive_failures,
+                "probe_failures": rec.consecutive_probe_failures,
+            }
+            if not rec.healthy:
+                ref_time = rec.last_probe_time or rec.unhealthy_since or 0
+                next_probe_in = max(0, ref_time + rec.cooldown_seconds() - now)
+                entry["next_probe_in_s"] = round(next_probe_in, 1)
+            port_health_list.append(entry)
         return {
             "shards": shard_statuses,
             "total_connected": sum(1 for s in self._shards.values() if s.connected),
@@ -408,6 +478,12 @@ class HyperliquidTracker:
             "proxy_configured": self._proxy_base_url is not None,
             "available_ports": len(self._available_ports),
             "unhealthy_ports": len(self._unhealthy_ports),
+            "port_health": port_health_list,
+            "backup_poll": {
+                "fills_caught": self._backup_fills_caught,
+                "total_polls": self._backup_polls_total,
+                "tracked_addresses": len(self._last_poll_time_ms),
+            },
         }
 
     # ==================== Thread Entry ====================
@@ -518,6 +594,8 @@ class HyperliquidTracker:
             )
             self._available_ports = self._available_ports[:ValiConfig.HL_MAX_PROXY_SHARDS]
 
+        self._port_health = {port: _PortHealthRecord(port) for port in self._available_ports}
+
         bt.logging.info(
             f"[HL_TRACKER] Proxy configured: {len(self._available_ports)} ports available "
             f"(max {len(self._available_ports) * ValiConfig.HL_MAX_TRACKED_ADDRESSES_PER_IP} addresses)"
@@ -559,20 +637,30 @@ class HyperliquidTracker:
     async def _run_stream(self):
         """Orchestrator: loads proxy config, then loops assigning addresses and managing shards."""
         self._load_proxy_config()
+        self._backup_poll_task = asyncio.ensure_future(self._backup_poll_cycle())
 
-        while not self._stop_event.is_set():
-            try:
-                self._assign_addresses_to_shards()
-                self._ensure_shard_tasks()
-            except Exception as e:
-                bt.logging.error(f"[HL_TRACKER] Orchestrator error: {e}")
-                bt.logging.error(traceback.format_exc())
+        try:
+            while not self._stop_event.is_set():
+                try:
+                    self._assign_addresses_to_shards()
+                    self._ensure_shard_tasks()
+                    self._probe_unhealthy_ports()
+                except Exception as e:
+                    bt.logging.error(f"[HL_TRACKER] Orchestrator error: {e}")
+                    bt.logging.error(traceback.format_exc())
 
-            # Wait before next refresh cycle
-            for _ in range(int(self.ADDRESS_REFRESH_INTERVAL_S)):
-                if self._stop_event.is_set():
-                    return
-                await asyncio.sleep(1.0)
+                # Wait before next refresh cycle
+                for _ in range(int(self.ADDRESS_REFRESH_INTERVAL_S)):
+                    if self._stop_event.is_set():
+                        return
+                    await asyncio.sleep(1.0)
+        finally:
+            if self._backup_poll_task and not self._backup_poll_task.done():
+                self._backup_poll_task.cancel()
+                try:
+                    await self._backup_poll_task
+                except asyncio.CancelledError:
+                    pass
 
     def _assign_addresses_to_shards(self):
         """
@@ -605,10 +693,10 @@ class HyperliquidTracker:
         for sid in unhealthy_shard_ids:
             shard = self._shards[sid]
             orphaned.update(shard.addresses & active_addresses)
-            # Return port to unhealthy set
+            # Mark port unhealthy for probe-based recovery.
             port = shard.port
-            if port is not None:
-                self._unhealthy_ports.add(port)
+            if port is not None and port in self._port_health:
+                self._port_health[port].mark_unhealthy()
             # Clean up shard
             for addr in shard.addresses:
                 self._address_to_shard.pop(addr, None)
@@ -620,12 +708,20 @@ class HyperliquidTracker:
 
         # 3. Addresses that need assignment (new + orphaned)
         already_assigned = set(self._address_to_shard.keys())
-        to_assign = (active_addresses - already_assigned) | orphaned
+        new_addresses = active_addresses - already_assigned
+        to_assign = new_addresses | orphaned
 
         if not to_assign:
             # 5. Tear down empty shards
             self._teardown_empty_shards()
             return
+
+        # Start backup poll for newly tracked addresses "from now" to avoid
+        # replaying historical fills before this tracker began tracking.
+        now_ms = int(time.time() * 1000)
+        for addr in new_addresses:
+            if addr not in self._last_poll_time_ms:
+                self._last_poll_time_ms[addr] = now_ms
 
         for addr in to_assign:
             assigned = False
@@ -702,6 +798,33 @@ class HyperliquidTracker:
         for sid, shard in self._shards.items():
             if shard.addresses and (shard.task is None or shard.task.done()):
                 shard.task = asyncio.ensure_future(shard.run())
+
+    def _probe_unhealthy_ports(self):
+        """Probe unhealthy ports and restore them to rotation on success."""
+        if not self._proxy_base_url:
+            return
+        for port, rec in self._port_health.items():
+            if rec.healthy or not rec.is_probe_due():
+                continue
+
+            rec.last_probe_time = time.time()
+            proxy_url = self._make_shard_proxy_url(port)
+            try:
+                session = requests.Session()
+                session.proxies = {"http": proxy_url, "https": proxy_url}
+                resp = session.post(ValiConfig.hl_info_url(), json={"type": "meta"}, timeout=10)
+                resp.raise_for_status()
+                session.close()
+                rec.mark_healthy()
+                if port not in self._available_ports:
+                    self._available_ports.append(port)
+                bt.logging.info(f"[HL_TRACKER] Port {port} probe succeeded, restored")
+            except Exception as e:
+                rec.consecutive_probe_failures += 1
+                bt.logging.debug(
+                    f"[HL_TRACKER] Port {port} probe failed "
+                    f"(attempt={rec.consecutive_probe_failures}, cooldown={rec.cooldown_seconds():.0f}s): {e}"
+                )
 
     # ==================== Message Handling (shared across all shards) ====================
 
@@ -804,6 +927,51 @@ class HyperliquidTracker:
 
     # ==================== HL Account State ====================
 
+    def _make_proxied_session(self) -> requests.Session:
+        """
+        Create a requests session that rotates across healthy proxy ports.
+        Falls back to direct session when no healthy ports are available.
+        """
+        session = requests.Session()
+        session._hl_proxy_port = None  # type: ignore[attr-defined]
+
+        if not self._proxy_base_url:
+            return session
+
+        all_ports = list(self._available_ports)
+        for shard in self._shards.values():
+            if shard.healthy and shard.port is not None:
+                all_ports.append(shard.port)
+        all_ports = sorted(set(all_ports))
+        healthy_ports = [p for p in all_ports if p not in self._unhealthy_ports]
+        if not healthy_ports:
+            if all_ports:
+                bt.logging.warning("[HL_BACKUP] All proxy ports unhealthy; falling back to direct REST")
+            return session
+
+        port = healthy_ports[self._proxy_index_rest % len(healthy_ports)]
+        self._proxy_index_rest += 1
+        proxy_url = self._make_shard_proxy_url(port)
+        session.proxies = {"http": proxy_url, "https": proxy_url}
+        session._hl_proxy_port = port  # type: ignore[attr-defined]
+        return session
+
+    def _report_rest_proxy_success(self, port: Optional[int]):
+        if port is not None and port in self._port_health:
+            self._port_health[port].rest_consecutive_failures = 0
+
+    def _report_rest_proxy_failure(self, port: Optional[int]):
+        if port is None or port not in self._port_health:
+            return
+        record = self._port_health[port]
+        record.rest_consecutive_failures += 1
+        if record.rest_consecutive_failures >= ValiConfig.HL_PORT_REST_FAILURE_THRESHOLD:
+            record.mark_unhealthy()
+            bt.logging.warning(
+                f"[HL_BACKUP] Port {port} marked unhealthy after "
+                f"{record.rest_consecutive_failures} REST failures"
+            )
+
     def _fetch_hl_account_state(self, hl_address: str) -> Optional[dict]:
         """
         Fetch HL account state via REST and compute portfolio weight per position.
@@ -813,13 +981,19 @@ class HyperliquidTracker:
           - positions: {coin: {"szi": float, "positionValue": float, "weight": float}}
         """
         api_url = ValiConfig.hl_info_url()
+        session = self._make_proxied_session()
+        proxy_port = getattr(session, "_hl_proxy_port", None)
         try:
-            perp = requests.post(api_url, json={"type": "clearinghouseState", "user": hl_address}, timeout=10).json()
-            spot = requests.post(api_url, json={"type": "spotClearinghouseState", "user": hl_address}, timeout=10).json()
-            all_mids = requests.post(api_url, json={"type": "allMids"}, timeout=10).json()
+            perp = session.post(api_url, json={"type": "clearinghouseState", "user": hl_address}, timeout=10).json()
+            spot = session.post(api_url, json={"type": "spotClearinghouseState", "user": hl_address}, timeout=10).json()
+            all_mids = session.post(api_url, json={"type": "allMids"}, timeout=10).json()
+            self._report_rest_proxy_success(proxy_port)
         except Exception as e:
             bt.logging.error(f"[HL_TRACKER] REST error fetching account state for {hl_address}: {e}")
+            self._report_rest_proxy_failure(proxy_port)
             return None
+        finally:
+            session.close()
 
         margin = perp.get("crossMarginSummary", perp.get("marginSummary", {}))
         perp_value = float(margin.get("accountValue", 0))
@@ -854,6 +1028,101 @@ class HyperliquidTracker:
             positions[coin] = {"szi": szi, "positionValue": pos_value_abs, "weight": weight}
 
         return {"total_portfolio_value": total_portfolio_value, "positions": positions}
+
+    # ==================== Backup REST Poll ====================
+
+    async def _fetch_fills_by_time(self, hl_address: str, start_time_ms: int) -> Optional[List[dict]]:
+        """Fetch fills for a tracked address via userFillsByTime REST endpoint."""
+        api_url = ValiConfig.hl_info_url()
+        payload = {"type": "userFillsByTime", "user": hl_address, "startTime": start_time_ms}
+        loop = asyncio.get_event_loop()
+        session = self._make_proxied_session()
+        proxy_port = getattr(session, "_hl_proxy_port", None)
+
+        try:
+            def _do_request():
+                try:
+                    resp = session.post(api_url, json=payload, timeout=10)
+                    resp.raise_for_status()
+                    return resp.json()
+                finally:
+                    session.close()
+
+            result = await loop.run_in_executor(None, _do_request)
+            self._backup_polls_total += 1
+            self._report_rest_proxy_success(proxy_port)
+            return result if isinstance(result, list) else []
+        except Exception as e:
+            bt.logging.debug(f"[HL_BACKUP] userFillsByTime failed for {hl_address}: {e}")
+            self._backup_polls_total += 1
+            self._report_rest_proxy_failure(proxy_port)
+            return None
+
+    async def _backup_poll_cycle(self):
+        """Periodic background poll for fills missed by websocket downtime."""
+        await asyncio.sleep(10.0)
+        bt.logging.info("[HL_BACKUP] Backup REST polling started")
+
+        while not self._stop_event.is_set():
+            try:
+                tracked_addresses = list(self._address_to_shard.keys())
+                if not tracked_addresses:
+                    await asyncio.sleep(ValiConfig.HL_BACKUP_POLL_INTERVAL_S)
+                    continue
+
+                min_delay_s = 60.0 / max(1, ValiConfig.HL_BACKUP_POLL_RATE_BUDGET)
+                catches_this_cycle = 0
+                now_ms = int(time.time() * 1000)
+
+                for hl_address in tracked_addresses:
+                    if self._stop_event.is_set():
+                        break
+
+                    start_ms = self._last_poll_time_ms.get(
+                        hl_address,
+                        now_ms - ValiConfig.HL_BACKUP_POLL_LOOKBACK_MS,
+                    )
+                    fills = await self._fetch_fills_by_time(hl_address, start_ms)
+
+                    if fills is not None:
+                        for fill in fills:
+                            fill_hash = fill.get("hash") or fill.get("tid")
+                            if not fill_hash or fill_hash in self._processed_hashes:
+                                continue
+                            self._record_hash(fill_hash)
+                            try:
+                                self._process_fill(hl_address, fill)
+                                catches_this_cycle += 1
+                                self._backup_fills_caught += 1
+                                bt.logging.info(
+                                    f"[HL_BACKUP] Caught missed fill: {fill_hash} "
+                                    f"address={hl_address} coin={fill.get('coin')}"
+                                )
+                            except Exception as e:
+                                bt.logging.error(f"[HL_BACKUP] Error processing fill {fill_hash}: {e}")
+                                bt.logging.error(traceback.format_exc())
+
+                        # Advance only on successful fetch to avoid skipping gaps.
+                        self._last_poll_time_ms[hl_address] = int(time.time() * 1000)
+
+                    await asyncio.sleep(min_delay_s)
+
+                # Cleanup stale watermarks.
+                active_set = set(self._address_to_shard.keys())
+                stale = [addr for addr in self._last_poll_time_ms if addr not in active_set]
+                for addr in stale:
+                    del self._last_poll_time_ms[addr]
+
+                if catches_this_cycle > 0:
+                    bt.logging.info(
+                        f"[HL_BACKUP] Cycle caught {catches_this_cycle} missed fill(s). "
+                        f"total={self._backup_fills_caught}"
+                    )
+            except Exception as e:
+                bt.logging.error(f"[HL_BACKUP] Poll cycle error: {e}")
+                bt.logging.error(traceback.format_exc())
+
+            await asyncio.sleep(ValiConfig.HL_BACKUP_POLL_INTERVAL_S)
 
     # ==================== Fill Processing ====================
 
