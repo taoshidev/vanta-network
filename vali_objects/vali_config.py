@@ -544,8 +544,8 @@ class ValiConfig:
     HL_MIN_USDC_BALANCE = 1_000  # Minimum USDC balance required to process HL trades
     HL_BACKUP_POLL_INTERVAL_S = 10.0
     HL_BACKUP_POLL_RATE_BUDGET = 60
-    HL_BACKUP_POLL_LOOKBACK_MS = 2 * 60 * 1000
-    HL_BACKUP_RESTART_LOOKBACK_MS = 30 * 60 * 1000
+    HL_BACKUP_POLL_LOOKBACK_MS = 60 * 60 * 1000 # TODO: change to 2 min
+    HL_BACKUP_RESTART_LOOKBACK_MS = 60 * 60 * 1000
 
     # L2 orderbook precision: nSigFigs controls price aggregation granularity.
     # HL returns max 20 levels per side regardless of nSigFigs.
