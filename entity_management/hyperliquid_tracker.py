@@ -1082,9 +1082,17 @@ class HyperliquidTracker:
                         hl_address,
                         now_ms - ValiConfig.HL_BACKUP_POLL_LOOKBACK_MS,
                     )
+                    bt.logging.info(
+                        f"[HL_BACKUP] REST check address={hl_address} "
+                        f"start_ms={start_ms}"
+                    )
                     fills = await self._fetch_fills_by_time(hl_address, start_ms)
 
                     if fills is not None:
+                        bt.logging.info(
+                            f"[HL_BACKUP] REST check result address={hl_address} "
+                            f"fills_returned={len(fills)}"
+                        )
                         for fill in fills:
                             fill_hash = fill.get("hash") or fill.get("tid")
                             if not fill_hash or fill_hash in self._processed_hashes:
