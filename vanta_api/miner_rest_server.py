@@ -30,7 +30,7 @@ from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from miner_config import MinerConfig
 from vali_objects.vali_dataclasses.order_signal import Signal
 from vali_objects.vali_config import TradePair
-from vali_objects.enums.order_type_enum import OrderType
+from vali_objects.enums.order_type_enum import OrderType, StopCondition
 from vali_objects.enums.execution_type_enum import ExecutionType
 
 
@@ -224,6 +224,8 @@ class MinerRestServer(BaseRestServer):
                 limit_price=float(signal_data['limit_price']) if 'limit_price' in signal_data else None,
                 stop_loss=float(signal_data['stop_loss']) if 'stop_loss' in signal_data else None,
                 take_profit=float(signal_data['take_profit']) if 'take_profit' in signal_data else None,
+                stop_price=float(signal_data['stop_price']) if 'stop_price' in signal_data else None,
+                stop_condition=StopCondition.from_string(signal_data['stop_condition'].upper()) if 'stop_condition' in signal_data else None,
                 trailing_stop=signal_data.get('trailing_stop'),
                 bracket_orders=signal_data.get('bracket_orders')
             )
@@ -324,10 +326,10 @@ class MinerRestServer(BaseRestServer):
                 return jsonify({'status': 'error', 'message': 'admin must be a boolean'}), 400
 
             # Asset class validation
-            if asset_class not in ["crypto", "forex"]:
+            if asset_class not in ["crypto", "forex", "equities"]:
                 return jsonify({
                     'status': 'error',
-                    'message': f"Invalid asset_class: {asset_class}. Must be 'crypto' or 'forex'"
+                    'message': f"Invalid asset_class: {asset_class}. Must be 'crypto', 'forex', or 'equities'"
                 }), 400
 
             # Account size validation
