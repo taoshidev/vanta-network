@@ -531,6 +531,8 @@ class ChallengePeriodManager(CacheController):
                 'last_eod_equity': last_eod,
                 'intraday_drawdown_pct': intraday_drawdown_pct,
                 'eod_drawdown_pct': eod_drawdown_pct,
+                'subaccount_challenge_intraday_drawdown_threshold': ValiConfig.SUBACCOUNT_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD,
+                'subaccount_challenge_eod_drawdown_threshold': ValiConfig.SUBACCOUNT_CHALLENGE_EOD_DRAWDOWN_THRESHOLD,
             }
 
             # Rule 1: Intraday drawdown — current equity cannot drop >5% from today's opening equity
