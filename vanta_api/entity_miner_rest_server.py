@@ -661,10 +661,10 @@ class EntityMinerRestServer(MinerRestServer):
             if not isinstance(admin, bool):
                 return jsonify({'status': 'error', 'message': 'admin must be a boolean'}), 400
 
-            if asset_class not in ["crypto", "forex"]:
+            if asset_class not in ["crypto", "forex", "equities"]:
                 return jsonify({
                     'status': 'error',
-                    'message': f"Invalid asset_class: {asset_class}. Must be 'crypto' or 'forex'"
+                    'message': f"Invalid asset_class: {asset_class}. Must be 'crypto', 'forex', or 'equities'"
                 }), 400
 
             if account_size <= 0:
