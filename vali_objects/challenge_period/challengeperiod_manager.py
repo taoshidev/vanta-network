@@ -745,9 +745,9 @@ class ChallengePeriodManager(CacheController):
                 portfolio_only_ledgers,
                 current_time
             )
-            bt.logging.info("DRYRUN: skipping actual challenge period promotion and elimination")
-            # hotkeys_to_promote.extend(synthetic_promotions)
-            # miners_to_eliminate.update(synthetic_eliminations)
+            # bt.logging.info("DRYRUN: skipping actual challenge period promotion and elimination")
+            hotkeys_to_promote.extend(synthetic_promotions)
+            miners_to_eliminate.update(synthetic_eliminations)
 
         # PHASE 2: Process rank-based hotkeys (regular flow for all others)
         if rank_based_hotkeys:
