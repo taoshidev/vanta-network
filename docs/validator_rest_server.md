@@ -825,6 +825,7 @@ Retrieve comprehensive dashboard data for a specific subaccount by aggregating i
 **Aggregated Data Includes:**
 - Subaccount info (status, timestamps, entity parent)
 - Challenge period status (bucket, start time, progress)
+- Drawdown stats (current equity, daily open equity, EOD high water mark — synthetic hotkeys only)
 - Debt ledger data (performance metrics, returns)
 - Position data (open positions, leverage, PnL)
 - Statistics (cached metrics, scores, rankings)
@@ -846,6 +847,15 @@ Retrieve comprehensive dashboard data for a specific subaccount by aggregating i
     "challenge_period": {
       "bucket": "CHALLENGE",
       "start_time_ms": 1702345678901
+    },
+    // drawdown is only included for synthetic hotkeys and only after the first evaluation cycle
+    "drawdown": {
+      "current_equity": 1.032,
+      "daily_open_equity": 1.045,
+      "eod_hwm": 1.065,
+      "last_eod_equity": 1.050,
+      "intraday_drawdown_pct": 1.24,
+      "eod_drawdown_pct": 1.41
     },
     "ledger": {
       "hotkey": "5GhDr3xy...abc_0",
@@ -1235,6 +1245,7 @@ Retrieve comprehensive dashboard data for a specific subaccount by aggregating i
 **Aggregated Data Includes:**
 - Subaccount info (status, timestamps, entity parent)
 - Challenge period status (bucket, start time, progress)
+- Drawdown stats (current equity, daily open equity, EOD high water mark — synthetic hotkeys only)
 - Debt ledger data (performance metrics, returns)
 - Position data (open positions, leverage, PnL)
 - Statistics (daily returns)
@@ -1270,7 +1281,16 @@ curl -H "Authorization: Bearer YOUR_TIER_200_API_KEY" \
       "bucket": "CHALLENGE",
       "start_time_ms": 1702345678901
     },
-    // eliminination is only included if the subaccount is eliminated  
+    // drawdown is only included for synthetic hotkeys and only after the first evaluation cycle
+    "drawdown": {
+      "current_equity": 1.032,
+      "daily_open_equity": 1.045,
+      "eod_hwm": 1.065,
+      "last_eod_equity": 1.050,
+      "intraday_drawdown_pct": 1.24,
+      "eod_drawdown_pct": 1.41
+    },
+    // eliminination is only included if the subaccount is eliminated
     "elimination": {
       "elimination_initiated_time_ms": 1771893304364,
       "reason": "FAILED_CHALLENGE_PERIOD_DRAWDOWN",
@@ -1414,6 +1434,16 @@ This is the only guaranteed section of the response. All other sections may be m
 **Challenge Period:**
 - `bucket`: Challenge period bucket ("CHALLENGE", "MAINCOMP", "PROBATION", etc.)
 - `start_time_ms`: Timestamp when challenge period started
+
+**Drawdown (synthetic hotkeys only):**
+
+Only present after the first challenge period evaluation cycle (~60s after startup). Values match exactly what the evaluation loop computed — use `GET /config` for the thresholds.
+- `current_equity`: Portfolio equity at last evaluation: `(balance + unrealized_pnl) / account_size`
+- `daily_open_equity`: Equity at today's midnight UTC checkpoint (Rule 1 baseline). Defaults to `1.0` if no midnight checkpoint exists yet.
+- `eod_hwm`: Highest end-of-day equity across all midnight checkpoints ever (Rule 2 high water mark). Defaults to `1.0` if no midnight checkpoints exist.
+- `last_eod_equity`: Most recent midnight checkpoint equity (`null` if no midnight checkpoints exist)
+- `intraday_drawdown_pct`: Percentage drop from `daily_open_equity` to `current_equity`. Positive = drawdown, negative = gain since open.
+- `eod_drawdown_pct`: Percentage drop from `eod_hwm` to `last_eod_equity`. `0.0` if no midnight checkpoints exist.
 
 **Elimination:**
 
@@ -1606,6 +1636,31 @@ curl -X POST http://localhost:48888/entity/subaccount/payout \
 - `start_time_ms` must be less than or equal to `end_time_ms`
 - Returns 404 if the subaccount has no debt ledger data in the specified time range
 - Payout calculation is based on debt ledger checkpoints that fall within the time range
+
+### Get Config
+
+`GET /config`
+
+Return relevant validator configuration constants for frontend consumption. No authentication required.
+
+**Example:**
+```bash
+curl http://localhost:48888/config
+```
+
+**Response:**
+```json
+{
+  "subaccount_challenge_intraday_drawdown_threshold": 0.05,
+  "subaccount_challenge_eod_drawdown_threshold": 0.05
+}
+```
+
+**Response Fields:**
+- `subaccount_challenge_intraday_drawdown_threshold`: Maximum allowed intraday equity drop from today's opening equity before elimination (Rule 1). E.g. `0.05` = 5%.
+- `subaccount_challenge_eod_drawdown_threshold`: Maximum allowed end-of-day equity drop from the all-time EOD high water mark before elimination (Rule 2). E.g. `0.05` = 5%.
+
+---
 
 ### Entity Trading Workflow
 
