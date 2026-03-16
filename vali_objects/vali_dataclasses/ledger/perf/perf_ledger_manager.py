@@ -82,6 +82,14 @@ class PerfLedgerManager(CacheController):
             connection_mode=connection_mode
         )
 
+        # Lazy import to avoid circular dependency
+        from vali_objects.miner_account.miner_account_client import MinerAccountClient
+        self._miner_account_client = MinerAccountClient(
+            port=ValiConfig.RPC_MINERACCOUNT_PORT,
+            connect_immediately=False,
+            connection_mode=connection_mode
+        )
+
         self.cached_miner_account_sizes = {}  # Deepcopy of contract_manager.miner_account_sizes
         self.cache_last_refreshed_date = None  # 'YYYY-MM-DD' format, refresh daily
         self.pds = None  # Load it later once the process starts so ipc works.
@@ -1091,7 +1099,8 @@ class PerfLedgerManager(CacheController):
         return accumulated_time_ms
 
 
-    def build_perf_ledger(self, perf_ledger_bundle: dict[str, dict[str, PerfLedger]], tp_to_historical_positions: dict[str, Position], start_time_ms, end_time_ms, miner_hotkey, tp_id_to_realtime_position_to_pop: dict[str, Position]) -> bool:
+    def build_perf_ledger(self, perf_ledger_bundle: dict[str, dict[str, PerfLedger]], tp_to_historical_positions: dict[str, Position], start_time_ms, end_time_ms, miner_hotkey, tp_id_to_realtime_position_to_pop: dict[str, Position],
+                          account_size: float = None) -> bool:
         # tp_id_to_realtime_position_to_pop is a dictionary mapping trade pair IDs to their realtime positions
         portfolio_pl = perf_ledger_bundle[TP_ID_PORTFOLIO]
         is_first_update = len(portfolio_pl.cps) == 0
@@ -1264,6 +1273,16 @@ class PerfLedgerManager(CacheController):
                                   current_spread_fee, current_carry_fee, tp_to_closed_pos_realized_pnl[tp_id], tp_to_closed_pos_unrealized_pnl[tp_id])
 
 
+        # Collect and sort all fee events once for equity_ret computation
+        _all_fee_events = []
+        _fee_cursor = 0
+        _cumulative_fees = 0.0
+        if account_size is not None:
+            for positions_list in tp_to_historical_positions.values():
+                for pos in positions_list:
+                    _all_fee_events.extend(pos.fee_history)
+            _all_fee_events.sort(key=lambda e: e["time_ms"])
+
         # Check if the while loop will execute at all
         if start_time_ms + accumulated_time_ms >= end_time_ms:
             # This should have been caught by the shortcut logic, but handle it defensively
@@ -1348,10 +1367,20 @@ class PerfLedgerManager(CacheController):
                     tp_id_to_realtime_position_to_pop
                 )
 
+                if tp_id == TP_ID_PORTFOLIO and account_size is not None:
+                    while _fee_cursor < len(_all_fee_events) and _all_fee_events[_fee_cursor]["time_ms"] <= t_ms:
+                        _cumulative_fees += _all_fee_events[_fee_cursor]["amount"]
+                        _fee_cursor += 1
+                    _tp_cumulative_fees = _cumulative_fees
+                else:
+                    _tp_cumulative_fees = None
+
                 perf_ledger.update_pl(current_return, t_ms, miner_hotkey, tp_to_any_open[tp_id],
                                       current_spread_fee, current_carry_fee,
                                       tp_to_realized_pnl[tp_id], tp_to_unrealized_pnl[tp_id],
-                                      tp_debug=tp_id)
+                                      tp_debug=tp_id,
+                                      account_size=account_size if tp_id == TP_ID_PORTFOLIO else None,
+                                      cumulative_fees_usd=_tp_cumulative_fees)
 
 
                 # Verify the ledger was updated to current t_ms
@@ -1557,7 +1586,10 @@ class PerfLedgerManager(CacheController):
 
     def update_one_perf_ledger_bundle(self, hotkey_i: int, n_hotkeys: int, hotkey: str, positions: List[Position],
                                       now_ms: int,
-                                      existing_perf_ledger_bundles: dict[str, dict[str, PerfLedger]]) -> None | dict[str, PerfLedger]:
+                                      existing_perf_ledger_bundles: dict[str, dict[str, PerfLedger]],
+                                      account_size: float = None) -> None | dict[str, PerfLedger]:
+
+
         # live_price_fetcher is now created in __init__ - no conditional needed
         eliminated = False
         self.n_api_calls = 0
@@ -1728,7 +1760,8 @@ class PerfLedgerManager(CacheController):
             # Pass the dictionary of positions (empty dict if none, single entry if one, multiple if many)
             eliminated = self.build_perf_ledger(perf_ledger_bundle_candidate, tp_to_historical_positions,
                                                portfolio_last_update_ms + 1, batch_order_timestamp,
-                                               hotkey, tp_id_to_realtime_position_to_pop)
+                                               hotkey, tp_id_to_realtime_position_to_pop,
+                                               account_size=account_size)
 
             if eliminated:
                 break
@@ -1760,7 +1793,8 @@ class PerfLedgerManager(CacheController):
                 #    self._log_continuity_summary(hotkey, continuity_changes, tp_to_historical_positions)
 
             self.build_perf_ledger(perf_ledger_bundle_candidate, tp_to_historical_positions,
-                                   current_last_update + 1, now_ms, hotkey, {})
+                                   current_last_update + 1, now_ms, hotkey, {},
+                                   account_size=account_size)
 
         self.hk_to_last_order_processed_ms[hotkey] = last_event_time_ms
 
@@ -1802,7 +1836,8 @@ class PerfLedgerManager(CacheController):
 
     def update_all_perf_ledgers(self, hotkey_to_positions: dict[str, List[Position]],
                                 existing_perf_ledgers: dict[str, dict[str, PerfLedger]],
-                                now_ms: int) -> None | dict[str, dict[str, PerfLedger]]:
+                                now_ms: int,
+                                hotkey_to_account_size: dict = None) -> None | dict[str, dict[str, PerfLedger]]:
         t_init = time.time()
         self.now_ms = now_ms
         self.candidate_pl_elimination_rows = []
@@ -1810,7 +1845,9 @@ class PerfLedgerManager(CacheController):
         n_hotkeys = len(hotkey_to_positions)
         for hotkey_i, (hotkey, positions) in enumerate(hotkey_to_positions.items()):
             try:
-                self.update_one_perf_ledger_bundle(hotkey_i, n_hotkeys, hotkey, positions, now_ms, existing_perf_ledgers)
+                account_size = hotkey_to_account_size.get(hotkey) if hotkey_to_account_size else None
+                self.update_one_perf_ledger_bundle(hotkey_i, n_hotkeys, hotkey, positions, now_ms, existing_perf_ledgers,
+                                                   account_size=account_size)
             except Exception as e:
                 bt.logging.error(f"Error updating perf ledger for {hotkey}: {e}. Please alert a team member ASAP!")
                 bt.logging.error(traceback.format_exc())
@@ -1971,7 +2008,8 @@ class PerfLedgerManager(CacheController):
             bt.logging.warning(traceback.format_exc())
 
         # Time in the past to start updating the perf ledgers
-        self.update_all_perf_ledgers(hotkey_to_positions, perf_ledger_bundles, t_ms)
+        hotkey_to_account_size = self._miner_account_client.get_all_miner_account_sizes()
+        self.update_all_perf_ledgers(hotkey_to_positions, perf_ledger_bundles, t_ms, hotkey_to_account_size=hotkey_to_account_size)
 
         # Clear invalidations after successful update. Prevent race condition by only clearing if we attempted invalidation for specific hk
         if self.hks_attempting_invalidations:
