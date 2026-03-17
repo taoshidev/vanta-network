@@ -336,6 +336,7 @@ class DebtBasedScoring:
         miner_remaining_payouts_usd = {}
         miner_actual_payouts_usd = {}  # Track what's been paid so far this pay period
         miner_penalty_loss_usd = {}  # Track how much was lost to penalties
+        miner_needed_payouts_usd = {}  # Track needed payout before clamping
 
         for hotkey, debt_ledger in ledger_dict.items():
             if not debt_ledger.checkpoints:
@@ -399,6 +400,7 @@ class DebtBasedScoring:
             miner_remaining_payouts_usd[hotkey] = remaining_payout_usd
             miner_actual_payouts_usd[hotkey] = actual_payout_usd
             miner_penalty_loss_usd[hotkey] = penalty_loss_usd
+            miner_needed_payouts_usd[hotkey] = needed_payout_usd
 
         # Query real-time emissions and project availability (in USD)
         total_remaining_payout_usd = sum(miner_remaining_payouts_usd.values())
@@ -416,12 +418,12 @@ class DebtBasedScoring:
         for hotkey in _payouts_sorted:
             remaining = miner_remaining_payouts_usd.get(hotkey, 0.0)
             actual = miner_actual_payouts_usd.get(hotkey, 0.0)
-            needed = remaining + actual
+            needed = miner_needed_payouts_usd.get(hotkey, 0.0)
             penalty_loss = miner_penalty_loss_usd.get(hotkey, 0.0)
             bt.logging.info(
-                f"[PAYOUT_DEBUG] DEBT CALC [{hotkey}] remaining=${remaining:.2f} \t"
-                f"paid=${actual:.2f} / ${needed:.2f},  penalty_loss=${penalty_loss:.2f}"
-                f"{'  <- needs payout' if remaining > 0 else ''}"
+                f"[PAYOUT_DEBUG] DEBT CALC [{hotkey}] remaining=${remaining:.2f}\t"
+                f"paid=${actual:.2f} / ${needed:.2f},\tpenalty_loss=${penalty_loss:.2f}"
+                f"{'<- needs payout' if remaining > 0 else ''}"
             )
 
         # Calculate projected emissions (needed for weight normalization)
@@ -489,11 +491,12 @@ class DebtBasedScoring:
             f"projected_daily_usd=${projected_daily_usd:.2f}, "
             f"days_until_target={days_until_target}"
         )
-        for hk, w in sorted(miner_weights_with_minimums.items(), key=lambda x: -x[1])[:10]:
+        for hk, w in sorted(miner_weights_with_minimums.items(), key=lambda x: -x[1]):
             daily_target = miner_daily_target_payouts_usd.get(hk, 0.0)
-            bt.logging.info(
-                f"[PAYOUT_DEBUG] TOP WEIGHT [{hk}]: weight={w:.8f}, daily_target=${daily_target:.2f}"
-            )
+            if daily_target > 0:
+                bt.logging.info(
+                    f"[PAYOUT_DEBUG] TOP WEIGHT [{hk}]: weight={w:.8f}, daily_target=${daily_target:.2f}"
+                )
 
         # Normalize weights with special burn address logic
         # If sum < 1.0: assign remaining weight to burn address (uid 229 / uid 5)
