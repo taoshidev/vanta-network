@@ -124,8 +124,6 @@ class TestPerfLedgerCore(TestBase):
 
         # Portfolio value validation
         self.assertIsInstance(cp.prev_portfolio_ret, float, f"{context}: prev_portfolio_ret should be float")
-        self.assertIsInstance(cp.prev_portfolio_spread_fee, float, f"{context}: prev_portfolio_spread_fee should be float")
-        self.assertIsInstance(cp.prev_portfolio_carry_fee, float, f"{context}: prev_portfolio_carry_fee should be float")
 
         # Risk metrics validation
         self.assertIsInstance(cp.mdd, float, f"{context}: mdd should be float")
@@ -136,22 +134,13 @@ class TestPerfLedgerCore(TestBase):
         self.assertGreaterEqual(cp.gain, 0.0, f"{context}: gain should be >= 0")
         self.assertLessEqual(cp.loss, 0.0, f"{context}: loss should be <= 0")
 
-        # Carry fee loss validation (allow small negative values due to floating point precision)
-        if hasattr(cp, 'carry_fee_loss'):
-            self.assertGreaterEqual(cp.carry_fee_loss, -0.01, f"{context}: carry_fee_loss should be reasonable")
-
         # Portfolio values should be reasonable
         self.assertGreater(cp.prev_portfolio_ret, 0.0, f"{context}: portfolio return should be positive")
-        self.assertGreater(cp.prev_portfolio_spread_fee, 0.0, f"{context}: spread fee should be positive")
-        self.assertGreater(cp.prev_portfolio_carry_fee, 0.0, f"{context}: carry fee should be positive")
 
         # Risk metrics should be reasonable
         self.assertGreater(cp.mdd, 0.0, f"{context}: MDD should be positive")
         self.assertGreater(cp.mpv, 0.0, f"{context}: MPV should be positive")
 
-        # Fees should not exceed 100%
-        self.assertLessEqual(cp.prev_portfolio_spread_fee, 1.0, f"{context}: spread fee should be <= 1.0")
-        self.assertLessEqual(cp.prev_portfolio_carry_fee, 1.0, f"{context}: carry fee should be <= 1.0")
 
     def test_basic_position_tracking(self):
         """Test basic position tracking and checkpoint creation."""
@@ -323,23 +312,6 @@ class TestPerfLedgerCore(TestBase):
                 # Validate checkpoint structure
                 self.validate_checkpoint(cp, "Fee calculation checkpoint")
 
-                # Carry fee should be applied over 5 days
-                # Expected range: between 0.95 and 1.0 (less than 5% decay over 5 days)
-                last_cp = btc_ledger.cps[-1]
-                self.assertLess(cp.prev_portfolio_carry_fee, 1.0,
-                               f"Carry fee should be applied over 5 days #{i}:{cp} {last_cp}")
-                self.assertGreater(cp.prev_portfolio_carry_fee, 0.95,
-                               f"Carry fee should not be too large for 5 days #{i}:{cp} {last_cp}")
-
-                # Spread fee behavior validation
-                # For a 1x leverage position, spread fee should be very close to 1.0 (0.1% fee = 0.999)
-                self.assertTrue(
-                    math.isclose(cp.prev_portfolio_spread_fee, 1.0, rel_tol=0.01, abs_tol=0.001),
-                    f"Spread fee should be close to 1.0 for low leverage position, got {cp.prev_portfolio_spread_fee}"
-                )
-
-                # Additional fee validation - allow small negative values due to floating point precision
-                self.assertGreaterEqual(cp.carry_fee_loss, -0.01, "Carry fee loss should be reasonable (small negative values allowed for FP precision)")
                 break
 
         self.assertTrue(position_checkpoint_found, "Should find at least one checkpoint with position data")

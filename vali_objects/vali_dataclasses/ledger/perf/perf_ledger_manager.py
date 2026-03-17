@@ -464,14 +464,12 @@ class PerfLedgerManager(CacheController):
 
     def _can_shortcut(self, tp_to_historical_positions: dict[str: Position], end_time_ms: int,
                       tp_id_to_realtime_position_to_pop: dict[str, Position], start_time_ms: int, portfolio_pl: PerfLedger) -> (
-            ShortcutReason, dict[str, float], dict[str, float], dict[str, float], dict[str, float], dict[str, float],
+            ShortcutReason, float, float, float,
             TradePairReturnStatus):
 
         portfolio_return = 1.0
         portfolio_realized_pnl = 0.0
         portfolio_unrealized_pnl = 0.0
-        portfolio_spread_fee = 1.0
-        portfolio_carry_fee = 1.0
 
         n_open_positions = 0
         # Set now_ms to end_time_ms when backtesting for historical perf ledger generation
@@ -497,10 +495,6 @@ class PerfLedgerManager(CacheController):
                 if tp_id in tp_id_to_realtime_position_to_pop and i == len(historical_positions) - 1:
                     historical_position = tp_id_to_realtime_position_to_pop[tp_id]
 
-                csf, _ = self.position_uuid_to_cache[historical_position.position_uuid].get_spread_fee(historical_position, end_time_ms)
-                portfolio_spread_fee *= csf
-                ccf, _ = self.position_uuid_to_cache[historical_position.position_uuid].get_carry_fee(end_time_ms, historical_position)
-                portfolio_carry_fee *= ccf
                 portfolio_return *= historical_position.return_at_close
                 portfolio_realized_pnl += historical_position.realized_pnl
                 portfolio_unrealized_pnl += historical_position.unrealized_pnl
@@ -510,15 +504,6 @@ class PerfLedgerManager(CacheController):
         if portfolio_pl and current_tuple and current_tuple[0] != portfolio_return:
             self.trade_pair_to_position_ret['portfolio_prev'] = current_tuple
         self.trade_pair_to_position_ret['portfolio'] = (portfolio_return, n_positions)
-
-        # Build return/fee dicts keyed by 'portfolio' for downstream consumers
-        tp_to_return = {'portfolio': portfolio_return}
-        tp_to_realized_pnl = {'portfolio': portfolio_realized_pnl}
-        tp_to_unrealized_pnl = {'portfolio': portfolio_unrealized_pnl}
-        tp_to_spread_fee = {'portfolio': portfolio_spread_fee}
-        tp_to_carry_fee = {'portfolio': portfolio_carry_fee}
-
-        assert tp_to_carry_fee['portfolio'] > 0, (tp_to_carry_fee['portfolio'], tp_to_spread_fee['portfolio'])
 
         reason = ''
         ans = ShortcutReason.NO_SHORTCUT
@@ -569,14 +554,14 @@ class PerfLedgerManager(CacheController):
                   f'{n_closed_positions}, n_positions_newly_opened: {n_positions_newly_opened}, '
                   f'start_time_ms: {TimeUtil.millis_to_formatted_date_str(start_time_ms)} ({start_time_ms}) , '
                   f'end_time_ms: {TimeUtil.millis_to_formatted_date_str(end_time_ms)} ({end_time_ms}) , '
-                  f'portfolio_value: {tp_to_return["portfolio"]} '
+                  f'portfolio_value: {portfolio_return} '
                   f'ledger_cutoff_ms: {TimeUtil.millis_to_formatted_date_str(ledger_cutoff_ms)}, '
                   f'trade_pair_to_position_ret: {self.trade_pair_to_position_ret} '
                   f'n_orders_per_position_counter: {n_orders_per_position_counter} '
                   f'final portfolio cp {final_cp}')
             bt.logging.info('---------------------------------------------------------------------')
 
-        return ans, tp_to_return, tp_to_realized_pnl, tp_to_unrealized_pnl, tp_to_spread_fee, tp_to_carry_fee, any_open
+        return ans, portfolio_return, portfolio_realized_pnl, portfolio_unrealized_pnl, any_open
 
 
     def new_window_intersects_old_window(self, start_time_ms, end_time_ms, existing_lb_ms, existing_ub_ms):
@@ -677,33 +662,27 @@ class PerfLedgerManager(CacheController):
         #print(f'Fetched {requested_seconds} s of candles for tp {tp.trade_pair} in {time.time() - t0}s')
         #print('22222', tp.trade_pair, trade_pair_to_price_info.keys())
 
-    def positions_to_portfolio_return(self, possible_tp_ids, tp_to_historical_positions_dense: dict[str: Position],
-                                      t_ms, mode, end_time_ms, tp_to_initial_return, tp_to_initial_realized_pnl, tp_to_initial_unrealized_pnl,
-                                      tp_to_initial_spread_fee, tp_to_initial_carry_fee, portfolio_pl,
+    def positions_to_portfolio_return(self, tp_to_historical_positions_dense: dict[str: Position],
+                                      t_ms, mode, end_time_ms, initial_return: float, initial_realized_pnl: float, initial_unrealized_pnl: float,
+                                      portfolio_pl,
                                       tp_id_to_realtime_position_to_pop: dict[str, Position] = None):
         # Answers "What is the portfolio return at this time t_ms?"
-        tp_to_any_open : dict[str, TradePairReturnStatus] = {x: TradePairReturnStatus.TP_NO_OPEN_POSITIONS for x in possible_tp_ids}
-        tp_to_return = tp_to_initial_return.copy()
-        tp_to_realized_pnl = tp_to_initial_realized_pnl.copy()
-        tp_to_unrealized_pnl = tp_to_initial_unrealized_pnl.copy()
-        tp_to_spread_fee = tp_to_initial_spread_fee.copy()
-        tp_to_carry_fee = tp_to_initial_carry_fee.copy()
+        any_open_status: TradePairReturnStatus = TradePairReturnStatus.TP_NO_OPEN_POSITIONS
+        portfolio_return = initial_return
+        portfolio_realized_pnl = initial_realized_pnl
+        portfolio_unrealized_pnl = initial_unrealized_pnl
         t_ms = self.align_t_ms_to_mode(t_ms, mode)
         for tp_id, historical_positions in tp_to_historical_positions_dense.items():
             assert len(historical_positions) < 2, ('maybe a recently opened position?', historical_positions)
 
             for historical_position in historical_positions:
                 if self._is_shutdown():
-                    return tp_to_return, tp_to_realized_pnl, tp_to_unrealized_pnl, tp_to_any_open, tp_to_spread_fee, tp_to_carry_fee
+                    return portfolio_return, portfolio_realized_pnl, portfolio_unrealized_pnl, any_open_status
 
                 # Calculate fees for this position
                 position_spread_fee, psf_updated = self.position_uuid_to_cache[historical_position.position_uuid].get_spread_fee(historical_position, t_ms)
                 hl_fr = self._get_hl_funding_rates(historical_position, t_ms)
                 position_carry_fee, pcf_updated = self.position_uuid_to_cache[historical_position.position_uuid].get_carry_fee(t_ms, historical_position, funding_rates=hl_fr)
-
-                # Apply fees to portfolio
-                tp_to_spread_fee['portfolio'] *= position_spread_fee
-                tp_to_carry_fee['portfolio'] *= position_carry_fee
 
                 # Check if market is open
                 if not self.market_calendar.is_market_open(historical_position.trade_pair, t_ms):
@@ -718,13 +697,13 @@ class PerfLedgerManager(CacheController):
                             t_ms >= candidate.close_ms):
                             closed_position = candidate
 
-                    tp_to_return['portfolio'] *= historical_position.return_at_close
-                    tp_to_realized_pnl['portfolio'] += historical_position.realized_pnl
+                    portfolio_return *= historical_position.return_at_close
+                    portfolio_realized_pnl += historical_position.realized_pnl
                     if not closed_position:
-                        tp_to_unrealized_pnl['portfolio'] += historical_position.unrealized_pnl
+                        portfolio_unrealized_pnl += historical_position.unrealized_pnl
 
-                    if tp_to_any_open['portfolio'] == TradePairReturnStatus.TP_NO_OPEN_POSITIONS:
-                        tp_to_any_open['portfolio'] = TradePairReturnStatus.TP_MARKET_NOT_OPEN
+                    if any_open_status == TradePairReturnStatus.TP_NO_OPEN_POSITIONS:
+                        any_open_status = TradePairReturnStatus.TP_MARKET_NOT_OPEN
                     continue
 
                 # Market is open - fetch price info
@@ -766,26 +745,26 @@ class PerfLedgerManager(CacheController):
                         t_ms >= candidate.close_ms):
                         closed_position = candidate
 
-                tp_to_return['portfolio'] *= historical_position.return_at_close
-                tp_to_realized_pnl['portfolio'] += historical_position.realized_pnl
+                portfolio_return *= historical_position.return_at_close
+                portfolio_realized_pnl += historical_position.realized_pnl
                 if not closed_position:
-                    tp_to_unrealized_pnl['portfolio'] += historical_position.unrealized_pnl
+                    portfolio_unrealized_pnl += historical_position.unrealized_pnl
 
                 # Update status based on price change
                 if price_changed:
-                    if tp_to_any_open['portfolio'] < TradePairReturnStatus.TP_MARKET_OPEN_PRICE_CHANGE:
-                        tp_to_any_open['portfolio'] = TradePairReturnStatus.TP_MARKET_OPEN_PRICE_CHANGE
+                    if any_open_status < TradePairReturnStatus.TP_MARKET_OPEN_PRICE_CHANGE:
+                        any_open_status = TradePairReturnStatus.TP_MARKET_OPEN_PRICE_CHANGE
                 else:
-                    if tp_to_any_open['portfolio'] < TradePairReturnStatus.TP_MARKET_OPEN_NO_PRICE_CHANGE:
-                        tp_to_any_open['portfolio'] = TradePairReturnStatus.TP_MARKET_OPEN_NO_PRICE_CHANGE
+                    if any_open_status < TradePairReturnStatus.TP_MARKET_OPEN_NO_PRICE_CHANGE:
+                        any_open_status = TradePairReturnStatus.TP_MARKET_OPEN_NO_PRICE_CHANGE
 
         # Update position return tracking for portfolio
         if 'portfolio' in self.trade_pair_to_position_ret:
             self.trade_pair_to_position_ret['portfolio_prev'] = self.trade_pair_to_position_ret['portfolio']
         total_position_count = sum(len(positions) for positions in tp_to_historical_positions_dense.values())
-        self.trade_pair_to_position_ret['portfolio'] = (tp_to_return['portfolio'], total_position_count)
+        self.trade_pair_to_position_ret['portfolio'] = (portfolio_return, total_position_count)
 
-        return tp_to_return, tp_to_realized_pnl, tp_to_unrealized_pnl, tp_to_any_open, tp_to_spread_fee, tp_to_carry_fee
+        return portfolio_return, portfolio_realized_pnl, portfolio_unrealized_pnl, any_open_status
 
 
     def check_liquidated(self, miner_hotkey, portfolio_return, t_ms, tp_to_historical_positions, portfolio_pl: PerfLedger):
@@ -829,22 +808,18 @@ class PerfLedgerManager(CacheController):
                 del portfolio_pl.last_known_prices[prev_price_key]
             bt.logging.debug(f"Removed closed position {tp_id} from price tracking")
 
-    def condense_positions(self, tp_ids_to_build, tp_to_historical_positions: dict[str: Position]) -> (float, float, float, dict[str: Position]):
-        tp_to_initial_return = {x: 1.0 for x in tp_ids_to_build}
-        tp_to_initial_realized_pnl = {x: 0.0 for x in tp_ids_to_build}
-        tp_to_initial_spread_fee = {x: 1.0 for x in tp_ids_to_build}
-        tp_to_initial_carry_fee = {x: 1.0 for x in tp_ids_to_build}
+    def condense_positions(self, tp_to_historical_positions: dict[str: Position]) -> (float, float, dict[str: Position]):
+        initial_return = 1.0
+        initial_realized_pnl = 0.0
         tp_to_historical_positions_dense = {}
         open_positions_tp_ids = set()
         for tp_id, historical_positions in tp_to_historical_positions.items():
             dense_positions = []
             for historical_position in historical_positions:
                 if historical_position.is_closed_position:
-                    # Portfolio-only: accumulate closed position stats into portfolio key
-                    tp_to_initial_return['portfolio'] *= historical_position.return_at_close
-                    tp_to_initial_realized_pnl['portfolio'] += historical_position.realized_pnl
-                    tp_to_initial_spread_fee['portfolio'] *= self.position_uuid_to_cache[historical_position.position_uuid].get_spread_fee(historical_position, historical_position.orders[-1].processed_ms)[0]
-                    tp_to_initial_carry_fee['portfolio'] *= self.position_uuid_to_cache[historical_position.position_uuid].get_carry_fee(historical_position.orders[-1].processed_ms, historical_position)[0]
+                    # Portfolio-only: accumulate closed position stats
+                    initial_return *= historical_position.return_at_close
+                    initial_realized_pnl += historical_position.realized_pnl
                 elif len(historical_position.orders) == 0:
                     continue
                 else:
@@ -853,7 +828,7 @@ class PerfLedgerManager(CacheController):
                     open_positions_tp_ids.add(historical_position.trade_pair.trade_pair_id)
             if dense_positions:
                 tp_to_historical_positions_dense[tp_id] = dense_positions
-        return tp_to_initial_return, tp_to_initial_realized_pnl, tp_to_initial_spread_fee, tp_to_initial_carry_fee, tp_to_historical_positions_dense, open_positions_tp_ids
+        return initial_return, initial_realized_pnl, tp_to_historical_positions_dense, open_positions_tp_ids
 
     def get_default_update_mode(self, start_time_ms, end_time_ms, n_open_positions):
         # Minutely mode requires only one open position since intervals are represented with 2 prices.
@@ -879,10 +854,9 @@ class PerfLedgerManager(CacheController):
 
     def get_bypass_values_if_applicable(self, perf_ledger: PerfLedger, tp_id: str, any_open: TradePairReturnStatus,
                                         calculated_return: float,
-                                        calculated_spread_fee: float, calculated_carry_fee: float,
-                                        tp_id_to_realtime_position_to_pop: dict[str, Position]) -> tuple[float, float, float]:
+                                        tp_id_to_realtime_position_to_pop: dict[str, Position]) -> float:
         """
-        Returns values to pass to update_pl. Uses previous checkpoint values if in bypass mode
+        Returns value to pass to update_pl. Uses previous checkpoint value if in bypass mode
         (all positions closed + no position just closed) to prevent floating point drift.
 
         Args:
@@ -890,12 +864,10 @@ class PerfLedgerManager(CacheController):
             tp_id: Trade pair ID for debugging
             any_open: Status indicating if any positions are open
             calculated_return: Freshly calculated portfolio return
-            calculated_spread_fee: Freshly calculated spread fee
-            calculated_carry_fee: Freshly calculated carry fee
             tp_id_to_realtime_position_to_pop: Trade pair ID of the position that just closed (realtime_position_to_pop)
 
         Returns:
-            Tuple of (return, spread_fee, carry_fee) to pass to update_pl
+            Return value to pass to update_pl
         """
         # Check if we should use bypass (all closed + no position just closed + same trade pair if applicable)
         position_just_closed = any(pos is not None and not pos.is_open_position for pos in tp_id_to_realtime_position_to_pop.values())
@@ -903,9 +875,7 @@ class PerfLedgerManager(CacheController):
         use_bypass = (any_open == TradePairReturnStatus.TP_NO_OPEN_POSITIONS and
                       not position_just_closed and
                       (not tp_id_to_realtime_position_to_pop or tp_id in tp_id_to_realtime_position_to_pop) and
-                      len(perf_ledger.cps) > 0 and
-                      calculated_spread_fee == prev_cp.prev_portfolio_spread_fee and
-                      calculated_carry_fee == prev_cp.prev_portfolio_carry_fee
+                      len(perf_ledger.cps) > 0
                       )
 
         if use_bypass:
@@ -914,7 +884,7 @@ class PerfLedgerManager(CacheController):
         else:
             return_val = calculated_return
 
-        return (return_val, calculated_spread_fee, calculated_carry_fee)
+        return return_val
 
     def debug_significant_portfolio_drop(self, mode, portfolio_return, portfolio_pl, t_ms, miner_hotkey,
                                          tp_to_historical_positions, open_positions_tp_ids, start_time_ms, end_time_ms):
@@ -1062,11 +1032,7 @@ class PerfLedgerManager(CacheController):
                 )
 
         if len(portfolio_pl.cps) == 0:
-            portfolio_pl.init_with_first_order(portfolio_pl.initialization_time_ms, point_in_time_dd=1.0, current_portfolio_value=1.0,
-                                              current_portfolio_fee_spread=1.0, current_portfolio_carry=1.0)
-
-        # Portfolio-only: always build just the portfolio ledger
-        tp_ids_to_build = ['portfolio']
+            portfolio_pl.init_with_first_order(portfolio_pl.initialization_time_ms, point_in_time_dd=1.0, current_portfolio_value=1.0)
 
         # Validate starting point for the portfolio ledger
         is_ledger_first_update = len(portfolio_pl.cps) == 0
@@ -1098,7 +1064,7 @@ class PerfLedgerManager(CacheController):
             return False  # Can only build perf ledger between orders or after all orders have passed.
 
         # "Shortcut" All positions closed and one newly open position OR before the ledger lookback window.
-        shortcut_reason, initial_tp_to_return, initial_tp_to_realized_pnl, initial_tp_to_unrealized_pnl, initial_tp_to_spread_fee, initial_tp_to_carry_fee, any_open = \
+        shortcut_reason, initial_return, initial_realized_pnl, initial_unrealized_pnl, any_open = \
             self._can_shortcut(tp_to_historical_positions, end_time_ms, tp_id_to_realtime_position_to_pop, start_time_ms, portfolio_pl)
         if shortcut_reason != ShortcutReason.NO_SHORTCUT:
             # Don't update if end_time is before the ledger's current state
@@ -1106,20 +1072,15 @@ class PerfLedgerManager(CacheController):
                 bt.logging.warning(f"Skipping shortcut update for portfolio - end_time_ms ({TimeUtil.millis_to_formatted_date_str(end_time_ms)}) "
                                f"is before last_update_ms ({TimeUtil.millis_to_formatted_date_str(portfolio_pl.last_update_ms)})")
             else:
-                tp_return, tp_spread_fee, tp_carry_fee = self.get_bypass_values_if_applicable(
+                tp_return = self.get_bypass_values_if_applicable(
                     portfolio_pl, 'portfolio', any_open,
-                    initial_tp_to_return['portfolio'], initial_tp_to_spread_fee['portfolio'], initial_tp_to_carry_fee['portfolio'],
+                    initial_return,
                     tp_id_to_realtime_position_to_pop
                 )
 
                 tp_to_historical_positions_compact = {}
-                for tp, ret in initial_tp_to_return.items():
-                    if tp != 'portfolio':
-                        for candpos in tp_to_historical_positions.get(tp, []):
-                            if candpos.return_at_close < .5:
-                                tp_to_historical_positions_compact[tp] = candpos
 
-                dd = {'initial_tp_to_return': initial_tp_to_return, 'miner_hotkey': miner_hotkey,
+                dd = {'initial_return': initial_return, 'miner_hotkey': miner_hotkey,
                       'shortcut_reason': shortcut_reason,
                       'tp_id': 'portfolio', 'start_time_ms': TimeUtil.millis_to_formatted_date_str(start_time_ms),
                       'end_time_ms': TimeUtil.millis_to_formatted_date_str(end_time_ms),
@@ -1127,16 +1088,16 @@ class PerfLedgerManager(CacheController):
                       'realtime_position_to_pop': tp_id_to_realtime_position_to_pop.keys()
                       }
                 portfolio_pl.update_pl(tp_return, end_time_ms, miner_hotkey, TradePairReturnStatus.TP_MARKET_NOT_OPEN,
-                                       tp_spread_fee, tp_carry_fee, initial_tp_to_realized_pnl['portfolio'], initial_tp_to_unrealized_pnl['portfolio'],
+                                       initial_realized_pnl, initial_unrealized_pnl,
                                        tp_debug='portfolio_shortcut', debug_dict=dd)
                 portfolio_pl.purge_old_cps()
             return False
 
         #print(f"Building perf ledger for {miner_hotkey} from {TimeUtil.millis_to_verbose_formatted_date_str(start_time_ms)} to {TimeUtil.millis_to_verbose_formatted_date_str(end_time_ms)} ({(end_time_ms - start_time_ms) // 1000} s) \
         #       mode_to_n_updates {self.mode_to_n_updates}. update_to_n_open_positions {self.update_to_n_open_positions}")
-        tp_to_closed_pos_unrealized_pnl = {x: 0.0 for x in tp_ids_to_build} # closed positions always have 0 unrealized pnl
-        tp_to_closed_pos_return, tp_to_closed_pos_realized_pnl, tp_to_closed_pos_spread_fee, tp_to_closed_pos_carry_fee, tp_to_historical_positions_dense, \
-            open_positions_tp_ids = self.condense_positions(tp_ids_to_build, tp_to_historical_positions)
+        closed_pos_unrealized_pnl = 0.0  # closed positions always have 0 unrealized pnl
+        closed_pos_return, closed_pos_realized_pnl, tp_to_historical_positions_dense, \
+            open_positions_tp_ids = self.condense_positions(tp_to_historical_positions)
 
         # Clean up prices for closed positions
         self.cleanup_closed_position_prices(portfolio_pl, open_positions_tp_ids)
@@ -1172,12 +1133,10 @@ class PerfLedgerManager(CacheController):
         if start_time_ms + accumulated_time_ms >= end_time_ms:
             # This should have been caught by the shortcut logic, but handle it defensively
             # Initialize variables needed after the loop with initial values
-            tp_to_current_return = initial_tp_to_return.copy()
-            tp_to_any_open = {tp_id: TradePairReturnStatus.TP_NO_OPEN_POSITIONS for tp_id in tp_ids_to_build}
-            tp_to_current_spread_fee = initial_tp_to_spread_fee.copy()
-            tp_to_current_carry_fee = initial_tp_to_carry_fee.copy()
-            tp_to_realized_pnl = initial_tp_to_realized_pnl.copy()
-            tp_to_unrealized_pnl = initial_tp_to_unrealized_pnl.copy()
+            portfolio_return = initial_return
+            any_open_status = TradePairReturnStatus.TP_NO_OPEN_POSITIONS
+            portfolio_realized_pnl = initial_realized_pnl
+            portfolio_unrealized_pnl = initial_unrealized_pnl
 
             bt.logging.warning(f"build_perf_ledger: while loop will not execute for miner {miner_hotkey}. "
                              f"start_time: {TimeUtil.millis_to_formatted_date_str(start_time_ms)}, "
@@ -1226,20 +1185,19 @@ class PerfLedgerManager(CacheController):
                                                          f"mode: {mode},"
                                                          f" delta_ms: {(t_ms - portfolio_pl.last_update_ms)} ms. perf ledger {portfolio_pl}")
 
-            tp_to_current_return, tp_to_realized_pnl, tp_to_unrealized_pnl, tp_to_any_open, tp_to_current_spread_fee, tp_to_current_carry_fee, = \
-                self.positions_to_portfolio_return(tp_ids_to_build, tp_to_historical_positions_dense, t_ms, mode,
-                   end_time_ms, tp_to_closed_pos_return, tp_to_closed_pos_realized_pnl, tp_to_closed_pos_unrealized_pnl, tp_to_closed_pos_spread_fee, tp_to_closed_pos_carry_fee, portfolio_pl,
+            portfolio_return, portfolio_realized_pnl, portfolio_unrealized_pnl, any_open_status = \
+                self.positions_to_portfolio_return(tp_to_historical_positions_dense, t_ms, mode,
+                   end_time_ms, closed_pos_return, closed_pos_realized_pnl, closed_pos_unrealized_pnl, portfolio_pl,
                    tp_id_to_realtime_position_to_pop)
-            portfolio_return = tp_to_current_return['portfolio']
 
             if portfolio_return == 0 and self.check_liquidated(miner_hotkey, portfolio_return, t_ms, tp_to_historical_positions, portfolio_pl):
                 return True
 
             self.debug_significant_portfolio_drop(mode, portfolio_return, portfolio_pl, t_ms, miner_hotkey, tp_to_historical_positions, open_positions_tp_ids, start_time_ms, end_time_ms)
 
-            current_return, current_spread_fee, current_carry_fee = self.get_bypass_values_if_applicable(
-                portfolio_pl, 'portfolio', tp_to_any_open['portfolio'],
-                tp_to_current_return['portfolio'], tp_to_current_spread_fee['portfolio'], tp_to_current_carry_fee['portfolio'],
+            current_return = self.get_bypass_values_if_applicable(
+                portfolio_pl, 'portfolio', any_open_status,
+                portfolio_return,
                 tp_id_to_realtime_position_to_pop
             )
 
@@ -1251,9 +1209,8 @@ class PerfLedgerManager(CacheController):
             else:
                 _tp_cumulative_fees = None
 
-            portfolio_pl.update_pl(current_return, t_ms, miner_hotkey, tp_to_any_open['portfolio'],
-                                   current_spread_fee, current_carry_fee,
-                                   tp_to_realized_pnl['portfolio'], tp_to_unrealized_pnl['portfolio'],
+            portfolio_pl.update_pl(current_return, t_ms, miner_hotkey, any_open_status,
+                                   portfolio_realized_pnl, portfolio_unrealized_pnl,
                                    tp_debug='portfolio',
                                    account_size=account_size,
                                    cumulative_fees_usd=_tp_cumulative_fees)
@@ -1297,15 +1254,15 @@ class PerfLedgerManager(CacheController):
         # Calculate boundary correction values for portfolio
         if boundary_correction_enabled and current_tp_position:
             correction_tp_id = current_tp_position.trade_pair.trade_pair_id
-            calculated_return = (tp_to_current_return['portfolio'] /
+            calculated_return = (portfolio_return /
                                tp_to_historical_positions_dense[correction_tp_id][0].return_at_close *
                                current_tp_position.return_at_close)
         else:
-            calculated_return = tp_to_current_return['portfolio']
+            calculated_return = portfolio_return
 
-        current_return, current_spread_fee, current_carry_fee = self.get_bypass_values_if_applicable(
-            portfolio_pl, 'portfolio', tp_to_any_open['portfolio'],
-            calculated_return, tp_to_current_spread_fee['portfolio'], tp_to_current_carry_fee['portfolio'],
+        current_return = self.get_bypass_values_if_applicable(
+            portfolio_pl, 'portfolio', any_open_status,
+            calculated_return,
             tp_id_to_realtime_position_to_pop
         )
 
@@ -1317,17 +1274,16 @@ class PerfLedgerManager(CacheController):
                 if check_tp_id in tp_to_historical_positions_dense:
                     for hist_pos in tp_to_historical_positions_dense[check_tp_id]:
                         if hist_pos.position_uuid == closed_position.position_uuid:
-                            tp_to_unrealized_pnl['portfolio'] -= hist_pos.unrealized_pnl
-                            tp_to_realized_pnl['portfolio'] += closed_position.realized_pnl
+                            portfolio_unrealized_pnl -= hist_pos.unrealized_pnl
+                            portfolio_realized_pnl += closed_position.realized_pnl
                             bt.logging.debug(
                                 f"Converted PnL for position {closed_position.position_uuid[:8]} closing during checkpoint: "
                                 f"removed unrealized ${hist_pos.unrealized_pnl:.2f}, added realized ${closed_position.realized_pnl:.2f}"
                             )
                             break
 
-        portfolio_pl.update_pl(current_return, end_time_ms, miner_hotkey, tp_to_any_open['portfolio'],
-                               current_spread_fee, current_carry_fee,
-                               tp_to_realized_pnl['portfolio'], tp_to_unrealized_pnl['portfolio'])
+        portfolio_pl.update_pl(current_return, end_time_ms, miner_hotkey, any_open_status,
+                               portfolio_realized_pnl, portfolio_unrealized_pnl)
 
         portfolio_pl.purge_old_cps()
 

@@ -219,7 +219,6 @@ class DebtLedgerManager():
             'latest_checkpoint_ms': latest.timestamp_ms,
             'realized_pnl': latest.realized_pnl,
             'unrealized_pnl': latest.unrealized_pnl,
-            'total_fees': latest.total_fees,
         }
 
     def get_all_summaries(self) -> Dict[str, dict]:
@@ -693,8 +692,6 @@ class DebtLedgerManager():
                     portfolio_return=miner_perf_checkpoint.gain,  # Current portfolio multiplier
                     realized_pnl=miner_perf_checkpoint.realized_pnl,  # Realized PnL during this checkpoint period
                     unrealized_pnl=miner_perf_checkpoint.unrealized_pnl,  # Unrealized PnL during this checkpoint period
-                    spread_fee_loss=miner_perf_checkpoint.spread_fee_loss,  # Spread fees during this checkpoint
-                    carry_fee_loss=miner_perf_checkpoint.carry_fee_loss,  # Carry fees during this checkpoint
                     max_drawdown=miner_perf_checkpoint.mdd,  # Max drawdown
                     max_portfolio_value=miner_perf_checkpoint.mpv,  # Max portfolio value achieved
                     open_ms=miner_perf_checkpoint.open_ms,
@@ -871,8 +868,6 @@ class DebtLedgerManager():
                     tao_balance = getattr(entity_emissions_cp, "tao_balance_snapshot", 0.0)
                     alpha_balance = getattr(entity_emissions_cp, "alpha_balance_snapshot", 0.0)
                     agg_unrealized_pnl = 0.0    # ignore unrealized pnl
-                    agg_spread_fee = sum(cp.spread_fee_loss for cp in checkpoints_at_time)
-                    agg_carry_fee = sum(cp.carry_fee_loss for cp in checkpoints_at_time)
                     agg_max_portfolio_value = sum(cp.max_portfolio_value for cp in checkpoints_at_time)
                     agg_open_ms = sum(cp.open_ms for cp in checkpoints_at_time)
                     agg_n_updates = sum(cp.n_updates for cp in checkpoints_at_time)
@@ -913,8 +908,6 @@ class DebtLedgerManager():
                         portfolio_return=agg_portfolio_return,
                         realized_pnl=agg_realized_pnl,
                         unrealized_pnl=agg_unrealized_pnl,
-                        spread_fee_loss=agg_spread_fee,
-                        carry_fee_loss=agg_carry_fee,
                         max_drawdown=agg_max_drawdown,
                         max_portfolio_value=agg_max_portfolio_value,
                         open_ms=agg_open_ms,

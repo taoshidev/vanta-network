@@ -112,15 +112,11 @@ class TestPerfLedgerVoidBehavior(TestBase):
         
         # Portfolio values should be reasonable
         self.assertGreater(cp.prev_portfolio_ret, 0.0, f"{context}: portfolio return should be positive")
-        self.assertGreater(cp.prev_portfolio_spread_fee, 0.0, f"{context}: spread fee should be positive")
-        self.assertGreater(cp.prev_portfolio_carry_fee, 0.0, f"{context}: carry fee should be positive")
         
         # Risk metrics should be reasonable
         self.assertGreater(cp.mdd, 0.0, f"{context}: MDD should be positive")
         self.assertGreater(cp.mpv, 0.0, f"{context}: MPV should be positive")
         
-        # Carry fee loss during void should be 0 (this was the original bug)
-        self.assertEqual(cp.carry_fee_loss, 0.0, f"{context}: void checkpoint should have 0 carry_fee_loss")
 
     def test_void_filling_prevents_drift(self):
         """
@@ -179,7 +175,7 @@ class TestPerfLedgerVoidBehavior(TestBase):
             # Find last active checkpoint
             close_checkpoint = None
             for i, cp in enumerate(btc_ledger.cps):
-                if close_checkpoint is None and cp.prev_portfolio_spread_fee == .998:
+                if close_checkpoint is None and cp.n_updates > 0:
                     close_checkpoint = cp
                     print('@@@@@ found close cp', i, cp)
                     break
@@ -223,10 +219,6 @@ class TestPerfLedgerVoidBehavior(TestBase):
                     # Exact equality - no tolerance
                     self.assertEqual(cp.prev_portfolio_ret, close_checkpoint.prev_portfolio_ret,
                                    f"Void checkpoint {i}/{n}: return drifted")
-                    self.assertEqual(cp.prev_portfolio_carry_fee, close_checkpoint.prev_portfolio_carry_fee,
-                                   f"Void checkpoint {i}/{n}: carry fee drifted")
-                    self.assertEqual(cp.prev_portfolio_spread_fee, close_checkpoint.prev_portfolio_spread_fee,
-                                     f"Void checkpoint {i}/{n}: spread fee drifted. update round index {update_round_idx}")
                     self.assertEqual(cp.mdd, close_checkpoint.mdd,
                                    f"Void checkpoint {i}/{n}: MDD drifted")
 
@@ -276,21 +268,17 @@ class TestPerfLedgerVoidBehavior(TestBase):
         prev_cp = PerfCheckpoint(
             last_update_ms=self.now_ms,
             prev_portfolio_ret=0.95,
-            prev_portfolio_spread_fee=0.999,
-            prev_portfolio_carry_fee=0.998,
             mdd=0.95,
             mpv=1.0
         )
         ledger.cps.append(prev_cp)
 
         # Test case 1: Should use bypass
-        ret, spread, carry = self.perf_ledger_client.get_bypass_values_if_applicable(
+        ret = self.perf_ledger_client.get_bypass_values_if_applicable(
             ledger, "BTCUSD", TradePairReturnStatus.TP_NO_OPEN_POSITIONS,
-            1.0, .999, .998, {"BTCUSD": None}
+            1.0, {"BTCUSD": None}
         )
         self.assertEqual(ret, 0.95)
-        self.assertEqual(spread, 0.999)
-        self.assertEqual(carry, 0.998)
 
         # Test case 2: Should NOT use bypass (position just closed)
         # Create a closed position to simulate a position that just closed
@@ -299,23 +287,23 @@ class TestPerfLedgerVoidBehavior(TestBase):
             self.now_ms - MS_IN_24_HOURS, self.now_ms,
             50000.0, 50000.0, OrderType.LONG
         )
-        ret, spread, carry = self.perf_ledger_client.get_bypass_values_if_applicable(
+        ret = self.perf_ledger_client.get_bypass_values_if_applicable(
             ledger, "BTCUSD", TradePairReturnStatus.TP_NO_OPEN_POSITIONS,
-            1.0, 1.0, 1.0, {"BTCUSD": closed_position}
+            1.0, {"BTCUSD": closed_position}
         )
         self.assertEqual(ret, 1.0)
 
         # Test case 3: Should NOT use bypass (positions open)
-        ret, spread, carry = self.perf_ledger_client.get_bypass_values_if_applicable(
+        ret = self.perf_ledger_client.get_bypass_values_if_applicable(
             ledger, "BTCUSD", TradePairReturnStatus.TP_MARKET_OPEN_PRICE_CHANGE,
-            1.0, 1.0, 1.0, {"BTCUSD": None}
+            1.0, {"BTCUSD": None}
         )
         self.assertEqual(ret, 1.0)
 
         # Test case 4: Should NOT use bypass (different TP)
-        ret, spread, carry = self.perf_ledger_client.get_bypass_values_if_applicable(
+        ret = self.perf_ledger_client.get_bypass_values_if_applicable(
             ledger, "ETHUSD", TradePairReturnStatus.TP_NO_OPEN_POSITIONS,
-            1.0, 1.0, 1.0, {"BTCUSD": None}
+            1.0, {"BTCUSD": None}
         )
         self.assertEqual(ret, 1.0)
 

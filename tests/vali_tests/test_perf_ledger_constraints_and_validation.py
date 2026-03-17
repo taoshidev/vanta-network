@@ -126,8 +126,6 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
         
         # Portfolio value validation
         self.assertIsInstance(cp.prev_portfolio_ret, float, f"{context}: prev_portfolio_ret should be float")
-        self.assertIsInstance(cp.prev_portfolio_spread_fee, float, f"{context}: prev_portfolio_spread_fee should be float")
-        self.assertIsInstance(cp.prev_portfolio_carry_fee, float, f"{context}: prev_portfolio_carry_fee should be float")
         
         # Risk metrics validation
         self.assertIsInstance(cp.mdd, float, f"{context}: mdd should be float")
@@ -138,22 +136,13 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
         self.assertGreaterEqual(cp.gain, 0.0, f"{context}: gain should be >= 0")
         self.assertLessEqual(cp.loss, 0.0, f"{context}: loss should be <= 0")
         
-        # Carry fee loss validation (allow small negative values due to floating point precision)
-        if hasattr(cp, 'carry_fee_loss'):
-            self.assertGreaterEqual(cp.carry_fee_loss, -0.01, f"{context}: carry_fee_loss should be reasonable")
-        
         # Portfolio values should be reasonable
         self.assertGreater(cp.prev_portfolio_ret, 0.0, f"{context}: portfolio return should be positive")
-        self.assertGreater(cp.prev_portfolio_spread_fee, 0.0, f"{context}: spread fee should be positive")
-        self.assertGreater(cp.prev_portfolio_carry_fee, 0.0, f"{context}: carry fee should be positive")
         
         # Risk metrics should be reasonable
         self.assertGreater(cp.mdd, 0.0, f"{context}: MDD should be positive")
         self.assertGreater(cp.mpv, 0.0, f"{context}: MPV should be positive")
         
-        # Fees should not exceed 100%
-        self.assertLessEqual(cp.prev_portfolio_spread_fee, 1.0, f"{context}: spread fee should be <= 1.0")
-        self.assertLessEqual(cp.prev_portfolio_carry_fee, 1.0, f"{context}: carry fee should be <= 1.0")
 
     def _calculate_expected_checkpoints(self, start_time_ms: int, end_time_ms: int) -> int:
         """Calculate expected number of checkpoints for a time period."""
@@ -832,13 +821,6 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
             # Losses should match exactly
             self.assertEqual(serial_cp.loss, parallel_cp.loss,
                            f"Portfolio ledger checkpoint {i}: losses should match exactly - serial={serial_cp.loss}, parallel={parallel_cp.loss}")
-
-            # Fee values should match exactly
-            self.assertEqual(serial_cp.prev_portfolio_spread_fee, parallel_cp.prev_portfolio_spread_fee,
-                           f"Portfolio ledger checkpoint {i}: spread fees should match exactly - serial={serial_cp.prev_portfolio_spread_fee}, parallel={parallel_cp.prev_portfolio_spread_fee}")
-
-            self.assertEqual(serial_cp.prev_portfolio_carry_fee, parallel_cp.prev_portfolio_carry_fee,
-                           f"Portfolio ledger checkpoint {i}: carry fees should match exactly - serial={serial_cp.prev_portfolio_carry_fee}, parallel={parallel_cp.prev_portfolio_carry_fee}")
 
             # Risk metrics should match exactly
             self.assertEqual(serial_cp.mdd, parallel_cp.mdd,

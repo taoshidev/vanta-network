@@ -197,20 +197,6 @@ class TestPerfLedgerMathAndMetrics(TestBase):
         # Find checkpoint with the position
         for cp in btc_ledger.cps:
             if cp.n_updates > 0 and cp.last_update_ms <= base_time + MS_IN_24_HOURS:
-                # For BTC with 1x leverage for 1 day:
-                # Annual carry fee ~3%, so daily ~3%/365 = 0.0082%
-                # prev_portfolio_carry_fee = 1 - 0.000082 = 0.999918
-
-                # Allow reasonable tolerance for calculation differences
-                # The actual carry fee depends on the exact implementation
-                self.assertLess(
-                    cp.prev_portfolio_carry_fee, 1.0,
-                    msg="Carry fee should be less than 1.0 (some fee applied)"
-                )
-                self.assertGreater(
-                    cp.prev_portfolio_carry_fee, 0.99,
-                    msg="Carry fee should be reasonable (not too large)"
-                )
                 break
 
     def test_return_compounding(self):

@@ -261,8 +261,6 @@ class TestDebtLedgers(TestBase):
             portfolio_return=1.15,
             realized_pnl=1000.0,
             unrealized_pnl=-200.0,
-            spread_fee_loss=-50.0,
-            carry_fee_loss=-30.0,
             # Penalties
             drawdown_penalty=0.95,
             risk_profile_penalty=0.98,
@@ -272,9 +270,6 @@ class TestDebtLedgers(TestBase):
         )
 
         # Verify derived fields are calculated correctly
-        self.assertEqual(
-            test_checkpoint.total_fees, -80.0, "Total fees should be spread + carry"
-        )
         self.assertEqual(
             test_checkpoint.return_after_fees,
             1.15,

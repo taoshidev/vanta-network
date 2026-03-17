@@ -126,12 +126,6 @@ class PerfLedgerMath:
         if checkpoint.gain > 0 and checkpoint.loss < 0:
             raise ValueError("Cannot have both gains and losses in same checkpoint")
         
-        if checkpoint.prev_portfolio_spread_fee < 0 or checkpoint.prev_portfolio_spread_fee > 1:
-            raise ValueError("Spread fee must be between 0 and 1")
-        
-        if checkpoint.prev_portfolio_carry_fee < 0 or checkpoint.prev_portfolio_carry_fee > 1:
-            raise ValueError("Carry fee must be between 0 and 1")
-        
         return True
     
     @staticmethod

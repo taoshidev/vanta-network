@@ -251,8 +251,6 @@ class TestPerfLedgerEdgeCasesAndValidation(TestBase):
         prev_cp = PerfCheckpoint(
             last_update_ms=self.now_ms,
             prev_portfolio_ret=0.95,
-            prev_portfolio_spread_fee=0.999,
-            prev_portfolio_carry_fee=0.998,
             mdd=0.95,
             mpv=1.0
         )
@@ -491,12 +489,6 @@ class TestPerfLedgerEdgeCasesAndValidation(TestBase):
         # Find checkpoint with position
         for i, cp in enumerate(btc_ledger.cps):
             if cp.n_updates > 0 and i != 0 :  # Skip initial checkpoint with the initial spread fee that triggers n_updates 1
-                # With 10x leverage for 10 days, carry fees should be significant
-                # Based on actual implementation: ~0.9989 for 10x leverage over 10 days
-                self.assertLess(cp.prev_portfolio_carry_fee, 1.0,
-                               "High leverage should have measurable carry fees")
-                self.assertLess(cp.prev_portfolio_carry_fee, 0.999,
-                               "10x leverage for 10 days should have measurable carry fees (actual: ~0.999)")
                 break
 
     def _create_position(self, position_id: str, trade_pair: TradePair,
