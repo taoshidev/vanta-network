@@ -392,13 +392,6 @@ class DebtBasedScoring:
             # Calculate remaining payout (in USD)
             remaining_payout_usd = needed_payout_usd - actual_payout_usd
 
-            # Log debt calculation details
-            bt.logging.info(
-                f"[PAYOUT_DEBUG] DEBT CALC [{hotkey}]: total_needed_payout=${needed_payout_usd:.2f}\t"
-                f"total_cumulative_emissions=${actual_payout_usd:.2f}, remaining=${remaining_payout_usd:.2f}, "
-                f"penalty_loss=${penalty_loss_usd:.2f}, earning_cps={len(earning_checkpoints)}"
-            )
-
             # Clamp to zero if negative (over-paid or negative performance)
             if remaining_payout_usd < 0:
                 remaining_payout_usd = 0.0
@@ -413,9 +406,23 @@ class DebtBasedScoring:
         total_needed_payout_usd = total_remaining_payout_usd + total_actual_payout_usd
 
         bt.logging.info(
-            f"[PAYOUT_DEBUG] PAYOUT TOTALS: needs=${total_needed_payout_usd:.2f}, "
-            f"paid_so_far=${total_actual_payout_usd:.2f}, remaining=${total_remaining_payout_usd:.2f}"
+            f"[PAYOUT_DEBUG] PAYOUT TOTALS: "
+            f"remaining: ${total_remaining_payout_usd:.2f}\t"
+            f"total required: ${total_needed_payout_usd:.2f}\t"
+            f"paid so far: ${total_actual_payout_usd:.2f}"
         )
+
+        _payouts_sorted = sorted(ledger_dict.keys(), key=lambda hk: miner_remaining_payouts_usd.get(hk, 0.0), reverse=True)
+        for hotkey in _payouts_sorted:
+            remaining = miner_remaining_payouts_usd.get(hotkey, 0.0)
+            actual = miner_actual_payouts_usd.get(hotkey, 0.0)
+            needed = remaining + actual
+            penalty_loss = miner_penalty_loss_usd.get(hotkey, 0.0)
+            bt.logging.info(
+                f"[PAYOUT_DEBUG] DEBT CALC [{hotkey}] remaining=${remaining:.2f} \t"
+                f"paid=${actual:.2f} / ${needed:.2f},  penalty_loss=${penalty_loss:.2f}"
+                f"{'  <- needs payout' if remaining > 0 else ''}"
+            )
 
         # Calculate projected emissions (needed for weight normalization)
         # Get projected ALPHA emissions
