@@ -692,6 +692,7 @@ class DebtLedgerManager():
                     portfolio_return=miner_perf_checkpoint.gain,  # Current portfolio multiplier
                     realized_pnl=miner_perf_checkpoint.realized_pnl,  # Realized PnL during this checkpoint period
                     unrealized_pnl=miner_perf_checkpoint.unrealized_pnl,  # Unrealized PnL during this checkpoint period
+                    cumulative_fees_usd=miner_perf_checkpoint.cumulative_fees_usd,  # Unrealized PnL during this checkpoint period
                     max_drawdown=miner_perf_checkpoint.mdd,  # Max drawdown
                     max_portfolio_value=miner_perf_checkpoint.mpv,  # Max portfolio value achieved
                     open_ms=miner_perf_checkpoint.open_ms,
@@ -845,9 +846,11 @@ class DebtLedgerManager():
                             checkpoints_at_time.append(checkpoint)
 
                             subaccount_cum_realized[synthetic_hotkey] += checkpoint.realized_pnl
-                            if subaccount_cum_realized[synthetic_hotkey] > subaccount_hwm[synthetic_hotkey]:
-                                delta = subaccount_cum_realized[synthetic_hotkey] - subaccount_hwm[synthetic_hotkey]
-                                subaccount_hwm[synthetic_hotkey] = subaccount_cum_realized[synthetic_hotkey]
+
+                            net_realized = subaccount_cum_realized[synthetic_hotkey] - checkpoint.cumulative_fees_usd
+                            if net_realized > subaccount_hwm[synthetic_hotkey]:
+                                delta = net_realized - subaccount_hwm[synthetic_hotkey]
+                                subaccount_hwm[synthetic_hotkey] = net_realized
 
                                 agg_realized_pnl += delta
 
@@ -868,6 +871,7 @@ class DebtLedgerManager():
                     tao_balance = getattr(entity_emissions_cp, "tao_balance_snapshot", 0.0)
                     alpha_balance = getattr(entity_emissions_cp, "alpha_balance_snapshot", 0.0)
                     agg_unrealized_pnl = 0.0    # ignore unrealized pnl
+                    agg_cumulative_fees_usd = 0.0    # ignore fees - included in agg realized pnl
                     agg_max_portfolio_value = sum(cp.max_portfolio_value for cp in checkpoints_at_time)
                     agg_open_ms = sum(cp.open_ms for cp in checkpoints_at_time)
                     agg_n_updates = sum(cp.n_updates for cp in checkpoints_at_time)
@@ -908,6 +912,7 @@ class DebtLedgerManager():
                         portfolio_return=agg_portfolio_return,
                         realized_pnl=agg_realized_pnl,
                         unrealized_pnl=agg_unrealized_pnl,
+                        cumulative_fees_usd=agg_cumulative_fees_usd,
                         max_drawdown=agg_max_drawdown,
                         max_portfolio_value=agg_max_portfolio_value,
                         open_ms=agg_open_ms,

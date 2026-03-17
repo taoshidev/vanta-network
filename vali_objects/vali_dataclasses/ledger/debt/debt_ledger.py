@@ -106,6 +106,7 @@ class DebtCheckpoint:
     portfolio_return: float = 1.0
     realized_pnl: float = 0.0
     unrealized_pnl: float = 0.0
+    cumulative_fees_usd: float = 0.0
     max_drawdown: float = 1.0
     max_portfolio_value: float = 0.0
     open_ms: int = 0
@@ -160,6 +161,7 @@ class DebtCheckpoint:
                 'portfolio_return': self.portfolio_return,
                 'realized_pnl': self.realized_pnl,
                 'unrealized_pnl': self.unrealized_pnl,
+                'cumulative_fees_usd': self.cumulative_fees_usd,
                 'max_drawdown': self.max_drawdown,
                 'max_portfolio_value': self.max_portfolio_value,
                 'open_ms': self.open_ms,
@@ -369,11 +371,10 @@ class DebtLedger:
 
     def print_summary(self):
         """Print a formatted summary of the debt ledger"""
-        if not self.checkpoints:
+        latest = self.get_latest_checkpoint()
+        if not latest:
             print(f"\nNo debt ledger data found for {self.hotkey}")
             return
-
-        latest = self.get_latest_checkpoint()
 
         print(f"\n{'='*80}")
         print(f"Debt Ledger Summary for {self.hotkey}")
@@ -430,6 +431,7 @@ class DebtLedger:
                     portfolio_return=performance.get('portfolio_return', 1.0),
                     realized_pnl=performance.get('realized_pnl', 0.0),
                     unrealized_pnl=performance.get('unrealized_pnl', 0.0),
+                    cumulative_fees_usd=performance.get('cumulative_fees_usd', 0.0),
                     max_drawdown=performance.get('max_drawdown', 1.0),
                     max_portfolio_value=performance.get('max_portfolio_value', 0.0),
                     open_ms=performance.get('open_ms', 0),
@@ -457,6 +459,7 @@ class DebtLedger:
                     portfolio_return=cp_dict.get('portfolio_return', 1.0),
                     realized_pnl=cp_dict.get('realized_pnl', 0.0),
                     unrealized_pnl=cp_dict.get('unrealized_pnl', 0.0),
+                    cumulative_fees_usd=cp_dict.get('cumulative_fees_usd', 0.0),
                     max_drawdown=cp_dict.get('max_drawdown', 1.0),
                     max_portfolio_value=cp_dict.get('max_portfolio_value', 0.0),
                     open_ms=cp_dict.get('open_ms', 0),

@@ -225,10 +225,11 @@ class DebtBasedScoring:
 
         for cp in checkpoints:
             cumulative_realized += cp.realized_pnl
-            if cumulative_realized > realized_hwm:
-                delta = cumulative_realized - realized_hwm
+            net_realized = cumulative_realized - cp.cumulative_fees_usd
+            if net_realized > realized_hwm:
+                delta = net_realized - realized_hwm
                 realized_component += delta * cp.total_penalty
-                realized_hwm = cumulative_realized
+                realized_hwm = net_realized
 
         # Unrealized component: min(0, unrealized_pnl) * penalty of last checkpoint
         # (only count unrealized losses, not gains)
@@ -782,10 +783,11 @@ class DebtBasedScoring:
 
         for cp in relevant_checkpoints:
             cumulative_realized += cp.realized_pnl
-            if cumulative_realized > realized_hwm:
-                delta = cumulative_realized - realized_hwm
+            net_realized = cumulative_realized - cp.cumulative_fees_usd
+            if net_realized > realized_hwm:
+                delta = net_realized - realized_hwm
                 penalty_adjusted_pnl += delta * cp.total_penalty
-                realized_hwm = cumulative_realized
+                realized_hwm = net_realized
 
         last_checkpoint = relevant_checkpoints[-1]
         penalty_adjusted_pnl += min(0.0, last_checkpoint.unrealized_pnl) * last_checkpoint.total_penalty
