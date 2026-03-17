@@ -276,10 +276,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         self.app.route("/v2/entity/subaccount/<synthetic_hotkey>", methods=["GET"])(self.v2_get_subaccount_dashboard)
         self.app.route("/entity/subaccount/payout", methods=["POST"])(self.calculate_subaccount_payout)
 
-        # Config endpoint
-        self.app.route("/config", methods=["GET"])(self.get_config)
-
-        print(f"[REST-INIT] 31 validator endpoints registered ✓")
+        print(f"[REST-INIT] 30 validator endpoints registered ✓")
 
     # ============================================================================
     # MINER POSITION ENDPOINTS
@@ -1875,20 +1872,6 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 'error': 'Internal server error calculating payout',
                 'detail': error_msg if self.running_unit_tests else None
             }), 500
-
-    def get_config(self):
-        """
-        Return relevant ValiConfig constants for frontend consumption.
-
-        No authentication required — these are non-sensitive configuration values.
-
-        Example:
-        curl http://localhost:48888/config
-        """
-        return jsonify({
-            'subaccount_challenge_intraday_drawdown_threshold': ValiConfig.SUBACCOUNT_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD,
-            'subaccount_challenge_eod_drawdown_threshold': ValiConfig.SUBACCOUNT_CHALLENGE_EOD_DRAWDOWN_THRESHOLD,
-        }), 200
 
     def _verify_coldkey_owns_hotkey(self, coldkey_ss58: str, hotkey_ss58: str) -> bool:
         """

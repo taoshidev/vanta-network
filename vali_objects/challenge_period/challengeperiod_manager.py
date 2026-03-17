@@ -519,9 +519,9 @@ class ChallengePeriodManager(CacheController):
             intraday_drawdown_pct = (1.0 - current_return / daily_open_equity) * 100.0
 
             eod_hwm = max(cp.equity_ret for cp in midnight_cps) if midnight_cps else 1.0
-            last_eod = midnight_cps[-1].equity_ret if midnight_cps else None
+            last_eod = midnight_cps[-1].equity_ret if midnight_cps else 1.0
             eod_floor = eod_hwm * (1.0 - ValiConfig.SUBACCOUNT_CHALLENGE_EOD_DRAWDOWN_THRESHOLD) if midnight_cps else None
-            eod_drawdown_pct = (1.0 - last_eod / eod_hwm) * 100.0 if midnight_cps else 0.0
+            eod_drawdown_pct = (1.0 - last_eod / eod_hwm) * 100.0
 
             # Cache stats before rule checks so dashboard reflects what triggered elimination
             self._drawdown_stats_cache[hotkey] = {

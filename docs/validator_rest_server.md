@@ -1441,11 +1441,11 @@ This is the only guaranteed section of the response. All other sections may be m
 
 **Drawdown (synthetic hotkeys only):**
 
-Only present after the first challenge period evaluation cycle (~60s after startup). Values match exactly what the evaluation loop computed — use `GET /config` for the thresholds.
+Only present after the first challenge period evaluation cycle (~60s after startup). Values match exactly what the evaluation loop computed.
 - `current_equity`: Portfolio equity at last evaluation: `(balance + unrealized_pnl) / account_size`
 - `daily_open_equity`: Equity at today's midnight UTC checkpoint (Rule 1 baseline). Defaults to `1.0` if no midnight checkpoint exists yet.
 - `eod_hwm`: Highest end-of-day equity across all midnight checkpoints ever (Rule 2 high water mark). Defaults to `1.0` if no midnight checkpoints exist.
-- `last_eod_equity`: Most recent midnight checkpoint equity (`null` if no midnight checkpoints exist)
+- `last_eod_equity`: Most recent midnight checkpoint equity. Defaults to `1.0` if no midnight checkpoints exist yet.
 - `intraday_drawdown_pct`: Percentage drop from `daily_open_equity` to `current_equity`. Positive = drawdown, negative = gain since open.
 - `eod_drawdown_pct`: Percentage drop from `eod_hwm` to `last_eod_equity`. `0.0` if no midnight checkpoints exist.
 - `subaccount_challenge_intraday_drawdown_threshold`: Elimination threshold for Rule 1 (e.g. `0.05` = 5%).
@@ -1642,31 +1642,6 @@ curl -X POST http://localhost:48888/entity/subaccount/payout \
 - `start_time_ms` must be less than or equal to `end_time_ms`
 - Returns 404 if the subaccount has no debt ledger data in the specified time range
 - Payout calculation is based on debt ledger checkpoints that fall within the time range
-
-### Get Config
-
-`GET /config`
-
-Return relevant validator configuration constants for frontend consumption. No authentication required.
-
-**Example:**
-```bash
-curl http://localhost:48888/config
-```
-
-**Response:**
-```json
-{
-  "subaccount_challenge_intraday_drawdown_threshold": 0.05,
-  "subaccount_challenge_eod_drawdown_threshold": 0.05
-}
-```
-
-**Response Fields:**
-- `subaccount_challenge_intraday_drawdown_threshold`: Maximum allowed intraday equity drop from today's opening equity before elimination (Rule 1). E.g. `0.05` = 5%.
-- `subaccount_challenge_eod_drawdown_threshold`: Maximum allowed end-of-day equity drop from the all-time EOD high water mark before elimination (Rule 2). E.g. `0.05` = 5%.
-
----
 
 ### Entity Trading Workflow
 
