@@ -84,7 +84,7 @@ class DebtBasedScoring:
         MinerBucket.PROBATION.value,
         MinerBucket.SUBACCOUNT_FUNDED.value,
         MinerBucket.SUBACCOUNT_ALPHA.value,
-        # MinerBucket.ENTITY.value,  # TODO re-enable entity earning checkpoints
+        MinerBucket.ENTITY.value,
     }
 
     @staticmethod

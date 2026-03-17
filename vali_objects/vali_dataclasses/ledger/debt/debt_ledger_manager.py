@@ -817,15 +817,27 @@ class DebtLedgerManager():
 
                 entity_emissions_ledger = self.emissions_ledger_manager.get_ledger(entity_hotkey)
 
+                # Track per-subaccount HWM state for realized PnL across checkpoints
+                subaccount_cum_realized = {hk: 0.0 for hk, _ in subaccount_ledgers}
+                subaccount_hwm = {hk: 0.0 for hk, _ in subaccount_ledgers}
+
                 # Create aggregated checkpoints for each timestamp
                 aggregated_checkpoints = []
                 for timestamp_ms in sorted_timestamps:
                     # Collect earning checkpoints from all subaccounts at this timestamp
                     checkpoints_at_time = []
+                    agg_realized_pnl = 0.0
                     for synthetic_hotkey, ledger in subaccount_ledgers:
                         checkpoint = ledger.get_checkpoint_at_time(timestamp_ms, target_cp_duration_ms)
                         if checkpoint and checkpoint.challenge_period_status in _earning_statuses:
                             checkpoints_at_time.append(checkpoint)
+
+                            subaccount_cum_realized[synthetic_hotkey] += checkpoint.realized_pnl
+                            if subaccount_cum_realized[synthetic_hotkey] > subaccount_hwm[synthetic_hotkey]:
+                                delta = subaccount_cum_realized[synthetic_hotkey] - subaccount_hwm[synthetic_hotkey]
+                                subaccount_hwm[synthetic_hotkey] = subaccount_cum_realized[synthetic_hotkey]
+
+                                agg_realized_pnl += delta
 
                     if not checkpoints_at_time:
                         continue
@@ -843,7 +855,6 @@ class DebtLedgerManager():
                     tao_to_usd_rate = getattr(entity_emissions_cp, "avg_tao_to_usd_rate", 0.0)
                     tao_balance = getattr(entity_emissions_cp, "tao_balance_snapshot", 0.0)
                     alpha_balance = getattr(entity_emissions_cp, "alpha_balance_snapshot", 0.0)
-                    agg_realized_pnl = sum(max(cp.realized_pnl, 0.0) for cp in checkpoints_at_time)     # sum positive realized pnl
                     agg_unrealized_pnl = 0.0    # ignore unrealized pnl
                     agg_spread_fee = sum(cp.spread_fee_loss for cp in checkpoints_at_time)
                     agg_carry_fee = sum(cp.carry_fee_loss for cp in checkpoints_at_time)

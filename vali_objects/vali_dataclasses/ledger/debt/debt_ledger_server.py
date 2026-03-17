@@ -132,7 +132,7 @@ class DebtLedgerServer(RPCServerBase):
         # Step 1: Update penalty ledgers
         bt.logging.info("Step 1/3: Updating penalty ledgers...")
         penalty_start = time.time()
-        self._manager.penalty_ledger_manager.build_penalty_ledgers(delta_update=False)
+        self._manager.penalty_ledger_manager.build_penalty_ledgers(delta_update=True)
         bt.logging.info(f"Penalty ledgers updated in {time.time() - penalty_start:.2f}s")
 
         # Step 2: Update emissions ledgers
