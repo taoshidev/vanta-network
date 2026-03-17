@@ -106,7 +106,8 @@ class PerfLedgerManager(CacheController):
 
         # Every update, pick a hotkey to rebuild in case polygon 1s candle data changed.
         self.trade_pair_to_price_info = {'second':{}, 'minute':{}}
-        self.trade_pair_to_position_ret = {}
+        self.portfolio_ret = None
+        self.portfolio_ret_prev = None
 
         self.random_security_screenings = set()
         self.market_calendar = UnifiedMarketCalendar()
@@ -500,10 +501,9 @@ class PerfLedgerManager(CacheController):
                 portfolio_unrealized_pnl += historical_position.unrealized_pnl
 
         # Update position return tracking for the portfolio
-        current_tuple = self.trade_pair_to_position_ret.get('portfolio')
-        if portfolio_pl and current_tuple and current_tuple[0] != portfolio_return:
-            self.trade_pair_to_position_ret['portfolio_prev'] = current_tuple
-        self.trade_pair_to_position_ret['portfolio'] = (portfolio_return, n_positions)
+        if portfolio_pl and self.portfolio_ret and self.portfolio_ret[0] != portfolio_return:
+            self.portfolio_ret_prev = self.portfolio_ret
+        self.portfolio_ret = (portfolio_return, n_positions)
 
         reason = ''
         ans = ShortcutReason.NO_SHORTCUT
@@ -556,7 +556,7 @@ class PerfLedgerManager(CacheController):
                   f'end_time_ms: {TimeUtil.millis_to_formatted_date_str(end_time_ms)} ({end_time_ms}) , '
                   f'portfolio_value: {portfolio_return} '
                   f'ledger_cutoff_ms: {TimeUtil.millis_to_formatted_date_str(ledger_cutoff_ms)}, '
-                  f'trade_pair_to_position_ret: {self.trade_pair_to_position_ret} '
+                  f'portfolio_ret: {self.portfolio_ret} '
                   f'n_orders_per_position_counter: {n_orders_per_position_counter} '
                   f'final portfolio cp {final_cp}')
             bt.logging.info('---------------------------------------------------------------------')
@@ -759,10 +759,10 @@ class PerfLedgerManager(CacheController):
                         any_open_status = TradePairReturnStatus.TP_MARKET_OPEN_NO_PRICE_CHANGE
 
         # Update position return tracking for portfolio
-        if 'portfolio' in self.trade_pair_to_position_ret:
-            self.trade_pair_to_position_ret['portfolio_prev'] = self.trade_pair_to_position_ret['portfolio']
+        if self.portfolio_ret is not None:
+            self.portfolio_ret_prev = self.portfolio_ret
         total_position_count = sum(len(positions) for positions in tp_to_historical_positions_dense.values())
-        self.trade_pair_to_position_ret['portfolio'] = (portfolio_return, total_position_count)
+        self.portfolio_ret = (portfolio_return, total_position_count)
 
         return portfolio_return, portfolio_realized_pnl, portfolio_unrealized_pnl, any_open_status
 
@@ -770,7 +770,7 @@ class PerfLedgerManager(CacheController):
     def check_liquidated(self, miner_hotkey, portfolio_return, t_ms, tp_to_historical_positions, portfolio_pl: PerfLedger):
         if portfolio_return == 0:
             bt.logging.warning(f"Portfolio value is {portfolio_return} for miner {miner_hotkey} at {t_ms}. Eliminating miner.")
-            elimination_row = self.generate_elimination_row(miner_hotkey, 0.0, "LIQUIDATED", t_ms=t_ms, price_info=portfolio_pl.last_known_prices, return_info={'dd_stats': {}, 'returns': self.trade_pair_to_position_ret})
+            elimination_row = self.generate_elimination_row(miner_hotkey, 0.0, "LIQUIDATED", t_ms=t_ms, price_info=portfolio_pl.last_known_prices, return_info={'dd_stats': {}, 'returns': {'portfolio': self.portfolio_ret, 'portfolio_prev': self.portfolio_ret_prev}})
             self.candidate_pl_elimination_rows.append(elimination_row)
             self.candidate_pl_elimination_rows[-1] = elimination_row  # Trigger the update on the multiprocessing Manager
             #self.hk_to_dd_stats[miner_hotkey]['eliminated'] = True
@@ -895,19 +895,16 @@ class PerfLedgerManager(CacheController):
             time_formatted = TimeUtil.millis_to_formatted_date_str(t_ms)
             start_formatted = TimeUtil.millis_to_formatted_date_str(start_time_ms)
             end_formatted = TimeUtil.millis_to_formatted_date_str(end_time_ms)
-            # Format trade_pair_to_position_ret for display
-            formatted_returns = {}
-            for k, v in self.trade_pair_to_position_ret.items():
-                if isinstance(v, tuple):
-                    formatted_returns[k] = f"{v[0]:.6f} (n={v[1]})"
-                else:
-                    formatted_returns[k] = v
+            # Format portfolio_ret for display
+            def _fmt(v):
+                return f"{v[0]:.6f} (n={v[1]})" if isinstance(v, tuple) else v
+            formatted_returns = {'portfolio': _fmt(self.portfolio_ret), 'portfolio_prev': _fmt(self.portfolio_ret_prev)}
 
             print(
                 f'perf ledger (pl_last_update_time {pl_last_update_time}) for hk {miner_hotkey} significant return drop on {time_formatted} from '
                 f'{portfolio_pl.cps[-1].prev_portfolio_ret} to {portfolio_return} over'
                 f' {time_since_last_update} ms ({t_ms}) when building up to {start_formatted} and {end_formatted} with open_positions_tp_ids {open_positions_tp_ids}, ',
-                f'trade_pair_to_position_ret {formatted_returns}, mode {mode} ')
+                f'portfolio_ret {formatted_returns}, mode {mode} ')
             for tp_id, historical_positions in tp_to_historical_positions.items():
                 positions = []
                 for historical_position in historical_positions:
@@ -942,8 +939,8 @@ class PerfLedgerManager(CacheController):
                         price_delta_str = f', price_delta={price_delta_ms}ms'
 
                     # Get current and previous position returns (now stored as tuples)
-                    current_tuple = self.trade_pair_to_position_ret.get(tp_id, None)
-                    prev_tuple = self.trade_pair_to_position_ret.get(tp_id + '_prev', None)
+                    current_tuple = self.portfolio_ret
+                    prev_tuple = self.portfolio_ret_prev
 
                     if current_tuple:
                         current_ret, current_pos_count = current_tuple
@@ -994,11 +991,9 @@ class PerfLedgerManager(CacheController):
         return accumulated_time_ms
 
 
-    def build_perf_ledger(self, perf_ledger_bundle: dict[str, PerfLedger], tp_to_historical_positions: dict[str, Position], start_time_ms, end_time_ms, miner_hotkey, tp_id_to_realtime_position_to_pop: dict[str, Position],
+    def build_perf_ledger(self, portfolio_pl: PerfLedger, tp_to_historical_positions: dict[str, Position], start_time_ms, end_time_ms, miner_hotkey, tp_id_to_realtime_position_to_pop: dict[str, Position],
                           account_size: float = None) -> bool:
         # tp_id_to_realtime_position_to_pop is a dictionary mapping trade pair IDs to their realtime positions
-        # perf_ledger_bundle is a dict with key 'portfolio' mapping to the portfolio PerfLedger
-        portfolio_pl = perf_ledger_bundle['portfolio']
         is_first_update = len(portfolio_pl.cps) == 0
 
         # Check if we need to build the ledger forward in time
@@ -1112,8 +1107,8 @@ class PerfLedgerManager(CacheController):
         accumulated_time_ms = 0
 
         # Initialize tracking for time increments
-        self._last_loop_t_ms = {}
-        self._last_ledger_update_ms = {'portfolio': portfolio_pl.last_update_ms}
+        self._last_loop_t_ms = None
+        self._last_ledger_update_ms = portfolio_pl.last_update_ms
 
         # Portfolio-only: no per-trade-pair closed-position pre-updates needed
         # (portfolio ledger is updated in the main while loop)
@@ -1149,14 +1144,14 @@ class PerfLedgerManager(CacheController):
 
             # Verify proper time increments for the portfolio ledger
             if accumulated_time_ms > 0:
-                if 'portfolio' in self._last_loop_t_ms:
-                    actual_increment = t_ms - self._last_loop_t_ms['portfolio']
+                if self._last_loop_t_ms is not None:
+                    actual_increment = t_ms - self._last_loop_t_ms
                     valid_increments = [1000, 60000]
                     assert actual_increment in valid_increments, (
                         f"Time increment violation for portfolio: {actual_increment}ms "
                         f"(expected 1000ms or 60000ms). "
                         f"Current: {TimeUtil.millis_to_formatted_date_str(t_ms)}, "
-                        f"Previous: {TimeUtil.millis_to_formatted_date_str(self._last_loop_t_ms['portfolio'])}. "
+                        f"Previous: {TimeUtil.millis_to_formatted_date_str(self._last_loop_t_ms)}. "
                         f"Please alert a team member ASAP!"
                     )
 
@@ -1223,18 +1218,17 @@ class PerfLedgerManager(CacheController):
             )
 
             # Verify continuous updates (no gaps)
-            if 'portfolio' in self._last_ledger_update_ms:
-                gap = portfolio_pl.last_update_ms - self._last_ledger_update_ms['portfolio']
-                valid_gaps = [1, 1000, 60000]
-                assert gap in valid_gaps, (
-                    f"Portfolio ledger jumped {gap}ms (expected 1000ms or 60000ms). "
-                    f"Previous: {TimeUtil.millis_to_formatted_date_str(self._last_ledger_update_ms['portfolio'])}, "
-                    f"Current: {TimeUtil.millis_to_formatted_date_str(portfolio_pl.last_update_ms)}. "
-                    f"Please alert a team member ASAP!"
-                )
+            gap = portfolio_pl.last_update_ms - self._last_ledger_update_ms
+            valid_gaps = [1, 1000, 60000]
+            assert gap in valid_gaps, (
+                f"Portfolio ledger jumped {gap}ms (expected 1000ms or 60000ms). "
+                f"Previous: {TimeUtil.millis_to_formatted_date_str(self._last_ledger_update_ms)}, "
+                f"Current: {TimeUtil.millis_to_formatted_date_str(portfolio_pl.last_update_ms)}. "
+                f"Please alert a team member ASAP!"
+            )
 
-            self._last_ledger_update_ms['portfolio'] = portfolio_pl.last_update_ms
-            self._last_loop_t_ms['portfolio'] = t_ms
+            self._last_ledger_update_ms = portfolio_pl.last_update_ms
+            self._last_loop_t_ms = t_ms
 
             accumulated_time_ms = self.inc_accumulated_time(mode, accumulated_time_ms)
 
@@ -1299,13 +1293,11 @@ class PerfLedgerManager(CacheController):
         #print(f'Updated between {TimeUtil.millis_to_formatted_date_str(start_time_ms)} and {TimeUtil.millis_to_formatted_date_str(end_time_ms)} ({n_minutes_between_intervals} min). mode_to_ticks {mode_to_ticks}. Default mode {default_mode}')
         return False
 
-    def mutate_position_returns_for_continuity(self, tp_to_historical_positions, perf_ledger_bundle_candidate, t_ms, debug_str=''):
-        if not perf_ledger_bundle_candidate:
-            return {}
-        if 'portfolio' not in perf_ledger_bundle_candidate:
+    def mutate_position_returns_for_continuity(self, tp_to_historical_positions, portfolio_pl: PerfLedger, t_ms, debug_str=''):
+        if portfolio_pl is None:
             return {}
 
-        portfolio_ledger = perf_ledger_bundle_candidate['portfolio']
+        portfolio_ledger = portfolio_pl
 
         # Collect continuity application data for aggregate logging
         continuity_applications = {}
@@ -1386,33 +1378,33 @@ class PerfLedgerManager(CacheController):
 
         t0 = time.time()
         existing_ledger = existing_perf_ledger_bundles.get(hotkey)
-        # Wrap existing PerfLedger into a local bundle dict for internal processing
         if isinstance(existing_ledger, PerfLedger):
-            perf_ledger_bundle_candidate = {'portfolio': existing_ledger}
+            portfolio_pl = existing_ledger
         elif isinstance(existing_ledger, dict) and 'portfolio' in existing_ledger:
-            perf_ledger_bundle_candidate = existing_ledger
+            portfolio_pl = existing_ledger['portfolio']
         else:
-            perf_ledger_bundle_candidate = None
+            portfolio_pl = None
 
-        if perf_ledger_bundle_candidate and 'portfolio' in perf_ledger_bundle_candidate and now_ms < perf_ledger_bundle_candidate['portfolio'].last_update_ms:
+        if portfolio_pl is not None and now_ms < portfolio_pl.last_update_ms:
             now_formatted = TimeUtil.millis_to_formatted_date_str(now_ms)
-            last_update_formatted = TimeUtil.millis_to_formatted_date_str(perf_ledger_bundle_candidate['portfolio'].last_update_ms)
+            last_update_formatted = TimeUtil.millis_to_formatted_date_str(portfolio_pl.last_update_ms)
             raise Exception(f'Trying to update in the past for {hotkey}. now {now_formatted} < last update {last_update_formatted}')
 
         continuity_established = False  # Track if we've already established price continuity
 
-        if perf_ledger_bundle_candidate is None:
+        if portfolio_pl is None:
             first_order_time_ms = min(p.orders[0].processed_ms for p in positions)
-            perf_ledger_bundle_candidate = {'portfolio': PerfLedger(initialization_time_ms=first_order_time_ms, target_ledger_window_ms=self.target_ledger_window_ms)}
+            portfolio_pl = PerfLedger(initialization_time_ms=first_order_time_ms, target_ledger_window_ms=self.target_ledger_window_ms)
             verbose = True
             bt.logging.info(f"Creating new perf ledger for {hotkey} with init time: {TimeUtil.millis_to_formatted_date_str(first_order_time_ms)}")
         else:
-            perf_ledger_bundle_candidate = deepcopy(perf_ledger_bundle_candidate)
+            portfolio_pl = deepcopy(portfolio_pl)
             verbose = False
 
-        perf_ledger_bundle_candidate['portfolio'].init_max_portfolio_value()
+        portfolio_pl.init_max_portfolio_value()
 
-        self.trade_pair_to_position_ret = {}
+        self.portfolio_ret = None
+        self.portfolio_ret_prev = None
         #if hotkey in self.hk_to_dd_stats:
         #    del self.hk_to_dd_stats[hotkey]
 
@@ -1420,7 +1412,7 @@ class PerfLedgerManager(CacheController):
         sorted_timeline, last_event_time_ms = self.generate_order_timeline(positions, now_ms, hotkey)  # Enforces our "now_ms" constraint
         # There hasn't been a new order since the last update time. Just need to update for open positions
         building_from_new_orders = True
-        if last_event_time_ms < perf_ledger_bundle_candidate['portfolio'].last_update_ms:
+        if last_event_time_ms < portfolio_pl.last_update_ms:
             building_from_new_orders = False
             # Preserve returns from realtime positions
             sorted_timeline = []
@@ -1440,7 +1432,7 @@ class PerfLedgerManager(CacheController):
                 symbol = realtime_position_to_pop.trade_pair.trade_pair_id
                 tp_to_historical_positions[symbol][-1] = realtime_position_to_pop
                 if realtime_position_to_pop.return_at_close == 0:  # liquidated
-                    self.check_liquidated(hotkey, 0.0, realtime_position_to_pop.close_ms, tp_to_historical_positions, perf_ledger_bundle_candidate)
+                    self.check_liquidated(hotkey, 0.0, realtime_position_to_pop.close_ms, tp_to_historical_positions, portfolio_pl)
                     eliminated = True
                     break
 
@@ -1523,12 +1515,11 @@ class PerfLedgerManager(CacheController):
                 continue
 
             # Building from a checkpoint ledger. Skip until we get to the new order(s).
-            portfolio_ledger = perf_ledger_bundle_candidate['portfolio']
-            portfolio_last_update_ms = portfolio_ledger.last_update_ms
+            portfolio_last_update_ms = portfolio_pl.last_update_ms
 
             if portfolio_last_update_ms == 0:
                 # If no checkpoints exist, use initialization time
-                portfolio_last_update_ms = portfolio_ledger.initialization_time_ms
+                portfolio_last_update_ms = portfolio_pl.initialization_time_ms
 
             # Skip batches that are strictly before the last update
             # (batches at the same timestamp will be handled by build_perf_ledger)
@@ -1538,7 +1529,7 @@ class PerfLedgerManager(CacheController):
             # Apply price continuity before building ledger (only if not already done)
             if not continuity_established:
                 continuity_changes = self.mutate_position_returns_for_continuity(tp_to_historical_positions,
-                 perf_ledger_bundle_candidate, portfolio_last_update_ms, debug_str=f'pre-batch {batch_order_timestamp}. '
+                 portfolio_pl, portfolio_last_update_ms, debug_str=f'pre-batch {batch_order_timestamp}. '
                    f'start_time {TimeUtil.millis_to_formatted_date_str(portfolio_last_update_ms)} end_time {TimeUtil.millis_to_formatted_date_str(batch_order_timestamp)}')
                 continuity_established = True
 
@@ -1548,7 +1539,7 @@ class PerfLedgerManager(CacheController):
 
             # Need to catch up from perf_ledger.last_update_ms to max timestamp in batch
             # Pass the dictionary of positions (empty dict if none, single entry if one, multiple if many)
-            eliminated = self.build_perf_ledger(perf_ledger_bundle_candidate, tp_to_historical_positions,
+            eliminated = self.build_perf_ledger(portfolio_pl, tp_to_historical_positions,
                                                portfolio_last_update_ms + 1, batch_order_timestamp,
                                                hotkey, tp_id_to_realtime_position_to_pop,
                                                account_size=account_size)
@@ -1557,14 +1548,14 @@ class PerfLedgerManager(CacheController):
                 break
 
         if eliminated and self.parallel_mode != ParallelizationMode.SERIAL:
-            return perf_ledger_bundle_candidate
+            return portfolio_pl
 
         # We have processed all orders. Need to catch up to now_ms
         for tp_id, realtime_position_to_pop in tp_id_to_realtime_position_to_pop.items():
             symbol = realtime_position_to_pop.trade_pair.trade_pair_id
             tp_to_historical_positions[symbol][-1] = realtime_position_to_pop
 
-        portfolio_perf_ledger = perf_ledger_bundle_candidate['portfolio']
+        portfolio_perf_ledger = portfolio_pl
         if now_ms > portfolio_perf_ledger.last_update_ms:
             # Always start from the current ledger state
             # The ledger may have been updated during order processing above
@@ -1575,14 +1566,14 @@ class PerfLedgerManager(CacheController):
 
             # Apply price continuity before final build_perf_ledger call
             if not continuity_established:
-                continuity_changes = self.mutate_position_returns_for_continuity(tp_to_historical_positions, perf_ledger_bundle_candidate, current_last_update, debug_str='final')
+                continuity_changes = self.mutate_position_returns_for_continuity(tp_to_historical_positions, portfolio_pl, current_last_update, debug_str='final')
                 continuity_established = True
 
                 # Log aggregate continuity info if changes were made
                 #if continuity_changes:
                 #    self._log_continuity_summary(hotkey, continuity_changes, tp_to_historical_positions)
 
-            self.build_perf_ledger(perf_ledger_bundle_candidate, tp_to_historical_positions,
+            self.build_perf_ledger(portfolio_pl, tp_to_historical_positions,
                                    current_last_update + 1, now_ms, hotkey, {},
                                    account_size=account_size)
 
@@ -1591,9 +1582,9 @@ class PerfLedgerManager(CacheController):
         lag = (TimeUtil.now_in_millis() - portfolio_perf_ledger.last_update_ms) // 1000
         total_product = portfolio_perf_ledger.get_total_product()
         last_portfolio_value = portfolio_perf_ledger.prev_portfolio_ret
-        pl_update_start_time_ms = perf_ledger_bundle_candidate['portfolio'].last_update_ms
+        pl_update_start_time_ms = portfolio_pl.last_update_ms
         if pl_update_start_time_ms == 0:
-            pl_update_start_time_ms = perf_ledger_bundle_candidate['portfolio'].initialization_time_ms
+            pl_update_start_time_ms = portfolio_pl.initialization_time_ms
         if verbose:
             bt.logging.success(
                 f"Done updating perf ledger for {hotkey} {hotkey_i + 1}/{n_hotkeys} in {time.time() - t0} "
@@ -1604,15 +1595,12 @@ class PerfLedgerManager(CacheController):
                 f"perf_ledger_initialization_time {TimeUtil.millis_to_formatted_date_str(portfolio_perf_ledger.initialization_time_ms)}. "
                 f"mode_to_n_updates {self.mode_to_n_updates}. update_to_n_open_positions {self.update_to_n_open_positions}, self.tp_to_mfs {self.tp_to_mfs}")
 
-        # Unwrap the internal bundle to just the portfolio PerfLedger for external storage
-        result_ledger = perf_ledger_bundle_candidate['portfolio']
-
         # If running in parallel mode, return the result instead of updating in place
         if self.parallel_mode != ParallelizationMode.SERIAL:
-            return result_ledger
+            return portfolio_pl
         else:
             # Write candidate at the very end in case an exception leads to a partial update
-            existing_perf_ledger_bundles[hotkey] = result_ledger
+            existing_perf_ledger_bundles[hotkey] = portfolio_pl
 
     @timeme
     def write_perf_ledger_eliminations_to_disk(self, eliminations):
