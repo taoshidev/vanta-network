@@ -62,19 +62,18 @@ from vali_objects.position_management.position_manager_client import PositionMan
 from vali_objects.utils.price_slippage_model import PriceSlippageModel  # noqa: E402
 from vali_objects.utils.vali_utils import ValiUtils  # noqa: E402
 from vali_objects.vali_config import ValiConfig  # noqa: E402
-from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import ParallelizationMode, TP_ID_PORTFOLIO  # noqa: E402
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import ParallelizationMode  # noqa: E402
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_server import PerfLedgerServer  # noqa: E402
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
 
 
-def initialize_components(hotkeys, parallel_mode, build_portfolio_ledgers_only, running_unit_tests=False, skip_port_kill=False):
+def initialize_components(hotkeys, parallel_mode, running_unit_tests=False, skip_port_kill=False):
     """
     Initialize common components for backtesting using client/server architecture.
 
     Args:
         hotkeys: List of miner hotkeys or single hotkey
         parallel_mode: Parallelization mode for performance ledger
-        build_portfolio_ledgers_only: Whether to build only portfolio ledgers
         running_unit_tests: Whether running in unit test mode
         skip_port_kill: Skip killing RPC ports (useful when caller already did it)
 
@@ -115,7 +114,6 @@ def initialize_components(hotkeys, parallel_mode, build_portfolio_ledgers_only, 
         running_unit_tests=running_unit_tests,
         is_backtesting=True,
         parallel_mode=parallel_mode,
-        build_portfolio_ledgers_only=build_portfolio_ledgers_only
     )
     perf_ledger_client = PerfLedgerClient()
 
@@ -184,7 +182,7 @@ class BacktestManager:
     def __init__(self, positions_at_t_f, start_time_ms, secrets, scoring_func,
                  use_slippage=None,
                  fetch_slippage_data=False, recalculate_slippage=False, rebuild_all_positions=False,
-                 parallel_mode: ParallelizationMode=ParallelizationMode.PYSPARK, build_portfolio_ledgers_only=False,
+                 parallel_mode: ParallelizationMode=ParallelizationMode.PYSPARK,
                  pool_size=0, target_ledger_window_ms=ValiConfig.TARGET_LEDGER_WINDOW_MS,
                  running_unit_tests=False, skip_port_kill=False):
         if not secrets:
@@ -213,7 +211,7 @@ class BacktestManager:
         (self.metagraph_client, self.elimination_client, self.position_client,
          self.perf_ledger_client, self.challenge_period_client, self.plagiarism_client,
          self.server_handles) = initialize_components(
-            hotkeys, parallel_mode, build_portfolio_ledgers_only,
+            hotkeys, parallel_mode,
             running_unit_tests=running_unit_tests, skip_port_kill=skip_port_kill
         )
 
@@ -314,19 +312,15 @@ class BacktestManager:
         # This would need to be refactored separately if needed
 
     def validate_last_update_ms(self, prev_end_time_ms):
-        perf_ledger_bundles = self.perf_ledger_client.get_perf_ledgers(portfolio_only=False)
-        for hk, bundles in perf_ledger_bundles.items():
+        perf_ledger_bundles = self.perf_ledger_client.get_perf_ledgers()
+        for hk, ledger in perf_ledger_bundles.items():
             if prev_end_time_ms:
-                for tp_id, b in bundles.items():
-                    assert b.last_update_ms == prev_end_time_ms, (f"Ledger for {hk} in {tp_id} was not updated. "
-                      f"last_update_ms={b.last_update_ms}, expected={prev_end_time_ms}, delta={prev_end_time_ms - b.last_update_ms}")
+                assert ledger.last_update_ms == prev_end_time_ms, (f"Ledger for {hk} was not updated. "
+                  f"last_update_ms={ledger.last_update_ms}, expected={prev_end_time_ms}, delta={prev_end_time_ms - ledger.last_update_ms}")
 
     def debug_print_ledgers(self, perf_ledger_bundles):
-        for hk, v in perf_ledger_bundles.items():
-            for tp_id, bundle in v.items():
-                if tp_id != TP_ID_PORTFOLIO:
-                    continue
-                self.perf_ledger_client.print_bundle(hk, v)
+        for hk, ledger in perf_ledger_bundles.items():
+            self.perf_ledger_client.print_bundle(hk, ledger)
 
     def cleanup(self):
         """Cleanup method to shutdown all servers and disconnect clients."""
@@ -344,7 +338,6 @@ if __name__ == '__main__':
     run_elimination = False            # Run elimination logic
     use_slippage = None              # Apply slippage modeling
     crypto_only = True              # Only include crypto trade pairs
-    build_portfolio_ledgers_only = True  # Whether to build only the portfolio ledgers or per trade pair
     parallel_mode = ParallelizationMode.SERIAL  # 1 for pyspark, 2 for multiprocessing
 
     # NOTE: Only one of use_test_positions, use_database_positions, or default (disk) should be True
@@ -405,8 +398,7 @@ if __name__ == '__main__':
     secrets = ValiUtils.get_secrets()  # {'polygon_apikey': '123', 'tiingo_apikey': '456'}
     btm = BacktestManager(hk_to_positions, start_time_ms, secrets, None,
                           use_slippage=use_slippage, fetch_slippage_data=False, recalculate_slippage=False,
-                          parallel_mode=parallel_mode,
-                          build_portfolio_ledgers_only=build_portfolio_ledgers_only)
+                          parallel_mode=parallel_mode)
 
     # For disk-based positions, load after BacktestManager has initialized servers
     if position_source == PositionSource.DISK:
@@ -428,7 +420,7 @@ if __name__ == '__main__':
         for t_ms in range(start_time_ms, end_time_ms, interval_ms):
             btm.validate_last_update_ms(prev_end_time_ms)
             btm.update(t_ms, run_challenge=run_challenge, run_elimination=run_elimination)
-            perf_ledger_bundles = btm.perf_ledger_client.get_perf_ledgers(portfolio_only=False)
+            perf_ledger_bundles = btm.perf_ledger_client.get_perf_ledgers()
             #hk_to_perf_ledger_tps = {}
             #for k, v in perf_ledger_bundles.items():
             #    hk_to_perf_ledger_tps[k] = list(v.keys())

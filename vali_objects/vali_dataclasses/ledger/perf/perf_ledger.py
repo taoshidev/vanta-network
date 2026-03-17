@@ -11,9 +11,6 @@ from vali_objects.vali_config import ValiConfig
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 
-TP_ID_PORTFOLIO = 'portfolio'
-
-
 class FeeCache():
     def __init__(self):
         self.spread_fee: float = 1.0
@@ -139,7 +136,7 @@ class PerfLedger():
     def __init__(self, initialization_time_ms: int=0, max_return:float=1.0,
                  target_cp_duration_ms:int=ValiConfig.TARGET_CHECKPOINT_DURATION_MS,
                  target_ledger_window_ms=ValiConfig.TARGET_LEDGER_WINDOW_MS, cps: list[PerfCheckpoint]=None,
-                 tp_id: str=TP_ID_PORTFOLIO, last_known_prices: Dict[str, Tuple[float, int]]=None):
+                 last_known_prices: Dict[str, Tuple[float, int]]=None):
         if cps is None:
             cps = []
         if last_known_prices is None:
@@ -148,12 +145,9 @@ class PerfLedger():
         self.target_cp_duration_ms = int(target_cp_duration_ms)
         self.target_ledger_window_ms = target_ledger_window_ms
         self.initialization_time_ms = int(initialization_time_ms)
-        self.tp_id = str(tp_id)
         self.cps = cps
         # Price continuity tracking - maps trade pair to (price, timestamp_ms)
         self.last_known_prices = last_known_prices
-        if last_known_prices and self.tp_id != TP_ID_PORTFOLIO:
-            raise ValueError(f"last_known_prices should only be set for portfolio ledgers, but got tp_id: {self.tp_id}")
 
     def to_dict(self):
         return {
@@ -172,6 +166,7 @@ class PerfLedger():
         # Handle missing last_known_prices for backward compatibility
         if 'last_known_prices' not in x:
             x['last_known_prices'] = {}
+        x.pop('tp_id', None)
         instance = cls(**x)
         return instance
 
@@ -511,7 +506,7 @@ class PerfLedger():
         if checkpoint.last_update_ms != timestamp_ms:
             from time_util.time_util import TimeUtil
             raise ValueError(
-                f"Data corruption detected for {self.tp_id}: "
+                f"Data corruption detected for portfolio: "
                 f"checkpoint at index {index} has last_update_ms {checkpoint.last_update_ms} "
                 f"({TimeUtil.millis_to_formatted_date_str(checkpoint.last_update_ms)}), "
                 f"but expected {timestamp_ms} "
@@ -538,7 +533,6 @@ if __name__ == "__main__":
     top_n_miners = 4
     test_single_hotkey = '5FRWVox3FD5Jc2VnS7FUCCf8UJgLKfGdEnMAN7nU3LrdMWHu'  # Set to a specific hotkey string to test single hotkey, or None for all
     regenerate_all = False  # Whether to regenerate all ledgers from scratch
-    build_portfolio_ledgers_only = False  # Whether to build only the portfolio ledgers or per trade pair
 
     # Time range for database queries (if using database positions)
     end_time_ms = None# 1736035200000    # Jan 5, 2025
@@ -593,8 +587,7 @@ if __name__ == "__main__":
 
     # PerfLedgerManager creates its own MetagraphClient and PositionManagerClient internally
     perf_ledger_manager = PerfLedgerManager(running_unit_tests=False,
-                                            enable_rss=False, parallel_mode=parallel_mode,
-                                            build_portfolio_ledgers_only=build_portfolio_ledgers_only)
+                                            enable_rss=False, parallel_mode=parallel_mode)
 
 
     if parallel_mode == ParallelizationMode.SERIAL:
@@ -609,7 +602,7 @@ if __name__ == "__main__":
         # Get positions and existing ledgers
         hotkey_to_positions, _ = perf_ledger_manager.get_positions_perf_ledger(testing_one_hotkey=test_single_hotkey)
 
-        existing_perf_ledgers = {} if regenerate_all else perf_ledger_manager.get_perf_ledgers(portfolio_only=False, from_disk=True)
+        existing_perf_ledgers = {} if regenerate_all else perf_ledger_manager.get_perf_ledgers(from_disk=True)
 
         # Run the parallel update
         spark, should_close = get_spark_session(parallel_mode)

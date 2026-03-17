@@ -13,7 +13,7 @@ from unittest.mock import MagicMock
 from shared_objects.subtensor_ops.mock_metagraph import MockMetagraph as BaseMockMetagraph
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.vali_config import ValiConfig
-from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger, PerfCheckpoint, TP_ID_PORTFOLIO
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger, PerfCheckpoint
 from time_util.time_util import TimeUtil
 from vali_objects.vali_dataclasses.position import Position
 from tests.shared_objects.mock_classes import (
@@ -227,10 +227,10 @@ class EnhancedMockPerfLedgerManager:
         else:
             self.__dict__[name] = value
 
-    def filtered_ledger_for_scoring(self, portfolio_only=False, hotkeys=None):
+    def filtered_ledger_for_scoring(self, hotkeys=None):
         """Override to exclude eliminated miners"""
         # Get base filtered ledger
-        filtered_ledger = self.base.filtered_ledger_for_scoring(portfolio_only, hotkeys)
+        filtered_ledger = self.base.filtered_ledger_for_scoring(hotkeys)
 
         # Additional filtering for eliminated miners
         if self.elimination_client:
@@ -359,11 +359,8 @@ class MockLedgerFactory:
             cps=checkpoints
         )
         
-        return {
-            TP_ID_PORTFOLIO: ledger,
-            "BTCUSD": ledger  # Same ledger for simplicity
-        }
-        
+        return ledger
+
     @staticmethod
     def create_losing_ledger(
         start_ms: int = 0,
@@ -407,11 +404,8 @@ class MockLedgerFactory:
             cps=checkpoints
         )
         
-        return {
-            TP_ID_PORTFOLIO: ledger,
-            "BTCUSD": ledger
-        }
-        
+        return ledger
+
     @staticmethod
     def _generate_return_curve(
         start_value: float,
@@ -493,10 +487,9 @@ class MockSubtensorWeightSetterHelper:
 
                 # If we have perf ledger manager, extract performance data
                 if perf_ledger_manager:
-                    perf_ledgers = perf_ledger_manager.get_perf_ledgers(portfolio_only=False)
+                    perf_ledgers = perf_ledger_manager.get_perf_ledgers()
                     if hotkey in perf_ledgers:
-                        miner_ledgers = perf_ledgers[hotkey]
-                        portfolio_ledger = miner_ledgers.get(TP_ID_PORTFOLIO)
+                        portfolio_ledger = perf_ledgers[hotkey]
 
                         if portfolio_ledger and portfolio_ledger.cps:
                             # Get the latest checkpoint from perf ledger
@@ -576,8 +569,7 @@ class MockScoring:
         results = []
 
         # Generate scores based on ledger performance
-        for hotkey, miner_ledger in ledger_dict.items():
-            portfolio_ledger = miner_ledger.get(TP_ID_PORTFOLIO)
+        for hotkey, portfolio_ledger in ledger_dict.items():
             if not portfolio_ledger or not portfolio_ledger.cps:
                 continue
 

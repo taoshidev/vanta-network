@@ -22,10 +22,7 @@ from vali_objects.enums.miner_bucket_enum import BucketEntry, MinerBucket
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.vali_dataclasses.order import Order
-from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import (
-    TP_ID_PORTFOLIO,
-    PerfLedger,
-)
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger
 
 
 class TestChallengePeriodIntegration(TestBase):
@@ -380,7 +377,7 @@ class TestChallengePeriodIntegration(TestBase):
         # Check the failing criteria initially
         ledger = ledgers.get(self.DEFAULT_MINER_HOTKEY)
         failing_criteria, _ = LedgerUtils.is_beyond_max_drawdown(
-            ledger_element=ledger[TP_ID_PORTFOLIO] if ledger else None,
+            ledger_element=ledger if ledger else None,
         )
 
         self.assertFalse(failing_criteria)
@@ -446,13 +443,13 @@ class TestChallengePeriodIntegration(TestBase):
         # Check the failing miners, to see if they are screened
         for miner in self.FAILING_MINER_NAMES:
             failing_screen, _ = LedgerUtils.is_beyond_max_drawdown(
-                ledger_element=self.LEDGERS[miner][TP_ID_PORTFOLIO],
+                ledger_element=self.LEDGERS[miner],
             )
             self.assertEqual(failing_screen, True)
 
         for miner in self.NOT_FAILING_MINER_NAMES:
             failing_screen, _ = LedgerUtils.is_beyond_max_drawdown(
-                ledger_element=self.LEDGERS[miner][TP_ID_PORTFOLIO],
+                ledger_element=self.LEDGERS[miner],
             )
             self.assertEqual(failing_screen, False)
 

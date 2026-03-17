@@ -107,7 +107,7 @@ class TestPerfLedgerEdgeCasesAndValidation(TestBase):
         plm.update(t_ms=self.now_ms)
         
         # Should create empty ledgers
-        bundles = plm.get_perf_ledgers(portfolio_only=False)
+        bundles = plm.get_perf_ledgers()
         self.assertEqual(len(bundles), 0, "Should have no bundles with no positions")
 
     def test_simultaneous_positions(self):
@@ -154,7 +154,7 @@ class TestPerfLedgerEdgeCasesAndValidation(TestBase):
         # Should handle gracefully
         plm.update(t_ms=base_time + MS_IN_24_HOURS)
         
-        bundles = plm.get_perf_ledgers(portfolio_only=False)
+        bundles = plm.get_perf_ledgers()
         self.assertIn(self.test_hotkey, bundles)
 
     def test_high_volume_positions(self):
@@ -185,12 +185,12 @@ class TestPerfLedgerEdgeCasesAndValidation(TestBase):
         update_time = base_time + (45 * MS_IN_24_HOURS)
         plm.update(t_ms=update_time)
         
-        bundles = plm.get_perf_ledgers(portfolio_only=False)
+        bundles = plm.get_perf_ledgers()
         
         # Check if we got bundles
         self.assertIn(self.test_hotkey, bundles, "Should have bundles for test miner")
         
-        btc_ledger = bundles[self.test_hotkey][TradePair.BTCUSD.trade_pair_id]
+        btc_ledger = bundles[self.test_hotkey]
         
         # Should have many checkpoints (at least 10)
         self.assertGreater(len(btc_ledger.cps), 10, "Should have many checkpoints with high volume")
@@ -224,7 +224,7 @@ class TestPerfLedgerEdgeCasesAndValidation(TestBase):
         update_time = base_time + (10 * MS_IN_24_HOURS)
         plm.update(t_ms=update_time)
         
-        bundles = plm.get_perf_ledgers(portfolio_only=False)
+        bundles = plm.get_perf_ledgers()
         
         # Even with extreme price movements, the system should handle gracefully
         # and create ledgers for valid positions
@@ -234,7 +234,7 @@ class TestPerfLedgerEdgeCasesAndValidation(TestBase):
         # The fact that extreme movements might prevent ledger creation is a specific
         # business rule that should be tested explicitly, not hand-waved
         if self.test_hotkey in bundles:
-            btc_ledger = bundles[self.test_hotkey][TradePair.BTCUSD.trade_pair_id]
+            btc_ledger = bundles[self.test_hotkey]
             # Validate the ledger structure if it exists
             self.assertIsInstance(btc_ledger.cps, list)
             self.assertGreaterEqual(len(btc_ledger.cps), 0)
@@ -320,13 +320,11 @@ class TestPerfLedgerEdgeCasesAndValidation(TestBase):
         plm.update(t_ms=update_time)
         
         # Verify all positions are tracked
-        bundles = plm.get_perf_ledgers(portfolio_only=False)
+        bundles = plm.get_perf_ledgers()
         
         # Must have bundles for the test miner - we created valid positions
         self.assertIn(self.test_hotkey, bundles, "Should have bundles for test miner with valid positions")
-        self.assertIn(TradePair.BTCUSD.trade_pair_id, bundles[self.test_hotkey], "Should have BTC ledger")
-            
-        btc_ledger = bundles[self.test_hotkey][TradePair.BTCUSD.trade_pair_id]
+        btc_ledger = bundles[self.test_hotkey]
         
         # Should have checkpoints aligned to boundaries
         for cp in btc_ledger.cps:
@@ -423,10 +421,9 @@ class TestPerfLedgerEdgeCasesAndValidation(TestBase):
             current_time = next_time
 
         # Check MDD
-        bundles = plm.get_perf_ledgers(portfolio_only=False)
+        bundles = plm.get_perf_ledgers()
         self.assertIn(self.test_hotkey, bundles, f"Should have bundles for test miner {self.test_hotkey}")
-        self.assertIn(TradePair.BTCUSD.trade_pair_id, bundles[self.test_hotkey], "Should have BTC ledger")
-        btc_ledger = bundles[self.test_hotkey][TradePair.BTCUSD.trade_pair_id]
+        btc_ledger = bundles[self.test_hotkey]
 
         # MDD should be less than 1.0 (indicating drawdown)
         # Find a checkpoint with actual updates (n_updates > 0)
@@ -488,8 +485,8 @@ class TestPerfLedgerEdgeCasesAndValidation(TestBase):
         plm.update(t_ms=base_time + (11 * MS_IN_24_HOURS))
         
         # High leverage should result in higher fees
-        bundles = plm.get_perf_ledgers(portfolio_only=False)
-        btc_ledger = bundles[self.test_hotkey][TradePair.BTCUSD.trade_pair_id]
+        bundles = plm.get_perf_ledgers()
+        btc_ledger = bundles[self.test_hotkey]
         
         # Find checkpoint with position
         for i, cp in enumerate(btc_ledger.cps):

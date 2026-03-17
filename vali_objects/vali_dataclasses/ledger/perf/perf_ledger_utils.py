@@ -229,32 +229,18 @@ class PerfLedgerValidator:
         return True
     
     @staticmethod
-    def validate_ledger_integrity(ledger_bundle: dict) -> bool:
+    def validate_ledger_integrity(ledger: object) -> bool:
         """
-        Validate the integrity of a ledger bundle.
-        
+        Validate the integrity of a portfolio PerfLedger.
+
         Args:
-            ledger_bundle: Dictionary of trade pair ID to PerfLedger
-            
+            ledger: PerfLedger instance to validate
+
         Returns:
-            True if bundle is valid
+            True if ledger is valid
         """
-        if not isinstance(ledger_bundle, dict):
-            raise ValueError("Ledger bundle must be a dictionary")
-        
-        # Check for portfolio ledger
-        from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import TP_ID_PORTFOLIO
-        if TP_ID_PORTFOLIO not in ledger_bundle:
-            raise ValueError("Ledger bundle must contain portfolio ledger")
-        
-        portfolio_ledger = ledger_bundle[TP_ID_PORTFOLIO]
-        
-        # Validate all ledgers have consistent timing
-        for tp_id, ledger in ledger_bundle.items():
-            if tp_id == TP_ID_PORTFOLIO:
-                continue
-            
-            if ledger.last_update_ms != portfolio_ledger.last_update_ms:
-                raise ValueError(f"Ledger {tp_id} last update time inconsistent with portfolio")
-        
+        from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger
+        if not isinstance(ledger, PerfLedger):
+            raise ValueError("Ledger must be a PerfLedger instance")
+
         return True

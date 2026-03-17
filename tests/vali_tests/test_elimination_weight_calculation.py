@@ -17,7 +17,6 @@ from tests.vali_tests.base_objects.test_base import TestBase
 from time_util.time_util import MS_IN_24_HOURS
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.vali_dataclasses.position import Position
-from vali_objects.utils.asset_segmentation import AssetSegmentation
 from vali_objects.utils.elimination.elimination_manager import EliminationReason
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from shared_objects.locks.position_lock import PositionLocks
@@ -401,7 +400,7 @@ class TestEliminationWeightCalculation(TestBase):
             hotkeys=success_hotkeys
         )
 
-        asset_classes = list(AssetSegmentation.distill_asset_classes(ValiConfig.ASSET_CLASS_BREAKDOWN))
+        asset_classes = list(ValiConfig.ASSET_CLASS_BREAKDOWN.keys())
         asset_class_min_days = {asset_class: ValiConfig.STATISTICAL_CONFIDENCE_MINIMUM_N_CEIL for asset_class in asset_classes}
 
         # Compute scores
@@ -447,13 +446,13 @@ class TestEliminationWeightCalculation(TestBase):
 
     def test_weight_calculation_performance_metrics(self):
         """Test that weight calculation uses performance metrics correctly"""
-        # Get ledgers for healthy miners - portfolio_only=True returns dict[str, PerfLedger]
-        ledgers = self.perf_ledger_client.get_perf_ledgers(portfolio_only=True)
+        # Get ledgers for healthy miners
+        ledgers = self.perf_ledger_client.get_perf_ledgers()
 
         # Verify ledger structure
         for miner in [self.HEALTHY_MINER_1, self.HEALTHY_MINER_2]:
             if miner in ledgers:
-                # With portfolio_only=True, we get PerfLedger directly
+                # PerfLedger is returned directly
                 portfolio_ledger = ledgers[miner]
                 self.assertIsInstance(portfolio_ledger, PerfLedger)
                 self.assertTrue(hasattr(portfolio_ledger, 'cps'))

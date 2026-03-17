@@ -1,6 +1,5 @@
 # developer: trdougherty
 import copy
-from vali_objects.utils.asset_segmentation import AssetSegmentation
 from vali_objects.vali_config import TradePairCategory
 
 from tests.shared_objects.test_utilities import generate_ledger
@@ -9,7 +8,6 @@ from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.scoring.scoring import Scoring
 from vali_objects.vali_config import TradePair, ValiConfig
-from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import TP_ID_PORTFOLIO
 
 
 class TestWeights(TestBase):
@@ -66,7 +64,7 @@ class TestWeights(TestBase):
             }
         }
 
-        asset_classes = list(AssetSegmentation.distill_asset_classes(ValiConfig.ASSET_CLASS_BREAKDOWN))
+        asset_classes = list(ValiConfig.ASSET_CLASS_BREAKDOWN.keys())
         self.SUBCATEGORY_MIN_DAYS = {asset_class: ValiConfig.STATISTICAL_CONFIDENCE_MINIMUM_N_CEIL for asset_class in asset_classes}
 
         self.DEFAULT_LEDGER = generate_ledger(0.1)
@@ -248,8 +246,8 @@ class TestWeights(TestBase):
 
         ledgers = {
             "miner1": None,
-            "miner2": generate_ledger(gain=0.001, loss=0, end_time=partial_window)[TP_ID_PORTFOLIO],
-            "miner3": generate_ledger(gain=0.001, loss=0, end_time=full_window)[TP_ID_PORTFOLIO],
+            "miner2": generate_ledger(gain=0.001, loss=0, end_time=partial_window),
+            "miner3": generate_ledger(gain=0.001, loss=0, end_time=full_window),
         }
         miner_scores = [("miner1", 0.1), ("miner2", 0.5), ("miner3", 0.49)]
 
@@ -272,8 +270,8 @@ class TestWeights(TestBase):
 
         ledgers = {
             "miner1": None,
-            "miner2": generate_ledger(gain=0.001, loss=0, end_time=partial_window)[TP_ID_PORTFOLIO],
-            "miner3": generate_ledger(gain=0.001, loss=0, end_time=full_window)[TP_ID_PORTFOLIO],
+            "miner2": generate_ledger(gain=0.001, loss=0, end_time=partial_window),
+            "miner3": generate_ledger(gain=0.001, loss=0, end_time=full_window),
         }
         miner_scores = [("miner1", 0.1), ("miner2", 0.5), ("miner3", 0.49)]
 
@@ -374,7 +372,7 @@ class TestWeights(TestBase):
 
     def test_score_miners_empty_ledger(self):
         """Test score_miners with empty ledger"""
-        result = Scoring.score_miners({}, {}, self.EVALUATION_TIME_MS)
+        result = Scoring.score_miners({}, {}, {}, self.EVALUATION_TIME_MS)
 
         # Function output should retain structure, but have no scores
         for subcategory, score_dict in result.items():

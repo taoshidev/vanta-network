@@ -571,7 +571,6 @@ class PositionManager:
         """
         # 1. Get existing perf ledger to access historical max portfolio value
         existing_bundle = self._perf_ledger_client.get_perf_ledgers(
-            portfolio_only=True,
             from_disk=False
         )
         portfolio_ledger = existing_bundle.get(hotkey)

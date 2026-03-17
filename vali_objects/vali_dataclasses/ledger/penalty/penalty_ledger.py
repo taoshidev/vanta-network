@@ -19,12 +19,11 @@ import shutil
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
 from vali_objects.contract.contract_client import ContractClient
-from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger, TP_ID_PORTFOLIO
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger
 from vali_objects.vali_dataclasses.ledger.ledger_utils import LedgerUtils
 from vali_objects.position_management.position_utils import PositionPenalties
 from vali_objects.contract.validator_contract_manager import ValidatorContractManager
 from vali_objects.position_management.position_utils.position_filter import PositionFilter
-from vali_objects.utils.asset_segmentation import AssetSegmentation
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.vali_config import ValiConfig
 from time_util.time_util import TimeUtil
@@ -40,7 +39,6 @@ class PenaltyInputType(Enum):
     POSITIONS = auto()
     PSEUDO_POSITIONS = auto()
     COLLATERAL = auto()
-    ASSET_LEDGER = auto()
 
 
 @dataclass
@@ -262,7 +260,7 @@ class PenaltyLedgerManager:
         ),
         'risk_adjusted_performance': PenaltyConfig(
             function=PositionPenalties.risk_adjusted_performance_penalty,
-            input_type=PenaltyInputType.ASSET_LEDGER
+            input_type=PenaltyInputType.LEDGER
         )
     }
 
@@ -754,9 +752,7 @@ class PenaltyLedgerManager:
             bt.logging.info("[PENALTY_LEDGER] Full rebuild mode: building new ledgers while preserving old ones")
 
         # Read all perf ledgers from perf ledger client
-        all_perf_ledgers: Dict[str, Dict[str, PerfLedger]] = self._perf_ledger_client.get_perf_ledgers(
-            portfolio_only=False
-        )
+        all_perf_ledgers: Dict[str, PerfLedger] = self._perf_ledger_client.get_perf_ledgers()
         all_positions: Dict[str, List[Position]] = self.position_manager.get_positions_for_all_miners()
 
         # OPTIMIZATION: Fetch entire active_miners dict once upfront to avoid O(n) RPC calls
@@ -787,10 +783,8 @@ class PenaltyLedgerManager:
         total_hotkeys = len(all_perf_ledgers)
         current_hotkey_index = 0
 
-        for miner_hotkey, ledger_dict in all_perf_ledgers.items():
+        for miner_hotkey, portfolio_ledger in all_perf_ledgers.items():
             current_hotkey_index += 1
-            # Get portfolio ledger for this miner
-            portfolio_ledger = ledger_dict.get(TP_ID_PORTFOLIO)
 
             if not portfolio_ledger or not portfolio_ledger.cps:
                 raise ValueError(f"No portfolio ledger found for miner {miner_hotkey}")
@@ -857,7 +851,6 @@ class PenaltyLedgerManager:
                                 target_cp_duration_ms=portfolio_ledger.target_cp_duration_ms,
                                 target_ledger_window_ms=portfolio_ledger.target_ledger_window_ms,
                                 cps=[cp for cp in portfolio_ledger.cps if cp.last_update_ms <= checkpoint_ms],
-                                tp_id=portfolio_ledger.tp_id
                             )
                             penalty_value = penalty_config.function(temp_ledger)
 
@@ -866,17 +859,6 @@ class PenaltyLedgerManager:
 
                         elif penalty_config.input_type == PenaltyInputType.COLLATERAL:
                             penalty_value = penalty_config.function(miner_account_size)
-
-                        elif penalty_config.input_type == PenaltyInputType.ASSET_LEDGER:
-                            segmentation_machine = AssetSegmentation({miner_hotkey: ledger_dict})
-                            asset_class = self._asset_selection_client.get_asset_selection(miner_hotkey)
-                            if not asset_class:
-                                penalty_value = 0
-                            else:
-                                asset_ledger = segmentation_machine.segmentation(asset_class).get(miner_hotkey)
-                                if not asset_ledger or not asset_ledger.cps:
-                                    continue
-                                penalty_value = penalty_config.function(asset_ledger, asset_class)
 
                     except Exception as e:
                         if verbose:

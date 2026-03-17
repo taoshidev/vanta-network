@@ -13,6 +13,7 @@ from time_util.time_util import TimeUtil
 from vali_objects.utils.vali_bkp_utils import CustomEncoder
 from vali_objects.vali_config import RPCConnectionMode
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger import DebtLedger, DebtCheckpoint
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from entity_management import entity_utils
 
@@ -433,8 +434,6 @@ class DebtLedgerManager():
             verbose: Enable detailed logging
             delta_update: If True, only process new checkpoints since last update. If False, rebuild from scratch.
         """
-        from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import TP_ID_PORTFOLIO
-
         # Build into candidate dict to prevent race conditions (don't clear existing ledgers yet)
         if delta_update:
             # Delta update: start with copies of existing ledgers
@@ -448,9 +447,7 @@ class DebtLedgerManager():
             bt.logging.info("Full rebuild mode: building new debt ledgers from scratch")
 
         # Read all perf ledgers from perf ledger client
-        all_perf_ledgers: Dict[str, Dict[str, any]] = self._perf_ledger_client.get_perf_ledgers(
-            portfolio_only=False
-        )
+        all_perf_ledgers: Dict[str, PerfLedger] = self._perf_ledger_client.get_perf_ledgers()
 
         if not all_perf_ledgers:
             bt.logging.warning("No performance ledgers found")
@@ -461,8 +458,7 @@ class DebtLedgerManager():
         reference_hotkey = None
         max_checkpoints = 0
 
-        for hotkey, ledger_dict in all_perf_ledgers.items():
-            portfolio_ledger = ledger_dict.get(TP_ID_PORTFOLIO)
+        for hotkey, portfolio_ledger in all_perf_ledgers.items():
             if portfolio_ledger and portfolio_ledger.cps:
                 if len(portfolio_ledger.cps) > max_checkpoints:
                     max_checkpoints = len(portfolio_ledger.cps)
@@ -576,12 +572,8 @@ class DebtLedgerManager():
 
             # Process ALL hotkeys at this timestamp
             for hotkey in all_hotkeys_to_track:
-                # Get ledgers for this hotkey
-                ledger_dict = all_perf_ledgers.get(hotkey)
-                if not ledger_dict:
-                    continue
-
-                portfolio_ledger = ledger_dict.get(TP_ID_PORTFOLIO)
+                # Get ledger for this hotkey
+                portfolio_ledger = all_perf_ledgers.get(hotkey)
                 if not portfolio_ledger or not portfolio_ledger.cps:
                     continue
 

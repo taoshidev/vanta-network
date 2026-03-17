@@ -1433,7 +1433,7 @@ curl -H "Authorization: Bearer YOUR_TIER_200_API_KEY" \
       "subaccount_challenge_intraday_drawdown_threshold": 0.05,
       "subaccount_challenge_eod_drawdown_threshold": 0.05
     },
-    // eliminination is only included if the subaccount is eliminated
+    // elimination is only included if the subaccount is eliminated
     "elimination": {
       "elimination_initiated_time_ms": 1771893304364,
       "reason": "FAILED_CHALLENGE_PERIOD_DRAWDOWN",

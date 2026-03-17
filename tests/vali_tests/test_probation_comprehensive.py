@@ -23,7 +23,6 @@ from vali_objects.enums.miner_bucket_enum import BucketEntry, MinerBucket
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.vali_dataclasses.order import Order
-from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import TP_ID_PORTFOLIO
 
 
 class TestProbationComprehensive(TestBase):
@@ -300,7 +299,7 @@ class TestProbationComprehensive(TestBase):
         # Ensure this miner has excellent performance
         excellent_ledger = generate_winning_ledger(self.START_TIME, self.END_TIME)
         # Boost the performance significantly
-        for checkpoint in excellent_ledger[TP_ID_PORTFOLIO].cps:
+        for checkpoint in excellent_ledger.cps:
             checkpoint.gain = 0.15  # 15% gain
             checkpoint.loss = -0.01  # Minimal loss
 
@@ -416,7 +415,7 @@ class TestProbationComprehensive(TestBase):
 
         # Setup excellent performance for promoting miners
         excellent_ledger = generate_winning_ledger(self.START_TIME, self.END_TIME)
-        for checkpoint in excellent_ledger[TP_ID_PORTFOLIO].cps:
+        for checkpoint in excellent_ledger.cps:
             checkpoint.gain = 0.12
             checkpoint.loss = -0.02
 
@@ -427,7 +426,7 @@ class TestProbationComprehensive(TestBase):
 
         # Setup poor performance for demoting miner
         poor_ledger = generate_winning_ledger(self.START_TIME, self.END_TIME)  # Start with winning then make poor
-        for checkpoint in poor_ledger[TP_ID_PORTFOLIO].cps:
+        for checkpoint in poor_ledger.cps:
             checkpoint.gain = 0.02
             checkpoint.loss = -0.08
 
@@ -756,7 +755,7 @@ class TestProbationComprehensive(TestBase):
         poor_ledgers = {}
         for miner in poorly_performing_miners:
             poor_ledger = generate_winning_ledger(self.START_TIME, self.END_TIME)
-            for checkpoint in poor_ledger[TP_ID_PORTFOLIO].cps:
+            for checkpoint in poor_ledger.cps:
                 checkpoint.gain = 0.01  # 1% gain
                 checkpoint.loss = -0.05  # 5% loss
             poor_ledgers[miner] = poor_ledger

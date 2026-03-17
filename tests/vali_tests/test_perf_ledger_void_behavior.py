@@ -20,8 +20,7 @@ from vali_objects.vali_config import TradePair
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import (
     PerfLedger,
-    PerfCheckpoint,
-    TP_ID_PORTFOLIO,
+    PerfCheckpoint
 )
 from vali_objects.enums.misc import TradePairReturnStatus
 
@@ -174,8 +173,8 @@ class TestPerfLedgerVoidBehavior(TestBase):
             self.perf_ledger_client.update(t_ms=close_ms + 5000)
 
             # Get checkpoint values at close
-            bundles = self.perf_ledger_client.get_perf_ledgers(portfolio_only=False)
-            btc_ledger = bundles[self.test_hotkey][TradePair.BTCUSD.trade_pair_id]
+            bundles = self.perf_ledger_client.get_perf_ledgers()
+            btc_ledger = bundles[self.test_hotkey]
 
             # Find last active checkpoint
             close_checkpoint = None
@@ -200,22 +199,18 @@ class TestPerfLedgerVoidBehavior(TestBase):
                 void_checkpoints = []
                 self.perf_ledger_client.update(t_ms=base_time + (3 + update_round_idx) * MS_IN_24_HOURS + boundary_offset_ms)
 
-                bundles = self.perf_ledger_client.get_perf_ledgers(portfolio_only=False)
-                btc_ledger = bundles[self.test_hotkey][TradePair.BTCUSD.trade_pair_id]
-                portfolio_ledger = bundles[self.test_hotkey][TP_ID_PORTFOLIO]
+                bundles = self.perf_ledger_client.get_perf_ledgers()
+                portfolio_ledger = bundles[self.test_hotkey]
 
-                assert len(btc_ledger.cps) == len(portfolio_ledger.cps)
                 lb = 6 + update_round_idx * 2
-                assert len(btc_ledger.cps) in list(range(lb + 3))
-                for cp_btc, cp_portfolio in zip(btc_ledger.cps, portfolio_ledger.cps):
-                    self.assertEqual(cp_btc, cp_portfolio)
+                assert len(portfolio_ledger.cps) in list(range(lb + 3))
 
                 print(f'-------------- update round index {update_round_idx} boundary offset {boundary_offset_ms}----------------')
-                for i, cp in enumerate(btc_ledger.cps):
+                for i, cp in enumerate(portfolio_ledger.cps):
                     print(TimeUtil.millis_to_formatted_date_str(cp.last_update_ms), i, cp)
                 print('-----------------------------------------------------------')
 
-                for cp in btc_ledger.cps:
+                for cp in portfolio_ledger.cps:
                     if cp.last_update_ms > close_checkpoint.last_update_ms:
                         void_checkpoints.append(cp)
 
@@ -263,25 +258,14 @@ class TestPerfLedgerVoidBehavior(TestBase):
         # Update to day 25
         self.perf_ledger_client.update(t_ms=base_time + (25 * MS_IN_24_HOURS))
 
-        bundles = self.perf_ledger_client.get_perf_ledgers(portfolio_only=False)
-        bundle = bundles[self.test_hotkey]
+        bundles = self.perf_ledger_client.get_perf_ledgers()
+        portfolio_ledger = bundles[self.test_hotkey]
 
-        # Verify each TP has correct void period
-        btc_ledger = bundle[TradePair.BTCUSD.trade_pair_id]
-        eth_ledger = bundle[TradePair.ETHUSD.trade_pair_id]
-        jpy_ledger = bundle[TradePair.USDJPY.trade_pair_id]
-
-        # Count void checkpoints for each
-        btc_void = sum(1 for cp in btc_ledger.cps if cp.n_updates == 0 and
-                      cp.last_update_ms > base_time + (10 * MS_IN_24_HOURS))
-        eth_void = sum(1 for cp in eth_ledger.cps if cp.n_updates == 0 and
-                      cp.last_update_ms > base_time + (15 * MS_IN_24_HOURS))
-        jpy_void = sum(1 for cp in jpy_ledger.cps if cp.n_updates == 0 and
-                      cp.last_update_ms > base_time + (18 * MS_IN_24_HOURS))
-
-        # BTC should have most void checkpoints (closed earliest)
-        self.assertGreater(btc_void, eth_void)
-        self.assertGreater(eth_void, jpy_void)
+        # Verify the portfolio ledger has void checkpoints after all positions closed (day 18)
+        # The last position closes at day 18, so checkpoints after that should be void
+        post_close_void = sum(1 for cp in portfolio_ledger.cps if cp.n_updates == 0 and
+                             cp.last_update_ms > base_time + (18 * MS_IN_24_HOURS))
+        self.assertGreater(post_close_void, 0, "Should have void checkpoints after all positions closed")
 
     def test_bypass_logic_direct(self):
         """Test the bypass logic utility function via RPC client."""
@@ -352,8 +336,8 @@ class TestPerfLedgerVoidBehavior(TestBase):
         # Update through void period
         self.perf_ledger_client.update(t_ms=base_time + (5 * MS_IN_24_HOURS))
 
-        bundles = self.perf_ledger_client.get_perf_ledgers(portfolio_only=False)
-        btc_ledger = bundles[self.test_hotkey][TradePair.BTCUSD.trade_pair_id]
+        bundles = self.perf_ledger_client.get_perf_ledgers()
+        btc_ledger = bundles[self.test_hotkey]
 
         # Check void checkpoint characteristics
         void_checkpoint_count = 0

@@ -17,9 +17,7 @@ from vali_objects.vali_dataclasses.position import Position
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair
 from vali_objects.vali_dataclasses.order import Order
-from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import (
-    TP_ID_PORTFOLIO,
-)
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger
 
 
 class TestPerfLedgerMathAndMetrics(TestBase):
@@ -144,15 +142,12 @@ class TestPerfLedgerMathAndMetrics(TestBase):
         self.perf_ledger_client.update(t_ms=base_time + (2 * MS_IN_24_HOURS))
 
         # Get ledgers via client
-        bundles = self.perf_ledger_client.get_perf_ledgers(portfolio_only=False)
+        bundles = self.perf_ledger_client.get_perf_ledgers()
         bundle = bundles[self.test_hotkey]
 
-        # Portfolio should exist
-        self.assertIn(TP_ID_PORTFOLIO, bundle, "Portfolio ledger should exist")
-
-        # All individual TPs should exist
-        for _, tp, _, _, _ in positions:
-            self.assertIn(tp.trade_pair_id, bundle, f"{tp.trade_pair_id} should exist")
+        # Portfolio ledger should exist and have checkpoints
+        self.assertIsInstance(bundle, PerfLedger, "Portfolio ledger should exist")
+        self.assertGreater(len(bundle.cps), 0, "Portfolio ledger should have checkpoints")
 
     def test_exact_fee_calculations(self):
         """Test exact fee calculations match expected values."""
@@ -196,8 +191,8 @@ class TestPerfLedgerMathAndMetrics(TestBase):
         self.perf_ledger_client.update(t_ms=base_time + (2 * MS_IN_24_HOURS))
 
         # Get checkpoint with position via client
-        bundles = self.perf_ledger_client.get_perf_ledgers(portfolio_only=False)
-        btc_ledger = bundles[self.test_hotkey][TradePair.BTCUSD.trade_pair_id]
+        bundles = self.perf_ledger_client.get_perf_ledgers()
+        btc_ledger = bundles[self.test_hotkey]
 
         # Find checkpoint with the position
         for cp in btc_ledger.cps:
@@ -250,8 +245,8 @@ class TestPerfLedgerMathAndMetrics(TestBase):
             current_time = next_time
 
         # Get ledger via client
-        bundles = self.perf_ledger_client.get_perf_ledgers(portfolio_only=False)
-        btc_ledger = bundles[self.test_hotkey][TradePair.BTCUSD.trade_pair_id]
+        bundles = self.perf_ledger_client.get_perf_ledgers()
+        btc_ledger = bundles[self.test_hotkey]
 
         # Find final checkpoint with data
         final_cp = None
@@ -313,62 +308,22 @@ class TestPerfLedgerMathAndMetrics(TestBase):
             current_time = next_time
 
         # Get performance ledgers for all trade pairs via client
-        bundles = self.perf_ledger_client.get_perf_ledgers(portfolio_only=False)
+        bundles = self.perf_ledger_client.get_perf_ledgers()
         self.assertIn(self.test_hotkey, bundles, "Should have ledger bundle for test hotkey")
 
-        perf_ledger_bundles = {self.test_hotkey: bundles[self.test_hotkey]}
-        portfolio_ledger = perf_ledger_bundles[self.test_hotkey][TP_ID_PORTFOLIO]
+        portfolio_ledger = bundles[self.test_hotkey]
 
-        # Validate returns consistency using the reference code logic
-        returns = []
-        returns_muled = []
-        n_contributing_tps = []
-
-        for i, portfolio_cp in enumerate(portfolio_ledger.cps):
-
-            returns.append(portfolio_cp.prev_portfolio_ret)
-
-            # Calculate product of individual trade pair returns at this checkpoint
-            product = 1.0
-            n_contributing = 0
-
-            for tp_id, ledger in perf_ledger_bundles[self.test_hotkey].items():
-                if tp_id == TP_ID_PORTFOLIO:
-                    continue
-
-                # Find matching checkpoint by timestamp
-                matching_cp = None
-                for tp_cp in ledger.cps:
-                    if tp_cp.last_update_ms == portfolio_cp.last_update_ms:
-                        matching_cp = tp_cp
-                        break
-
-                if matching_cp:
-                    product *= matching_cp.prev_portfolio_ret
-                    n_contributing += 1
-
-            returns_muled.append(product)
-            n_contributing_tps.append(n_contributing)
+        # Validate returns data from portfolio ledger
+        returns = [cp.prev_portfolio_ret for cp in portfolio_ledger.cps]
 
         # Validate that we have meaningful data
         self.assertGreater(len(returns), 0, "Should have portfolio checkpoints with data")
-        self.assertTrue(any(n > 0 for n in n_contributing_tps),
-                       "Should have contributing trade pairs")
 
-        # Test consistency: portfolio return should approximately equal product of trade pair returns
-        for i, (portfolio_ret, trade_pair_product, n_contrib) in enumerate(zip(returns, returns_muled, n_contributing_tps)):
-            diff = portfolio_ret - trade_pair_product
-            print(f'cp {i} portfolio_ret {portfolio_ret}, trade_pair_product {trade_pair_product}, diff {diff}, n_contributing_tps {n_contributing_tps}')
-
-        for i, (portfolio_ret, trade_pair_product, n_contrib) in enumerate(zip(returns, returns_muled, n_contributing_tps)):
-            if n_contrib > 0:  # Only test when we have contributing trade pairs
-                difference = abs(portfolio_ret - trade_pair_product)
-
-                # Allow for small floating point differences (0.1% tolerance)
-                self.assertLess(difference, 1e-10,
-                    f"Checkpoint {i}: Portfolio return {portfolio_ret:.6f} should match "
-                    f"product of trade pair returns {trade_pair_product:.6f} "
-                    f"(relative error: {difference})")
+        # Test that all portfolio returns are positive (sanity check)
+        for i, portfolio_ret in enumerate(returns):
+            self.assertGreater(portfolio_ret, 0,
+                    f"Checkpoint {i}: Portfolio return {portfolio_ret:.6f} should be positive "
+                    f"checkpoint {i}")
 
     def _create_position(self, position_id: str, trade_pair: TradePair,
                         open_ms: int, close_ms: int, open_price: float,

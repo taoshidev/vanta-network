@@ -20,8 +20,7 @@ from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import (
-    PerfCheckpoint,
-    TP_ID_PORTFOLIO,
+    PerfCheckpoint
 )
 
 
@@ -183,39 +182,33 @@ class TestPerfLedgerCore(TestBase):
         self.perf_ledger_client.update(t_ms=base_time + (2 * MS_IN_24_HOURS))
 
         # Verify via client
-        bundles = self.perf_ledger_client.get_perf_ledgers(portfolio_only=False)
+        bundles = self.perf_ledger_client.get_perf_ledgers()
         print(f"DEBUG: get_perf_ledgers returned {len(bundles)} bundles: {list(bundles.keys())}")
         self.assertIn(self.TEST_HOTKEY, bundles)
 
         bundle = bundles[self.TEST_HOTKEY]
-        self.assertIn(TradePair.BTCUSD.trade_pair_id, bundle)
-        self.assertIn(TP_ID_PORTFOLIO, bundle)
+        self.assertIsNotNone(bundle)
 
-        # Validate each ledger thoroughly
-        for tp_id, ledger in bundle.items():
-            self.validate_perf_ledger(ledger, base_time)
+        # Validate the portfolio ledger thoroughly
+        ledger = bundle
+        self.validate_perf_ledger(ledger, base_time)
 
-            # Check checkpoints exist
-            self.assertGreater(len(ledger.cps), 0, f"Ledger {tp_id} should have checkpoints")
+        # Check checkpoints exist
+        self.assertGreater(len(ledger.cps), 0, "Portfolio ledger should have checkpoints")
 
-            # For a 2-day period with 12-hour checkpoints, expect 4 checkpoints minimum
-            # The exact count depends on alignment and timing, but should be reasonable
-            min_expected_checkpoints = 3  # At least 3 checkpoints for 2-day period
-            max_expected_checkpoints = 6  # At most 6 for boundary cases
-            self.assertGreaterEqual(len(ledger.cps), min_expected_checkpoints,
-                                   f"Expected at least {min_expected_checkpoints} checkpoints, got {len(ledger.cps)} for {tp_id}")
-            self.assertLessEqual(len(ledger.cps), max_expected_checkpoints,
-                                f"Expected at most {max_expected_checkpoints} checkpoints, got {len(ledger.cps)} for {tp_id}")
+        # For a 2-day period with 12-hour checkpoints, expect 4 checkpoints minimum
+        # The exact count depends on alignment and timing, but should be reasonable
+        min_expected_checkpoints = 3  # At least 3 checkpoints for 2-day period
+        max_expected_checkpoints = 6  # At most 6 for boundary cases
+        self.assertGreaterEqual(len(ledger.cps), min_expected_checkpoints,
+                               f"Expected at least {min_expected_checkpoints} checkpoints, got {len(ledger.cps)}")
+        self.assertLessEqual(len(ledger.cps), max_expected_checkpoints,
+                            f"Expected at most {max_expected_checkpoints} checkpoints, got {len(ledger.cps)}")
 
-            # Validate that at least one checkpoint has trading activity
-            # We created a position, so there must be activity recorded
-            has_activity = any(cp.n_updates > 0 for cp in ledger.cps)
-            if tp_id == TradePair.BTCUSD.trade_pair_id:
-                # For the specific trade pair we created a position in, must have activity
-                self.assertTrue(has_activity, f"BTC ledger must have trading activity - we created a position")
-            elif tp_id == TP_ID_PORTFOLIO:
-                # Portfolio aggregates individual TPs, so should also have activity
-                self.assertTrue(has_activity, f"Portfolio ledger must reflect BTC trading activity")
+        # Validate that at least one checkpoint has trading activity
+        # We created a position, so there must be activity recorded
+        has_activity = any(cp.n_updates > 0 for cp in ledger.cps)
+        self.assertTrue(has_activity, "Portfolio ledger must reflect BTC trading activity")
 
     def test_return_calculation_accuracy(self):
         """Test accurate return calculations for various scenarios."""
@@ -243,30 +236,26 @@ class TestPerfLedgerCore(TestBase):
         self.perf_ledger_client.update(t_ms=base_time + (15 * MS_IN_24_HOURS))
 
         # Verify returns via client
-        bundles = self.perf_ledger_client.get_perf_ledgers(portfolio_only=False)
+        bundles = self.perf_ledger_client.get_perf_ledgers()
         bundle = bundles[self.TEST_HOTKEY]
 
-        # Validate all ledgers
-        for tp_id, ledger in bundle.items():
-            self.validate_perf_ledger(ledger, base_time)
+        # Validate the portfolio ledger
+        ledger = bundle
+        self.validate_perf_ledger(ledger, base_time)
 
-            # Check that we have checkpoints with varied return characteristics
-            gains_found = 0
-            losses_found = 0
-            neutral_found = 0
+        # Check that we have checkpoints with varied return characteristics
+        gains_found = 0
+        losses_found = 0
 
-            for cp in ledger.cps:
-                if cp.gain > 0:
-                    gains_found += 1
-                elif cp.loss < 0:
-                    losses_found += 1
-                elif cp.n_updates > 0 and cp.gain == 0 and cp.loss == 0:
-                    neutral_found += 1
+        for cp in ledger.cps:
+            if cp.gain > 0:
+                gains_found += 1
+            elif cp.loss < 0:
+                losses_found += 1
 
-            # Should have variety in returns
-            if tp_id == TradePair.BTCUSD.trade_pair_id:
-                self.assertGreater(gains_found, 0, f"Ledger {tp_id} should have some gaining checkpoints")
-                self.assertGreater(losses_found, 0, f"Ledger {tp_id} should have some losing checkpoints")
+        # Should have variety in returns across all positions
+        self.assertGreater(gains_found, 0, "Portfolio ledger should have some gaining checkpoints")
+        self.assertGreater(losses_found, 0, "Portfolio ledger should have some losing checkpoints")
 
     def test_multi_trade_pair_aggregation(self):
         """Test portfolio aggregation across multiple trade pairs."""
@@ -291,23 +280,16 @@ class TestPerfLedgerCore(TestBase):
         self.perf_ledger_client.update(t_ms=base_time + (2 * MS_IN_24_HOURS))
 
         # Verify all trade pairs are tracked via client
-        bundles = self.perf_ledger_client.get_perf_ledgers(portfolio_only=False)
+        bundles = self.perf_ledger_client.get_perf_ledgers()
         bundle = bundles[self.TEST_HOTKEY]
 
-        # Validate each expected trade pair
-        for _, tp, _, _ in positions:
-            self.assertIn(tp.trade_pair_id, bundle, f"{tp.trade_pair_id} should be in bundle")
-            self.validate_perf_ledger(bundle[tp.trade_pair_id], base_time)
-
         # Portfolio should aggregate all positions
-        self.assertIn(TP_ID_PORTFOLIO, bundle, "Portfolio ledger should exist")
-        portfolio_ledger = bundle[TP_ID_PORTFOLIO]
+        self.assertIsNotNone(bundle, "Portfolio ledger should exist")
+        portfolio_ledger = bundle
         self.validate_perf_ledger(portfolio_ledger, base_time)
 
-        # Portfolio should have at least as many checkpoints as individual TPs
-        min_individual_cps = min(len(bundle[tp.trade_pair_id].cps) for _, tp, _, _ in positions)
-        self.assertGreaterEqual(len(portfolio_ledger.cps), min_individual_cps,
-                               "Portfolio should have reasonable checkpoint count")
+        # Portfolio should have checkpoints reflecting activity from all trade pairs
+        self.assertGreater(len(portfolio_ledger.cps), 0, "Portfolio should have checkpoints")
 
     def test_fee_calculations(self):
         """Test carry fee and spread fee calculations."""
@@ -325,9 +307,9 @@ class TestPerfLedgerCore(TestBase):
         # Update via client
         self.perf_ledger_client.update(t_ms=base_time + (6 * MS_IN_24_HOURS))
 
-        # Check fees via client
-        bundles = self.perf_ledger_client.get_perf_ledgers(portfolio_only=False)
-        btc_ledger = bundles[self.TEST_HOTKEY][TradePair.BTCUSD.trade_pair_id]
+        # Check fees via client (portfolio-level ledger)
+        bundles = self.perf_ledger_client.get_perf_ledgers()
+        btc_ledger = bundles[self.TEST_HOTKEY]
 
         # Validate the ledger structure first
         self.validate_perf_ledger(btc_ledger, base_time)
@@ -380,9 +362,9 @@ class TestPerfLedgerCore(TestBase):
         # Update via client
         self.perf_ledger_client.update(t_ms=base_time + (2 * MS_IN_24_HOURS))
 
-        # Verify checkpoint alignment via client
-        bundles = self.perf_ledger_client.get_perf_ledgers(portfolio_only=False)
-        btc_ledger = bundles[self.TEST_HOTKEY][TradePair.BTCUSD.trade_pair_id]
+        # Verify checkpoint alignment via client (portfolio-level ledger)
+        bundles = self.perf_ledger_client.get_perf_ledgers()
+        btc_ledger = bundles[self.TEST_HOTKEY]
 
         # Validate ledger structure
         self.validate_perf_ledger(btc_ledger, base_time)
@@ -471,13 +453,11 @@ class TestPerfLedgerCore(TestBase):
         self.perf_ledger_client.update(t_ms=update_time)
 
         # Get the perf ledgers via client
-        bundles = self.perf_ledger_client.get_perf_ledgers(portfolio_only=False)
+        bundles = self.perf_ledger_client.get_perf_ledgers()
         self.assertIn(self.TEST_HOTKEY, bundles, "Should have bundle for test hotkey")
 
-        # Check BTCUSD ledger
-        btc_bundle = bundles[self.TEST_HOTKEY]
-        self.assertIn(TradePair.BTCUSD.trade_pair_id, btc_bundle, "Should have BTCUSD ledger")
-        btc_ledger = btc_bundle[TradePair.BTCUSD.trade_pair_id]
+        # Get portfolio ledger (single PerfLedger per miner)
+        btc_ledger = bundles[self.TEST_HOTKEY]
 
         # Verify we have exactly one checkpoint
         self.assertEqual(len(btc_ledger.cps), 1, "Should have exactly one checkpoint")
@@ -518,8 +498,8 @@ class TestPerfLedgerCore(TestBase):
         )
 
         # Check portfolio ledger
-        self.assertIn(TP_ID_PORTFOLIO, btc_bundle, "Should have portfolio ledger")
-        portfolio_ledger = btc_bundle[TP_ID_PORTFOLIO]
+        self.assertIsNotNone(btc_ledger, "Should have portfolio ledger")
+        portfolio_ledger = btc_ledger
         self.assertEqual(len(portfolio_ledger.cps), 1, "Portfolio should have one checkpoint")
 
         portfolio_checkpoint = portfolio_ledger.cps[0]
@@ -565,9 +545,9 @@ class TestPerfLedgerCore(TestBase):
         update_time = base_time + (8 * 60 * 60 * 1000)
         self.perf_ledger_client.update(t_ms=update_time)
 
-        # Get the ledgers via client
-        bundles = self.perf_ledger_client.get_perf_ledgers(portfolio_only=False)
-        btc_ledger = bundles[self.TEST_HOTKEY][TradePair.BTCUSD.trade_pair_id]
+        # Get the ledgers via client (portfolio-level)
+        bundles = self.perf_ledger_client.get_perf_ledgers()
+        btc_ledger = bundles[self.TEST_HOTKEY]
 
         # Should have single checkpoint
         self.assertEqual(len(btc_ledger.cps), 1, "Should have exactly one checkpoint")

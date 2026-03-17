@@ -13,7 +13,6 @@ from tests.vali_tests.base_objects.test_base import TestBase
 from vali_objects.vali_dataclasses.ledger.ledger_utils import LedgerUtils
 from vali_objects.vali_config import ValiConfig
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import (
-    TP_ID_PORTFOLIO,
     PerfCheckpoint,
     PerfLedger,
 )
@@ -29,7 +28,7 @@ class TestLedgerUtils(TestBase):
         # seeding
         random.seed(0)
 
-        self.DEFAULT_LEDGER = generate_ledger(0.1, mdd=0.99)[TP_ID_PORTFOLIO]
+        self.DEFAULT_LEDGER = generate_ledger(0.1, mdd=0.99)
 
     def test_daily_return_log(self):
         """
@@ -257,21 +256,21 @@ class TestLedgerUtils(TestBase):
         self.assertEqual(len(LedgerUtils.daily_returns(empty_ledger)), 0)
 
         # No returns
-        l1 = generate_ledger(0.1)[TP_ID_PORTFOLIO]
+        l1 = generate_ledger(0.1)
         l1_ledger = l1
         self.assertEqual(LedgerUtils.daily_returns(l1_ledger)[0], 0)
         # Simple returns >= log returns
         self.assertGreaterEqual(LedgerUtils.daily_returns(l1_ledger)[0], LedgerUtils.daily_return_log(l1_ledger)[0] * 100)
 
         # Negative returns
-        l1 = generate_ledger(0.1, gain=0.1, loss=-0.2)[TP_ID_PORTFOLIO]
+        l1 = generate_ledger(0.1, gain=0.1, loss=-0.2)
         l1_ledger = l1
         self.assertLess(LedgerUtils.daily_returns(l1_ledger)[0], 0)
         # Simple returns >= log returns
         self.assertGreaterEqual(LedgerUtils.daily_returns(l1_ledger)[0], LedgerUtils.daily_return_log(l1_ledger)[0] * 100)
 
         # Positive returns
-        l1 = generate_ledger(0.1, gain=0.2, loss=-0.1)[TP_ID_PORTFOLIO]
+        l1 = generate_ledger(0.1, gain=0.2, loss=-0.1)
         l1_ledger = l1
         self.assertGreater(LedgerUtils.daily_returns(l1_ledger)[0], 0)
         # Simple returns >= log returns
@@ -285,19 +284,19 @@ class TestLedgerUtils(TestBase):
         self.assertEqual(LedgerUtils.instantaneous_max_drawdown(empty_ledger), 0.0)
 
         # Valid ledger tests
-        l1 = generate_ledger(0.1, mdd=0.99)[TP_ID_PORTFOLIO]
+        l1 = generate_ledger(0.1, mdd=0.99)
         self.assertEqual(LedgerUtils.instantaneous_max_drawdown(l1), 0.99)
 
-        l2 = generate_ledger(0.1, mdd=0.95)[TP_ID_PORTFOLIO]
+        l2 = generate_ledger(0.1, mdd=0.95)
         self.assertEqual(LedgerUtils.instantaneous_max_drawdown(l2), 0.95)
 
         # Test with varying drawdowns - should return the minimum (worst) drawdown
-        l3 = generate_ledger(0.1, mdd=0.99)[TP_ID_PORTFOLIO]
+        l3 = generate_ledger(0.1, mdd=0.99)
         l3_cps = l3.cps
         l3_cps[-1].mdd = 0.5  # Worse drawdown
         self.assertEqual(LedgerUtils.instantaneous_max_drawdown(l3), 0.5)
 
-        l4 = generate_ledger(0.1, mdd=0.99)[TP_ID_PORTFOLIO]
+        l4 = generate_ledger(0.1, mdd=0.99)
         l4_cps = l4.cps
         l4_cps[0].mdd = 0.5  # Worse drawdown at start
         self.assertEqual(LedgerUtils.instantaneous_max_drawdown(l4), 0.5)
@@ -639,84 +638,50 @@ class TestLedgerUtils(TestBase):
         except TypeError:
             self.fail("daily_returns_by_date_json results should be JSON serializable")
     
-    def test_is_valid_trading_day_forex_saturday_exclusion(self):
-        """Test that forex trade pairs correctly exclude Saturdays as invalid trading days"""
-        # Test data: asset_id, expected_saturday_result, expected_monday_result
-        test_cases = [
-            ("EURUSD", False, True),    # Forex - Saturday closed, Monday open
-            ("GBPUSD", False, True),    # Forex - Saturday closed, Monday open
-            ("USDJPY", False, True),    # Forex - Saturday closed, Monday open
-            ("BTCUSD", True, True),     # Crypto - Always open
-            (TP_ID_PORTFOLIO, True, True),  # Portfolio - Always valid
-        ]
-        
+    def test_is_valid_trading_day_portfolio_always_valid(self):
+        """Test that portfolio ledgers are always valid trading days"""
         saturday_date = date_type(2023, 1, 7)  # Saturday
         monday_date = date_type(2023, 1, 9)    # Monday
-        
-        for asset_id, expected_saturday, expected_monday in test_cases:
-            ledger = generate_ledger(0.1)[TP_ID_PORTFOLIO]
-            ledger.tp_id = asset_id
-            
-            saturday_result = LedgerUtils.is_valid_trading_day(ledger, saturday_date)
-            monday_result = LedgerUtils.is_valid_trading_day(ledger, monday_date)
-            
-            self.assertEqual(
-                saturday_result, expected_saturday,
-                f"{asset_id} Saturday result should be {expected_saturday}"
-            )
-            self.assertEqual(
-                monday_result, expected_monday,
-                f"{asset_id} Monday result should be {expected_monday}"
-            )
+
+        ledger = generate_ledger(0.1)
+
+        # Portfolio ledger should always be valid
+        self.assertTrue(LedgerUtils.is_valid_trading_day(ledger, saturday_date, is_portfolio=True))
+        self.assertTrue(LedgerUtils.is_valid_trading_day(ledger, monday_date, is_portfolio=True))
+        # Default (non-portfolio) also returns True
+        self.assertTrue(LedgerUtils.is_valid_trading_day(ledger, saturday_date))
+        self.assertTrue(LedgerUtils.is_valid_trading_day(ledger, monday_date))
     
-    def test_daily_return_log_by_date_forex_saturday_exclusion(self):
-        """Test that daily_return_log_by_date excludes Saturdays for forex pairs"""
-        # Create ledgers spanning a weekend using generate_ledger
+    def test_daily_return_log_by_date_portfolio_includes_weekends(self):
+        """Test that portfolio daily_return_log_by_date includes all days (no weekend exclusion)"""
+        # Create ledger spanning a weekend
         friday_start = int(datetime(2023, 1, 6, tzinfo=timezone.utc).timestamp() * 1000)  # Friday
         monday_end = int(datetime(2023, 1, 9, 23, 59, 59, tzinfo=timezone.utc).timestamp() * 1000)  # Monday
-        
-        # Create forex and crypto ledgers with same time range
-        forex_ledger = generate_ledger(0.1, start_time=friday_start, end_time=monday_end)[TP_ID_PORTFOLIO]
-        forex_ledger.tp_id = "EURUSD"
-        
-        crypto_ledger = generate_ledger(0.1, start_time=friday_start, end_time=monday_end)[TP_ID_PORTFOLIO]
-        crypto_ledger.tp_id = "BTCUSD"
-        
-        # Get daily returns for both ledgers
-        forex_daily_returns = LedgerUtils.daily_return_log_by_date(forex_ledger)
-        crypto_daily_returns = LedgerUtils.daily_return_log_by_date(crypto_ledger)
-        
-        # Crypto should have more days than forex (Saturday should be excluded for forex)
-        self.assertLess(len(forex_daily_returns), len(crypto_daily_returns), 
-                       "Forex should have fewer trading days than crypto due to Saturday exclusion")
-        
-        # Check that Saturday (2023-01-07) is missing from forex but present in crypto
+
+        portfolio_ledger = generate_ledger(0.1, start_time=friday_start, end_time=monday_end)
+
+        # Get daily returns for portfolio ledger
+        daily_returns = LedgerUtils.daily_return_log_by_date(portfolio_ledger)
+
+        # Portfolio ledger includes all days including Saturday
         saturday_date_obj = date_type(2023, 1, 7)
-        self.assertNotIn(saturday_date_obj, forex_daily_returns, "Forex should NOT have Saturday returns")
-        self.assertIn(saturday_date_obj, crypto_daily_returns, "Crypto should have Saturday returns")
+        self.assertIn(saturday_date_obj, daily_returns, "Portfolio should include Saturday returns")
     
     def test_is_valid_trading_day_error_handling(self):
         """Test error handling for is_valid_trading_day function"""
         # Test with None ledger
         self.assertFalse(LedgerUtils.is_valid_trading_day(None, date_type(2023, 1, 1)))
-        
+
         # Test with None date
-        ledger = generate_ledger(0.1)[TP_ID_PORTFOLIO]
-        ledger.tp_id = "EURUSD"
+        ledger = generate_ledger(0.1)
         self.assertFalse(LedgerUtils.is_valid_trading_day(ledger, None))
-        
+
         # Test with invalid date type
         self.assertFalse(LedgerUtils.is_valid_trading_day(ledger, "2023-01-01"))
         self.assertFalse(LedgerUtils.is_valid_trading_day(ledger, 20230101))
-        
-        # Test with invalid asset_id (should return False due to None trade_pair)
-        invalid_ledger = generate_ledger(0.1)[TP_ID_PORTFOLIO]
-        invalid_ledger.tp_id = "INVALID_PAIR"
-        self.assertFalse(LedgerUtils.is_valid_trading_day(invalid_ledger, date_type(2023, 1, 1)))
-        
-        # Test portfolio ledger should always return True (except for error cases)
-        portfolio_ledger = generate_ledger(0.1)[TP_ID_PORTFOLIO]
-        portfolio_ledger.tp_id = TP_ID_PORTFOLIO
+
+        # Portfolio ledger should always return True
+        portfolio_ledger = generate_ledger(0.1)
         self.assertTrue(LedgerUtils.is_valid_trading_day(portfolio_ledger, date_type(2023, 1, 7)))  # Saturday
 
     def test_daily_pnl_empty_ledger(self):

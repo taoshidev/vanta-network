@@ -23,7 +23,6 @@ from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.vali_dataclasses.order import Order
-from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import TP_ID_PORTFOLIO
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger import DebtCheckpoint
 
@@ -160,7 +159,7 @@ class TestDebtLedgers(TestBase):
         from vali_objects.vali_dataclasses.ledger.emission.emissions_ledger import EmissionsLedger, EmissionsCheckpoint
 
         # Get perf ledgers to determine which checkpoints we need to create emissions for
-        perf_ledgers = self.perf_ledger_client.get_perf_ledgers(portfolio_only=True)
+        perf_ledgers = self.perf_ledger_client.get_perf_ledgers()
 
         for hotkey, portfolio_ledger in perf_ledgers.items():
             # Create emissions ledger for this hotkey (use dummy coldkey for tests)
@@ -585,11 +584,11 @@ class TestDebtLedgers(TestBase):
         self.perf_ledger_client.update()
 
         # Verify perf ledgers were created
-        perf_ledgers = self.perf_ledger_client.get_perf_ledgers(portfolio_only=False)
+        perf_ledgers = self.perf_ledger_client.get_perf_ledgers()
         self.assertIn(self.DEFAULT_MINER_HOTKEY, perf_ledgers)
-        self.assertIn(TP_ID_PORTFOLIO, perf_ledgers[self.DEFAULT_MINER_HOTKEY])
+        self.assertIn(self.DEFAULT_MINER_HOTKEY, perf_ledgers)
 
-        portfolio_pl = perf_ledgers[self.DEFAULT_MINER_HOTKEY][TP_ID_PORTFOLIO]
+        portfolio_pl = perf_ledgers[self.DEFAULT_MINER_HOTKEY]
         bt.logging.info(f"  Created {len(portfolio_pl.cps)} perf checkpoints")
 
         # Step 3: Build all three ledgers (integrates perf + emissions + penalties)

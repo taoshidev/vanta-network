@@ -8,57 +8,56 @@ from typing import Dict, List
 
 from tests.vali_tests.base_objects.test_base import TestBase
 from vali_objects.vali_dataclasses.ledger.ledger_utils import LedgerUtils
-from vali_objects.utils.asset_segmentation import AssetSegmentation
 from vali_objects.vali_config import ValiConfig, TradePairCategory, TradePair
-from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger, PerfCheckpoint, TP_ID_PORTFOLIO
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger, PerfCheckpoint
 
 
 class TestDynamicMinimumDaysRobust(TestBase):
     """Robust test suite using production code paths for dynamic minimum days calculation."""
-    
+
     def setUp(self):
         """Set up test fixtures."""
         super().setUp()
         self.checkpoint_duration_ms = ValiConfig.TARGET_CHECKPOINT_DURATION_MS  # 12 hours
         self.daily_ms = ValiConfig.DAILY_MS
-        
+
     def create_checkpoint_sequence(
-        self, 
-        start_time_ms: int, 
+        self,
+        start_time_ms: int,
         num_days: int
     ) -> List[PerfCheckpoint]:
         """
-        Create a precise sequence of checkpoints that will produce exactly num_days 
+        Create a precise sequence of checkpoints that will produce exactly num_days
         from daily_return_log_by_date().
-        
+
         Based on the production logic:
         - Only full cells (accum_ms == TARGET_CHECKPOINT_DURATION_MS) count
         - Only complete days (exactly 2 checkpoints per day) count
         - Checkpoints are grouped by their START time (last_update_ms - accum_ms)
-        
+
         Args:
             start_time_ms: Starting timestamp (should be start of UTC day)
             num_days: Number of complete days to create
-        
+
         Returns:
             List of PerfCheckpoint objects that produce exactly num_days
         """
         checkpoints = []
         checkpoints_per_day = int(ValiConfig.DAILY_CHECKPOINTS)  # Should be 2
         checkpoint_duration = ValiConfig.TARGET_CHECKPOINT_DURATION_MS  # 12 hours
-        
+
         # Start at beginning of a UTC day (midnight)
         # Ensure start_time_ms is aligned to UTC day boundary
         day_ms = ValiConfig.DAILY_MS
         aligned_start = (start_time_ms // day_ms) * day_ms
-        
+
         current_start_time = aligned_start
-        
+
         for day in range(num_days):
             for checkpoint_in_day in range(checkpoints_per_day):
                 # Calculate the end time for this checkpoint
                 end_time = current_start_time + checkpoint_duration
-                
+
                 # Create checkpoint with precise timing
                 checkpoint = PerfCheckpoint(
                     last_update_ms=end_time,  # End time of checkpoint
@@ -72,240 +71,213 @@ class TestDynamicMinimumDaysRobust(TestBase):
                 )
                 checkpoints.append(checkpoint)
                 current_start_time += checkpoint_duration
-        
+
         return checkpoints
-    
+
     def create_production_ledger(self, num_days: int, start_time_ms: int = 1000000000000) -> PerfLedger:
         """
-        Create a PerfLedger using production patterns that will yield exactly num_days 
+        Create a PerfLedger using production patterns that will yield exactly num_days
         when processed by LedgerUtils.daily_return_log().
-        
+
         Args:
             num_days: Exact number of days this ledger should represent
             start_time_ms: Starting timestamp
-        
+
         Returns:
             PerfLedger that produces exactly num_days from daily_return_log()
         """
         checkpoints = self.create_checkpoint_sequence(start_time_ms, num_days)
-        
+
         ledger = PerfLedger(
             target_cp_duration_ms=self.checkpoint_duration_ms,
             target_ledger_window_ms=ValiConfig.TARGET_LEDGER_WINDOW_MS,
             cps=checkpoints
         )
-        
+
         return ledger
-    
-    def create_production_ledger_dict(
-        self, 
+
+    def create_portfolio_ledger_dict(
+        self,
         miner_participation: Dict[str, Dict[str, int]]
-    ) -> Dict[str, Dict[str, PerfLedger]]:
+    ) -> Dict[str, PerfLedger]:
         """
-        Create a production-style ledger dictionary with realistic structure.
-        
+        Create a portfolio-level ledger dictionary where each miner has a single PerfLedger.
+        The portfolio ledger uses the max participation days across all trade pairs.
+
         Args:
             miner_participation: Dict mapping miner_hotkey -> trade_pair_id -> num_days
-        
+
         Returns:
-            Production-style ledger dictionary
+            Dictionary mapping miner_hotkey -> portfolio PerfLedger
         """
         ledger_dict = {}
         base_time = 1000000000000  # Base timestamp
-        
+
         for miner_hotkey, trade_pairs in miner_participation.items():
-            miner_ledgers = {}
-            
-            # Create portfolio ledger (aggregate of all positions)
+            # Use max days across all trade pairs as portfolio participation
             max_days = max(trade_pairs.values()) if trade_pairs else 0
             if max_days > 0:
-                miner_ledgers[TP_ID_PORTFOLIO] = self.create_production_ledger(max_days, base_time)
+                ledger_dict[miner_hotkey] = self.create_production_ledger(max_days, base_time)
             else:
-                miner_ledgers[TP_ID_PORTFOLIO] = PerfLedger()
-            
-            # Create individual trade pair ledgers
-            for trade_pair_id, days in trade_pairs.items():
-                if days > 0:
-                    # Stagger start times slightly to be realistic
-                    start_time = base_time + hash(miner_hotkey + trade_pair_id) % (24 * 60 * 60 * 1000)
-                    miner_ledgers[trade_pair_id] = self.create_production_ledger(days, start_time)
-                else:
-                    miner_ledgers[trade_pair_id] = PerfLedger()
-            
-            ledger_dict[miner_hotkey] = miner_ledgers
-        
+                ledger_dict[miner_hotkey] = PerfLedger()
+
         return ledger_dict
-    
+
     def verify_ledger_produces_expected_days(self, ledger: PerfLedger, expected_days: int):
         """Verify that a ledger produces exactly the expected number of days."""
         actual_days = len(LedgerUtils.daily_return_log(ledger))
         self.assertEqual(
-            actual_days, 
-            expected_days, 
+            actual_days,
+            expected_days,
             f"Ledger should produce exactly {expected_days} days, got {actual_days}"
         )
-    
+
     def test_empty_ledger_dict_exact(self):
         """Test with empty ledger dictionary returns exact ceil value."""
         result_dict = LedgerUtils.calculate_dynamic_minimum_days_for_asset_classes(
             {}, [TradePairCategory.CRYPTO]
         )
         self.assertEqual(result_dict[TradePairCategory.CRYPTO], ValiConfig.STATISTICAL_CONFIDENCE_MINIMUM_N_CEIL)
-    
+
     def test_no_participating_miners_exact(self):
-        """Test when no miners participate in the asset class returns exact floor."""
-        # Create miners that only trade forex (not crypto)
+        """Test when very few miners participate returns exact floor."""
+        # Create only 3 miners (fewer than DYNAMIC_MIN_DAYS_NUM_MINERS)
         miner_participation = {
-            "forex_trader_001": {"EURUSD": 30, "GBPUSD": 25},
-            "forex_trader_002": {"USDJPY": 40, "USDCHF": 35},
-            "forex_trader_003": {"AUDUSD": 20, "NZDUSD": 15}
+            "trader_001": {"EURUSD": 30, "GBPUSD": 25},
+            "trader_002": {"USDJPY": 40, "USDCHF": 35},
+            "trader_003": {"AUDUSD": 20, "NZDUSD": 15}
         }
-        
-        ledger_dict = self.create_production_ledger_dict(miner_participation)
-        
-        # Test for crypto - should find no participants
+
+        ledger_dict = self.create_portfolio_ledger_dict(miner_participation)
+
+        # With fewer than DYNAMIC_MIN_DAYS_NUM_MINERS miners, should return floor
         result_dict = LedgerUtils.calculate_dynamic_minimum_days_for_asset_classes(
             ledger_dict, [TradePairCategory.CRYPTO]
         )
 
         self.assertEqual(result_dict[TradePairCategory.CRYPTO], ValiConfig.STATISTICAL_CONFIDENCE_MINIMUM_N_FLOOR)
-    
+
     def test_fewer_than_percentile_rank_miners_exact(self):
         """Test with fewer than PERCENTILE_RANK miners uses exact minimum participation."""
-        # Create fewer than PERCENTILE_RANK miners trading crypto with known participation days
+        # Create fewer than PERCENTILE_RANK miners with known participation days
         percentile_rank = ValiConfig.DYNAMIC_MIN_DAYS_NUM_MINERS
         # Create fewer miners than the percentile rank (e.g., 15 if percentile rank is 20)
         num_miners = percentile_rank - 5
         participation_days = list(range(60, 60 - num_miners, -1))  # Descending participation
         miner_participation = {}
-        
+
         for i, days in enumerate(participation_days):
             miner_participation[f"crypto_trader_{i:03d}"] = {
                 "BTCUSD": days,
                 "ETHUSD": days - 1 if days > 1 else days  # Slightly different participation
             }
-        
-        ledger_dict = self.create_production_ledger_dict(miner_participation)
-        
-        # Verify our ledgers produce expected days
+
+        ledger_dict = self.create_portfolio_ledger_dict(miner_participation)
+
+        # Verify our ledgers produce expected days (using max days per miner as portfolio days)
         for i, expected_days in enumerate(participation_days):
             miner_key = f"crypto_trader_{i:03d}"
-            btc_ledger = ledger_dict[miner_key]["BTCUSD"]
-            self.verify_ledger_produces_expected_days(btc_ledger, expected_days)
-        
+            portfolio_ledger = ledger_dict[miner_key]
+            self.verify_ledger_produces_expected_days(portfolio_ledger, expected_days)
+
         # Test the function
         result_dict = LedgerUtils.calculate_dynamic_minimum_days_for_asset_classes(
             ledger_dict, [TradePairCategory.CRYPTO]
         )
         result = result_dict[TradePairCategory.CRYPTO]
 
-        # Get actual aggregated participation after asset segmentation
-        segmentation = AssetSegmentation(ledger_dict)
-        crypto_ledgers = segmentation.segmentation(TradePairCategory.CRYPTO)
-        
-        actual_participation = []
-        for miner_hotkey, ledger in crypto_ledgers.items():
-            if ledger and ledger.cps:
-                days = len(LedgerUtils.daily_return_log(ledger))
-                actual_participation.append(days)
-        
-        # With fewer than 20 miners, should return floor regardless of actual participation
+        # With fewer than DYNAMIC_MIN_DAYS_NUM_MINERS miners, should return floor
         self.assertEqual(result, ValiConfig.STATISTICAL_CONFIDENCE_MINIMUM_N_FLOOR)
-    
+
     def test_exactly_percentile_rank_miners_exact(self):
         """Test with exactly DYNAMIC_MIN_DAYS_PERCENTILE_RANK miners uses exact percentile."""
         # Create exactly DYNAMIC_MIN_DAYS_PERCENTILE_RANK miners with incremental participation days
         percentile_rank = ValiConfig.DYNAMIC_MIN_DAYS_NUM_MINERS
         participation_days = list(range(5, 5 + percentile_rank * 5, 5))  # [5, 10, 15, ..., up to percentile_rank * 5]
         self.assertEqual(len(participation_days), percentile_rank)
-        
+
         miner_participation = {}
         for i, days in enumerate(participation_days):
             miner_participation[f"crypto_trader_{i:03d}"] = {
                 "BTCUSD": days,
                 "ETHUSD": days
             }
-        
-        ledger_dict = self.create_production_ledger_dict(miner_participation)
-        
+
+        ledger_dict = self.create_portfolio_ledger_dict(miner_participation)
+
         # Verify our ledgers produce expected days
         for i, expected_days in enumerate(participation_days):
             miner_key = f"crypto_trader_{i:03d}"
-            btc_ledger = ledger_dict[miner_key]["BTCUSD"]
-            self.verify_ledger_produces_expected_days(btc_ledger, expected_days)
-        
+            portfolio_ledger = ledger_dict[miner_key]
+            self.verify_ledger_produces_expected_days(portfolio_ledger, expected_days)
+
         result_dict = LedgerUtils.calculate_dynamic_minimum_days_for_asset_classes(
             ledger_dict, [TradePairCategory.CRYPTO]
         )
         result = result_dict[TradePairCategory.CRYPTO]
-        
+
         # Sorted descending, the DYNAMIC_MIN_DAYS_PERCENTILE_RANK-th element (index percentile_rank-1) = 5, but floor is 7
         sorted_desc = sorted(participation_days, reverse=True)
         expected_raw = sorted_desc[percentile_rank - 1]  # Last element in our case
         expected = max(ValiConfig.STATISTICAL_CONFIDENCE_MINIMUM_N_FLOOR, expected_raw)
         self.assertEqual(result, expected)
-    
+
     def test_more_than_percentile_rank_miners_exact(self):
         """Test with more than DYNAMIC_MIN_DAYS_PERCENTILE_RANK miners uses exact percentile."""
         # Create more miners than the percentile rank with known participation pattern
         percentile_rank = ValiConfig.DYNAMIC_MIN_DAYS_NUM_MINERS
         # Create 1.5x the percentile rank miners (e.g., 30 if percentile rank is 20)
         total_miners = int(percentile_rank * 1.5)
-        
+
         # Top third: high participation
         top_third = total_miners // 3
-        # Middle third: medium participation  
+        # Middle third: medium participation
         middle_third = total_miners // 3
         # Bottom third: low participation
         bottom_third = total_miners - top_third - middle_third
-        
+
         participation_days = (
             list(range(90, 90 + top_third))  +     # Top miners: 90+ days
-            list(range(40, 40 + middle_third)) +   # Middle miners: 40+ days  
+            list(range(40, 40 + middle_third)) +   # Middle miners: 40+ days
             list(range(10, 10 + bottom_third))     # Bottom miners: 10+ days
         )
         self.assertEqual(len(participation_days), total_miners)
-        
+
         miner_participation = {}
         for i, days in enumerate(participation_days):
             miner_participation[f"crypto_trader_{i:03d}"] = {
                 "BTCUSD": days,
                 "ETHUSD": days
             }
-        
-        ledger_dict = self.create_production_ledger_dict(miner_participation)
-        
+
+        ledger_dict = self.create_portfolio_ledger_dict(miner_participation)
+
         # Verify all ledgers produce expected days
         for i, expected_days in enumerate(participation_days):
             miner_key = f"crypto_trader_{i:03d}"
-            btc_ledger = ledger_dict[miner_key]["BTCUSD"]
-            self.verify_ledger_produces_expected_days(btc_ledger, expected_days)
-        
+            portfolio_ledger = ledger_dict[miner_key]
+            self.verify_ledger_produces_expected_days(portfolio_ledger, expected_days)
+
         result_dict = LedgerUtils.calculate_dynamic_minimum_days_for_asset_classes(
             ledger_dict, [TradePairCategory.CRYPTO]
         )
         result = result_dict[TradePairCategory.CRYPTO]
-        
-        # The AssetSegmentation.aggregate_miner_subledgers() function will aggregate
-        # BTCUSD and ETHUSD ledgers for each miner, creating a combined participation
-        # We need to get the actual result by testing the actual segmentation
-        segmentation = AssetSegmentation(ledger_dict)
-        crypto_ledgers = segmentation.segmentation(TradePairCategory.CRYPTO)
-        
-        # Get actual participation days after aggregation
-        actual_participation = []
-        for miner_hotkey, ledger in crypto_ledgers.items():
-            if ledger and ledger.cps:
-                days = len(LedgerUtils.daily_return_log(ledger))
-                actual_participation.append(days)
-        
-        actual_participation.sort(reverse=True)
-        
-        # DYNAMIC_MIN_DAYS_PERCENTILE_RANK-th element (index percentile_rank-1) after aggregation
+
+        # Calculate expected result using portfolio participation days directly
+        actual_participation = sorted(participation_days, reverse=True)
+
         expected_element_index = percentile_rank - 1
         expected_percentile_value = actual_participation[expected_element_index]
-        self.assertEqual(result, expected_percentile_value)
-    
+        # Apply median cap and floor/ceiling bounds
+        import statistics
+        median_days = int(statistics.median(actual_participation))
+        expected_bounded = max(
+            ValiConfig.STATISTICAL_CONFIDENCE_MINIMUM_N_FLOOR,
+            min(ValiConfig.STATISTICAL_CONFIDENCE_MINIMUM_N_CEIL,
+                min(expected_percentile_value, median_days))
+        )
+        self.assertEqual(result, expected_bounded)
+
     def test_floor_ceiling_boundaries_exact(self):
         """Test exact floor and ceiling boundary conditions."""
         # Test floor boundary - create miners with very low participation
@@ -316,16 +288,16 @@ class TestDynamicMinimumDaysRobust(TestBase):
                 "BTCUSD": days,
                 "ETHUSD": days
             }
-        
-        ledger_dict_low = self.create_production_ledger_dict(miner_participation_low)
+
+        ledger_dict_low = self.create_portfolio_ledger_dict(miner_participation_low)
         result_dict_low = LedgerUtils.calculate_dynamic_minimum_days_for_asset_classes(
             ledger_dict_low, [TradePairCategory.CRYPTO]
         )
         result_low = result_dict_low[TradePairCategory.CRYPTO]
-        
+
         # DYNAMIC_MIN_DAYS_PERCENTILE_RANK-th percentile would be 1, but should be floored at 7
         self.assertEqual(result_low, ValiConfig.STATISTICAL_CONFIDENCE_MINIMUM_N_FLOOR)
-        
+
         # Test ceiling boundary - create miners with high participation
         high_participation = list(range(65, 90))  # 65 to 89 days (25 miners)
         miner_participation_high = {}
@@ -334,13 +306,13 @@ class TestDynamicMinimumDaysRobust(TestBase):
                 "BTCUSD": days,
                 "ETHUSD": days
             }
-        
-        ledger_dict_high = self.create_production_ledger_dict(miner_participation_high)
+
+        ledger_dict_high = self.create_portfolio_ledger_dict(miner_participation_high)
         result_dict_high = LedgerUtils.calculate_dynamic_minimum_days_for_asset_classes(
             ledger_dict_high, [TradePairCategory.CRYPTO]
         )
         result_high = result_dict_high[TradePairCategory.CRYPTO]
-        
+
         # DYNAMIC_MIN_DAYS_PERCENTILE_RANK-th percentile would be 69, but should be capped at 60
         # Calculate the actual percentile value dynamically
         sorted_desc = sorted(high_participation, reverse=True)
@@ -348,33 +320,26 @@ class TestDynamicMinimumDaysRobust(TestBase):
         raw_percentile_value = sorted_desc[percentile_rank - 1] if len(sorted_desc) >= percentile_rank else min(sorted_desc)
         expected_high = min(ValiConfig.STATISTICAL_CONFIDENCE_MINIMUM_N_CEIL, raw_percentile_value)
         self.assertEqual(result_high, expected_high)
-    
+
     def test_different_asset_classes_exact(self):
-        """Test that different asset classes return exact different values."""
-        # Create miners with mixed participation across different assets
+        """Test that different asset classes return same values (portfolio-level tracking)."""
+        # Create miners with mixed participation - all miners contribute to all asset classes
         miner_participation = {
-            # Crypto specialists (high participation)
-            "crypto_001": {"BTCUSD": 80, "ETHUSD": 75},
-            "crypto_002": {"BTCUSD": 70, "ETHUSD": 65},
-            "crypto_003": {"BTCUSD": 60, "ETHUSD": 55},
-            
-            # Crypto alts specialists (medium participation)
-            "crypto_alt_001": {"SOLUSD": 50, "XRPUSD": 45},
-            "crypto_alt_002": {"SOLUSD": 40, "XRPUSD": 35},
-            "crypto_alt_003": {"SOLUSD": 30, "XRPUSD": 25},
-            
-            # Forex G1 specialists (low participation)
-            "forex_g1_001": {"EURUSD": 25, "GBPUSD": 20},
-            "forex_g1_002": {"EURUSD": 15, "GBPUSD": 12},
-            "forex_g1_003": {"EURUSD": 10, "GBPUSD": 8},
-            
-            # Mixed traders
-            "mixed_001": {"BTCUSD": 45, "SOLUSD": 40, "EURUSD": 35},
-            "mixed_002": {"ETHUSD": 35, "XRPUSD": 30, "GBPUSD": 25}
+            "miner_001": {"BTCUSD": 80, "ETHUSD": 75},
+            "miner_002": {"BTCUSD": 70, "ETHUSD": 65},
+            "miner_003": {"BTCUSD": 60, "ETHUSD": 55},
+            "miner_004": {"SOLUSD": 50, "XRPUSD": 45},
+            "miner_005": {"SOLUSD": 40, "XRPUSD": 35},
+            "miner_006": {"SOLUSD": 30, "XRPUSD": 25},
+            "miner_007": {"EURUSD": 25, "GBPUSD": 20},
+            "miner_008": {"EURUSD": 15, "GBPUSD": 12},
+            "miner_009": {"EURUSD": 10, "GBPUSD": 8},
+            "miner_010": {"BTCUSD": 45, "SOLUSD": 40, "EURUSD": 35},
+            "miner_011": {"ETHUSD": 35, "XRPUSD": 30, "GBPUSD": 25}
         }
-        
-        ledger_dict = self.create_production_ledger_dict(miner_participation)
-        
+
+        ledger_dict = self.create_portfolio_ledger_dict(miner_participation)
+
         # Calculate all asset classes at once
         result_dict = LedgerUtils.calculate_dynamic_minimum_days_for_asset_classes(
             ledger_dict, [TradePairCategory.CRYPTO, TradePairCategory.FOREX]
@@ -384,7 +349,8 @@ class TestDynamicMinimumDaysRobust(TestBase):
         crypto_result = result_dict[TradePairCategory.CRYPTO]
         forex_result = result_dict[TradePairCategory.FOREX]
 
-        # With fewer than 20 miners in each asset class, all should return floor value
+        # With portfolio-level tracking, all miners count for all asset classes
+        # With fewer than 20 miners, both should return floor value
         self.assertEqual(crypto_result, ValiConfig.STATISTICAL_CONFIDENCE_MINIMUM_N_FLOOR)
         self.assertEqual(forex_result, ValiConfig.STATISTICAL_CONFIDENCE_MINIMUM_N_FLOOR)
 
@@ -392,7 +358,7 @@ class TestDynamicMinimumDaysRobust(TestBase):
         for result in [crypto_result, forex_result]:
             self.assertGreaterEqual(result, ValiConfig.STATISTICAL_CONFIDENCE_MINIMUM_N_FLOOR)
             self.assertLessEqual(result, ValiConfig.STATISTICAL_CONFIDENCE_MINIMUM_N_CEIL)
-    
+
     def test_production_trade_pair_categorization(self):
         """Test that actual TradePair categorization works correctly."""
         # Verify our understanding of trade pair categories
@@ -402,8 +368,8 @@ class TestDynamicMinimumDaysRobust(TestBase):
         self.assertEqual(TradePair.EURUSD.trade_pair_category, TradePairCategory.FOREX)
         self.assertEqual(TradePair.GBPUSD.trade_pair_category, TradePairCategory.FOREX)
         self.assertEqual(TradePair.USDJPY.trade_pair_category, TradePairCategory.FOREX)
-        
-        # Create miners with specific trade pairs
+
+        # Create miners with specific trade pairs (portfolio-level, fewer than 20)
         miner_participation = {
             "btc_trader": {"BTCUSD": 50},  # Crypto
             "sol_trader": {"SOLUSD": 40},  # Crypto
@@ -411,89 +377,88 @@ class TestDynamicMinimumDaysRobust(TestBase):
             "jpy_trader": {"USDJPY": 20},  # Forex
         }
 
-        ledger_dict = self.create_production_ledger_dict(miner_participation)
+        ledger_dict = self.create_portfolio_ledger_dict(miner_participation)
 
-        # Test each asset class finds exactly the expected miners
+        # Test each asset class - with portfolio-level tracking and fewer than 20 miners, should return floor
         result_dict = LedgerUtils.calculate_dynamic_minimum_days_for_asset_classes(
             ledger_dict, [TradePairCategory.CRYPTO, TradePairCategory.FOREX]
         )
 
         crypto_result = result_dict[TradePairCategory.CRYPTO]
-        # Both btc_trader and sol_trader participate, but with fewer than 20 miners, should return floor
+        # Fewer than 20 miners, should return floor
         self.assertEqual(crypto_result, ValiConfig.STATISTICAL_CONFIDENCE_MINIMUM_N_FLOOR)
 
         forex_result = result_dict[TradePairCategory.FOREX]
-        # Both eur_trader and jpy_trader participate, but with fewer than 20 miners, should return floor
+        # Fewer than 20 miners, should return floor
         self.assertEqual(forex_result, ValiConfig.STATISTICAL_CONFIDENCE_MINIMUM_N_FLOOR)
-    
+
     def test_realistic_production_scenario(self):
         """Test with a realistic production-like scenario with exact expectations."""
         # Simulate realistic miner distribution
         miner_participation = {}
-        
-        # Top-tier crypto major traders (5 miners, 80-100 days)
+
+        # Top-tier traders (5 miners, 80-100 days)
         for i in range(5):
-            miner_participation[f"top_crypto_{i}"] = {
+            miner_participation[f"top_trader_{i}"] = {
                 "BTCUSD": 100 - i * 2,  # 100, 98, 96, 94, 92
                 "ETHUSD": 95 - i * 2    # 95, 93, 91, 89, 87
             }
-        
-        # Mid-tier crypto major traders (10 miners, 40-60 days)
+
+        # Mid-tier traders (10 miners, 40-60 days)
         for i in range(10):
-            miner_participation[f"mid_crypto_{i}"] = {
+            miner_participation[f"mid_trader_{i}"] = {
                 "BTCUSD": 60 - i * 2,   # 60, 58, 56, ..., 42
                 "ETHUSD": 55 - i * 2    # 55, 53, 51, ..., 37
             }
-        
-        # New crypto major traders (10 miners, 10-30 days)
+
+        # New traders (10 miners, 10-30 days)
         for i in range(10):
-            miner_participation[f"new_crypto_{i}"] = {
+            miner_participation[f"new_trader_{i}"] = {
                 "BTCUSD": 30 - i * 2,   # 30, 28, 26, ..., 12
                 "ETHUSD": 25 - i * 2    # 25, 23, 21, ..., 7
             }
-        
-        ledger_dict = self.create_production_ledger_dict(miner_participation)
-        
+
+        ledger_dict = self.create_portfolio_ledger_dict(miner_participation)
+
         result_dict = LedgerUtils.calculate_dynamic_minimum_days_for_asset_classes(
             ledger_dict, [TradePairCategory.CRYPTO]
         )
         result = result_dict[TradePairCategory.CRYPTO]
-        
-        # The AssetSegmentation.aggregate_miner_subledgers() function will aggregate
-        # BTCUSD and ETHUSD ledgers for each miner, creating a combined participation
-        # We need to calculate the expected result by testing the actual segmentation
-        
-        segmentation = AssetSegmentation(ledger_dict)
-        crypto_ledgers = segmentation.segmentation(TradePairCategory.CRYPTO)
-        
-        # Get actual participation days after aggregation
+
+        # Calculate expected result using portfolio participation days directly
+        import statistics
         actual_participation = []
-        for miner_hotkey, ledger in crypto_ledgers.items():
-            if ledger and ledger.cps:
-                days = len(LedgerUtils.daily_return_log(ledger))
-                actual_participation.append(days)
-        
+        for miner_key, trade_pairs in miner_participation.items():
+            max_days = max(trade_pairs.values()) if trade_pairs else 0
+            if max_days > 0:
+                actual_participation.append(max_days)
+
         actual_participation.sort(reverse=True)
-        
+
         # Should have 25 miners (5 top + 10 mid + 10 new)
         expected_total_miners = 25
         self.assertEqual(len(actual_participation), expected_total_miners)
-        
-        # DYNAMIC_MIN_DAYS_PERCENTILE_RANK-th element (index percentile_rank-1) after aggregation
+
+        # DYNAMIC_MIN_DAYS_PERCENTILE_RANK-th element (index percentile_rank-1) after portfolio aggregation
         percentile_rank = ValiConfig.DYNAMIC_MIN_DAYS_NUM_MINERS
         if len(actual_participation) >= percentile_rank:
             expected_percentile = actual_participation[percentile_rank - 1]
         else:
             expected_percentile = min(actual_participation) if actual_participation else ValiConfig.STATISTICAL_CONFIDENCE_MINIMUM_N_FLOOR
-        expected_final = max(ValiConfig.STATISTICAL_CONFIDENCE_MINIMUM_N_FLOOR, min(ValiConfig.STATISTICAL_CONFIDENCE_MINIMUM_N_CEIL, expected_percentile))
+        median_days = int(statistics.median(actual_participation))
+        expected_final = max(
+            ValiConfig.STATISTICAL_CONFIDENCE_MINIMUM_N_FLOOR,
+            min(ValiConfig.STATISTICAL_CONFIDENCE_MINIMUM_N_CEIL,
+                min(expected_percentile, median_days))
+        )
         self.assertEqual(result, expected_final)
-    
+
     def test_exception_handling_exact(self):
         """Test that invalid data is gracefully handled and treated as no participants."""
         # Create invalid ledger structure - these entries will be filtered out gracefully
         invalid_ledger_dict = {
-            "miner_001": None,  # Invalid structure (filtered out)
-            "miner_002": "not_a_dict",  # Invalid type (filtered out)
+            "miner_001": None,  # Invalid (filtered out)
+            "miner_002": "not_a_ledger",  # Invalid type (filtered out)
         }
 
         result_dict = LedgerUtils.calculate_dynamic_minimum_days_for_asset_classes(
@@ -502,17 +467,16 @@ class TestDynamicMinimumDaysRobust(TestBase):
 
         # Invalid entries are filtered out, resulting in 0 participants -> returns floor
         self.assertEqual(result_dict[TradePairCategory.CRYPTO], ValiConfig.STATISTICAL_CONFIDENCE_MINIMUM_N_FLOOR)
-    
-    def test_production_asset_segmentation_integration(self):
-        """Test integration with production AssetSegmentation logic."""
-        # Create comprehensive ledger structure
+
+    def test_portfolio_level_dynamic_minimum_integration(self):
+        """Test integration with portfolio-level ledger tracking."""
+        # Create miners with varied participation
         miner_participation = {
             "diversified_trader": {
-                "BTCUSD": 50,   # Crypto major
-                "SOLUSD": 45,   # Crypto alt  
-                "EURUSD": 40,   # Forex G1
-                "USDJPY": 35,   # Forex G2
-                "GBPAUD": 30,   # Forex G4
+                "BTCUSD": 50,
+                "SOLUSD": 45,
+                "EURUSD": 40,
+                "USDJPY": 35,
             },
             "crypto_only": {
                 "BTCUSD": 60,
@@ -527,30 +491,20 @@ class TestDynamicMinimumDaysRobust(TestBase):
                 "USDCHF": 55,
             }
         }
-        
-        ledger_dict = self.create_production_ledger_dict(miner_participation)
-        
-        # Verify AssetSegmentation correctly segments each asset class
-        segmentation = AssetSegmentation(ledger_dict)
-        
-        # Test crypto segmentation
-        crypto_ledgers = segmentation.segmentation(TradePairCategory.CRYPTO)
-        
-        # Should include diversified_trader and crypto_only, not forex_only
-        self.assertIn("diversified_trader", crypto_ledgers)
-        self.assertIn("crypto_only", crypto_ledgers) 
-        self.assertIn("forex_only", crypto_ledgers)  # forex_only doesn't have crypto, so empty ledger
-        
-        # Verify the segmented ledgers have data
-        self.assertIsInstance(crypto_ledgers["diversified_trader"], PerfLedger)
-        self.assertIsInstance(crypto_ledgers["crypto_only"], PerfLedger)
-        
-        # Test the dynamic minimum calculation uses this segmentation
+
+        ledger_dict = self.create_portfolio_ledger_dict(miner_participation)
+
+        # Verify the portfolio ledger structure
+        for miner_key in miner_participation:
+            self.assertIn(miner_key, ledger_dict)
+            self.assertIsInstance(ledger_dict[miner_key], PerfLedger)
+
+        # Test the dynamic minimum calculation uses portfolio participation
         result_dict = LedgerUtils.calculate_dynamic_minimum_days_for_asset_classes(
             ledger_dict, [TradePairCategory.CRYPTO]
         )
         result = result_dict[TradePairCategory.CRYPTO]
-        
+
         # Should be within expected bounds
         self.assertGreaterEqual(result, ValiConfig.STATISTICAL_CONFIDENCE_MINIMUM_N_FLOOR)
         self.assertLessEqual(result, ValiConfig.STATISTICAL_CONFIDENCE_MINIMUM_N_CEIL)

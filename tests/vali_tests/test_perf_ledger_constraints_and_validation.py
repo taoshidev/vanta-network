@@ -22,11 +22,9 @@ from vali_objects.vali_dataclasses.order import Order
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import (
     PerfLedger,
     PerfCheckpoint,
-    TP_ID_PORTFOLIO,
     ParallelizationMode,
 )
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_manager import PerfLedgerManager
-
 
 class TestPerfLedgerConstraintsAndValidation(TestBase):
     """
@@ -173,46 +171,34 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
         
         return max(1, num_checkpoints)  # At least 1 checkpoint
 
-    def _validate_all_ledgers_in_bundle(self, bundle: dict, expected_trade_pairs: list, 
+    def _validate_all_ledgers_in_bundle(self, bundle: PerfLedger, expected_trade_pairs: list,
                                        start_time_ms: int, end_time_ms: int):
-        """Validate all ledgers in a bundle comprehensively."""
+        """Validate portfolio ledger comprehensively."""
         # Must have portfolio ledger
-        self.assertIn(TP_ID_PORTFOLIO, bundle, "Bundle must contain portfolio ledger")
-        
-        # Must have all expected trade pair ledgers
-        for tp in expected_trade_pairs:
-            tp_id = tp.trade_pair_id
-            self.assertIn(tp_id, bundle, f"Bundle must contain {tp_id} ledger")
-        
-        # Should not have unexpected ledgers
-        expected_ledger_ids = {TP_ID_PORTFOLIO} | {tp.trade_pair_id for tp in expected_trade_pairs}
-        actual_ledger_ids = set(bundle.keys())
-        self.assertEqual(actual_ledger_ids, expected_ledger_ids, 
-                        f"Bundle has unexpected ledgers: {actual_ledger_ids - expected_ledger_ids}")
-        
-        # Validate each ledger
+        self.assertIsNotNone(bundle, "Portfolio ledger must not be None")
+        self.assertIsInstance(bundle, PerfLedger, "Bundle should be a PerfLedger")
+
+        # Validate checkpoint count
         expected_checkpoints = self._calculate_expected_checkpoints(start_time_ms, end_time_ms)
-        
-        for ledger_id, ledger in bundle.items():
-            self.assertIsInstance(ledger, PerfLedger, f"Ledger {ledger_id} should be PerfLedger")
-            self.assertIsInstance(ledger.cps, list, f"Ledger {ledger_id} should have checkpoint list")
-            
-            # Validate checkpoint count - should be consistent across all ledgers
-            actual_checkpoints = len(ledger.cps)
-            self.assertGreaterEqual(actual_checkpoints, expected_checkpoints - 1,
-                                   f"Ledger {ledger_id}: expected ~{expected_checkpoints} checkpoints, got {actual_checkpoints}")
-            self.assertLessEqual(actual_checkpoints, expected_checkpoints + 2,
-                                f"Ledger {ledger_id}: too many checkpoints, expected ~{expected_checkpoints}, got {actual_checkpoints}")
-            
-            # Validate checkpoint sequence
-            for i, cp in enumerate(ledger.cps):
-                self.assertIsInstance(cp, PerfCheckpoint, f"Ledger {ledger_id} checkpoint {i} should be PerfCheckpoint")
-                self.assertIsInstance(cp.last_update_ms, int, f"Ledger {ledger_id} checkpoint {i} timestamp should be int")
-                
-                # Timestamps should be in ascending order
-                if i > 0:
-                    self.assertGreater(cp.last_update_ms, ledger.cps[i-1].last_update_ms,
-                                     f"Ledger {ledger_id} checkpoint {i} timestamp should be > previous")
+        ledger = bundle
+
+        self.assertIsInstance(ledger.cps, list, "Portfolio ledger should have checkpoint list")
+
+        actual_checkpoints = len(ledger.cps)
+        self.assertGreaterEqual(actual_checkpoints, expected_checkpoints - 1,
+                               f"Portfolio ledger: expected ~{expected_checkpoints} checkpoints, got {actual_checkpoints}")
+        self.assertLessEqual(actual_checkpoints, expected_checkpoints + 2,
+                            f"Portfolio ledger: too many checkpoints, expected ~{expected_checkpoints}, got {actual_checkpoints}")
+
+        # Validate checkpoint sequence
+        for i, cp in enumerate(ledger.cps):
+            self.assertIsInstance(cp, PerfCheckpoint, f"Portfolio checkpoint {i} should be PerfCheckpoint")
+            self.assertIsInstance(cp.last_update_ms, int, f"Portfolio checkpoint {i} timestamp should be int")
+
+            # Timestamps should be in ascending order
+            if i > 0:
+                self.assertGreater(cp.last_update_ms, ledger.cps[i-1].last_update_ms,
+                                 f"Portfolio checkpoint {i} timestamp should be > previous")
 
     def test_overlapping_positions_constraint_violation(self):
         """Test that overlapping positions for the same trade pair cause failures."""
@@ -244,7 +230,7 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
         plm.update(t_ms=base_time + (5 * MS_IN_24_HOURS))
         
         # Should either reject the overlapping positions or handle gracefully
-        bundles = plm.get_perf_ledgers(portfolio_only=False)
+        bundles = plm.get_perf_ledgers()
         
         # If bundles are created, they should not contain invalid state
         if self.test_hotkey in bundles:
@@ -353,21 +339,15 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
         # Update and verify both positions are processed
         plm.update(t_ms=base_time + (2 * MS_IN_24_HOURS))
         
-        bundles = plm.get_perf_ledgers(portfolio_only=False)
+        bundles = plm.get_perf_ledgers()
         self.assertIn(self.test_hotkey, bundles, "Should have bundles for both positions")
         
         bundle = bundles[self.test_hotkey]
         
-        # Should have ledgers for both trade pairs
-        self.assertIn(TradePair.BTCUSD.trade_pair_id, bundle, "Should have BTC ledger")
-        self.assertIn(TradePair.ETHUSD.trade_pair_id, bundle, "Should have ETH ledger")
-        
-        # Both ledgers should have activity
-        btc_has_activity = any(cp.n_updates > 0 for cp in bundle[TradePair.BTCUSD.trade_pair_id].cps)
-        eth_has_activity = any(cp.n_updates > 0 for cp in bundle[TradePair.ETHUSD.trade_pair_id].cps)
-        
-        self.assertTrue(btc_has_activity, "BTC ledger should have trading activity")
-        self.assertTrue(eth_has_activity, "ETH ledger should have trading activity")
+        # Portfolio ledger should have activity from both trade pairs
+        self.assertIsInstance(bundle, PerfLedger, "Should have portfolio ledger")
+        has_activity = any(cp.n_updates > 0 for cp in bundle.cps)
+        self.assertTrue(has_activity, "Portfolio ledger should have trading activity")
 
     def test_multi_trade_pair_comprehensive_validation(self):
         """Test comprehensive multi-trade pair scenario with initialization time and last_update_ms validation."""
@@ -412,7 +392,7 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
         plm.update(t_ms=update_time)
         
         # Get and validate bundles
-        bundles = plm.get_perf_ledgers(portfolio_only=False)
+        bundles = plm.get_perf_ledgers()
         
         # Must have our miner's bundle
         self.assertIn(self.test_hotkey, bundles, "Should have bundle for test miner")
@@ -422,33 +402,25 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
         # Validate all ledgers comprehensively
         self._validate_all_ledgers_in_bundle(bundle, trade_pairs, base_time, update_time)
         
-        # NEW: Validate initialization times correspond to position start times
-        for tp in trade_pairs:
-            ledger = bundle[tp.trade_pair_id]
-            expected_init_time = tp_earliest_start[tp]
-            
-            self.assertEqual(ledger.initialization_time_ms, expected_init_time,
-                           f"{tp.trade_pair_id} ledger initialization time should match earliest position start time")
+        # Validate portfolio ledger initialization time corresponds to earliest position start time across all trade pairs
+        earliest_start = min(tp_earliest_start.values())
+        self.assertEqual(bundle.initialization_time_ms, earliest_start,
+                       "Portfolio ledger initialization time should match earliest position start time")
         
-        # NEW: Validate all ledgers have the same last_update_ms after all updates complete
+        # Validate portfolio ledger has the expected last_update_ms after all updates complete
+        ledger = bundle
         expected_last_update = None
-        for ledger_id, ledger in bundle.items():
-            # Get the last checkpoint's update time
-            if ledger.cps:
-                last_cp_time = ledger.cps[-1].last_update_ms
-                if expected_last_update is None:
-                    expected_last_update = last_cp_time
-                else:
-                    self.assertEqual(last_cp_time, expected_last_update,
-                                   f"Ledger {ledger_id} last checkpoint time {last_cp_time} should match other ledgers {expected_last_update}")
-            
-            # Validate ledger's last_update_ms
+        if ledger.cps:
+            expected_last_update = ledger.cps[-1].last_update_ms
+
+        # Validate ledger's last_update_ms
+        if expected_last_update is not None:
             self.assertEqual(ledger.last_update_ms, expected_last_update,
-                           f"Ledger {ledger_id} last_update_ms should match expected {expected_last_update}")
+                           f"Portfolio ledger last_update_ms should match last checkpoint {expected_last_update}")
         
         # Validate trading activity per trade pair
         for tp in trade_pairs:
-            ledger = bundle[tp.trade_pair_id]
+            ledger = bundle
             
             # Each trade pair should have some trading activity
             has_activity = any(cp.n_updates > 0 for cp in ledger.cps)
@@ -459,7 +431,7 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
             self.assertGreater(active_checkpoints, 0, f"{tp.trade_pair_id} should have active checkpoints")
         
         # Portfolio ledger should aggregate all activity
-        portfolio_ledger = bundle[TP_ID_PORTFOLIO]
+        portfolio_ledger = bundle
         portfolio_has_activity = any(cp.n_updates > 0 for cp in portfolio_ledger.cps)
         self.assertTrue(portfolio_has_activity, "Portfolio ledger should aggregate all trading activity")
 
@@ -491,23 +463,23 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
         # Calculate expected checkpoints
         expected_checkpoints = self._calculate_expected_checkpoints(base_time, update_time)
         
-        bundles = plm.get_perf_ledgers(portfolio_only=False)
+        bundles = plm.get_perf_ledgers()
         self.assertIn(self.test_hotkey, bundles, "Should have bundle for test miner")
         
         bundle = bundles[self.test_hotkey]
         
         # Validate ledger count and checkpoint count precisely
-        expected_ledgers = {TP_ID_PORTFOLIO, TradePair.BTCUSD.trade_pair_id}
-        self.assertEqual(set(bundle.keys()), expected_ledgers, "Should have exactly portfolio + BTC ledgers")
+        expected_ledgers = set()
+        self.assertIsInstance(bundle, PerfLedger, "Bundle should be a PerfLedger")
         
-        for ledger_id, ledger in bundle.items():
-            actual_checkpoints = len(ledger.cps)
-            
-            # Allow small variance due to timing boundaries, but should be close
-            self.assertGreaterEqual(actual_checkpoints, expected_checkpoints - 1,
-                                   f"Ledger {ledger_id}: too few checkpoints, expected ~{expected_checkpoints}, got {actual_checkpoints}")
-            self.assertLessEqual(actual_checkpoints, expected_checkpoints + 1,
-                                f"Ledger {ledger_id}: too many checkpoints, expected ~{expected_checkpoints}, got {actual_checkpoints}")
+        # Validate portfolio ledger checkpoint count
+        actual_checkpoints = len(bundle.cps)
+
+        # Allow small variance due to timing boundaries, but should be close
+        self.assertGreaterEqual(actual_checkpoints, expected_checkpoints - 1,
+                               f"Portfolio ledger: too few checkpoints, expected ~{expected_checkpoints}, got {actual_checkpoints}")
+        self.assertLessEqual(actual_checkpoints, expected_checkpoints + 1,
+                            f"Portfolio ledger: too many checkpoints, expected ~{expected_checkpoints}, got {actual_checkpoints}")
 
     def test_no_positions_bundle_behavior(self):
         """Test bundle creation behavior when no positions exist."""
@@ -520,7 +492,7 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
         # Update with no positions
         plm.update(t_ms=self.now_ms)
         
-        bundles = plm.get_perf_ledgers(portfolio_only=False)
+        bundles = plm.get_perf_ledgers()
         
         # With no positions, should have no bundles
         self.assertEqual(len(bundles), 0, "Should have no bundles when no positions exist")
@@ -567,11 +539,11 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
             plm.update(t_ms=update_time)
             
             # Validate checkpoint count
-            bundles = plm.get_perf_ledgers(portfolio_only=False)
+            bundles = plm.get_perf_ledgers()
             self.assertIn(self.test_hotkey, bundles, f"Should have bundle for {name} test")
             
             bundle = bundles[self.test_hotkey]
-            btc_ledger = bundle[TradePair.BTCUSD.trade_pair_id]
+            btc_ledger = bundle
             
             actual_checkpoints = len(btc_ledger.cps)
             self.assertGreaterEqual(actual_checkpoints, min_expected,
@@ -631,7 +603,7 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
         for i, update_time in enumerate(update_times):
             plm.update(t_ms=update_time)
             
-            bundles = plm.get_perf_ledgers(portfolio_only=False)
+            bundles = plm.get_perf_ledgers()
             
             if self.test_hotkey in bundles:
                 bundle = bundles[self.test_hotkey]
@@ -640,16 +612,18 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
                 checkpoint_counts_over_time[i] = {}
                 last_update_times_over_time[i] = {}
                 
-                for ledger_id, ledger in bundle.items():
-                    checkpoint_counts_over_time[i][ledger_id] = len(ledger.cps)
-                    last_update_times_over_time[i][ledger_id] = ledger.last_update_ms
-                    
-                    # Validate that ledger's last_update_ms is reasonable relative to the update time
-                    # The exact alignment depends on checkpoint boundaries and position timing
-                    self.assertGreaterEqual(ledger.last_update_ms, update_time - MS_IN_24_HOURS,
-                                          f"Delta update {i}: ledger {ledger_id} last_update_ms should be recent")
-                    self.assertLessEqual(ledger.last_update_ms, update_time + MS_IN_24_HOURS,
-                                        f"Delta update {i}: ledger {ledger_id} last_update_ms should not be in future")
+                # Track checkpoint counts for portfolio ledger
+                ledger_id = "portfolio"
+                ledger = bundle
+                checkpoint_counts_over_time[i][ledger_id] = len(ledger.cps)
+                last_update_times_over_time[i][ledger_id] = ledger.last_update_ms
+
+                # Validate that ledger's last_update_ms is reasonable relative to the update time
+                # The exact alignment depends on checkpoint boundaries and position timing
+                self.assertGreaterEqual(ledger.last_update_ms, update_time - MS_IN_24_HOURS,
+                                      f"Delta update {i}: portfolio ledger last_update_ms should be recent")
+                self.assertLessEqual(ledger.last_update_ms, update_time + MS_IN_24_HOURS,
+                                    f"Delta update {i}: portfolio ledger last_update_ms should not be in future")
                 
                 # Validate checkpoint count progression (should be non-decreasing)
                 if i > 0 and self.test_hotkey in last_update_times_over_time[i-1]:
@@ -661,19 +635,15 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
                                                    f"Delta update {i}: checkpoint count should not decrease for {ledger_id}")
         
         # Final validation: ensure all positions were processed
-        final_bundles = plm.get_perf_ledgers(portfolio_only=False)
+        final_bundles = plm.get_perf_ledgers()
         self.assertIn(self.test_hotkey, final_bundles, "Should have final bundle after all delta updates")
         
         final_bundle = final_bundles[self.test_hotkey]
-        expected_trade_pairs = [TradePair.BTCUSD, TradePair.ETHUSD, TradePair.EURUSD]
-        
-        for tp in expected_trade_pairs:
-            self.assertIn(tp.trade_pair_id, final_bundle, f"Should have {tp.trade_pair_id} after delta updates")
-            ledger = final_bundle[tp.trade_pair_id]
-            
-            # Should have trading activity for each trade pair
-            has_activity = any(cp.n_updates > 0 for cp in ledger.cps)
-            self.assertTrue(has_activity, f"{tp.trade_pair_id} should have activity after delta updates")
+        self.assertIsInstance(final_bundle, PerfLedger, "Should have portfolio ledger after delta updates")
+
+        # Portfolio should have activity from all trade pairs
+        has_activity = any(cp.n_updates > 0 for cp in final_bundle.cps)
+        self.assertTrue(has_activity, "Portfolio ledger should have activity after delta updates")
 
     def test_multiprocessing_vs_serial_consistency(self):
         """Test that multiprocessing and serial modes produce identical results."""
@@ -743,7 +713,7 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
                 # Use serial mode - capture positions that serial mode will use internally
                 # Serial mode calls get_positions_for_all_miners() internally during update()
                 plm.update(t_ms=update_time)
-                return plm.get_perf_ledgers(portfolio_only=False), hotkey_to_positions, update_time
+                return plm.get_perf_ledgers(), hotkey_to_positions, update_time
         
         # Run in serial mode
         serial_bundles, serial_positions, serial_update_time = create_positions_and_run(ParallelizationMode.SERIAL)
@@ -819,64 +789,63 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
         serial_bundle = serial_bundles[self.test_hotkey]
         parallel_bundle = parallel_bundles[self.test_hotkey]
 
-        # Same ledgers should exist
-        self.assertEqual(set(serial_bundle.keys()), set(parallel_bundle.keys()),
-                       "Serial and parallel modes should have same ledgers")
+        # Same portfolio ledgers should exist
+        self.assertIsInstance(serial_bundle, PerfLedger, "Serial bundle should be a PerfLedger")
+        self.assertIsInstance(parallel_bundle, PerfLedger, "Parallel bundle should be a PerfLedger")
 
-        # Compare each ledger
-        for ledger_id in serial_bundle:
-            print(f'Comparing ledger {ledger_id} between serial and parallel modes...')
-            serial_ledger = serial_bundle[ledger_id]
-            parallel_ledger = parallel_bundle[ledger_id]
+        # Compare portfolio ledgers between serial and parallel modes
+        print('Comparing portfolio ledger between serial and parallel modes...')
+        serial_ledger = serial_bundle
+        parallel_ledger = parallel_bundle
 
-            # Compare basic attributes
-            self.assertEqual(serial_ledger.initialization_time_ms, parallel_ledger.initialization_time_ms,
-                           f"Ledger {ledger_id}: initialization times should match")
-            self.assertEqual(serial_ledger.last_update_ms, parallel_ledger.last_update_ms,
-                           f"Ledger {ledger_id}: last update times should match")
+        # Compare basic attributes
+        self.assertEqual(serial_ledger.initialization_time_ms, parallel_ledger.initialization_time_ms,
+                       "Portfolio ledger: initialization times should match")
+        self.assertEqual(serial_ledger.last_update_ms, parallel_ledger.last_update_ms,
+                       "Portfolio ledger: last update times should match")
 
-            # max_return should match exactly between modes
-            self.assertEqual(serial_ledger.max_return, parallel_ledger.max_return,
-                           f"Ledger {ledger_id}: max returns should match exactly between serial ({serial_ledger.max_return}) and parallel ({parallel_ledger.max_return}) modes")
+        # max_return should match exactly between modes
+        self.assertEqual(serial_ledger.max_return, parallel_ledger.max_return,
+                       "Portfolio ledger: max returns should match exactly between serial and parallel modes")
 
-            # Compare checkpoint counts
-            self.assertEqual(len(serial_ledger.cps), len(parallel_ledger.cps),
-                           f"Ledger {ledger_id}: checkpoint counts should match")
+        # Compare checkpoint counts
+        self.assertEqual(len(serial_ledger.cps), len(parallel_ledger.cps),
+                       "Portfolio ledger: checkpoint counts should match")
 
-            # Compare individual checkpoints - should match between modes
-            for i, (serial_cp, parallel_cp) in enumerate(zip(serial_ledger.cps, parallel_ledger.cps)):
-                self.assertEqual(serial_cp.last_update_ms, parallel_cp.last_update_ms,
-                               f"Ledger {ledger_id} checkpoint {i}: update times should match")
+        # Compare individual checkpoints - should match between modes
+        for i, (serial_cp, parallel_cp) in enumerate(zip(serial_ledger.cps, parallel_ledger.cps)):
+            self.assertEqual(serial_cp.last_update_ms, parallel_cp.last_update_ms,
+                           f"Portfolio ledger checkpoint {i}: update times should match")
 
-                # Update counts should match
-                self.assertEqual(serial_cp.n_updates, parallel_cp.n_updates,
-                               f"Ledger {ledger_id} checkpoint {i}: update counts should match - serial={serial_cp.n_updates}, parallel={parallel_cp.n_updates}")
+            # Update counts should match
+            self.assertEqual(serial_cp.n_updates, parallel_cp.n_updates,
+                           f"Portfolio ledger checkpoint {i}: update counts should match - serial={serial_cp.n_updates}, parallel={parallel_cp.n_updates}")
 
-                # Portfolio values should match exactly
-                self.assertEqual(serial_cp.prev_portfolio_ret, parallel_cp.prev_portfolio_ret,
-                               f"Ledger {ledger_id} checkpoint {i}: portfolio returns should match exactly - serial={serial_cp.prev_portfolio_ret}, parallel={parallel_cp.prev_portfolio_ret}")
+            # Portfolio values should match exactly
+            self.assertEqual(serial_cp.prev_portfolio_ret, parallel_cp.prev_portfolio_ret,
+                           f"Portfolio ledger checkpoint {i}: portfolio returns should match exactly - serial={serial_cp.prev_portfolio_ret}, parallel={parallel_cp.prev_portfolio_ret}")
 
-                # Gains should match exactly
-                self.assertEqual(serial_cp.gain, parallel_cp.gain,
-                               f"Ledger {ledger_id} checkpoint {i}: gains should match exactly - serial={serial_cp.gain}, parallel={parallel_cp.gain}")
+            # Gains should match exactly
+            self.assertEqual(serial_cp.gain, parallel_cp.gain,
+                           f"Portfolio ledger checkpoint {i}: gains should match exactly - serial={serial_cp.gain}, parallel={parallel_cp.gain}")
 
-                # Losses should match exactly
-                self.assertEqual(serial_cp.loss, parallel_cp.loss,
-                               f"Ledger {ledger_id} checkpoint {i}: losses should match exactly - serial={serial_cp.loss}, parallel={parallel_cp.loss}")
-                
-                # Fee values should match exactly
-                self.assertEqual(serial_cp.prev_portfolio_spread_fee, parallel_cp.prev_portfolio_spread_fee,
-                               f"Ledger {ledger_id} checkpoint {i}: spread fees should match exactly - serial={serial_cp.prev_portfolio_spread_fee}, parallel={parallel_cp.prev_portfolio_spread_fee}")
-                
-                self.assertEqual(serial_cp.prev_portfolio_carry_fee, parallel_cp.prev_portfolio_carry_fee,
-                               f"Ledger {ledger_id} checkpoint {i}: carry fees should match exactly - serial={serial_cp.prev_portfolio_carry_fee}, parallel={parallel_cp.prev_portfolio_carry_fee}")
-                
-                # Risk metrics should match exactly
-                self.assertEqual(serial_cp.mdd, parallel_cp.mdd,
-                               f"Ledger {ledger_id} checkpoint {i}: MDD should match exactly - serial={serial_cp.mdd}, parallel={parallel_cp.mdd}")
-                
-                self.assertEqual(serial_cp.mpv, parallel_cp.mpv,
-                               f"Ledger {ledger_id} checkpoint {i}: MPV should match exactly - serial={serial_cp.mpv}, parallel={parallel_cp.mpv}")
+            # Losses should match exactly
+            self.assertEqual(serial_cp.loss, parallel_cp.loss,
+                           f"Portfolio ledger checkpoint {i}: losses should match exactly - serial={serial_cp.loss}, parallel={parallel_cp.loss}")
+
+            # Fee values should match exactly
+            self.assertEqual(serial_cp.prev_portfolio_spread_fee, parallel_cp.prev_portfolio_spread_fee,
+                           f"Portfolio ledger checkpoint {i}: spread fees should match exactly - serial={serial_cp.prev_portfolio_spread_fee}, parallel={parallel_cp.prev_portfolio_spread_fee}")
+
+            self.assertEqual(serial_cp.prev_portfolio_carry_fee, parallel_cp.prev_portfolio_carry_fee,
+                           f"Portfolio ledger checkpoint {i}: carry fees should match exactly - serial={serial_cp.prev_portfolio_carry_fee}, parallel={parallel_cp.prev_portfolio_carry_fee}")
+
+            # Risk metrics should match exactly
+            self.assertEqual(serial_cp.mdd, parallel_cp.mdd,
+                           f"Portfolio ledger checkpoint {i}: MDD should match exactly - serial={serial_cp.mdd}, parallel={parallel_cp.mdd}")
+
+            self.assertEqual(serial_cp.mpv, parallel_cp.mpv,
+                           f"Portfolio ledger checkpoint {i}: MPV should match exactly - serial={serial_cp.mpv}, parallel={parallel_cp.mpv}")
 
     def test_rss_random_security_screening_logic(self):
         """Test RSS (Random Security Screening) logic with production code paths."""
@@ -944,73 +913,46 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
         self.assertEqual(len(plm_rss_disabled.random_security_screenings), 0, 
                         "RSS disabled should never add miners to screening")
 
-    def test_build_portfolio_ledgers_only_flag(self):
-        """Test build_portfolio_ledgers_only flag with production code paths."""
+    def test_build_portfolio_ledgers_only(self):
+        """Test that only portfolio ledgers are built (per-TP-ID sub-ledgers no longer supported)."""
         base_time = self.now_ms - (10 * MS_IN_24_HOURS)
-        
+
         # Create positions across multiple trade pairs
         positions_data = [
             ("btc_pos", TradePair.BTCUSD, 50000.0, 51000.0),
             ("eth_pos", TradePair.ETHUSD, 3000.0, 3100.0),
             ("eur_pos", TradePair.EURUSD, 1.10, 1.11),
         ]
-        
-        def test_ledger_mode(portfolio_only: bool):
-            """Helper to test a specific ledger mode."""
-            # Clear positions
-            self.position_client.clear_all_miner_positions_and_disk()
-            
-            # Create positions for multiple trade pairs
-            for name, tp, open_price, close_price in positions_data:
-                position = self._create_position(
-                    name, tp, base_time, base_time + MS_IN_24_HOURS,
-                    open_price, close_price, OrderType.LONG
-                )
-                self.position_client.save_miner_position(position)
-            
-            # Create manager with specific portfolio-only setting
-            plm = PerfLedgerManager(
-                running_unit_tests=True,
-                parallel_mode=ParallelizationMode.SERIAL,
-                build_portfolio_ledgers_only=portfolio_only,
+
+        # Clear positions
+        self.position_client.clear_all_miner_positions_and_disk()
+
+        # Create positions for multiple trade pairs
+        for name, tp, open_price, close_price in positions_data:
+            position = self._create_position(
+                name, tp, base_time, base_time + MS_IN_24_HOURS,
+                open_price, close_price, OrderType.LONG
             )
-            plm.clear_all_ledger_data()
-            
-            # Update ledgers
-            plm.update(t_ms=base_time + (2 * MS_IN_24_HOURS))
-            
-            # Get ledgers
-            bundles = plm.get_perf_ledgers(portfolio_only=False)
-            
-            return bundles
-        
-        # Test portfolio-only mode (should only create portfolio ledger)
-        portfolio_only_bundles = test_ledger_mode(portfolio_only=True)
-        
-        if self.test_hotkey in portfolio_only_bundles:
-            portfolio_bundle = portfolio_only_bundles[self.test_hotkey]
-            
-            # Should only have portfolio ledger
-            self.assertIn(TP_ID_PORTFOLIO, portfolio_bundle, "Should have portfolio ledger")
-            
-            # Should NOT have individual trade pair ledgers
-            for _, tp, _, _ in positions_data:
-                self.assertNotIn(tp.trade_pair_id, portfolio_bundle, 
-                               f"Should NOT have {tp.trade_pair_id} ledger in portfolio-only mode")
-        
-        # Test full mode (should create portfolio + trade pair ledgers)
-        full_bundles = test_ledger_mode(portfolio_only=False)
-        
-        if self.test_hotkey in full_bundles:
-            full_bundle = full_bundles[self.test_hotkey]
-            
-            # Should have portfolio ledger
-            self.assertIn(TP_ID_PORTFOLIO, full_bundle, "Should have portfolio ledger")
-            
-            # Should ALSO have individual trade pair ledgers
-            for _, tp, _, _ in positions_data:
-                self.assertIn(tp.trade_pair_id, full_bundle, 
-                             f"Should have {tp.trade_pair_id} ledger in full mode")
+            self.position_client.save_miner_position(position)
+
+        plm = PerfLedgerManager(
+            running_unit_tests=True,
+            parallel_mode=ParallelizationMode.SERIAL,
+        )
+        plm.clear_all_ledger_data()
+
+        # Update ledgers
+        plm.update(t_ms=base_time + (2 * MS_IN_24_HOURS))
+
+        # Get ledgers - now returns dict[str, PerfLedger]
+        bundles = plm.get_perf_ledgers()
+
+        if self.test_hotkey in bundles:
+            portfolio_ledger = bundles[self.test_hotkey]
+
+            # Should be a PerfLedger directly (no per-TP-ID sub-ledgers)
+            self.assertIsInstance(portfolio_ledger, PerfLedger, "Should have portfolio PerfLedger")
+            self.assertGreater(len(portfolio_ledger.cps), 0, "Portfolio ledger should have checkpoints")
 
     def test_slippage_configuration_effects(self):
         """Test use_slippage configuration with production code paths."""
@@ -1042,7 +984,7 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
             plm.update(t_ms=base_time + (2 * MS_IN_24_HOURS))
             
             # Get ledgers
-            bundles = plm.get_perf_ledgers(portfolio_only=False)
+            bundles = plm.get_perf_ledgers()
             
             return bundles
         
@@ -1082,7 +1024,7 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
         plm_backtest.update(t_ms=explicit_time)
         
         # Should work with explicit time
-        backtest_bundles = plm_backtest.get_perf_ledgers(portfolio_only=False)
+        backtest_bundles = plm_backtest.get_perf_ledgers()
         self.assertIsNotNone(backtest_bundles, "Backtesting mode should work with explicit time")
         
         # Test production mode (non-backtesting)
@@ -1096,7 +1038,7 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
         # Production mode can work without explicit t_ms (uses current time - lookback)
         plm_production.update()  # No t_ms parameter
         
-        production_bundles = plm_production.get_perf_ledgers(portfolio_only=False)
+        production_bundles = plm_production.get_perf_ledgers()
         self.assertIsNotNone(production_bundles, "Production mode should work without explicit time")
 
     def test_parallel_mode_configurations(self):
@@ -1119,7 +1061,7 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
         plm_serial.clear_all_ledger_data()
         
         plm_serial.update(t_ms=base_time + (2 * MS_IN_24_HOURS))
-        serial_bundles = plm_serial.get_perf_ledgers(portfolio_only=False)
+        serial_bundles = plm_serial.get_perf_ledgers()
         
         # Test Multiprocessing mode
         plm_multiprocessing = PerfLedgerManager(
@@ -1175,7 +1117,7 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
             
             plm.update(t_ms=base_time + (10 * MS_IN_24_HOURS))
             
-            bundles = plm.get_perf_ledgers(portfolio_only=False)
+            bundles = plm.get_perf_ledgers()
             
             # Should create bundles regardless of window size (for this test)
             self.assertIsNotNone(bundles, f"Should create bundles with {window_name} window")
@@ -1260,15 +1202,15 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
         
         # Should have all trade pairs
         for tp in trade_pairs:
-            self.assertIn(tp.trade_pair_id, bundle, f"Should have {tp.trade_pair_id} in multiprocessing mode")
+            self.assertIsNotNone(bundle)
             
-            ledger = bundle[tp.trade_pair_id]
+            ledger = bundle
             has_activity = any(cp.n_updates > 0 for cp in ledger.cps)
             self.assertTrue(has_activity, f"{tp.trade_pair_id} should have activity in multiprocessing mode")
         
         # Portfolio should aggregate all
-        self.assertIn(TP_ID_PORTFOLIO, bundle, "Should have portfolio in multiprocessing mode")
-        portfolio_has_activity = any(cp.n_updates > 0 for cp in bundle[TP_ID_PORTFOLIO].cps)
+        self.assertIsNotNone(bundle, "Should have portfolio in multiprocessing mode")
+        portfolio_has_activity = any(cp.n_updates > 0 for cp in bundle.cps)
         self.assertTrue(portfolio_has_activity, "Portfolio should have activity in multiprocessing mode")
 
     @unittest.skip("Skipping test_delta_update_order_trimming_behavior - trimming logic needs refactoring")
@@ -1307,9 +1249,9 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
         plm.update(t_ms=first_update_time)
         
         # Capture initial ledger state
-        initial_bundles = plm.get_perf_ledgers(portfolio_only=False)
+        initial_bundles = plm.get_perf_ledgers()
         self.assertIn(self.test_hotkey, initial_bundles, "Should have initial bundles")
-        initial_btc_ledger = initial_bundles[self.test_hotkey][TradePair.BTCUSD.trade_pair_id]
+        initial_btc_ledger = initial_bundles[self.test_hotkey]
         initial_checkpoint_count = len(initial_btc_ledger.cps)
         initial_last_update = initial_btc_ledger.cps[-1].last_update_ms if initial_btc_ledger.cps else 0
         
@@ -1335,8 +1277,8 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
         plm.update(t_ms=second_update_time)
         
         # Capture state before trimming
-        pre_trim_bundles = plm.get_perf_ledgers(portfolio_only=False)
-        pre_trim_btc_ledger = pre_trim_bundles[self.test_hotkey][TradePair.BTCUSD.trade_pair_id]
+        pre_trim_bundles = plm.get_perf_ledgers()
+        pre_trim_btc_ledger = pre_trim_bundles[self.test_hotkey]
         pre_trim_checkpoint_count = len(pre_trim_btc_ledger.cps)
         pre_trim_last_update = pre_trim_btc_ledger.cps[-1].last_update_ms
         
@@ -1411,13 +1353,13 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
             print(f"   ⚠️  update_all_perf_ledgers returned None, falling back to get_perf_ledgers")
             # Fallback: call regular update and get ledgers
             plm.update(t_ms=trim_update_time)
-            result_bundles = plm.get_perf_ledgers(portfolio_only=False)
+            result_bundles = plm.get_perf_ledgers()
         else:
             print(f"   ✅ update_all_perf_ledgers completed successfully")
         
         # Step 5: VERIFY TRIMMING BEHAVIOR
         # Use the result bundles for analysis
-        post_trim_btc_ledger = result_bundles[self.test_hotkey][TradePair.BTCUSD.trade_pair_id]
+        post_trim_btc_ledger = result_bundles[self.test_hotkey]
         post_trim_checkpoint_count = len(post_trim_btc_ledger.cps)
         post_trim_last_update = post_trim_btc_ledger.cps[-1].last_update_ms if post_trim_btc_ledger.cps else 0
         
@@ -1677,13 +1619,13 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
             current_time = next_time
     
         # Get ledgers and verify price tracking
-        bundles_1 = plm.get_perf_ledgers(portfolio_only=False)
+        bundles_1 = plm.get_perf_ledgers()
     
         # Check if the test_hotkey exists in bundles
         if self.test_hotkey not in bundles_1:
             self.fail(f"Test hotkey '{self.test_hotkey}' not found in bundles. Available keys: {list(bundles_1.keys())}")
     
-        portfolio_ledger_1 = bundles_1[self.test_hotkey][TP_ID_PORTFOLIO]
+        portfolio_ledger_1 = bundles_1[self.test_hotkey]
     
         # Debug: Print what we have
         print(f"\nPortfolio ledger last_known_prices: {portfolio_ledger_1.last_known_prices}")
@@ -1692,13 +1634,12 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
             print(f"Last checkpoint update time: {portfolio_ledger_1.cps[-1].last_update_ms}")
             print(f"Last checkpoint n_updates: {portfolio_ledger_1.cps[-1].n_updates}")
     
-        # Check individual ledgers too
-        for tp_id in [TradePair.BTCUSD.trade_pair_id, TradePair.ETHUSD.trade_pair_id, TradePair.EURUSD.trade_pair_id]:
-            if tp_id in bundles_1[self.test_hotkey]:
-                ledger = bundles_1[self.test_hotkey][tp_id]
-                print(f"{tp_id} ledger: checkpoints={len(ledger.cps)}, last_update={ledger.last_update_ms}")
-                if hasattr(ledger, 'last_known_prices'):
-                    print(f"  last_known_prices: {ledger.last_known_prices}")
+        # Check portfolio ledger
+        portfolio_ledger = bundles_1.get(self.test_hotkey)
+        if portfolio_ledger and isinstance(portfolio_ledger, PerfLedger):
+            print(f"portfolio ledger: checkpoints={len(portfolio_ledger.cps)}, last_update={portfolio_ledger.last_update_ms}")
+            if hasattr(portfolio_ledger, 'last_known_prices'):
+                print(f"  last_known_prices: {portfolio_ledger.last_known_prices}")
     
         # Check if positions are open
         for p in positions:
@@ -1730,7 +1671,7 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
         btc_price, btc_time = portfolio_ledger_1.last_known_prices[TradePair.BTCUSD.trade_pair_id]
         eth_price, eth_time = portfolio_ledger_1.last_known_prices[TradePair.ETHUSD.trade_pair_id]
         eur_price, eur_time = portfolio_ledger_1.last_known_prices[TradePair.EURUSD.trade_pair_id]
-    
+
         # Note: Actual prices might be slightly different due to checkpoint alignment
         # So we'll check they're in the expected range
         self.assertGreater(btc_price, 50000.0)  # Should have increased
@@ -1792,8 +1733,8 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
         print(f"\nDoing second update to {TimeUtil.millis_to_formatted_date_str(update_time_2)}")
         plm.update(t_ms=update_time_2)
 
-        bundles_2 = plm.get_perf_ledgers(portfolio_only=False)
-        portfolio_ledger_2 = bundles_2[self.test_hotkey][TP_ID_PORTFOLIO]
+        bundles_2 = plm.get_perf_ledgers()
+        portfolio_ledger_2 = bundles_2[self.test_hotkey]
 
         # After closing all ETHUSD positions, the cleanup logic should remove ETH from tracking
         # because there are no open positions for ETHUSD
@@ -1826,7 +1767,7 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
         # Create portfolio ledger with some known prices
         portfolio_ledger = PerfLedger(
             initialization_time_ms=1000000000000,
-            tp_id=TP_ID_PORTFOLIO
+            # tp_id removed
         )
         
         # Set up last known prices
@@ -1838,9 +1779,7 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
         
         # Create bundle
         bundle = {
-            TP_ID_PORTFOLIO: portfolio_ledger,
-            btc_tp_id: PerfLedger(initialization_time_ms=1000000000000, tp_id=btc_tp_id),
-            eth_tp_id: PerfLedger(initialization_time_ms=1000000000000, tp_id=eth_tp_id)
+            'portfolio': portfolio_ledger,
         }
         
         # Create positions with different order prices

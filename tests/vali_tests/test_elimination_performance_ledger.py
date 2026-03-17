@@ -20,7 +20,6 @@ from vali_objects.vali_dataclasses.order import Order
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import (
     PerfLedger,
     PerfCheckpoint,
-    TP_ID_PORTFOLIO
 )
 
 
@@ -142,7 +141,7 @@ class TestPerfLedgerEliminations(TestBase):
 
         # Check if miner is beyond max drawdown
         # generate_losing_ledger returns a dict, we need the portfolio ledger
-        portfolio_ledger = losing_ledger[TP_ID_PORTFOLIO]
+        portfolio_ledger = losing_ledger
         is_beyond, dd_percentage = LedgerUtils.is_beyond_max_drawdown(portfolio_ledger)
         self.assertTrue(is_beyond)
         # dd_percentage is returned as percentage (0-100), not decimal
@@ -182,9 +181,7 @@ class TestPerfLedgerEliminations(TestBase):
         )
 
         # Get filtered ledger for scoring
-        filtered_ledger = self.perf_ledger_client.filtered_ledger_for_scoring(
-            portfolio_only=True,
-            hotkeys=self.all_miners
+        filtered_ledger = self.perf_ledger_client.filtered_ledger_for_scoring(hotkeys=self.all_miners
         )
 
         # Verify invalidated miner is excluded
@@ -341,12 +338,12 @@ class TestPerfLedgerEliminations(TestBase):
 
         # Save ledger
         self.perf_ledger_client.save_perf_ledgers({
-            self.HEALTHY_MINER: {TP_ID_PORTFOLIO: ledger}
+            self.HEALTHY_MINER: ledger
         })
 
         # Get ledger and verify window constraint
-        retrieved_ledgers = self.perf_ledger_client.get_perf_ledgers(portfolio_only=False)
-        miner_ledger = retrieved_ledgers[self.HEALTHY_MINER][TP_ID_PORTFOLIO]
+        retrieved_ledgers = self.perf_ledger_client.get_perf_ledgers()
+        miner_ledger = retrieved_ledgers[self.HEALTHY_MINER]
 
         # Check that old checkpoints outside window are handled appropriately
         self.assertIsNotNone(miner_ledger)
@@ -406,9 +403,9 @@ class TestPerfLedgerEliminations(TestBase):
         self.perf_ledger_client.update(t_ms=current_time)
 
         # Get ledger and verify closed positions are handled
-        ledgers = self.perf_ledger_client.get_perf_ledgers(portfolio_only=False)
+        ledgers = self.perf_ledger_client.get_perf_ledgers()
         if self.HEALTHY_MINER in ledgers:
-            miner_ledger = ledgers[self.HEALTHY_MINER].get(TP_ID_PORTFOLIO)
+            miner_ledger = ledgers[self.HEALTHY_MINER]
             if miner_ledger:
                 # Closed position with return_at_close=1.0 should not affect performance
                 self.assertIsNotNone(miner_ledger)
