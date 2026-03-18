@@ -588,7 +588,10 @@ class MarketOrderManager():
                 take_profit = signal.get("take_profit")
                 fill_price = signal.get("price")
 
-                if execution_type == ExecutionType.LIMIT:
+                # If we enforce market cooldown, we treat as market order regardless of execution type
+                if enforce_market_cooldown:
+                    new_src = OrderSource.ORGANIC
+                elif execution_type == ExecutionType.LIMIT:
                     new_src = OrderSource.LIMIT_FILLED
                 elif execution_type == ExecutionType.BRACKET:
                     new_src = OrderSource.BRACKET_FILLED

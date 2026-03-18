@@ -31,6 +31,7 @@ from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.miner_account.miner_account_client import MinerAccountClient
 from vali_objects.vali_config import ValiConfig, TradePair, RPCConnectionMode
 from vali_objects.vali_dataclasses.price_source import PriceSource
+from vali_objects.enums.order_source_enum import OrderSource
 
 
 class MDDChecker(CacheController):
@@ -388,6 +389,10 @@ class MDDChecker(CacheController):
             for i, order in enumerate(reversed(position.orders)):
                 if not self.price_correction_enabled:
                     break
+
+                # Only correct market orders (no order corrections for limit/bracket orders)
+                if order.src != OrderSource.ORGANIC:
+                    continue
 
                 order_age = now_ms - order.processed_ms
                 if order_age > ValiConfig.RECENT_EVENT_TRACKER_OLDEST_ALLOWED_RECORD_MS:
