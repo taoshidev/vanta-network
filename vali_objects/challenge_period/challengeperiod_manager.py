@@ -558,6 +558,9 @@ class ChallengePeriodManager(CacheController):
                 'last_eod_equity': last_eod,
                 'intraday_drawdown_pct': intraday_drawdown_pct,
                 'eod_drawdown_pct': eod_drawdown_pct,
+                'intraday_drawdown_threshold': ValiConfig.SUBACCOUNT_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD,
+                'eod_drawdown_threshold': ValiConfig.SUBACCOUNT_CHALLENGE_EOD_DRAWDOWN_THRESHOLD,
+                # TODO: remove legacy fields below
                 'subaccount_challenge_intraday_drawdown_threshold': ValiConfig.SUBACCOUNT_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD,
                 'subaccount_challenge_eod_drawdown_threshold': ValiConfig.SUBACCOUNT_CHALLENGE_EOD_DRAWDOWN_THRESHOLD,
             }
@@ -651,6 +654,9 @@ class ChallengePeriodManager(CacheController):
                 'last_eod_equity': last_eod,
                 'intraday_drawdown_pct': intraday_drawdown_pct,
                 'eod_drawdown_pct': eod_drawdown_pct,
+                'intraday_drawdown_threshold': intraday_threshold,
+                'eod_drawdown_threshold': eod_threshold,
+                # TODO: remove legacy fields below
                 'subaccount_funded_intraday_drawdown_threshold': intraday_threshold,
                 'subaccount_funded_eod_drawdown_threshold': eod_threshold,
             }
