@@ -186,7 +186,6 @@ class ChallengePeriodManager(CacheController):
 
         challengeperiod_success_hotkeys = (
             self.get_hotkeys_by_bucket(MinerBucket.MAINCOMP) +
-            self.get_hotkeys_by_bucket(MinerBucket.SUBACCOUNT_FUNDED) +
             self.get_hotkeys_by_bucket(MinerBucket.SUBACCOUNT_ALPHA)
         )
         challengeperiod_testing_hotkeys = (
@@ -194,7 +193,8 @@ class ChallengePeriodManager(CacheController):
             self.get_hotkeys_by_bucket(MinerBucket.SUBACCOUNT_CHALLENGE)
         )
         challengeperiod_probation_hotkeys = self.get_hotkeys_by_bucket(MinerBucket.PROBATION)
-        all_miners = challengeperiod_success_hotkeys + challengeperiod_testing_hotkeys + challengeperiod_probation_hotkeys
+        challengeperiod_funded_hotkeys = self.get_hotkeys_by_bucket(MinerBucket.SUBACCOUNT_FUNDED)
+        all_miners = challengeperiod_success_hotkeys + challengeperiod_testing_hotkeys + challengeperiod_probation_hotkeys + challengeperiod_funded_hotkeys
 
         if not self.refreshed_challengeperiod_start_time:
             self.refreshed_challengeperiod_start_time = True
@@ -203,7 +203,7 @@ class ChallengePeriodManager(CacheController):
 
         ledger = self._perf_ledger_client.filtered_ledger_for_scoring(hotkeys=all_miners, portfolio_only=False)
 
-        inspection_miners = self.get_testing_miners() | self.get_probation_miners()
+        inspection_miners = self.get_testing_miners() | self.get_probation_miners() | self.get_funded_miners()
         challengeperiod_success, challengeperiod_demoted, challengeperiod_eliminations = self.inspect(
             positions=hk_to_positions,
             ledger=ledger,
@@ -1661,6 +1661,10 @@ class ChallengePeriodManager(CacheController):
         funded = self._bucket_view(MinerBucket.SUBACCOUNT_FUNDED)
         alpha = self._bucket_view(MinerBucket.SUBACCOUNT_ALPHA)
         return copy.deepcopy({**maincomp, **funded, **alpha})
+
+    def get_funded_miners(self):
+        """Get all SUBACCOUNT_FUNDED bucket miners."""
+        return copy.deepcopy(self._bucket_view(MinerBucket.SUBACCOUNT_FUNDED))
 
     def get_probation_miners(self):
         """Get all PROBATION bucket miners."""
