@@ -1286,7 +1286,7 @@ class ChallengePeriodManager(CacheController):
             # Fix synthetic hotkeys incorrectly in CHALLENGE bucket
             if is_synthetic_hotkey(hotkey) and bucket == MinerBucket.CHALLENGE:
                 bt.logging.info(f"Fixing synthetic hotkey {hotkey} from CHALLENGE to SUBACCOUNT_CHALLENGE")
-                self.set_miner_bucket(hotkey, MinerBucket.SUBACCOUNT_CHALLENGE, start_time_ms)
+                self.set_miner_bucket(hotkey, MinerBucket.SUBACCOUNT_CHALLENGE, start_time_ms, replace_bucket=True)
                 any_changes = True
 
             if hotkey not in hk_to_first_order_time_ms:
@@ -1338,6 +1338,7 @@ class ChallengePeriodManager(CacheController):
         hotkey: str,
         bucket: MinerBucket,
         start_time: int,
+        replace_bucket: bool = False,
     ) -> bool:
         """
         Set or update a miner's bucket information.
@@ -1360,12 +1361,12 @@ class ChallengePeriodManager(CacheController):
             self.active_miners[hotkey] = [new_entry]
         else:
             history = self.active_miners[hotkey]
-            if history[0].bucket != bucket:
-                # Bucket changed — prepend new entry, keeping full history
-                history.insert(0, new_entry)
-            else:
+            if replace_bucket or history[0].bucket == bucket:
                 # Same bucket — update in place
                 history[0] = new_entry
+            else:
+                # Bucket changed — prepend new entry, keeping full history
+                history.insert(0, new_entry)
 
         # Push bucket to MinerAccount
         try:
