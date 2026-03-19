@@ -1350,6 +1350,7 @@ class ChallengePeriodManager(CacheController):
             hotkey: Miner's hotkey
             bucket: New bucket to assign
             start_time: Start time for new bucket
+            replace_bucket: Update newest bucket in place
 
         Returns:
             True if this is a new miner, False if updating existing
