@@ -511,15 +511,15 @@ class ChallengePeriodManager(CacheController):
             now_ms = current_time if current_time is not None else TimeUtil.now_in_millis()
             today_midnight_ms = (now_ms // 86400000) * 86400000
             midnight_cps = [cp for cp in ledger.cps if cp.last_update_ms % 86400000 == 0 and cp.equity_ret > 0]
+            last_eod = midnight_cps[-1].equity_ret if midnight_cps else 1.0
 
             # Compute all checkpoint-derived values upfront
             today_open_cp = next((cp for cp in midnight_cps if cp.last_update_ms == today_midnight_ms), None)
-            daily_open_equity = today_open_cp.equity_ret if today_open_cp else 1.0
+            daily_open_equity = today_open_cp.equity_ret if today_open_cp else last_eod
             intraday_floor = daily_open_equity * (1.0 - ValiConfig.SUBACCOUNT_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD)
             intraday_drawdown_pct = (1.0 - current_return / daily_open_equity) * 100.0
 
             eod_hwm = max(cp.equity_ret for cp in midnight_cps) if midnight_cps else 1.0
-            last_eod = midnight_cps[-1].equity_ret if midnight_cps else 1.0
             eod_floor = eod_hwm * (1.0 - ValiConfig.SUBACCOUNT_CHALLENGE_EOD_DRAWDOWN_THRESHOLD) if midnight_cps else None
             eod_drawdown_pct = (1.0 - last_eod / eod_hwm) * 100.0
 
