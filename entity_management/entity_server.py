@@ -190,6 +190,10 @@ class EntityServer(RPCServerBase):
         """
         return self._manager.eliminate_subaccount(entity_hotkey, subaccount_id, reason)
 
+    def restore_subaccount_rpc(self, synthetic_hotkey: str) -> Tuple[bool, str]:
+        """Restore an erroneously eliminated subaccount to active status."""
+        return self._manager.restore_subaccount(synthetic_hotkey)
+
     # ==================== Query RPC Methods ====================
 
     def get_subaccount_status_rpc(self, synthetic_hotkey: str) -> Tuple[bool, Optional[str], str]:

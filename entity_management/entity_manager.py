@@ -627,6 +627,42 @@ class EntityManager(ValidatorBroadcastBase):
             )
             return True, f"Subaccount {subaccount_id} eliminated successfully"
 
+    def restore_subaccount(self, synthetic_hotkey: str) -> Tuple[bool, str]:
+        """
+        Restore an erroneously eliminated subaccount back to active status.
+
+        Args:
+            synthetic_hotkey: The synthetic hotkey ({entity_hotkey}_{subaccount_id})
+
+        Returns:
+            (success: bool, message: str)
+        """
+        if not is_synthetic_hotkey(synthetic_hotkey):
+            return False, f"{synthetic_hotkey} is not a synthetic hotkey"
+
+        entity_hotkey, subaccount_id = parse_synthetic_hotkey(synthetic_hotkey)
+
+        entity_lock = self._get_entity_lock(entity_hotkey)
+        with entity_lock:
+            entity_data = self.entities.get(entity_hotkey)
+            if not entity_data:
+                return False, f"Entity {entity_hotkey} not found"
+
+            subaccount = entity_data.subaccounts.get(subaccount_id)
+            if not subaccount:
+                return False, f"Subaccount {subaccount_id} not found for entity {entity_hotkey}"
+
+            subaccount.status = "active"
+            subaccount.eliminated_at_ms = None
+            self._write_entities_from_memory_to_disk()
+
+        self.broadcast_subaccount_dashboard(synthetic_hotkey)
+
+        bt.logging.info(
+            f"[ENTITY_MANAGER] Restored subaccount {synthetic_hotkey} to active status"
+        )
+        return True, f"Subaccount {synthetic_hotkey} restored to active"
+
     def get_subaccount_status(self, synthetic_hotkey: str) -> Tuple[bool, Optional[str], str]:
         """
         Get the status of a subaccount by synthetic hotkey.
