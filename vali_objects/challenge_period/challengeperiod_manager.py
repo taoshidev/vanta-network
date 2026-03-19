@@ -511,15 +511,15 @@ class ChallengePeriodManager(CacheController):
             now_ms = current_time if current_time is not None else TimeUtil.now_in_millis()
             today_midnight_ms = (now_ms // 86400000) * 86400000
             midnight_cps = [cp for cp in ledger.cps if cp.last_update_ms % 86400000 == 0 and cp.equity_ret > 0]
+            last_eod = midnight_cps[-1].equity_ret if midnight_cps else 1.0
 
             # Compute all checkpoint-derived values upfront
             today_open_cp = next((cp for cp in midnight_cps if cp.last_update_ms == today_midnight_ms), None)
-            daily_open_equity = today_open_cp.equity_ret if today_open_cp else 1.0
+            daily_open_equity = today_open_cp.equity_ret if today_open_cp else last_eod
             intraday_floor = daily_open_equity * (1.0 - ValiConfig.SUBACCOUNT_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD)
             intraday_drawdown_pct = (1.0 - current_return / daily_open_equity) * 100.0
 
             eod_hwm = max(cp.equity_ret for cp in midnight_cps) if midnight_cps else 1.0
-            last_eod = midnight_cps[-1].equity_ret if midnight_cps else 1.0
             eod_floor = eod_hwm * (1.0 - ValiConfig.SUBACCOUNT_CHALLENGE_EOD_DRAWDOWN_THRESHOLD) if midnight_cps else None
             eod_drawdown_pct = (1.0 - last_eod / eod_hwm) * 100.0
 
@@ -1286,7 +1286,7 @@ class ChallengePeriodManager(CacheController):
             # Fix synthetic hotkeys incorrectly in CHALLENGE bucket
             if is_synthetic_hotkey(hotkey) and bucket == MinerBucket.CHALLENGE:
                 bt.logging.info(f"Fixing synthetic hotkey {hotkey} from CHALLENGE to SUBACCOUNT_CHALLENGE")
-                self.set_miner_bucket(hotkey, MinerBucket.SUBACCOUNT_CHALLENGE, start_time_ms)
+                self.set_miner_bucket(hotkey, MinerBucket.SUBACCOUNT_CHALLENGE, start_time_ms, replace_bucket=True)
                 any_changes = True
 
             if hotkey not in hk_to_first_order_time_ms:
@@ -1338,6 +1338,7 @@ class ChallengePeriodManager(CacheController):
         hotkey: str,
         bucket: MinerBucket,
         start_time: int,
+        replace_bucket: bool = False,
     ) -> bool:
         """
         Set or update a miner's bucket information.
@@ -1349,6 +1350,7 @@ class ChallengePeriodManager(CacheController):
             hotkey: Miner's hotkey
             bucket: New bucket to assign
             start_time: Start time for new bucket
+            replace_bucket: Update newest bucket in place
 
         Returns:
             True if this is a new miner, False if updating existing
@@ -1360,12 +1362,12 @@ class ChallengePeriodManager(CacheController):
             self.active_miners[hotkey] = [new_entry]
         else:
             history = self.active_miners[hotkey]
-            if history[0].bucket != bucket:
-                # Bucket changed — prepend new entry, keeping full history
-                history.insert(0, new_entry)
-            else:
+            if replace_bucket or history[0].bucket == bucket:
                 # Same bucket — update in place
                 history[0] = new_entry
+            else:
+                # Bucket changed — prepend new entry, keeping full history
+                history.insert(0, new_entry)
 
         # Push bucket to MinerAccount
         try:
