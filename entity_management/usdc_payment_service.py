@@ -65,6 +65,7 @@ class USDCPaymentService:
         payment_ledger: PaymentLedger,
         usdc_contract_address: str = MinerConfig.USDC_CONTRACT_ADDRESS_BASE,
         chain_id: int = MinerConfig.BASE_CHAIN_ID,
+        hyperscaled_url: str = MinerConfig.HYPERSCALED_API_URL,
         slack_notifier=None
     ):
         if Web3 is None:
@@ -76,6 +77,7 @@ class USDCPaymentService:
         self._ledger = payment_ledger
         self._slack_notifier = slack_notifier
         self._usdc_address = Web3.to_checksum_address(usdc_contract_address)
+        self._hyperscaled_url = hyperscaled_url.rstrip("/")
 
         # Web3 setup
         self._w3 = Web3(Web3.HTTPProvider(rpc_url))
@@ -167,6 +169,14 @@ class USDCPaymentService:
             if self._ledger.has_been_paid(sub_uuid, start_time_ms, end_time_ms):
                 bt.logging.info(
                     f"[USDC_PAYMENT] Skipping {synthetic_hotkey}: already paid for this period"
+                )
+                result.skipped_count += 1
+                continue
+
+            # KYC verification — only pay accounts that have completed KYC
+            if not self._check_kyc_status(payout_address):
+                bt.logging.info(
+                    f"[USDC_PAYMENT] Skipping {synthetic_hotkey}: KYC not approved for {payout_address}"
                 )
                 result.skipped_count += 1
                 continue
@@ -318,6 +328,44 @@ class USDCPaymentService:
             )
 
         return result
+
+    def _check_kyc_status(self, wallet_address: str) -> bool:
+        """
+        Check if a wallet has completed KYC via the Hyperscaled API.
+
+        Args:
+            wallet_address: EVM payout address to check
+
+        Returns:
+            True if KYC status is approved, False otherwise.
+        """
+        try:
+            resp = http_requests.get(
+                f"{self._hyperscaled_url}/api/kyc/status",
+                params={"wallet": wallet_address},
+                timeout=15
+            )
+            if resp.status_code != 200:
+                bt.logging.warning(
+                    f"[USDC_PAYMENT] KYC check failed for {wallet_address} "
+                    f"({resp.status_code}): {resp.text}"
+                )
+                return False
+
+            data = resp.json()
+            verified = data.get("verified", False)
+            kyc_status = data.get("kycStatus", "none")
+
+            if not verified:
+                bt.logging.info(
+                    f"[USDC_PAYMENT] KYC not approved for {wallet_address} "
+                    f"(status={kyc_status}), skipping payout"
+                )
+            return verified
+
+        except Exception as e:
+            bt.logging.error(f"[USDC_PAYMENT] Error checking KYC for {wallet_address}: {e}")
+            return False
 
     def _query_entity_subaccounts(self, entity_hotkey: str) -> Optional[list]:
         """Query validator GET /entity/<entity_hotkey> for subaccount list."""
