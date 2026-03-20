@@ -253,20 +253,22 @@ class Position(BaseModel):
         if borrowed <= 0:
             return 0.0
 
-        interval_start_ms = self.open_ms
-        for fee_event in self.fee_history:
+        last_interest_accrual_ms = (self.open_ms // MS_IN_24_HOURS) * MS_IN_24_HOURS
+        for fee_event in reversed(self.fee_history):
             if fee_event["fee_type"] == "interest":
-                interval_start_ms = max(interval_start_ms, fee_event["time_ms"])
+                last_interest_accrual_ms = fee_event["time_ms"]
+                break
 
-        intervals = (current_time_ms - interval_start_ms) // MS_IN_24_HOURS
+        most_recent_midnight_ms = (current_time_ms // MS_IN_24_HOURS) * MS_IN_24_HOURS
+        intervals = (most_recent_midnight_ms - last_interest_accrual_ms) // MS_IN_24_HOURS
         if intervals <= 0:
             return 0.0
 
-        interest = borrowed * ValiConfig.DAILY_INTEREST_RATE * intervals
-        if interest > 0:
-            self.record_fee_event("interest", interest, current_time_ms)
+        interest_usd = borrowed * ValiConfig.DAILY_INTEREST_RATE * intervals
+        if interest_usd > 0:
+            self.record_fee_event("interest", interest_usd, most_recent_midnight_ms)
 
-        return interest
+        return interest_usd
 
     def record_fee_event(self, fee_type: str, amount: float, time_ms: int):
         if amount <= 0:
