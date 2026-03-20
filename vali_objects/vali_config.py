@@ -325,7 +325,7 @@ class ValiConfig:
     FOREX_MAX_LEVERAGE = 10
     INDICES_MIN_LEVERAGE = 0.1
     INDICES_MAX_LEVERAGE = 5
-    EQUITIES_MIN_LEVERAGE = 0.1
+    EQUITIES_MIN_LEVERAGE = 0.01
     EQUITIES_MAX_LEVERAGE = 2
     COMMODITIES_MIN_LEVERAGE = 0.1
     COMMODITIES_MAX_LEVERAGE = 4
@@ -340,6 +340,7 @@ class ValiConfig:
     # Minimum position size limits
     FOREX_MIN_POSITION_SIZE_LOTS = 0.01  # 0.01 standard lots
     CRYPTO_MIN_POSITION_SIZE_USD = 10.0  # $10 USD
+    EQUITIES_MIN_POSITION_SIZE_SHARES = 0.01 # 0.01 shares
 
     MAX_DAILY_DRAWDOWN = 0.95  # Portfolio should never fall below .95 x of initial value when measured day to day
     MAX_TOTAL_DRAWDOWN = 0.9  # Portfolio should never fall below .90 x of initial value when measured at any instant
@@ -512,7 +513,12 @@ class ValiConfig:
         TradePairCategory.EQUITIES: 0,
     }
 
-    SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR = 4
+    SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR = {
+        TradePairCategory.CRYPTO: 4,
+        TradePairCategory.FOREX: 4,
+        TradePairCategory.INDICES: 4,
+        TradePairCategory.EQUITIES: 2,
+    }
 
     # Collateral limits
     MIN_COLLATERAL_BALANCE_THETA = 300  # Required minimum total collateral balance per miner in Theta. Approx $150k capital account size

@@ -930,16 +930,21 @@ class Position(BaseModel):
             proposed_lots = abs(proposed_quantity)
             if proposed_lots > 0 and proposed_lots < ValiConfig.FOREX_MIN_POSITION_SIZE_LOTS:
                 raise ValueError(
-                    f"{self.trade_pair.trade_pair_id}: below min {ValiConfig.FOREX_MIN_POSITION_SIZE_LOTS} lots ({proposed_lots:.4f})")
+                    f"{self.trade_pair.trade_pair_id}: position size {proposed_lots:.4f} lots is below minimum {ValiConfig.FOREX_MIN_POSITION_SIZE_LOTS} lots")
         elif self.trade_pair.is_crypto:
             if abs(proposed_value) > 0 and abs(proposed_value) < ValiConfig.CRYPTO_MIN_POSITION_SIZE_USD:
                 raise ValueError(
-                    f"{self.trade_pair.trade_pair_id}: below min ${ValiConfig.CRYPTO_MIN_POSITION_SIZE_USD} (${abs(proposed_value):.2f})")
+                    f"{self.trade_pair.trade_pair_id}: position size ${abs(proposed_value):.2f} is below minimum ${ValiConfig.CRYPTO_MIN_POSITION_SIZE_USD:.2f}")
+        elif self.trade_pair.is_equities:
+            proposed_shares = abs(proposed_quantity)
+            if proposed_shares > 0 and proposed_shares < ValiConfig.EQUITIES_MIN_POSITION_SIZE_SHARES:
+                raise ValueError(
+                    f"{self.trade_pair.trade_pair_id}: position size {proposed_shares:.4f} shares is below minimum {ValiConfig.EQUITIES_MIN_POSITION_SIZE_SHARES} shares")
         else:  # for other asset classes
             min_position_leverage, _ = leverage_utils.get_position_leverage_bounds(self.trade_pair)
             if abs(proposed_leverage) < min_position_leverage:
                 raise ValueError(
-                    f"{self.trade_pair.trade_pair_id}: below min leverage {min_position_leverage} ({abs(proposed_leverage)})")
+                    f"{self.trade_pair.trade_pair_id}: position leverage {abs(proposed_leverage):.4f}x is below minimum {min_position_leverage}x")
 
         return clamped
 

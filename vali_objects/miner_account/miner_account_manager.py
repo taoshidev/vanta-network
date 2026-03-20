@@ -98,9 +98,13 @@ class MinerAccount:
 
     @property
     def multiplier(self) -> float:
-        multiplier = ValiConfig.PORTFOLIO_LEVERAGE_CAP.get(self.asset_class, 1.0) if self.asset_class else 1.0
+        if not self.asset_class:
+            return 1
+
+        multiplier = ValiConfig.PORTFOLIO_LEVERAGE_CAP.get(self.asset_class, 1.0)
         if self.miner_bucket == MinerBucket.SUBACCOUNT_CHALLENGE:
-            multiplier /= ValiConfig.SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR
+            multiplier /= ValiConfig.SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR.get(self.asset_class, 1.0)
+
         return multiplier
 
 

@@ -276,11 +276,12 @@ class MarketOrderManager():
         if not balance:
             balance = self._miner_account_client.get_balance(miner_hotkey) or 0.0
 
+        trade_pair_category = trade_pair.trade_pair_category
         _, max_position_leverage = leverage_utils.get_position_leverage_bounds(trade_pair)
         account_multiplier = ValiConfig.PORTFOLIO_LEVERAGE_CAP.get(trade_pair.trade_pair_category, 1.0)
         if self._challenge_period_client.get_miner_bucket(miner_hotkey) == MinerBucket.SUBACCOUNT_CHALLENGE:
-            max_position_leverage /= ValiConfig.SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR
-            account_multiplier /= ValiConfig.SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR
+            max_position_leverage /= ValiConfig.SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR[trade_pair_category]
+            account_multiplier /= ValiConfig.SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR[trade_pair_category]
         max_position_value = max_position_leverage * balance
 
         # Validate order before processing cash balance (raises ValueError if invalid)
@@ -290,7 +291,7 @@ class MarketOrderManager():
         order_resized = existing_position.validate_order_size(order, max_position_value)
 
         # Calculate transaction fee AFTER clamping based on final order value
-        transaction_fee_rate = ValiConfig.TRANSACTION_FEE_RATE.get(trade_pair.trade_pair_category, 0)
+        transaction_fee_rate = ValiConfig.TRANSACTION_FEE_RATE.get(trade_pair_category, 0)
 
         if order.order_type == existing_position.position_type:
             if buying_power <= 0:
