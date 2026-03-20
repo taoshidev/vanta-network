@@ -1976,7 +1976,17 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             else ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD
         )
         target_return_percent = target_return_threshold * 100.0
-        drawdown_limit_percent = ValiConfig.SUBACCOUNT_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD * 100.0
+        intraday_drawdown_limit_percent = ValiConfig.SUBACCOUNT_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD * 100.0
+
+        # Find today's daily open equity from the ledger midnight checkpoint
+        today_midnight_ms = (now_ms // 86400000) * 86400000
+        daily_open_equity = None
+        for cp in checkpoints:
+            cp_ts = cp.get('timestamp_ms')
+            if cp_ts == today_midnight_ms:
+                cp_perf = cp.get('performance') or {}
+                daily_open_equity = cp_perf.get('portfolio_return')
+                break
 
         current_return = None
         returns_percent = None
@@ -1993,10 +2003,11 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 returns_progress_percent = min(max(raw_returns_progress, 0.0), 100.0)
                 challenge_completion_percent = returns_progress_percent
 
-            if isinstance(max_return, (int, float)) and max_return > 0:
-                drawdown_percent = max((1.0 - (current_return / max_return)) * 100.0, 0.0)
-                if drawdown_limit_percent > 0:
-                    drawdown_usage_percent = min(max((drawdown_percent / drawdown_limit_percent) * 100.0, 0.0), 100.0)
+            # Intraday drawdown: drop from today's open equity (matching challengeperiod_manager logic)
+            open_equity = daily_open_equity if isinstance(daily_open_equity, (int, float)) and daily_open_equity > 0 else 1.0
+            drawdown_percent = max((1.0 - (current_return / open_equity)) * 100.0, 0.0)
+            if intraday_drawdown_limit_percent > 0:
+                drawdown_usage_percent = min(max((drawdown_percent / intraday_drawdown_limit_percent) * 100.0, 0.0), 100.0)
 
         challenge_progress = {
             'in_challenge_period': in_challenge_period,
@@ -2010,7 +2021,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             'returns_progress_percent': returns_progress_percent,
             'challenge_completion_percent': challenge_completion_percent,
             'drawdown_percent': drawdown_percent,
-            'drawdown_limit_percent': drawdown_limit_percent,
+            'drawdown_limit_percent': intraday_drawdown_limit_percent,
             'drawdown_usage_percent': drawdown_usage_percent,
         }
 

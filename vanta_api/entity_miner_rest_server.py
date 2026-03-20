@@ -29,6 +29,7 @@ import time
 import uuid
 from collections import deque
 from dataclasses import dataclass, field, asdict
+from datetime import datetime, timezone, timedelta
 from typing import Dict, Optional, Set
 
 import bittensor as bt
@@ -135,6 +136,12 @@ class EntityMinerRestServer(MinerRestServer):
         self._ws_connected = False
         self._ws_stop_event = threading.Event()
 
+        # Payment daemon state
+        self._payment_thread: Optional[threading.Thread] = None
+        self._payment_stop_event = threading.Event()
+        self._payment_service = None
+        self._payment_ledger = None
+
         # Wallet/secrets (loaded in _initialize_clients)
         self._hotkey = None
         self._coldkey = None
@@ -190,6 +197,159 @@ class EntityMinerRestServer(MinerRestServer):
 
         # Start WebSocket listener thread
         self._start_ws_listener()
+
+        # Initialize USDC payment daemon if configured
+        self._initialize_payment_daemon(secrets)
+
+    # ==================== Payment Daemon ====================
+
+    def _initialize_payment_daemon(self, secrets: dict):
+        """Initialize USDC payment service and start daemon thread if configured."""
+        try:
+            # Check if auto payouts are enabled
+            enable_auto_payouts = (
+                os.environ.get("ENABLE_AUTO_PAYOUTS", "").lower() == "true"
+                or secrets.get("enable_auto_payouts", False)
+            )
+            if not enable_auto_payouts:
+                bt.logging.info("[ENTITY-GW] Auto payouts not enabled (set enable_auto_payouts in secrets)")
+                return
+
+            # Load required secrets
+            usdc_private_key = os.environ.get("USDC_PRIVATE_KEY") or secrets.get("usdc_private_key")
+            if not usdc_private_key:
+                bt.logging.warning("[ENTITY-GW] USDC_PRIVATE_KEY not configured, payment daemon disabled")
+                return
+
+            usdc_rpc_url = (
+                os.environ.get("USDC_RPC_URL")
+                or secrets.get("usdc_rpc_url")
+                or MinerConfig.BASE_DEFAULT_RPC
+            )
+            validator_payout_api_key = (
+                os.environ.get("VALIDATOR_PAYOUT_API_KEY")
+                or secrets.get("validator_payout_api_key")
+            )
+            if not validator_payout_api_key:
+                bt.logging.warning("[ENTITY-GW] VALIDATOR_PAYOUT_API_KEY not configured, payment daemon disabled")
+                return
+
+            if not self._validator_url:
+                bt.logging.warning("[ENTITY-GW] validator_url not configured, payment daemon disabled")
+                return
+
+            from entity_management.payment_ledger import PaymentLedger
+            from entity_management.usdc_payment_service import USDCPaymentService
+
+            self._payment_ledger = PaymentLedger(MinerConfig.get_payment_ledger_file_path())
+            self._payment_service = USDCPaymentService(
+                private_key=usdc_private_key,
+                rpc_url=usdc_rpc_url,
+                validator_url=self._validator_url,
+                validator_api_key=validator_payout_api_key,
+                payment_ledger=self._payment_ledger,
+                slack_notifier=self.slack_notifier
+            )
+
+            # Check for pending payments from previous run
+            self._payment_service.check_pending_payments()
+
+            # Read schedule config
+            self._payout_schedule_day = secrets.get("payout_schedule_day", "sunday").lower()
+            self._payout_schedule_hour = int(secrets.get("payout_schedule_hour", 1))
+
+            # Start daemon thread
+            self._payment_stop_event.clear()
+            self._payment_thread = threading.Thread(
+                target=self._payment_daemon_loop,
+                daemon=True,
+                name="entity-gw-payment"
+            )
+            self._payment_thread.start()
+
+            bt.logging.info(
+                f"[ENTITY-GW] Payment daemon started: "
+                f"wallet={self._payment_service.get_wallet_address()}, "
+                f"schedule={self._payout_schedule_day} {self._payout_schedule_hour:02d}:00 UTC"
+            )
+        except Exception as e:
+            bt.logging.error(f"[ENTITY-GW] Failed to initialize payment daemon: {e}")
+
+    def _payment_daemon_loop(self):
+        """Main loop for the payment daemon thread."""
+        DAY_NAMES = {
+            "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+            "friday": 4, "saturday": 5, "sunday": 6
+        }
+        target_day = DAY_NAMES.get(self._payout_schedule_day, 6)
+
+        while not self._payment_stop_event.is_set():
+            try:
+                now = datetime.now(timezone.utc)
+
+                # Calculate next run time
+                days_ahead = target_day - now.weekday()
+                if days_ahead < 0 or (days_ahead == 0 and now.hour >= self._payout_schedule_hour):
+                    days_ahead += 7
+
+                next_run = now.replace(
+                    hour=self._payout_schedule_hour, minute=0, second=0, microsecond=0
+                ) + timedelta(days=days_ahead)
+
+                sleep_seconds = (next_run - now).total_seconds()
+                bt.logging.info(
+                    f"[USDC_PAYMENT_DAEMON] Next payout run at {next_run.isoformat()} "
+                    f"(in {sleep_seconds / 3600:.1f} hours)"
+                )
+
+                # Sleep until next run (check stop event every 60s)
+                while sleep_seconds > 0 and not self._payment_stop_event.is_set():
+                    wait_time = min(sleep_seconds, 60.0)
+                    self._payment_stop_event.wait(timeout=wait_time)
+                    sleep_seconds -= wait_time
+
+                if self._payment_stop_event.is_set():
+                    break
+
+                # Calculate previous week's period (Sunday 00:00 UTC -> Sunday 00:00 UTC)
+                period_end = now.replace(
+                    hour=0, minute=0, second=0, microsecond=0
+                ) - timedelta(days=now.weekday()) + timedelta(days=(target_day - now.weekday()) % 7)
+                # Adjust: period_end is the start of today's target day
+                # period_start is 7 days before that
+                if period_end > now:
+                    period_end -= timedelta(days=7)
+                period_start = period_end - timedelta(days=7)
+
+                start_ms = int(period_start.timestamp() * 1000)
+                end_ms = int(period_end.timestamp() * 1000)
+
+                bt.logging.info(
+                    f"[USDC_PAYMENT_DAEMON] Running payout for period "
+                    f"{period_start.isoformat()} to {period_end.isoformat()}"
+                )
+
+                entity_hotkey = self._hotkey.ss58_address if self._hotkey else None
+                if not entity_hotkey:
+                    bt.logging.error("[USDC_PAYMENT_DAEMON] No hotkey available, skipping payout run")
+                    continue
+
+                result = self._payment_service.process_payouts(
+                    entity_hotkey=entity_hotkey,
+                    start_time_ms=start_ms,
+                    end_time_ms=end_ms
+                )
+
+                bt.logging.info(
+                    f"[USDC_PAYMENT_DAEMON] Payout run {result.run_id} complete: "
+                    f"{result.successful_count} successful, {result.failed_count} failed, "
+                    f"${result.total_usd_paid:.2f} paid"
+                )
+
+            except Exception as e:
+                bt.logging.error(f"[USDC_PAYMENT_DAEMON] Error in payment daemon loop: {e}")
+                # Sleep 5 minutes before retrying on error
+                self._payment_stop_event.wait(timeout=300)
 
     @staticmethod
     def _normalize_hl_address(hl_address: str) -> str:
@@ -979,20 +1139,25 @@ class EntityMinerRestServer(MinerRestServer):
 
     def health_endpoint(self):
         """GET /api/health - Health check."""
-        return jsonify({
+        health = {
             'status': 'healthy',
             'service': 'EntityMinerRestServer',
             'ws_connected': self._ws_connected,
             'hl_addresses_tracked': len(self._hl_to_synthetic),
             'dashboard_cache_size': len(self._dashboard_cache),
             'sse_subscribers': sum(len(s) for s in self._sse_subscribers.values()),
+            'payment_daemon_active': self._payment_thread is not None and self._payment_thread.is_alive(),
             'timestamp': time.time()
-        }), 200
+        }
+        return jsonify(health), 200
 
     def shutdown(self):
         """Gracefully shutdown the gateway."""
         self._ws_stop_event.set()
+        self._payment_stop_event.set()
         if self._ws_thread and self._ws_thread.is_alive():
             self._ws_thread.join(timeout=5.0)
+        if self._payment_thread and self._payment_thread.is_alive():
+            self._payment_thread.join(timeout=5.0)
         self.stop_flask_server()
         bt.logging.info("[ENTITY-GW] Shutdown complete")

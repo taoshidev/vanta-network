@@ -36,3 +36,20 @@ class MinerConfig:
     def get_secrets_file_path() -> str:
         """Get path to miner API keys file."""
         return ValiConfig.BASE_DIR + "/mining/miner_secrets.json"
+
+    # USDC Payment Configuration (Base chain)
+    USDC_CONTRACT_ADDRESS_BASE = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+    BASE_CHAIN_ID = 8453
+    BASE_DEFAULT_RPC = "https://mainnet.base.org"
+    USDC_DECIMALS = 6
+    PAYMENT_LEDGER_FILE = "mining/payment_ledger.json"
+    PAYMENT_MIN_USDC_AMOUNT = 1.0
+    PAYMENT_GAS_BUFFER_MULTIPLIER = 1.2
+    PAYMENT_CONFIRMATION_TIMEOUT_S = 120
+    PAYMENT_MAX_RETRIES = 3
+    PAYMENT_RETRY_DELAY_S = 5.0
+
+    @staticmethod
+    def get_payment_ledger_file_path() -> str:
+        """Get path to payment ledger file."""
+        return ValiConfig.BASE_DIR + "/mining/payment_ledger.json"
