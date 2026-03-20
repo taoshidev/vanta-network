@@ -209,18 +209,19 @@ class Position(BaseModel):
         if self.is_closed_position:
             return 0.0
 
-        total_carry_fee_paid = 0
-        interval_start_ms = self.open_ms
-        for fee_event in self.fee_history:
+        last_carry_fee_accrual_ms = self.open_ms
+        for fee_event in reversed(self.fee_history):
             if fee_event["fee_type"] == "carry":
-                total_carry_fee_paid += fee_event["amount"]
-                interval_start_ms = max(interval_start_ms, fee_event["time_ms"])
+                last_carry_fee_accrual_ms = fee_event["time_ms"]
+                break
 
         if self.trade_pair.is_crypto:
-            intervals = (current_time_ms - interval_start_ms) // MS_IN_8_HOURS
+            interval_ms = MS_IN_8_HOURS
+            intervals = (current_time_ms - last_carry_fee_accrual_ms) // interval_ms
             rate = ValiConfig.CARRY_FEE_RATE_PER_INTERVAL[TradePairCategory.CRYPTO]
         elif self.trade_pair.is_forex:
-            intervals = (current_time_ms - interval_start_ms) // MS_IN_24_HOURS
+            interval_ms = MS_IN_24_HOURS
+            intervals = (current_time_ms - last_carry_fee_accrual_ms) // interval_ms
             rate = ValiConfig.CARRY_FEE_RATE_PER_INTERVAL[TradePairCategory.FOREX]
         else:
             return 0.0
@@ -233,8 +234,9 @@ class Position(BaseModel):
             return 0.0
 
         carry_fee = market_value * rate * intervals
+        record_time_ms = last_carry_fee_accrual_ms + intervals * interval_ms
         if carry_fee > 0:
-            self.record_fee_event("carry", carry_fee, current_time_ms)
+            self.record_fee_event("carry", carry_fee, record_time_ms)
 
         return carry_fee
 
