@@ -91,7 +91,7 @@ class PositionManagerServer(RPCServerBase):
         # At this point, self._manager exists, so RPC calls won't fail
         # daemon_interval_s: 1 hour (frequent carry fee charging; compact is separately rate-limited)
         # hang_timeout_s: Dynamically set to 2x interval to prevent false alarms during normal sleep
-        daemon_interval_s = 3600 + 60  # 1 hour + 1 min buffer to ensure interval boundary has passed
+        daemon_interval_s = 3600 # 1 hour
         hang_timeout_s = daemon_interval_s * 2.0  # 2 hours (2x interval)
 
         super().__init__(
@@ -134,6 +134,12 @@ class PositionManagerServer(RPCServerBase):
             self._manager.refresh_position_fees()
         except Exception as e:
             bt.logging.error(f"Error in carry fee daemon iteration: {traceback.format_exc()}")
+
+        # Align next daemon iteration to UTC hour boundary
+        now = time.time()
+        next_hour_s = (int(now) // 3600 + 1) * 3600
+        self.daemon_interval_s = next_hour_s - now
+        bt.logging.info(f"PositionManager daemon interval complete, next iteration in {self.daemon_interval_s} seconds")
 
 
     # ==================== RPC Methods (called by client via RPC) ====================
