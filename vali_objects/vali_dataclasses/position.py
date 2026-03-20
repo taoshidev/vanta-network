@@ -207,7 +207,7 @@ class Position(BaseModel):
 
     def refresh_carry_fee_usd(self, current_time_ms: int) -> float:
         if self.is_closed_position:
-            return 0.0
+            current_time_ms = self.close_ms
 
         last_carry_fee_accrual_ms = self.open_ms
         for fee_event in reversed(self.fee_history):
