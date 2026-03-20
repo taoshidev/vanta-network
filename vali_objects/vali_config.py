@@ -500,10 +500,10 @@ class ValiConfig:
         TradePairCategory.EQUITIES: 2,
     }
     TRANSACTION_FEE_RATE = {
-        TradePairCategory.CRYPTO: 0.0005,
+        TradePairCategory.CRYPTO: 0.0005,    # 0.5%
         TradePairCategory.FOREX: 0,
         TradePairCategory.INDICES: 0,
-        TradePairCategory.EQUITIES: 0,
+        TradePairCategory.EQUITIES: 0.0005,  # 0.5%
     }
     CARRY_FEE_RATE_PER_INTERVAL = {
         TradePairCategory.CRYPTO: 0.0001,          # 10.95% annual / (365*3 intervals)
