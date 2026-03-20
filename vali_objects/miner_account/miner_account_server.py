@@ -262,13 +262,13 @@ class MinerAccountServer(RPCServerBase):
 
     # ==================== Margin/Cash Processing Methods ====================
 
-    def process_order_buy(self, hotkey: str, order_value_usd: float, fee_usd: float) -> float:
-        """Process buy order cash/margin. Returns borrowed amount."""
-        return self._manager.process_order_buy(hotkey, order_value_usd, fee_usd)
+    def process_order_buy(self, hotkey: str, order_value_usd: float, borrowed_amount: float, fee_usd: float) -> None:
+        """Process buy order cash/margin."""
+        self._manager.process_order_buy(hotkey, order_value_usd, borrowed_amount, fee_usd)
 
-    def process_order_sell(self, hotkey: str, entry_value_usd: float, realized_pnl: float, position_margin_loan: float, fee_usd: float) -> float:
+    def process_order_sell(self, hotkey: str, entry_value_usd: float, realized_pnl: float, loan_repaid: float, fee_usd: float) -> None:
         """Process sell/close order."""
-        return self._manager.process_order_sell(hotkey, entry_value_usd, realized_pnl, position_margin_loan, fee_usd)
+        self._manager.process_order_sell(hotkey, entry_value_usd, realized_pnl, loan_repaid, fee_usd)
 
     def get_total_borrowed_amount(self, hotkey: str) -> float:
         """Get total borrowed amount for a miner."""

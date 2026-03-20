@@ -458,8 +458,9 @@ class EliminationManager(CacheController):
                     f"[ELIM_FLAT] hotkey={hotkey} tp={trade_pair.trade_pair_id} "
                     f"entry_value=${entry_value:.2f} realized_pnl=${order_realized_pnl:.2f} fee=${transaction_fee:.2f}"
                 )
-                loan_repaid = self._miner_account_client.process_order_sell(
-                    hotkey, entry_value, order_realized_pnl, position.margin_loan, transaction_fee
+                loan_repaid = min(position.margin_loan, entry_value + order_realized_pnl)
+                self._miner_account_client.process_order_sell(
+                    hotkey, entry_value, order_realized_pnl, loan_repaid, transaction_fee
                 )
                 flat_order.margin_loan = -loan_repaid
 
