@@ -683,8 +683,8 @@ class ChallengePeriodManager(CacheController):
                 'intraday_drawdown_threshold': intraday_threshold,
                 'eod_drawdown_threshold': eod_threshold,
                 # TODO: remove legacy fields below
-                'subaccount_funded_intraday_drawdown_threshold': intraday_threshold,
-                'subaccount_funded_eod_drawdown_threshold': eod_threshold,
+                'subaccount_challenge_intraday_drawdown_threshold': intraday_threshold,
+                'subaccount_challenge_eod_drawdown_threshold': eod_threshold,
             }
 
             # Rule 1: Intraday drawdown
