@@ -186,7 +186,6 @@ class ChallengePeriodManager(CacheController):
 
         challengeperiod_success_hotkeys = (
             self.get_hotkeys_by_bucket(MinerBucket.MAINCOMP) +
-            self.get_hotkeys_by_bucket(MinerBucket.SUBACCOUNT_FUNDED) +
             self.get_hotkeys_by_bucket(MinerBucket.SUBACCOUNT_ALPHA)
         )
         challengeperiod_testing_hotkeys = (
@@ -194,7 +193,8 @@ class ChallengePeriodManager(CacheController):
             self.get_hotkeys_by_bucket(MinerBucket.SUBACCOUNT_CHALLENGE)
         )
         challengeperiod_probation_hotkeys = self.get_hotkeys_by_bucket(MinerBucket.PROBATION)
-        all_miners = challengeperiod_success_hotkeys + challengeperiod_testing_hotkeys + challengeperiod_probation_hotkeys
+        challengeperiod_funded_hotkeys = self.get_hotkeys_by_bucket(MinerBucket.SUBACCOUNT_FUNDED)
+        all_miners = challengeperiod_success_hotkeys + challengeperiod_testing_hotkeys + challengeperiod_probation_hotkeys + challengeperiod_funded_hotkeys
 
         if not self.refreshed_challengeperiod_start_time:
             self.refreshed_challengeperiod_start_time = True
@@ -203,7 +203,7 @@ class ChallengePeriodManager(CacheController):
 
         ledger = self._perf_ledger_client.filtered_ledger_for_scoring(hotkeys=all_miners, portfolio_only=False)
 
-        inspection_miners = self.get_testing_miners() | self.get_probation_miners()
+        inspection_miners = self.get_testing_miners() | self.get_probation_miners() | self.get_funded_miners()
         challengeperiod_success, challengeperiod_demoted, challengeperiod_eliminations = self.inspect(
             positions=hk_to_positions,
             ledger=ledger,
@@ -446,6 +446,43 @@ class ChallengePeriodManager(CacheController):
 
     # ==================== Evaluation Methods ====================
 
+    # Miners registered in SUBACCOUNT_CHALLENGE before this timestamp use V0 funded thresholds
+    _SUBACCOUNT_FUNDED_V0_CUTOFF_MS = 1773532799000  # Mar 14, 2026 23:59:59 UTC
+
+    def _parse_eod_checkpoints(
+        self,
+        ledger: PerfLedger,
+        now_ms: int
+    ) -> tuple[list, float, float, float]:
+        """
+        Parse midnight checkpoints from a ledger.
+        Returns (midnight_cps, last_eod, daily_open_equity, eod_hwm).
+        """
+        midnight_cps = [cp for cp in ledger.cps if cp.last_update_ms % 86400000 == 0 and cp.equity_ret > 0]
+        last_eod = midnight_cps[-1].equity_ret if midnight_cps else 1.0
+        today_midnight_ms = (now_ms // 86400000) * 86400000
+        today_open_cp = next((cp for cp in midnight_cps if cp.last_update_ms == today_midnight_ms), None)
+        daily_open_equity = today_open_cp.equity_ret if today_open_cp else last_eod
+        eod_hwm = max(cp.equity_ret for cp in midnight_cps) if midnight_cps else 1.0
+        return midnight_cps, last_eod, daily_open_equity, eod_hwm
+
+    def _get_funded_drawdown_thresholds(self, hotkey: str) -> tuple[float, float]:
+        """
+        Returns (intraday_threshold, eod_threshold) for a SUBACCOUNT_FUNDED miner.
+        Uses V0 thresholds if the miner's SUBACCOUNT_CHALLENGE bucket started before Mar 14, 2026.
+        """
+        history = self.active_miners.get(hotkey, [])
+        challenge_entry = next((e for e in history if e.bucket == MinerBucket.SUBACCOUNT_CHALLENGE), None)
+        if challenge_entry and challenge_entry.start_time_ms < self._SUBACCOUNT_FUNDED_V0_CUTOFF_MS:
+            return (
+                ValiConfig.SUBACCOUNT_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD_V0,
+                ValiConfig.SUBACCOUNT_FUNDED_EOD_DRAWDOWN_THRESHOLD_V0,
+            )
+        return (
+            ValiConfig.SUBACCOUNT_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD,
+            ValiConfig.SUBACCOUNT_FUNDED_EOD_DRAWDOWN_THRESHOLD,
+        )
+
     def _evaluate_synthetic_challenge(
         self,
         inspection_hotkeys: dict[str, int],
@@ -509,18 +546,8 @@ class ChallengePeriodManager(CacheController):
                 continue
 
             now_ms = current_time if current_time is not None else TimeUtil.now_in_millis()
-            today_midnight_ms = (now_ms // 86400000) * 86400000
-            midnight_cps = [cp for cp in ledger.cps if cp.last_update_ms % 86400000 == 0 and cp.equity_ret > 0]
-            last_eod = midnight_cps[-1].equity_ret if midnight_cps else 1.0
-
-            # Compute all checkpoint-derived values upfront
-            today_open_cp = next((cp for cp in midnight_cps if cp.last_update_ms == today_midnight_ms), None)
-            daily_open_equity = today_open_cp.equity_ret if today_open_cp else last_eod
-            intraday_floor = daily_open_equity * (1.0 - ValiConfig.SUBACCOUNT_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD)
+            midnight_cps, last_eod, daily_open_equity, eod_hwm = self._parse_eod_checkpoints(ledger, now_ms)
             intraday_drawdown_pct = (1.0 - current_return / daily_open_equity) * 100.0
-
-            eod_hwm = max(cp.equity_ret for cp in midnight_cps) if midnight_cps else 1.0
-            eod_floor = eod_hwm * (1.0 - ValiConfig.SUBACCOUNT_CHALLENGE_EOD_DRAWDOWN_THRESHOLD) if midnight_cps else None
             eod_drawdown_pct = (1.0 - last_eod / eod_hwm) * 100.0
 
             # Cache stats before rule checks so dashboard reflects what triggered elimination
@@ -531,15 +558,18 @@ class ChallengePeriodManager(CacheController):
                 'last_eod_equity': last_eod,
                 'intraday_drawdown_pct': intraday_drawdown_pct,
                 'eod_drawdown_pct': eod_drawdown_pct,
+                'intraday_drawdown_threshold': ValiConfig.SUBACCOUNT_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD,
+                'eod_drawdown_threshold': ValiConfig.SUBACCOUNT_CHALLENGE_EOD_DRAWDOWN_THRESHOLD,
+                # TODO: remove legacy fields below
                 'subaccount_challenge_intraday_drawdown_threshold': ValiConfig.SUBACCOUNT_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD,
                 'subaccount_challenge_eod_drawdown_threshold': ValiConfig.SUBACCOUNT_CHALLENGE_EOD_DRAWDOWN_THRESHOLD,
             }
 
             # Rule 1: Intraday drawdown — current equity cannot drop >5% from today's opening equity
-            if current_return < intraday_floor:
+            if current_return < daily_open_equity * (1.0 - ValiConfig.SUBACCOUNT_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD):
                 bt.logging.info(
                     f"[SYNTHETIC_CP] {hotkey} intraday drawdown violation, failed challenge period - "
-                    f"current_equity={current_return:.6f} < floor={intraday_floor:.6f} "
+                    f"current_equity={current_return:.6f} < floor={daily_open_equity * (1.0 - ValiConfig.SUBACCOUNT_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD):.6f} "
                     f"(day_open={daily_open_equity:.6f}, drawdown={intraday_drawdown_pct:.2f}%)"
                 )
                 miners_to_eliminate[hotkey] = (
@@ -550,10 +580,10 @@ class ChallengePeriodManager(CacheController):
                 continue
 
             # Rule 2: EOD trailing drawdown — last EOD equity cannot drop >5% from highest-ever EOD equity
-            if midnight_cps and last_eod < eod_floor:
+            if midnight_cps and last_eod < eod_hwm * (1.0 - ValiConfig.SUBACCOUNT_CHALLENGE_EOD_DRAWDOWN_THRESHOLD):
                 bt.logging.info(
                     f"[SYNTHETIC_CP] {hotkey} EOD drawdown violation, failed challenge period - "
-                    f"last_eod={last_eod:.6f} < floor={eod_floor:.6f} "
+                    f"last_eod={last_eod:.6f} < floor={eod_hwm * (1.0 - ValiConfig.SUBACCOUNT_CHALLENGE_EOD_DRAWDOWN_THRESHOLD):.6f} "
                     f"(hwm={eod_hwm:.6f}, drawdown={eod_drawdown_pct:.2f}%)"
                 )
                 miners_to_eliminate[hotkey] = (
@@ -581,6 +611,100 @@ class ChallengePeriodManager(CacheController):
         )
 
         return hotkeys_to_promote, miners_to_eliminate
+
+    def _evaluate_subaccount_funded(
+        self,
+        inspection_hotkeys: dict[str, int],
+        portfolio_only_ledgers: dict[str, PerfLedger],
+        current_time: int = None
+    ) -> dict[str, tuple[str, float, int]]:
+        """
+        Evaluate synthetic hotkeys in SUBACCOUNT_FUNDED bucket.
+
+        Applies the same two drawdown rules as SUBACCOUNT_CHALLENGE, with version-aware thresholds:
+        - V0 thresholds (10%) for miners whose SUBACCOUNT_CHALLENGE bucket started before Mar 14, 2026
+        - V1 thresholds (8%) for all others
+
+        No returns threshold or promotion logic — funded miners cannot be promoted past this bucket.
+        """
+        miners_to_eliminate = {}
+        accounts = self._miner_account_client.get_accounts(list(inspection_hotkeys.keys()))
+
+        for hotkey, bucket_start_time in inspection_hotkeys.items():
+            has_minimum_ledger, ledger = self._check_minimum_ledger(portfolio_only_ledgers, hotkey)
+            if not has_minimum_ledger or not ledger:
+                continue
+
+            current_return = self._compute_portfolio_return(hotkey, accounts.get(hotkey))
+            if current_return is None:
+                continue
+
+            now_ms = current_time if current_time is not None else TimeUtil.now_in_millis()
+            midnight_cps, last_eod, daily_open_equity, eod_hwm = self._parse_eod_checkpoints(ledger, now_ms)
+            intraday_threshold, eod_threshold = self._get_funded_drawdown_thresholds(hotkey)
+
+            intraday_drawdown_pct = (1.0 - current_return / daily_open_equity) * 100.0
+            eod_drawdown_pct = (1.0 - last_eod / eod_hwm) * 100.0
+
+            # Cache stats before rule checks so dashboard reflects what triggered elimination
+            self._drawdown_stats_cache[hotkey] = {
+                'current_equity': current_return,
+                'daily_open_equity': daily_open_equity,
+                'eod_hwm': eod_hwm,
+                'last_eod_equity': last_eod,
+                'intraday_drawdown_pct': intraday_drawdown_pct,
+                'eod_drawdown_pct': eod_drawdown_pct,
+                'intraday_drawdown_threshold': intraday_threshold,
+                'eod_drawdown_threshold': eod_threshold,
+                # TODO: remove legacy fields below
+                'subaccount_funded_intraday_drawdown_threshold': intraday_threshold,
+                'subaccount_funded_eod_drawdown_threshold': eod_threshold,
+            }
+
+            # Rule 1: Intraday drawdown
+            if current_return < daily_open_equity * (1.0 - intraday_threshold):
+                bt.logging.info(
+                    f"[FUNDED_EVAL {hotkey}] intraday drawdown violation - "
+                    f"current_equity={current_return:.6f} < floor={daily_open_equity * (1.0 - intraday_threshold):.6f} "
+                    f"(day_open={daily_open_equity:.6f}, drawdown={intraday_drawdown_pct:.2f}%)"
+                )
+                miners_to_eliminate[hotkey] = (
+                    EliminationReason.FAILED_FUNDED_PERIOD_INTRADAY_DRAWDOWN.value,
+                    intraday_drawdown_pct,
+                    now_ms
+                )
+                continue
+
+            # Rule 2: EOD trailing drawdown
+            if midnight_cps and last_eod < eod_hwm * (1.0 - eod_threshold):
+                bt.logging.info(
+                    f"[FUNDED_EVAL {hotkey}] EOD drawdown violation - "
+                    f"last_eod={last_eod:.6f} < floor={eod_hwm * (1.0 - eod_threshold):.6f} "
+                    f"(hwm={eod_hwm:.6f}, drawdown={eod_drawdown_pct:.2f}%)"
+                )
+                miners_to_eliminate[hotkey] = (
+                    EliminationReason.FAILED_FUNDED_PERIOD_EOD_DRAWDOWN.value,
+                    eod_drawdown_pct,
+                    midnight_cps[-1].last_update_ms
+                )
+                continue
+
+            threshold_pct = max(intraday_threshold, eod_threshold) * 100.0
+            worst_drawdown_pct = max(intraday_drawdown_pct, eod_drawdown_pct)
+            if worst_drawdown_pct >= threshold_pct * 0.75:
+                bt.logging.info(
+                    f"[FUNDED_EVAL {hotkey}] near elimination - "
+                    f"current_return={current_return:.6f}, "
+                    f"intraday_drawdown={intraday_drawdown_pct:.2f}%, eod_drawdown={eod_drawdown_pct:.2f}% "
+                    f"(threshold={threshold_pct:.1f}%)"
+                )
+
+        bt.logging.info(
+            f"[FUNDED_EVAL] Evaluation complete: {len(inspection_hotkeys)} evaluated, "
+            f"{len(miners_to_eliminate)} to eliminate"
+        )
+
+        return miners_to_eliminate
 
     def _evaluate_rank_based(
         self,
@@ -747,23 +871,26 @@ class ChallengePeriodManager(CacheController):
         hotkeys_to_demote = []
         miners_to_eliminate = {}
 
-        # Separate into challenge-period synthetic vs rank-based evaluation
+        # Separate into per-bucket evaluation groups
         synthetic_challenge_hotkeys = {}
+        synthetic_funded_hotkeys = {}
         rank_based_hotkeys = {}
 
         for hotkey, bucket_start_time in inspection_hotkeys.items():
             bucket = self.get_miner_bucket(hotkey)
 
             if is_synthetic_hotkey(hotkey) and bucket == MinerBucket.SUBACCOUNT_CHALLENGE:
-                # Synthetic hotkeys in SUBACCOUNT_CHALLENGE use instantaneous pass
                 synthetic_challenge_hotkeys[hotkey] = bucket_start_time
+            elif is_synthetic_hotkey(hotkey) and bucket == MinerBucket.SUBACCOUNT_FUNDED:
+                synthetic_funded_hotkeys[hotkey] = bucket_start_time
             else:
-                # Regular miners + synthetic miners in SUBACCOUNT_FUNDED/SUBACCOUNT_ALPHA
+                # Regular miners + synthetic miners in SUBACCOUNT_ALPHA
                 rank_based_hotkeys[hotkey] = bucket_start_time
 
         bt.logging.info(
             f"Inspection split: {len(synthetic_challenge_hotkeys)} synthetic-challenge, "
-            f"{len(rank_based_hotkeys)} rank-based (regular + synthetic post-challenge)"
+            f"{len(synthetic_funded_hotkeys)} synthetic-funded, "
+            f"{len(rank_based_hotkeys)} rank-based (regular + synthetic post-funded)"
         )
 
         # PHASE 1: Process synthetic hotkeys in challenge period (instantaneous pass)
@@ -773,11 +900,19 @@ class ChallengePeriodManager(CacheController):
                 portfolio_only_ledgers,
                 current_time
             )
-            # bt.logging.info("DRYRUN: skipping actual challenge period promotion and elimination")
             hotkeys_to_promote.extend(synthetic_promotions)
             miners_to_eliminate.update(synthetic_eliminations)
 
-        # PHASE 2: Process rank-based hotkeys (regular flow for all others)
+        # PHASE 2: Process synthetic hotkeys in funded period (drawdown rules only, no promotion)
+        if synthetic_funded_hotkeys:
+            funded_eliminations = self._evaluate_subaccount_funded(
+                synthetic_funded_hotkeys,
+                portfolio_only_ledgers,
+                current_time
+            )
+            miners_to_eliminate.update(funded_eliminations)
+
+        # PHASE 3: Process rank-based hotkeys (regular flow for all others)
         if rank_based_hotkeys:
             rank_promotions, rank_demotions, rank_eliminations = self._evaluate_rank_based(
                 rank_based_hotkeys,
@@ -1095,6 +1230,10 @@ class ChallengePeriodManager(CacheController):
                 self._perf_ledger_client.wipe_miners_perf_ledgers([hotkey])
 
             elif bucket_value == MinerBucket.SUBACCOUNT_FUNDED:
+                # Synthetic funded miners cannot be promoted past SUBACCOUNT_FUNDED
+                if is_synthetic_hotkey(hotkey):
+                    bt.logging.error(f"Unexpected promotion attempt for synthetic funded hotkey {hotkey} — skipping")
+                    continue
                 target_bucket = MinerBucket.SUBACCOUNT_ALPHA
             else:
                 bt.logging.error(f"Cannot promote {hotkey} from bucket {bucket_value.value}")
@@ -1522,6 +1661,10 @@ class ChallengePeriodManager(CacheController):
         funded = self._bucket_view(MinerBucket.SUBACCOUNT_FUNDED)
         alpha = self._bucket_view(MinerBucket.SUBACCOUNT_ALPHA)
         return copy.deepcopy({**maincomp, **funded, **alpha})
+
+    def get_funded_miners(self):
+        """Get all SUBACCOUNT_FUNDED bucket miners."""
+        return copy.deepcopy(self._bucket_view(MinerBucket.SUBACCOUNT_FUNDED))
 
     def get_probation_miners(self):
         """Get all PROBATION bucket miners."""
