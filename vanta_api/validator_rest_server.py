@@ -1976,7 +1976,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             else ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD
         )
         target_return_percent = target_return_threshold * 100.0
-        drawdown_limit_percent = ValiConfig.SUBACCOUNT_CHALLENGE_DRAWDOWN_THRESHOLD * 100.0
+        drawdown_limit_percent = ValiConfig.SUBACCOUNT_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD * 100.0
 
         current_return = None
         returns_percent = None
