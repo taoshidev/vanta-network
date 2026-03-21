@@ -455,13 +455,14 @@ class LimitOrderManager(CacheController):
         return None
 
 
-    def cancel_limit_order(self, miner_hotkey, trade_pair_id, order_uuid, now_ms):
+    def cancel_limit_order(self, miner_hotkey, trade_pair_id, order_uuid, now_ms, execution_type=None):
         """
         RPC method to cancel limit order(s).
         Args:
             miner_hotkey: The miner's hotkey
             order_uuid: UUID of specific order to cancel, comma-separated for multiple, or None/empty for all
             now_ms: Current timestamp
+            execution_type: Optional ExecutionType filter — when set with cancel_all, only cancels orders of this type
         Returns:
             dict with cancellation details
         """
@@ -481,6 +482,8 @@ class LimitOrderManager(CacheController):
                     if miner_hotkey in hotkey_dict:
                         for order in hotkey_dict[miner_hotkey]:
                             if order.src in [OrderSource.LIMIT_UNFILLED, OrderSource.BRACKET_UNFILLED, OrderSource.STOP_LIMIT_UNFILLED]:
+                                if execution_type is not None and order.execution_type != execution_type:
+                                    continue
                                 orders_to_cancel.append(order)
             else:
                 # Cancel by specific UUID(s) — comma-separated for multiple
@@ -1130,6 +1133,19 @@ class LimitOrderManager(CacheController):
                 self._last_fill_time[trade_pair] = {}
             self._last_fill_time[trade_pair][miner_hotkey] = fill_time
 
+
+            # Cancel unfilled bracket orders immediately if position is now closed
+            if updated_position.is_closed_position:
+                try:
+                    self.cancel_limit_order(
+                        miner_hotkey,
+                        trade_pair.trade_pair_id,
+                        "ALL",
+                        fill_time,
+                        execution_type=ExecutionType.BRACKET
+                    )
+                except Exception as e:
+                    bt.logging.warning(f"Failed to cancel bracket orders after position close: {e}")
 
             if order.execution_type == ExecutionType.LIMIT:
                 if updated_position.is_open_position and len(updated_position.orders) == 1:
