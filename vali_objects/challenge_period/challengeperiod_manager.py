@@ -561,16 +561,6 @@ class ChallengePeriodManager(CacheController):
             if subaccount_asset_class == TradePairCategory.CRYPTO:
                 returns_threshold = ValiConfig.SUBACCOUNT_CRYPTO_CHALLENGE_RETURNS_THRESHOLD
 
-            # Promote if returns meet threshold
-            if returns_percentage >= returns_threshold:
-                bt.logging.info(
-                    f"[SYNTHETIC_CP] {hotkey} promoted - "
-                    f"returns {returns_percentage:.2f}% >= {returns_threshold}%"
-                    f"balance {accounts.get(hotkey).get('balance')}, unrealized_pnl {self._position_client.get_unrealized_pnl(hotkey)}"
-                )
-                hotkeys_to_promote.append(hotkey)
-                continue
-
             now_ms = current_time if current_time is not None else TimeUtil.now_in_millis()
             midnight_cps, last_eod, daily_open_equity, eod_hwm = self._parse_eod_checkpoints(ledger, now_ms)
             intraday_drawdown_pct = (1.0 - current_return / daily_open_equity) * 100.0
@@ -590,6 +580,16 @@ class ChallengePeriodManager(CacheController):
                 'subaccount_challenge_intraday_drawdown_threshold': ValiConfig.SUBACCOUNT_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD,
                 'subaccount_challenge_eod_drawdown_threshold': ValiConfig.SUBACCOUNT_CHALLENGE_EOD_DRAWDOWN_THRESHOLD,
             }
+
+            # Promote if returns meet threshold
+            if returns_percentage >= returns_threshold:
+                bt.logging.info(
+                    f"[SYNTHETIC_CP] {hotkey} promoted - "
+                    f"returns {returns_percentage:.2f}% >= {returns_threshold}%"
+                    f"balance {accounts.get(hotkey).get('balance')}, unrealized_pnl {self._position_client.get_unrealized_pnl(hotkey)}"
+                )
+                hotkeys_to_promote.append(hotkey)
+                continue
 
             # Rule 1: Intraday drawdown — current equity cannot drop >5% from today's opening equity
             if current_return < daily_open_equity * (1.0 - ValiConfig.SUBACCOUNT_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD):
