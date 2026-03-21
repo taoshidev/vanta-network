@@ -600,6 +600,7 @@ class ChallengePeriodManager(CacheController):
                     f"[SYNTHETIC_CP] {hotkey} promoted - "
                     f"returns {returns_percentage:.2f}% >= {returns_threshold}%"
                     f"balance {accounts.get(hotkey).get('balance')}, unrealized_pnl {self._position_client.get_unrealized_pnl(hotkey)}"
+                    f"drawdown stats: {self._drawdown_stats_cache[hotkey]}"
                 )
                 hotkeys_to_promote.append(hotkey)
                 continue
@@ -608,8 +609,7 @@ class ChallengePeriodManager(CacheController):
             if current_return < daily_open_equity * (1.0 - ValiConfig.SUBACCOUNT_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD):
                 bt.logging.info(
                     f"[SYNTHETIC_CP] {hotkey} intraday drawdown violation, failed challenge period - "
-                    f"current_equity={current_return:.6f} < floor={daily_open_equity * (1.0 - ValiConfig.SUBACCOUNT_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD):.6f} "
-                    f"(day_open={daily_open_equity:.6f}, drawdown={intraday_drawdown_pct:.2f}%)"
+                    f"drawdown stats: {self._drawdown_stats_cache[hotkey]}"
                 )
                 miners_to_eliminate[hotkey] = (
                     EliminationReason.FAILED_CHALLENGE_PERIOD_INTRADAY_DRAWDOWN.value,
@@ -622,8 +622,7 @@ class ChallengePeriodManager(CacheController):
             if midnight_cps and last_eod < eod_hwm * (1.0 - ValiConfig.SUBACCOUNT_CHALLENGE_EOD_DRAWDOWN_THRESHOLD):
                 bt.logging.info(
                     f"[SYNTHETIC_CP] {hotkey} EOD drawdown violation, failed challenge period - "
-                    f"last_eod={last_eod:.6f} < floor={eod_hwm * (1.0 - ValiConfig.SUBACCOUNT_CHALLENGE_EOD_DRAWDOWN_THRESHOLD):.6f} "
-                    f"(hwm={eod_hwm:.6f}, drawdown={eod_drawdown_pct:.2f}%)"
+                    f"drawdown stats: {self._drawdown_stats_cache[hotkey]}"
                 )
                 miners_to_eliminate[hotkey] = (
                     EliminationReason.FAILED_CHALLENGE_PERIOD_EOD_DRAWDOWN.value,
@@ -639,9 +638,8 @@ class ChallengePeriodManager(CacheController):
             near_promotion = returns_percentage >= returns_threshold * 0.75
             if near_elimination or near_promotion:
                 bt.logging.info(
-                    f"[SYNTH_EVAL {hotkey}] current_return={current_return:.6f}, returns={returns_percentage:.2%}, "
-                    f"intraday_drawdown={intraday_drawdown_pct:.2f}% eod_drawdown={eod_drawdown_pct:.2f}% "
-                    f"(elim threshold={threshold_pct:.1f}%)"
+                    f"[SYNTH_EVAL {hotkey}] near elimination - "
+                    f"drawdown stats: {self._drawdown_stats_cache[hotkey]}"
                 )
 
         bt.logging.info(
@@ -718,8 +716,7 @@ class ChallengePeriodManager(CacheController):
             if current_return < daily_open_equity * (1.0 - intraday_threshold):
                 bt.logging.info(
                     f"[FUNDED_EVAL {hotkey}] intraday drawdown violation - "
-                    f"current_equity={current_return:.6f} < floor={daily_open_equity * (1.0 - intraday_threshold):.6f} "
-                    f"(day_open={daily_open_equity:.6f}, drawdown={intraday_drawdown_pct:.2f}%)"
+                    f"drawdown stats: {self._drawdown_stats_cache[hotkey]}"
                 )
                 miners_to_eliminate[hotkey] = (
                     EliminationReason.FAILED_FUNDED_PERIOD_INTRADAY_DRAWDOWN.value,
@@ -732,8 +729,7 @@ class ChallengePeriodManager(CacheController):
             if midnight_cps and last_eod < eod_hwm * (1.0 - eod_threshold):
                 bt.logging.info(
                     f"[FUNDED_EVAL {hotkey}] EOD drawdown violation - "
-                    f"last_eod={last_eod:.6f} < floor={eod_hwm * (1.0 - eod_threshold):.6f} "
-                    f"(hwm={eod_hwm:.6f}, drawdown={eod_drawdown_pct:.2f}%)"
+                    f"drawdown stats: {self._drawdown_stats_cache[hotkey]}"
                 )
                 miners_to_eliminate[hotkey] = (
                     EliminationReason.FAILED_FUNDED_PERIOD_EOD_DRAWDOWN.value,
@@ -747,9 +743,7 @@ class ChallengePeriodManager(CacheController):
             if worst_drawdown_pct >= threshold_pct * 0.75:
                 bt.logging.info(
                     f"[FUNDED_EVAL {hotkey}] near elimination - "
-                    f"current_return={current_return:.6f}, "
-                    f"intraday_drawdown={intraday_drawdown_pct:.2f}%, eod_drawdown={eod_drawdown_pct:.2f}% "
-                    f"(threshold={threshold_pct:.1f}%)"
+                    f"drawdown stats: {self._drawdown_stats_cache[hotkey]}"
                 )
 
         bt.logging.info(
