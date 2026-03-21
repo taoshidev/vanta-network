@@ -542,6 +542,19 @@ class ChallengePeriodManager(CacheController):
                 portfolio_only_ledgers, hotkey
             )
             if not has_minimum_ledger or not ledger:
+                self._drawdown_stats_cache[hotkey] = {
+                    'current_equity': 1.0,
+                    'daily_open_equity': 1.0,
+                    'eod_hwm': 1.0,
+                    'last_eod_equity': 1.0,
+                    'intraday_drawdown_pct': 0,
+                    'eod_drawdown_pct': 0,
+                    'intraday_drawdown_threshold': ValiConfig.SUBACCOUNT_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD,
+                    'eod_drawdown_threshold': ValiConfig.SUBACCOUNT_CHALLENGE_EOD_DRAWDOWN_THRESHOLD,
+                    # TODO: remove legacy fields below
+                    'subaccount_challenge_intraday_drawdown_threshold': ValiConfig.SUBACCOUNT_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD,
+                    'subaccount_challenge_eod_drawdown_threshold': ValiConfig.SUBACCOUNT_CHALLENGE_EOD_DRAWDOWN_THRESHOLD,
+                }
                 continue
 
             # Compute portfolio return: (balance + unrealized_pnl) / account_size
@@ -657,9 +670,23 @@ class ChallengePeriodManager(CacheController):
         accounts = self._miner_account_client.get_accounts(list(inspection_hotkeys.keys()))
 
         for hotkey, bucket_start_time in inspection_hotkeys.items():
+            intraday_threshold, eod_threshold = self._get_funded_drawdown_thresholds(hotkey)
+
             has_minimum_ledger, ledger = self._check_minimum_ledger(portfolio_only_ledgers, hotkey)
             if not has_minimum_ledger or not ledger:
-                self._reset_drawdown_stats_cache(hotkey)
+                self._drawdown_stats_cache[hotkey] = {
+                    'current_equity': 1.0,
+                    'daily_open_equity': 1.0,
+                    'eod_hwm': 1.0,
+                    'last_eod_equity': 1.0,
+                    'intraday_drawdown_pct': 0,
+                    'eod_drawdown_pct': 0,
+                    'intraday_drawdown_threshold': intraday_threshold,
+                    'eod_drawdown_threshold': eod_threshold,
+                    # TODO: remove legacy fields below
+                    'subaccount_challenge_intraday_drawdown_threshold': intraday_threshold,
+                    'subaccount_challenge_eod_drawdown_threshold': eod_threshold,
+                }
                 continue
 
             current_return = self._compute_portfolio_return(hotkey, accounts.get(hotkey))
@@ -668,7 +695,6 @@ class ChallengePeriodManager(CacheController):
 
             now_ms = current_time if current_time is not None else TimeUtil.now_in_millis()
             midnight_cps, last_eod, daily_open_equity, eod_hwm = self._parse_eod_checkpoints(ledger, now_ms)
-            intraday_threshold, eod_threshold = self._get_funded_drawdown_thresholds(hotkey)
 
             intraday_drawdown_pct = (1.0 - current_return / daily_open_equity) * 100.0
             eod_drawdown_pct = (1.0 - last_eod / eod_hwm) * 100.0
