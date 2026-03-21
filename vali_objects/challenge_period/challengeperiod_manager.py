@@ -566,6 +566,7 @@ class ChallengePeriodManager(CacheController):
                 bt.logging.info(
                     f"[SYNTHETIC_CP] {hotkey} promoted - "
                     f"returns {returns_percentage:.2f}% >= {returns_threshold}%"
+                    f"balance {accounts.get(hotkey).get('balance')}, unrealized_pnl {self._position_client.get_unrealized_pnl(hotkey)}"
                 )
                 hotkeys_to_promote.append(hotkey)
                 continue
