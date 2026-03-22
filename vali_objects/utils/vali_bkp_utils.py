@@ -25,7 +25,7 @@ def orjson_encoder(obj):
     elif hasattr(obj, 'to_dict'):
         return obj.to_dict()
     elif isinstance(obj, BaseModel):
-        return obj.model_dump()
+        return obj.model_dump(mode="json")
     elif isinstance(obj, DictProxy):
         return dict(obj)
     return obj
@@ -35,7 +35,7 @@ class CustomEncoder(json.JSONEncoder):
         if isinstance(obj, (TradePair, DynamicTradePair, OrderType, ExecutionType, StopCondition)):
             return obj.__json__()
         elif isinstance(obj, BaseModel):
-            return obj.model_dump()
+            return obj.model_dump(mode="json")
         elif hasattr(obj, 'to_dict'):
             return obj.to_dict()
         elif isinstance(obj, DictProxy):

@@ -126,7 +126,7 @@ class CoreOutputsManager:
     def filter_new_positions_random_sample(
         self,
         percent_new_positions_keep: float,
-        hotkey_to_positions: dict[str:[dict]],
+        hotkey_to_positions: dict,
         time_of_position_read_ms: int
     ) -> None:
         """Filter positions based on tier percentage."""
@@ -144,7 +144,7 @@ class CoreOutputsManager:
                 return False
             return True
 
-        def truncate_position(p: dict) -> dict:
+        def truncate_position(p: dict) -> dict | None:
             nonlocal stale_date_threshold_ms
 
             filtered_orders = []
@@ -168,16 +168,17 @@ class CoreOutputsManager:
 
         assert percent_new_positions_keep in PERCENT_NEW_POSITIONS_TIERS
         stale_date_threshold_ms = time_of_position_read_ms - AUTO_SYNC_ORDER_LAG_MS
-        for hotkey, positions in hotkey_to_positions.items():
+        for hotkey, hotkey_position_data in hotkey_to_positions.items():
+            unfiltered_positions = hotkey_position_data['positions']
             filtered_positions = []
-            for unfiltered_position in positions:
+            for unfiltered_position in unfiltered_positions:
                 if filter_orders(unfiltered_position):
                     truncated_position = truncate_position(unfiltered_position)
                     if truncated_position:
                         filtered_positions.append(truncated_position)
                 else:
                     filtered_positions.append(unfiltered_position)
-            positions['positions'] = filtered_positions
+            hotkey_position_data['positions'] = filtered_positions
 
     @staticmethod
     def cleanup_test_files():
@@ -216,7 +217,9 @@ class CoreOutputsManager:
             return
 
         # check if file exists
-        KEY_PATH = ValiConfig.BASE_DIR + '/gcloud_new.json'
+        # TODO: Revert
+        #KEY_PATH = ValiConfig.BASE_DIR + '/gcloud_new.json'
+        KEY_PATH = ValiConfig.BASE_DIR + '/gcloud_test.json'
         if not os.path.exists(KEY_PATH):
             return
 
@@ -234,7 +237,9 @@ class CoreOutputsManager:
         bucket = client.get_bucket(bucket_name)
 
         # Name for the new blob
-        blob_name = 'validator_checkpoint.json.gz'
+        # TODO: Revert
+        #blob_name = 'validator_checkpoint.json.gz'
+        blob_name = 'validator_checkpoint_test.json.gz'
 
         # Create a new blob and upload data
         blob = bucket.blob(blob_name)

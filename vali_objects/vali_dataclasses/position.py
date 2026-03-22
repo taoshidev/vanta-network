@@ -381,21 +381,12 @@ class Position(BaseModel):
             for order in orders:
                 order.pop('trade_pair', None)
 
-        # Write the trade_pair in the legacy tuple format as to not break generate_request_outputs. This is temporary
-        # code until generate_request_outputs is updated to have the new TradePair decoding logic. If BTC or ETH, put
-        # the legacy fee value so that pydantic can validate the JSON with the original decoding logic
         tp = d['trade_pair']
-        if isinstance(tp, TradePair):
-            fee = .003 if tp.is_crypto else tp.fees
-            d['trade_pair'] = [tp.trade_pair_id, tp.trade_pair, fee, tp.min_leverage, tp.max_leverage]
-        else:
-            if tp[0] in (TradePair.BTCUSD.trade_pair_id, TradePair.ETHUSD.trade_pair_id):
-                tp[2] = 0.003
-            d['trade_pair'] = tp[:5]
+        d['trade_pair'] = tp[:5]
         return d
 
     def to_dict(self):
-        d = self.model_dump()
+        d = self.model_dump(mode="json")
         return self._handle_trade_pair_encoding(d)
 
     def to_dashboard(self, positions_time_ms: int, filled_orders, unfilled_orders) -> dict:
