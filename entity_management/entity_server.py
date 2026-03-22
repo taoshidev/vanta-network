@@ -356,18 +356,8 @@ class EntityServer(RPCServerBase):
         """
         return self._manager.get_subaccount_dashboard_data(synthetic_hotkey)
 
-    def broadcast_subaccount_dashboard_rpc(self, synthetic_hotkey: str, error_msg: Optional[str] = None) -> bool:
-        """
-        Get dashboard data and broadcast to WebSocket subscribers (RPC method).
-
-        Args:
-            synthetic_hotkey: The synthetic hotkey ({entity_hotkey}_{subaccount_id})
-            error_msg: Optional error message to include in the broadcast
-
-        Returns:
-            bool: True if broadcast was successful or skipped, False on error
-        """
-        return self._manager.broadcast_subaccount_dashboard(synthetic_hotkey, error_msg)
+    def broadcast_subaccount_dashboard_rpc(self, synthetic_hotkey: str) -> None:
+        self._manager.broadcast_subaccount_dashboard(synthetic_hotkey)
 
     def calculate_subaccount_payout_rpc(
         self,

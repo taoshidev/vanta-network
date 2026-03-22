@@ -697,7 +697,7 @@ class Validator(ValidatorBase):
                 bt.logging.info(f"[TIMING] Final synapse setup took {final_processing_ms}ms")
 
                 if is_synthetic_hotkey(miner_hotkey):
-                    self.entity_client.broadcast_subaccount_dashboard(miner_hotkey, synapse.error_message)
+                    self.entity_client.broadcast_subaccount_dashboard(miner_hotkey)
 
                 processing_time_ms = TimeUtil.now_in_millis() - now_ms
                 bt.logging.success(f"Sending ack back to miner [{miner_hotkey}]. Synapse Message: {synapse.error_message}. "

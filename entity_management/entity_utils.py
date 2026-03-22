@@ -5,6 +5,7 @@ Entity utility functions for synthetic hotkey parsing and validation.
 
 These are static utility functions that can be called without RPC overhead.
 """
+import bittensor as bt
 from typing import Tuple, Optional
 
 
@@ -86,3 +87,41 @@ def parse_synthetic_hotkey(synthetic_hotkey: str) -> Tuple[Optional[str], Option
         return entity_hotkey, subaccount_id
     except ValueError:
         return None, None
+
+
+def create_subaccount_dashboard(
+    synthetic_hotkey: str,
+    subaccount_dashboard: dict,
+    challenge_period_client,
+    elimination_client,
+    miner_account_client,
+    position_client,
+    limit_order_client,
+    debt_ledger_client,
+    statistics_client,
+    positions_time_ms: int,
+    limit_orders_time_ms: int,
+    checkpoints_time_ms: int,
+    daily_returns_time_ms: int,
+) -> dict:
+    dashboard = {"subaccount_info": subaccount_dashboard}
+
+    # Fail gracefully if other services are not available
+    def add_to_dashboard(section, function, *args, **kwargs):
+        try:
+            # Assume the first parameter is the synthetic_hotkey
+            section_data = function(synthetic_hotkey, *args, **kwargs)
+            if section_data is not None:
+                dashboard[section] = section_data
+        except Exception as ex:
+            bt.logging.error(f"Error retrieving {section} for {synthetic_hotkey}: {ex}")
+
+    add_to_dashboard("challenge_period", challenge_period_client.get_dashboard)
+    add_to_dashboard("elimination", elimination_client.get_dashboard)
+    add_to_dashboard("account_size_data", miner_account_client.get_dashboard)
+    add_to_dashboard("positions", position_client.get_dashboard, positions_time_ms)
+    add_to_dashboard("limit_orders", limit_order_client.get_dashboard, limit_orders_time_ms)
+    add_to_dashboard("ledger", debt_ledger_client.get_dashboard, checkpoints_time_ms)
+    add_to_dashboard("statistics", statistics_client.get_dashboard, daily_returns_time_ms)
+
+    return dashboard

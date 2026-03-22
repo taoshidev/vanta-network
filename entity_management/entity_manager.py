@@ -1342,34 +1342,14 @@ class EntityManager(ValidatorBroadcastBase):
             'drawdown': drawdown_data,
         }
 
-    def broadcast_subaccount_dashboard(self, synthetic_hotkey: str, error_msg: Optional[str] = None) -> bool:
-        """
-        Get dashboard data for a subaccount and broadcast it to WebSocket subscribers.
-
-        Args:
-            synthetic_hotkey: The synthetic hotkey ({entity_hotkey}_{subaccount_id})
-
-        Returns:
-            bool: True if broadcast was successful or skipped, False on error
-        """
+    def broadcast_subaccount_dashboard(self, synthetic_hotkey: str) -> None:
         if self.running_unit_tests:
-            return True
+            return
 
         try:
-            # Skip if no subscribers
-            if not self._websocket_client.has_subaccount_subscribers(synthetic_hotkey):
-                return True
-
-            dashboard_data = self.get_subaccount_dashboard_data(synthetic_hotkey)
-
-            if dashboard_data:
-                if error_msg:
-                    dashboard_data["error_msg"] = error_msg
-                return self._websocket_client.broadcast_subaccount_dashboard(synthetic_hotkey, dashboard_data)
-            return True  # No data = nothing to broadcast, not an error
+            self._websocket_client.broadcast_subaccount_dashboard(synthetic_hotkey)
         except Exception as e:
             bt.logging.error(f"[ENTITY_MANAGER] Dashboard broadcast failed for {synthetic_hotkey}: {e}")
-            return False
 
     def get_all_entities(self) -> Dict[str, EntityData]:
         """Get all entities."""

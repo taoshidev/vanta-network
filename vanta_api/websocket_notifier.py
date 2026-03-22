@@ -12,7 +12,7 @@ Client Usage:
     from vanta_api.websocket_notifier import WebSocketNotifierClient
 
     client = WebSocketNotifierClient()
-    success = client.broadcast_position_update(position)
+    client.broadcast_position_update(position)
 """
 from typing import Optional
 
@@ -63,44 +63,24 @@ class WebSocketNotifierClient(RPCClientBase):
 
     # ==================== Client Methods ====================
 
-    def broadcast_position_update(self, position: Position, miner_repo_version: str = None) -> bool:
+    def broadcast_position_update(self, position: Position, miner_repo_version: str = None) -> None:
         """
         Broadcast a position update to all subscribed WebSocket clients.
 
         Args:
             position: Position object to broadcast
             miner_repo_version: Optional miner repository version for the websocket dict
-
-        Returns:
-            bool: True if message was queued successfully, False otherwise
         """
         # Skip broadcast for development hotkey
         if position.miner_hotkey == ValiConfig.DEVELOPMENT_HOTKEY:
-            return True
+            return
 
         try:
-            return self._server.broadcast_position_update_rpc(position, miner_repo_version)
+            self._server.broadcast_position_update_rpc(position, miner_repo_version)
         except Exception as e:
             bt.logging.debug(f"WebSocketNotifierClient: Broadcast failed: {e}")
-            return False
 
-    def has_subaccount_subscribers(self, synthetic_hotkey: str) -> bool:
-        """
-        Check if there are any WebSocket clients subscribed to a subaccount.
-
-        Args:
-            synthetic_hotkey: The synthetic hotkey to check
-
-        Returns:
-            bool: True if there are subscribers, False otherwise
-        """
-        try:
-            return self._server.has_subaccount_subscribers_rpc(synthetic_hotkey)
-        except Exception as e:
-            bt.logging.debug(f"WebSocketNotifierClient: Subscriber check failed: {e}")
-            return False
-
-    def broadcast_subaccount_dashboard(self, synthetic_hotkey: str, data: dict) -> bool:
+    def broadcast_subaccount_dashboard(self, synthetic_hotkey: str) -> None:
         """
         Broadcast subaccount dashboard to subscribed WebSocket clients.
 
@@ -112,10 +92,9 @@ class WebSocketNotifierClient(RPCClientBase):
             bool: True if broadcast was successful or skipped, False on error
         """
         try:
-            return self._server.broadcast_subaccount_dashboard_rpc(synthetic_hotkey, data)
+            self._server.broadcast_subaccount_dashboard_rpc(synthetic_hotkey)
         except Exception as e:
             bt.logging.debug(f"WebSocketNotifierClient: Dashboard broadcast failed: {e}")
-            return False
 
     def notify_new_subaccount(self, entity_hotkey: str, synthetic_hotkey: str) -> bool:
         """
