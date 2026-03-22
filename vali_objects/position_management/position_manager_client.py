@@ -27,7 +27,6 @@ from typing import Dict, List, Optional
 
 from shared_objects.rpc.rpc_client_base import RPCClientBase
 from time_util.time_util import TimeUtil
-from vali_objects.decoders.generalized_json_decoder import GeneralizedJSONDecoder
 from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.position_management.position_manager import PositionManager
 from vali_objects.position_management.position_utils import PositionUtils

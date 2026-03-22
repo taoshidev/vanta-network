@@ -14,22 +14,16 @@ class ExecutionType(Enum):
         return self.value
 
     @staticmethod
-    def execution_type_map():
-        return {e.value: e for e in ExecutionType}
-
-    @staticmethod
     def from_string(execution_type_value: str):
         # Handle None or missing execution_type - default to MARKET
         if execution_type_value is None:
             return ExecutionType.MARKET
 
-        e_map = ExecutionType.execution_type_map()
-        execution_type_upper = execution_type_value.upper()
-        if execution_type_upper in e_map:
-            return e_map[execution_type_upper]  # Use uppercase version for lookup
-        else:
+        try:
+            return ExecutionType(execution_type_value.upper())
+        except ValueError:
             raise ValueError(f"No matching execution type found for value '{execution_type_value}'. "
-                             f"Valid values are: {', '.join(e_map.keys())}")
+                             f"Valid values are: {', '.join([e.value for e in ExecutionType])}")
 
     def __json__(self):
         # Provide a dictionary representation for JSON serialization

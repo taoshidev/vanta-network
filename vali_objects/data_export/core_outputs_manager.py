@@ -130,48 +130,54 @@ class CoreOutputsManager:
         time_of_position_read_ms: int
     ) -> None:
         """Filter positions based on tier percentage."""
-        def filter_orders(p: Position) -> bool:
+        def filter_orders(p: dict) -> bool:
             nonlocal stale_date_threshold_ms
-            if p.is_closed_position and p.close_ms < stale_date_threshold_ms:
+            if p["is_closed_position"] and (p["close_ms"] < stale_date_threshold_ms):
                 return False
-            if p.is_open_position and p.orders[-1].processed_ms < stale_date_threshold_ms:
+            if p["is_open_position"] and (p["orders"][-1]["processed_ms"] < stale_date_threshold_ms):
                 return False
             if percent_new_positions_keep == 100:
                 return False
-            if percent_new_positions_keep and self.hash_string_to_int(p.position_uuid) % 100 < percent_new_positions_keep:
+            if percent_new_positions_keep and (
+                    (self.hash_string_to_int(p["position_uuid"]) % 100) < percent_new_positions_keep
+            ):
                 return False
             return True
 
-        def truncate_position(position_to_truncate: Position) -> Position:
+        def truncate_position(p: dict) -> dict:
             nonlocal stale_date_threshold_ms
 
-            new_orders = []
-            for order in position_to_truncate.orders:
-                if order.processed_ms < stale_date_threshold_ms:
-                    new_orders.append(order)
+            filtered_orders = []
+            order_filtered = False
+            for order in p["orders"]:
+                if order["processed_ms"] < stale_date_threshold_ms:
+                    filtered_orders.append(order)
+                else:
+                    order_filtered = True
 
-            if len(new_orders):
-                position_to_truncate.orders = new_orders
-                position_to_truncate.rebuild_position_with_updated_orders(self.live_price_client)
-                return position_to_truncate
-            else:  # no orders left. erase position
+            if not order_filtered:
+                return p
+            elif len(filtered_orders):
+                p["orders"] = filtered_orders
+                position = Position(**p)
+                position.rebuild_position_with_updated_orders(self.live_price_client)
+                return position.to_dict()
+            else:
+                # Mo orders left. erase position
                 return None
 
         assert percent_new_positions_keep in PERCENT_NEW_POSITIONS_TIERS
         stale_date_threshold_ms = time_of_position_read_ms - AUTO_SYNC_ORDER_LAG_MS
         for hotkey, positions in hotkey_to_positions.items():
-            new_positions = []
-            positions_deserialized = [Position(**json_positions_dict) for json_positions_dict in positions['positions']]
-            for position in positions_deserialized:
-                if filter_orders(position):
-                    truncated_position = truncate_position(position)
+            filtered_positions = []
+            for unfiltered_position in positions:
+                if filter_orders(unfiltered_position):
+                    truncated_position = truncate_position(unfiltered_position)
                     if truncated_position:
-                        new_positions.append(truncated_position)
+                        filtered_positions.append(truncated_position)
                 else:
-                    new_positions.append(position)
-
-            # Turn the positions back into json dicts. Note we are overwriting the original positions
-            positions['positions'] = [p.to_dict() for p in new_positions]
+                    filtered_positions.append(unfiltered_position)
+            positions['positions'] = filtered_positions
 
     @staticmethod
     def cleanup_test_files():
