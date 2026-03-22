@@ -27,7 +27,6 @@ Usage:
     # In consumers - create client
     client = CoreOutputsClient()
     checkpoint = client.generate_request_core()
-    compressed = client.get_compressed_checkpoint_from_memory()
 """
 
 import bittensor as bt
@@ -154,13 +153,6 @@ class CoreOutputsServer(RPCServerBase):
 
     # ==================== RPC Methods (exposed to clients) ====================
 
-    def get_health_check_details(self) -> dict:
-        """Add service-specific health check details."""
-        cache_status = 'cached' if self._manager.validator_checkpoint_cache.get('checkpoint') else 'empty'
-        return {
-            "cache_status": cache_status
-        }
-
     def generate_request_core_rpc(
         self,
         get_dash_data_hotkey: str | None = None,
@@ -181,14 +173,6 @@ class CoreOutputsServer(RPCServerBase):
             save_production_files=save_production_files,
             upload_production_files=upload_production_files
         )
-
-    def get_compressed_checkpoint_from_memory_rpc(self) -> bytes | None:
-        """
-        Retrieve compressed validator checkpoint data directly from memory cache via RPC.
-
-        Delegates to manager for cache retrieval.
-        """
-        return self._manager.get_compressed_checkpoint_from_memory()
 
     # ==================== Forward-Compatible Aliases (without _rpc suffix) ====================
     # These allow direct use of the server in tests without RPC
@@ -213,10 +197,6 @@ class CoreOutputsServer(RPCServerBase):
             save_production_files=save_production_files,
             upload_production_files=upload_production_files
         )
-
-    def get_compressed_checkpoint_from_memory(self) -> bytes | None:
-        """Get compressed checkpoint from memory - delegates to manager."""
-        return self._manager.get_compressed_checkpoint_from_memory()
 
     @staticmethod
     def cleanup_test_files():

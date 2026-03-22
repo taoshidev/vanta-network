@@ -1862,7 +1862,7 @@ class TestPositions(TestBase):
         for x in dict_repr['orders']:
             self.assertFalse('trade_pair' in x, dict_repr)
 
-        position_json = position.to_json_string()
+        position_json = str(position)
         recreated_object = Position(**json.loads(position_json))
         for x in recreated_object.orders:
             self.assertTrue(hasattr(x, 'trade_pair'), recreated_object)

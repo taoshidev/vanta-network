@@ -1,6 +1,5 @@
 import json
 import logging
-from copy import deepcopy
 from typing import Dict, Optional, List
 from pydantic import model_validator, BaseModel, Field
 
@@ -377,31 +376,26 @@ class Position(BaseModel):
 
     def _handle_trade_pair_encoding(self, d):
         # Remove trade_pair from orders
-        if 'orders' in d:
-            for order in d['orders']:
-                if 'trade_pair' in order:
-                    del order['trade_pair']
+        orders = d.get("orders", None)
+        if orders:
+            for order in orders:
+                order.pop('trade_pair', None)
+
         # Write the trade_pair in the legacy tuple format as to not break generate_request_outputs. This is temporary
         # code until generate_request_outputs is updated to have the new TradePair decoding logic. If BTC or ETH, put
         # the legacy fee value so that pydantic can validate the JSON with the original decoding logic
-        tp_val = d['trade_pair']
-        if isinstance(tp_val, TradePair):
-            fee = .003 if tp_val.is_crypto else tp_val.fees
-            d['trade_pair'] = [tp_val.trade_pair_id, tp_val.trade_pair, fee, tp_val.min_leverage, tp_val.max_leverage]
-        elif isinstance(tp_val, DynamicTradePair):
-            # Defensive: shouldn't reach here after model_dump(), but handle correctly if it does.
-            d['trade_pair'] = [tp_val.trade_pair_id, tp_val.trade_pair, tp_val.fees, tp_val.min_leverage, tp_val.max_leverage]
-        elif isinstance(tp_val, dict) and 'hl_coin' in tp_val:
-            # Pydantic v2 model_dump() converts Python @dataclass fields to plain dicts.
-            d['trade_pair'] = [tp_val['trade_pair_id'], tp_val['trade_pair'], tp_val.get('fees', 0.001), tp_val.get('min_leverage', 0.01), tp_val['max_leverage']]
+        tp = d['trade_pair']
+        if isinstance(tp, TradePair):
+            fee = .003 if tp.is_crypto else tp.fees
+            d['trade_pair'] = [tp.trade_pair_id, tp.trade_pair, fee, tp.min_leverage, tp.max_leverage]
         else:
-            d['trade_pair'] = tp_val[:5]
-            if d['trade_pair'][0] in (TradePair.BTCUSD.trade_pair_id, TradePair.ETHUSD.trade_pair_id):
-                d['trade_pair'][2] = 0.003
+            if tp[0] in (TradePair.BTCUSD.trade_pair_id, TradePair.ETHUSD.trade_pair_id):
+                tp[2] = 0.003
+            d['trade_pair'] = tp[:5]
         return d
 
     def to_dict(self):
-        d = deepcopy(self.model_dump())
+        d = self.model_dump()
         return self._handle_trade_pair_encoding(d)
 
     def to_dashboard(self, positions_time_ms: int, filled_orders, unfilled_orders) -> dict:
@@ -481,7 +475,7 @@ class Position(BaseModel):
         return -1
 
     def __str__(self):
-        return self.to_json_string()
+        return json.dumps(self.to_dict())
 
     def to_copyable_str(self):
         ans = self.model_dump()
@@ -495,15 +489,6 @@ class Position(BaseModel):
         s = re.sub(r"'(TradePair\.[A-Z]+|OrderType\.[A-Z]+|FLAT|SHORT|LONG)'", r"\1", s)
 
         return s
-
-
-    def to_json_string(self) -> str:
-        # Using pydantic's model_dump_json method with built-in validation
-        json_str = self.model_dump_json()
-        # Unfortunately, we can't tell pydantic v2 to strip certain fields so we do that here
-        json_loaded = json.loads(json_str)
-        json_compressed = self._handle_trade_pair_encoding(json_loaded)
-        return json.dumps(json_compressed)
 
     @classmethod
     def from_dict(cls, position_dict):

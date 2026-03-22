@@ -22,7 +22,6 @@ Usage:
 """
 
 import copy
-import gzip
 import json
 import os
 import hashlib
@@ -33,9 +32,8 @@ from google.cloud import storage
 from time_util.time_util import TimeUtil
 from vali_objects.price_fetcher import LivePriceFetcherClient
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
-from vali_objects.decoders.generalized_json_decoder import GeneralizedJSONDecoder
 from vali_objects.vali_dataclasses.position import Position
-from vali_objects.utils.vali_bkp_utils import ValiBkpUtils, CustomEncoder
+from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
 from vali_objects.data_sync.validator_sync_base import AUTO_SYNC_ORDER_LAG_MS
 
@@ -90,9 +88,6 @@ class CoreOutputsManager:
         self._miner_account_client = MinerAccountClient(connection_mode=connection_mode)
         self._asset_selection_client = AssetSelectionClient(connection_mode=connection_mode)
         self._entity_client = EntityClient(connection_mode=connection_mode, running_unit_tests=running_unit_tests)
-
-        # Manager uses regular dict (no IPC needed - managed by server)
-        self.validator_checkpoint_cache = {}
 
         bt.logging.info(f"[COREOUTPUTS_MANAGER] CoreOutputsManager initialized")
 
@@ -176,7 +171,7 @@ class CoreOutputsManager:
                     new_positions.append(position)
 
             # Turn the positions back into json dicts. Note we are overwriting the original positions
-            positions['positions'] = [json.loads(str(p), cls=GeneralizedJSONDecoder) for p in new_positions]
+            positions['positions'] = [p.to_dict() for p in new_positions]
 
     @staticmethod
     def cleanup_test_files():
@@ -205,47 +200,7 @@ class CoreOutputsManager:
             except Exception as e:
                 print(f"Error removing positions file for tier {tier}: {e}")
 
-    def compress_dict(self, data: dict) -> bytes:
-        """Compress dict to gzip bytes."""
-        str_to_write = json.dumps(data, cls=CustomEncoder)
-        compressed = gzip.compress(str_to_write.encode("utf-8"))
-        return compressed
-
-    def decompress_dict(self, compressed_data: bytes) -> dict:
-        """Decompress gzip bytes to dict."""
-        decompressed = gzip.decompress(compressed_data)
-        data = json.loads(decompressed.decode("utf-8"))
-        return data
-
-    def store_checkpoint_in_memory(self, checkpoint_data: dict):
-        """Store compressed validator checkpoint data in memory cache."""
-        try:
-            compressed_data = self.compress_dict(checkpoint_data)
-            self.validator_checkpoint_cache['checkpoint'] = {
-                'data': compressed_data,
-                'timestamp_ms': TimeUtil.now_in_millis()
-            }
-        except Exception as e:
-            bt.logging.error(f"Error storing checkpoint in memory: {e}")
-
-    def get_compressed_checkpoint_from_memory(self) -> bytes | None:
-        """
-        Retrieve compressed validator checkpoint data directly from memory cache.
-
-        Returns:
-            Cached compressed gzip bytes of checkpoint JSON (None if cache not built yet)
-        """
-        try:
-            cached_entry = self.validator_checkpoint_cache.get('checkpoint', {})
-            if not cached_entry or 'data' not in cached_entry:
-                return None
-
-            return cached_entry['data']
-        except Exception as e:
-            bt.logging.error(f"Error retrieving compressed checkpoint from memory: {e}")
-            return None
-
-    def upload_checkpoint_to_gcloud(self, final_dict):
+    def upload_checkpoint_file_to_gcloud(self, checkpoint_file_path: str):
         """
         Upload a zipped, time lagged validator checkpoint to google cloud for auto restoration
         on other validators as well as transparency with the community.
@@ -278,10 +233,8 @@ class CoreOutputsManager:
         # Create a new blob and upload data
         blob = bucket.blob(blob_name)
 
-        # Create a zip file in memory
-        zip_buffer = self.compress_dict(final_dict)
         # Upload the content of the zip_buffer to Google Cloud Storage
-        blob.upload_from_string(zip_buffer)
+        blob.upload_from_filename(checkpoint_file_path)
         bt.logging.info(f'Uploaded {blob_name} to {bucket_name}')
 
     def create_and_upload_production_files(
@@ -296,7 +249,6 @@ class CoreOutputsManager:
         limit_orders_dict,
         archived_positions=None,
         save_to_disk=True,
-        upload_to_gcloud=True
     ):
         """Create and optionally upload production files."""
         perf_ledgers = self._perf_ledger_client.get_perf_ledgers()
@@ -333,43 +285,28 @@ class CoreOutputsManager:
         }
 
         if save_to_disk:
-            # Write compressed checkpoint only - saves disk space and bandwidth
-            compressed_data = self.compress_dict(final_dict)
-
-            # Write compressed file directly
-            compressed_path = ValiBkpUtils.get_vcp_output_path(
+            checkpoint_file_path = ValiBkpUtils.get_vcp_output_path(
                 running_unit_tests=self.running_unit_tests
             )
-            with open(compressed_path, 'wb') as f:
-                f.write(compressed_data)
+            ValiBkpUtils.write_compressed_json(checkpoint_file_path, final_dict)
 
-            # Store compressed checkpoint data in memory cache
-            self.store_checkpoint_in_memory(final_dict)
+            # Write positions data at different tiers (highest to lowest)
+            for tier in PERCENT_NEW_POSITIONS_TIERS:
 
-            # Write positions data at different tiers
-            for t in PERCENT_NEW_POSITIONS_TIERS:
-                if t == 100:  # no filtering
-                    # Write legacy location as well. no compression
-                    ValiBkpUtils.write_file(
-                        ValiBkpUtils.get_miner_positions_output_path(suffix_dir=None),
-                        ord_dict_hotkey_position_map,
-                    )
-                else:
-                    self.filter_new_positions_random_sample(t, ord_dict_hotkey_position_map, time_now)
+                # Filter tiers below the highest tier
+                if tier != 100:
+                    self.filter_new_positions_random_sample(tier, ord_dict_hotkey_position_map, time_now)
 
-                # "v2" add a tier. compress the data
+                # Add tier information
                 for hotkey, dat in ord_dict_hotkey_position_map.items():
-                    dat['tier'] = t
+                    dat['tier'] = tier
 
-                compressed_positions = self.compress_dict(ord_dict_hotkey_position_map)
-                ValiBkpUtils.write_file(
-                    ValiBkpUtils.get_miner_positions_output_path(suffix_dir=str(t)),
-                    compressed_positions, is_binary=True
+                ValiBkpUtils.write_compressed_json(
+                    ValiBkpUtils.get_miner_positions_output_path(suffix_dir=str(tier)),
+                    ord_dict_hotkey_position_map
                 )
 
-        # Max filtering
-        if upload_to_gcloud:
-            self.upload_checkpoint_to_gcloud(final_dict)
+            self.upload_checkpoint_file_to_gcloud(checkpoint_file_path)
 
     def generate_request_core(
         self,
@@ -448,8 +385,11 @@ class CoreOutputsManager:
             )
         )
 
-        # unfiltered positions dict for checkpoints
-        unfiltered_positions = copy.deepcopy(ord_dict_hotkey_position_map)
+        # Only create a deep copy if the positions are local references
+        if self.connection_mode == RPCConnectionMode.LOCAL:
+            unfiltered_positions = copy.deepcopy(ord_dict_hotkey_position_map)
+        else:
+            unfiltered_positions = ord_dict_hotkey_position_map
 
         n_orders_original = 0
         for positions in hotkey_positions.values():
@@ -473,7 +413,6 @@ class CoreOutputsManager:
         if write_and_upload_production_files:
             create_production_files = True
             save_production_files = True
-            upload_production_files = True
 
         if create_production_files:
             limit_orders_dict = {}
@@ -487,7 +426,6 @@ class CoreOutputsManager:
                     challengeperiod_dict, miner_account_sizes_dict, limit_orders_dict,
                     archived_positions=archived_positions_map,
                     save_to_disk=save_production_files,
-                    upload_to_gcloud=upload_production_files
                 )
 
         checkpoint_dict = {
