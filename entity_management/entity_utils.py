@@ -27,18 +27,18 @@ def is_synthetic_hotkey(hotkey: str) -> bool:
         True if synthetic (format: base_123), False otherwise
 
     Examples:
-        >>> is_synthetic_hotkey("entity_123")
-        True
-        >>> is_synthetic_hotkey("my_entity_0")
-        True
-        >>> is_synthetic_hotkey("foo_bar_99")
-        True
-        >>> is_synthetic_hotkey("regular_hotkey")
-        False
-        >>> is_synthetic_hotkey("no_number_")
-        False
-        >>> is_synthetic_hotkey("just_text")
-        False
+        is_synthetic_hotkey("entity_123")
+            True
+        is_synthetic_hotkey("my_entity_0")
+            True
+        is_synthetic_hotkey("foo_bar_99")
+            True
+        is_synthetic_hotkey("regular_hotkey")
+            False
+        is_synthetic_hotkey("no_number_")
+            False
+        is_synthetic_hotkey("just_text")
+            False
     """
     if "_" not in hotkey:
         return False
@@ -68,14 +68,14 @@ def parse_synthetic_hotkey(synthetic_hotkey: str) -> Tuple[Optional[str], Option
         (entity_hotkey, subaccount_id) or (None, None) if invalid
 
     Examples:
-        >>> parse_synthetic_hotkey("entity_123")
-        ("entity", 123)
-        >>> parse_synthetic_hotkey("my_entity_0")
-        ("my_entity", 0)
-        >>> parse_synthetic_hotkey("foo_bar_99")
-        ("foo_bar", 99)
-        >>> parse_synthetic_hotkey("invalid")
-        (None, None)
+        parse_synthetic_hotkey("entity_123")
+            ("entity", 123)
+        parse_synthetic_hotkey("my_entity_0")
+            ("my_entity", 0)
+        parse_synthetic_hotkey("foo_bar_99")
+            ("foo_bar", 99)
+        parse_synthetic_hotkey("invalid")
+            (None, None)
     """
     if not is_synthetic_hotkey(synthetic_hotkey):
         return None, None
@@ -117,6 +117,7 @@ def create_subaccount_dashboard(
             bt.logging.error(f"Error retrieving {section} for {synthetic_hotkey}: {ex}")
 
     add_to_dashboard("challenge_period", challenge_period_client.get_dashboard)
+    add_to_dashboard("drawdown", challenge_period_client.get_drawdown_stats)
     add_to_dashboard("elimination", elimination_client.get_dashboard)
     add_to_dashboard("account_size_data", miner_account_client.get_dashboard)
     add_to_dashboard("positions", position_client.get_dashboard, positions_time_ms)

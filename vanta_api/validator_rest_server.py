@@ -39,7 +39,6 @@ from vali_objects.vali_config import ValiConfig, RPCConnectionMode, TradePairCat
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_client import DebtLedgerClient
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
-from vali_objects.vali_dataclasses.position import Position
 from vali_objects.exceptions.signal_exception import SignalException
 from vanta_api.base_rest_server import BaseRestServer
 from vanta_api.nonce_manager import NonceManager
