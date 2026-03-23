@@ -71,7 +71,7 @@ class CoreOutputsServer(RPCServerBase):
             connection_mode: RPCConnectionMode.LOCAL for tests, RPCConnectionMode.RPC for production
         """
         self.running_unit_tests = running_unit_tests
-        self._last_upload_hour = TimeUtil.generate_start_timestamp(0).hour
+        self._last_upload_hour = -1
 
         # Initialize RPCServerBase (handles RPC server lifecycle, daemon, watchdog)
         super().__init__(
