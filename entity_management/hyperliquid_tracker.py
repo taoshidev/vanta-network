@@ -292,7 +292,7 @@ class HyperliquidTracker:
             for addr in new_addresses - self.subscribed_addresses:
                 msg = {
                     "method": "subscribe",
-                    "subscription": {"type": "userFills", "user": addr.lower()},
+                    "subscription": {"type": "userFills", "user": addr.lower(), "aggregateByTime": True},
                 }
                 try:
                     await ws.send(json.dumps(msg))
@@ -1453,7 +1453,7 @@ class HyperliquidTracker:
                         slippage_pct = (avg_price - mid) / mid
                     else:
                         slippage_pct = (mid - avg_price) / mid
-                    slippage_pct = max(0.0, min(slippage_pct, 0.03))  # clip to 3% max
+                    slippage_pct = max(0.0, slippage_pct)
 
         # === Build signal ===
         signal = {
