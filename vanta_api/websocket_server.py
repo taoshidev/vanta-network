@@ -200,7 +200,7 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
         self._dashboard_update_queue = Queue()
 
         # Tasks and threads
-        self._event_loop = asyncio.get_running_loop()
+        self._event_loop = None
         self._broadcast_message_queue_task = None
         self._thread_pool = ThreadPoolExecutor(max_workers=8)
 
@@ -1019,6 +1019,9 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                 del nonces[n]
 
     async def start(self) -> None:
+        # Store the event loop reference for thread-safe operations
+        self._event_loop = asyncio.get_running_loop()
+
         # Suppress EOFError logs from websockets library (caused by health monitor TCP checks)
         # These errors occur when the health monitor creates a raw TCP connection to check if the port is open,
         # but doesn't complete the WebSocket handshake. This is expected behavior and not an actual error.
