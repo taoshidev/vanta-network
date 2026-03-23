@@ -349,7 +349,7 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                     bt.logging.info(
                         f"WebSocketServer: Removed client {client_id} from API key {api_key_alias}")
 
-            if client.websocket.open:
+            if client.websocket.state == websockets.protocol.OPEN:
                 client.websocket.fail_connection(code=CloseCode.ABNORMAL_CLOSURE)
 
             bt.logging.info(f"WebSocketServer: Client {client_id} removed")
