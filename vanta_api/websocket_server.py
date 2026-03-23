@@ -434,7 +434,7 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                     subscription.update_times(dashboard)
 
                     asyncio.run_coroutine_threadsafe(
-                        self._send_message(client, dashboard),
+                        self._send_message(client, {"dashboard": dashboard}),
                         self._event_loop
                     )
 
