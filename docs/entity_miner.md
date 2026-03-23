@@ -43,6 +43,7 @@ Create `mining/miner_secrets.json` with your wallet credentials and validator co
 | `validator_url` | Validator REST API URL (port 48888) |
 | `validator_ws_host` | Validator WebSocket host (for real-time dashboard/rejection streams) |
 | `validator_ws_port` | Validator WebSocket port (default: 8765) |
+| `max_hl_traders` | Maximum number of Hyperliquid traders that can be registered (optional, no limit if unset). Can also be set via `MAX_HL_TRADERS` env var (env var takes precedence). |
 
 Register your entity miner's public endpoint URL with the validator, add:
 
@@ -173,6 +174,7 @@ curl http://localhost:8089/api/health
   "service": "EntityMinerRestServer",
   "ws_connected": true,
   "hl_addresses_tracked": 5,
+  "max_hl_traders": 50,
   "dashboard_cache_size": 3,
   "sse_subscribers": 0,
   "timestamp": 1700000000.0
@@ -227,6 +229,7 @@ New subaccounts enter a 90-day challenge period upon creation:
 | Constraint | Value |
 |------------|-------|
 | Max active subaccounts per entity | 500 |
+| Max HL traders per entity miner | Configurable via `max_hl_traders` / `MAX_HL_TRADERS` (no limit if unset) |
 | Max account size | $100,000 USD |
 | Challenge period duration | 90 days |
 | Challenge period returns threshold | 3% |

@@ -142,6 +142,9 @@ class EntityMinerRestServer(MinerRestServer):
         self._payment_service = None
         self._payment_ledger = None
 
+        # Max HL traders limit (loaded in _initialize_clients)
+        self._max_hl_traders: Optional[int] = None
+
         # Wallet/secrets (loaded in _initialize_clients)
         self._hotkey = None
         self._coldkey = None
@@ -186,6 +189,17 @@ class EntityMinerRestServer(MinerRestServer):
             # Derive mappings file path alongside the secrets file
             secrets_dir = os.path.dirname(MinerConfig.get_secrets_file_path())
             self._mappings_file = os.path.join(secrets_dir, "entity_hl_mappings.json")
+
+            # Load max HL traders limit (env var takes precedence)
+            max_hl_env = os.environ.get("MAX_HL_TRADERS")
+            max_hl_secret = secrets.get("max_hl_traders")
+            raw_max_hl = max_hl_env if max_hl_env is not None else max_hl_secret
+            if raw_max_hl is not None:
+                try:
+                    self._max_hl_traders = int(raw_max_hl)
+                    print(f"[ENTITY-GW-INIT] Max HL traders limit set to {self._max_hl_traders}")
+                except (ValueError, TypeError):
+                    bt.logging.warning(f"[ENTITY-GW-INIT] Invalid max_hl_traders value: {raw_max_hl}, ignoring")
         except Exception as e:
             bt.logging.error(f"[ENTITY-GW-INIT] Failed to load wallet secrets: {e}")
 
@@ -1014,11 +1028,24 @@ class EntityMinerRestServer(MinerRestServer):
             bt.logging.error(f"Error parsing request body: {e}")
             return jsonify({'status': 'error', 'message': f'Invalid request: {str(e)}'}), 400
 
-        # 3. Check wallet is configured
+        # 3. Check max HL traders limit
+        if self._max_hl_traders is not None:
+            current_count = len(self._hl_to_synthetic)
+            if current_count >= self._max_hl_traders:
+                bt.logging.warning(
+                    f"[ENTITY-GW] HL trader limit reached: {current_count}/{self._max_hl_traders}"
+                )
+                return jsonify({
+                    'status': 'error',
+                    'message': f'Maximum number of Hyperliquid traders ({self._max_hl_traders}) reached. '
+                               f'Cannot register more HL subaccounts.'
+                }), 403
+
+        # 4. Check wallet is configured
         if not self._coldkey or not self._hotkey or not self._validator_url:
             return jsonify({'status': 'error', 'message': 'Wallet not configured'}), 500
 
-        # 4. Sign message
+        # 5. Sign message
         try:
             message_dict = {
                 "account_size": account_size,
@@ -1144,6 +1171,7 @@ class EntityMinerRestServer(MinerRestServer):
             'service': 'EntityMinerRestServer',
             'ws_connected': self._ws_connected,
             'hl_addresses_tracked': len(self._hl_to_synthetic),
+            'max_hl_traders': self._max_hl_traders,
             'dashboard_cache_size': len(self._dashboard_cache),
             'sse_subscribers': sum(len(s) for s in self._sse_subscribers.values()),
             'payment_daemon_active': self._payment_thread is not None and self._payment_thread.is_alive(),
