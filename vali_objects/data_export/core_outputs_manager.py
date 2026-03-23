@@ -244,6 +244,7 @@ class CoreOutputsManager:
         blob.content_type = "application/gzip"
 
         # Upload the contents of the file to Google Cloud Storage
+        bt.logging.info(f'Uploading {blob_name} to {bucket_name}')
         blob.upload_from_filename(filename=checkpoint_file_path)
         bt.logging.info(f'Uploaded {blob_name} to {bucket_name}')
 
@@ -301,25 +302,25 @@ class CoreOutputsManager:
             )
             ValiBkpUtils.write_compressed_json(checkpoint_file_path, final_dict)
 
-        if save_to_disk:
-            # Write positions data at different tiers (highest to lowest)
-            for tier in PERCENT_NEW_POSITIONS_TIERS:
+            if save_to_disk:
+                # Write positions data at different tiers (highest to lowest)
+                for tier in PERCENT_NEW_POSITIONS_TIERS:
 
-                # Filter tiers below the highest tier
-                if tier != 100:
-                    self.filter_new_positions_random_sample(tier, ord_dict_hotkey_position_map, time_now)
+                    # Filter tiers below the highest tier
+                    if tier != 100:
+                        self.filter_new_positions_random_sample(tier, ord_dict_hotkey_position_map, time_now)
 
-                # Add tier information
-                for hotkey, dat in ord_dict_hotkey_position_map.items():
-                    dat['tier'] = tier
+                    # Add tier information
+                    for hotkey, dat in ord_dict_hotkey_position_map.items():
+                        dat['tier'] = tier
 
-                ValiBkpUtils.write_compressed_json(
-                    ValiBkpUtils.get_miner_positions_output_path(suffix_dir=str(tier)),
-                    ord_dict_hotkey_position_map
-                )
+                    ValiBkpUtils.write_compressed_json(
+                        ValiBkpUtils.get_miner_positions_output_path(suffix_dir=str(tier)),
+                        ord_dict_hotkey_position_map
+                    )
 
-        if upload_to_gcloud:
-            self.upload_checkpoint_file_to_gcloud(checkpoint_file_path)
+            if upload_to_gcloud:
+                self.upload_checkpoint_file_to_gcloud(checkpoint_file_path)
 
     def generate_request_core(
         self,
