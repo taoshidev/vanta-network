@@ -132,10 +132,12 @@ class CoreOutputsManager:
         """Filter positions based on tier percentage."""
         def filter_orders(p: dict) -> bool:
             nonlocal stale_date_threshold_ms
-            if p["is_closed_position"] and (p["close_ms"] < stale_date_threshold_ms):
-                return False
-            if p["is_open_position"] and (p["orders"][-1]["processed_ms"] < stale_date_threshold_ms):
-                return False
+            if p["is_closed_position"]:
+                if p["close_ms"] < stale_date_threshold_ms:
+                    return False
+            else:
+                if p["orders"][-1]["processed_ms"] < stale_date_threshold_ms:
+                    return False
             if percent_new_positions_keep == 100:
                 return False
             if percent_new_positions_keep and (
