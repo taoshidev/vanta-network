@@ -54,6 +54,7 @@ from vali_objects.miner_account.miner_account_client import MinerAccountClient
 class EliminationReason(Enum):
     """Reasons for miner elimination."""
     ZOMBIE = "ZOMBIE"
+    IDLE = "IDLE"
     PLAGIARISM = "PLAGIARISM"
     MAX_TOTAL_DRAWDOWN = "MAX_TOTAL_DRAWDOWN"
     FAILED_CHALLENGE_PERIOD_TIME = "FAILED_CHALLENGE_PERIOD_TIME"
@@ -648,6 +649,9 @@ class EliminationManager(CacheController):
             bt.logging.debug("[ELIM_PROCESS] Starting handle_zombies")
             self.handle_zombies(iteration_epoch)
 
+            bt.logging.debug("[ELIM_PROCESS] Starting handle_idle_miners")
+            self.handle_idle_miners(iteration_epoch)
+
             bt.logging.debug("[ELIM_PROCESS] Starting _delete_eliminated_expired_miners")
             self._delete_eliminated_expired_miners()
 
@@ -779,6 +783,48 @@ class EliminationManager(CacheController):
                 continue
             elif self.is_zombie_hotkey(hotkey, all_hotkeys_set):
                 self.append_elimination_row(hotkey=hotkey, current_dd=None, reason=EliminationReason.ZOMBIE.value)
+                self.handle_eliminated_miner(hotkey, {}, iteration_epoch)
+
+    def handle_idle_miners(self, iteration_epoch=None):
+        """Eliminate MAINCOMP, CHALLENGE, and PROBATION miners that have not submitted any orders in the past 60 days."""
+        now_ms = TimeUtil.now_in_millis()
+        IDLE_ELIMINATION_ACTIVATION_MS = 1774310400000 + ValiConfig.IDLE_MINER_MAXIMUM_MS  # 60 days after 2026-03-20
+        if now_ms < IDLE_ELIMINATION_ACTIVATION_MS:
+            return
+
+        bt.logging.info("checking all active buckets for idle miner eliminations.")
+
+        active_buckets = [MinerBucket.MAINCOMP, MinerBucket.CHALLENGE, MinerBucket.PROBATION]
+        candidate_hotkeys = set()
+        for bucket in active_buckets:
+            candidate_hotkeys.update(self.cp_client.get_hotkeys_by_bucket(bucket))
+
+        if not candidate_hotkeys:
+            return
+
+        hotkey_to_positions = self._position_client.get_positions_for_hotkeys(
+            list(candidate_hotkeys), only_open_positions=False
+        )
+
+        idle_threshold_ms = ValiConfig.IDLE_MINER_MAXIMUM_MS
+
+        for hotkey in candidate_hotkeys:
+            if hotkey in self.eliminations:
+                continue
+
+            positions = hotkey_to_positions.get(hotkey, [])
+            last_order_ms = None
+            for position in positions:
+                for order in position.orders:
+                    if last_order_ms is None or order.processed_ms > last_order_ms:
+                        last_order_ms = order.processed_ms
+
+            if last_order_ms is None or (now_ms - last_order_ms) > idle_threshold_ms:
+                bt.logging.info(
+                    f"Eliminating idle miner {hotkey}. Last order: "
+                    f"{last_order_ms}, idle_ms={now_ms - last_order_ms if last_order_ms else 'never traded'}"
+                )
+                self.append_elimination_row(hotkey=hotkey, current_dd=None, reason=EliminationReason.IDLE.value)
                 self.handle_eliminated_miner(hotkey, {}, iteration_epoch)
 
     def _update_departed_hotkeys(self):
