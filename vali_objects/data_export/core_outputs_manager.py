@@ -215,9 +215,7 @@ class CoreOutputsManager:
         on other validators as well as transparency with the community.
         """
         # check if file exists
-        # TODO: Revert
-        #KEY_PATH = ValiConfig.BASE_DIR + '/gcloud_new.json'
-        KEY_PATH = ValiConfig.BASE_DIR + '/gcloud_test.json'
+        KEY_PATH = ValiConfig.BASE_DIR + '/gcloud_new.json'
         if not os.path.exists(KEY_PATH):
             return
 
@@ -235,9 +233,7 @@ class CoreOutputsManager:
         bucket = client.get_bucket(bucket_name)
 
         # Name for the new blob
-        # TODO: Revert
-        #blob_name = 'validator_checkpoint.json.gz'
-        blob_name = 'validator_checkpoint_test.json.gz'
+        blob_name = 'validator_checkpoint.json.gz'
 
         # Create a new blob and upload data
         blob = bucket.blob(blob_name)
