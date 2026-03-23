@@ -514,7 +514,7 @@ class ValiBkpUtils:
             stream.write(b"]")
 
         else:
-            stream.write(orjson.dumps(data))
+            stream.write(orjson.dumps(data, default=orjson_encoder))
 
     @staticmethod
     def write_compressed_json(file_path: str, data: dict) -> None:
