@@ -1,5 +1,7 @@
 import threading
 import time
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 import bittensor as bt
 import databento as db
 
@@ -225,6 +227,12 @@ class DatabentoDataService(BaseDataService):
         # Live client will be created in _create_websocket_client
         pass
 
+    @staticmethod
+    def _next_date_str(date_str: str) -> str:
+        """Return the next calendar day as a YYYY-MM-DD string."""
+        d = datetime.strptime(date_str, "%Y-%m-%d")
+        return (d + timedelta(days=1)).strftime("%Y-%m-%d")
+
     def get_stock_splits(self, time_ms) -> dict[str, float]:
         """
         Get stock splits for all equity symbols on a given date.
@@ -233,12 +241,13 @@ class DatabentoDataService(BaseDataService):
             dict mapping trade_pair_id to split ratio (ratio_new / ratio_old)
         """
         execution_date_str = TimeUtil.timestamp_ms_to_eastern_time_str(time_ms, short=True)
+        next_date_str = self._next_date_str(execution_date_str)
 
         try:
             df_raw = self._ref_client.corporate_actions.get_range(
                 symbols=self._get_equity_symbols(),
                 start=execution_date_str,
-                end=execution_date_str,
+                end=next_date_str,
                 index="ex_date",
                 events=["FSPLT", "RSPLT"],
                 countries=["US"]
@@ -262,7 +271,41 @@ class DatabentoDataService(BaseDataService):
 
         return result
 
+    def get_dividend_events(self, time_ms: int) -> dict[str, float]:
+        """
+        Get cash dividend events for all equity symbols on a given ex-dividend date.
 
+        Returns:
+            dict mapping trade_pair symbol to dividend amount per share (USD)
+        """
+        execution_date_str = TimeUtil.timestamp_ms_to_eastern_time_str(time_ms, short=True)
+        next_date_str = self._next_date_str(execution_date_str)
+
+        try:
+            df_raw = self._ref_client.corporate_actions.get_range(
+                symbols=self._get_equity_symbols(),
+                start=execution_date_str,
+                end=next_date_str,
+                index="ex_date",
+                events=["DIV"],
+                countries=["US"]
+            )
+        except Exception as e:
+            bt.logging.error(f"Failed to fetch dividend events from Databento: {e}")
+            return {}
+
+        if df_raw is None or df_raw.empty:
+            return {}
+
+        result = {}
+        for _, row in df_raw.iterrows():
+            symbol = row.get("symbol")
+            amount = row.get("amount")
+
+            if symbol and amount is not None and amount > 0:
+                result[symbol] = float(amount)
+
+        return result
 
 if __name__ == "__main__":
     import asyncio
