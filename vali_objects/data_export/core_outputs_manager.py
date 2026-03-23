@@ -245,9 +245,10 @@ class CoreOutputsManager:
 
         # Create a new blob and upload data
         blob = bucket.blob(blob_name)
+        blob.content_type = "application/gzip"
 
-        # Upload the content of the zip_buffer to Google Cloud Storage
-        blob.upload_from_filename(checkpoint_file_path)
+        # Upload the contents of the file to Google Cloud Storage
+        blob.upload_from_filename(filename=checkpoint_file_path)
         bt.logging.info(f'Uploaded {blob_name} to {bucket_name}')
 
     def create_and_upload_production_files(
