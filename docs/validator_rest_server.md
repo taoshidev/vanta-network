@@ -1614,15 +1614,14 @@ curl -H "Authorization: Bearer YOUR_TIER_200_API_KEY" \
       "limit_orders_time_ms": 1701388800000, // Use as a query parameter in next request
     },
     "ledger": {
-      "checkpoints": [
-        {
-          "t": 1770768000000, // timestamp_ms
+      "checkpoints": {
+        "1770768000000": { // timestamp_ms
           "r": -11.400847781869729, // realized_pnl (if not zero)
           "u": 9.2605843763286, // unrealized_pnl (if not zero)
           "m": 1.0001092732205306, // max_portfolio_value
           "s": "CHALLENGE" // challenge_period_status
         }
-      ],
+      },
       "portfolio_return": 2.2204460492503128e-16,
       "checkpoints_time_ms": 1770768000000 // Use as a query parameter in next request
     },
