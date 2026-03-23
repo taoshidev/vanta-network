@@ -483,7 +483,8 @@ class ValiBkpUtils:
                 else:
                     stream.write(b",")
 
-                key_is_not_str = isinstance(key, str)
+                # Add quotes around keys that are not strings
+                key_is_not_str = not isinstance(key, str)
                 if key_is_not_str:
                     stream.write(b'"')
                 stream.write(orjson.dumps(key))
