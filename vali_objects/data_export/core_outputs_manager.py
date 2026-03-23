@@ -214,10 +214,6 @@ class CoreOutputsManager:
         Upload a zipped, time lagged validator checkpoint to google cloud for auto restoration
         on other validators as well as transparency with the community.
         """
-        datetime_now = TimeUtil.generate_start_timestamp(0)  # UTC
-        if not (datetime_now.minute == 24):
-            return
-
         # check if file exists
         # TODO: Revert
         #KEY_PATH = ValiConfig.BASE_DIR + '/gcloud_new.json'
@@ -263,6 +259,7 @@ class CoreOutputsManager:
         limit_orders_dict,
         archived_positions=None,
         save_to_disk=True,
+        upload_to_gcloud=True
     ):
         """Create and optionally upload production files."""
         perf_ledgers = self._perf_ledger_client.get_perf_ledgers()
@@ -298,12 +295,13 @@ class CoreOutputsManager:
             'archived_positions': archived_positions or {}
         }
 
-        if save_to_disk:
+        if save_to_disk or upload_to_gcloud:
             checkpoint_file_path = ValiBkpUtils.get_vcp_output_path(
                 running_unit_tests=self.running_unit_tests
             )
             ValiBkpUtils.write_compressed_json(checkpoint_file_path, final_dict)
 
+        if save_to_disk:
             # Write positions data at different tiers (highest to lowest)
             for tier in PERCENT_NEW_POSITIONS_TIERS:
 
@@ -320,6 +318,7 @@ class CoreOutputsManager:
                     ord_dict_hotkey_position_map
                 )
 
+        if upload_to_gcloud:
             self.upload_checkpoint_file_to_gcloud(checkpoint_file_path)
 
     def generate_request_core(
@@ -427,6 +426,7 @@ class CoreOutputsManager:
         if write_and_upload_production_files:
             create_production_files = True
             save_production_files = True
+            upload_production_files = True
 
         if create_production_files:
             limit_orders_dict = {}
@@ -440,6 +440,7 @@ class CoreOutputsManager:
                     challengeperiod_dict, miner_account_sizes_dict, limit_orders_dict,
                     archived_positions=archived_positions_map,
                     save_to_disk=save_production_files,
+                    upload_to_gcloud=upload_production_files
                 )
 
         checkpoint_dict = {
