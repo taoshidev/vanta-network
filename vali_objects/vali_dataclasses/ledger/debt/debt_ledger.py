@@ -188,7 +188,6 @@ class DebtCheckpoint:
 
     def to_dashboard(self) -> dict:
         results = {
-            "t": self.timestamp_ms,
             "m": self.max_portfolio_value,
             "s": self.challenge_period_status
         }

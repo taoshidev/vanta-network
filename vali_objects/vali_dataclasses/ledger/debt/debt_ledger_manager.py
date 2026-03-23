@@ -171,20 +171,21 @@ class DebtLedgerManager():
 
         ledger = self.get_ledger(hotkey)
         if ledger:
-            dashboard_checkpoints = []
+            dashboard_checkpoints = {}
             for checkpoint in reversed(ledger.checkpoints):
                 if checkpoint.timestamp_ms <= checkpoints_time_ms:
                     break
                 snapshot_time_ms = max(snapshot_time_ms, checkpoint.timestamp_ms)
+                timestamp = str(checkpoint.timestamp_ms)
                 dashboard_checkpoint = checkpoint.to_dashboard()
-                dashboard_checkpoints.append(dashboard_checkpoint)
+                dashboard_checkpoints[timestamp] = dashboard_checkpoint
 
             dashboard = {
                 "portfolio_return": ledger.get_current_portfolio_return(),
             }
 
             if dashboard_checkpoints:
-                dashboard_checkpoints.reverse()
+                dashboard_checkpoints = dict(reversed(dashboard_checkpoints.items()))
                 dashboard["checkpoints"] = dashboard_checkpoints
                 dashboard["checkpoints_time_ms"] = snapshot_time_ms
 
