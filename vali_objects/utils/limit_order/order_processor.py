@@ -727,6 +727,19 @@ class OrderProcessor:
             if err_msg:
                 raise SignalException(err_msg)
 
+            # Cancel unfilled bracket orders immediately if position is now closed
+            if updated_position and updated_position.is_closed_position:
+                try:
+                    limit_order_client.cancel_limit_order(
+                        miner_hotkey,
+                        updated_position.trade_pair.trade_pair_id,
+                        "ALL",
+                        now_ms,
+                        execution_type=ExecutionType.BRACKET
+                    )
+                except Exception as e:
+                    bt.logging.warning(f"Failed to cancel bracket orders after position close: {e}")
+
             # Create bracket order(s) if market order succeeded and position is open
             if created_order and created_order.bracket_orders:
                 if updated_position and not updated_position.is_closed_position:

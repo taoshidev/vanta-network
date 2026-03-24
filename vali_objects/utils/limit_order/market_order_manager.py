@@ -588,7 +588,15 @@ class MarketOrderManager():
                 take_profit = signal.get("take_profit")
                 fill_price = signal.get("price")
 
-                if execution_type == ExecutionType.LIMIT:
+                if existing_position.orders:
+                    position_last_order = existing_position.orders[-1].processed_ms
+                    if now_ms < position_last_order:
+                        raise SignalException(f"Proposed order timestamp < position's last order ({now_ms} < {position_last_order})")
+
+                # If we enforce market cooldown, we treat as market order regardless of execution type
+                if enforce_market_cooldown:
+                    new_src = OrderSource.ORGANIC
+                elif execution_type == ExecutionType.LIMIT:
                     new_src = OrderSource.LIMIT_FILLED
                 elif execution_type == ExecutionType.BRACKET:
                     new_src = OrderSource.BRACKET_FILLED
