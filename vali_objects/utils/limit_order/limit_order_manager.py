@@ -1097,9 +1097,9 @@ class LimitOrderManager(CacheController):
                 if closing_order_type:
                     order_dict['order_type'] = closing_order_type.name
                     sign = 1 if closing_order_type == OrderType.LONG else -1
-                    order_dict['leverage'] = sign * order.leverage if order.leverage else None
-                    order_dict['value'] = sign * order.value if order.value else None
-                    order_dict['quantity'] = sign * order.quantity if order.quantity else None
+                    order_dict['leverage'] = sign * abs(order.leverage) if order.leverage else None
+                    order_dict['value'] = sign * abs(order.value) if order.value else None
+                    order_dict['quantity'] = sign * abs(order.quantity) if order.quantity else None
                 else:
                     raise ValueError("Bracket Order type was not LONG or SHORT")
 
