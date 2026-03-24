@@ -33,7 +33,7 @@ from vali_objects.challenge_period.challengeperiod_client import ChallengePeriod
 from entity_management.entity_client import EntityClient
 from entity_management.entity_utils import is_synthetic_hotkey
 
-TARGET_MS = 1773964538000 + (1000 * 60 * 60 * 6)  # + 6 hours
+TARGET_MS = 1774396800000 + (1000 * 60 * 60 * 6)  # + 6 hours
 
 
 class PositionManager:
@@ -983,21 +983,9 @@ class PositionManager:
             # bt.logging.info(f"Applied {n_slippage_corrections} forex slippage corrections")
 
             # All miners that wanted their challenge period restarted
-            miners_to_wipe = ["5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_33"]
-            position_uuids_to_delete = []
-            position_uuids_to_archive = [
-                    "b5e90732-5346-4e4e-99ff-00b533a1ebdc",
-                    "7ede277b-b643-4c8f-a888-88c27b8b6de4",
-                    "39d9d394-0ef5-4df7-b58a-c65bf22c7f9e",
-                    "4c71b30d-cf9a-40e1-9646-7cc3bed3e683",
-                    "8d0f95a6-af66-4344-9ce1-4a774bea8bd5",
-                    "833f52c8-28c6-42a6-8bec-88e392e31a43",
-                    "8c8a2db8-9228-422a-a355-804a8f6aa9e3",
-                    "cb3573af-4216-4ec1-b36e-21766fa59522",
-                    "e64d0a5a-420c-4df0-8027-270ef70ec245",
-                    "7675554b-4a5e-4aef-bc3f-592fcacfdf2b",
-                    "4c9722cd-6ab5-4cf3-aa9e-296ac4818cc0",
-                ]
+            miners_to_wipe = ["5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_32"]
+            position_uuids_to_delete = ["e4feaeec-41f4-4299-9bc1-2ba5ae6b581a"]
+            position_uuids_to_archive = []
             miners_to_promote = []
 
             for p in positions_to_snap:
