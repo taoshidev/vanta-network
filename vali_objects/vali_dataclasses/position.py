@@ -207,20 +207,21 @@ class Position(BaseModel):
 
     def refresh_carry_fee_usd(self, current_time_ms: int) -> float:
         if self.is_closed_position:
-            return 0.0
+            current_time_ms = self.close_ms
 
-        total_carry_fee_paid = 0
-        interval_start_ms = self.open_ms
-        for fee_event in self.fee_history:
+        last_carry_fee_accrual_ms = self.open_ms
+        for fee_event in reversed(self.fee_history):
             if fee_event["fee_type"] == "carry":
-                total_carry_fee_paid += fee_event["amount"]
-                interval_start_ms = max(interval_start_ms, fee_event["time_ms"])
+                last_carry_fee_accrual_ms = fee_event["time_ms"]
+                break
 
         if self.trade_pair.is_crypto:
-            intervals = (current_time_ms - interval_start_ms) // MS_IN_8_HOURS
+            interval_ms = MS_IN_8_HOURS
+            intervals = (current_time_ms - last_carry_fee_accrual_ms) // interval_ms
             rate = ValiConfig.CARRY_FEE_RATE_PER_INTERVAL[TradePairCategory.CRYPTO]
         elif self.trade_pair.is_forex:
-            intervals = (current_time_ms - interval_start_ms) // MS_IN_24_HOURS
+            interval_ms = MS_IN_24_HOURS
+            intervals = (current_time_ms - last_carry_fee_accrual_ms) // interval_ms
             rate = ValiConfig.CARRY_FEE_RATE_PER_INTERVAL[TradePairCategory.FOREX]
         else:
             return 0.0
@@ -233,8 +234,9 @@ class Position(BaseModel):
             return 0.0
 
         carry_fee = market_value * rate * intervals
+        record_time_ms = last_carry_fee_accrual_ms + intervals * interval_ms
         if carry_fee > 0:
-            self.record_fee_event("carry", carry_fee, current_time_ms)
+            self.record_fee_event("carry", carry_fee, record_time_ms)
 
         return carry_fee
 
@@ -251,20 +253,22 @@ class Position(BaseModel):
         if borrowed <= 0:
             return 0.0
 
-        interval_start_ms = self.open_ms
-        for fee_event in self.fee_history:
+        last_interest_accrual_ms = (self.open_ms // MS_IN_24_HOURS) * MS_IN_24_HOURS
+        for fee_event in reversed(self.fee_history):
             if fee_event["fee_type"] == "interest":
-                interval_start_ms = max(interval_start_ms, fee_event["time_ms"])
+                last_interest_accrual_ms = fee_event["time_ms"]
+                break
 
-        intervals = (current_time_ms - interval_start_ms) // MS_IN_24_HOURS
+        most_recent_midnight_ms = (current_time_ms // MS_IN_24_HOURS) * MS_IN_24_HOURS
+        intervals = (most_recent_midnight_ms - last_interest_accrual_ms) // MS_IN_24_HOURS
         if intervals <= 0:
             return 0.0
 
-        interest = borrowed * ValiConfig.DAILY_INTEREST_RATE * intervals
-        if interest > 0:
-            self.record_fee_event("interest", interest, current_time_ms)
+        interest_usd = borrowed * ValiConfig.DAILY_INTEREST_RATE * intervals
+        if interest_usd > 0:
+            self.record_fee_event("interest", interest_usd, most_recent_midnight_ms)
 
-        return interest
+        return interest_usd
 
     def record_fee_event(self, fee_type: str, amount: float, time_ms: int):
         if amount <= 0:

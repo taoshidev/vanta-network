@@ -10,7 +10,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import List, Dict, Optional
 
-from time_util.time_util import TimeUtil, timeme
+from time_util.time_util import TimeUtil, timeme, MS_IN_1_HOUR
 from vali_objects.exceptions.corrupt_data_exception import ValiBkpCorruptDataException
 from vali_objects.exceptions.vali_bkp_file_missing_exception import ValiFileMissingException
 from vali_objects.position_management.position_utils import PositionUtils
@@ -1263,9 +1263,13 @@ class PositionManager:
         positions_charged = 0
         hotkey_to_fee = {}
 
-        for hotkey, positions_dict in self.hotkey_to_open_positions.items():
+        recent_cutoff_ms = time_ms - MS_IN_1_HOUR
+
+        for hotkey, positions_dict in self.hotkey_to_positions.items():
             hotkey_fee = 0.0
             for _, position in positions_dict.items():
+                if position.is_closed_position and position.close_ms < recent_cutoff_ms:
+                    continue
                 if position.trade_pair.is_equities:
                     fee = position.refresh_interest_fee_usd(time_ms)
                 else:

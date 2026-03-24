@@ -492,6 +492,14 @@ class LimitOrderManager(CacheController):
                     orders_to_cancel.extend(self._find_orders_to_cancel_by_uuid(miner_hotkey, uuid))
 
             if not orders_to_cancel:
+                if cancel_all:
+                    return {
+                        "status": "cancelled",
+                        "order_uuid": order_uuid,
+                        "miner_hotkey": miner_hotkey,
+                        "cancelled_ms": now_ms,
+                        "num_cancelled": 0
+                    }
                 raise SignalException(
                     f"No unfilled limit orders found for {miner_hotkey} (uuid={order_uuid})"
                 )
