@@ -27,7 +27,7 @@ import traceback
 from typing import List, Dict, Optional
 
 from shared_objects.rpc.rpc_server_base import RPCServerBase
-from time_util.time_util import timeme
+from time_util.time_util import MS_IN_24_HOURS, S_IN_24_HOURS, timeme
 from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
@@ -86,6 +86,7 @@ class PositionManagerServer(RPCServerBase):
         bt.logging.success("PositionManager initialized")
 
         self._last_compact_time_s: float = 0.0  # Track last compact_price_sources run time
+        self._last_dividend_settle_time_s: float = 0.0  # Track last compact_price_sources run time
 
         # Initialize RPCServerBase (may start RPC server immediately if start_server=True)
         # At this point, self._manager exists, so RPC calls won't fail
@@ -129,6 +130,13 @@ class PositionManagerServer(RPCServerBase):
                 self._last_compact_time_s = now
             except Exception as e:
                 bt.logging.error(f"Error in compaction daemon iteration: {traceback.format_exc()}")
+
+        if now - self._last_dividend_settle_time_s >= S_IN_24_HOURS:
+            try:
+                self._manager.settle_dividend_payments()
+                self._last_dividend_settle_time_s = (now // S_IN_24_HOURS) * S_IN_24_HOURS
+            except Exception as e:
+                bt.logging.error(f"Error settling dividend payments: {traceback.format_exc()}")
 
         try:
             self._manager.refresh_position_fees()
@@ -308,6 +316,10 @@ class PositionManagerServer(RPCServerBase):
 
     def apply_stock_split_rpc(self, trade_pair_id: str, stock_split_ratio: float, execution_date: str):
         return self._manager.apply_stock_split(trade_pair_id, stock_split_ratio, execution_date)
+
+    def process_dividend_ex_date(self, trade_pair_id: str, gross_dividend: float,
+                                   payment_date_str: str, ex_date_str: str):
+        return self._manager.process_dividend_ex_date(trade_pair_id, gross_dividend, payment_date_str, ex_date_str)
 
     # ==================== Bracket Order Attachment RPC Methods ====================
 
