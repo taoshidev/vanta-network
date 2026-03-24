@@ -271,12 +271,12 @@ class DatabentoDataService(BaseDataService):
 
         return result
 
-    def get_dividend_events(self, time_ms: int) -> dict[str, float]:
+    def get_dividend_events(self, time_ms: int) -> dict[str, dict]:
         """
         Get cash dividend events for all equity symbols on a given ex-dividend date.
 
         Returns:
-            dict mapping trade_pair symbol to dividend amount per share (USD)
+            dict mapping trade_pair symbol to {"gross_dividend": float, "payment_date": "YYYY-MM-DD"}
         """
         execution_date_str = TimeUtil.timestamp_ms_to_eastern_time_str(time_ms, short=True)
         next_date_str = self._next_date_str(execution_date_str)
@@ -300,10 +300,14 @@ class DatabentoDataService(BaseDataService):
         result = {}
         for _, row in df_raw.iterrows():
             symbol = row.get("symbol")
-            amount = row.get("amount")
+            gross_dividend = row.get("gross_dividend", 0)
+            payment_date = row.get("payment_date", "")
 
-            if symbol and amount is not None and amount > 0:
-                result[symbol] = float(amount)
+            if symbol and gross_dividend is not None and gross_dividend > 0:
+                result[symbol] = {
+                    "gross_dividend": float(gross_dividend),
+                    "payment_date": str(payment_date) if payment_date else ""
+                }
 
         return result
 

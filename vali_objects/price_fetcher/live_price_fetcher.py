@@ -48,10 +48,11 @@ class LivePriceFetcher:
             running_unit_tests=running_unit_tests
         )
 
-        # Stock splits cache - load from disk on startup
-        self.STOCK_SPLITS_FILE = ValiBkpUtils.get_stock_splits_file_location()
-        self._stock_splits = ValiUtils.get_vali_json_file_dict(self.STOCK_SPLITS_FILE)
-        self._last_split_check_ms = 0
+        # Stock splits cache - keyed by date string "YYYY-MM-DD"
+        self._stock_splits_by_date: dict[str, dict] = {}
+
+        # Dividend events cache - keyed by date string "YYYY-MM-DD"
+        self._dividend_events_by_date: dict[str, dict] = {}
 
     def stop_all_threads(self):
         self.tiingo_data_service.stop_threads()

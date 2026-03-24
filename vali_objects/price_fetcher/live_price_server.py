@@ -198,6 +198,9 @@ class LivePriceFetcherServer(RPCServerBase):
     def get_stock_splits(self, time_ms: int) -> dict[str, float]:
         return self._fetcher.get_stock_splits(time_ms)
 
+    def get_dividend_events(self, time_ms: int) -> dict[str, dict]:
+        return self._fetcher.get_dividend_events(time_ms)
+
     def set_test_price_source(self, trade_pair: TradePair, price_source: PriceSource) -> None:
         """
         Test-only RPC method to set price source for a trade pair.

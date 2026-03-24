@@ -139,6 +139,9 @@ class LivePriceFetcherClient(RPCClientBase):
     def simulate_slippage(self, trade_pair: TradePair, size_usd: float, is_buy: bool):
         """Simulate slippage by walking the Hyperliquid L2 orderbook."""
         return self._server.simulate_slippage(trade_pair, size_usd, is_buy)
+        
+    def get_dividend_events(self, time_ms: int) -> dict[str, dict]:
+        return self._server.get_dividend_events(time_ms)
 
     def simulate_avg_fill_price(self, trade_pair: TradePair, size_usd: float, is_buy: bool):
         """Simulate avg fill price by walking the Hyperliquid L2 orderbook."""
