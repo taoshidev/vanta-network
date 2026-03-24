@@ -72,6 +72,7 @@ class MinerAccount:
     capital_used: float = 0.0            # Total leveraged USD value of open positions
     total_borrowed_amount: float = 0.0   # Total margin loans outstanding (equities only)
     total_fees_paid: float = 0.0         # Cumulative fees paid (transaction, funding, interest, ...)
+    total_dividend_income: float = 0.0   # Net dividend income
     asset_class: Optional[TradePairCategory] = None  # EQUITIES, CRYPTO, FOREX
     collateral_records: List[CollateralRecord] = None  # Historical CollateralRecords (List[CollateralRecord])
     miner_bucket: Optional[MinerBucket] = None  # Pushed by ChallengePeriodManager
@@ -84,8 +85,8 @@ class MinerAccount:
 
     @property
     def balance(self) -> float:
-        """Current balance = account_size + total_realized_pnl - total_fees_paid."""
-        return self.get_account_size() + self.total_realized_pnl - self.total_fees_paid
+        """Current balance = account_size + total_realized_pnl + total_dividend_income - total_fees_paid."""
+        return self.get_account_size() + self.total_realized_pnl + self.total_dividend_income - self.total_fees_paid
 
     @property
     def buying_power(self) -> float:
@@ -145,6 +146,7 @@ class MinerAccount:
         self.capital_used = 0
         self.total_borrowed_amount = 0
         self.total_fees_paid = 0
+        self.total_dividend_income = 0
         self.miner_bucket = None
         self.max_return = 1.0
 
@@ -169,6 +171,7 @@ class MinerAccount:
             'asset_class': self.asset_class.value if self.asset_class else None,
             'total_borrowed_amount': self.total_borrowed_amount,
             'total_fees_paid': self.total_fees_paid,
+            'total_dividend_income': self.total_dividend_income,
             'miner_bucket': self.miner_bucket.value if self.miner_bucket else None,
             'max_return': self.max_return
         }
@@ -350,6 +353,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     capital_used = last_record.get("capital_used")
                     total_borrowed = last_record.get("total_borrowed_amount", 0.0)
                     total_fees_paid = last_record.get("total_fees_paid", 0.0)
+                    total_dividend_income = last_record.get("total_dividend_income", 0.0)
                     miner_bucket_str = last_record.get("miner_bucket")
                     max_return = last_record.get("max_return", 1.0)
                 else:
@@ -357,6 +361,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     capital_used = None
                     total_borrowed = 0.0
                     total_fees_paid = 0.0
+                    total_dividend_income = 0.0
                     miner_bucket_str = None
                     max_return = 1.0
 
@@ -400,6 +405,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     capital_used=capital_used if capital_used is not None else 0.0,
                     total_borrowed_amount=total_borrowed,
                     total_fees_paid=total_fees_paid,
+                    total_dividend_income=total_dividend_income,
                     asset_class=asset_class,
                     collateral_records=collateral_records,
                     miner_bucket=miner_bucket,
@@ -772,6 +778,14 @@ class MinerAccountManager(ValidatorBroadcastBase):
             for hotkey, fee_usd in hotkey_to_fee.items():
                 account = self.get_or_create(hotkey)
                 account.total_fees_paid += fee_usd
+            self._save_accounts_to_disk()
+
+    def process_dividend_income(self, hotkey_to_credit: Dict[str, float]) -> None:
+        """Batch update total_dividend_income for multiple hotkeys. Saves to disk once."""
+        with self._accounts_lock:
+            for hotkey, credit_usd in hotkey_to_credit.items():
+                account = self.get_or_create(hotkey)
+                account.total_dividend_income += credit_usd
             self._save_accounts_to_disk()
 
     # ==================== Asset Selection / Withdrawal Methods ====================

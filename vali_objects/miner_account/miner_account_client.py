@@ -333,3 +333,7 @@ class MinerAccountClient(RPCClientBase):
         """Batch update total_fees_paid for multiple hotkeys. Saves to disk once."""
         self._server.process_fees(hotkey_to_fee)
 
+    def process_dividend_income(self, hotkey_to_credit: Dict[str, float]) -> None:
+        """Batch update total_dividend_income for multiple hotkeys. Saves to disk once."""
+        self._server.process_dividend_income(hotkey_to_credit)
+
