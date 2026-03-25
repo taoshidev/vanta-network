@@ -602,7 +602,7 @@ class TestTiingoDataService(unittest.TestCase):
         all_pair_ids = {tp.trade_pair_id for tp in all_pairs}
 
         # Verify unsupported pairs (SPX, DJI, etc.) are NEVER included
-        unsupported_ids = {'SPX', 'DJI', 'NDX', 'VIX', 'FTSE', 'GDAXI', 'TAOUSD'}
+        unsupported_ids = {'SPX', 'DJI', 'NDX', 'VIX', 'FTSE', 'GDAXI'}
         unsupported_in_result = all_pair_ids & unsupported_ids
 
         self.assertEqual(

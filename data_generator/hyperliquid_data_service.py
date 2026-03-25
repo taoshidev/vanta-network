@@ -3,8 +3,10 @@ import json
 import threading
 import time
 import traceback
+from typing import List
 
 import bittensor as bt
+import requests
 import websockets
 
 from data_generator.base_data_service import BaseDataService, HYPERLIQUID_PROVIDER_NAME
@@ -14,6 +16,8 @@ from vali_objects.vali_dataclasses.price_source import PriceSource
 from vali_objects.vali_dataclasses.recent_event_tracker import RecentEventTracker
 
 HYPERLIQUID_WS_URL = "wss://api.hyperliquid.xyz/ws"
+HYPERLIQUID_REST_URL = "https://api.hyperliquid.xyz/info"
+REST_TIMEOUT_S = 10
 RECV_TIMEOUT_S = 30
 
 
@@ -180,6 +184,105 @@ class HyperliquidDataService(BaseDataService):
                 f"with error: {e}, type: {type(e).__name__}, "
                 f"traceback: {limited_traceback}"
             )
+
+    def _fetch_all_mids(self) -> dict[str, float]:
+        """Fetch mid prices for all coins via the REST API. Returns {coin: mid_price}."""
+        try:
+            resp = requests.post(
+                HYPERLIQUID_REST_URL,
+                json={"type": "allMids"},
+                timeout=REST_TIMEOUT_S,
+            )
+            resp.raise_for_status()
+            return {coin: float(price) for coin, price in resp.json().items()}
+        except Exception as e:
+            bt.logging.error(f"Hyperliquid REST allMids failed: {type(e).__name__}: {e}")
+            return {}
+
+    def _fetch_l2_book(self, coin: str) -> tuple[float, float] | None:
+        """Fetch best bid/ask for a single coin via the REST API."""
+        try:
+            resp = requests.post(
+                HYPERLIQUID_REST_URL,
+                json={"type": "l2Book", "coin": coin},
+                timeout=REST_TIMEOUT_S,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            levels = data.get("levels", [])
+            if len(levels) < 2 or not levels[0] or not levels[1]:
+                return None
+            best_bid = float(levels[0][0]["px"])
+            best_ask = float(levels[1][0]["px"])
+            return best_bid, best_ask
+        except Exception as e:
+            bt.logging.error(f"Hyperliquid REST l2Book({coin}) failed: {type(e).__name__}: {e}")
+            return None
+
+    def get_closes_rest(self, trade_pairs: List[TradePair], time_ms, live=True) -> dict[TradePair, PriceSource]:
+        """REST fallback: fetch mid prices from Hyperliquid for the requested crypto pairs."""
+        if self.running_unit_tests:
+            from data_generator.polygon_data_service import PolygonDataService
+            return {tp: PolygonDataService.DEFAULT_TESTING_FALLBACK_PRICE_SOURCE for tp in trade_pairs}
+
+        crypto_pairs = [tp for tp in trade_pairs if tp.is_crypto and tp not in self.UNSUPPORTED_TRADE_PAIRS]
+        if not crypto_pairs:
+            return {}
+
+        now_ms = TimeUtil.now_in_millis()
+
+        # Use the bulk allMids endpoint first
+        all_mids = self._fetch_all_mids()
+
+        results: dict[TradePair, PriceSource] = {}
+        pairs_needing_book = []
+
+        for tp in crypto_pairs:
+            mid = all_mids.get(tp.base)
+            if mid is not None and mid > 0:
+                results[tp] = PriceSource(
+                    source=f"{HYPERLIQUID_PROVIDER_NAME}_rest",
+                    timespan_ms=0,
+                    open=mid,
+                    close=mid,
+                    vwap=mid,
+                    high=mid,
+                    low=mid,
+                    start_ms=now_ms,
+                    websocket=False,
+                    lag_ms=0,
+                )
+            else:
+                pairs_needing_book.append(tp)
+
+        # Fall back to individual l2Book calls for any coins missing from allMids
+        for tp in pairs_needing_book:
+            book = self._fetch_l2_book(tp.base)
+            if book is None:
+                continue
+            best_bid, best_ask = book
+            mid = (best_bid + best_ask) / 2.0
+            results[tp] = PriceSource(
+                source=f"{HYPERLIQUID_PROVIDER_NAME}_rest",
+                timespan_ms=0,
+                open=mid,
+                close=mid,
+                vwap=mid,
+                high=mid,
+                low=mid,
+                start_ms=now_ms,
+                websocket=False,
+                lag_ms=0,
+                bid=best_bid,
+                ask=best_ask,
+            )
+
+        return results
+
+    def get_close_rest(self, trade_pair: TradePair, timestamp_ms: int) -> PriceSource | None:
+        """Single-pair REST fallback."""
+        results = self.get_closes_rest([trade_pair], timestamp_ms)
+        return results.get(trade_pair)
 
     def instantiate_not_pickleable_objects(self):
         pass

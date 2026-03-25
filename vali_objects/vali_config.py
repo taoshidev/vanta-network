@@ -567,10 +567,20 @@ class TradePair(Enum):
     ADAUSD = ["ADAUSD", "ADA/USD", 0.001, ValiConfig.CRYPTO_MIN_LEVERAGE, ValiConfig.CRYPTO_MAX_LEVERAGE,
                TradePairCategory.CRYPTO, CryptoSubcategory.ALTS]
 
-    # TAO (data-only, not tradeable - used for emissions ledger calculations)
     TAOUSD = ["TAOUSD", "TAO/USD", 0.001, ValiConfig.CRYPTO_MIN_LEVERAGE, ValiConfig.CRYPTO_MAX_LEVERAGE,
               TradePairCategory.CRYPTO, CryptoSubcategory.ALTS]
-
+    HYPEUSD = ["HYPEUSD", "HYPE/USD", 0.001, ValiConfig.CRYPTO_MIN_LEVERAGE, ValiConfig.CRYPTO_MAX_LEVERAGE,
+               TradePairCategory.CRYPTO, CryptoSubcategory.ALTS]
+    ZECUSD = ["ZECUSD", "ZEC/USD", 0.001, ValiConfig.CRYPTO_MIN_LEVERAGE, ValiConfig.CRYPTO_MAX_LEVERAGE,
+              TradePairCategory.CRYPTO, CryptoSubcategory.ALTS]
+    BCHUSD = ["BCHUSD", "BCH/USD", 0.001, ValiConfig.CRYPTO_MIN_LEVERAGE, ValiConfig.CRYPTO_MAX_LEVERAGE,
+              TradePairCategory.CRYPTO, CryptoSubcategory.ALTS]
+    LINKUSD = ["LINKUSD", "LINK/USD", 0.001, ValiConfig.CRYPTO_MIN_LEVERAGE, ValiConfig.CRYPTO_MAX_LEVERAGE,
+               TradePairCategory.CRYPTO, CryptoSubcategory.ALTS]
+    XMRUSD = ["XMRUSD", "XMR/USD", 0.001, ValiConfig.CRYPTO_MIN_LEVERAGE, ValiConfig.CRYPTO_MAX_LEVERAGE,
+              TradePairCategory.CRYPTO, CryptoSubcategory.ALTS]
+    LTCUSD = ["LTCUSD", "LTC/USD", 0.001, ValiConfig.CRYPTO_MIN_LEVERAGE, ValiConfig.CRYPTO_MAX_LEVERAGE,
+              TradePairCategory.CRYPTO, CryptoSubcategory.ALTS]
 
     # forex
     AUDCAD = ["AUDCAD", "AUD/CAD", 0.00007, ValiConfig.FOREX_MIN_LEVERAGE, ValiConfig.FOREX_MAX_LEVERAGE,
@@ -875,4 +885,4 @@ TRADE_PAIR_STR_TO_TRADE_PAIR = {x.trade_pair: x for x in TradePair}
 # Set UNSUPPORTED_TRADE_PAIRS now that TradePair enum is defined
 # These are trade pairs that have no price data available (not just temporarily halted)
 ValiConfig.UNSUPPORTED_TRADE_PAIRS = (TradePair.SPX, TradePair.DJI, TradePair.NDX, TradePair.VIX,
-                                      TradePair.FTSE, TradePair.GDAXI, TradePair.TAOUSD)
+                                      TradePair.FTSE, TradePair.GDAXI)
