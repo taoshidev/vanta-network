@@ -103,7 +103,7 @@ class Validator(ValidatorBase):
 
         self.config = self.get_config()
         self.is_mainnet = self.config.netuid == 8
-        ValiConfig.HL_USE_TESTNET = not self.is_mainnet
+        # ValiConfig.HL_USE_TESTNET = not self.is_mainnet
         # Ensure the directory for logging exists, else create one.
         if not os.path.exists(self.config.full_path):
             os.makedirs(self.config.full_path, exist_ok=True)
