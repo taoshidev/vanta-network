@@ -435,27 +435,7 @@ class ChallengePeriodManager(CacheController):
         """
         return self._drawdown_stats_cache.get(synthetic_hotkey)
 
-    def _reset_drawdown_stats_cache(self, hotkey: str) -> None:
-        """Reset a hotkey's drawdown stats cache to neutral default values.
-
-        Sets equity fields to 1.0 (starting equity), drawdown percentages to 0.0,
-        and thresholds to the challenge-period config defaults.
-        """
-        self._drawdown_stats_cache[hotkey] = {
-            'current_equity': 1.0,
-            'daily_open_equity': 1.0,
-            'eod_hwm': 1.0,
-            'last_eod_equity': 1.0,
-            'intraday_drawdown_pct': 0.0,
-            'eod_drawdown_pct': 0.0,
-            'intraday_drawdown_threshold': ValiConfig.SUBACCOUNT_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD,
-            'eod_drawdown_threshold': ValiConfig.SUBACCOUNT_CHALLENGE_EOD_DRAWDOWN_THRESHOLD,
-            # TODO: remove legacy fields below
-            'subaccount_challenge_intraday_drawdown_threshold': ValiConfig.SUBACCOUNT_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD,
-            'subaccount_challenge_eod_drawdown_threshold': ValiConfig.SUBACCOUNT_CHALLENGE_EOD_DRAWDOWN_THRESHOLD,
-        }
-
-    def _compute_portfolio_return(self, hotkey: str, account: Optional[dict] = None) -> Optional[float]:
+    def _compute_portfolio_return(self, hotkey: str, account: Optional[dict] = None) -> tuple[float, float] | None:
         """Compute current portfolio return as (balance + unrealized_pnl) / account_size.
 
         Returns None if account data is unavailable.
@@ -467,7 +447,12 @@ class ChallengePeriodManager(CacheController):
             return None
         balance = account.get('balance', 0)
         unrealized_pnl = self._position_client.get_unrealized_pnl(hotkey)
-        return (balance + unrealized_pnl) / account_size
+        equity = balance + unrealized_pnl
+
+        equity_ret = equity / account_size
+        balance_ret = balance / account_size
+
+        return equity_ret, balance_ret
 
     # ==================== Evaluation Methods ====================
 
@@ -558,12 +543,12 @@ class ChallengePeriodManager(CacheController):
                 continue
 
             # Compute portfolio return: (balance + unrealized_pnl) / account_size
-            current_return = self._compute_portfolio_return(hotkey, accounts.get(hotkey))
+            current_return, balance_return = self._compute_portfolio_return(hotkey, accounts.get(hotkey))
             if current_return is None:
                 continue
 
             # returns_percentage = current_return - 1.0 (e.g. 1.08 -> 8%)
-            returns_percentage = current_return - 1.0
+            returns_percentage = min(current_return, balance_return) - 1.0
 
             subaccount_asset_class = asset_classes.get(hotkey)
             if subaccount_asset_class is None:
@@ -687,7 +672,7 @@ class ChallengePeriodManager(CacheController):
                 }
                 continue
 
-            current_return = self._compute_portfolio_return(hotkey, accounts.get(hotkey))
+            current_return, _ = self._compute_portfolio_return(hotkey, accounts.get(hotkey))
             if current_return is None:
                 continue
 
@@ -809,7 +794,7 @@ class ChallengePeriodManager(CacheController):
             # Unified check: Drawdown during challenge/probation period
             # NOTE: This is for FAILING the challenge period (FAILED_CHALLENGE_PERIOD_DRAWDOWN)
             # EliminationManager separately handles ongoing 10% max drawdown for all miners
-            current_return = self._compute_portfolio_return(hotkey, accounts.get(hotkey))
+            current_return, _ = self._compute_portfolio_return(hotkey, accounts.get(hotkey))
             account = accounts.get(hotkey, {})
             max_return = account.get('max_return', 1.0)
             if current_return is not None:
