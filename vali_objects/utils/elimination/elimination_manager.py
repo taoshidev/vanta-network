@@ -819,7 +819,7 @@ class EliminationManager(CacheController):
                     if last_order_ms is None or order.processed_ms > last_order_ms:
                         last_order_ms = order.processed_ms
 
-            if last_order_ms is None or (now_ms - last_order_ms) > idle_threshold_ms:
+            if last_order_ms is not None and (now_ms - last_order_ms) > idle_threshold_ms:
                 bt.logging.info(
                     f"Eliminating idle miner {hotkey}. Last order: "
                     f"{last_order_ms}, idle_ms={now_ms - last_order_ms if last_order_ms else 'never traded'}"
