@@ -157,6 +157,7 @@ class DebtLedgerManager():
         if hotkey in self.debt_ledgers:
             del self.debt_ledgers[hotkey]
             bt.logging.info(f"[DEBT_LEDGER] Deleted debt and penalty ledgers for {hotkey}")
+            self.save_to_disk(create_backup=False)
             return True
         return False
 

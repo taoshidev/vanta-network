@@ -1042,6 +1042,7 @@ class PenaltyLedgerManager:
         if miner_hotkey in self.penalty_ledgers:
             del self.penalty_ledgers[miner_hotkey]
             bt.logging.info(f"[PENALTY_LEDGER] Deleted penalty ledger for {miner_hotkey}")
+            self.save_to_disk()
             return True
         return False
 
