@@ -152,6 +152,15 @@ class DebtLedgerServer(RPCServerBase):
         bt.logging.info(f"Complete update cycle finished in {elapsed:.2f}s")
         bt.logging.info("="*80)
 
+        # Run at the next checkpoint aligned time interval + 2*worst case perf ledger checkpoint generation delay
+        now = time.time()
+        checkpoint_duration_s = ValiConfig.TARGET_CHECKPOINT_DURATION_MS // 1000
+        perf_ledger_interval_s = ValiConfig.PERF_LEDGER_REFRESH_TIME_MS // 1000
+        next_checkpoint_timestamp_s = (int(now) // checkpoint_duration_s + 1) * checkpoint_duration_s + 2*perf_ledger_interval_s
+        self.daemon_interval_s = next_checkpoint_timestamp_s - now
+
+        bt.logging.info(f"DebtLedger daemon next iteration in {self.daemon_interval_s} seconds")
+
     # ========================================================================
     # RPC METHODS (delegate to manager)
     # ========================================================================
