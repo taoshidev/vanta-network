@@ -18,9 +18,9 @@ holidays == 0.67
 Flask-Compress == 1.17
 google-cloud-secret-manager==2.21.1
 websockets==16.0
-python-socks>=2.7.1
-PySocks>=1.7.1
-PySocks>=1.7.1
-web3>=6.15.0
+python-socks==2.7.1
+PySocks==1.7.1
+PySocks==1.7.1
+web3==6.15.0
 git+https://github.com/taoshidev/collateral_sdk.git@1.0.7#egg=collateral_sdk
 git+https://github.com/taoshidev/vanta-cli.git@2.0.3#egg=vanta-cli

@@ -39,10 +39,6 @@ class MinerConfig:
 
     # USDC Payment Configuration (Base chain)
     USDC_CONTRACT_ADDRESS_BASE = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
-    BASE_CHAIN_ID = 8453
-    BASE_DEFAULT_RPC = "https://mainnet.base.org"
-    USDC_DECIMALS = 6
-    PAYMENT_LEDGER_FILE = "mining/payment_ledger.json"
     PAYMENT_MIN_USDC_AMOUNT = 1.0
     PAYMENT_GAS_BUFFER_MULTIPLIER = 1.2
     PAYMENT_CONFIRMATION_TIMEOUT_S = 120

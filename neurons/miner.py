@@ -130,59 +130,70 @@ class Miner:
         mothership_hotkey = ValiConfig.MOTHERSHIP_HOTKEY_TESTNET if self.is_testnet else ValiConfig.MOTHERSHIP_HOTKEY
         bt.logging.info(f"Mothership hotkey {mothership_hotkey} in validator list: {mothership_hotkey in validator_hotkeys}")
 
-        # Start REST API server (for synchronous order submission)
-        if not running_unit_tests:
-            bt.logging.info("Starting Miner REST API server...")
-            self.api_manager = MinerAPIManager(
-                prop_net_order_placer=self.prop_net_order_placer,
-                miner_hotkey=self.wallet.hotkey.ss58_address,
-                api_host=getattr(self.config, 'api_host', '0.0.0.0'),
-                api_rest_port=getattr(self.config, 'api_rest_port', 8088),
-                slack_notifier=self.slack_notifier
-            )
-
-            self.api_thread = threading.Thread(target=self.api_manager.run, daemon=True)
-            self.api_thread.start()
-
-            # Give the API server a moment to start
-            time.sleep(0.5)
-
-            # Verify thread is alive
-            if not self.api_thread.is_alive():
-                error_msg = "API server thread failed to start"
-                bt.logging.error(error_msg)
-                self.slack_notifier.send_message(f"❌ {error_msg}", level="error")
-                raise RuntimeError(error_msg)
-
-            bt.logging.success(f"Miner REST API server started on http://{getattr(self.config, 'api_host', '0.0.0.0')}:{getattr(self.config, 'api_rest_port', 8088)}")
-            self.slack_notifier.send_message(
-                f"🌐 REST API enabled on port {getattr(self.config, 'api_rest_port', 8088)}",
-                level="info"
-            )
-        else:
-            self.api_manager = None
-            self.api_thread = None
-
-        # Start Entity Miner Gateway (optional, enabled with --entity-miner)
+        # Start REST API server(s).
+        # In entity-miner mode, only start the EntityMinerAPIManager and bind it to
+        # the same consumer-facing port as the standard miner REST API.
+        self.api_manager = None
+        self.api_thread = None
         self.entity_api_manager = None
         self.entity_api_thread = None
-        if not running_unit_tests and getattr(self.config, 'entity_miner', False):
-            bt.logging.info("Starting Entity Miner Gateway...")
-            entity_port = getattr(self.config, 'entity_api_port', 8089)
-            self.entity_api_manager = EntityMinerAPIManager(
-                api_host=getattr(self.config, 'api_host', '0.0.0.0'),
-                api_port=entity_port,
-                slack_notifier=self.slack_notifier
-            )
-            self.entity_api_thread = threading.Thread(
-                target=self.entity_api_manager.run, daemon=True
-            )
-            self.entity_api_thread.start()
-            time.sleep(0.5)
-            if self.entity_api_thread.is_alive():
-                bt.logging.success(f"Entity Miner Gateway started on port {entity_port}")
+        if not running_unit_tests:
+            api_host = getattr(self.config, 'api_host', '0.0.0.0')
+            api_rest_port = getattr(self.config, 'api_rest_port', 8088)
+            is_entity_miner = getattr(self.config, 'entity_miner', False)
+
+            if is_entity_miner:
+                bt.logging.info("Starting Entity Miner Gateway...")
+                self.entity_api_manager = EntityMinerAPIManager(
+                    api_host=api_host,
+                    api_port=api_rest_port,
+                    slack_notifier=self.slack_notifier,
+                    prop_net_order_placer=self.prop_net_order_placer
+                )
+                self.entity_api_thread = threading.Thread(
+                    target=self.entity_api_manager.run, daemon=True
+                )
+                self.entity_api_thread.start()
+                time.sleep(0.5)
+                if self.entity_api_thread.is_alive():
+                    bt.logging.success(f"Entity Miner Gateway started on port {api_rest_port}")
+                    self.slack_notifier.send_message(
+                        f"🌐 Entity Miner Gateway enabled on port {api_rest_port}",
+                        level="info"
+                    )
+                else:
+                    error_msg = "Entity Miner Gateway thread failed to start"
+                    bt.logging.error(error_msg)
+                    self.slack_notifier.send_message(f"❌ {error_msg}", level="error")
+                    raise RuntimeError(error_msg)
             else:
-                bt.logging.error("Entity Miner Gateway thread failed to start")
+                bt.logging.info("Starting Miner REST API server...")
+                self.api_manager = MinerAPIManager(
+                    prop_net_order_placer=self.prop_net_order_placer,
+                    miner_hotkey=self.wallet.hotkey.ss58_address,
+                    api_host=api_host,
+                    api_rest_port=api_rest_port,
+                    slack_notifier=self.slack_notifier
+                )
+
+                self.api_thread = threading.Thread(target=self.api_manager.run, daemon=True)
+                self.api_thread.start()
+
+                # Give the API server a moment to start
+                time.sleep(0.5)
+
+                # Verify thread is alive
+                if not self.api_thread.is_alive():
+                    error_msg = "API server thread failed to start"
+                    bt.logging.error(error_msg)
+                    self.slack_notifier.send_message(f"❌ {error_msg}", level="error")
+                    raise RuntimeError(error_msg)
+
+                bt.logging.success(f"Miner REST API server started on http://{api_host}:{api_rest_port}")
+                self.slack_notifier.send_message(
+                    f"🌐 REST API enabled on port {api_rest_port}",
+                    level="info"
+                )
 
         # Send startup notification with hotkey and IP
         self.slack_notifier.send_message(
@@ -324,12 +335,6 @@ class Miner:
             '--entity-miner',
             action='store_true',
             help='Enable Entity Miner Gateway for HL rejection notifications and dashboard proxy'
-        )
-        parser.add_argument(
-            '--entity-api-port',
-            type=int,
-            default=8089,
-            help='Port for the Entity Miner Gateway REST server (default: 8089)'
         )
 
         # Parse the config (will take command-line arguments if provided)
