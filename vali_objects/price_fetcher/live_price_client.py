@@ -136,6 +136,10 @@ class LivePriceFetcherClient(RPCClientBase):
     def get_stock_splits(self, time_ms: int) -> dict[str, float]:
         return self._server.get_stock_splits(time_ms)
 
+    def calculate_hl_slippage(self, trade_pair: TradePair, size_usd: float, is_buy: bool):
+        """Calculate slippage from Hyperliquid L2 orderbook for a crypto trade pair."""
+        return self._server.calculate_hl_slippage(trade_pair, size_usd, is_buy)
+
     def set_test_price_source(self, trade_pair: TradePair, price_source: PriceSource) -> None:
         """Set test price source for a specific trade pair (test-only)."""
         return self._server.set_test_price_source(trade_pair, price_source)

@@ -417,6 +417,13 @@ class TimeUtil:
         # standard is 1 day
         return 60000 * 60 * hours * 1 * 1
 
+    @staticmethod
+    def ms_to_next_hour(t_ms: int) -> int:
+        """Return ms remaining until the next full UTC hour boundary."""
+        dt = TimeUtil.millis_to_timestamp(t_ms, change_timezone=False)
+        next_hour = dt.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+        return int((next_hour - dt).total_seconds() * 1000)
+
 
     @staticmethod
     def ms_at_start_of_day(dt: datetime) -> int:

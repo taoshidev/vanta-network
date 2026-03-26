@@ -10,6 +10,7 @@ import requests
 import websockets
 
 from data_generator.base_data_service import BaseDataService, HYPERLIQUID_PROVIDER_NAME
+from entity_management.hl_orderbook_utils import simulate_fill
 from time_util.time_util import TimeUtil
 from vali_objects.vali_config import TradePair, TradePairCategory
 from vali_objects.vali_dataclasses.price_source import PriceSource
@@ -102,6 +103,10 @@ class HyperliquidDataService(BaseDataService):
             if tp.is_crypto and tp not in self.UNSUPPORTED_TRADE_PAIRS:
                 self._coin_to_trade_pair[tp.base] = tp
 
+        # Cache full L2 orderbook levels per coin for slippage calculation
+        # Key: coin name (e.g. "BTC"), Value: {"bids": [...], "asks": [...], "time": timestamp_ms}
+        self._orderbooks: dict[str, dict] = {}
+
         if disable_ws:
             self.websocket_manager_thread = None
         else:
@@ -171,6 +176,13 @@ class HyperliquidDataService(BaseDataService):
             self.trade_pair_to_recent_events[symbol].add_event(
                 ps, False, f"{self.provider_name}:{tp.trade_pair}"
             )
+
+            # Cache full orderbook levels for slippage calculation
+            self._orderbooks[coin] = {
+                "bids": levels[0],
+                "asks": levels[1],
+                "time": timestamp_ms,
+            }
 
             self.tpc_to_n_events[TradePairCategory.CRYPTO] += 1
             self.tpc_to_last_event_time[TradePairCategory.CRYPTO] = time.time()
@@ -278,6 +290,53 @@ class HyperliquidDataService(BaseDataService):
             )
 
         return results
+
+    def calculate_slippage(self, trade_pair: TradePair, size_usd: float, is_buy: bool) -> float | None:
+        """Calculate slippage percentage by walking the cached L2 orderbook.
+
+        Args:
+            trade_pair: The trade pair to calculate slippage for.
+            size_usd: The order size in USD.
+            is_buy: True for buy (LONG) orders, False for sell (SHORT) orders.
+
+        Returns:
+            Slippage as a fraction (e.g. 0.001 for 0.1%), or None if no orderbook data.
+        """
+        coin = trade_pair.base
+        book = self._orderbooks.get(coin)
+        if not book:
+            return None
+
+        levels = book["asks"] if is_buy else book["bids"]
+        if not levels:
+            return None
+
+        # Get mid price from best bid/ask
+        bids = book.get("bids", [])
+        asks = book.get("asks", [])
+        if not bids or not asks:
+            return None
+
+        best_bid = float(bids[0]["px"])
+        best_ask = float(asks[0]["px"])
+        mid = (best_bid + best_ask) / 2.0
+
+        fills, _ = simulate_fill(levels, size_usd, unit="usd")
+        if not fills:
+            return None
+
+        total_coins = sum(f[1] for f in fills)
+        total_usd = sum(f[2] for f in fills)
+        if total_coins <= 0:
+            return None
+
+        avg_price = total_usd / total_coins
+        if is_buy:
+            slippage_pct = (avg_price - mid) / mid
+        else:
+            slippage_pct = (mid - avg_price) / mid
+
+        return max(0.0, slippage_pct)
 
     def get_close_rest(self, trade_pair: TradePair, timestamp_ms: int) -> PriceSource | None:
         """Single-pair REST fallback."""
