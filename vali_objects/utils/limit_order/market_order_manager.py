@@ -258,18 +258,9 @@ class MarketOrderManager():
         if hl_slippage is not None:
             # Use pre-computed L2 orderbook slippage (from HL entity miner signals)
             order.slippage = hl_slippage
-        elif trade_pair.is_crypto:
-            # For all crypto orders, try Hyperliquid L2 orderbook slippage first
-            is_buy = signal_order_type != OrderType.SHORT
-            size_usd = abs(value) if value else abs(leverage) * existing_position.account_size
-            hl_slip = self._live_price_client.calculate_hl_slippage(trade_pair, size_usd, is_buy)
-            if hl_slip is not None:
-                order.slippage = hl_slip
-                bt.logging.info(f"[ADD_ORDER_DETAIL] Using Hyperliquid L2 orderbook slippage: {hl_slip:.6f}")
-            else:
-                order.slippage = PriceSlippageModel.calculate_slippage(order.bid, order.ask, order, existing_position.account_size)
-                bt.logging.info(f"[ADD_ORDER_DETAIL] HL orderbook unavailable, using PriceSlippageModel fallback")
         else:
+            # PriceSlippageModel handles HL orderbook simulation for crypto internally,
+            # falling back to the existing model when orderbook data is unavailable
             order.slippage = PriceSlippageModel.calculate_slippage(order.bid, order.ask, order, existing_position.account_size)
         if is_hl_taker is not None:
             order.is_hl_taker = is_hl_taker

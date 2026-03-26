@@ -85,10 +85,31 @@ class PriceSlippageModel:
         elif trade_pair.is_forex:
             slippage_percentage = cls.calc_slippage_forex(bid, ask, order)
         elif trade_pair.is_crypto:
-            slippage_percentage = cls.calc_slippage_crypto(order, capital)
+            # Try Hyperliquid L2 orderbook simulation first
+            hl_slippage = cls._simulate_slippage_hl(order)
+            if hl_slippage is not None:
+                slippage_percentage = hl_slippage
+            else:
+                slippage_percentage = cls.calc_slippage_crypto(order, capital)
         else:
             raise ValueError(f"Invalid trade pair {trade_pair.trade_pair_id} to calculate slippage")
         return float(np.clip(slippage_percentage, 0.0, 0.03))
+
+    @classmethod
+    def _simulate_slippage_hl(cls, order: Order) -> float | None:
+        """Try to compute slippage via Hyperliquid L2 orderbook simulation.
+
+        Returns slippage as a fraction, or None if the orderbook is unavailable.
+        """
+        if cls.live_price_fetcher is None:
+            return None
+        try:
+            is_buy = order.leverage > 0  # Longs fill against asks, shorts against bids
+            size_usd = abs(order.value)
+            return cls.live_price_fetcher.simulate_slippage(order.trade_pair, size_usd, is_buy)
+        except Exception as e:
+            bt.logging.warning(f"[SLIPPAGE] HL simulate_slippage failed for {order.trade_pair.trade_pair_id}: {e}")
+            return None
 
     @classmethod
     def calc_slippage_equities(cls, bid:float, ask:float, order:Order) -> float:

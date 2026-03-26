@@ -46,7 +46,7 @@ class _HyperliquidWebsocketClient:
             for tp in trade_pairs:
                 subscribe_msg = {
                     "method": "subscribe",
-                    "subscription": {"type": "l2Book", "coin": tp.base}
+                    "subscription": {"type": "l2Book", "coin": tp.base, "nSigFigs": 2}
                 }
                 await self._ws.send(json.dumps(subscribe_msg))
 
@@ -291,27 +291,33 @@ class HyperliquidDataService(BaseDataService):
 
         return results
 
-    def calculate_slippage(self, trade_pair: TradePair, size_usd: float, is_buy: bool) -> float | None:
-        """Calculate slippage percentage by walking the cached L2 orderbook.
+    def simulate_slippage(self, trade_pair: TradePair, size_usd: float, is_buy: bool) -> float | None:
+        """Simulate slippage by walking the cached L2 orderbook.
+
+        Longs fill against asks, shorts fill against bids. If the order size
+        exceeds the book depth, the remaining size is filled at the last
+        available price.
 
         Args:
             trade_pair: The trade pair to calculate slippage for.
             size_usd: The order size in USD.
-            is_buy: True for buy (LONG) orders, False for sell (SHORT) orders.
+            is_buy: True for LONG orders (fill against asks),
+                     False for SHORT orders (fill against bids).
 
         Returns:
-            Slippage as a fraction (e.g. 0.001 for 0.1%), or None if no orderbook data.
+            Slippage as a fraction (e.g. 0.001 for 0.1%), or None if no
+            orderbook data is available.
         """
         coin = trade_pair.base
         book = self._orderbooks.get(coin)
         if not book:
             return None
 
+        # Longs fill against asks, shorts fill against bids
         levels = book["asks"] if is_buy else book["bids"]
         if not levels:
             return None
 
-        # Get mid price from best bid/ask
         bids = book.get("bids", [])
         asks = book.get("asks", [])
         if not bids or not asks:
@@ -321,7 +327,18 @@ class HyperliquidDataService(BaseDataService):
         best_ask = float(asks[0]["px"])
         mid = (best_bid + best_ask) / 2.0
 
-        fills, _ = simulate_fill(levels, size_usd, unit="usd")
+        fills, remaining = simulate_fill(levels, size_usd, unit="usd")
+
+        # If order exceeds book depth, fill remaining at the last book price
+        if remaining > 0:
+            last_px = float(levels[-1]["px"]) if levels else mid
+            extra_coins = remaining / last_px
+            fills.append((last_px, extra_coins, remaining))
+            bt.logging.warning(
+                f"[HL_SLIPPAGE] Order for {coin} exceeds L2 book depth: "
+                f"${remaining:.2f} of ${size_usd:.2f} filled at last price {last_px}"
+            )
+
         if not fills:
             return None
 
