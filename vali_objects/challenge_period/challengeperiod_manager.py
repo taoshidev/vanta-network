@@ -1511,17 +1511,14 @@ class ChallengePeriodManager(CacheController):
 
         if is_new:
             self.active_miners[hotkey] = [new_entry]
-            bucket_changed = True
         else:
             history = self.active_miners[hotkey]
-            if history[0].bucket != bucket:
-                # Bucket changed — prepend new entry, keeping full history
-                history.insert(0, new_entry)
-                bucket_changed = True
-            else:
+            if replace_bucket or history[0].bucket == bucket:
                 # Same bucket — update in place
                 history[0] = new_entry
-                bucket_changed = False
+            else:
+                # Bucket changed — prepend new entry, keeping full history
+                history.insert(0, new_entry)
 
         # Push bucket to MinerAccount
         try:
@@ -1530,7 +1527,7 @@ class ChallengePeriodManager(CacheController):
             bt.logging.warning(f"Failed to push miner_bucket to MinerAccount for {hotkey}: {e}")
 
         # Broadcast dashboard update for synthetic hotkeys when bucket changes
-        if bucket_changed and is_synthetic_hotkey(hotkey):
+        if is_synthetic_hotkey(hotkey):
             try:
                 self._entity_client.broadcast_subaccount_dashboard(hotkey)
             except Exception as e:

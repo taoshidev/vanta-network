@@ -1212,6 +1212,13 @@ class EntityManager(ValidatorBroadcastBase):
         except Exception as e:
             bt.logging.error(f"[ENTITY_MANAGER] Elimination data unavailable for {synthetic_hotkey}: {e}")
 
+        # Drawdown stats (synthetic hotkeys only)
+        drawdown_data = None
+        try:
+            drawdown_data = self._challenge_period_client.get_drawdown_stats(synthetic_hotkey)
+        except Exception as e:
+            bt.logging.debug(f"[ENTITY_MANAGER] Drawdown stats unavailable for {synthetic_hotkey}: {e}")
+
         # 3. Build aggregated response
         subaccount_info_dict = {
             'synthetic_hotkey': synthetic_hotkey,

@@ -2072,6 +2072,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         daily_returns_time_ms = int(query_args.get("daily_returns_time_ms", 0))
 
         add_to_dashboard("challenge_period", self._challenge_period_client.get_dashboard)
+        add_to_dashboard("drawdown", self._challenge_period_client.get_drawdown_stats)
         add_to_dashboard("elimination", self._elimination_client.get_dashboard)
         add_to_dashboard("account_size_data", self._miner_account_client.get_dashboard)
         add_to_dashboard("positions", self._position_client.get_dashboard, positions_time_ms)
