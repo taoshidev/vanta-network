@@ -153,6 +153,24 @@ class DebtLedgerClient(RPCClientBase):
             bt.logging.debug(f"DebtLedgerClient: Health check failed: {e}")
             return None
 
+    def delete_debt_ledger(self, hotkey: str) -> bool:
+        """
+        Delete the debt ledger for a specific hotkey.
+
+        Called on subaccount promotion so the funded period starts with a clean ledger.
+
+        Args:
+            hotkey: The miner's hotkey
+
+        Returns:
+            True if deleted, False if not found or on error
+        """
+        try:
+            return self._server.delete_debt_ledger_rpc(hotkey)
+        except Exception as e:
+            bt.logging.debug(f"DebtLedgerClient: Delete debt ledger failed: {e}")
+            return False
+
     def build_debt_ledgers(self, verbose: bool = False, delta_update: bool = True):
         """
         Build or update debt ledgers (RPC method for testing/manual use).

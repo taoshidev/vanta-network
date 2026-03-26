@@ -141,6 +141,25 @@ class DebtLedgerManager():
         """
         return self.debt_ledgers
 
+    def delete_ledger(self, hotkey: str) -> bool:
+        """
+        Delete the debt and penalty ledgers for a specific hotkey.
+
+        Called on subaccount promotion so the funded period starts with clean ledgers.
+
+        Args:
+            hotkey: The miner's hotkey
+
+        Returns:
+            True if the debt ledger was deleted, False if it did not exist
+        """
+        self.penalty_ledger_manager.delete_penalty_ledger(hotkey)
+        if hotkey in self.debt_ledgers:
+            del self.debt_ledgers[hotkey]
+            bt.logging.info(f"[DEBT_LEDGER] Deleted debt and penalty ledgers for {hotkey}")
+            return True
+        return False
+
     def get_dashboard(self, hotkey: str, checkpoints_time_ms: int) -> dict | None:
         dashboard: dict | None = None
         snapshot_time_ms = checkpoints_time_ms

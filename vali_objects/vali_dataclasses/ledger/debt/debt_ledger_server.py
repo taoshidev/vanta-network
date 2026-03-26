@@ -132,7 +132,7 @@ class DebtLedgerServer(RPCServerBase):
         # Step 1: Update penalty ledgers
         bt.logging.info("Step 1/3: Updating penalty ledgers...")
         penalty_start = time.time()
-        self._manager.penalty_ledger_manager.build_penalty_ledgers(delta_update=True)
+        self._manager.penalty_ledger_manager.build_penalty_ledgers(delta_update=False)
         bt.logging.info(f"Penalty ledgers updated in {time.time() - penalty_start:.2f}s")
 
         # Step 2: Update emissions ledgers
@@ -318,6 +318,20 @@ class DebtLedgerServer(RPCServerBase):
             delta_update: If True, only process new checkpoints. If False, rebuild from scratch.
         """
         return self._manager.build_debt_ledgers(verbose=verbose, delta_update=delta_update)
+
+    def delete_debt_ledger_rpc(self, hotkey: str) -> bool:
+        """
+        Delete the debt ledger for a specific hotkey (RPC method).
+
+        Called on subaccount promotion so the funded period starts with a clean ledger.
+
+        Args:
+            hotkey: The miner's hotkey
+
+        Returns:
+            True if deleted, False if not found
+        """
+        return self._manager.delete_ledger(hotkey)
 
     def build_debt_ledgers_rpc(self, verbose: bool = False, delta_update: bool = True):
         """
