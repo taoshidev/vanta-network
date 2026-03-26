@@ -232,6 +232,9 @@ class ValiConfig:
     RPC_ENTITY_PORT = 50024
     RPC_ENTITY_SERVICE_NAME = "EntityServer"
 
+    RPC_HL_FUNDING_PORT = 50025
+    RPC_HL_FUNDING_SERVICE_NAME = "HLFundingRateServer"
+
     # Public API Configuration (well-known network endpoints)
     REST_API_HOST = "127.0.0.1"
     REST_API_PORT = 48888
@@ -324,10 +327,6 @@ class ValiConfig:
     EQUITIES_MAX_LEVERAGE = 2
     COMMODITIES_MIN_LEVERAGE = 0.1
     COMMODITIES_MAX_LEVERAGE = 4
-
-    # Minimum position size limits
-    FOREX_MIN_POSITION_SIZE_LOTS = 0.01  # 0.01 standard lots
-    CRYPTO_MIN_POSITION_SIZE_USD = 10.0  # $10 USD
 
     # Minimum position size limits
     FOREX_MIN_POSITION_SIZE_LOTS = 0.01  # 0.01 standard lots
@@ -521,9 +520,10 @@ class ValiConfig:
     HL_USE_TESTNET = False  # Set to True to use Hyperliquid testnet endpoints
     HL_MAINNET_WS = "wss://api.hyperliquid.xyz/ws"
     HL_MAINNET_INFO = "https://api.hyperliquid.xyz/info"
+    HL_MAINNET_HOST = "api.hyperliquid.xyz"
+
     HL_TESTNET_WS = "wss://api.hyperliquid-testnet.xyz/ws"
     HL_TESTNET_INFO = "https://api.hyperliquid-testnet.xyz/info"
-    HL_MAINNET_HOST = "api.hyperliquid.xyz"
     HL_TESTNET_HOST = "api.hyperliquid-testnet.xyz"
 
     @classmethod
@@ -537,6 +537,7 @@ class ValiConfig:
     @classmethod
     def hl_host(cls) -> str:
         return cls.HL_TESTNET_HOST if cls.HL_USE_TESTNET else cls.HL_MAINNET_HOST
+
     HL_MAX_TRACKED_ADDRESSES_PER_IP = 10  # HL WebSocket limit: 10 unique users per IP
     HL_MAX_TRACKED_ADDRESSES = HL_MAX_TRACKED_ADDRESSES_PER_IP  # backward compat alias
     HL_WS_HEARTBEAT_INTERVAL_S = 30.0
@@ -574,8 +575,6 @@ class ValiConfig:
     HL_MAKER_FEE = 0.00015    # 0.015%
 
     # HL Funding Rate Service
-    RPC_HL_FUNDING_PORT = 50025
-    RPC_HL_FUNDING_SERVICE_NAME = "HLFundingRateServer"
     HL_FUNDING_DAEMON_INTERVAL_S = 300
     HL_FUNDING_BACKFILL_HOURS = 4
 

@@ -160,8 +160,6 @@ The Hyperliquid WebSocket API limits tracking to 10 unique user addresses per IP
 Add the following to your `secrets.json`:
 ```json
 {
-  "polygon_apikey": "YOUR_POLYGON_API_KEY",
-  "tiingo_apikey": "YOUR_TIINGO_API_KEY",
   "hl_proxy_url": "socks5://USERNAME:PASSWORD@dc.decodo.com",
   "hl_proxy_ports": "10001-10010"
 }

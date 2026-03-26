@@ -1296,10 +1296,6 @@ class ChallengePeriodManager(CacheController):
                 bt.logging.info(f"[CP_DEBUG] Eliminating {hotkey} from bucket {bucket.value}")
                 self.remove_miner(hotkey)
 
-                # Broadcast dashboard update for synthetic hotkeys
-                if is_synthetic_hotkey(hotkey):
-                    self._entity_client.broadcast_subaccount_dashboard(hotkey)
-
                 # Verify deletion
                 if not self.has_miner(hotkey):
                     bt.logging.info(f"[CP_DEBUG] ✓ Verified {hotkey} was removed from active_miners")
@@ -1525,13 +1521,6 @@ class ChallengePeriodManager(CacheController):
             self._miner_account_client.set_miner_bucket(hotkey, bucket)
         except Exception as e:
             bt.logging.warning(f"Failed to push miner_bucket to MinerAccount for {hotkey}: {e}")
-
-        # Broadcast dashboard update for synthetic hotkeys when bucket changes
-        if is_synthetic_hotkey(hotkey):
-            try:
-                self._entity_client.broadcast_subaccount_dashboard(hotkey)
-            except Exception as e:
-                bt.logging.debug(f"Failed to broadcast dashboard for {hotkey}: {e}")
 
         return is_new
 
