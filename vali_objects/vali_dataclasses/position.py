@@ -397,6 +397,7 @@ class Position(BaseModel):
             "r": self.current_return,
             "ap": self.average_entry_price,
             "rp": self.realized_pnl,
+            "up": self.unrealized_pnl,
         }
 
         if self.net_leverage:
@@ -442,16 +443,15 @@ class Position(BaseModel):
         return not self.is_closed_position
 
     def add_unfilled_order(self, order_dict: dict) -> None:
-        """Add or update an unfilled bracket order dict on this position."""
-        order_uuid = order_dict.get('order_uuid')
-        if order_uuid:
-            self.unfilled_orders = [o for o in self.unfilled_orders if o.get('order_uuid') != order_uuid]
-            self.unfilled_orders.append(order_dict)
+        """Add an unfilled bracket order dict to this position."""
+        existing_uuids = {o.order_uuid for o in self.unfilled_orders}
+        if order_dict.get('order_uuid') not in existing_uuids:
+            self.unfilled_orders.append(Order.from_dict(order_dict))
 
     def remove_unfilled_order(self, order_uuid: str) -> bool:
         """Remove an unfilled order by UUID. Returns True if found."""
-        for i, order_dict in enumerate(self.unfilled_orders):
-            if order_dict.get('order_uuid') == order_uuid:
+        for i, order in enumerate(self.unfilled_orders):
+            if order.order_uuid == order_uuid:
                 self.unfilled_orders.pop(i)
                 return True
         return False
