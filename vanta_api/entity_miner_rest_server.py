@@ -965,6 +965,7 @@ class EntityMinerRestServer(MinerRestServer):
         {
             "hl_address": "0x...",          // Required, 0x + 40 hex chars
             "account_size": float,           // Required, must be > 0
+            "asset_class": str,              // Optional, default "crypto"
             "payout_address": "0x...",       // Optional, EVM address (0x + 40 hex) for USDC payouts
             "admin": bool                    // Optional, default false
         }
@@ -997,6 +998,7 @@ class EntityMinerRestServer(MinerRestServer):
                 return jsonify({'status': 'error', 'message': 'Missing required field: account_size'}), 400
 
             hl_address = request_data["hl_address"]
+            asset_class = request_data.get("asset_class", "crypto")
             admin = request_data.get("admin", False)
             payout_address = request_data.get("payout_address")
 
@@ -1050,6 +1052,7 @@ class EntityMinerRestServer(MinerRestServer):
             message_dict = {
                 "account_size": account_size,
                 "admin": admin,
+                "asset_class": asset_class,
                 "entity_coldkey": self._coldkey.ss58_address,
                 "entity_hotkey": self._hotkey.ss58_address,
                 "hl_address": hl_address
@@ -1068,6 +1071,7 @@ class EntityMinerRestServer(MinerRestServer):
                 "entity_hotkey": self._hotkey.ss58_address,
                 "entity_coldkey": self._coldkey.ss58_address,
                 "account_size": account_size,
+                "asset_class": asset_class,
                 "hl_address": hl_address,
                 "admin": admin,
                 "signature": signature,

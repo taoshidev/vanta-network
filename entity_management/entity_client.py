@@ -114,6 +114,7 @@ class EntityClient(RPCClientBase):
         entity_hotkey: str,
         account_size: float,
         hl_address: str,
+        asset_class: str = "crypto",
         admin: bool = False,
         payout_address: Optional[str] = None
     ) -> Tuple[bool, Optional[dict], str]:
@@ -124,13 +125,14 @@ class EntityClient(RPCClientBase):
             entity_hotkey: The VANTA_ENTITY_HOTKEY
             account_size: Account size in USD
             hl_address: Hyperliquid address (0x-prefixed, 40 hex chars)
+            asset_class: Asset class selection (default: "crypto")
             admin: If True, skip collateral slashing
             payout_address: Optional EVM address (0x + 40 hex) for USDC payouts
 
         Returns:
             (success: bool, subaccount_info_dict: Optional[dict], message: str)
         """
-        return self._server.create_hl_subaccount_rpc(entity_hotkey, account_size, hl_address, admin=admin, payout_address=payout_address)
+        return self._server.create_hl_subaccount_rpc(entity_hotkey, account_size, hl_address, asset_class=asset_class, admin=admin, payout_address=payout_address)
 
     def get_all_active_hl_subaccounts(self) -> List[Tuple[str, dict]]:
         """

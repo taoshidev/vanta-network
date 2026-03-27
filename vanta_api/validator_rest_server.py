@@ -1620,6 +1620,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             entity_hotkey = data['entity_hotkey']
             account_size = data['account_size']
             hl_address = data['hl_address']
+            asset_class = data.get('asset_class', 'crypto')
             admin = data.get('admin', False)
             payout_address = data.get('payout_address')
 
@@ -1644,11 +1645,12 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 if not isinstance(payout_address, str) or not re.match(ValiConfig.HL_ADDRESS_REGEX, payout_address):
                     return jsonify({'error': 'payout_address must be a valid EVM address (0x followed by 40 hex characters)'}), 400
 
-            # Verify signature (message includes hl_address instead of asset_class, and payout_address if provided)
+            # Verify signature
             keypair = Keypair(ss58_address=entity_coldkey)
             sig_message_dict = {
                 "account_size": account_size,
                 "admin": admin,
+                "asset_class": asset_class,
                 "entity_coldkey": entity_coldkey,
                 "entity_hotkey": entity_hotkey,
                 "hl_address": hl_address
@@ -1668,7 +1670,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
             # Create HL subaccount via RPC
             success, subaccount_info, message = self._entity_client.create_hl_subaccount(
-                entity_hotkey, account_size, hl_address, admin=admin, payout_address=payout_address
+                entity_hotkey, account_size, hl_address, asset_class=asset_class, admin=admin, payout_address=payout_address
             )
 
             if success:

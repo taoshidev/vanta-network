@@ -650,6 +650,7 @@ class EntityManager(ValidatorBroadcastBase):
         entity_hotkey: str,
         account_size: float,
         hl_address: str,
+        asset_class: str = "crypto",
         admin: bool = False,
         payout_address: Optional[str] = None
     ) -> Tuple[bool, Optional[SubaccountInfo], str]:
@@ -663,6 +664,7 @@ class EntityManager(ValidatorBroadcastBase):
             entity_hotkey: The VANTA_ENTITY_HOTKEY
             account_size: Account size in USD
             hl_address: Hyperliquid address (0x-prefixed, 40 hex chars)
+            asset_class: Asset class selection (default: "crypto")
             admin: If True, skip collateral slashing
             payout_address: Optional EVM address for payouts (0x-prefixed, 40 hex chars)
 
@@ -696,7 +698,7 @@ class EntityManager(ValidatorBroadcastBase):
 
         # Delegate to standard create_subaccount for all existing validation
         success, subaccount_info, message = self.create_subaccount(
-            entity_hotkey, account_size, "crypto", admin=admin
+            entity_hotkey, account_size, asset_class, admin=admin
         )
 
         if not success:
