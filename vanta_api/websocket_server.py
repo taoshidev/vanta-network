@@ -55,7 +55,7 @@ class DashboardSubscription:
     checkpoints_time_ms: int = 0
     daily_returns_time_ms: int = 0
     last_update_time_ms: int = 0
-    lock = Lock()
+    lock: Lock = field(default_factory=Lock)
 
     @staticmethod
     def _get_subkey(branch: dict, subkeys: list[str], default=None):
