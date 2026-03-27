@@ -1904,13 +1904,13 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
     def get_hl_trader(self, hl_address: str):
         """
         Public endpoint — no authentication required.
-        Looks up a Hyperliquid trader by their HL address and returns
-        their positions, drawdown, funded account size, and payout info.
+        Resolves a Hyperliquid address to its synthetic hotkey and returns the
+        full subaccount dashboard. subaccount_info includes hl_address and
+        payout_address for HL subaccounts.
 
         Example:
         curl http://localhost:48888/hl-traders/0xabcd1234...
         """
-        # Check if entity client is available
         if not self._entity_client:
             return jsonify({'error': 'Entity management not available'}), 503
 
@@ -1924,121 +1924,42 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         if not synthetic_hotkey:
             return jsonify({'status': 'error', 'message': 'HL address not found'}), 404
 
-        # Re-use existing dashboard aggregation (same logic as /entity/subaccount/<hotkey>)
         try:
-            dashboard = self._entity_client.get_subaccount_dashboard_data(synthetic_hotkey)
+            subaccount_info = self._entity_client.get_subaccount_dashboard(synthetic_hotkey)
+            if subaccount_info is None:
+                return jsonify({'status': 'error', 'message': 'Trader data not available'}), 404
         except Exception as e:
-            bt.logging.error(f"get_hl_trader: dashboard failed for {synthetic_hotkey}: {e}")
+            bt.logging.error(f"get_hl_trader: subaccount lookup failed for {synthetic_hotkey}: {e}")
             return jsonify({'status': 'error', 'message': 'Internal error'}), 500
 
-        if dashboard is None:
-            return jsonify({'status': 'error', 'message': 'Trader data not available'}), 404
+        ## TODO: update below when merging websocket v2
+        dashboard = {"subaccount_info": subaccount_info}
 
-        # Extract drawdown: combine statistics cache (instant/daily) + ledger last checkpoint
-        drawdown = {}
-        stats = dashboard.get('statistics') or {}
-        drawdown.update(stats.get('drawdowns') or {})
-        ledger = dashboard.get('ledger') or {}
-        checkpoints = ledger.get('checkpoints') or []
-        if checkpoints:
-            last_perf = checkpoints[-1].get('performance') or {}
-            drawdown['ledger_max_drawdown'] = last_perf.get('max_drawdown')
+        def add_to_dashboard(section, function, *args, **kwargs):
+            try:
+                section_data = function(synthetic_hotkey, *args, **kwargs)
+                if section_data is not None:
+                    dashboard[section] = section_data
+            except Exception as ex:
+                bt.logging.error(f"get_hl_trader: error retrieving {section} for {synthetic_hotkey}: {ex}")
 
-        subaccount_info = dashboard.get('subaccount_info') or {}
-        challenge_period = dashboard.get('challenge_period') or {}
-        account_size_data = dashboard.get('account_size_data') or {}
+        query_args = request.args
+        positions_time_ms = int(query_args.get("positions_time_ms", 0))
+        limit_orders_time_ms = int(query_args.get("limit_orders_time_ms", 0))
 
-        # Build challenge progress metrics for subaccounts in SUBACCOUNT_CHALLENGE.
-        challenge_bucket = challenge_period.get('bucket')
-        challenge_start_time_ms = challenge_period.get('start_time_ms')
-        now_ms = TimeUtil.now_in_millis()
-        in_challenge_period = challenge_bucket == 'SUBACCOUNT_CHALLENGE'
+        add_to_dashboard("challenge_period", self._challenge_period_client.get_dashboard)
+        add_to_dashboard("drawdown", self._challenge_period_client.get_drawdown_stats)
+        add_to_dashboard("elimination", self._elimination_client.get_dashboard)
+        add_to_dashboard("account_size_data", self._miner_account_client.get_dashboard)
+        add_to_dashboard("positions", self._position_client.get_dashboard, positions_time_ms)
+        add_to_dashboard("limit_orders", self._limit_order_client.get_dashboard, limit_orders_time_ms)
 
-        elapsed_time_ms = None
-        time_progress_percent = None
-        if isinstance(challenge_start_time_ms, int):
-            elapsed_time_ms = max(0, now_ms - challenge_start_time_ms)
-            if ValiConfig.CHALLENGE_PERIOD_MAXIMUM_MS > 0:
-                time_progress_percent = min(
-                    100.0,
-                    (elapsed_time_ms / ValiConfig.CHALLENGE_PERIOD_MAXIMUM_MS) * 100.0
-                )
+        return jsonify({
+            'status': 'success',
+            'dashboard': dashboard,
+            'timestamp': TimeUtil.now_in_millis(),
+        })
 
-        account_size = subaccount_info.get('account_size')
-        balance = account_size_data.get('balance')
-        max_return = account_size_data.get('max_return')
-        asset_class = (subaccount_info.get('asset_class') or '').lower()
-
-        target_return_threshold = (
-            ValiConfig.SUBACCOUNT_CRYPTO_CHALLENGE_RETURNS_THRESHOLD
-            if asset_class == TradePairCategory.CRYPTO.value
-            else ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD
-        )
-        target_return_percent = target_return_threshold * 100.0
-        intraday_drawdown_limit_percent = ValiConfig.SUBACCOUNT_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD * 100.0
-
-        # Find today's daily open equity from the ledger midnight checkpoint
-        today_midnight_ms = (now_ms // 86400000) * 86400000
-        daily_open_equity = None
-        for cp in checkpoints:
-            cp_ts = cp.get('timestamp_ms')
-            if cp_ts == today_midnight_ms:
-                cp_perf = cp.get('performance') or {}
-                daily_open_equity = cp_perf.get('portfolio_return')
-                break
-
-        current_return = None
-        returns_percent = None
-        returns_progress_percent = None
-        challenge_completion_percent = None
-        drawdown_percent = None
-        drawdown_usage_percent = None
-
-        if isinstance(account_size, (int, float)) and account_size > 0 and isinstance(balance, (int, float)):
-            current_return = balance / account_size
-            returns_percent = (current_return - 1.0) * 100.0
-            if in_challenge_period and target_return_percent > 0:
-                raw_returns_progress = (returns_percent / target_return_percent) * 100.0
-                returns_progress_percent = min(max(raw_returns_progress, 0.0), 100.0)
-                challenge_completion_percent = returns_progress_percent
-
-            # Intraday drawdown: drop from today's open equity (matching challengeperiod_manager logic)
-            open_equity = daily_open_equity if isinstance(daily_open_equity, (int, float)) and daily_open_equity > 0 else 1.0
-            drawdown_percent = max((1.0 - (current_return / open_equity)) * 100.0, 0.0)
-            if intraday_drawdown_limit_percent > 0:
-                drawdown_usage_percent = min(max((drawdown_percent / intraday_drawdown_limit_percent) * 100.0, 0.0), 100.0)
-
-        challenge_progress = {
-            'in_challenge_period': in_challenge_period,
-            'bucket': challenge_bucket,
-            'start_time_ms': challenge_start_time_ms,
-            'elapsed_time_ms': elapsed_time_ms,
-            'time_progress_percent': time_progress_percent,
-            'current_return': current_return,
-            'returns_percent': returns_percent,
-            'target_return_percent': target_return_percent,
-            'returns_progress_percent': returns_progress_percent,
-            'challenge_completion_percent': challenge_completion_percent,
-            'drawdown_percent': drawdown_percent,
-            'drawdown_limit_percent': intraday_drawdown_limit_percent,
-            'drawdown_usage_percent': drawdown_usage_percent,
-        }
-
-        response_body = json.dumps(
-            {
-                'status': 'success',
-                'synthetic_hotkey': synthetic_hotkey,
-                'hl_address': hl_address,
-                'account_size': subaccount_info.get('account_size'),   # funded account size (USD)
-                'payout_address': subaccount_info.get('payout_address'),  # EVM address for USDC
-                'positions': dashboard.get('positions'),
-                'drawdown': drawdown or None,
-                'challenge_progress': challenge_progress,
-                'timestamp': now_ms,
-            },
-            cls=CustomEncoder,
-        )
-        return Response(response_body, content_type='application/json'), 200
     def v2_get_subaccount_dashboard(self, synthetic_hotkey: str):
         access_error_response = self._get_access_error_response()
         if access_error_response is not None:

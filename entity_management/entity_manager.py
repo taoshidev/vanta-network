@@ -940,7 +940,7 @@ class EntityManager(ValidatorBroadcastBase):
             if subaccount is None:
                 return None
 
-            return {
+            result = {
                 "synthetic_hotkey": synthetic_hotkey,
                 "subaccount_uuid": subaccount.subaccount_uuid,
                 "subaccount_id": subaccount.subaccount_id,
@@ -950,6 +950,11 @@ class EntityManager(ValidatorBroadcastBase):
                 "created_at_ms": subaccount.created_at_ms,
                 "eliminated_at_ms": subaccount.eliminated_at_ms,
             }
+            if subaccount.hl_address:
+                result["hl_address"] = subaccount.hl_address
+            if subaccount.payout_address:
+                result["payout_address"] = subaccount.payout_address
+            return result
 
     def get_synthetic_hotkey_from_uuid(self, subaccount_uuid: str) -> Optional[str]:
         """
