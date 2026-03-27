@@ -12,7 +12,7 @@ import websockets
 from data_generator.base_data_service import BaseDataService, HYPERLIQUID_PROVIDER_NAME
 from entity_management.hl_orderbook_utils import simulate_fill
 from time_util.time_util import TimeUtil
-from vali_objects.vali_config import TradePair, TradePairCategory
+from vali_objects.vali_config import TradePair, TradePairCategory, ValiConfig
 from vali_objects.vali_dataclasses.price_source import PriceSource
 from vali_objects.vali_dataclasses.recent_event_tracker import RecentEventTracker
 
@@ -23,11 +23,12 @@ RECV_TIMEOUT_S = 30
 
 
 class _HyperliquidWebsocketClient:
-    """Websocket client for Hyperliquid L2 orderbook data."""
+    """Websocket client for Hyperliquid L2 orderbook data at a given resolution."""
 
-    def __init__(self, service, category):
+    def __init__(self, service, category, n_sig_figs: int = 5):
         self._svc = service
         self._cat = category
+        self._n_sig_figs = n_sig_figs
         self._ws = None
         self._should_close = False
 
@@ -46,12 +47,12 @@ class _HyperliquidWebsocketClient:
             for tp in trade_pairs:
                 subscribe_msg = {
                     "method": "subscribe",
-                    "subscription": {"type": "l2Book", "coin": tp.base, "nSigFigs": 2}
+                    "subscription": {"type": "l2Book", "coin": tp.base, "nSigFigs": self._n_sig_figs}
                 }
                 await self._ws.send(json.dumps(subscribe_msg))
 
-            bt.logging.info(f"Subscribed to Hyperliquid l2Book for {len(trade_pairs)} coins: "
-                            f"{[tp.base for tp in trade_pairs]}")
+            bt.logging.info(f"Subscribed to Hyperliquid l2Book (nSigFigs={self._n_sig_figs}) for "
+                            f"{len(trade_pairs)} coins: {[tp.base for tp in trade_pairs]}")
 
             # Receive loop
             while not self._should_close:
@@ -87,6 +88,34 @@ class _HyperliquidWebsocketClient:
         self._should_close = True
 
 
+class _DualL2BookClient:
+    """Manages two concurrent L2 book WebSocket connections at different resolutions.
+
+    Fine-grained (nSigFigs=5) provides accurate near-spread pricing.
+    Coarse (nSigFigs=2) provides wider depth for large slippage walks.
+    Messages are routed to the service's resolution-specific handlers.
+    """
+
+    def __init__(self, service, category):
+        self._fine = _HyperliquidWebsocketClient(service, category, n_sig_figs=ValiConfig.HL_L2_FINE_SIG_FIGS)
+        self._coarse = _HyperliquidWebsocketClient(service, category, n_sig_figs=ValiConfig.HL_L2_COARSE_SIG_FIGS)
+        self._svc = service
+
+    async def connect(self, handle_msg):
+        """Run both WebSocket connections concurrently."""
+        await asyncio.gather(
+            self._fine.connect(self._svc.handle_msg_fine),
+            self._coarse.connect(self._svc.handle_msg_coarse),
+        )
+
+    async def close(self):
+        await asyncio.gather(self._fine.close(), self._coarse.close())
+
+    def unsubscribe_all(self):
+        self._fine.unsubscribe_all()
+        self._coarse.unsubscribe_all()
+
+
 class HyperliquidDataService(BaseDataService):
     """Crypto-only live WebSocket feed from Hyperliquid using L2 orderbook data."""
 
@@ -103,9 +132,12 @@ class HyperliquidDataService(BaseDataService):
             if tp.is_crypto and tp not in self.UNSUPPORTED_TRADE_PAIRS:
                 self._coin_to_trade_pair[tp.base] = tp
 
-        # Cache full L2 orderbook levels per coin for slippage calculation
+        # Dual-resolution L2 orderbook cache per coin.
+        # Fine (nSigFigs=5): accurate near-spread pricing and slippage.
+        # Coarse (nSigFigs=2): wider depth for large orders that exhaust the fine book.
         # Key: coin name (e.g. "BTC"), Value: {"bids": [...], "asks": [...], "time": timestamp_ms}
-        self._orderbooks: dict[str, dict] = {}
+        self._orderbooks_fine: dict[str, dict] = {}
+        self._orderbooks_coarse: dict[str, dict] = {}
 
         if disable_ws:
             self.websocket_manager_thread = None
@@ -118,40 +150,43 @@ class HyperliquidDataService(BaseDataService):
     def _create_websocket_client(self, tpc):
         if tpc != TradePairCategory.CRYPTO:
             return
-        client = _HyperliquidWebsocketClient(self, tpc)
+        client = _DualL2BookClient(self, tpc)
         self.WEBSOCKET_OBJECTS[tpc] = client
-        bt.logging.info(f"Created {self.provider_name} websocket client for {tpc}")
+        bt.logging.info(f"Created {self.provider_name} dual-resolution websocket client for {tpc}")
 
     def _subscribe_websockets(self, tpc):
         # Subscription happens inside connect()
         pass
 
-    async def handle_msg(self, msg):
+    def _parse_l2_book_msg(self, msg):
+        """Parse an l2Book WebSocket message. Returns (coin, tp, bids, asks, timestamp_ms) or None."""
+        data = json.loads(msg)
+        if data.get("channel") != "l2Book":
+            return None
+        book_data = data.get("data", {})
+        coin = book_data.get("coin")
+        if not coin:
+            return None
+        tp = self._coin_to_trade_pair.get(coin)
+        if not tp:
+            return None
+        levels = book_data.get("levels", [])
+        if len(levels) < 2 or not levels[0] or not levels[1]:
+            return None
+        timestamp_ms = round(book_data.get("time", TimeUtil.now_in_millis()), -3)
+        return coin, tp, levels[0], levels[1], timestamp_ms
+
+    async def handle_msg_fine(self, msg):
+        """Handle nSigFigs=5 l2Book messages: update price feed and fine orderbook cache."""
         try:
-            data = json.loads(msg)
-
-            if data.get("channel") != "l2Book":
+            parsed = self._parse_l2_book_msg(msg)
+            if parsed is None:
                 return
+            coin, tp, bids, asks, timestamp_ms = parsed
 
-            book_data = data.get("data", {})
-            coin = book_data.get("coin")
-            if not coin:
-                return
-
-            tp = self._coin_to_trade_pair.get(coin)
-            if not tp:
-                return
-
-            levels = book_data.get("levels", [])
-            if len(levels) < 2 or not levels[0] or not levels[1]:
-                return
-
-            best_bid = float(levels[0][0]["px"])
-            best_ask = float(levels[1][0]["px"])
+            best_bid = float(bids[0]["px"])
+            best_ask = float(asks[0]["px"])
             mid_price = (best_bid + best_ask) / 2.0
-
-            timestamp_ms = book_data.get("time", TimeUtil.now_in_millis())
-            timestamp_ms = round(timestamp_ms, -3)  # Round to nearest second for dedup
 
             now_ms = TimeUtil.now_in_millis()
             ps = PriceSource(
@@ -166,7 +201,7 @@ class HyperliquidDataService(BaseDataService):
                 websocket=True,
                 lag_ms=now_ms - timestamp_ms,
                 bid=best_bid,
-                ask=best_ask
+                ask=best_ask,
             )
 
             symbol = tp.trade_pair
@@ -177,24 +212,32 @@ class HyperliquidDataService(BaseDataService):
                 ps, False, f"{self.provider_name}:{tp.trade_pair}"
             )
 
-            # Cache full orderbook levels for slippage calculation
-            self._orderbooks[coin] = {
-                "bids": levels[0],
-                "asks": levels[1],
-                "time": timestamp_ms,
-            }
+            self._orderbooks_fine[coin] = {"bids": bids, "asks": asks, "time": timestamp_ms}
 
             self.tpc_to_n_events[TradePairCategory.CRYPTO] += 1
             self.tpc_to_last_event_time[TradePairCategory.CRYPTO] = time.time()
             self.closed_market_prices[tp] = None
 
         except Exception as e:
-            full_traceback = traceback.format_exc()
-            limited_traceback = full_traceback[-1000:]
+            limited_traceback = traceback.format_exc()[-1000:]
             bt.logging.error(
-                f"Failed to handle {HYPERLIQUID_PROVIDER_NAME} websocket message "
-                f"with error: {e}, type: {type(e).__name__}, "
-                f"traceback: {limited_traceback}"
+                f"Failed to handle {HYPERLIQUID_PROVIDER_NAME} fine websocket message "
+                f"with error: {e}, type: {type(e).__name__}, traceback: {limited_traceback}"
+            )
+
+    async def handle_msg_coarse(self, msg):
+        """Handle nSigFigs=2 l2Book messages: update coarse orderbook cache for deep slippage walks."""
+        try:
+            parsed = self._parse_l2_book_msg(msg)
+            if parsed is None:
+                return
+            coin, _tp, bids, asks, timestamp_ms = parsed
+            self._orderbooks_coarse[coin] = {"bids": bids, "asks": asks, "time": timestamp_ms}
+        except Exception as e:
+            limited_traceback = traceback.format_exc()[-1000:]
+            bt.logging.error(
+                f"Failed to handle {HYPERLIQUID_PROVIDER_NAME} coarse websocket message "
+                f"with error: {e}, type: {type(e).__name__}, traceback: {limited_traceback}"
             )
 
     def _fetch_all_mids(self) -> dict[str, float]:
@@ -292,52 +335,62 @@ class HyperliquidDataService(BaseDataService):
         return results
 
     def simulate_slippage(self, trade_pair: TradePair, size_usd: float, is_buy: bool) -> float | None:
-        """Simulate slippage by walking the cached L2 orderbook.
+        """Simulate slippage using a dual-resolution two-phase orderbook walk.
 
-        Longs fill against asks, shorts fill against bids. If the order size
-        exceeds the book depth, the remaining size is filled at the last
-        available price.
+        Phase 1 walks the fine-grained book (nSigFigs=5) for accurate near-spread
+        pricing. Phase 2 continues with coarse levels (nSigFigs=2) priced beyond the
+        last fine level if the order exhausts the fine book. Falls back to coarse-only
+        if the fine book is not yet populated.
 
         Args:
             trade_pair: The trade pair to calculate slippage for.
             size_usd: The order size in USD.
             is_buy: True for LONG orders (fill against asks),
-                     False for SHORT orders (fill against bids).
+                    False for SHORT orders (fill against bids).
 
         Returns:
             Slippage as a fraction (e.g. 0.001 for 0.1%), or None if no
             orderbook data is available.
         """
         coin = trade_pair.base
-        book = self._orderbooks.get(coin)
-        if not book:
+        fine_book = self._orderbooks_fine.get(coin, {})
+        coarse_book = self._orderbooks_coarse.get(coin, {})
+
+        primary = fine_book or coarse_book
+        if not primary:
             return None
 
-        # Longs fill against asks, shorts fill against bids
-        levels = book["asks"] if is_buy else book["bids"]
-        if not levels:
-            return None
-
-        bids = book.get("bids", [])
-        asks = book.get("asks", [])
+        bids = primary.get("bids", [])
+        asks = primary.get("asks", [])
         if not bids or not asks:
             return None
 
-        best_bid = float(bids[0]["px"])
-        best_ask = float(asks[0]["px"])
-        mid = (best_bid + best_ask) / 2.0
+        mid = (float(bids[0]["px"]) + float(asks[0]["px"])) / 2.0
+        if mid <= 0:
+            return None
 
-        fills, remaining = simulate_fill(levels, size_usd, unit="usd")
+        side = "asks" if is_buy else "bids"
+        fine_levels = fine_book.get(side, [])
+        coarse_levels = coarse_book.get(side, [])
 
-        # If order exceeds book depth, fill remaining at the last book price
-        if remaining > 0:
-            last_px = float(levels[-1]["px"]) if levels else mid
-            extra_coins = remaining / last_px
-            fills.append((last_px, extra_coins, remaining))
-            bt.logging.warning(
-                f"[HL_SLIPPAGE] Order for {coin} exceeds L2 book depth: "
-                f"${remaining:.2f} of ${size_usd:.2f} filled at last price {last_px}"
-            )
+        # Phase 1: walk fine-grained levels
+        if fine_levels:
+            fills, remaining = simulate_fill(fine_levels, size_usd, "usd")
+        else:
+            fills, remaining = [], size_usd
+
+        # Phase 2: continue with coarse levels beyond fine book's price coverage
+        if remaining > 0 and coarse_levels:
+            if fine_levels:
+                last_fine_px = float(fine_levels[-1]["px"])
+                if is_buy:
+                    deeper = [l for l in coarse_levels if float(l["px"]) > last_fine_px]
+                else:
+                    deeper = [l for l in coarse_levels if float(l["px"]) < last_fine_px]
+            else:
+                deeper = coarse_levels
+            coarse_fills, _ = simulate_fill(deeper, remaining, "usd")
+            fills.extend(coarse_fills)
 
         if not fills:
             return None
@@ -348,11 +401,7 @@ class HyperliquidDataService(BaseDataService):
             return None
 
         avg_price = total_usd / total_coins
-        if is_buy:
-            slippage_pct = (avg_price - mid) / mid
-        else:
-            slippage_pct = (mid - avg_price) / mid
-
+        slippage_pct = (avg_price - mid) / mid if is_buy else (mid - avg_price) / mid
         return max(0.0, slippage_pct)
 
     def get_close_rest(self, trade_pair: TradePair, timestamp_ms: int) -> PriceSource | None:
