@@ -513,6 +513,22 @@ class ValiConfig:
     ENTITY_COST_PER_THETA = 5000  # USD account size per theta of collateral for entity subaccounts
     MAX_SUBACCOUNT_ACCOUNT_SIZE = 100_000  # Maximum account size in USD for entity subaccounts
 
+    # Hyperliquid L2 orderbook precision
+    HL_L2_COARSE_SIG_FIGS = 2  # Aggregated to 2 sig figs for deep coverage on large orders (max 20 levels)
+
+    HL_COIN_TO_TRADE_PAIR = {
+        "BTC": "BTCUSD", "ETH": "ETHUSD", "SOL": "SOLUSD",
+        "XRP": "XRPUSD", "DOGE": "DOGEUSD", "ADA": "ADAUSD",
+        "TAO": "TAOUSD", "HYPE": "HYPEUSD", "ZEC": "ZECUSD",
+        "BCH": "BCHUSD", "LINK": "LINKUSD", "XMR": "XMRUSD",
+        "LTC": "LTCUSD"
+    }
+    TRADE_PAIR_ID_TO_HL_COIN = {v: k for k, v in HL_COIN_TO_TRADE_PAIR.items()}
+
+    # HL fee constants
+    HL_TAKER_FEE = 0.00045    # 0.045%
+    HL_MAKER_FEE = 0.00015    # 0.015%
+
     # Account Size
     COST_PER_THETA = 500  # Account size USD value per theta of collateral
     MIN_COLLATERAL_VALUE = MIN_COLLATERAL_BALANCE_THETA * COST_PER_THETA   # Approx $150k
@@ -566,11 +582,20 @@ class TradePair(Enum):
                 TradePairCategory.CRYPTO, CryptoSubcategory.ALTS]
     ADAUSD = ["ADAUSD", "ADA/USD", 0.001, ValiConfig.CRYPTO_MIN_LEVERAGE, ValiConfig.CRYPTO_MAX_LEVERAGE,
                TradePairCategory.CRYPTO, CryptoSubcategory.ALTS]
-
-    # TAO (data-only, not tradeable - used for emissions ledger calculations)
     TAOUSD = ["TAOUSD", "TAO/USD", 0.001, ValiConfig.CRYPTO_MIN_LEVERAGE, ValiConfig.CRYPTO_MAX_LEVERAGE,
               TradePairCategory.CRYPTO, CryptoSubcategory.ALTS]
-
+    HYPEUSD = ["HYPEUSD", "HYPE/USD", 0.001, ValiConfig.CRYPTO_MIN_LEVERAGE, ValiConfig.CRYPTO_MAX_LEVERAGE,
+               TradePairCategory.CRYPTO, CryptoSubcategory.ALTS]
+    ZECUSD = ["ZECUSD", "ZEC/USD", 0.001, ValiConfig.CRYPTO_MIN_LEVERAGE, ValiConfig.CRYPTO_MAX_LEVERAGE,
+              TradePairCategory.CRYPTO, CryptoSubcategory.ALTS]
+    BCHUSD = ["BCHUSD", "BCH/USD", 0.001, ValiConfig.CRYPTO_MIN_LEVERAGE, ValiConfig.CRYPTO_MAX_LEVERAGE,
+              TradePairCategory.CRYPTO, CryptoSubcategory.ALTS]
+    LINKUSD = ["LINKUSD", "LINK/USD", 0.001, ValiConfig.CRYPTO_MIN_LEVERAGE, ValiConfig.CRYPTO_MAX_LEVERAGE,
+               TradePairCategory.CRYPTO, CryptoSubcategory.ALTS]
+    XMRUSD = ["XMRUSD", "XMR/USD", 0.001, ValiConfig.CRYPTO_MIN_LEVERAGE, ValiConfig.CRYPTO_MAX_LEVERAGE,
+              TradePairCategory.CRYPTO, CryptoSubcategory.ALTS]
+    LTCUSD = ["LTCUSD", "LTC/USD", 0.001, ValiConfig.CRYPTO_MIN_LEVERAGE, ValiConfig.CRYPTO_MAX_LEVERAGE,
+              TradePairCategory.CRYPTO, CryptoSubcategory.ALTS]
 
     # forex
     AUDCAD = ["AUDCAD", "AUD/CAD", 0.00007, ValiConfig.FOREX_MIN_LEVERAGE, ValiConfig.FOREX_MAX_LEVERAGE,
@@ -875,4 +900,4 @@ TRADE_PAIR_STR_TO_TRADE_PAIR = {x.trade_pair: x for x in TradePair}
 # Set UNSUPPORTED_TRADE_PAIRS now that TradePair enum is defined
 # These are trade pairs that have no price data available (not just temporarily halted)
 ValiConfig.UNSUPPORTED_TRADE_PAIRS = (TradePair.SPX, TradePair.DJI, TradePair.NDX, TradePair.VIX,
-                                      TradePair.FTSE, TradePair.GDAXI, TradePair.TAOUSD)
+                                      TradePair.FTSE, TradePair.GDAXI)

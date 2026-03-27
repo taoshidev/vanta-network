@@ -175,6 +175,7 @@ cython_debug/
 
 # Files generated when sending signals from miner
 mining/processed_signals/
+mining/failed_signals/
 validation/miners/
 validation/outputs/
 validation/plagiarism/

@@ -20,6 +20,7 @@ from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.vali_dataclasses.order import Order
 
 SLIPPAGE_V2_TIME_MS = 1759431540000
+HL_CRYPTO_TIME_MS = 1774655999000
 
 class PriceSlippageModel:
     features = defaultdict(dict)
@@ -89,6 +90,22 @@ class PriceSlippageModel:
         else:
             raise ValueError(f"Invalid trade pair {trade_pair.trade_pair_id} to calculate slippage")
         return float(np.clip(slippage_percentage, 0.0, 0.03))
+
+    @classmethod
+    def _simulate_slippage_hl(cls, order: Order) -> float | None:
+        """Try to compute slippage via Hyperliquid L2 orderbook simulation.
+
+        Returns slippage as a fraction, or None if the orderbook is unavailable.
+        """
+        if cls.live_price_fetcher is None:
+            return None
+        try:
+            is_buy = order.leverage > 0  # Longs fill against asks, shorts against bids
+            size_usd = abs(order.value)
+            return cls.live_price_fetcher.simulate_slippage(order.trade_pair, size_usd, is_buy)
+        except Exception as e:
+            bt.logging.warning(f"[SLIPPAGE] HL simulate_slippage failed for {order.trade_pair.trade_pair_id}: {e}")
+            return None
 
     @classmethod
     def calc_slippage_equities(cls, bid:float, ask:float, order:Order) -> float:
@@ -195,6 +212,12 @@ class PriceSlippageModel:
         """
         slippage values for crypto
         """
+        # Try Hyperliquid L2 orderbook simulation first
+        if order.processed_ms > HL_CRYPTO_TIME_MS:
+            hl_slippage = cls._simulate_slippage_hl(order)
+            if hl_slippage is not None:
+                return hl_slippage
+
         if order.processed_ms > SLIPPAGE_V2_TIME_MS:
             side = "long" if order.leverage > 0 else "short"
             size = abs(order.value)

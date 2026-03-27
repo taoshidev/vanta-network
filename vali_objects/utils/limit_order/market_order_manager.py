@@ -172,8 +172,9 @@ class MarketOrderManager():
     def _add_order_to_existing_position(self, existing_position: Position, trade_pair: TradePair, signal_order_type: OrderType,
                                         quantity: float, leverage: float, value: float, order_time_ms: int, miner_hotkey: str,
                                         price_sources, miner_order_uuid: str, miner_repo_version: str, src:OrderSource,
-                                        balance=None, usd_base_price=None, execution_type=ExecutionType.MARKET, fill_price=None,
-                                        limit_price=None, stop_loss=None, take_profit=None, bracket_orders=None, trailing_stop=None) -> Order:
+                                        balance=None, usd_base_price=None, execution_type=ExecutionType.MARKET,
+                                        fill_price=None, limit_price=None, stop_loss=None, take_profit=None, bracket_orders=None,
+                                        hl_slippage=None, is_hl_taker=None, trailing_stop=None) -> Order:
         # Must be locked by caller
         step_start = TimeUtil.now_in_millis()
 
@@ -254,7 +255,15 @@ class MarketOrderManager():
             bt.logging.info(f"[ADD_ORDER_DETAIL] refresh_features_daily took {refresh_features_ms}ms")
 
         step_start = TimeUtil.now_in_millis()
-        order.slippage = PriceSlippageModel.calculate_slippage(order.bid, order.ask, order, existing_position.account_size)
+        if hl_slippage is not None:
+            # Use pre-computed L2 orderbook slippage (from HL entity miner signals)
+            order.slippage = hl_slippage
+        else:
+            # PriceSlippageModel handles HL orderbook simulation for crypto internally,
+            # falling back to the existing model when orderbook data is unavailable
+            order.slippage = PriceSlippageModel.calculate_slippage(order.bid, order.ask, order, existing_position.account_size)
+        if is_hl_taker is not None:
+            order.is_hl_taker = is_hl_taker
         slippage_calc_ms = TimeUtil.now_in_millis() - step_start
         bt.logging.info(f"[ADD_ORDER_DETAIL] Slippage calculation took {slippage_calc_ms}ms")
 
@@ -582,6 +591,10 @@ class MarketOrderManager():
             # TIMING: Add order to position
             created_order = None
             if existing_position:
+                # Set is_hl flag on new positions from HL tracker
+                if not existing_position.orders and signal.get("is_hl"):
+                    existing_position.is_hl = True
+
                 add_order_start = TimeUtil.now_in_millis()
                 limit_price = signal.get("limit_price")
                 stop_loss = signal.get("stop_loss")
@@ -621,7 +634,10 @@ class MarketOrderManager():
                                                      quantity, leverage, value, now_ms, miner_hotkey,
                                                      price_sources, miner_order_uuid, miner_repo_version,
                                                      new_src, account_balance, usd_base_price, execution_type,
-                                                     fill_price, limit_price, stop_loss, take_profit, bracket_orders, trailing_stop)
+                                                     fill_price, limit_price, stop_loss, take_profit, bracket_orders,
+                                                     hl_slippage=signal.get("hl_slippage"),
+                                                     is_hl_taker=signal.get("is_hl_taker"),
+                                                     trailing_stop=trailing_stop)
                 add_order_ms = TimeUtil.now_in_millis() - add_order_start
                 bt.logging.info(f"[LOCK_WORK] Add order to position took {add_order_ms}ms")
             else:

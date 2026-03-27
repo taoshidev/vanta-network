@@ -6,6 +6,7 @@ import numpy as np
 from data_generator.tiingo_data_service import TiingoDataService
 from data_generator.polygon_data_service import PolygonDataService
 from data_generator.databento_data_service import DatabentoDataService
+from data_generator.hyperliquid_data_service import HyperliquidDataService
 from time_util.time_util import TimeUtil
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
@@ -41,6 +42,12 @@ class LivePriceFetcher:
                 running_unit_tests=running_unit_tests
             )
 
+        # Hyperliquid service for crypto (no API key needed)
+        self.hyperliquid_data_service = HyperliquidDataService(
+            disable_ws=disable_ws,
+            running_unit_tests=running_unit_tests
+        )
+
         # Stock splits cache - load from disk on startup
         self.STOCK_SPLITS_FILE = ValiBkpUtils.get_stock_splits_file_location()
         self._stock_splits = ValiUtils.get_vali_json_file_dict(self.STOCK_SPLITS_FILE)
@@ -51,6 +58,14 @@ class LivePriceFetcher:
         self.polygon_data_service.stop_threads()
         if self.databento_data_service:
             self.databento_data_service.stop_threads()
+        self.hyperliquid_data_service.stop_threads()
+
+    def simulate_slippage(self, trade_pair: TradePair, size_usd: float, is_buy: bool) -> Optional[float]:
+        """Simulate slippage by walking the Hyperliquid L2 orderbook.
+
+        Returns slippage as a fraction (e.g. 0.001 for 0.1%), or None if unavailable.
+        """
+        return self.hyperliquid_data_service.simulate_slippage(trade_pair, size_usd, is_buy)
 
     def set_test_price_source(self, trade_pair: TradePair, price_source: PriceSource) -> None:
         """
@@ -151,28 +166,35 @@ class LivePriceFetcher:
 
         return PriceSource.non_null_events_sorted(valid_events, current_time_ms)
 
-    def dual_rest_get(self, trade_pairs: List[TradePair], time_ms, live) -> Tuple[Dict[TradePair, PriceSource], Dict[TradePair, PriceSource]]:
+    def dual_rest_get(self, trade_pairs: List[TradePair], time_ms, live) -> Tuple[Dict[TradePair, PriceSource], Dict[TradePair, PriceSource], Dict[TradePair, PriceSource]]:
         """
-        Fetch REST closes from both Polygon and Tiingo in parallel,
-        using ThreadPoolExecutor to run both calls concurrently.
+        Fetch REST closes from Polygon, Tiingo, and Hyperliquid (crypto only) in parallel,
+        using ThreadPoolExecutor to run calls concurrently.
         """
         polygon_results = {}
         tiingo_results = {}
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            # Submit both REST calls to the executor
+        hyperliquid_results = {}
+        crypto_pairs = [tp for tp in trade_pairs if tp.is_crypto]
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            # Submit REST calls to the executor
             poly_fut = executor.submit(self.polygon_data_service.get_closes_rest, trade_pairs, time_ms, live)
             tiingo_fut = executor.submit(self.tiingo_data_service.get_closes_rest, trade_pairs, time_ms, live)
+            hl_fut = executor.submit(self.hyperliquid_data_service.get_closes_rest, crypto_pairs, time_ms, live) if crypto_pairs else None
 
             try:
-                # Wait for both futures to complete with a 10s timeout
+                # Wait for futures to complete with a 10s timeout
                 polygon_results = poly_fut.result(timeout=10)
                 tiingo_results = tiingo_fut.result(timeout=10)
+                if hl_fut:
+                    hyperliquid_results = hl_fut.result(timeout=10)
             except FuturesTimeoutError:
                 poly_fut.cancel()
                 tiingo_fut.cancel()
+                if hl_fut:
+                    hl_fut.cancel()
                 bt.logging.warning(f"dual_rest_get REST API requests timed out. trade_pairs: {trade_pairs}.")
 
-        return polygon_results, tiingo_results
+        return polygon_results, tiingo_results, hyperliquid_results
 
     def get_ws_price_sources_in_window(self, trade_pair: TradePair, start_ms: int, end_ms: int) -> List[PriceSource]:
         # Utilize get_events_in_range
@@ -181,7 +203,10 @@ class LivePriceFetcher:
         db_sources = []
         if self.databento_data_service and trade_pair.is_equities:
             db_sources = self.databento_data_service.trade_pair_to_recent_events[trade_pair.trade_pair].get_events_in_range(start_ms, end_ms)
-        return poly_sources + t_sources + db_sources
+        hl_sources = []
+        if trade_pair.is_crypto:
+            hl_sources = self.hyperliquid_data_service.trade_pair_to_recent_events[trade_pair.trade_pair].get_events_in_range(start_ms, end_ms)
+        return poly_sources + t_sources + db_sources + hl_sources
 
     def get_latest_price(self, trade_pair: TradePair, time_ms=None) -> Tuple[float, List[PriceSource]] | Tuple[None, None]:
         """
@@ -213,6 +238,12 @@ class LivePriceFetcher:
             if equity_pairs:
                 websocket_prices_databento = self.databento_data_service.get_closes_websocket(equity_pairs, time_ms)
 
+        # Get Hyperliquid prices for crypto
+        websocket_prices_hyperliquid = {}
+        crypto_pairs = [tp for tp in trade_pairs if tp.is_crypto]
+        if crypto_pairs:
+            websocket_prices_hyperliquid = self.hyperliquid_data_service.get_closes_websocket(crypto_pairs, time_ms)
+
         trade_pairs_needing_rest_data = []
 
         results = {}
@@ -234,6 +265,7 @@ class LivePriceFetcher:
             events = [
                 websocket_prices_polygon.get(trade_pair),
                 websocket_prices_tiingo_data.get(trade_pair),
+                websocket_prices_hyperliquid.get(trade_pair),
             ]
             sources = self.sorted_valid_price_sources(events, time_ms, filter_recent_only=True)
             if sources:
@@ -245,14 +277,16 @@ class LivePriceFetcher:
         if not trade_pairs_needing_rest_data:
             return results
 
-        rest_prices_polygon, rest_prices_tiingo_data = self.dual_rest_get(trade_pairs_needing_rest_data, time_ms, live)
+        rest_prices_polygon, rest_prices_tiingo_data, rest_prices_hyperliquid = self.dual_rest_get(trade_pairs_needing_rest_data, time_ms, live)
 
         for trade_pair in trade_pairs_needing_rest_data:
             sources = self.sorted_valid_price_sources([
                 websocket_prices_polygon.get(trade_pair),
                 websocket_prices_tiingo_data.get(trade_pair),
+                websocket_prices_hyperliquid.get(trade_pair),
                 rest_prices_polygon.get(trade_pair),
-                rest_prices_tiingo_data.get(trade_pair)
+                rest_prices_tiingo_data.get(trade_pair),
+                rest_prices_hyperliquid.get(trade_pair),
             ], time_ms, filter_recent_only=False)
             results[trade_pair] = sources
 
@@ -267,7 +301,10 @@ class LivePriceFetcher:
         t3 = None
         if self.databento_data_service and trade_pair.is_equities:
             t3 = self.databento_data_service.get_websocket_lag_for_trade_pair_s(tp=trade_pair.trade_pair, now_ms=now_ms)
-        lags = [x for x in (t1, t2, t3) if x]
+        t4 = None
+        if trade_pair.is_crypto:
+            t4 = self.hyperliquid_data_service.get_websocket_lag_for_trade_pair_s(tp=trade_pair.trade_pair, now_ms=now_ms)
+        lags = [x for x in (t1, t2, t3, t4) if x]
         return max(lags) if lags else None
 
     def filter_outliers(self, unique_data: List[PriceSource]) -> List[PriceSource]:

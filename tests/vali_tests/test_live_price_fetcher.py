@@ -160,23 +160,24 @@ class TestLivePriceFetcher(unittest.TestCase):
             self.assertGreater(len(sources), 0)
 
     def test_dual_rest_get(self):
-        """Test dual_rest_get fetches from both Polygon and Tiingo in parallel."""
+        """Test dual_rest_get fetches from Polygon, Tiingo, and Hyperliquid in parallel."""
         order_time_ms = TimeUtil.now_in_millis()
         trade_pairs = [TradePair.BTCUSD, TradePair.NVDA]
 
         # Call dual_rest_get
-        polygon_results, tiingo_results = self.fetcher.dual_rest_get(
+        polygon_results, tiingo_results, hyperliquid_results = self.fetcher.dual_rest_get(
             trade_pairs=trade_pairs,
             time_ms=order_time_ms,
             live=True
         )
 
-        # Both should return dicts (even if empty in test mode)
+        # All should return dicts (even if empty in test mode)
         self.assertIsInstance(polygon_results, dict)
         self.assertIsInstance(tiingo_results, dict)
+        self.assertIsInstance(hyperliquid_results, dict)
 
-        # In test mode, both services should return results
-        self.assertGreater(len(polygon_results) + len(tiingo_results), 0)
+        # In test mode, services should return results
+        self.assertGreater(len(polygon_results) + len(tiingo_results) + len(hyperliquid_results), 0)
 
     def test_sorted_valid_price_sources(self):
         """Test sorting and filtering of price sources by validity and recency."""

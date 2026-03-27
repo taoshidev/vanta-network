@@ -20,6 +20,7 @@ from vali_objects.vali_dataclasses.price_source import PriceSource
 
 POLYGON_PROVIDER_NAME = "Polygon"
 TIINGO_PROVIDER_NAME = "Tiingo"
+HYPERLIQUID_PROVIDER_NAME = "Hyperliquid"
 
 def exception_handler_decorator():
     """

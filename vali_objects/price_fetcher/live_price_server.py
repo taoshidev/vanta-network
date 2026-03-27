@@ -231,6 +231,10 @@ class LivePriceFetcherServer(RPCServerBase):
         """Test-only RPC method to clear all test candle data."""
         return self._fetcher.clear_test_candle_data()
 
+    def simulate_slippage(self, trade_pair: TradePair, size_usd: float, is_buy: bool):
+        """Delegate to fetcher."""
+        return self._fetcher.simulate_slippage(trade_pair, size_usd, is_buy)
+
     def is_market_open(self, trade_pair: TradePair, time_ms: int) -> bool:
         return self._fetcher.is_market_open(trade_pair, time_ms)
 
