@@ -153,6 +153,9 @@ class DebtLedgerManager():
         Returns:
             True if the debt ledger was deleted, False if it did not exist
         """
+        if not entity_utils.is_synthetic_hotkey(hotkey):
+            bt.logging.error(f"[DEBT_LEDGER] Cannot delete ledger for {hotkey}: only subaccount (synthetic) hotkeys can have their ledgers deleted")
+            return False
         self.penalty_ledger_manager.delete_penalty_ledger(hotkey)
         if hotkey in self.debt_ledgers:
             del self.debt_ledgers[hotkey]
