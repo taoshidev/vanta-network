@@ -514,8 +514,7 @@ class ValiConfig:
     MAX_SUBACCOUNT_ACCOUNT_SIZE = 100_000  # Maximum account size in USD for entity subaccounts
 
     # Hyperliquid L2 orderbook precision
-    HL_L2_FINE_SIG_FIGS = 5    # Precise near-spread pricing (max 20 levels)
-    HL_L2_COARSE_SIG_FIGS = 2  # Deep coverage for large orders (max 20 levels)
+    HL_L2_COARSE_SIG_FIGS = 2  # Aggregated to 2 sig figs for deep coverage on large orders (max 20 levels)
 
     HL_COIN_TO_TRADE_PAIR = {
         "BTC": "BTCUSD", "ETH": "ETHUSD", "SOL": "SOLUSD",
