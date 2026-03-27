@@ -14,6 +14,7 @@ import bittensor as bt
 import time
 from typing import Dict, Optional
 
+from time_util.time_util import MS_IN_1_HOUR
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 from shared_objects.rpc.rpc_server_base import RPCServerBase
 
@@ -154,11 +155,11 @@ class DebtLedgerServer(RPCServerBase):
         bt.logging.info(f"Complete update cycle finished in {elapsed:.2f}s")
         bt.logging.info("="*80)
 
-        # Run at the next checkpoint aligned time interval + 2*worst case perf ledger checkpoint generation delay
+        # Run at the next checkpoint aligned time interval
+        # + 1 hour delay for autosync (midnight utc) and perf ledger checkpoint regen
         now = time.time()
         checkpoint_duration_s = ValiConfig.TARGET_CHECKPOINT_DURATION_MS // 1000
-        perf_ledger_interval_s = ValiConfig.PERF_LEDGER_REFRESH_TIME_MS // 1000
-        next_checkpoint_timestamp_s = (int(now) // checkpoint_duration_s + 1) * checkpoint_duration_s + 2*perf_ledger_interval_s
+        next_checkpoint_timestamp_s = (int(now) // checkpoint_duration_s + 1) * checkpoint_duration_s + MS_IN_1_HOUR // 1000
         self.daemon_interval_s = next_checkpoint_timestamp_s - now
 
         bt.logging.info(f"DebtLedger daemon next iteration in {self.daemon_interval_s} seconds")
