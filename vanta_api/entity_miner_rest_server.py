@@ -912,7 +912,7 @@ class EntityMinerRestServer(MinerRestServer):
                     )
                 return jsonify(response_data), 200
             else:
-                error_message = response_data.get('message', 'Unknown error from validator')
+                error_message = response_data.get('error', response_data.get('message', 'Unknown error from validator'))
                 if self.slack_notifier:
                     self.slack_notifier.send_message(
                         f"Subaccount creation failed\n"
