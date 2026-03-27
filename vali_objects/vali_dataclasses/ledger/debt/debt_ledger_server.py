@@ -80,7 +80,7 @@ class DebtLedgerServer(RPCServerBase):
         )
 
         self.running_unit_tests = running_unit_tests
-        self._first_iteration = True
+        self._penalty_delta_update = False
 
     # ========================================================================
     # PROPERTIES (forward to manager)
@@ -134,9 +134,9 @@ class DebtLedgerServer(RPCServerBase):
         # Step 1: Update penalty ledgers
         bt.logging.info("Step 1/3: Updating penalty ledgers...")
         penalty_start = time.time()
-        self._manager.penalty_ledger_manager.build_penalty_ledgers(delta_update=not self._first_iteration)
+        self._manager.penalty_ledger_manager.build_penalty_ledgers(delta_update=self._penalty_delta_update)
         bt.logging.info(f"Penalty ledgers updated in {time.time() - penalty_start:.2f}s")
-        self._first_iteration = False
+        self._penalty_delta_update = True
 
         # Step 2: Update emissions ledgers
         bt.logging.info("Step 2/3: Updating emissions ledgers...")
