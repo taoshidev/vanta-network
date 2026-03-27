@@ -20,7 +20,7 @@ from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.vali_dataclasses.order import Order
 
 SLIPPAGE_V2_TIME_MS = 1759431540000
-HL_CRYPTO_TIME_MS = 1774628042000
+HL_CRYPTO_TIME_MS = 1774655999000
 
 class PriceSlippageModel:
     features = defaultdict(dict)
