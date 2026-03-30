@@ -888,6 +888,8 @@ class TestEntityMinerRestServerMessageHandling(TestBase):
         gw._dashboard_cache = {}
         gw._hl_to_synthetic = {"0xHL1": "5Entity_0"}
         gw._synthetic_to_hl = {"5Entity_0": "0xHL1"}
+        gw._dashboard_cache_updated_ms = {}
+        gw._mapping_last_refresh_ms = {}
         gw._sse_subscribers = {}
         gw._sse_lock = __import__('threading').Lock()
         gw._validator_url = None
@@ -996,6 +998,120 @@ class TestEntityMinerRestServerMessageHandling(TestBase):
         })
 
         gw._load_hl_mappings.assert_called_once()
+
+
+class TestEntityMinerDashboardCacheReconciliation(TestBase):
+    """Regression tests for HL mapping reassignment and stale dashboard cache behavior."""
+
+    def _make_gateway(self):
+        from vanta_api.entity_miner_rest_server import EntityMinerRestServer, OrderEventStore
+        import threading
+        try:
+            from flask import Flask
+        except ModuleNotFoundError:
+            self.skipTest("flask not installed")
+
+        gw = object.__new__(EntityMinerRestServer)
+        gw.app = Flask(__name__)
+        gw._event_store = OrderEventStore()
+        gw._dashboard_cache = {}
+        gw._dashboard_cache_updated_ms = {}
+        gw._hl_to_synthetic = {}
+        gw._synthetic_to_hl = {}
+        gw._mapping_last_refresh_ms = {}
+        gw._sse_subscribers = {}
+        gw._sse_lock = threading.Lock()
+        gw._validator_url = "http://validator"
+        gw.DASHBOARD_CACHE_TTL_MS = 10_000
+        gw.MAPPING_REFRESH_TTL_MS = 5_000
+        return gw
+
+    def test_set_hl_mapping_reassignment_evicts_dashboard(self):
+        gw = self._make_gateway()
+        hl = "0xabc"
+
+        gw._dashboard_cache[hl] = {"synthetic_hotkey": "entity_409", "timestamp_ms": 1}
+        gw._dashboard_cache_updated_ms[hl] = 1
+        gw._hl_to_synthetic[hl] = "entity_409"
+        gw._synthetic_to_hl["entity_409"] = hl
+        gw._save_hl_mappings = MagicMock()
+
+        gw._set_hl_mapping(hl, "entity_443", source="test")
+
+        self.assertEqual(gw._hl_to_synthetic[hl], "entity_443")
+        self.assertEqual(gw._synthetic_to_hl["entity_443"], hl)
+        self.assertNotIn("entity_409", gw._synthetic_to_hl)
+        self.assertNotIn(hl, gw._dashboard_cache)
+
+    def test_dashboard_endpoint_refreshes_when_mapping_changes(self):
+        gw = self._make_gateway()
+        hl = "0x2d26b7339a624e84634cde1d1fb5128eb02e4b0e"
+
+        # Stale cache points to old synthetic.
+        gw._dashboard_cache[hl] = {
+            "timestamp_ms": 1000,
+            "synthetic_hotkey": "entity_409",
+            "hl_address": hl,
+            "balance": 100000.0,
+            "total_realized_pnl": 0.0,
+        }
+        gw._dashboard_cache_updated_ms[hl] = int(time.time() * 1000)
+        gw._hl_to_synthetic[hl] = "entity_443"
+
+        # Validator returns canonical snapshot for new synthetic.
+        gw._fetch_validator_hl_trader = MagicMock(return_value={
+            "status": "success",
+            "timestamp": 2000,
+            "dashboard": {
+                "subaccount_info": {
+                    "synthetic_hotkey": "entity_443",
+                    "balance": 99844.9234,
+                    "total_realized_pnl": -71.8062,
+                }
+            },
+        })
+
+        with gw.app.test_request_context(f"/api/hl/{hl}/dashboard"):
+            response, status_code = gw.dashboard_endpoint(hl)
+
+        payload = response.get_json()
+        self.assertEqual(status_code, 200)
+        self.assertEqual(payload["synthetic_hotkey"], "entity_443")
+        self.assertAlmostEqual(payload["balance"], 99844.9234)
+        self.assertAlmostEqual(payload["total_realized_pnl"], -71.8062)
+
+    def test_events_endpoint_filters_out_old_synthetic_events(self):
+        from vanta_api.entity_miner_rest_server import OrderEvent
+
+        gw = self._make_gateway()
+        hl = "0x2d26b7339a624e84634cde1d1fb5128eb02e4b0e"
+        gw._hl_to_synthetic[hl] = "entity_443"
+        gw._mapping_last_refresh_ms[hl] = int(time.time() * 1000)
+
+        gw._event_store.add(OrderEvent(
+            timestamp_ms=1000,
+            hl_address=hl,
+            trade_pair="BTCUSD",
+            order_type="LONG",
+            status="accepted",
+            synthetic_hotkey="entity_409",
+        ))
+        gw._event_store.add(OrderEvent(
+            timestamp_ms=2000,
+            hl_address=hl,
+            trade_pair="BTCUSD",
+            order_type="LONG",
+            status="accepted",
+            synthetic_hotkey="entity_443",
+        ))
+
+        with gw.app.test_request_context(f"/api/hl/{hl}/events"):
+            response, status_code = gw.events_endpoint(hl)
+
+        payload = response.get_json()
+        self.assertEqual(status_code, 200)
+        self.assertEqual(payload["count"], 1)
+        self.assertEqual(payload["events"][0]["synthetic_hotkey"], "entity_443")
 
 
 # ==================== SSE Tests ====================

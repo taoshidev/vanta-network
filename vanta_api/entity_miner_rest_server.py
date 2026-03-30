@@ -119,6 +119,9 @@ class EntityMinerRestServer(MinerRestServer):
     create-subaccount, create-hl-subaccount).
     """
 
+    DASHBOARD_CACHE_TTL_MS = 10_000
+    MAPPING_REFRESH_TTL_MS = 5_000
+
     def __init__(self, api_keys_file, flask_host="0.0.0.0", flask_port=8089,
                  slack_notifier=None, prop_net_order_placer=None, **kwargs):
         # Internal state (initialized before super().__init__ calls _initialize_clients)
@@ -126,6 +129,8 @@ class EntityMinerRestServer(MinerRestServer):
         self._dashboard_cache: Dict[str, dict] = {}  # hl_address -> latest dashboard
         self._hl_to_synthetic: Dict[str, str] = {}  # hl_address -> synthetic_hotkey
         self._synthetic_to_hl: Dict[str, str] = {}  # synthetic_hotkey -> hl_address
+        self._dashboard_cache_updated_ms: Dict[str, int] = {}  # hl_address -> cache write time
+        self._mapping_last_refresh_ms: Dict[str, int] = {}  # hl_address -> last validator mapping refresh time
 
         # SSE subscriber tracking: hl_address -> set of Queue objects
         self._sse_subscribers: Dict[str, Set[queue.Queue]] = {}
@@ -442,14 +447,138 @@ class EntityMinerRestServer(MinerRestServer):
 
     def _apply_hl_mappings(self, hl_mappings: dict):
         """Apply HL address -> synthetic hotkey mappings received from validator (e.g. WS auth response)."""
+        mapping_changed = False
         for hl_addr, synthetic in hl_mappings.items():
             normalized_hl = self._normalize_hl_address(hl_addr)
             if not normalized_hl or not synthetic:
                 continue
-            self._hl_to_synthetic[normalized_hl] = synthetic
-            self._synthetic_to_hl[synthetic] = normalized_hl
-        self._save_hl_mappings()
+            mapping_changed = self._set_hl_mapping(normalized_hl, synthetic, source="ws_auth") or mapping_changed
+        if mapping_changed:
+            self._save_hl_mappings()
         bt.logging.info(f"[ENTITY-GW] Applied {len(hl_mappings)} HL mappings from validator")
+
+    def _set_hl_mapping(self, hl_address: str, synthetic_hotkey: str, source: str = "unknown") -> bool:
+        """Update HL<->synthetic mapping and evict stale dashboard on reassignment."""
+        if not hl_address or not synthetic_hotkey:
+            return False
+
+        old_synthetic = self._hl_to_synthetic.get(hl_address)
+        old_hl_for_synthetic = self._synthetic_to_hl.get(synthetic_hotkey)
+        mapping_changed = (
+            old_synthetic is not None and old_synthetic != synthetic_hotkey
+        ) or (
+            old_hl_for_synthetic is not None and old_hl_for_synthetic != hl_address
+        )
+
+        if old_synthetic and old_synthetic != synthetic_hotkey:
+            self._synthetic_to_hl.pop(old_synthetic, None)
+            self._evict_dashboard_cache(hl_address)
+            bt.logging.info(
+                f"[ENTITY-GW] HL mapping reassigned ({source}): {hl_address} {old_synthetic} -> {synthetic_hotkey}"
+            )
+
+        if old_hl_for_synthetic and old_hl_for_synthetic != hl_address:
+            self._hl_to_synthetic.pop(old_hl_for_synthetic, None)
+            self._evict_dashboard_cache(old_hl_for_synthetic)
+            bt.logging.info(
+                f"[ENTITY-GW] Synthetic reassigned ({source}): {synthetic_hotkey} {old_hl_for_synthetic} -> {hl_address}"
+            )
+
+        self._hl_to_synthetic[hl_address] = synthetic_hotkey
+        self._synthetic_to_hl[synthetic_hotkey] = hl_address
+        return mapping_changed
+
+    def _evict_dashboard_cache(self, hl_address: str):
+        """Remove any cached dashboard payload for an HL address."""
+        self._dashboard_cache.pop(hl_address, None)
+        self._dashboard_cache_updated_ms.pop(hl_address, None)
+
+    def _fetch_validator_hl_trader(self, hl_address: str) -> Optional[dict]:
+        """Fetch canonical HL trader snapshot from validator."""
+        if not self._validator_url:
+            return None
+
+        try:
+            import requests as http_requests
+            response = http_requests.get(f"{self._validator_url}/hl-traders/{hl_address}", timeout=8)
+            if response.status_code != 200:
+                return None
+            return response.json()
+        except Exception as e:
+            bt.logging.warning(f"[ENTITY-GW] Failed to fetch validator HL trader for {hl_address}: {e}")
+            return None
+
+    @staticmethod
+    def _extract_synthetic_from_validator_payload(payload: dict) -> Optional[str]:
+        """Extract synthetic hotkey from validator /hl-traders payload."""
+        if not isinstance(payload, dict):
+            return None
+
+        dashboard = payload.get("dashboard", {})
+        if isinstance(dashboard, dict):
+            if dashboard.get("synthetic_hotkey"):
+                return dashboard.get("synthetic_hotkey")
+            subaccount_info = dashboard.get("subaccount_info", {})
+            if isinstance(subaccount_info, dict) and subaccount_info.get("synthetic_hotkey"):
+                return subaccount_info.get("synthetic_hotkey")
+
+        return payload.get("synthetic_hotkey")
+
+    def _refresh_dashboard_from_validator(self, hl_address: str) -> Optional[dict]:
+        """
+        Refresh dashboard + mapping from validator canonical source.
+        Returns a normalized dashboard payload or None if refresh failed.
+        """
+        payload = self._fetch_validator_hl_trader(hl_address)
+        now_ms = int(time.time() * 1000)
+        self._mapping_last_refresh_ms[hl_address] = now_ms
+        if not payload:
+            return None
+
+        active_synthetic = self._extract_synthetic_from_validator_payload(payload)
+        if active_synthetic:
+            mapping_changed = self._set_hl_mapping(hl_address, active_synthetic, source="validator_poll")
+            if mapping_changed:
+                self._save_hl_mappings()
+
+        dashboard = payload.get("dashboard", {})
+        normalized_payload = None
+        if isinstance(dashboard, dict):
+            subaccount_info = dashboard.get("subaccount_info", {})
+            if isinstance(subaccount_info, dict) and subaccount_info:
+                normalized_payload = {
+                    "timestamp_ms": payload.get("timestamp", now_ms),
+                    "synthetic_hotkey": active_synthetic or subaccount_info.get("synthetic_hotkey", ""),
+                    "hl_address": hl_address,
+                    **subaccount_info,
+                }
+            elif dashboard:
+                normalized_payload = {
+                    "timestamp_ms": payload.get("timestamp", now_ms),
+                    "synthetic_hotkey": active_synthetic or dashboard.get("synthetic_hotkey", ""),
+                    "hl_address": hl_address,
+                    **dashboard,
+                }
+
+        if normalized_payload:
+            self._dashboard_cache[hl_address] = normalized_payload
+            self._dashboard_cache_updated_ms[hl_address] = now_ms
+
+        return normalized_payload
+
+    def _resolve_active_synthetic_hotkey(self, hl_address: str) -> Optional[str]:
+        """Resolve active synthetic hotkey, refreshing from validator periodically."""
+        now_ms = int(time.time() * 1000)
+        cached_synthetic = self._hl_to_synthetic.get(hl_address)
+        last_refresh_ms = self._mapping_last_refresh_ms.get(hl_address, 0)
+
+        if cached_synthetic and (now_ms - last_refresh_ms) < self.MAPPING_REFRESH_TTL_MS:
+            return cached_synthetic
+
+        refreshed_dashboard = self._refresh_dashboard_from_validator(hl_address)
+        if refreshed_dashboard:
+            return refreshed_dashboard.get("synthetic_hotkey") or self._hl_to_synthetic.get(hl_address)
+        return cached_synthetic
 
     # ==================== Endpoint URL Registration ====================
 
@@ -674,6 +803,7 @@ class EntityMinerRestServer(MinerRestServer):
                 "hl_address": hl_address,
                 **data
             }
+            self._dashboard_cache_updated_ms[hl_address] = int(time.time() * 1000)
             # Push to SSE
             self._push_sse(hl_address, {"type": "dashboard", "data": self._dashboard_cache[hl_address]})
 
@@ -736,10 +866,39 @@ class EntityMinerRestServer(MinerRestServer):
     # ==================== Endpoints ====================
 
     def dashboard_endpoint(self, hl_address):
-        """GET /api/hl/<hl_address>/dashboard - Return cached dashboard data (no API key required)."""
+        """GET /api/hl/<hl_address>/dashboard - Return dashboard data with mapping/TTL reconciliation."""
         normalized_hl = self._normalize_hl_address(hl_address)
+        now_ms = int(time.time() * 1000)
+        active_synthetic = self._resolve_active_synthetic_hotkey(normalized_hl)
         dashboard = self._dashboard_cache.get(normalized_hl)
+        cache_updated_ms = self._dashboard_cache_updated_ms.get(normalized_hl, 0)
+        cache_is_fresh = dashboard is not None and (now_ms - cache_updated_ms) <= self.DASHBOARD_CACHE_TTL_MS
+        cache_matches_mapping = (
+            dashboard is not None and (
+                not active_synthetic or dashboard.get("synthetic_hotkey") == active_synthetic
+            )
+        )
+
+        # Force refresh when entry is stale or points to the wrong synthetic hotkey.
+        if not cache_is_fresh or not cache_matches_mapping:
+            refreshed = self._refresh_dashboard_from_validator(normalized_hl)
+            if refreshed:
+                return jsonify(refreshed), 200
+
+            # Stale-if-error fallback only if mapping still matches or mapping is unknown.
+            if dashboard and cache_matches_mapping:
+                return jsonify(dashboard), 200
+
+            return jsonify({
+                'status': 'no_data',
+                'hl_address': normalized_hl,
+                'message': 'Dashboard cache invalidated and refresh failed'
+            }), 404
+
         if not dashboard:
+            refreshed = self._refresh_dashboard_from_validator(normalized_hl)
+            if refreshed:
+                return jsonify(refreshed), 200
             return jsonify({'status': 'no_data', 'hl_address': normalized_hl}), 404
 
         return jsonify(dashboard), 200
@@ -748,7 +907,10 @@ class EntityMinerRestServer(MinerRestServer):
         """GET /api/hl/<hl_address>/events?since=<ms> - Return order events (no API key required)."""
         since_ms = request.args.get('since', 0, type=int)
         normalized_hl = self._normalize_hl_address(hl_address)
+        active_synthetic = self._resolve_active_synthetic_hotkey(normalized_hl)
         events = self._event_store.get_events(normalized_hl, since_ms=since_ms)
+        if active_synthetic:
+            events = [event for event in events if event.get("synthetic_hotkey") == active_synthetic]
         return jsonify({'hl_address': normalized_hl, 'events': events, 'count': len(events)}), 200
 
     def stream_endpoint(self, hl_address):
@@ -1099,8 +1261,7 @@ class EntityMinerRestServer(MinerRestServer):
                 synthetic = subaccount.get('synthetic_hotkey')
                 normalized_hl = self._normalize_hl_address(hl_address)
                 if synthetic and normalized_hl:
-                    self._hl_to_synthetic[normalized_hl] = synthetic
-                    self._synthetic_to_hl[synthetic] = normalized_hl
+                    self._set_hl_mapping(normalized_hl, synthetic, source="create_hl_subaccount")
                     self._save_hl_mappings()
 
                 if self.slack_notifier:
