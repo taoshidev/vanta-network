@@ -1027,3 +1027,22 @@ class PenaltyLedgerManager:
         """
         return self.penalty_ledgers.get(miner_hotkey, None)
 
+    def delete_penalty_ledger(self, miner_hotkey: str) -> bool:
+        """
+        Delete the penalty ledger for a specific miner.
+
+        Called on subaccount promotion so the funded period starts with a clean ledger.
+
+        Args:
+            miner_hotkey: The miner's hotkey
+
+        Returns:
+            True if deleted, False if not found
+        """
+        if miner_hotkey in self.penalty_ledgers:
+            del self.penalty_ledgers[miner_hotkey]
+            bt.logging.info(f"[PENALTY_LEDGER] Deleted penalty ledger for {miner_hotkey}")
+            self.save_to_disk()
+            return True
+        return False
+

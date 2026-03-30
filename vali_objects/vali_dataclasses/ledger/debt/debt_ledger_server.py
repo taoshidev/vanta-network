@@ -14,6 +14,7 @@ import bittensor as bt
 import time
 from typing import Dict, Optional
 
+from time_util.time_util import MS_IN_1_HOUR
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 from shared_objects.rpc.rpc_server_base import RPCServerBase
 
@@ -79,6 +80,7 @@ class DebtLedgerServer(RPCServerBase):
         )
 
         self.running_unit_tests = running_unit_tests
+        self._penalty_delta_update = False
 
     # ========================================================================
     # PROPERTIES (forward to manager)
@@ -132,8 +134,9 @@ class DebtLedgerServer(RPCServerBase):
         # Step 1: Update penalty ledgers
         bt.logging.info("Step 1/3: Updating penalty ledgers...")
         penalty_start = time.time()
-        self._manager.penalty_ledger_manager.build_penalty_ledgers(delta_update=True)
+        self._manager.penalty_ledger_manager.build_penalty_ledgers(delta_update=self._penalty_delta_update)
         bt.logging.info(f"Penalty ledgers updated in {time.time() - penalty_start:.2f}s")
+        self._penalty_delta_update = True
 
         # Step 2: Update emissions ledgers
         bt.logging.info("Step 2/3: Updating emissions ledgers...")
@@ -151,6 +154,15 @@ class DebtLedgerServer(RPCServerBase):
         bt.logging.info("="*80)
         bt.logging.info(f"Complete update cycle finished in {elapsed:.2f}s")
         bt.logging.info("="*80)
+
+        # Run at the next checkpoint aligned time interval
+        # + 1 hour delay for autosync (midnight utc) and perf ledger checkpoint regen
+        now = time.time()
+        checkpoint_duration_s = ValiConfig.TARGET_CHECKPOINT_DURATION_MS // 1000
+        next_checkpoint_timestamp_s = (int(now) // checkpoint_duration_s + 1) * checkpoint_duration_s + MS_IN_1_HOUR // 1000
+        self.daemon_interval_s = next_checkpoint_timestamp_s - now
+
+        bt.logging.info(f"DebtLedger daemon next iteration in {self.daemon_interval_s} seconds")
 
     # ========================================================================
     # RPC METHODS (delegate to manager)
@@ -318,6 +330,20 @@ class DebtLedgerServer(RPCServerBase):
             delta_update: If True, only process new checkpoints. If False, rebuild from scratch.
         """
         return self._manager.build_debt_ledgers(verbose=verbose, delta_update=delta_update)
+
+    def delete_debt_ledger_rpc(self, hotkey: str) -> bool:
+        """
+        Delete the debt ledger for a specific hotkey (RPC method).
+
+        Called on subaccount promotion so the funded period starts with a clean ledger.
+
+        Args:
+            hotkey: The miner's hotkey
+
+        Returns:
+            True if deleted, False if not found
+        """
+        return self._manager.delete_ledger(hotkey)
 
     def build_debt_ledgers_rpc(self, verbose: bool = False, delta_update: bool = True):
         """

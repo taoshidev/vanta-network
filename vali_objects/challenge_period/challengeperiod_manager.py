@@ -31,6 +31,7 @@ from time_util.time_util import TimeUtil
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger, TP_ID_PORTFOLIO
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
 from vali_objects.vali_dataclasses.ledger.ledger_utils import LedgerUtils
+from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_client import DebtLedgerClient
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.utils.elimination.elimination_manager import EliminationReason
 from vali_objects.enums.miner_bucket_enum import BucketEntry, MinerBucket
@@ -108,6 +109,11 @@ class ChallengePeriodManager(CacheController):
 
         # Create AssetSelectionClient for asset class selection support
         self.asset_selection_client = AssetSelectionClient(
+            connect_immediately=False,
+            connection_mode=connection_mode
+        )
+
+        self._debt_ledger_client = DebtLedgerClient(
             connect_immediately=False,
             connection_mode=connection_mode
         )
@@ -1228,6 +1234,8 @@ class ChallengePeriodManager(CacheController):
                 self._position_client.archive_positions_for_hotkey(hotkey, archive_all=True)
                 # Wipe perf ledgers so funded-period performance is tracked from scratch
                 self._perf_ledger_client.wipe_miners_perf_ledgers([hotkey])
+                # Delete debt ledger to match new perf ledger checkpoints
+                self._debt_ledger_client.delete_debt_ledger(hotkey)
 
             elif bucket_value == MinerBucket.SUBACCOUNT_FUNDED:
                 # Synthetic funded miners cannot be promoted past SUBACCOUNT_FUNDED
