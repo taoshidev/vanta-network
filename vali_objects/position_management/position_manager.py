@@ -1140,20 +1140,20 @@ class PositionManager:
 
     def _delete_position_from_disk(self, position: Position) -> None:
         """Delete a position file from disk. Lock should be aquired by caller"""
-        try:
-            # Try both open and closed directories
-            miner_dir = ValiBkpUtils.get_partitioned_miner_positions_dir(
-                position.miner_hotkey,
-                position.trade_pair.trade_pair_id,
-                order_status=OrderStatus.OPEN if position.is_open_position else OrderStatus.CLOSED,
-                running_unit_tests=self.running_unit_tests
-            )
-            file_path = miner_dir + position.position_uuid
-            if os.path.exists(file_path):
-                os.remove(file_path)
-                bt.logging.info(f"Deleted position from disk: {file_path}")
-        except Exception as e:
-            bt.logging.error(f"Error deleting position {position.position_uuid} from disk: {e}")
+        for order_status in [OrderStatus.OPEN, OrderStatus.CLOSED]:
+            try:
+                miner_dir = ValiBkpUtils.get_partitioned_miner_positions_dir(
+                    position.miner_hotkey,
+                    position.trade_pair.trade_pair_id,
+                    order_status=order_status,
+                    running_unit_tests=self.running_unit_tests
+                )
+                file_path = miner_dir + position.position_uuid
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+                    bt.logging.info(f"Deleted position from disk: {file_path}")
+            except Exception as e:
+                bt.logging.error(f"Error deleting position {position.position_uuid} from disk: {e}")
 
     def dedupe_positions(self, positions: List[Position], miner_hotkey: str) -> None:
         """Internal method to deduplicate positions for a miner."""
