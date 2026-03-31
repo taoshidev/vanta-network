@@ -248,7 +248,6 @@ class PropNetOrderPlacer:
         mothership_hotkey = ValiConfig.MOTHERSHIP_HOTKEY_TESTNET if self.is_testnet else ValiConfig.MOTHERSHIP_HOTKEY
         axons = self.position_inspector.get_possible_validators()
         hotkey_to_v_trust = {a.hotkey: neuron.validator_trust for neuron in self.metagraph_client.get_neurons() for a in axons if neuron.hotkey == a.hotkey}
-        bt.logging.info(f"Validator hotkey -> v_trust: {hotkey_to_v_trust}")
         mothership_axon = None
         other_axons = []
         for axon in axons:
@@ -257,8 +256,9 @@ class PropNetOrderPlacer:
             elif hotkey_to_v_trust.get(axon.hotkey, 0) >= MinerConfig.HIGH_V_TRUST_THRESHOLD:
                 other_axons.append(axon)
 
-        bt.logging.info(f"Mothership validator: {mothership_axon.hotkey if mothership_axon else 'None'}")
-        bt.logging.info(f"Other validators ({len(other_axons)}): {[a.hotkey for a in other_axons]}")
+        # bt.logging.info(f"Validator hotkey -> v_trust: {hotkey_to_v_trust}")
+        # bt.logging.info(f"Mothership validator: {mothership_axon.hotkey if mothership_axon else 'None'}")
+        # bt.logging.info(f"Other validators ({len(other_axons)}): {[a.hotkey for a in other_axons]}")
         return mothership_axon, other_axons
 
     async def _send_order(self, synapse, mothership_axon, other_axons) -> dict:
