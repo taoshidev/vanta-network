@@ -1025,6 +1025,15 @@ class SubtensorOpsManager(CacheController):
             tao_reserve_rao, alpha_reserve_rao = self._get_substrate_reserves(metagraph_clone)
             tao_to_usd_rate = self._get_tao_usd_rate()
 
+        # Log validator hotkeys (those with validator_permit=True) and stake requirement
+        if hasattr(metagraph_clone, 'validator_permit') and hasattr(metagraph_clone, 'hotkeys'):
+            validator_hotkeys = [
+                metagraph_clone.hotkeys[i]
+                for i, permit in enumerate(metagraph_clone.validator_permit)
+                if permit
+            ]
+            bt.logging.info(f"Validators with permit ({len(validator_hotkeys)}): {validator_hotkeys}")
+
         # Single atomic RPC call to update all metagraph fields
         # Much faster than multiple calls - all fields updated together under one lock
         self._metagraph_client.update_metagraph(
