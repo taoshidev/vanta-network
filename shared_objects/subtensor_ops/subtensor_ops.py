@@ -384,7 +384,8 @@ class SubtensorOpsManager(CacheController):
             # Create wallet from config
             wallet = bt.wallet(config=self.config)
 
-            bt.logging.info(f"[BROADCAST RPC] Broadcasting {synapse_class_name} to {len(validator_axons_list)} validators")
+            target_hotkeys = [a.hotkey for a in validator_axons_list]
+            bt.logging.info(f"[BROADCAST RPC] Broadcasting {synapse_class_name} to {len(validator_axons_list)} validators: {target_hotkeys}")
 
             async def do_broadcast():
                 async with bt.dendrite(wallet=wallet) as dendrite:
@@ -392,19 +393,22 @@ class SubtensorOpsManager(CacheController):
 
                     success_count = 0
                     errors = []
+                    successful_hotkeys = []
 
                     for response in responses:
                         if response.successfully_processed:
                             success_count += 1
+                            successful_hotkeys.append(response.axon.hotkey)
                         elif response.error_message:
                             errors.append(f"{response.axon.hotkey}: {response.error_message}")
 
-                    return success_count, errors
+                    return success_count, errors, successful_hotkeys
 
-            success_count, errors = asyncio.run(do_broadcast())
+            success_count, errors, successful_hotkeys = asyncio.run(do_broadcast())
 
             bt.logging.info(
-                f"[BROADCAST RPC] Broadcast completed: {success_count}/{len(validator_axons_list)} validators updated"
+                f"[BROADCAST RPC] Broadcast completed: {success_count}/{len(validator_axons_list)} validators updated. "
+                f"Successful: {successful_hotkeys}"
             )
 
             return {
