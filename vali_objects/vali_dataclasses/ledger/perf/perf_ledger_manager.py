@@ -1485,11 +1485,13 @@ class PerfLedgerManager(CacheController):
                                 # Convert unrealized PnL to realized PnL
                                 # Subtract the open position's unrealized PnL (accumulated during tick-by-tick)
                                 tp_to_unrealized_pnl[tp_id] -= hist_pos.unrealized_pnl
-                                # Add the closed position's realized PnL
-                                tp_to_realized_pnl[tp_id] += closed_position.realized_pnl
+                                # Add only the incremental realized PnL from the FLAT order.
+                                tp_to_realized_pnl[tp_id] += closed_position.realized_pnl - hist_pos.realized_pnl
                                 bt.logging.debug(
                                     f"Converted PnL for position {closed_position.position_uuid[:8]} closing during checkpoint: "
-                                    f"removed unrealized ${hist_pos.unrealized_pnl:.2f}, added realized ${closed_position.realized_pnl:.2f}"
+                                    f"removed unrealized ${hist_pos.unrealized_pnl:.2f}, added incremental realized "
+                                    f"${closed_position.realized_pnl - hist_pos.realized_pnl:.2f} "
+                                    f"(closed={closed_position.realized_pnl:.2f}, hist={hist_pos.realized_pnl:.2f})"
                                 )
                                 break
 
