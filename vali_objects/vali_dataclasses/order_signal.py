@@ -3,12 +3,12 @@
 from typing import Optional
 
 from vali_objects.enums.execution_type_enum import ExecutionType
-from vali_objects.vali_config import TradePair, ValiConfig
+from vali_objects.vali_config import TradePair, TradePairLike, ValiConfig
 from vali_objects.enums.order_type_enum import OrderType, StopCondition
 from pydantic import BaseModel, model_validator
 
 class Signal(BaseModel):
-    trade_pair: Optional[TradePair] = None  # Optional for FLAT_ALL and LIMIT_CANCEL
+    trade_pair: Optional[TradePairLike] = None  # Optional for FLAT_ALL and LIMIT_CANCEL
     order_type: Optional[OrderType] = None
     leverage: Optional[float] = None    # Multiplier of account size
     value: Optional[float] = None       # USD notional value
@@ -222,7 +222,7 @@ class Signal(BaseModel):
         return values
 
     @staticmethod
-    def parse_trade_pair_from_signal(signal) -> TradePair | None:
+    def parse_trade_pair_from_signal(signal) -> TradePairLike | None:
         if not signal or not isinstance(signal, dict):
             return None
         if 'trade_pair' not in signal:

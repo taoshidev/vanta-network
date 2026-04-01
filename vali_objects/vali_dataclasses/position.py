@@ -5,7 +5,7 @@ from typing import Dict, Optional, List
 from pydantic import model_validator, BaseModel, Field
 
 from time_util.time_util import TimeUtil, MS_IN_1_HOUR, MS_IN_8_HOURS, MS_IN_24_HOURS
-from vali_objects.vali_config import TradePair, TradePairCategory, ValiConfig
+from vali_objects.vali_config import TradePair, TradePairCategory, TradePairLike, DynamicTradePair, ValiConfig
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.enums.order_type_enum import OrderType
@@ -46,7 +46,7 @@ class Position(BaseModel):
     miner_hotkey: str
     position_uuid: str
     open_ms: int
-    trade_pair: TradePair
+    trade_pair: TradePairLike
     orders: List[Order] = Field(default_factory=list)
     current_return: float = 1.0             # Excludes fees
     close_ms: Optional[int] = None
@@ -69,10 +69,11 @@ class Position(BaseModel):
 
     @model_validator(mode='before')
     def add_trade_pair_to_orders_and_self(cls, values):
-        if isinstance(values['trade_pair'], TradePair):
-            trade_pair_id = values['trade_pair'].trade_pair_id
+        tp = values['trade_pair']
+        if hasattr(tp, 'trade_pair_id'):
+            trade_pair_id = tp.trade_pair_id
         else:
-            trade_pair_id = values['trade_pair'][0]
+            trade_pair_id = tp[0]  # legacy list from disk
 
         trade_pair = TradePair.get_latest_trade_pair_from_trade_pair_id(trade_pair_id)
         orders = values.get('orders', [])
@@ -363,12 +364,18 @@ class Position(BaseModel):
         # Write the trade_pair in the legacy tuple format as to not break generate_request_outputs. This is temporary
         # code until generate_request_outputs is updated to have the new TradePair decoding logic. If BTC or ETH, put
         # the legacy fee value so that pydantic can validate the JSON with the original decoding logic
-        if isinstance(d['trade_pair'], TradePair):
-            tp = d['trade_pair']
-            fee = .003 if tp.is_crypto else tp.fees
-            d['trade_pair'] = [tp.trade_pair_id, tp.trade_pair, fee, tp.min_leverage, tp.max_leverage]
+        tp_val = d['trade_pair']
+        if isinstance(tp_val, TradePair):
+            fee = .003 if tp_val.is_crypto else tp_val.fees
+            d['trade_pair'] = [tp_val.trade_pair_id, tp_val.trade_pair, fee, tp_val.min_leverage, tp_val.max_leverage]
+        elif isinstance(tp_val, DynamicTradePair):
+            # Defensive: shouldn't reach here after model_dump(), but handle correctly if it does.
+            d['trade_pair'] = [tp_val.trade_pair_id, tp_val.trade_pair, tp_val.fees, tp_val.min_leverage, tp_val.max_leverage]
+        elif isinstance(tp_val, dict) and 'hl_coin' in tp_val:
+            # Pydantic v2 model_dump() converts Python @dataclass fields to plain dicts.
+            d['trade_pair'] = [tp_val['trade_pair_id'], tp_val['trade_pair'], tp_val.get('fees', 0.001), tp_val.get('min_leverage', 0.01), tp_val['max_leverage']]
         else:
-            d['trade_pair'] = d['trade_pair'][:5]
+            d['trade_pair'] = tp_val[:5]
             if d['trade_pair'][0] in (TradePair.BTCUSD.trade_pair_id, TradePair.ETHUSD.trade_pair_id):
                 d['trade_pair'][2] = 0.003
         return d
