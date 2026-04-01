@@ -18,7 +18,7 @@ from unittest.mock import MagicMock, patch
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
 from vali_objects.utils.vali_utils import ValiUtils
-from vali_objects.vali_config import ValiConfig, TradePair, TRADE_PAIR_ID_TO_TRADE_PAIR
+from vali_objects.vali_config import ValiConfig, TradePair, TRADE_PAIR_ID_TO_HL_COIN, DynamicTradePair
 from time_util.time_util import TimeUtil
 from entity_management.entity_utils import is_synthetic_hotkey, parse_synthetic_hotkey
 from entity_management.hyperliquid_tracker import HyperliquidTracker
@@ -764,23 +764,45 @@ class TestHyperliquidTracker(TestBase):
 
     # ==================== Coin Mapping ====================
 
-    def test_hl_coin_to_trade_pair_mapping(self):
-        """Test that HL_COIN_TO_TRADE_PAIR maps all supported coins correctly."""
+    def test_trade_pair_id_to_hl_coin_mapping(self):
+        """TRADE_PAIR_ID_TO_HL_COIN has the six static HL coins."""
         expected = {
-            "BTC": "BTCUSD",
-            "ETH": "ETHUSD",
-            "SOL": "SOLUSD",
-            "XRP": "XRPUSD",
-            "DOGE": "DOGEUSD",
-            "ADA": "ADAUSD",
+            "BTCUSD": "BTC",
+            "ETHUSD": "ETH",
+            "SOLUSD": "SOL",
+            "XRPUSD": "XRP",
+            "DOGEUSD": "DOGE",
+            "ADAUSD": "ADA",
         }
-        self.assertEqual(ValiConfig.HL_COIN_TO_TRADE_PAIR, expected)
+        self.assertEqual(TRADE_PAIR_ID_TO_HL_COIN, expected)
 
-    def test_all_mapped_trade_pairs_exist(self):
-        """Test that all trade pair IDs in the mapping resolve to actual TradePair objects."""
-        for coin, trade_pair_id in ValiConfig.HL_COIN_TO_TRADE_PAIR.items():
-            tp = TRADE_PAIR_ID_TO_TRADE_PAIR.get(trade_pair_id)
-            self.assertIsNotNone(tp, f"Trade pair {trade_pair_id} for coin {coin} not found in TRADE_PAIR_ID_TO_TRADE_PAIR")
+    def test_dynamic_registry_populated_by_refresh(self):
+        """_refresh_hl_universe populates _hl_universe with DynamicTradePair objects for liquid coins."""
+        fake_meta = {
+            "universe": [
+                {"name": "PEPE", "maxLeverage": 40},
+                {"name": "LOWVOL", "maxLeverage": 10},
+            ]
+        }
+        fake_ctxs = [
+            {"dayNtlVlm": "5000000"},  # above liquidity threshold
+            {"dayNtlVlm": "100"},       # below liquidity threshold
+        ]
+
+        with patch.object(self.tracker, '_persist_hl_dynamic_registry'), \
+             patch('entity_management.hyperliquid_tracker.requests') as mock_req:
+            mock_resp = MagicMock()
+            mock_resp.json.return_value = [fake_meta, fake_ctxs]
+            mock_req.post.return_value = mock_resp
+            self.tracker._refresh_hl_universe()
+
+        self.assertIn("PEPE", self.tracker._hl_universe)
+        self.assertNotIn("LOWVOL", self.tracker._hl_universe)
+        pepe_dtp = self.tracker._hl_universe["PEPE"]
+        self.assertIsInstance(pepe_dtp, DynamicTradePair)
+        self.assertEqual(pepe_dtp.trade_pair_id, "PEPEUSD")
+        # max_leverage = min(40 / ValiConfig.HL_LEVERAGE_SCALE_FACTOR, HL_LEVERAGE_CEILING) = 0.5
+        self.assertAlmostEqual(pepe_dtp.max_leverage, 0.5)
 
     # ==================== Fill Dedup ====================
 

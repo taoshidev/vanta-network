@@ -713,10 +713,14 @@ class TestHLTrackerRejectionBroadcasts(TestBase):
 
     def _setup_valid_fill_path(self, tracker, synthetic="5Entity_0"):
         """Configure mocks so fill passes coin/hotkey resolution but hits fail-early checks."""
-        from vali_objects.vali_config import ValiConfig
+        from vali_objects.vali_config import DynamicTradePair
 
-        # Coin resolves to a valid trade pair
-        ValiConfig.HL_COIN_TO_TRADE_PAIR = ValiConfig.HL_COIN_TO_TRADE_PAIR or {}
+        # Coin resolves to a valid trade pair via dynamic registry
+        tracker._hl_universe = {
+            "BTC": DynamicTradePair(
+                trade_pair_id="BTCUSD", trade_pair="BTC/USD", hl_coin="BTC", max_leverage=0.5
+            )
+        }
         tracker._entity_client.get_synthetic_hotkey_for_hl_address.return_value = synthetic
         tracker._entity_client.get_subaccount_info_for_synthetic.return_value = {
             "account_size": 100_000
@@ -781,13 +785,7 @@ class TestHLTrackerRejectionBroadcasts(TestBase):
         tracker._rate_limiter = MagicMock()
         tracker._rate_limiter.is_allowed.return_value = (False, 5.0)
 
-        with patch('entity_management.hyperliquid_tracker.ValiConfig') as mock_config, \
-             patch('entity_management.hyperliquid_tracker.TRADE_PAIR_ID_TO_TRADE_PAIR') as mock_tp:
-            mock_config.HL_COIN_TO_TRADE_PAIR = {"BTC": "BTCUSD"}
-            mock_tp.__getitem__ = MagicMock(return_value=MagicMock(is_blocked=False))
-            mock_tp.get = MagicMock(return_value=MagicMock(is_blocked=False))
-
-            tracker._process_fill("0xaddr", self._make_fill())
+        tracker._process_fill("0xaddr", self._make_fill())
 
         tracker._ws_notifier_client.broadcast_subaccount_dashboard.assert_called_once()
         call_args = tracker._ws_notifier_client.broadcast_subaccount_dashboard.call_args
@@ -805,12 +803,7 @@ class TestHLTrackerRejectionBroadcasts(TestBase):
         # Elimination check returns data (eliminated)
         tracker._elimination_client.get_elimination_local_cache.return_value = {"reason": "mdd"}
 
-        with patch('entity_management.hyperliquid_tracker.ValiConfig') as mock_config, \
-             patch('entity_management.hyperliquid_tracker.TRADE_PAIR_ID_TO_TRADE_PAIR') as mock_tp:
-            mock_config.HL_COIN_TO_TRADE_PAIR = {"BTC": "BTCUSD"}
-            mock_tp.get = MagicMock(return_value=MagicMock(is_blocked=False))
-
-            tracker._process_fill("0xaddr", self._make_fill())
+        tracker._process_fill("0xaddr", self._make_fill())
 
         call_args = tracker._ws_notifier_client.broadcast_subaccount_dashboard.call_args
         self.assertIn("eliminated", call_args[0][1]["error_msg"].lower())
@@ -827,16 +820,15 @@ class TestHLTrackerRejectionBroadcasts(TestBase):
         tracker._elimination_client.get_elimination_local_cache.return_value = None
         tracker._entity_client.validate_hotkey_for_orders.return_value = {"is_valid": True}
 
-        with patch('entity_management.hyperliquid_tracker.ValiConfig') as mock_config, \
-             patch('entity_management.hyperliquid_tracker.TRADE_PAIR_ID_TO_TRADE_PAIR') as mock_tp, \
-             patch('entity_management.hyperliquid_tracker.OrderProcessor') as mock_op:
-            mock_config.HL_COIN_TO_TRADE_PAIR = {"BTC": "BTCUSD"}
-            mock_config.CRYPTO_MIN_LEVERAGE = 0.01
-            mock_config.CRYPTO_MAX_LEVERAGE = 0.5
-            tp_mock = MagicMock(is_blocked=False)
-            mock_tp.get = MagicMock(return_value=tp_mock)
-            tracker._price_fetcher_client.is_market_open.return_value = True
+        tracker._price_fetcher_client.is_market_open.return_value = True
+        tracker._fetch_hl_account_state = MagicMock(return_value={
+            "total_portfolio_value": 100_000,
+            "positions": {"BTC": {"weight": 0.3}},
+        })
+        tracker._position_client = MagicMock()
+        tracker._position_client.get_open_position_for_trade_pair.return_value = None
 
+        with patch('entity_management.hyperliquid_tracker.OrderProcessor') as mock_op:
             mock_op.process_order.side_effect = SignalException("Leverage too high")
 
             tracker._process_fill("0xaddr", self._make_fill())
@@ -855,16 +847,15 @@ class TestHLTrackerRejectionBroadcasts(TestBase):
         tracker._elimination_client.get_elimination_local_cache.return_value = None
         tracker._entity_client.validate_hotkey_for_orders.return_value = {"is_valid": True}
 
-        with patch('entity_management.hyperliquid_tracker.ValiConfig') as mock_config, \
-             patch('entity_management.hyperliquid_tracker.TRADE_PAIR_ID_TO_TRADE_PAIR') as mock_tp, \
-             patch('entity_management.hyperliquid_tracker.OrderProcessor') as mock_op:
-            mock_config.HL_COIN_TO_TRADE_PAIR = {"BTC": "BTCUSD"}
-            mock_config.CRYPTO_MIN_LEVERAGE = 0.01
-            mock_config.CRYPTO_MAX_LEVERAGE = 0.5
-            tp_mock = MagicMock(is_blocked=False)
-            mock_tp.get = MagicMock(return_value=tp_mock)
-            tracker._price_fetcher_client.is_market_open.return_value = True
+        tracker._price_fetcher_client.is_market_open.return_value = True
+        tracker._fetch_hl_account_state = MagicMock(return_value={
+            "total_portfolio_value": 100_000,
+            "positions": {"BTC": {"weight": 0.3}},
+        })
+        tracker._position_client = MagicMock()
+        tracker._position_client.get_open_position_for_trade_pair.return_value = None
 
+        with patch('entity_management.hyperliquid_tracker.OrderProcessor') as mock_op:
             mock_op.process_order.side_effect = ValueError("Position at max $1000.00 (limit: $1000.00)")
 
             tracker._process_fill("0xaddr", self._make_fill())
