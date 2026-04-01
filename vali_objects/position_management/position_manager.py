@@ -33,7 +33,7 @@ from vali_objects.challenge_period.challengeperiod_client import ChallengePeriod
 from entity_management.entity_client import EntityClient
 from entity_management.entity_utils import is_synthetic_hotkey
 
-TARGET_MS = 1774396800000 + (1000 * 60 * 60 * 6)  # + 6 hours
+TARGET_MS = 1775032548000 + (1000 * 60 * 60 * 6)  # + 6 hours
 
 
 class PositionManager:
@@ -983,8 +983,8 @@ class PositionManager:
             # bt.logging.info(f"Applied {n_slippage_corrections} forex slippage corrections")
 
             # All miners that wanted their challenge period restarted
-            miners_to_wipe = ["5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_32"]
-            position_uuids_to_delete = ["e4feaeec-41f4-4299-9bc1-2ba5ae6b581a"]
+            miners_to_wipe = ["5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_75"]
+            position_uuids_to_delete = []
             position_uuids_to_archive = []
             miners_to_promote = []
 
@@ -1056,10 +1056,10 @@ class PositionManager:
                             self.save_miner_position(pos, validate=False)
                             print(f'Removed eliminated orders from position {pos}')
 
-                # Restore subaccount status for erroneously eliminated synthetic hotkeys
-                if is_synthetic_hotkey(miner_hotkey) and self._entity_client:
-                    success, msg = self._entity_client.restore_subaccount(miner_hotkey)
-                    print(f"Restored subaccount {miner_hotkey}: {msg}")
+                # # Restore subaccount status for erroneously eliminated synthetic hotkeys
+                # if is_synthetic_hotkey(miner_hotkey) and self._entity_client:
+                #     success, msg = self._entity_client.restore_subaccount(miner_hotkey)
+                #     print(f"Restored subaccount {miner_hotkey}: {msg}")
 
                 # Remove from challenge period so the next refresh re-adds them to the
                 # correct bucket (SUBACCOUNT_CHALLENGE for synthetic, CHALLENGE for regular)
