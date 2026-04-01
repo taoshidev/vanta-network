@@ -23,7 +23,7 @@ from vali_objects.price_fetcher.live_price_client import LivePriceFetcherClient
 from vali_objects.utils.elimination.elimination_client import EliminationClient
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
-from vali_objects.vali_config import RPCConnectionMode, ValiConfig
+from vali_objects.vali_config import RPCConnectionMode, ValiConfig, DynamicTradePair
 from vali_objects.vali_dataclasses import position as position_file
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import FeeCache, PerfLedger, TP_ID_PORTFOLIO
 from vali_objects.vali_dataclasses.position import Position
@@ -149,7 +149,11 @@ class PerfLedgerManager(CacheController):
         """Fetch HL funding rates for a position if it is an HL position, otherwise return None."""
         if not position.is_hl:
             return None
-        coin = ValiConfig.TRADE_PAIR_ID_TO_HL_COIN.get(position.trade_pair.trade_pair_id)
+        tp = position.trade_pair
+        if isinstance(tp, DynamicTradePair):
+            coin = tp.hl_coin
+        else:
+            coin = ValiConfig.TRADE_PAIR_ID_TO_HL_COIN.get(tp.trade_pair_id)
         if not coin:
             return None
         try:

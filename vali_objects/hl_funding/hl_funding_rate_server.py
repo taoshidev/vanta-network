@@ -9,7 +9,7 @@ from typing import Dict, List, Optional
 
 from time_util.time_util import TimeUtil
 from vali_objects.hl_funding.hl_funding_rate_manager import HLFundingRateManager
-from vali_objects.vali_config import ValiConfig, RPCConnectionMode
+from vali_objects.vali_config import ValiConfig, RPCConnectionMode, HL_DYNAMIC_REGISTRY, load_hl_dynamic_registry
 from shared_objects.rpc.rpc_server_base import RPCServerBase
 
 
@@ -54,11 +54,23 @@ class HLFundingRateServer(RPCServerBase):
         if not running_unit_tests:
             self._backfill()
 
+    def _get_coins(self) -> list:
+        """Return all known HL coins, refreshing registry from disk first."""
+        load_hl_dynamic_registry()
+        coins = [dtp.hl_coin for dtp in list(HL_DYNAMIC_REGISTRY.values())]
+        if not coins:
+            # Fallback: static 6 coins before any tracker run has written the registry.
+            return list(ValiConfig.TRADE_PAIR_ID_TO_HL_COIN.values())
+        return coins
+
     def _backfill(self):
         """Backfill the last N hours of funding rates on startup."""
         now_ms = TimeUtil.now_in_millis()
         start_ms = now_ms - ValiConfig.HL_FUNDING_BACKFILL_HOURS * 3600 * 1000
-        coins = list(ValiConfig.HL_COIN_TO_TRADE_PAIR.keys())
+        coins = self._get_coins()
+        if not coins:
+            bt.logging.warning("[HL_FUNDING_SERVER] No coins available, skipping backfill.")
+            return
         bt.logging.info(f"[HL_FUNDING_SERVER] Backfilling {ValiConfig.HL_FUNDING_BACKFILL_HOURS}h of rates for {len(coins)} coins")
         self._manager.fetch_and_store_rates(coins, start_ms, now_ms)
 
@@ -66,7 +78,9 @@ class HLFundingRateServer(RPCServerBase):
         """Fetch last 2 hours of rates for all HL coins."""
         now_ms = TimeUtil.now_in_millis()
         start_ms = now_ms - 2 * 3600 * 1000  # 2 hours back
-        coins = list(ValiConfig.HL_COIN_TO_TRADE_PAIR.keys())
+        coins = self._get_coins()
+        if not coins:
+            return
         self._manager.fetch_and_store_rates(coins, start_ms, now_ms)
 
     # === RPC methods ===
