@@ -415,6 +415,8 @@ class HyperliquidTracker:
         self._backup_fills_caught = 0
         self._backup_polls_total = 0
         self._proxy_index_rest = 0
+        self._hl_universe: dict = {}       # keyed by coin name, refreshed hourly
+        self._last_universe_refresh: float = 0.0
         self._load_backup_poll_watermarks()
 
     @property
@@ -434,6 +436,8 @@ class HyperliquidTracker:
             return
 
         self._stop_event.clear()
+        # Populate universe before the thread starts so _process_fill has coins ready.
+        self._refresh_hl_universe()
         self._thread = threading.Thread(target=self._run_loop, daemon=True, name="hl-tracker")
         self._thread.start()
         bt.logging.info("[HL_TRACKER] Started daemon thread")
@@ -521,7 +525,12 @@ class HyperliquidTracker:
         We dynamically intersect configured coins with HL `allMids` to avoid sending
         unsupported testnet subscriptions that can cause abrupt socket closes.
         """
-        configured_coins = set(ValiConfig.HL_COIN_TO_TRADE_PAIR.keys())
+        from vali_objects.vali_config import HL_DYNAMIC_REGISTRY
+        configured_coins = (
+            set(self._hl_universe.keys()) or
+            {dtp.hl_coin for dtp in list(HL_DYNAMIC_REGISTRY.values())} or
+            set(ValiConfig.TRADE_PAIR_ID_TO_HL_COIN.values())
+        )
         now = time.time()
         if (
             self._l2_coin_cache is not None
@@ -1068,6 +1077,62 @@ class HyperliquidTracker:
         except Exception as e:
             bt.logging.warning(f"[HL_BACKUP] Failed to load watermarks: {e}")
 
+    def _refresh_hl_universe(self):
+        """Fetch /metaAndAssetCtxs from HL and update _hl_universe + HL_DYNAMIC_REGISTRY."""
+        from vali_objects.vali_config import HL_DYNAMIC_REGISTRY, DynamicTradePair
+        try:
+            resp = requests.post(ValiConfig.hl_info_url(), json={"type": "metaAndAssetCtxs"}, timeout=10)
+            resp.raise_for_status()
+            meta, ctxs = resp.json()
+        except Exception as e:
+            bt.logging.warning(f"[HL_TRACKER] _refresh_hl_universe failed: {e} — keeping existing registry")
+            return
+
+        new_universe = {}
+        for asset, ctx in zip(meta["universe"], ctxs):
+            coin = asset["name"]
+            if float(ctx.get("dayNtlVlm", 0)) < ValiConfig.HL_MIN_LIQUIDITY_USD:
+                continue
+            vanta_max = max(
+                ValiConfig.HL_LEVERAGE_FLOOR,
+                min(asset["maxLeverage"] / ValiConfig.HL_LEVERAGE_SCALE_FACTOR,
+                    ValiConfig.HL_LEVERAGE_CEILING)
+            )
+            new_universe[coin] = DynamicTradePair(
+                trade_pair_id=f"{coin}USD",
+                trade_pair=f"{coin}/USD",
+                hl_coin=coin,
+                max_leverage=vanta_max,
+            )
+
+        self._hl_universe = new_universe
+        for dtp in new_universe.values():
+            HL_DYNAMIC_REGISTRY[dtp.trade_pair_id] = dtp
+        self._persist_hl_dynamic_registry()
+        self._last_universe_refresh = time.time()
+        bt.logging.info(f"[HL_TRACKER] Universe: {len(new_universe)} active, {len(HL_DYNAMIC_REGISTRY)} total")
+
+    def _persist_hl_dynamic_registry(self):
+        """Write HL_DYNAMIC_REGISTRY to disk so other processes can load it."""
+        from vali_objects.vali_config import HL_DYNAMIC_REGISTRY, _HL_REGISTRY_PATH
+        data = {
+            tid: {
+                "trade_pair_id": dtp.trade_pair_id,
+                "trade_pair":    dtp.trade_pair,
+                "hl_coin":       dtp.hl_coin,
+                "max_leverage":  dtp.max_leverage,
+                "min_leverage":  dtp.min_leverage,
+                "fees":          dtp.fees,
+                "trade_pair_category": dtp.trade_pair_category.value,
+            }
+            for tid, dtp in HL_DYNAMIC_REGISTRY.items()
+        }
+        try:
+            with open(_HL_REGISTRY_PATH, "w") as f:
+                json.dump(data, f)
+        except Exception as e:
+            bt.logging.warning(f"[HL_TRACKER] Failed to persist HL_DYNAMIC_REGISTRY: {e}")
+
     def _save_backup_poll_watermarks(self):
         """Persist HL backup watermarks for restart continuity."""
         try:
@@ -1135,6 +1200,8 @@ class HyperliquidTracker:
 
         while not self._stop_event.is_set():
             try:
+                if time.time() - self._last_universe_refresh > ValiConfig.HL_UNIVERSE_REFRESH_INTERVAL_S:
+                    await asyncio.get_running_loop().run_in_executor(None, self._refresh_hl_universe)
                 tracked_addresses = list(self._address_to_shard.keys())
                 if not tracked_addresses:
                     await asyncio.sleep(ValiConfig.HL_BACKUP_POLL_INTERVAL_S)
@@ -1223,7 +1290,11 @@ class HyperliquidTracker:
             return
 
         coins_to_check = set(account_state.get("positions", {}).keys())
-        trade_pair_to_coin = {v: k for k, v in ValiConfig.HL_COIN_TO_TRADE_PAIR.items()}
+        from vali_objects.vali_config import HL_DYNAMIC_REGISTRY
+        trade_pair_to_coin = {
+            dtp.trade_pair_id: dtp.hl_coin
+            for dtp in list(HL_DYNAMIC_REGISTRY.values())
+        }
         try:
             open_positions = self._position_client.get_positions_for_one_hotkey(
                 synthetic_hotkey, only_open_positions=True
@@ -1267,16 +1338,19 @@ class HyperliquidTracker:
         if not coin:
             return
 
-        # Map coin to trade pair ID
-        trade_pair_id = ValiConfig.HL_COIN_TO_TRADE_PAIR.get(coin)
-        if not trade_pair_id:
-            bt.logging.debug(f"[HL_TRACKER] Unsupported coin: {coin}")
-            return
-
-        trade_pair = TRADE_PAIR_ID_TO_TRADE_PAIR.get(trade_pair_id)
+        # Map coin to trade pair via dynamic registry
+        from vali_objects.vali_config import HL_DYNAMIC_REGISTRY
+        trade_pair = self._hl_universe.get(coin)
+        below_threshold = False
         if not trade_pair:
-            bt.logging.warning(f"[HL_TRACKER] Trade pair not found: {trade_pair_id}")
-            return
+            # Coin is below liquidity threshold or not yet refreshed — check full registry
+            # to handle close/reduce fills for previously tracked coins.
+            trade_pair = HL_DYNAMIC_REGISTRY.get(f"{coin}USD")
+            if not trade_pair:
+                bt.logging.debug(f"[HL_TRACKER] Unknown coin: {coin}")
+                return
+            below_threshold = True
+        trade_pair_id = trade_pair.trade_pair_id
 
         # Resolve synthetic hotkey
         synthetic_hotkey = self._entity_client.get_synthetic_hotkey_for_hl_address(hl_address)
@@ -1353,9 +1427,9 @@ class HyperliquidTracker:
         else:
             target_signed_weight = 0.0  # position closed on HL side
 
-        # Clip to Vanta limits (signed)
-        max_lev = ValiConfig.CRYPTO_MAX_LEVERAGE
-        min_lev = ValiConfig.CRYPTO_MIN_LEVERAGE
+        # Clip to per-asset Vanta limits (signed)
+        max_lev = trade_pair.max_leverage
+        min_lev = trade_pair.min_leverage
         if abs(target_signed_weight) < min_lev:
             target_signed_weight = 0.0  # below minimum -> treat as flat
         elif abs(target_signed_weight) > max_lev:
@@ -1383,6 +1457,15 @@ class HyperliquidTracker:
         if abs(delta) < min_lev and target_signed_weight != 0.0:
             bt.logging.debug(f"[HL_TRACKER] Delta {delta:.4f} below min leverage, skipping")
             return
+
+        # Block position increases for coins below the liquidity threshold.
+        if below_threshold and delta != 0:
+            would_increase = (current_signed_lev >= 0 and delta > 0) or \
+                             (current_signed_lev <= 0 and delta < 0)
+            if would_increase:
+                bt.logging.debug(f"[HL_TRACKER] Blocking position increase for below-threshold coin {coin}")
+                return
+            # delta reduces or closes — allow through
 
         # Step 5: Convert delta to order_type + leverage
         if target_signed_weight == 0.0:

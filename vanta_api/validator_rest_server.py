@@ -1207,6 +1207,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
             trade_pair_id = data.get('trade_pair_id')
             trade_pair = TradePair.from_trade_pair_id(trade_pair_id) if trade_pair_id else None
+            if trade_pair is not None and not isinstance(trade_pair, TradePair):
+                raise SignalException("Dynamic HL coins are not available for direct signal submission.")
 
             signal_obj = Signal(
                 trade_pair=trade_pair,
