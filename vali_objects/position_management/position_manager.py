@@ -33,7 +33,7 @@ from vali_objects.challenge_period.challengeperiod_client import ChallengePeriod
 from entity_management.entity_client import EntityClient
 from entity_management.entity_utils import is_synthetic_hotkey
 
-TARGET_MS = 1775160000 + (1000 * 60 * 60 * 6)  # + 6 hours
+TARGET_MS = 1775160000000 + (1000 * 60 * 60 * 6)  # + 6 hours
 
 
 class PositionManager:
