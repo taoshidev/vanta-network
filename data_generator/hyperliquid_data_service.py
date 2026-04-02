@@ -12,14 +12,13 @@ import websockets
 from data_generator.base_data_service import BaseDataService, HYPERLIQUID_PROVIDER_NAME
 from entity_management.hl_orderbook_utils import simulate_fill
 from time_util.time_util import TimeUtil
-from vali_objects.vali_config import TradePair, TradePairCategory, ValiConfig
+from vali_objects.vali_config import TradePair, TradePairCategory, TradePairLike, ValiConfig
 from vali_objects.vali_dataclasses.price_source import PriceSource
 from vali_objects.vali_dataclasses.recent_event_tracker import RecentEventTracker
 
-HYPERLIQUID_WS_URL = "wss://api.hyperliquid.xyz/ws"
-HYPERLIQUID_REST_URL = "https://api.hyperliquid.xyz/info"
 REST_TIMEOUT_S = 10
 RECV_TIMEOUT_S = 30
+_L2_COIN_CACHE_TTL_S = 300.0
 
 
 class _HyperliquidWebsocketClient:
@@ -34,18 +33,15 @@ class _HyperliquidWebsocketClient:
 
     async def connect(self, handle_msg):
         """Connect to Hyperliquid L2 orderbook websocket and process messages."""
-        self._ws = await websockets.connect(HYPERLIQUID_WS_URL)
+        self._ws = await websockets.connect(ValiConfig.hl_ws_url())
 
         try:
-            # Subscribe to l2Book for each crypto coin
-            trade_pairs = self._svc.get_tradeable_pairs(
-                category=self._cat,
-                include_blocked=False,
-                market_open_only=False
-            )
+            # Get the filtered, env-aware coin list from the service (includes dynamic coins,
+            # filtered by allMids availability to prevent testnet socket closes).
+            coins = self._svc._get_subscription_coins()
 
-            for tp in trade_pairs:
-                subscription = {"type": "l2Book", "coin": tp.base}
+            for coin in coins:
+                subscription = {"type": "l2Book", "coin": coin}
                 if self._n_sig_figs is not None:
                     subscription["nSigFigs"] = self._n_sig_figs
                 subscribe_msg = {"method": "subscribe", "subscription": subscription}
@@ -53,7 +49,7 @@ class _HyperliquidWebsocketClient:
 
             precision = f"nSigFigs={self._n_sig_figs}" if self._n_sig_figs is not None else "full precision"
             bt.logging.info(f"Subscribed to Hyperliquid l2Book ({precision}) for "
-                            f"{len(trade_pairs)} coins: {[tp.base for tp in trade_pairs]}")
+                            f"{len(coins)} coins: {sorted(coins)}")
 
             # Receive loop
             while not self._should_close:
@@ -127,8 +123,8 @@ class HyperliquidDataService(BaseDataService):
             enabled_websocket_categories={TradePairCategory.CRYPTO}
         )
 
-        # Build coin name -> TradePair mapping
-        self._coin_to_trade_pair = {}
+        # Build coin name -> TradePair mapping for static pairs.
+        self._coin_to_trade_pair: dict[str, TradePair] = {}
         for tp in TradePair:
             if tp.is_crypto and tp not in self.UNSUPPORTED_TRADE_PAIRS:
                 self._coin_to_trade_pair[tp.base] = tp
@@ -139,6 +135,11 @@ class HyperliquidDataService(BaseDataService):
         # Key: coin name (e.g. "BTC"), Value: {"bids": [...], "asks": [...], "time": timestamp_ms}
         self._orderbooks_full: dict[str, dict] = {}
         self._orderbooks_coarse: dict[str, dict] = {}
+
+        # Cache for subscription coin list (filtered by allMids availability).
+        # Persists across reconnects to avoid repeated REST calls on reconnect storms.
+        self._l2_coin_cache: set[str] | None = None
+        self._l2_coin_cache_ts: float = 0.0
 
         if disable_ws:
             self.websocket_manager_thread = None
@@ -160,7 +161,12 @@ class HyperliquidDataService(BaseDataService):
         pass
 
     def _parse_l2_book_msg(self, msg):
-        """Parse an l2Book WebSocket message. Returns (coin, tp, bids, asks, timestamp_ms) or None."""
+        """Parse an l2Book WebSocket message.
+
+        Returns (coin, tp, bids, asks, timestamp_ms) or None.
+        tp is a TradePair for static coins, a DynamicTradePair for dynamic coins,
+        or None (and the whole result is None) for completely unknown coins.
+        """
         data = json.loads(msg)
         if data.get("channel") != "l2Book":
             return None
@@ -169,7 +175,10 @@ class HyperliquidDataService(BaseDataService):
         if not coin:
             return None
         tp = self._coin_to_trade_pair.get(coin)
-        if not tp:
+        if tp is None:
+            from vali_objects.vali_config import HL_DYNAMIC_REGISTRY
+            tp = HL_DYNAMIC_REGISTRY.get(f"{coin}USD")
+        if tp is None:
             return None
         levels = book_data.get("levels", [])
         if len(levels) < 2 or not levels[0] or not levels[1]:
@@ -185,39 +194,39 @@ class HyperliquidDataService(BaseDataService):
                 return
             coin, tp, bids, asks, timestamp_ms = parsed
 
-            best_bid = float(bids[0]["px"])
-            best_ask = float(asks[0]["px"])
-            mid_price = (best_bid + best_ask) / 2.0
-
-            now_ms = TimeUtil.now_in_millis()
-            ps = PriceSource(
-                source=f"{HYPERLIQUID_PROVIDER_NAME}_ws",
-                timespan_ms=0,
-                open=mid_price,
-                close=mid_price,
-                vwap=mid_price,
-                high=mid_price,
-                low=mid_price,
-                start_ms=timestamp_ms,
-                websocket=True,
-                lag_ms=now_ms - timestamp_ms,
-                bid=best_bid,
-                ask=best_ask,
-            )
-
-            symbol = tp.trade_pair
-            self.latest_websocket_events[symbol] = ps
-            if symbol not in self.trade_pair_to_recent_events:
-                self.trade_pair_to_recent_events[symbol] = RecentEventTracker()
-            self.trade_pair_to_recent_events[symbol].add_event(
-                ps, False, f"{self.provider_name}:{tp.trade_pair}"
-            )
-
             self._orderbooks_full[coin] = {"bids": bids, "asks": asks, "time": timestamp_ms}
-
             self.tpc_to_n_events[TradePairCategory.CRYPTO] += 1
             self.tpc_to_last_event_time[TradePairCategory.CRYPTO] = time.time()
-            self.closed_market_prices[tp] = None
+
+            # Only push to the validator price feed for static TradePair enum members.
+            # Dynamic altcoins provide orderbook data for slippage but are not validator price sources.
+            if isinstance(tp, TradePair):
+                best_bid = float(bids[0]["px"])
+                best_ask = float(asks[0]["px"])
+                mid_price = (best_bid + best_ask) / 2.0
+                now_ms = TimeUtil.now_in_millis()
+                ps = PriceSource(
+                    source=f"{HYPERLIQUID_PROVIDER_NAME}_ws",
+                    timespan_ms=0,
+                    open=mid_price,
+                    close=mid_price,
+                    vwap=mid_price,
+                    high=mid_price,
+                    low=mid_price,
+                    start_ms=timestamp_ms,
+                    websocket=True,
+                    lag_ms=now_ms - timestamp_ms,
+                    bid=best_bid,
+                    ask=best_ask,
+                )
+                symbol = tp.trade_pair
+                self.latest_websocket_events[symbol] = ps
+                if symbol not in self.trade_pair_to_recent_events:
+                    self.trade_pair_to_recent_events[symbol] = RecentEventTracker()
+                self.trade_pair_to_recent_events[symbol].add_event(
+                    ps, False, f"{self.provider_name}:{tp.trade_pair}"
+                )
+                self.closed_market_prices[tp] = None
 
         except Exception as e:
             limited_traceback = traceback.format_exc()[-1000:]
@@ -245,7 +254,7 @@ class HyperliquidDataService(BaseDataService):
         """Fetch mid prices for all coins via the REST API. Returns {coin: mid_price}."""
         try:
             resp = requests.post(
-                HYPERLIQUID_REST_URL,
+                ValiConfig.hl_info_url(),
                 json={"type": "allMids"},
                 timeout=REST_TIMEOUT_S,
             )
@@ -259,7 +268,7 @@ class HyperliquidDataService(BaseDataService):
         """Fetch best bid/ask for a single coin via the REST API."""
         try:
             resp = requests.post(
-                HYPERLIQUID_REST_URL,
+                ValiConfig.hl_info_url(),
                 json={"type": "l2Book", "coin": coin},
                 timeout=REST_TIMEOUT_S,
             )
@@ -275,7 +284,7 @@ class HyperliquidDataService(BaseDataService):
             bt.logging.error(f"Hyperliquid REST l2Book({coin}) failed: {type(e).__name__}: {e}")
             return None
 
-    def get_closes_rest(self, trade_pairs: List[TradePair], time_ms, live=True) -> dict[TradePair, PriceSource]:
+    def get_closes_rest(self, trade_pairs: List[TradePairLike], time_ms, live=True) -> dict[TradePairLike, PriceSource]:
         """REST fallback: fetch mid prices from Hyperliquid for the requested crypto pairs."""
         if self.running_unit_tests:
             from data_generator.polygon_data_service import PolygonDataService
@@ -335,7 +344,7 @@ class HyperliquidDataService(BaseDataService):
 
         return results
 
-    def simulate_slippage(self, trade_pair: TradePair, size_usd: float, is_buy: bool) -> float | None:
+    def simulate_slippage(self, trade_pair: TradePairLike, size_usd: float, is_buy: bool) -> float | None:
         """Simulate slippage using a dual-resolution two-phase orderbook walk.
 
         Phase 1 walks the full-precision book (nSigFigs=None) for accurate near-spread
@@ -405,10 +414,63 @@ class HyperliquidDataService(BaseDataService):
         slippage_pct = (avg_price - mid) / mid if is_buy else (mid - avg_price) / mid
         return max(0.0, slippage_pct)
 
-    def get_close_rest(self, trade_pair: TradePair, timestamp_ms: int) -> PriceSource | None:
+    def get_close_rest(self, trade_pair: TradePairLike, timestamp_ms: int) -> PriceSource | None:
         """Single-pair REST fallback."""
         results = self.get_closes_rest([trade_pair], timestamp_ms)
         return results.get(trade_pair)
+
+    def _get_subscription_coins(self) -> set[str]:
+        """Return the filtered set of HL coins to subscribe to for l2Book streams.
+
+        Builds the configured coin set from (in priority order):
+          1. Static TradePair crypto members
+          2. Dynamic coins from HL_DYNAMIC_REGISTRY
+
+        Then intersects with allMids availability to avoid subscribing to unsupported
+        coins on testnet, which causes the HL server to close the WebSocket connection.
+        Result is cached for _L2_COIN_CACHE_TTL_S seconds across reconnects.
+        """
+        from vali_objects.vali_config import HL_DYNAMIC_REGISTRY
+
+        configured_coins = set(self._coin_to_trade_pair.keys())
+        configured_coins.update(dtp.hl_coin for dtp in HL_DYNAMIC_REGISTRY.values())
+
+        now = time.time()
+        if self._l2_coin_cache is not None and (now - self._l2_coin_cache_ts) < _L2_COIN_CACHE_TTL_S:
+            # Re-expand cached coins with any new dynamic entries not yet in the cache.
+            return self._l2_coin_cache | (configured_coins - self._l2_coin_cache)
+
+        try:
+            resp = requests.post(
+                ValiConfig.hl_info_url(),
+                json={"type": "allMids"},
+                timeout=5,
+            )
+            mids = resp.json()
+            if isinstance(mids, dict):
+                supported = configured_coins.intersection(mids.keys())
+            else:
+                supported = configured_coins
+
+            if not supported:
+                supported = configured_coins
+            elif supported != configured_coins:
+                skipped = sorted(configured_coins - supported)
+                bt.logging.info(
+                    f"[HL_DATA_SVC] Skipping unsupported l2Book coins on current HL env: {skipped}"
+                )
+
+            self._l2_coin_cache = supported
+            self._l2_coin_cache_ts = now
+            return supported
+        except Exception as e:
+            bt.logging.warning(
+                f"[HL_DATA_SVC] Failed to fetch allMids for coin filtering: {e}. "
+                "Falling back to configured coins."
+            )
+            if self._l2_coin_cache:
+                return self._l2_coin_cache | configured_coins
+            return configured_coins
 
     def instantiate_not_pickleable_objects(self):
         pass
@@ -423,10 +485,10 @@ if __name__ == "__main__":
     coins = list(service._coin_to_trade_pair.keys())
     print(f"Crypto coins ({len(coins)}): {coins}")
 
-    print(f"\nConnecting to {HYPERLIQUID_WS_URL}...")
+    print(f"\nConnecting to {ValiConfig.hl_ws_url()}...")
 
     async def run():
-        ws = await websockets.connect(HYPERLIQUID_WS_URL)
+        ws = await websockets.connect(ValiConfig.hl_ws_url())
         try:
             for coin in coins:
                 sub = {"method": "subscribe", "subscription": {"type": "l2Book", "coin": coin}}

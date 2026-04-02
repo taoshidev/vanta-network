@@ -44,7 +44,6 @@ except ImportError:
     SocksProxy = None
 
 from entity_management.entity_client import EntityClient
-from entity_management.hl_orderbook_utils import simulate_fill
 from shared_objects.rate_limiter import RateLimiter
 from time_util.time_util import TimeUtil
 from vali_objects.enums.order_type_enum import OrderType
@@ -114,8 +113,6 @@ class HyperliquidTracker:
     MAX_DEDUP_HASHES = 50_000
     # How often to refresh the list of subscribed addresses (seconds)
     ADDRESS_REFRESH_INTERVAL_S = 60.0
-    # Cache TTL for dynamic HL coin discovery used by L2 subscriptions.
-    L2_COIN_CACHE_TTL_S = 300.0
     # Persistent backup watermark file (under validator state dir).
     BACKUP_WATERMARK_FILE = "hl_backup_poll_watermarks.json"
 
@@ -314,30 +311,6 @@ class HyperliquidTracker:
 
             self.subscribed_addresses = new_addresses
 
-            # Shard 0 subscribes to fine-grained L2 book (nSigFigs=5) for precise
-            # near-spread slippage. Shard 1 subscribes to coarse L2 book (nSigFigs=2)
-            # for deep coverage on large orders. Both are combined during slippage calc.
-            if self.shard_id == 0:
-                n_sig = ValiConfig.HL_L2_FINE_SIG_FIGS
-            elif self.shard_id == 1:
-                n_sig = ValiConfig.HL_L2_COARSE_SIG_FIGS
-            else:
-                n_sig = None
-
-            if n_sig is not None:
-                for coin in self.tracker._get_l2_subscription_coins():
-                    try:
-                        await ws.send(json.dumps({
-                            "method": "subscribe",
-                            "subscription": {"type": "l2Book", "coin": coin,
-                                             "nSigFigs": n_sig}
-                        }))
-                    except Exception as e:
-                        bt.logging.warning(
-                            f"[HL_{self.label}] Failed to subscribe l2Book "
-                            f"(nSigFigs={n_sig}) for {coin}: {e}"
-                        )
-
         async def _periodic_refresh(self, ws):
             """Periodically sync subscriptions for address changes."""
             while True:
@@ -379,12 +352,6 @@ class HyperliquidTracker:
             connection_mode=connection_mode
         )
 
-        # L2 orderbook snapshots per coin at two resolutions (updated via WebSocket).
-        # Fine (nSigFigs=5): precise near-spread pricing, subscribed on shard 0.
-        # Coarse (nSigFigs=2): deep coverage for large orders, subscribed on shard 1.
-        self._orderbooks_fine: Dict[str, dict] = {}
-        self._orderbooks_coarse: Dict[str, dict] = {}
-
         # State
         self._thread: Optional[threading.Thread] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -406,9 +373,6 @@ class HyperliquidTracker:
         # Metrics
         self._fills_processed = 0
         self._last_fill_time: Optional[float] = None
-        self._l2_coin_cache: Optional[Set[str]] = None
-        self._l2_coin_cache_ts: float = 0.0
-
         # Backup REST poll state
         self._last_poll_time_ms: Dict[str, int] = {}  # hl_address -> watermark (epoch ms)
         self._backup_poll_task: Optional[asyncio.Task] = None
@@ -517,58 +481,6 @@ class HyperliquidTracker:
                 except Exception:
                     pass
             self._loop.close()
-
-    def _get_l2_subscription_coins(self) -> List[str]:
-        """
-        Return HL coins that should be used for l2Book subscriptions.
-
-        We dynamically intersect configured coins with HL `allMids` to avoid sending
-        unsupported testnet subscriptions that can cause abrupt socket closes.
-        """
-        from vali_objects.vali_config import HL_DYNAMIC_REGISTRY
-        configured_coins = (
-            set(self._hl_universe.keys()) or
-            {dtp.hl_coin for dtp in list(HL_DYNAMIC_REGISTRY.values())} or
-            set(ValiConfig.TRADE_PAIR_ID_TO_HL_COIN.values())
-        )
-        now = time.time()
-        if (
-            self._l2_coin_cache is not None
-            and (now - self._l2_coin_cache_ts) < self.L2_COIN_CACHE_TTL_S
-        ):
-            return sorted(self._l2_coin_cache)
-
-        try:
-            resp = requests.post(
-                ValiConfig.hl_info_url(),
-                json={"type": "allMids"},
-                timeout=5,
-            )
-            mids = resp.json()
-            if isinstance(mids, dict):
-                supported = configured_coins.intersection(mids.keys())
-            else:
-                supported = configured_coins
-
-            if not supported:
-                supported = configured_coins
-            elif supported != configured_coins:
-                skipped = sorted(configured_coins - supported)
-                bt.logging.info(
-                    f"[HL_TRACKER] Skipping unsupported l2Book coins on current HL env: {skipped}"
-                )
-
-            self._l2_coin_cache = supported
-            self._l2_coin_cache_ts = now
-            return sorted(supported)
-        except Exception as e:
-            bt.logging.warning(
-                f"[HL_TRACKER] Failed to fetch dynamic l2Book coin list: {e}. "
-                "Falling back to configured coins."
-            )
-            if self._l2_coin_cache:
-                return sorted(self._l2_coin_cache)
-            return sorted(configured_coins)
 
     # ==================== Proxy Config ====================
 
@@ -858,14 +770,6 @@ class HyperliquidTracker:
 
         if channel == "userFills":
             self._handle_user_fills(msg)
-        elif channel == "l2Book":
-            book = msg.get("data", {})
-            coin = book.get("coin")
-            if coin:
-                if shard_id == 0:
-                    self._orderbooks_fine[coin] = book
-                elif shard_id == 1:
-                    self._orderbooks_coarse[coin] = book
 
     def _handle_user_fills(self, msg: dict):
         """Handle userFills channel messages."""
@@ -1478,65 +1382,21 @@ class HyperliquidTracker:
             order_type = "SHORT"
             leverage = abs(delta)
 
-        # === Step 6: Calculate L2 orderbook slippage (multi-resolution) ===
-        # Walk the fine-grained book (nSigFigs=5) first for precise near-spread
-        # pricing, then continue with the coarse book (nSigFigs=2) for remaining
-        # depth if the order penetrates all fine levels.
+        # === Step 6: Slippage via HyperliquidDataService orderbook ===
         is_taker = fill.get("crossed", True)
         slippage_pct = 0.0
-
-        fine_book = self._orderbooks_fine.get(coin, {})
-        coarse_book = self._orderbooks_coarse.get(coin, {})
-        has_book = fine_book or coarse_book
-
-        if is_taker and has_book:
-            # Use fine book for mid-price if available, else coarse
-            primary = fine_book or coarse_book
-            bids = primary.get("levels", [[], []])[0]
-            asks = primary.get("levels", [[], []])[1]
-            if asks and bids:
-                mid = (float(asks[0]["px"]) + float(bids[0]["px"])) / 2
-                if mid > 0:
-                    if order_type == "FLAT":
-                        # Closing a position: trade size is the current position's leverage,
-                        # direction is opposite to position type (closing LONG = sell = eat bids,
-                        # closing SHORT = buy = eat asks)
-                        translated_size_usd = abs(current_signed_lev) * account_size
-                        is_buying = current_signed_lev < 0  # closing SHORT = buying
-                    else:
-                        translated_size_usd = leverage * account_size
-                        is_buying = order_type == "LONG"
-
-                    side_idx = 1 if is_buying else 0  # asks if buying, bids if selling
-                    fine_levels = fine_book.get("levels", [[], []])[side_idx]
-                    coarse_levels = coarse_book.get("levels", [[], []])[side_idx]
-
-                    # Phase 1: walk fine-grained levels
-                    fills_result, remaining = simulate_fill(fine_levels, translated_size_usd, "usd")
-
-                    # Phase 2: if order penetrated all fine levels, continue with
-                    # coarse levels beyond the fine book's price coverage
-                    if remaining > 0 and coarse_levels and fine_levels:
-                        last_fine_px = float(fine_levels[-1]["px"])
-                        if is_buying:
-                            deeper = [l for l in coarse_levels if float(l["px"]) > last_fine_px]
-                        else:
-                            deeper = [l for l in coarse_levels if float(l["px"]) < last_fine_px]
-                        coarse_fills, remaining = simulate_fill(deeper, remaining, "usd")
-                        fills_result.extend(coarse_fills)
-                    elif remaining > 0 and coarse_levels and not fine_levels:
-                        # No fine book available, use coarse only
-                        coarse_fills, remaining = simulate_fill(coarse_levels, remaining, "usd")
-                        fills_result.extend(coarse_fills)
-
-                    total_coins = sum(f[1] for f in fills_result)
-                    total_usd = sum(f[2] for f in fills_result)
-                    avg_price = total_usd / total_coins if total_coins > 0 else mid
-                    if is_buying:
-                        slippage_pct = (avg_price - mid) / mid
-                    else:
-                        slippage_pct = (mid - avg_price) / mid
-                    slippage_pct = max(0.0, slippage_pct)
+        if is_taker:
+            if order_type == "FLAT":
+                translated_size_usd = abs(current_signed_lev) * account_size
+                is_buying = current_signed_lev < 0  # closing SHORT = buying
+            else:
+                translated_size_usd = leverage * account_size
+                is_buying = order_type == "LONG"
+            slippage = self._price_fetcher_client.simulate_slippage(
+                trade_pair, translated_size_usd, is_buying
+            )
+            if slippage is not None:
+                slippage_pct = slippage
 
         # === Build signal ===
         signal = {

@@ -54,13 +54,13 @@ class TestHyperliquidDataService(unittest.TestCase):
     def test_enabled_categories_crypto_only(self):
         self.assertEqual(self.service.enabled_websocket_categories, {TradePairCategory.CRYPTO})
 
-    # -- handle_msg_fine tests (price feed + fine orderbook) --
+    # -- handle_msg_full tests (price feed + fine orderbook) --
 
-    def test_handle_msg_fine_valid_l2book(self):
+    def test_handle_msg_full_valid_l2book(self):
         now_ms = TimeUtil.now_in_millis()
         msg = self._make_l2book_msg(coin="BTC", bid="30000.0", ask="30002.0", time_ms=now_ms)
 
-        asyncio.run(self.service.handle_msg_fine(msg))
+        asyncio.run(self.service.handle_msg_full(msg))
 
         symbol = TradePair.BTCUSD.trade_pair  # "BTC/USD"
         self.assertIn(symbol, self.service.latest_websocket_events)
@@ -73,23 +73,23 @@ class TestHyperliquidDataService(unittest.TestCase):
         self.assertTrue(ps.websocket)
         self.assertEqual(ps.timespan_ms, 0)
 
-    def test_handle_msg_fine_updates_fine_orderbook(self):
+    def test_handle_msg_full_updates_fine_orderbook(self):
         msg = self._make_l2book_msg(coin="BTC", bid="30000.0", ask="30002.0")
-        asyncio.run(self.service.handle_msg_fine(msg))
-        self.assertIn("BTC", self.service._orderbooks_fine)
+        asyncio.run(self.service.handle_msg_full(msg))
+        self.assertIn("BTC", self.service._orderbooks_full)
         self.assertNotIn("BTC", self.service._orderbooks_coarse)
 
     def test_handle_msg_coarse_updates_coarse_orderbook_only(self):
         msg = self._make_l2book_msg(coin="BTC", bid="30000.0", ask="30002.0")
         asyncio.run(self.service.handle_msg_coarse(msg))
         self.assertIn("BTC", self.service._orderbooks_coarse)
-        self.assertNotIn("BTC", self.service._orderbooks_fine)
+        self.assertNotIn("BTC", self.service._orderbooks_full)
         # coarse handler must NOT update the price feed
         self.assertNotIn(TradePair.BTCUSD.trade_pair, self.service.latest_websocket_events)
 
-    def test_handle_msg_fine_stores_in_recent_events(self):
+    def test_handle_msg_full_stores_in_recent_events(self):
         msg = self._make_l2book_msg(coin="ETH", bid="2000.0", ask="2001.0")
-        asyncio.run(self.service.handle_msg_fine(msg))
+        asyncio.run(self.service.handle_msg_full(msg))
 
         symbol = TradePair.ETHUSD.trade_pair
         self.assertIn(symbol, self.service.trade_pair_to_recent_events)
@@ -97,26 +97,26 @@ class TestHyperliquidDataService(unittest.TestCase):
         tracker = self.service.trade_pair_to_recent_events[symbol]
         self.assertTrue(len(tracker.events) > 0)
 
-    def test_handle_msg_fine_ignores_non_l2book(self):
+    def test_handle_msg_full_ignores_non_l2book(self):
         # Subscription confirmation message
         msg = json.dumps({"channel": "subscriptionResponse", "data": {"method": "subscribe"}})
-        asyncio.run(self.service.handle_msg_fine(msg))
+        asyncio.run(self.service.handle_msg_full(msg))
         self.assertEqual(len(self.service.latest_websocket_events), 0)
 
-    def test_handle_msg_fine_ignores_unknown_coin(self):
+    def test_handle_msg_full_ignores_unknown_coin(self):
         msg = self._make_l2book_msg(coin="UNKNOWN", bid="100.0", ask="101.0")
-        asyncio.run(self.service.handle_msg_fine(msg))
+        asyncio.run(self.service.handle_msg_full(msg))
         self.assertEqual(len(self.service.latest_websocket_events), 0)
 
-    def test_handle_msg_fine_handles_empty_levels(self):
+    def test_handle_msg_full_handles_empty_levels(self):
         msg = json.dumps({
             "channel": "l2Book",
             "data": {"coin": "BTC", "time": TimeUtil.now_in_millis(), "levels": []}
         })
-        asyncio.run(self.service.handle_msg_fine(msg))
+        asyncio.run(self.service.handle_msg_full(msg))
         self.assertEqual(len(self.service.latest_websocket_events), 0)
 
-    def test_handle_msg_fine_handles_empty_bids(self):
+    def test_handle_msg_full_handles_empty_bids(self):
         msg = json.dumps({
             "channel": "l2Book",
             "data": {
@@ -125,13 +125,13 @@ class TestHyperliquidDataService(unittest.TestCase):
                 "levels": [[], [{"px": "30001.0", "sz": "0.8", "n": 3}]]
             }
         })
-        asyncio.run(self.service.handle_msg_fine(msg))
+        asyncio.run(self.service.handle_msg_full(msg))
         self.assertEqual(len(self.service.latest_websocket_events), 0)
 
-    def test_handle_msg_fine_increments_event_counter(self):
+    def test_handle_msg_full_increments_event_counter(self):
         initial_count = self.service.tpc_to_n_events[TradePairCategory.CRYPTO]
         msg = self._make_l2book_msg(coin="BTC", bid="30000.0", ask="30001.0")
-        asyncio.run(self.service.handle_msg_fine(msg))
+        asyncio.run(self.service.handle_msg_full(msg))
         self.assertEqual(self.service.tpc_to_n_events[TradePairCategory.CRYPTO], initial_count + 1)
 
     # -- get_closes_websocket tests --
@@ -139,7 +139,7 @@ class TestHyperliquidDataService(unittest.TestCase):
     def test_get_closes_websocket_returns_injected_data(self):
         now_ms = TimeUtil.now_in_millis()
         msg = self._make_l2book_msg(coin="BTC", bid="30000.0", ask="30002.0", time_ms=now_ms)
-        asyncio.run(self.service.handle_msg_fine(msg))
+        asyncio.run(self.service.handle_msg_full(msg))
 
         results = self.service.get_closes_websocket([TradePair.BTCUSD], now_ms)
         self.assertIn(TradePair.BTCUSD, results)
@@ -153,7 +153,7 @@ class TestHyperliquidDataService(unittest.TestCase):
         now_ms = TimeUtil.now_in_millis()
         for coin, bid, ask in [("BTC", "30000", "30002"), ("ETH", "2000", "2001"), ("SOL", "100", "100.5")]:
             msg = self._make_l2book_msg(coin=coin, bid=bid, ask=ask, time_ms=now_ms)
-            asyncio.run(self.service.handle_msg_fine(msg))
+            asyncio.run(self.service.handle_msg_full(msg))
 
         results = self.service.get_closes_websocket(
             [TradePair.BTCUSD, TradePair.ETHUSD, TradePair.SOLUSD], now_ms
@@ -169,7 +169,7 @@ class TestHyperliquidDataService(unittest.TestCase):
     def _inject_books(self, coin, fine_bids, fine_asks, coarse_bids, coarse_asks):
         """Directly populate both orderbook caches."""
         if fine_bids is not None:
-            self.service._orderbooks_fine[coin] = {"bids": fine_bids, "asks": fine_asks}
+            self.service._orderbooks_full[coin] = {"bids": fine_bids, "asks": fine_asks}
         if coarse_bids is not None:
             self.service._orderbooks_coarse[coin] = {"bids": coarse_bids, "asks": coarse_asks}
 

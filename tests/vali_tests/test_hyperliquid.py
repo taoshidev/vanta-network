@@ -18,7 +18,7 @@ from unittest.mock import MagicMock, patch
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
 from vali_objects.utils.vali_utils import ValiUtils
-from vali_objects.vali_config import ValiConfig, TradePair, TRADE_PAIR_ID_TO_HL_COIN, DynamicTradePair
+from vali_objects.vali_config import ValiConfig, TradePair, DynamicTradePair
 from time_util.time_util import TimeUtil
 from entity_management.entity_utils import is_synthetic_hotkey, parse_synthetic_hotkey
 from entity_management.hyperliquid_tracker import HyperliquidTracker
@@ -753,9 +753,21 @@ class TestHyperliquidTracker(TestBase):
             "is_valid": True, "error_message": ""
         }
         self.price_fetcher_client.is_market_open.return_value = True
+        self.price_fetcher_client.simulate_slippage.return_value = None
 
-        # Mock USDC balance check to pass by default
-        self.tracker._get_hl_usdc_balance = MagicMock(return_value=5000.0)
+        # Populate _hl_universe with common test coins so _process_fill coin lookup succeeds.
+        self.tracker._hl_universe = {
+            "BTC": DynamicTradePair(trade_pair_id="BTCUSD", trade_pair="BTC/USD", hl_coin="BTC", max_leverage=0.5),
+            "ETH": DynamicTradePair(trade_pair_id="ETHUSD", trade_pair="ETH/USD", hl_coin="ETH", max_leverage=0.5),
+        }
+
+        # Mock account state fetch and current position lookup.
+        self.tracker._fetch_hl_account_state = MagicMock(return_value={
+            "total_portfolio_value": account_size,
+            "positions": {"BTC": {"weight": 0.1}, "ETH": {"weight": 0.06}},
+        })
+        self.tracker._position_client = MagicMock()
+        self.tracker._position_client.get_open_position_for_trade_pair.return_value = None
 
         # OrderProcessor mock
         mock_result = MagicMock()
@@ -765,16 +777,15 @@ class TestHyperliquidTracker(TestBase):
     # ==================== Coin Mapping ====================
 
     def test_trade_pair_id_to_hl_coin_mapping(self):
-        """TRADE_PAIR_ID_TO_HL_COIN has the six static HL coins."""
+        """TRADE_PAIR_ID_TO_HL_COIN contains all static HL coins and their coin names."""
         expected = {
-            "BTCUSD": "BTC",
-            "ETHUSD": "ETH",
-            "SOLUSD": "SOL",
-            "XRPUSD": "XRP",
-            "DOGEUSD": "DOGE",
-            "ADAUSD": "ADA",
+            "BTCUSD": "BTC", "ETHUSD": "ETH", "SOLUSD": "SOL",
+            "XRPUSD": "XRP", "DOGEUSD": "DOGE", "ADAUSD": "ADA",
+            "TAOUSD": "TAO", "HYPEUSD": "HYPE", "ZECUSD": "ZED",
+            "BCHUSD": "BCH", "LINKUSD": "LINK", "XMRUSD": "XMR",
+            "LTCUSD": "LTC",
         }
-        self.assertEqual(TRADE_PAIR_ID_TO_HL_COIN, expected)
+        self.assertEqual(ValiConfig.TRADE_PAIR_ID_TO_HL_COIN, expected)
 
     def test_dynamic_registry_populated_by_refresh(self):
         """_refresh_hl_universe populates _hl_universe with DynamicTradePair objects for liquid coins."""
