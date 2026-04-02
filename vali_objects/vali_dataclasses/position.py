@@ -430,9 +430,10 @@ class Position(BaseModel):
         return not self.is_closed_position
 
     def add_unfilled_order(self, order_dict: dict) -> None:
-        """Add an unfilled bracket order dict to this position."""
-        existing_uuids = {o.get('order_uuid') for o in self.unfilled_orders}
-        if order_dict.get('order_uuid') not in existing_uuids:
+        """Add or update an unfilled bracket order dict on this position."""
+        order_uuid = order_dict.get('order_uuid')
+        if order_uuid:
+            self.unfilled_orders = [o for o in self.unfilled_orders if o.get('order_uuid') != order_uuid]
             self.unfilled_orders.append(order_dict)
 
     def remove_unfilled_order(self, order_uuid: str) -> bool:
