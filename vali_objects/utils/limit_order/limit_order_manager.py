@@ -80,7 +80,7 @@ class LimitOrderManager(CacheController):
 
         self._read_limit_orders_from_disk()
         self._needs_initial_bracket_sync = True
-        self._last_trailing_disk_write_ms = 0
+        self._last_trailing_disk_write_ms = {}  # {order_uuid: last_write_ms}
 
         # Create dedicated locks for protecting self._limit_orders dictionary
         # Convert limit orders structure to format expected by PositionLocks
@@ -748,7 +748,6 @@ class LimitOrderManager(CacheController):
         now_ms = TimeUtil.now_in_millis()
         total_checked = 0
         total_filled = 0
-        self._trailing_stop_price_changed = False
 
         if self._needs_initial_bracket_sync:
             self._attach_order_to_position()
@@ -807,7 +806,9 @@ class LimitOrderManager(CacheController):
                             self._close_limit_order(miner_hotkey, order, OrderSource.BRACKET_CANCELLED, now_ms)
                             continue
 
-                    # Attempt to fill
+                    # Capture best_price before attempt so we can detect trailing stop updates
+                    prev_best_price = order.price if order.trailing_stop is not None else None
+
                     if self._attempt_fill_limit_order(miner_hotkey, order, price_sources, now_ms):
                         total_filled += 1
                         # DESIGN: Break after first fill to enforce LIMIT_ORDER_FILL_INTERVAL_MS
@@ -815,15 +816,15 @@ class LimitOrderManager(CacheController):
                         # This prevents rapid sequential fills and enforces rate limiting.
                         break
 
-                # Persist trailing stop orders whose best price changed (crash recovery)
-                # Rate limited to once per minute to avoid excessive disk I/O
-                if self._trailing_stop_price_changed and now_ms - self._last_trailing_disk_write_ms >= 60_000:
-                    for order in orders:
-                        if order.trailing_stop is not None and order.src == OrderSource.BRACKET_UNFILLED:
-                            self._write_to_disk(miner_hotkey, order)
-                            self._attach_order_to_position(miner_hotkey, order)
-                    self._last_trailing_disk_write_ms = now_ms
-                    self._trailing_stop_price_changed = False
+                    # Persist trailing stop best_price changes to disk and position (crash recovery)
+                    # Rate limited per order to once per minute to avoid excessive disk I/O
+                    if (prev_best_price is not None
+                            and order.src == OrderSource.BRACKET_UNFILLED
+                            and order.price != prev_best_price
+                            and now_ms - self._last_trailing_disk_write_ms.get(order.order_uuid, 0) >= 60_000):
+                        self._write_to_disk(miner_hotkey, order)
+                        self._attach_order_to_position(miner_hotkey, order)
+                        self._last_trailing_disk_write_ms[order.order_uuid] = now_ms
 
         if total_filled > 0:
             bt.logging.info(f"Limit order check complete: checked={total_checked}, filled={total_filled}")
@@ -1411,7 +1412,6 @@ class LimitOrderManager(CacheController):
                         f"{order.price:.6f} -> {new_best:.6f} (bid={bid_price:.6f})"
                     )
                     order.price = new_best
-                    self._trailing_stop_price_changed = True
                 if trailing_percent is not None:
                     trailing_sl = order.price * (1 - float(trailing_percent))
                 else:
@@ -1425,7 +1425,6 @@ class LimitOrderManager(CacheController):
                         f"{order.price:.6f} -> {new_best:.6f} (ask={ask_price:.6f})"
                     )
                     order.price = new_best
-                    self._trailing_stop_price_changed = True
                 if trailing_percent is not None:
                     trailing_sl = order.price * (1 + float(trailing_percent))
                 else:
