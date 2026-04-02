@@ -1,6 +1,5 @@
 # developer: Taoshidev
 # Copyright (c) 2024 Taoshi Inc
-import uuid
 from typing import Optional
 
 from vali_objects.enums.execution_type_enum import ExecutionType
@@ -57,17 +56,12 @@ class Signal(BaseModel):
         price_fields = {'stop_loss', 'take_profit'}
         trailing_fields = {'trailing_percent', 'trailing_value'}
 
-        normalized = []
         for i, bracket in enumerate(bracket_orders):
             price_present = [f for f in price_fields if bracket.get(f) is not None]
             trailing_present = [f for f in trailing_fields if bracket.get(f) is not None]
             if len(price_present) < 1 and len(trailing_present) < 1:
                 raise ValueError(f"bracket_orders[{i}]: at least one of stop_loss/take_profit/trailing_percent/trailing_value required")
-            if not bracket.get('order_uuid'):
-                bracket = {**bracket, 'order_uuid': str(uuid.uuid4())}
-            normalized.append(bracket)
 
-        values['bracket_orders'] = normalized
         return values
 
     @model_validator(mode='before')
