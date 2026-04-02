@@ -626,10 +626,7 @@ class PositionManager:
                 if price_sources and price_sources[0]:
                     realtime_price = price_sources[0].close
                     # Calculate return with fees at this moment
-                    position_return = position.get_open_position_return_with_fees(
-                        realtime_price,
-                        now_ms
-                    )
+                    position_return = position.get_open_position_return_with_fees(realtime_price, None, now_ms)
                     portfolio_return *= position_return
                 else:
                     # Fallback to last known return
