@@ -384,7 +384,8 @@ class SubtensorOpsManager(CacheController):
             # Create wallet from config
             wallet = bt.wallet(config=self.config)
 
-            bt.logging.info(f"[BROADCAST RPC] Broadcasting {synapse_class_name} to {len(validator_axons_list)} validators")
+            target_hotkeys = [a.hotkey for a in validator_axons_list]
+            bt.logging.info(f"[BROADCAST RPC] Broadcasting {synapse_class_name} to {len(validator_axons_list)} validators: {target_hotkeys}")
 
             async def do_broadcast():
                 async with bt.dendrite(wallet=wallet) as dendrite:
@@ -392,19 +393,22 @@ class SubtensorOpsManager(CacheController):
 
                     success_count = 0
                     errors = []
+                    successful_hotkeys = []
 
                     for response in responses:
                         if response.successfully_processed:
                             success_count += 1
+                            successful_hotkeys.append(response.axon.hotkey)
                         elif response.error_message:
                             errors.append(f"{response.axon.hotkey}: {response.error_message}")
 
-                    return success_count, errors
+                    return success_count, errors, successful_hotkeys
 
-            success_count, errors = asyncio.run(do_broadcast())
+            success_count, errors, successful_hotkeys = asyncio.run(do_broadcast())
 
             bt.logging.info(
-                f"[BROADCAST RPC] Broadcast completed: {success_count}/{len(validator_axons_list)} validators updated"
+                f"[BROADCAST RPC] Broadcast completed: {success_count}/{len(validator_axons_list)} validators updated. "
+                f"Successful: {successful_hotkeys}"
             )
 
             return {
@@ -1020,6 +1024,15 @@ class SubtensorOpsManager(CacheController):
         if self.is_validator:  # Only validators need reserves/prices for weight calculation
             tao_reserve_rao, alpha_reserve_rao = self._get_substrate_reserves(metagraph_clone)
             tao_to_usd_rate = self._get_tao_usd_rate()
+
+        # Log validator hotkeys (those with validator_permit=True) and stake requirement
+        if hasattr(metagraph_clone, 'validator_permit') and hasattr(metagraph_clone, 'hotkeys'):
+            validator_hotkeys = [
+                metagraph_clone.hotkeys[i]
+                for i, permit in enumerate(metagraph_clone.validator_permit)
+                if permit
+            ]
+            bt.logging.info(f"Validators with permit ({len(validator_hotkeys)}): {validator_hotkeys}")
 
         # Single atomic RPC call to update all metagraph fields
         # Much faster than multiple calls - all fields updated together under one lock
