@@ -256,9 +256,11 @@ class MarketOrderManager():
 
         step_start = TimeUtil.now_in_millis()
         if hl_slippage is not None:
-            # Use pre-computed L2 orderbook slippage for HL positions
+            # Use pre-computed L2 orderbook slippage (from HL entity miner signals)
             order.slippage = hl_slippage
         else:
+            # PriceSlippageModel handles HL orderbook simulation for crypto internally,
+            # falling back to the existing model when orderbook data is unavailable
             order.slippage = PriceSlippageModel.calculate_slippage(order.bid, order.ask, order, existing_position.account_size)
         if is_hl_taker is not None:
             order.is_hl_taker = is_hl_taker
@@ -651,3 +653,4 @@ class MarketOrderManager():
         time_after_lock = TimeUtil.now_in_millis() - lock_released_time
         bt.logging.info(f"[TIMING] Time from lock release to try block end: {time_after_lock}ms")
         return err_msg, existing_position, created_order
+

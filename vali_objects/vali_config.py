@@ -567,15 +567,16 @@ class ValiConfig:
 
     # L2 orderbook precision: nSigFigs controls price aggregation granularity.
     # HL returns max 20 levels per side regardless of nSigFigs.
-    # Fine (5) = precise near-spread pricing but shallow depth.
     # Coarse (2) = deep coverage but loses granular price distribution.
-    # We subscribe at both resolutions on separate shards and combine them.
-    HL_L2_FINE_SIG_FIGS = 5
+    # We subscribe at coarse and full resolution on separate shards and combine them.
     HL_L2_COARSE_SIG_FIGS = 2
 
     TRADE_PAIR_ID_TO_HL_COIN = {
         "BTCUSD": "BTC", "ETHUSD": "ETH", "SOLUSD": "SOL",
         "XRPUSD": "XRP", "DOGEUSD": "DOGE", "ADAUSD": "ADA",
+        "TAOUSD": "TAO", "HYPEUSD": "HYPE", "ZECUSD": "ZED",
+        "BCHUSD": "BCH", "LINKUSD": "LINK", "XMRUSD": "XMR",
+        "LTCUSD": "LTC"
     }
 
     # HL fee constants
@@ -992,7 +993,7 @@ TRADE_PAIR_STR_TO_TRADE_PAIR = {x.trade_pair: x for x in TradePair}
 # Set UNSUPPORTED_TRADE_PAIRS now that TradePair enum is defined
 # These are trade pairs that have no price data available (not just temporarily halted)
 ValiConfig.UNSUPPORTED_TRADE_PAIRS = (TradePair.SPX, TradePair.DJI, TradePair.NDX, TradePair.VIX,
-                                      TradePair.FTSE, TradePair.GDAXI, TradePair.TAOUSD)
+                                      TradePair.FTSE, TradePair.GDAXI)
 
 # HL dynamic registry — populated at import time from disk, updated hourly by hyperliquid_tracker.
 HL_DYNAMIC_REGISTRY: dict[str, DynamicTradePair] = {}
