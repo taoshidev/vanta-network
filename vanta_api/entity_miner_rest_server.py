@@ -388,7 +388,7 @@ class EntityMinerRestServer(MinerRestServer):
         self.app.route("/api/hl/<hl_address>/events", methods=["GET"])(self.events_endpoint)
         self.app.route("/api/hl/<hl_address>/stream", methods=["GET"])(self.stream_endpoint)
         self.app.route("/api/create-subaccount", methods=["POST"])(self.create_subaccount_endpoint)
-        self.app.route("/api/create-hl-subaccount", methods=["POST"])(self.create_hl_subaccount_endpoint)
+        self.app.route("/api/create-hl-subaccount", methods=["POST"])(self.create_subaccount_endpoint)
         print(f"[ENTITY-GW-INIT] 8 endpoints registered (3 inherited + 5 entity-specific)")
 
     # ==================== HL Address Mapping ====================
@@ -944,26 +944,24 @@ class EntityMinerRestServer(MinerRestServer):
 
     def create_subaccount_endpoint(self):
         """
-        POST /api/create-subaccount - Create a standard subaccount via validator.
+        POST /api/create-subaccount (and /api/create-hl-subaccount) - Create a subaccount via validator.
 
-        Request body (JSON):
+        When hl_address is provided, creates an HL-linked subaccount whose trades are
+        automatically forwarded from the HyperliquidTracker as Vanta signals.
+
+        Request body (JSON) — standard:
         {
-            "asset_class": "crypto" | "forex",  // Required
-            "account_size": float,              // Required, must be > 0
-            "admin": bool                       // Optional, default false
+            "asset_class": "crypto" | "forex" | "equities",  // Required
+            "account_size": float,                           // Required, must be > 0
+            "admin": bool                                    // Optional, default false
         }
 
-        Response (200 OK):
+        Request body (JSON) — HL-linked:
         {
-            "status": "success",
-            "message": "...",
-            "subaccount": {
-                "subaccount_id": 0,
-                "subaccount_uuid": "uuid-string",
-                "synthetic_hotkey": "5xxx_0",
-                "account_size": 10000.0,
-                "asset_class": "crypto"
-            }
+            "hl_address": "0x...",     // Required, 0x + 40 hex chars
+            "account_size": float,     // Required, must be > 0
+            "payout_address": "0x...", // Optional, EVM address for USDC payouts
+            "admin": bool              // Optional, default false
         }
         """
         import requests as http_requests
@@ -980,13 +978,22 @@ class EntityMinerRestServer(MinerRestServer):
             if not request_data:
                 return jsonify({'status': 'error', 'message': 'Invalid request: missing JSON body'}), 400
 
-            if "asset_class" not in request_data:
-                return jsonify({'status': 'error', 'message': 'Missing required field: asset_class'}), 400
-
             if "account_size" not in request_data:
                 return jsonify({'status': 'error', 'message': 'Missing required field: account_size'}), 400
 
-            asset_class = request_data["asset_class"]
+            is_hl = 'hl_address' in request_data
+
+            if is_hl:
+                hl_address = request_data["hl_address"]
+                payout_address = request_data.get("payout_address")
+                asset_class = "crypto"
+            else:
+                hl_address = None
+                payout_address = None
+                if "asset_class" not in request_data:
+                    return jsonify({'status': 'error', 'message': 'Missing required field: asset_class'}), 400
+                asset_class = request_data["asset_class"]
+
             admin = request_data.get("admin", False)
 
             try:
@@ -1006,6 +1013,33 @@ class EntityMinerRestServer(MinerRestServer):
             if account_size <= 0:
                 return jsonify({'status': 'error', 'message': 'account_size must be positive'}), 400
 
+            if is_hl:
+                if not isinstance(hl_address, str) or not re.match(ValiConfig.HL_ADDRESS_REGEX, hl_address):
+                    return jsonify({
+                        'status': 'error',
+                        'message': 'hl_address must be a valid Hyperliquid address (0x followed by 40 hex characters)'
+                    }), 400
+
+                if payout_address is not None:
+                    if not isinstance(payout_address, str) or not re.match(ValiConfig.HL_ADDRESS_REGEX, payout_address):
+                        return jsonify({
+                            'status': 'error',
+                            'message': 'payout_address must be a valid EVM address (0x followed by 40 hex characters)'
+                        }), 400
+
+                # Check max HL traders limit
+                if self._max_hl_traders is not None:
+                    current_count = len(self._hl_to_synthetic)
+                    if current_count >= self._max_hl_traders:
+                        bt.logging.warning(
+                            f"[ENTITY-GW] HL trader limit reached: {current_count}/{self._max_hl_traders}"
+                        )
+                        return jsonify({
+                            'status': 'error',
+                            'message': f'Maximum number of Hyperliquid traders ({self._max_hl_traders}) reached. '
+                                       f'Cannot register more HL subaccounts.'
+                        }), 403
+
         except Exception as e:
             bt.logging.error(f"Error parsing request body: {e}")
             return jsonify({'status': 'error', 'message': f'Invalid request: {str(e)}'}), 400
@@ -1021,8 +1055,12 @@ class EntityMinerRestServer(MinerRestServer):
                 "admin": admin,
                 "asset_class": asset_class,
                 "entity_coldkey": self._coldkey.ss58_address,
-                "entity_hotkey": self._hotkey.ss58_address
+                "entity_hotkey": self._hotkey.ss58_address,
             }
+            if is_hl:
+                message_dict["hl_address"] = hl_address
+                if payout_address is not None:
+                    message_dict["payout_address"] = payout_address
             message = json.dumps(message_dict, sort_keys=True).encode('utf-8')
             signature = self._coldkey.sign(message).hex()
         except Exception as e:
@@ -1040,6 +1078,10 @@ class EntityMinerRestServer(MinerRestServer):
                 "signature": signature,
                 "version": "2.0.0"
             }
+            if is_hl:
+                payload["hl_address"] = hl_address
+                if payout_address is not None:
+                    payload["payout_address"] = payout_address
 
             resp = http_requests.post(
                 f"{self._validator_url}/entity/create-subaccount",
@@ -1055,29 +1097,56 @@ class EntityMinerRestServer(MinerRestServer):
                 return jsonify({'status': 'error', 'message': 'Invalid JSON response from validator'}), 500
 
             if resp.status_code == 200:
+                subaccount = response_data.get('subaccount', {})
+
+                if is_hl:
+                    # Update local HL address mapping and persist to disk
+                    synthetic = subaccount.get('synthetic_hotkey')
+                    normalized_hl = self._normalize_hl_address(hl_address)
+                    if synthetic and normalized_hl:
+                        self._set_hl_mapping(normalized_hl, synthetic, source="create_subaccount")
+                        self._save_hl_mappings()
+
                 if self.slack_notifier:
-                    subaccount = response_data.get('subaccount', {})
                     from datetime import datetime, timezone
                     timestamp = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
-                    self.slack_notifier.send_message(
-                        f"Subaccount created successfully!\n"
-                        f"ID: {subaccount.get('subaccount_id')}\n"
-                        f"UUID: {subaccount.get('subaccount_uuid')}\n"
-                        f"Synthetic Hotkey: {subaccount.get('synthetic_hotkey')}\n"
-                        f"Asset Class: {subaccount.get('asset_class')}\n"
-                        f"Account Size: ${subaccount.get('account_size'):,.2f}\n"
-                        f"Message: {response_data.get('message', '')}\n"
-                        f"Created: {timestamp}\n"
-                        f"Time: {elapsed_s:.2f}s",
-                        level="success",
-                        bypass_cooldown=True
-                    )
+                    if is_hl:
+                        payout_line = f"Payout Address: {payout_address}\n" if payout_address else ""
+                        msg = (
+                            f"HL Subaccount created successfully!\n"
+                            f"ID: {subaccount.get('subaccount_id')}\n"
+                            f"UUID: {subaccount.get('subaccount_uuid')}\n"
+                            f"Synthetic Hotkey: {subaccount.get('synthetic_hotkey')}\n"
+                            f"HL Address: {hl_address}\n"
+                            f"{payout_line}"
+                            f"Asset Class: {subaccount.get('asset_class')}\n"
+                            f"Account Size: ${subaccount.get('account_size', 0):,.2f}\n"
+                            f"Message: {response_data.get('message', '')}\n"
+                            f"Created: {timestamp}\n"
+                            f"Time: {elapsed_s:.2f}s"
+                        )
+                    else:
+                        msg = (
+                            f"Subaccount created successfully!\n"
+                            f"ID: {subaccount.get('subaccount_id')}\n"
+                            f"UUID: {subaccount.get('subaccount_uuid')}\n"
+                            f"Synthetic Hotkey: {subaccount.get('synthetic_hotkey')}\n"
+                            f"Asset Class: {subaccount.get('asset_class')}\n"
+                            f"Account Size: ${subaccount.get('account_size'):,.2f}\n"
+                            f"Message: {response_data.get('message', '')}\n"
+                            f"Created: {timestamp}\n"
+                            f"Time: {elapsed_s:.2f}s"
+                        )
+                    self.slack_notifier.send_message(msg, level="success", bypass_cooldown=True)
+
                 return jsonify(response_data), 200
             else:
                 error_message = response_data.get('error', response_data.get('message', 'Unknown error from validator'))
                 if self.slack_notifier:
+                    hl_address_line = f"HL Address: {hl_address}\n" if is_hl else ""
                     self.slack_notifier.send_message(
                         f"Subaccount creation failed\n"
+                        f"{hl_address_line}"
                         f"Asset Class: {asset_class}\n"
                         f"Account Size: ${account_size:,.2f}\n"
                         f"Error: {error_message}",
@@ -1087,8 +1156,10 @@ class EntityMinerRestServer(MinerRestServer):
 
         except http_requests.exceptions.Timeout:
             if self.slack_notifier:
+                hl_address_line = f"HL Address: {hl_address}\n" if is_hl else ""
                 self.slack_notifier.send_message(
                     f"Subaccount creation failed\n"
+                    f"{hl_address_line}"
                     f"Asset Class: {asset_class}\n"
                     f"Account Size: ${account_size:,.2f}\n"
                     f"Error: Request to validator timed out",
@@ -1098,8 +1169,10 @@ class EntityMinerRestServer(MinerRestServer):
 
         except http_requests.exceptions.ConnectionError:
             if self.slack_notifier:
+                hl_address_line = f"HL Address: {hl_address}\n" if is_hl else ""
                 self.slack_notifier.send_message(
                     f"Subaccount creation failed\n"
+                    f"{hl_address_line}"
                     f"Asset Class: {asset_class}\n"
                     f"Account Size: ${account_size:,.2f}\n"
                     f"Error: Could not connect to validator",
@@ -1110,219 +1183,11 @@ class EntityMinerRestServer(MinerRestServer):
         except Exception as e:
             bt.logging.error(f"Error communicating with validator: {e}")
             if self.slack_notifier:
+                hl_address_line = f"HL Address: {hl_address}\n" if is_hl else ""
                 self.slack_notifier.send_message(
                     f"Subaccount creation failed\n"
+                    f"{hl_address_line}"
                     f"Asset Class: {asset_class}\n"
-                    f"Account Size: ${account_size:,.2f}\n"
-                    f"Error: {str(e)}",
-                    level="error"
-                )
-            return jsonify({'status': 'error', 'message': f'Validator communication error: {str(e)}'}), 500
-
-    def create_hl_subaccount_endpoint(self):
-        """
-        POST /api/create-hl-subaccount - Create an HL-linked subaccount via validator.
-
-        Request body (JSON):
-        {
-            "hl_address": "0x...",          // Required, 0x + 40 hex chars
-            "account_size": float,           // Required, must be > 0
-            "asset_class": str,              // Optional, default "crypto"
-            "payout_address": "0x...",       // Optional, EVM address (0x + 40 hex) for USDC payouts
-            "admin": bool                    // Optional, default false
-        }
-
-        Response (200 OK):
-        {
-            "status": "success",
-            "message": "...",
-            "subaccount": { ... }
-        }
-        """
-        import requests as http_requests
-        start_time = time.time()
-
-        # 1. Validate API key
-        api_key = self._get_api_key_safe()
-        if not self.is_valid_api_key(api_key):
-            return jsonify({'error': 'Unauthorized access'}), 401
-
-        # 2. Parse and validate request body
-        try:
-            request_data = request.get_json()
-            if not request_data:
-                return jsonify({'status': 'error', 'message': 'Invalid request: missing JSON body'}), 400
-
-            if "hl_address" not in request_data:
-                return jsonify({'status': 'error', 'message': 'Missing required field: hl_address'}), 400
-
-            if "account_size" not in request_data:
-                return jsonify({'status': 'error', 'message': 'Missing required field: account_size'}), 400
-
-            hl_address = request_data["hl_address"]
-            asset_class = request_data.get("asset_class", "crypto")
-            admin = request_data.get("admin", False)
-            payout_address = request_data.get("payout_address")
-
-            try:
-                account_size = float(request_data["account_size"])
-            except (ValueError, TypeError):
-                return jsonify({'status': 'error', 'message': 'account_size must be a number'}), 400
-
-            if not isinstance(admin, bool):
-                return jsonify({'status': 'error', 'message': 'admin must be a boolean'}), 400
-
-            if not isinstance(hl_address, str) or not re.match(ValiConfig.HL_ADDRESS_REGEX, hl_address):
-                return jsonify({
-                    'status': 'error',
-                    'message': 'hl_address must be a valid Hyperliquid address (0x followed by 40 hex characters)'
-                }), 400
-
-            if payout_address is not None:
-                if not isinstance(payout_address, str) or not re.match(ValiConfig.HL_ADDRESS_REGEX, payout_address):
-                    return jsonify({
-                        'status': 'error',
-                        'message': 'payout_address must be a valid EVM address (0x followed by 40 hex characters)'
-                    }), 400
-
-            if account_size <= 0:
-                return jsonify({'status': 'error', 'message': 'account_size must be positive'}), 400
-
-        except Exception as e:
-            bt.logging.error(f"Error parsing request body: {e}")
-            return jsonify({'status': 'error', 'message': f'Invalid request: {str(e)}'}), 400
-
-        # 3. Check max HL traders limit
-        if self._max_hl_traders is not None:
-            current_count = len(self._hl_to_synthetic)
-            if current_count >= self._max_hl_traders:
-                bt.logging.warning(
-                    f"[ENTITY-GW] HL trader limit reached: {current_count}/{self._max_hl_traders}"
-                )
-                return jsonify({
-                    'status': 'error',
-                    'message': f'Maximum number of Hyperliquid traders ({self._max_hl_traders}) reached. '
-                               f'Cannot register more HL subaccounts.'
-                }), 403
-
-        # 4. Check wallet is configured
-        if not self._coldkey or not self._hotkey or not self._validator_url:
-            return jsonify({'status': 'error', 'message': 'Wallet not configured'}), 500
-
-        # 5. Sign message
-        try:
-            message_dict = {
-                "account_size": account_size,
-                "admin": admin,
-                "asset_class": asset_class,
-                "entity_coldkey": self._coldkey.ss58_address,
-                "entity_hotkey": self._hotkey.ss58_address,
-                "hl_address": hl_address
-            }
-            if payout_address is not None:
-                message_dict["payout_address"] = payout_address
-            message = json.dumps(message_dict, sort_keys=True).encode('utf-8')
-            signature = self._coldkey.sign(message).hex()
-        except Exception as e:
-            bt.logging.error(f"Error signing message: {e}")
-            return jsonify({'status': 'error', 'message': f'Wallet error: {str(e)}'}), 500
-
-        # 5. Send request to validator
-        try:
-            payload = {
-                "entity_hotkey": self._hotkey.ss58_address,
-                "entity_coldkey": self._coldkey.ss58_address,
-                "account_size": account_size,
-                "asset_class": asset_class,
-                "hl_address": hl_address,
-                "admin": admin,
-                "signature": signature,
-                "version": "2.0.0"
-            }
-            if payout_address is not None:
-                payload["payout_address"] = payout_address
-
-            resp = http_requests.post(
-                f"{self._validator_url}/entity/create-hl-subaccount",
-                json=payload,
-                headers={"Content-Type": "application/json"},
-                timeout=60
-            )
-            elapsed_s = time.time() - start_time
-
-            try:
-                response_data = resp.json()
-            except json.JSONDecodeError:
-                return jsonify({'status': 'error', 'message': 'Invalid JSON response from validator'}), 500
-
-            if resp.status_code == 200:
-                # Update HL address mappings and persist to disk
-                subaccount = response_data.get('subaccount', {})
-                synthetic = subaccount.get('synthetic_hotkey')
-                normalized_hl = self._normalize_hl_address(hl_address)
-                if synthetic and normalized_hl:
-                    self._set_hl_mapping(normalized_hl, synthetic, source="create_hl_subaccount")
-                    self._save_hl_mappings()
-
-                if self.slack_notifier:
-                    from datetime import datetime, timezone
-                    timestamp = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
-                    payout_line = f"Payout Address: {payout_address}\n" if payout_address else ""
-                    self.slack_notifier.send_message(
-                        f"HL Subaccount created successfully!\n"
-                        f"ID: {subaccount.get('subaccount_id')}\n"
-                        f"UUID: {subaccount.get('subaccount_uuid')}\n"
-                        f"Synthetic Hotkey: {subaccount.get('synthetic_hotkey')}\n"
-                        f"HL Address: {hl_address}\n"
-                        f"{payout_line}"
-                        f"Account Size: ${subaccount.get('account_size', 0):,.2f}\n"
-                        f"Message: {response_data.get('message', '')}\n"
-                        f"Created: {timestamp}\n"
-                        f"Time: {elapsed_s:.2f}s",
-                        level="success",
-                        bypass_cooldown=True
-                    )
-                return jsonify(response_data), 200
-            else:
-                error_message = response_data.get('message', 'Unknown error from validator')
-                if self.slack_notifier:
-                    self.slack_notifier.send_message(
-                        f"HL Subaccount creation failed\n"
-                        f"HL Address: {hl_address}\n"
-                        f"Account Size: ${account_size:,.2f}\n"
-                        f"Error: {error_message}",
-                        level="error"
-                    )
-                return jsonify({'status': 'error', 'message': error_message}), resp.status_code
-
-        except http_requests.exceptions.Timeout:
-            if self.slack_notifier:
-                self.slack_notifier.send_message(
-                    f"HL Subaccount creation failed\n"
-                    f"HL Address: {hl_address}\n"
-                    f"Account Size: ${account_size:,.2f}\n"
-                    f"Error: Request to validator timed out",
-                    level="error"
-                )
-            return jsonify({'status': 'error', 'message': 'Request to validator timed out'}), 504
-
-        except http_requests.exceptions.ConnectionError:
-            if self.slack_notifier:
-                self.slack_notifier.send_message(
-                    f"HL Subaccount creation failed\n"
-                    f"HL Address: {hl_address}\n"
-                    f"Account Size: ${account_size:,.2f}\n"
-                    f"Error: Could not connect to validator",
-                    level="error"
-                )
-            return jsonify({'status': 'error', 'message': 'Could not connect to validator'}), 503
-
-        except Exception as e:
-            bt.logging.error(f"Error communicating with validator: {e}")
-            if self.slack_notifier:
-                self.slack_notifier.send_message(
-                    f"HL Subaccount creation failed\n"
-                    f"HL Address: {hl_address}\n"
                     f"Account Size: ${account_size:,.2f}\n"
                     f"Error: {str(e)}",
                     level="error"

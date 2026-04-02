@@ -271,7 +271,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         # Entity management endpoints
         self.app.route("/entity/register", methods=["POST"])(self.register_entity)
         self.app.route("/entity/create-subaccount", methods=["POST"])(self.create_subaccount)
-        self.app.route("/entity/create-hl-subaccount", methods=["POST"])(self.create_hl_subaccount)
+        self.app.route("/entity/create-hl-subaccount", methods=["POST"])(self.create_subaccount)
         self.app.route("/entity/<entity_hotkey>", methods=["GET"])(self.get_entity)
         self.app.route("/entities", methods=["GET"])(self.get_all_entities)
         self.app.route("/entity/subaccount/eliminate", methods=["POST"])(self.eliminate_subaccount)
@@ -1435,10 +1435,11 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         """
         Create a new subaccount for an entity.
 
-        Requires account_size (USD) and asset_class in request payload.
-        These values are immutable once the subaccount is created.
+        When hl_address is provided, creates an HL-linked subaccount whose trades are
+        automatically forwarded from the HyperliquidTracker as Vanta signals.
+        asset_class is required for standard subaccounts; HL subaccounts always use 'crypto'.
 
-        Example:
+        Example (standard):
         curl -X POST http://localhost:48888/entity/create-subaccount \\
           -H "Content-Type: application/json" \\
           -d '{
@@ -1446,6 +1447,19 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             "entity_coldkey": "5FxY...",
             "account_size": 25000,
             "asset_class": "crypto",
+            "signature": "0x..."
+          }'
+
+        Example (HL-linked):
+        curl -X POST http://localhost:48888/entity/create-subaccount \\
+          -H "Content-Type: application/json" \\
+          -d '{
+            "entity_hotkey": "5GhDr...",
+            "entity_coldkey": "5FxY...",
+            "account_size": 25000,
+            "asset_class": "crypto",
+            "hl_address": "0x1234...abcd",
+            "payout_address": "0xAbCd...1234",
             "signature": "0x..."
           }'
         """
@@ -1476,8 +1490,12 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             if vanta_cli_error:
                 return jsonify({'error': vanta_cli_error}), 400
 
+            is_hl = 'hl_address' in data
+
             # Validate required fields
             required_fields = ['entity_coldkey', 'entity_hotkey', 'account_size', 'asset_class', 'signature']
+            if is_hl:
+                required_fields.append('hl_address')
             missing_fields = [field for field in required_fields if field not in data]
             if missing_fields:
                 return jsonify({'error': f'Missing required fields: {", ".join(missing_fields)}'}), 400
@@ -1503,19 +1521,39 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             # Validate asset_class is a non-empty string
             if not isinstance(asset_class, str) or not asset_class.strip():
                 return jsonify({'error': 'asset_class must be a non-empty string'}), 400
-
             asset_class = asset_class.strip()
+
+            if is_hl:
+                hl_address = data['hl_address']
+                payout_address = data.get('payout_address')
+
+                # Validate hl_address format
+                if not isinstance(hl_address, str) or not re.match(ValiConfig.HL_ADDRESS_REGEX, hl_address):
+                    return jsonify({'error': 'hl_address must be a valid Hyperliquid address (0x followed by 40 hex characters)'}), 400
+
+                # Validate payout_address format if provided
+                if payout_address is not None:
+                    if not isinstance(payout_address, str) or not re.match(ValiConfig.HL_ADDRESS_REGEX, payout_address):
+                        return jsonify({'error': 'payout_address must be a valid EVM address (0x followed by 40 hex characters)'}), 400
+            else:
+                hl_address = None
+                payout_address = None
 
             # Verify signature
             t0 = time.time()
             keypair = Keypair(ss58_address=entity_coldkey)
-            message = json.dumps({
+            sig_dict = {
                 "account_size": account_size,
                 "admin": admin,
                 "asset_class": asset_class,
                 "entity_coldkey": entity_coldkey,
-                "entity_hotkey": entity_hotkey
-            }, sort_keys=True).encode('utf-8')
+                "entity_hotkey": entity_hotkey,
+            }
+            if is_hl:
+                sig_dict["hl_address"] = hl_address
+                if payout_address is not None:
+                    sig_dict["payout_address"] = payout_address
+            message = json.dumps(sig_dict, sort_keys=True).encode('utf-8')
 
             is_valid = keypair.verify(message, bytes.fromhex(data['signature']))
             timings['verify_signature'] = int((time.time() - t0) * 1000)
@@ -1531,14 +1569,19 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
             # Create subaccount via RPC
             t0 = time.time()
-            success, subaccount_info, message = self._entity_client.create_subaccount(
-                entity_hotkey, account_size, asset_class, admin=admin
-            )
+            if is_hl:
+                success, subaccount_info, message = self._entity_client.create_hl_subaccount(
+                    entity_hotkey, account_size, hl_address, asset_class=asset_class, admin=admin, payout_address=payout_address
+                )
+            else:
+                success, subaccount_info, message = self._entity_client.create_subaccount(
+                    entity_hotkey, account_size, asset_class, admin=admin
+                )
             timings['create_subaccount_rpc'] = int((time.time() - t0) * 1000)
 
             if success:
                 # Broadcast for admin subaccounts only (regular subaccounts broadcast after slashing completes)
-                if admin:
+                if admin and subaccount_info:
                     try:
                         t0 = time.time()
                         self._entity_client.broadcast_subaccount_registration(
@@ -1548,7 +1591,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                             synthetic_hotkey=subaccount_info['synthetic_hotkey'],
                             account_size=subaccount_info['account_size'],
                             asset_class=subaccount_info['asset_class'],
-                            status=subaccount_info['status']
+                            status=subaccount_info['status'],
+                            **({"hl_address": hl_address, "payout_address": payout_address} if is_hl else {})
                         )
                         timings['broadcast_rpc'] = int((time.time() - t0) * 1000)
                         bt.logging.info(f"[REST_API] Broadcasted admin subaccount registration for {subaccount_info['synthetic_hotkey']}")
@@ -1569,141 +1613,6 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         except Exception as e:
             bt.logging.error(f"Error creating subaccount: {e}")
             return jsonify({'error': 'Internal server error creating subaccount'}), 500
-
-    def create_hl_subaccount(self):
-        """
-        Create a new subaccount linked to a Hyperliquid address.
-
-        The HL address is tracked by the validator's HyperliquidTracker service,
-        which automatically forwards trades as Vanta signals.
-
-        Example:
-        curl -X POST http://localhost:48888/entity/create-hl-subaccount \\
-          -H "Content-Type: application/json" \\
-          -d '{
-            "entity_hotkey": "5GhDr...",
-            "entity_coldkey": "5FxY...",
-            "account_size": 25000,
-            "hl_address": "0x1234...abcd",
-            "payout_address": "0xAbCd...1234",
-            "signature": "0x..."
-          }'
-        """
-        # Check if entity client is available
-        if not self._entity_client:
-            return jsonify({'error': 'Entity management not available'}), 503
-
-        try:
-            # Parse and validate request
-            if not request.is_json:
-                return jsonify({'error': 'Content-Type must be application/json'}), 400
-
-            data = request.get_json()
-            if not data:
-                return jsonify({'error': 'Invalid JSON body'}), 400
-
-            # Check vanta-cli version
-            vanta_cli_version = (
-                data.get('version')
-                or data.get('ptncli_version')
-                or '0.0.0'
-            )
-            vanta_cli_error = self.check_vanta_cli_version(vanta_cli_version)
-            if vanta_cli_error:
-                return jsonify({'error': vanta_cli_error}), 400
-
-            # Validate required fields
-            required_fields = ['entity_coldkey', 'entity_hotkey', 'account_size', 'hl_address', 'signature']
-            missing_fields = [field for field in required_fields if field not in data]
-            if missing_fields:
-                return jsonify({'error': f'Missing required fields: {", ".join(missing_fields)}'}), 400
-
-            entity_coldkey = data['entity_coldkey']
-            entity_hotkey = data['entity_hotkey']
-            account_size = data['account_size']
-            hl_address = data['hl_address']
-            asset_class = data.get('asset_class', 'crypto')
-            admin = data.get('admin', False)
-            payout_address = data.get('payout_address')
-
-            # Validate admin flag type early
-            if not isinstance(admin, bool):
-                return jsonify({'error': 'admin must be a boolean'}), 400
-
-            # Validate account_size is a positive number
-            try:
-                account_size = float(account_size)
-                if account_size <= 0:
-                    return jsonify({'error': 'account_size must be a positive number'}), 400
-            except (TypeError, ValueError):
-                return jsonify({'error': 'account_size must be a valid number'}), 400
-
-            # Validate hl_address format
-            if not isinstance(hl_address, str) or not re.match(ValiConfig.HL_ADDRESS_REGEX, hl_address):
-                return jsonify({'error': 'hl_address must be a valid Hyperliquid address (0x followed by 40 hex characters)'}), 400
-
-            # Validate payout_address format if provided
-            if payout_address is not None:
-                if not isinstance(payout_address, str) or not re.match(ValiConfig.HL_ADDRESS_REGEX, payout_address):
-                    return jsonify({'error': 'payout_address must be a valid EVM address (0x followed by 40 hex characters)'}), 400
-
-            # Verify signature
-            keypair = Keypair(ss58_address=entity_coldkey)
-            sig_message_dict = {
-                "account_size": account_size,
-                "admin": admin,
-                "asset_class": asset_class,
-                "entity_coldkey": entity_coldkey,
-                "entity_hotkey": entity_hotkey,
-                "hl_address": hl_address
-            }
-            if payout_address is not None:
-                sig_message_dict["payout_address"] = payout_address
-            message = json.dumps(sig_message_dict, sort_keys=True).encode('utf-8')
-
-            is_valid = keypair.verify(message, bytes.fromhex(data['signature']))
-            if not is_valid:
-                return jsonify({'error': 'Invalid signature. HL subaccount creation unauthorized'}), 401
-
-            # Verify coldkey-hotkey ownership using subtensor
-            owns_hotkey = self._verify_coldkey_owns_hotkey(entity_coldkey, entity_hotkey)
-            if not owns_hotkey:
-                return jsonify({'error': 'Coldkey does not own the specified hotkey'}), 403
-
-            # Create HL subaccount via RPC
-            success, subaccount_info, message = self._entity_client.create_hl_subaccount(
-                entity_hotkey, account_size, hl_address, asset_class=asset_class, admin=admin, payout_address=payout_address
-            )
-
-            if success:
-                # Broadcast for admin subaccounts only (regular subaccounts broadcast after slashing completes)
-                if admin and subaccount_info:
-                    try:
-                        self._entity_client.broadcast_subaccount_registration(
-                            entity_hotkey=entity_hotkey,
-                            subaccount_id=subaccount_info['subaccount_id'],
-                            subaccount_uuid=subaccount_info['subaccount_uuid'],
-                            synthetic_hotkey=subaccount_info['synthetic_hotkey'],
-                            account_size=subaccount_info['account_size'],
-                            asset_class=subaccount_info['asset_class'],
-                            status=subaccount_info['status'],
-                            hl_address=hl_address,
-                            payout_address=payout_address
-                        )
-                    except Exception as e:
-                        bt.logging.warning(f"[REST_API] Failed to broadcast HL subaccount registration: {e}")
-
-                return jsonify({
-                    'status': 'success',
-                    'message': message,
-                    'subaccount': subaccount_info
-                }), 200
-            else:
-                return jsonify({'error': message}), 400
-
-        except Exception as e:
-            bt.logging.error(f"Error creating HL subaccount: {e}")
-            return jsonify({'error': 'Internal server error creating HL subaccount'}), 500
 
     def get_entity(self, entity_hotkey):
         """
