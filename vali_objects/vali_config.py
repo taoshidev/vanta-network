@@ -559,7 +559,6 @@ class ValiConfig:
     HL_PORT_HEALTH_PROBE_INTERVAL_S = 30.0
     HL_PORT_HEALTH_MAX_COOLDOWN_S = 600.0
     HL_ADDRESS_REGEX = r"^0x[a-fA-F0-9]{40}$"
-    HL_MIN_USDC_BALANCE = 1_000  # Minimum USDC balance required to process HL trades
     HL_BACKUP_POLL_INTERVAL_S = 10.0
     HL_BACKUP_POLL_RATE_BUDGET = 60
     HL_BACKUP_POLL_LOOKBACK_MS = 60 * 60 * 1000 # TODO: change to 2 min
