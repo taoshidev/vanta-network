@@ -247,7 +247,7 @@ class PropNetOrderPlacer:
         """Get mothership axon and other validator axons (filtered by v_trust)."""
         mothership_hotkey = ValiConfig.MOTHERSHIP_HOTKEY_TESTNET if self.is_testnet else ValiConfig.MOTHERSHIP_HOTKEY
         axons = self.position_inspector.get_possible_validators()
-        hotkey_to_v_trust = {a.hotkey: neuron.validator_trust for neuron in self.metagraph_client.get_neurons() for a in axons if neuron.hotkey == a.hotkey}
+        hotkey_to_v_trust = {neuron.hotkey: neuron.validator_trust for neuron in self.metagraph_client.get_neurons()}
         mothership_axon = None
         other_axons = []
         for axon in axons:
