@@ -80,7 +80,7 @@ class LimitOrderManager(CacheController):
 
         self._read_limit_orders_from_disk()
         self._needs_initial_bracket_sync = True
-        self._last_trailing_disk_write_ms = 0
+        self._last_trailing_disk_write_ms = {}  # {order_uuid: last_write_ms}
 
         # Create dedicated locks for protecting self._limit_orders dictionary
         # Convert limit orders structure to format expected by PositionLocks
@@ -426,17 +426,13 @@ class LimitOrderManager(CacheController):
                     self.position_manager.remove_bracket_order_from_position(
                         miner_hotkey, trade_pair.trade_pair_id, order_uuid
                     )
-                    self.position_manager.attach_bracket_order_to_position(
-                        miner_hotkey, trade_pair.trade_pair_id, order.to_python_dict()
-                    )
+                    self._attach_order_to_position(miner_hotkey, order)
             else:
                 # Append new order
                 self._limit_orders[trade_pair][miner_hotkey].append(order)
                 # Attach bracket order to position for new orders
                 if order.execution_type == ExecutionType.BRACKET:
-                    self.position_manager.attach_bracket_order_to_position(
-                        miner_hotkey, trade_pair.trade_pair_id, order.to_python_dict()
-                    )
+                    self._attach_order_to_position(miner_hotkey, order)
 
         return {"status": "success", "order_uuid": order_uuid}
 
@@ -752,10 +748,9 @@ class LimitOrderManager(CacheController):
         now_ms = TimeUtil.now_in_millis()
         total_checked = 0
         total_filled = 0
-        self._trailing_stop_price_changed = False
 
         if self._needs_initial_bracket_sync:
-            self._attach_bracket_orders_to_positions()
+            self._attach_order_to_position()
             self._needs_initial_bracket_sync = False
 
         if now_ms - self._last_print_time_ms > 4 * 60 * 1000:
@@ -811,7 +806,9 @@ class LimitOrderManager(CacheController):
                             self._close_limit_order(miner_hotkey, order, OrderSource.BRACKET_CANCELLED, now_ms)
                             continue
 
-                    # Attempt to fill
+                    # Capture best_price before attempt so we can detect trailing stop updates
+                    prev_best_price = order.price if order.trailing_stop is not None else None
+
                     if self._attempt_fill_limit_order(miner_hotkey, order, price_sources, now_ms):
                         total_filled += 1
                         # DESIGN: Break after first fill to enforce LIMIT_ORDER_FILL_INTERVAL_MS
@@ -819,14 +816,15 @@ class LimitOrderManager(CacheController):
                         # This prevents rapid sequential fills and enforces rate limiting.
                         break
 
-                # Persist trailing stop orders whose best price changed (crash recovery)
-                # Rate limited to once per minute to avoid excessive disk I/O
-                if self._trailing_stop_price_changed and now_ms - self._last_trailing_disk_write_ms >= 60_000:
-                    for order in orders:
-                        if order.trailing_stop is not None and order.src == OrderSource.BRACKET_UNFILLED:
-                            self._write_to_disk(miner_hotkey, order)
-                    self._last_trailing_disk_write_ms = now_ms
-                    self._trailing_stop_price_changed = False
+                    # Persist trailing stop best_price changes to disk and position (crash recovery)
+                    # Rate limited per order to once per minute to avoid excessive disk I/O
+                    if (prev_best_price is not None
+                            and order.src == OrderSource.BRACKET_UNFILLED
+                            and order.price != prev_best_price
+                            and now_ms - self._last_trailing_disk_write_ms.get(order.order_uuid, 0) >= 60_000):
+                        self._write_to_disk(miner_hotkey, order)
+                        self._attach_order_to_position(miner_hotkey, order)
+                        self._last_trailing_disk_write_ms[order.order_uuid] = now_ms
 
         if total_filled > 0:
             bt.logging.info(f"Limit order check complete: checked={total_checked}, filled={total_filled}")
@@ -1156,12 +1154,8 @@ class LimitOrderManager(CacheController):
                     bt.logging.warning(f"Failed to cancel bracket orders after position close: {e}")
 
             if order.execution_type == ExecutionType.LIMIT:
-                if updated_position.is_open_position and len(updated_position.orders) == 1:
-                    # New position created - sync any pending bracket orders with the position
-                    self._sync_pending_bracket_orders(miner_hotkey, updated_position)
-
-                if order.bracket_orders is not None:
-                    self.create_sltp_order(miner_hotkey, order)
+                if order.bracket_orders is not None and updated_position.is_open_position:
+                    self.create_sltp_order(miner_hotkey, order, open_position=updated_position)
 
         except BracketOrderException as e:
             error_msg = f"Limit order [{order.order_uuid}] filled successfully, but bracket order creation failed: {e}"
@@ -1217,7 +1211,7 @@ class LimitOrderManager(CacheController):
 
             bt.logging.info(f"Successfully closed limit order [{order_uuid}] [{trade_pair_id}] for [{miner_hotkey}]")
 
-    def create_sltp_order(self, miner_hotkey, parent_order):
+    def create_sltp_order(self, miner_hotkey, parent_order, open_position=None):
         """
         Create bracket order(s) from parent_order.bracket_orders list.
 
@@ -1309,13 +1303,13 @@ class LimitOrderManager(CacheController):
                         src=OrderSource.BRACKET_UNFILLED
                     )
 
+                    if open_position is not None:
+                        self._validate_bracket_order(bracket_order, open_position, reference_price=fill_price)
+
                     self._write_to_disk(miner_hotkey, bracket_order)
                     self._limit_orders[trade_pair][miner_hotkey].append(bracket_order)
 
-                    # Attach bracket order to position via RPC
-                    self.position_manager.attach_bracket_order_to_position(
-                        miner_hotkey, trade_pair.trade_pair_id, bracket_order.to_python_dict()
-                    )
+                    self._attach_order_to_position(miner_hotkey, bracket_order)
 
                     trailing_info = ""
                     if trailing_stop_dict:
@@ -1418,7 +1412,6 @@ class LimitOrderManager(CacheController):
                         f"{order.price:.6f} -> {new_best:.6f} (bid={bid_price:.6f})"
                     )
                     order.price = new_best
-                    self._trailing_stop_price_changed = True
                 if trailing_percent is not None:
                     trailing_sl = order.price * (1 - float(trailing_percent))
                 else:
@@ -1432,7 +1425,6 @@ class LimitOrderManager(CacheController):
                         f"{order.price:.6f} -> {new_best:.6f} (ask={ask_price:.6f})"
                     )
                     order.price = new_best
-                    self._trailing_stop_price_changed = True
                 if trailing_percent is not None:
                     trailing_sl = order.price * (1 + float(trailing_percent))
                 else:
@@ -1526,81 +1518,43 @@ class LimitOrderManager(CacheController):
 
         bt.logging.info(f"[LIMIT ORDER DISK] Finished reading limit orders: {total_orders_read} open orders, {total_bracket_orders} bracket orders (attachment deferred to first daemon iteration)")
 
-    def _attach_bracket_orders_to_positions(self):
+    def _attach_order_to_position(self, miner_hotkey=None, order=None):
         """
-        Attach bracket orders to their positions. Called once on the first daemon iteration
-        after startup to ensure positions are fully loaded before attaching.
+        Attach BRACKET_UNFILLED orders to their open positions.
+
+        Single-order fast path (order + miner_hotkey): called when a new bracket order is
+        created or a trailing stop best_price changes. Directly attaches without iterating
+        all orders.
+
+        Startup path (no args): iterates all orders and re-attaches every BRACKET_UNFILLED
+        order after a restart.
         """
-        total_bracket_orders = 0
-        total_bracket_attached = 0
-
-        for trade_pair, hotkey_dict in self._limit_orders.items():
-            for hotkey, orders in hotkey_dict.items():
-                for order in orders:
-                    if order.src == OrderSource.BRACKET_UNFILLED:
-                        total_bracket_orders += 1
-                        try:
-                            attached = self.position_manager.attach_bracket_order_to_position(
-                                hotkey, trade_pair.trade_pair_id, order.to_python_dict()
-                            )
-                            if attached:
-                                total_bracket_attached += 1
-                        except Exception as e:
-                            bt.logging.error(f"Error attaching bracket order {order.order_uuid} to position: {e}")
-
-        bt.logging.info(f"[LIMIT ORDER INIT] Attached {total_bracket_attached}/{total_bracket_orders} bracket orders to positions")
-
-    def _sync_pending_bracket_orders(self, miner_hotkey: str, position):
-        """
-        Sync pending bracket orders with a position.
-        Sets the bracket order's order_type to match the position's position_type
-        and attaches the bracket order to the position.
-
-        Args:
-            miner_hotkey: The miner's hotkey
-            position: The position to sync bracket orders with
-        """
-        if not position:
+        if order is not None:
+            try:
+                self.position_manager.attach_bracket_order_to_position(
+                    miner_hotkey, order.trade_pair.trade_pair_id, order.to_python_dict()
+                )
+            except Exception as e:
+                bt.logging.error(f"Error attaching bracket order {order.order_uuid} to position: {e}")
             return
 
-        trade_pair = position.trade_pair
-        orders_to_sync = []
-
-        # Collect bracket orders that need syncing for this position
-        if trade_pair in self._limit_orders and miner_hotkey in self._limit_orders[trade_pair]:
-            for order in self._limit_orders[trade_pair][miner_hotkey]:
-                if order.src == OrderSource.BRACKET_UNFILLED:
-                    orders_to_sync.append(order)
-
-        now_ms = TimeUtil.now_in_millis()
-        for order in orders_to_sync:
-            # Check if already attached (idempotent)
-            existing_uuids = {o.get('order_uuid') for o in position.unfilled_orders}
-            if order.order_uuid in existing_uuids:
-                continue
-
-            # Validate bracket order now that we have a position
-            # This handles bracket orders submitted on pending limit orders (no position at submission)
-            try:
-                self._validate_bracket_order(order, position, reference_price=position.initial_entry_price)
-            except SignalException as e:
-                bt.logging.warning(f"[BRACKET SYNC] Validation failed for {order.order_uuid}: {e}")
-                self._close_limit_order(miner_hotkey, order, OrderSource.BRACKET_CANCELLED, now_ms)
-                continue
-
-            # Persist updated order to disk (order_type was set by _validate_bracket_order)
-            self._write_to_disk(miner_hotkey, order)
-
-            # Attach to position
-            attached = self.position_manager.attach_bracket_order_to_position(
-                miner_hotkey, trade_pair.trade_pair_id, order.to_python_dict()
-            )
-            if attached:
-                bt.logging.info(
-                    f"[BRACKET SYNC] Synced bracket order {order.order_uuid} "
-                    f"with position {miner_hotkey}/{trade_pair.trade_pair_id} "
-                    f"(order_type={order.order_type})"
-                )
+        # Startup: re-attach all bracket orders
+        total_orders = 0
+        total_attached = 0
+        for tp, hotkey_dict in self._limit_orders.items():
+            for hotkey, orders in hotkey_dict.items():
+                for o in orders:
+                    if o.src != OrderSource.BRACKET_UNFILLED:
+                        continue
+                    total_orders += 1
+                    try:
+                        if self.position_manager.attach_bracket_order_to_position(
+                            hotkey, tp.trade_pair_id, o.to_python_dict()
+                        ):
+                            total_attached += 1
+                    except Exception as e:
+                        bt.logging.error(f"Error attaching bracket order {o.order_uuid} to position: {e}")
+        bt.logging.info(f"[LIMIT ORDER INIT] Attached {total_attached}/{total_orders} bracket orders to positions")
 
     def _write_to_disk(self, miner_hotkey, order):
         """Write order to disk."""
