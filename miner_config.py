@@ -44,7 +44,7 @@ class MinerConfig:
     PAYMENT_CONFIRMATION_TIMEOUT_S = 120
     PAYMENT_MAX_RETRIES = 3
     PAYMENT_RETRY_DELAY_S = 5.0
-    HYPERSCALED_API_URL = "https://hyperscaled.com"
+    HYPERSCALED_API_URL = "https://hyperscaled.trade"
 
     @staticmethod
     def get_payment_ledger_file_path() -> str:
