@@ -340,8 +340,9 @@ class ValiConfig:
     HL_LEVERAGE_SCALE_FACTOR = 80       # TBD
     HL_LEVERAGE_FLOOR = 0.01
     HL_LEVERAGE_CEILING = 0.5           # TBD
-    HL_MIN_LIQUIDITY_USD = 1_000_000    # TBD
-    HL_UNIVERSE_REFRESH_INTERVAL_S = 3_600
+    HL_MIN_LIQUIDITY_USD = 2_000_000    # 30-day mean daily USD volume threshold
+    HL_LIQUIDITY_LOOKBACK_DAYS = 30     # days of daily candles used to compute mean(v × close)
+    HL_UNIVERSE_REFRESH_INTERVAL_S = 86_400  # refresh once daily
 
     # Minimum position size limits
     FOREX_MIN_POSITION_SIZE_LOTS = 0.01        # micro lot — subaccounts > $10K
@@ -657,7 +658,7 @@ class DynamicTradePair:
     """HL-only dynamic trade pair. Never added to TRADE_PAIR_ID_TO_TRADE_PAIR."""
     trade_pair_id: str          # e.g. "HYPEUSD"
     trade_pair: str             # e.g. "HYPE/USD"
-    hl_coin: str                # original HL name e.g. "HYPE" — needed for funding rate lookups
+    hl_coin: str                # original HL name e.g. "HYPE" or "xyz:TSLA" — needed for funding rate lookups
     max_leverage: float
     fees: float = 0.001
     min_leverage: float = ValiConfig.HL_LEVERAGE_FLOOR
@@ -668,6 +669,7 @@ class DynamicTradePair:
     is_indices: bool = False
     is_blocked: bool = False
     lot_size: int = 1
+    collateral_token: str = "USDC"
 
     @property
     def subcategory(self): return CryptoSubcategory.ALTS

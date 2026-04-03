@@ -24,6 +24,7 @@ import time
 import traceback
 import uuid
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Optional, Set
 
 import bittensor as bt
@@ -1009,8 +1010,41 @@ class HyperliquidTracker:
         except Exception as e:
             bt.logging.warning(f"[HL_BACKUP] Failed to load watermarks: {e}")
 
+    def _fetch_30d_avg_volume(self, coin: str) -> float:
+        """Return 30-day mean daily USD volume for *coin* using HL candleSnapshot.
+
+        Uses complete days only (endTime = today midnight UTC).
+        Retries up to 3 times on failure.  Returns 0.0 on persistent error.
+        """
+        today_midnight_ms = (int(time.time()) // 86400) * 86400 * 1000
+        start_ms = today_midnight_ms - ValiConfig.HL_LIQUIDITY_LOOKBACK_DAYS * 86400 * 1000
+        payload = {
+            "type": "candleSnapshot",
+            "req": {
+                "coin": coin,
+                "interval": "1d",
+                "startTime": start_ms,
+                "endTime": today_midnight_ms,
+            },
+        }
+        for attempt in range(3):
+            try:
+                resp = requests.post(ValiConfig.hl_info_url(), json=payload, timeout=15)
+                resp.raise_for_status()
+                candles = resp.json()
+                if not candles:
+                    return 0.0
+                daily_vols = [float(c["v"]) * float(c["c"]) for c in candles]
+                return sum(daily_vols) / len(daily_vols)
+            except Exception as e:
+                if attempt < 2:
+                    time.sleep(1)
+                else:
+                    bt.logging.warning(f"[HL_TRACKER] candleSnapshot failed for {coin}: {e}")
+        return 0.0
+
     def _refresh_hl_universe(self):
-        """Fetch /metaAndAssetCtxs from HL and update _hl_universe + HL_DYNAMIC_REGISTRY."""
+        """Fetch metaAndAssetCtxs from HL, apply 30-day liquidity filter, update _hl_universe + HL_DYNAMIC_REGISTRY."""
         from vali_objects.vali_config import HL_DYNAMIC_REGISTRY, DynamicTradePair
         try:
             resp = requests.post(ValiConfig.hl_info_url(), json={"type": "metaAndAssetCtxs"}, timeout=10)
@@ -1020,49 +1054,41 @@ class HyperliquidTracker:
             bt.logging.warning(f"[HL_TRACKER] _refresh_hl_universe failed: {e} — keeping existing registry")
             return
 
-        # Build reverse map once: HL coin name -> static TradePair (e.g. "BTC" -> TradePair.BTCUSD)
-        hl_coin_to_static_tp = {
-            coin: TradePair[tp_id]
-            for tp_id, coin in ValiConfig.TRADE_PAIR_ID_TO_HL_COIN.items()
-        }
+        candidates = [
+            (asset["name"], asset["maxLeverage"])
+            for asset, ctx in zip(meta["universe"], ctxs)
+        ]
+
+        # Fetch 30-day avg USD volume in parallel (20 workers, retry 3x per coin)
+        avg_volumes: Dict[str, float] = {}
+        with ThreadPoolExecutor(max_workers=20) as pool:
+            futures = {pool.submit(self._fetch_30d_avg_volume, coin): coin for coin, _ in candidates}
+            for future in as_completed(futures):
+                coin = futures[future]
+                avg_volumes[coin] = future.result()
 
         new_universe = {}
-        for asset, ctx in zip(meta["universe"], ctxs):
-            coin = asset["name"]
-            if float(ctx.get("dayNtlVlm", 0)) < ValiConfig.HL_MIN_LIQUIDITY_USD:
+        for coin, max_lev in candidates:
+            if avg_volumes.get(coin, 0.0) < ValiConfig.HL_MIN_LIQUIDITY_USD:
                 continue
-            static_tp = hl_coin_to_static_tp.get(coin)
-            if static_tp:
-                # Use the static TradePair's leverage rules so these coins behave
-                # identically to regular miners (e.g. CRYPTO_MAX_LEVERAGE=2.5 for BTC).
-                new_universe[coin] = DynamicTradePair(
-                    trade_pair_id=static_tp.trade_pair_id,
-                    trade_pair=static_tp.trade_pair,
-                    hl_coin=coin,
-                    max_leverage=static_tp.max_leverage,
-                    min_leverage=static_tp.min_leverage,
-                    fees=static_tp.fees,
-                    trade_pair_category=static_tp.trade_pair_category,
-                )
-            else:
-                vanta_max = max(
-                    ValiConfig.HL_LEVERAGE_FLOOR,
-                    min(asset["maxLeverage"] / ValiConfig.HL_LEVERAGE_SCALE_FACTOR,
-                        ValiConfig.HL_LEVERAGE_CEILING)
-                )
-                new_universe[coin] = DynamicTradePair(
-                    trade_pair_id=f"{coin}USD",
-                    trade_pair=f"{coin}/USD",
-                    hl_coin=coin,
-                    max_leverage=vanta_max,
-                )
+            vanta_max = max(
+                ValiConfig.HL_LEVERAGE_FLOOR,
+                min(max_lev / ValiConfig.HL_LEVERAGE_SCALE_FACTOR,
+                    ValiConfig.HL_LEVERAGE_CEILING)
+            )
+            new_universe[coin] = DynamicTradePair(
+                trade_pair_id=f"{coin}USD",
+                trade_pair=f"{coin}/USD",
+                hl_coin=coin,
+                max_leverage=vanta_max,
+            )
 
         self._hl_universe = new_universe
         for dtp in new_universe.values():
             HL_DYNAMIC_REGISTRY[dtp.trade_pair_id] = dtp
         self._persist_hl_dynamic_registry()
         self._last_universe_refresh = time.time()
-        bt.logging.info(f"[HL_TRACKER] Universe: {len(new_universe)} active, {len(HL_DYNAMIC_REGISTRY)} total")
+        bt.logging.info(f"[HL_TRACKER] Universe: {len(new_universe)} active (30d avg vol ≥ ${ValiConfig.HL_MIN_LIQUIDITY_USD:,}), {len(HL_DYNAMIC_REGISTRY)} total")
 
     def _persist_hl_dynamic_registry(self):
         """Write HL_DYNAMIC_REGISTRY to disk so other processes can load it."""
