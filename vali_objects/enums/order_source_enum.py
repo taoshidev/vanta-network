@@ -19,6 +19,7 @@ class OrderSource(IntEnum):
     STOP_LIMIT_UNFILLED = 13           # stop-limit order created but not yet triggered
     STOP_LIMIT_FILLED = 14             # stop-limit order that was triggered (spawned a limit order)
     STOP_LIMIT_CANCELLED = 15          # stop-limit order that was cancelled
+    HYPERLIQUID = 16                   # order placed via Hyperliquid with exchange fill price
 
     @staticmethod
     def get_fill(order_src):

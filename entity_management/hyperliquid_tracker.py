@@ -1398,6 +1398,15 @@ class HyperliquidTracker:
             if slippage is not None:
                 slippage_pct = slippage
 
+        # Use actual HL fill price when available (captures real execution quality)
+        hl_fill_price = None
+        raw_px = fill.get("px")
+        if raw_px is not None:
+            try:
+                hl_fill_price = float(raw_px)
+            except (ValueError, TypeError):
+                hl_fill_price = None
+
         # === Build signal ===
         signal = {
             "order_type": order_type,
@@ -1408,6 +1417,8 @@ class HyperliquidTracker:
             "is_hl_taker": is_taker,
             "hl_slippage": slippage_pct,
         }
+        if hl_fill_price:
+            signal["price"] = hl_fill_price
 
         miner_order_uuid = str(uuid.uuid4())
 
@@ -1439,7 +1450,8 @@ class HyperliquidTracker:
             bt.logging.info(
                 f"[HL_TRACKER] Processed fill: {coin} target_weight={target_signed_weight:+.4f} "
                 f"current_lev={current_signed_lev:+.4f} delta={delta:+.4f} -> "
-                f"{synthetic_hotkey} {order_type} leverage={leverage:.4f} slippage={slippage_pct:.6f}"
+                f"{synthetic_hotkey} {order_type} leverage={leverage:.4f} "
+                f"fill_px={hl_fill_price} slippage={slippage_pct:.6f}"
             )
 
         except SignalException as e:
