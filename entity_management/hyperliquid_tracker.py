@@ -24,7 +24,6 @@ import time
 import traceback
 import uuid
 from collections import OrderedDict
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Optional, Set
 
 import bittensor as bt
@@ -1030,6 +1029,10 @@ class HyperliquidTracker:
         for attempt in range(3):
             try:
                 resp = requests.post(ValiConfig.hl_info_url(), json=payload, timeout=15)
+                if resp.status_code == 429:
+                    bt.logging.warning(f"[HL_TRACKER] 429 on {coin}, waiting 60s...")
+                    time.sleep(60)
+                    continue
                 resp.raise_for_status()
                 candles = resp.json()
                 if not candles:
@@ -1037,10 +1040,9 @@ class HyperliquidTracker:
                 daily_vols = [float(c["v"]) * float(c["c"]) for c in candles]
                 return sum(daily_vols) / len(daily_vols)
             except Exception as e:
-                if attempt < 2:
-                    time.sleep(1)
-                else:
+                if attempt == 2:
                     bt.logging.warning(f"[HL_TRACKER] candleSnapshot failed for {coin}: {e}")
+                time.sleep(2 ** attempt)
         return 0.0
 
     def _fetch_dex_collateral_map(self, dex_names: List[Optional[str]]) -> Dict[str, str]:
@@ -1115,13 +1117,11 @@ class HyperliquidTracker:
             bt.logging.warning("[HL_TRACKER] No candidates found — keeping existing registry")
             return
 
-        # 4. Fetch 30-day avg USD volume in parallel (20 workers, retry 3x per coin)
+        # 4. Fetch 30-day avg USD volume sequentially (1s sleep → ≤60 req/min, under 1200 weight/min limit)
         avg_volumes: Dict[str, float] = {}
-        with ThreadPoolExecutor(max_workers=20) as pool:
-            futures = {pool.submit(self._fetch_30d_avg_volume, coin): coin for coin, _ in all_candidates}
-            for future in as_completed(futures):
-                coin = futures[future]
-                avg_volumes[coin] = future.result()
+        for coin, _ in all_candidates:
+            avg_volumes[coin] = self._fetch_30d_avg_volume(coin)
+            time.sleep(1)
 
         # 5. Filter and build universe
         new_universe = {}
