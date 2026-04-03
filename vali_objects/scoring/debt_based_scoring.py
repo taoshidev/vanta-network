@@ -385,7 +385,6 @@ class DebtBasedScoring:
             cumulative_payout_checkpoints = [
                 cp for cp in debt_ledger.checkpoints
                 if payout_calc_start_ms <= cp.timestamp_ms <= current_time_ms
-                and cp.challenge_period_status in DebtBasedScoring.EARNING_MINER_BUCKETS
             ]
             actual_payout_usd = sum(cp.chunk_emissions_usd for cp in cumulative_payout_checkpoints)
 
