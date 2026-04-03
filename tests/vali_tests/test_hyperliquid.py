@@ -795,16 +795,28 @@ class TestHyperliquidTracker(TestBase):
                 {"name": "LOWVOL", "maxLeverage": 10},
             ]
         }
-        fake_ctxs = [
-            {"dayNtlVlm": "5000000"},  # above liquidity threshold
-            {"dayNtlVlm": "100"},       # below liquidity threshold
-        ]
+
+        def fake_avg_volume(coin):
+            # PEPE passes the 2M threshold; LOWVOL does not
+            return 5_000_000.0 if coin == "PEPE" else 100.0
+
+        def post_side_effect(url, json=None, timeout=None):
+            r = MagicMock()
+            t = (json or {}).get("type", "")
+            if t == "perpDexs":
+                r.json.return_value = []  # no named dexes — default dex only
+            elif t == "spotMeta":
+                r.json.return_value = {"tokens": [{"index": 0, "name": "USDC"}]}
+            elif t == "metaAndAssetCtxs":
+                r.json.return_value = [fake_meta, [{}, {}]]
+            else:
+                r.json.return_value = {}
+            return r
 
         with patch.object(self.tracker, '_persist_hl_dynamic_registry'), \
+             patch.object(self.tracker, '_fetch_30d_avg_volume', side_effect=fake_avg_volume), \
              patch('entity_management.hyperliquid_tracker.requests') as mock_req:
-            mock_resp = MagicMock()
-            mock_resp.json.return_value = [fake_meta, fake_ctxs]
-            mock_req.post.return_value = mock_resp
+            mock_req.post.side_effect = post_side_effect
             self.tracker._refresh_hl_universe()
 
         self.assertIn("PEPE", self.tracker._hl_universe)

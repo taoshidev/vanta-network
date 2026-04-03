@@ -1090,14 +1090,17 @@ class HyperliquidTracker:
         """Discover all dexes, apply 30-day liquidity filter, update _hl_universe + HL_DYNAMIC_REGISTRY."""
         from vali_objects.vali_config import HL_DYNAMIC_REGISTRY, DynamicTradePair
 
-        # 1. Discover all dex names; None represents the default crypto dex
+        # 1. Discover all dex names; None represents the default crypto dex.
+        # perpDexs returns a list where the first element is None (default dex) and the rest
+        # are dicts like {"name": "xyz", ...} — extract the name strings from those dicts.
+        named_dexes: List[str] = []
         try:
             resp = requests.post(ValiConfig.hl_info_url(), json={"type": "perpDexs"}, timeout=10)
             resp.raise_for_status()
-            dex_names: List[Optional[str]] = [None] + resp.json()
+            named_dexes = [d["name"] for d in resp.json() if isinstance(d, dict) and d.get("name")]
         except Exception as e:
             bt.logging.warning(f"[HL_TRACKER] Failed to fetch perpDexs: {e} — using default dex only")
-            dex_names = [None]
+        dex_names: List[Optional[str]] = [None] + named_dexes
 
         # 2. Fetch collateral token per dex (one spotMeta call + one meta call per named dex)
         dex_to_collateral = self._fetch_dex_collateral_map(dex_names)
@@ -1147,7 +1150,7 @@ class HyperliquidTracker:
         self._persist_hl_dynamic_registry()
         self._last_universe_refresh = time.time()
         bt.logging.info(
-            f"[HL_TRACKER] Universe: {len(new_universe)} active across {len(dex_names)} dex(es) "
+            f"[HL_TRACKER] Universe: {len(new_universe)} active across {len(named_dexes) + 1} dex(es) "
             f"(30d avg vol ≥ ${ValiConfig.HL_MIN_LIQUIDITY_USD:,}), {len(HL_DYNAMIC_REGISTRY)} total"
         )
 
@@ -1431,7 +1434,7 @@ class HyperliquidTracker:
             return
 
         # Map coin to trade pair via dynamic registry
-        from vali_objects.vali_config import HL_DYNAMIC_REGISTRY, HL_COIN_TO_DYNAMIC_TRADE_PAIR
+        from vali_objects.vali_config import HL_COIN_TO_DYNAMIC_TRADE_PAIR
         trade_pair = self._hl_universe.get(coin)
         below_threshold = False
         if not trade_pair:
