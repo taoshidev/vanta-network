@@ -91,10 +91,6 @@ class Position(BaseModel):
         values['trade_pair'] = trade_pair
         return values
 
-    @property
-    def start_carry_fee_accrual_ms(self):
-        return max(FEE_V6_TIME_MS, self.open_ms)
-
     def get_cumulative_leverage(self) -> float:
         current_leverage = 0.0
         cumulative_leverage = 0.0
@@ -140,11 +136,10 @@ class Position(BaseModel):
 
     # TODO update with ledger update
     def crypto_carry_fee(self, current_time_ms: int) -> (float, int):
-        # print(f'accrual time {TimeUtil.millis_to_formatted_date_str(self.start_carry_fee_accrual_ms)} now {TimeUtil.millis_to_formatted_date_str(current_time_ms)}')
         # Fees every 8 hrs. 4 UTC, 12 UTC, 20 UTC
-        n_intervals_elapsed, time_until_next_interval_ms = TimeUtil.n_intervals_elapsed_crypto(self.start_carry_fee_accrual_ms, current_time_ms)
+        n_intervals_elapsed, time_until_next_interval_ms = TimeUtil.n_intervals_elapsed_crypto(self.open_ms, current_time_ms)
         fee_product = 1.0
-        start_ms = self.start_carry_fee_accrual_ms
+        start_ms = self.open_ms
         end_ms = start_ms + time_until_next_interval_ms
         for n in range(n_intervals_elapsed):
             if n != 0:
@@ -163,9 +158,9 @@ class Position(BaseModel):
     # TODO update with ledger update
     def forex_indices_carry_fee(self, current_time_ms: int) -> (float, int):
         # Fees M-F where W gets triple fee.
-        n_intervals_elapsed, time_until_next_interval_ms = TimeUtil.n_intervals_elapsed_forex_indices(self.start_carry_fee_accrual_ms, current_time_ms)
+        n_intervals_elapsed, time_until_next_interval_ms = TimeUtil.n_intervals_elapsed_forex_indices(self.open_ms, current_time_ms)
         fee_product = 1.0
-        start_ms = self.start_carry_fee_accrual_ms
+        start_ms = self.open_ms
         end_ms = start_ms + time_until_next_interval_ms
         for n in range(n_intervals_elapsed):
             if n != 0:
@@ -223,9 +218,9 @@ class Position(BaseModel):
         if self.is_closed_position and current_time_ms > self.close_ms:
             current_time_ms = self.close_ms
 
-        if current_time_ms < self.start_carry_fee_accrual_ms:
+        if current_time_ms < self.open_ms:
             delta = MS_IN_1_HOUR if (self.is_hl and funding_rates is not None) else (MS_IN_8_HOURS if self.trade_pair.is_crypto else MS_IN_24_HOURS)
-            return 1.0, min(current_time_ms + delta, self.start_carry_fee_accrual_ms)
+            return 1.0, min(current_time_ms + delta, self.open_ms)
 
         # HL positions use actual funding rates when available
         if self.is_hl and funding_rates is not None:
@@ -239,23 +234,43 @@ class Position(BaseModel):
 
         return carry_fee, next_update_time_ms
 
-    def refresh_carry_fee_usd(self, current_time_ms: int) -> float:
+    def refresh_carry_fee_usd(self, current_time_ms: int, hl_funding_rates: Optional[dict] = None) -> float:
         if self.is_closed_position:
             current_time_ms = self.close_ms
 
-        last_carry_fee_accrual_ms = self.open_ms
-        for fee_event in reversed(self.fee_history):
-            if fee_event["fee_type"] == "carry":
-                last_carry_fee_accrual_ms = fee_event["time_ms"]
-                break
+        market_value = abs(self.net_value) + self.unrealized_pnl
+        if market_value <= 0:
+            return 0.0
+
+        if self.is_hl:
+            if not hl_funding_rates:
+                return 0
+
+            last_accrual_ms = self.last_fee_time_ms("hl_funding")
+            sign = 1.0 if self.position_type == OrderType.LONG else -1.0
+            total_fee = 0.0
+            last_settlement_ms = last_accrual_ms
+            for settlement_ms, rate in sorted(hl_funding_rates.items()):
+                if settlement_ms <= last_accrual_ms:
+                    continue
+                if settlement_ms > current_time_ms:
+                    break
+                total_fee += market_value * rate * sign
+                last_settlement_ms = settlement_ms
+            if total_fee > 0:
+                self.record_fee_event("hl_funding", total_fee, last_settlement_ms)
+
+            return total_fee
+
+        last_accrual_ms = self.last_fee_time_ms("carry")
 
         if self.trade_pair.is_crypto:
             interval_ms = MS_IN_8_HOURS
-            intervals = (current_time_ms - last_carry_fee_accrual_ms) // interval_ms
+            intervals = (current_time_ms - last_accrual_ms) // interval_ms
             rate = ValiConfig.CARRY_FEE_RATE_PER_INTERVAL[TradePairCategory.CRYPTO]
         elif self.trade_pair.is_forex:
             interval_ms = MS_IN_24_HOURS
-            intervals = (current_time_ms - last_carry_fee_accrual_ms) // interval_ms
+            intervals = (current_time_ms - last_accrual_ms) // interval_ms
             rate = ValiConfig.CARRY_FEE_RATE_PER_INTERVAL[TradePairCategory.FOREX]
         else:
             return 0.0
@@ -263,12 +278,8 @@ class Position(BaseModel):
         if intervals <= 0:
             return 0.0
 
-        market_value = abs(self.net_value) + self.unrealized_pnl
-        if market_value <= 0:
-            return 0.0
-
         carry_fee = market_value * rate * intervals
-        record_time_ms = last_carry_fee_accrual_ms + intervals * interval_ms
+        record_time_ms = last_accrual_ms + intervals * interval_ms
         if carry_fee > 0:
             self.record_fee_event("carry", carry_fee, record_time_ms)
 
@@ -303,6 +314,12 @@ class Position(BaseModel):
             self.record_fee_event("interest", interest_usd, most_recent_midnight_ms)
 
         return interest_usd
+
+    def last_fee_time_ms(self, fee_type: str) -> int:
+        for fee_event in reversed(self.fee_history):
+            if fee_event["fee_type"] == fee_type:
+                return fee_event["time_ms"]
+        return self.open_ms
 
     def record_fee_event(self, fee_type: str, amount: float, time_ms: int):
         if amount <= 0:

@@ -16,7 +16,7 @@ from vali_objects.exceptions.vali_bkp_file_missing_exception import ValiFileMiss
 from vali_objects.position_management.position_utils import PositionUtils
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
-from vali_objects.vali_config import TradePairCategory, ValiConfig, TradePair, RPCConnectionMode
+from vali_objects.vali_config import TradePairCategory, ValiConfig, TradePair, RPCConnectionMode, DynamicTradePair
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.enums.misc import OrderStatus
 from vali_objects.enums.order_source_enum import OrderSource
@@ -29,6 +29,7 @@ from vali_objects.position_management.position_utils.positions_to_snap import po
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.price_fetcher.live_price_client import LivePriceFetcherClient
 from vali_objects.utils.elimination.elimination_client import EliminationClient
+from vali_objects.hl_funding.hl_funding_rate_client import HLFundingRateClient
 from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
 from entity_management.entity_client import EntityClient
 from entity_management.entity_utils import is_synthetic_hotkey
@@ -110,6 +111,7 @@ class PositionManager:
             connection_mode=RPCConnectionMode.RPC,
             running_unit_tests=self.running_unit_tests
         )
+        self._hl_funding_client = HLFundingRateClient(connection_mode=RPCConnectionMode.RPC)
 
         # Load positions from disk on startup
         self._load_positions_from_disk()
@@ -1239,6 +1241,24 @@ class PositionManager:
 
         bt.logging.info(f'Removed {n_price_sources_removed} price sources from old data.')
 
+    def _get_hl_funding_rates(self, position, current_time_ms: int):
+        if not position.is_hl:
+            return None
+        tp = position.trade_pair
+        if isinstance(tp, DynamicTradePair):
+            coin = tp.hl_coin
+        else:
+            coin = ValiConfig.TRADE_PAIR_ID_TO_HL_COIN.get(tp.trade_pair_id)
+        if not coin:
+            return None
+        try:
+            return self._hl_funding_client.get_rates_for_position(
+                coin, position.open_ms, current_time_ms
+            )
+        except Exception as e:
+            bt.logging.warning(f"[POSITION FEE] Failed to fetch HL funding rates for {coin}: {e}")
+            return None
+
     def refresh_position_fees(self, time_ms: Optional[int] = None) -> None:
         """Iterate over all open positions, compute carry fees, update positions and miner accounts."""
         if not time_ms:
@@ -1257,7 +1277,8 @@ class PositionManager:
                 if position.trade_pair.is_equities:
                     fee = position.refresh_interest_fee_usd(time_ms)
                 else:
-                    fee = position.refresh_carry_fee_usd(time_ms)
+                    hl_fr = self._get_hl_funding_rates(position, time_ms)
+                    fee = position.refresh_carry_fee_usd(time_ms, hl_funding_rates=hl_fr)
 
                 if fee > 0:
                     bt.logging.info(

@@ -159,7 +159,7 @@ class PerfLedgerManager(CacheController):
             return None
         try:
             return self._hl_funding_client.get_rates_for_position(
-                coin, position.start_carry_fee_accrual_ms, current_time_ms
+                coin, position.open_ms, current_time_ms
             )
         except Exception as e:
             bt.logging.warning(f"[PERF_LEDGER] Failed to fetch HL funding rates for {coin}: {e}")

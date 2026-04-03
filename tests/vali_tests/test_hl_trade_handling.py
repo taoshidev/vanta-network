@@ -21,7 +21,6 @@ from entity_management.hl_orderbook_utils import simulate_fill
 from vali_objects.hl_funding.hl_funding_rate_manager import HLFundingRateManager
 
 
-# Use an open_ms well after FEE_V6_TIME_MS so start_carry_fee_accrual_ms == open_ms
 # 2024-08-01 00:00:00 UTC
 BASE_OPEN_MS = 1722470400000
 

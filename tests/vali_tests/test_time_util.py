@@ -151,7 +151,7 @@ class TestTimeUtil(TestBase):
         )
         position.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
         n_intervals, time_until_next_interval_ms = TimeUtil.n_intervals_elapsed_crypto(
-            position.start_carry_fee_accrual_ms, t_ms
+            position.open_ms, t_ms
         )
         assert n_intervals == 0, f"n_intervals: {n_intervals}, time_until_next_interval_ms: {time_until_next_interval_ms}"
 
