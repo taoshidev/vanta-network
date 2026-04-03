@@ -103,6 +103,8 @@ class PerfLedgerServer(RPCServerBase):
             connection_mode=connection_mode
         )
 
+        self._regenerate_all_ledgers = True  # Full rebuild on first daemon iteration
+
         # Start daemon if requested (not in LOCAL mode)
         if start_daemon:
             self.start_daemon()
@@ -117,7 +119,8 @@ class PerfLedgerServer(RPCServerBase):
 
         if self._manager.refresh_allowed(ValiConfig.PERF_LEDGER_REFRESH_TIME_MS):
             bt.logging.info("[PERF_LEDGER_DAEMON] Starting perf ledger update...")
-            self._manager.update()
+            self._manager.update(regenerate_all_ledgers=self._regenerate_all_ledgers)
+            self._regenerate_all_ledgers = False
             self._manager.set_last_update_time(skip_message=False)  # Enable logging to confirm updates
             bt.logging.success("[PERF_LEDGER_DAEMON] Perf ledger update completed")
         else:
