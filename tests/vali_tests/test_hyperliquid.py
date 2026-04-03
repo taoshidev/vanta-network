@@ -757,8 +757,8 @@ class TestHyperliquidTracker(TestBase):
 
         # Populate _hl_universe with common test coins so _process_fill coin lookup succeeds.
         self.tracker._hl_universe = {
-            "BTC": DynamicTradePair(trade_pair_id="BTCUSD", trade_pair="BTC/USD", hl_coin="BTC", max_leverage=0.5, collateral_token="USDC"),
-            "ETH": DynamicTradePair(trade_pair_id="ETHUSD", trade_pair="ETH/USD", hl_coin="ETH", max_leverage=0.5, collateral_token="USDC"),
+            "BTC": DynamicTradePair(trade_pair_id="BTCUSDC", trade_pair="BTC/USDC", hl_coin="BTC", max_leverage=0.5),
+            "ETH": DynamicTradePair(trade_pair_id="ETHUSDC", trade_pair="ETH/USDC", hl_coin="ETH", max_leverage=0.5),
         }
 
         # Mock account state fetch and current position lookup.
@@ -811,7 +811,7 @@ class TestHyperliquidTracker(TestBase):
         self.assertNotIn("LOWVOL", self.tracker._hl_universe)
         pepe_dtp = self.tracker._hl_universe["PEPE"]
         self.assertIsInstance(pepe_dtp, DynamicTradePair)
-        self.assertEqual(pepe_dtp.trade_pair_id, "PEPEUSD")
+        self.assertEqual(pepe_dtp.trade_pair_id, "PEPEUSDC")
         # max_leverage = min(40 / ValiConfig.HL_LEVERAGE_SCALE_FACTOR, HL_LEVERAGE_CEILING) = 0.5
         self.assertAlmostEqual(pepe_dtp.max_leverage, 0.5)
 
@@ -1125,7 +1125,7 @@ class TestHyperliquidTracker(TestBase):
         signal = call_args.kwargs['signal']
 
         self.assertEqual(signal['order_type'], 'LONG')
-        self.assertEqual(signal['trade_pair'], {'trade_pair_id': 'ETHUSD'})
+        self.assertEqual(signal['trade_pair'], {'trade_pair_id': 'ETHUSDC'})
         self.assertEqual(signal['execution_type'], 'MARKET')
         # leverage = (2.0 * 3000.0) / 100000 = 0.06
         self.assertAlmostEqual(signal['leverage'], 0.06, places=4)

@@ -176,8 +176,8 @@ class HyperliquidDataService(BaseDataService):
             return None
         tp = self._coin_to_trade_pair.get(coin)
         if tp is None:
-            from vali_objects.vali_config import HL_DYNAMIC_REGISTRY
-            tp = HL_DYNAMIC_REGISTRY.get(f"{coin}USD")
+            from vali_objects.vali_config import HL_COIN_TO_DYNAMIC_TRADE_PAIR
+            tp = HL_COIN_TO_DYNAMIC_TRADE_PAIR.get(coin)
         if tp is None:
             return None
         levels = book_data.get("levels", [])
@@ -251,7 +251,17 @@ class HyperliquidDataService(BaseDataService):
             )
 
     def _fetch_all_mids(self) -> dict[str, float]:
-        """Fetch mid prices for all coins via the REST API. Returns {coin: mid_price}."""
+        """Fetch mid prices for all coins across all dexes via the REST API.
+
+        Fetches the default crypto dex first, then merges in each non-default dex
+        (identified by the colon-prefixed hl_coin names in HL_DYNAMIC_REGISTRY).
+        Returns {coin: mid_price} with prefixed keys for non-default dex coins (e.g. "xyz:TSLA").
+        """
+        from vali_objects.vali_config import HL_DYNAMIC_REGISTRY
+
+        result: dict[str, float] = {}
+
+        # Default dex
         try:
             resp = requests.post(
                 ValiConfig.hl_info_url(),
@@ -259,10 +269,29 @@ class HyperliquidDataService(BaseDataService):
                 timeout=REST_TIMEOUT_S,
             )
             resp.raise_for_status()
-            return {coin: float(price) for coin, price in resp.json().items()}
+            result.update({coin: float(price) for coin, price in resp.json().items()})
         except Exception as e:
-            bt.logging.error(f"Hyperliquid REST allMids failed: {type(e).__name__}: {e}")
-            return {}
+            bt.logging.error(f"Hyperliquid REST allMids (default dex) failed: {type(e).__name__}: {e}")
+
+        # Non-default dexes — derive names from prefixed hl_coin entries in the registry
+        non_default_dexes = {
+            dtp.hl_coin.split(":")[0]
+            for dtp in HL_DYNAMIC_REGISTRY.values()
+            if ":" in dtp.hl_coin
+        }
+        for dex in non_default_dexes:
+            try:
+                resp = requests.post(
+                    ValiConfig.hl_info_url(),
+                    json={"type": "allMids", "dex": dex},
+                    timeout=REST_TIMEOUT_S,
+                )
+                resp.raise_for_status()
+                result.update({coin: float(price) for coin, price in resp.json().items()})
+            except Exception as e:
+                bt.logging.error(f"Hyperliquid REST allMids (dex={dex}) failed: {type(e).__name__}: {e}")
+
+        return result
 
     def _fetch_l2_book(self, coin: str) -> tuple[float, float] | None:
         """Fetch best bid/ask for a single coin via the REST API."""
@@ -514,7 +543,24 @@ class HyperliquidDataService(BaseDataService):
             )
             mids = resp.json()
             if isinstance(mids, dict):
-                supported = configured_coins.intersection(mids.keys())
+                all_supported_keys = set(mids.keys())
+                # Also fetch non-default dex allMids so prefixed coins are not filtered out
+                non_default_dexes = {
+                    dtp.hl_coin.split(":")[0]
+                    for dtp in HL_DYNAMIC_REGISTRY.values()
+                    if ":" in dtp.hl_coin
+                }
+                for dex in non_default_dexes:
+                    try:
+                        r = requests.post(
+                            ValiConfig.hl_info_url(),
+                            json={"type": "allMids", "dex": dex},
+                            timeout=5,
+                        )
+                        all_supported_keys.update(r.json().keys())
+                    except Exception:
+                        pass
+                supported = configured_coins.intersection(all_supported_keys)
             else:
                 supported = configured_coins
 
