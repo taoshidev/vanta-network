@@ -1498,7 +1498,13 @@ class HyperliquidTracker:
             return
 
         # Market hours check (only for market orders)
-        is_market_open = self._price_fetcher_client.is_market_open(trade_pair, now_ms)
+        # DynamicTradePairs are HL instruments — HL trades 24/7 regardless of asset type,
+        # so skip the market-hours check entirely for them.
+        from vali_objects.vali_config import DynamicTradePair
+        if isinstance(trade_pair, DynamicTradePair):
+            is_market_open = True
+        else:
+            is_market_open = self._price_fetcher_client.is_market_open(trade_pair, now_ms)
         if not is_market_open:
             bt.logging.debug(f"[HL_TRACKER] Market closed for {trade_pair_id}")
             self._broadcast_rejection(synthetic_hotkey, f"Market is closed for {trade_pair_id}.")
