@@ -509,15 +509,16 @@ class EntityManager(ValidatorBroadcastBase):
                     synthetic_hotkey=synthetic_hotkey,
                     account_size=account_size,
                     asset_class=asset_class,
-                    status="active"
+                    status="active",
+                    hl_address=subaccount.hl_address,
+                    payout_address=subaccount.payout_address
                 )
             self.broadcast_subaccount_dashboard(synthetic_hotkey)
 
-                # Notify WebSocket server so connected entity clients auto-subscribe
-                try:
-                    self._websocket_client.notify_new_subaccount(entity_hotkey, synthetic_hotkey)
-                except Exception as notify_err:
-                    bt.logging.debug(f"[ENTITY_MANAGER] New subaccount WS notification failed: {notify_err}")
+            try:
+                self._websocket_client.notify_new_subaccount(entity_hotkey, synthetic_hotkey)
+            except Exception as notify_err:
+                bt.logging.debug(f"[ENTITY_MANAGER] New subaccount WS notification failed: {notify_err}")
 
             total_ms = int((time.time() - t_start) * 1000)
 
@@ -1713,6 +1714,7 @@ class EntityManager(ValidatorBroadcastBase):
                 if subaccount_id in entity_data.subaccounts:
                     existing_sub = entity_data.subaccounts[subaccount_id]
                     if existing_sub.subaccount_uuid == subaccount_uuid:
+                        changed = False
                         # Update status if changed
                         if existing_sub.status != status:
                             bt.logging.info(

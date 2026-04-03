@@ -422,6 +422,8 @@ class ServerOrchestrator:
         from entity_management.entity_client import EntityClient
         from vali_objects.utils.entity_collateral.entity_collateral_server import EntityCollateralServer
         from vali_objects.utils.entity_collateral.entity_collateral_client import EntityCollateralClient
+        from vali_objects.hl_funding.hl_funding_rate_server import HLFundingRateServer
+        from vali_objects.hl_funding.hl_funding_rate_client import HLFundingRateClient
 
         # Update registry with classes
         self.SERVERS['common_data'].server_class = CommonDataServer
@@ -486,6 +488,9 @@ class ServerOrchestrator:
 
         self.SERVERS['entity_collateral'].server_class = EntityCollateralServer
         self.SERVERS['entity_collateral'].client_class = EntityCollateralClient
+
+        self.SERVERS['hl_funding'].server_class = HLFundingRateServer
+        self.SERVERS['hl_funding'].client_class = HLFundingRateClient
 
         self._classes_loaded = True
 

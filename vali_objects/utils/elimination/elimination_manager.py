@@ -45,6 +45,8 @@ from vali_objects.position_management.position_manager_client import PositionMan
 from vali_objects.vali_dataclasses.price_source import PriceSource
 from shared_objects.rpc.common_data_client import CommonDataClient
 from entity_management.entity_utils import is_synthetic_hotkey
+from vali_objects.enums.order_type_enum import OrderType
+from vali_objects.miner_account.miner_account_client import MinerAccountClient
 
 
 # ==================== Elimination Types ====================
@@ -246,6 +248,12 @@ class EliminationManager(CacheController):
         self._limit_order_client = LimitOrderClient(
             connect_immediately=False,
             connection_mode=connection_mode
+        )
+
+        self._miner_account_client = MinerAccountClient(
+            connect_immediately=False,
+            connection_mode=connection_mode,
+            running_unit_tests=running_unit_tests
         )
 
         # Create own EntityCollateralClient for slashing on elimination
