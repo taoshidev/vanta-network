@@ -153,6 +153,33 @@ brew install jq  # or apt install jq for Linux
 }
 ```
 
+3. **Optional: Decodo Proxy for Hyperliquid Tracking**
+
+The Hyperliquid WebSocket API limits tracking to 10 unique user addresses per IP. To scale beyond this, you can route connections through Decodo datacenter SOCKS5 proxies. Each purchased IP (accessed via a dedicated port) gets its own WebSocket connection handling up to 10 addresses.
+
+Add the following to your `secrets.json`:
+```json
+{
+  "hl_proxy_url": "socks5://USERNAME:PASSWORD@dc.decodo.com",
+  "hl_proxy_ports": "10001-10010"
+}
+```
+
+- `hl_proxy_url`: Base SOCKS5 proxy URL (without port). Your Decodo username and password.
+- `hl_proxy_ports`: Port list. Supports range format (`"10001-10010"`) or comma-separated (`"10001,10002,10005"`). Each port maps to a different static IP.
+
+Each port = 1 IP = up to 10 HL addresses. 10 ports = 100 addresses. Max 20 ports (200 addresses).
+
+Install the SOCKS5 dependencies (both are in `requirements.txt`):
+- `python-socks` – WebSocket connections through SOCKS5
+- `PySocks` – HTTP/REST requests through SOCKS5 (used by `requests`)
+
+```bash
+pip install -r requirements.txt
+```
+
+If no proxy keys are present in `secrets.json`, the tracker falls back to a single direct connection (max 10 addresses). Unhealthy proxy IPs are automatically detected after 5 consecutive connection failures and their addresses are redistributed to healthy IPs.
+
 ### Launch Options
 
 The `run.sh` script provides automated updating and simplified execution.

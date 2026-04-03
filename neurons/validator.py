@@ -36,6 +36,7 @@ from shared_objects.subtensor_ops.subtensor_ops import SubtensorOpsManager
 from shared_objects.error_utils import ErrorUtils
 from shared_objects.slack_notifier import SlackNotifier
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
+from vali_objects.vali_config import ValiConfig
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.utils.limit_order.order_processor import OrderProcessor
@@ -102,6 +103,7 @@ class Validator(ValidatorBase):
 
         self.config = self.get_config()
         self.is_mainnet = self.config.netuid == 8
+        # ValiConfig.HL_USE_TESTNET = not self.is_mainnet
         # Ensure the directory for logging exists, else create one.
         if not os.path.exists(self.config.full_path):
             os.makedirs(self.config.full_path, exist_ok=True)
@@ -228,6 +230,23 @@ class Validator(ValidatorBase):
 
         # Initialize UUID tracker with existing positions
         self.uuid_tracker.add_initial_uuids(self.position_manager_client.get_positions_for_all_miners())
+
+        # Hyperliquid tracker (daemon thread for tracking HL trader fills)
+        from entity_management.hyperliquid_tracker import HyperliquidTracker
+        from vanta_api.websocket_notifier import WebSocketNotifierClient
+        hl_ws_notifier = WebSocketNotifierClient(connect_immediately=False)
+        self.hl_tracker = HyperliquidTracker(
+            entity_client=self.entity_client,
+            elimination_client=self.elimination_client,
+            price_fetcher_client=self.price_fetcher_client,
+            asset_selection_client=self.asset_selection_client,
+            market_order_manager=self.market_order_manager,
+            limit_order_client=self.limit_order_client,
+            uuid_tracker=self.uuid_tracker,
+            rate_limiter=RateLimiter(),
+            ws_notifier_client=hl_ws_notifier,
+        )
+        self.hl_tracker.start()
 
         # Verify hotkey is registered
         bt.logging.info(f"Metagraph n_entries: {len(self.metagraph_client.get_hotkeys())}")

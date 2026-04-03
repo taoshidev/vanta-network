@@ -200,6 +200,66 @@ Returns position data for a specific miner identified by their hotkey.
 
 Returns all the hotkeys as seen in the metagraph from the validator's perspective.
 
+### Allowed Trade Pairs
+
+`GET /trade-pairs`
+
+Returns the currently allowed trading pairs and their maximum leverage limits. This endpoint excludes blocked pairs (e.g., indices, commodities, deprecated forex pairs) and unsupported pairs (e.g., TAOUSD). Use it to discover which `trade_pair_id` values are valid when placing orders and what leverage constraints apply per pair.
+
+**Authentication:** None required. Public endpoint.
+
+**Response:**
+```json
+{
+  "allowed_trade_pairs": [
+    {
+      "trade_pair_id": "BTCUSD",
+      "trade_pair": "BTC/USD",
+      "trade_pair_category": "CRYPTO",
+      "max_leverage": 0.5
+    },
+    {
+      "trade_pair_id": "ETHUSD",
+      "trade_pair": "ETH/USD",
+      "trade_pair_category": "CRYPTO",
+      "max_leverage": 0.5
+    },
+    {
+      "trade_pair_id": "EURUSD",
+      "trade_pair": "EUR/USD",
+      "trade_pair_category": "FOREX",
+      "max_leverage": 5
+    }
+  ],
+  "allowed_trade_pair_ids": ["BTCUSD", "ETHUSD", "EURUSD", "..."],
+  "total_trade_pairs": 45,
+  "timestamp": 1749234567890
+}
+```
+
+**Response fields:**
+- `allowed_trade_pairs`: Array of objects, each with:
+  - `trade_pair_id`: Identifier to use in order requests (e.g., `"BTCUSD"`)
+  - `trade_pair`: Display format (e.g., `"BTC/USD"`)
+  - `trade_pair_category`: Asset class (`CRYPTO`, `FOREX`, `EQUITIES`, `INDICES`)
+  - `max_leverage`: Maximum allowed leverage for this pair
+- `allowed_trade_pair_ids`: Flat list of valid `trade_pair_id` values
+- `total_trade_pairs`: Count of allowed pairs
+- `timestamp`: Response timestamp in milliseconds
+
+**Example:**
+```bash
+curl http://localhost:48888/trade-pairs
+```
+
+**Error responses:**
+```json
+// 500 Internal Server Error
+{
+  "error": "Internal server error retrieving allowed trade pairs"
+}
+```
+
 ### All Miners Statistics 
 
 `GET /statistics`
@@ -651,8 +711,7 @@ Register a new entity miner that can create and manage subaccounts.
 **Request Body:**
 ```json
 {
-  "entity_hotkey": "5GhDr3xy...abc",
-  "max_subaccounts": 500
+  "entity_hotkey": "5GhDr3xy...abc"
 }
 ```
 
@@ -668,33 +727,59 @@ Register a new entity miner that can create and manage subaccounts.
 **Parameters:**
 - `entity_hotkey` (string, required): The entity's hotkey SS58 address
 - `collateral_amount` (float, optional): Collateral amount in alpha tokens (default: 0.0)
-- `max_subaccounts` (int, optional): Maximum allowed subaccounts (default: 500)
 
 **Example:**
 ```bash
 curl -X POST http://localhost:48888/entity/register \
   -H "Authorization: Bearer YOUR_TIER_200_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{
-    "entity_hotkey": "5GhDr3xy...abc",
-    "max_subaccounts": 500
-  }'
+  -d '{"entity_hotkey": "5GhDr3xy...abc"}'
 ```
 
 ### Create Subaccount
 
 `POST /entity/create-subaccount`
+`POST /entity/create-hl-subaccount` *(alias — both routes call the same implementation)*
 
-Create a new trading subaccount under an entity. The subaccount receives a unique synthetic hotkey that can be used for order placement.
+Create a new trading subaccount under an entity. The subaccount receives a unique synthetic hotkey that can be used for order placement. This endpoint handles both standard subaccounts and Hyperliquid-linked subaccounts — the presence of the `hl_address` field in the request body selects the HL path.
 
-**Request Body:**
+**Authentication:** Coldkey signature (no API key required — the request is signed by the entity's coldkey).
+
+**Request Body — Standard subaccount:**
 ```json
 {
   "entity_hotkey": "5GhDr3xy...abc",
+  "entity_coldkey": "5FxY...",
   "account_size": 50000,
-  "asset_class": "crypto"
+  "asset_class": "crypto",
+  "signature": "0x...",
+  "version": "2.0.0"
 }
 ```
+
+**Request Body — Hyperliquid-linked subaccount:**
+```json
+{
+  "entity_hotkey": "5GhDr3xy...abc",
+  "entity_coldkey": "5FxY...",
+  "account_size": 50000,
+  "asset_class": "crypto",
+  "hl_address": "0xabcd1234...ef56",
+  "payout_address": "0xAbCd...1234",
+  "signature": "0x...",
+  "version": "2.0.0"
+}
+```
+
+**Parameters:**
+- `entity_hotkey` (string, required): The entity's hotkey SS58 address
+- `entity_coldkey` (string, required): The entity's coldkey SS58 address
+- `account_size` (float, required): Account size in USD. Must be positive.
+- `asset_class` (string, required): `"crypto"`, `"forex"`, or `"equities"`. HL subaccounts always use `"crypto"`.
+- `signature` (string, required): Coldkey signature over the sorted-JSON of `{account_size, asset_class, entity_coldkey, entity_hotkey}` (plus `hl_address` and optionally `payout_address` for HL subaccounts).
+- `hl_address` (string, optional): Hyperliquid wallet address (`0x` + 40 hex chars). Presence selects the HL subaccount path.
+- `payout_address` (string, optional, HL only): EVM address for USDC payouts (`0x` + 40 hex chars).
+- `version` (string, optional): vanta-cli version string for compatibility checking.
 
 **Response:**
 ```json
@@ -705,6 +790,8 @@ Create a new trading subaccount under an entity. The subaccount receives a uniqu
     "subaccount_id": 0,
     "subaccount_uuid": "550e8400-e29b-41d4-a716-446655440000",
     "synthetic_hotkey": "5GhDr3xy...abc_0",
+    "asset_class": "crypto",
+    "account_size": 50000.0,
     "status": "active",
     "created_at_ms": 1702345678901,
     "eliminated_at_ms": null
@@ -715,28 +802,80 @@ Create a new trading subaccount under an entity. The subaccount receives a uniqu
 **Response Fields:**
 - `subaccount_id`: Monotonically increasing ID (0, 1, 2, ...)
 - `subaccount_uuid`: Unique identifier for the subaccount
-- `synthetic_hotkey`: Generated hotkey for trading operations ({entity_hotkey}_{id})
-- `status`: Current status ("active", "eliminated", or "unknown")
+- `synthetic_hotkey`: Generated hotkey for trading operations (`{entity_hotkey}_{id}`)
+- `asset_class`: Asset class assigned to this subaccount
+- `account_size`: USD account size
+- `status`: Current status (`"active"`, `"eliminated"`, or `"unknown"`)
 - `created_at_ms`: Timestamp when subaccount was created
 - `eliminated_at_ms`: Timestamp when eliminated (null if active)
-
-**Example:**
-```bash
-curl -X POST http://localhost:48888/entity/create-subaccount \
-  -H "Authorization: Bearer YOUR_TIER_200_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "entity_hotkey": "5GhDr3xy...abc"
-    "account_size": 50000,
-    "asset_class": "crypto"
-  }'
-```
 
 **Important Notes:**
 - Subaccount IDs are monotonically increasing and never reused
 - The synthetic hotkey must be used for all trading operations
 - Entity hotkeys cannot place orders directly (only subaccounts can trade)
 - New subaccounts are automatically broadcasted to all validators in the network
+- The entity miner gateway (`EntityMinerRestServer`) handles signing and forwarding — end users typically call the miner-side endpoint rather than this one directly
+
+### Set Entity Endpoint
+
+`POST /entity/set-endpoint`
+
+Register the entity miner's public REST gateway URL with the validator. The validator stores this URL and uses it to direct HL address lookups. Called automatically by the entity miner gateway at startup.
+
+**Authentication:** Coldkey signature (no API key required).
+
+**Request Body:**
+```json
+{
+  "entity_hotkey": "5GhDr3xy...abc",
+  "entity_coldkey": "5FxY...",
+  "endpoint_url": "https://my-gateway.example.com",
+  "signature": "0x..."
+}
+```
+
+**Parameters:**
+- `entity_hotkey` (string, required): The entity's hotkey SS58 address
+- `entity_coldkey` (string, required): The entity's coldkey SS58 address
+- `endpoint_url` (string, required): Publicly reachable URL of the entity miner gateway
+- `signature` (string, required): Coldkey signature over sorted-JSON of `{endpoint_url, entity_coldkey, entity_hotkey}`
+
+**Response:**
+```json
+{
+  "status": "success",
+  "message": "Endpoint URL set successfully",
+  "entity_hotkey": "5GhDr3xy...abc",
+  "endpoint_url": "https://my-gateway.example.com"
+}
+```
+
+### Get Entity Endpoint
+
+`GET /entity/endpoint`
+
+Look up the registered gateway URL for an entity miner. Resolves by HL address or synthetic hotkey.
+
+**Authentication:** None required. Public endpoint.
+
+**Query Parameters (one required):**
+- `hl_address` (string): Hyperliquid wallet address
+- `subaccount` (string): Synthetic hotkey (e.g., `5GhDr3xy...abc_0`)
+
+**Response:**
+```json
+{
+  "status": "success",
+  "entity_hotkey": "5GhDr3xy...abc",
+  "endpoint_url": "https://my-gateway.example.com"
+}
+```
+
+**Examples:**
+```bash
+curl "http://localhost:48888/entity/endpoint?hl_address=0xabcd1234..."
+curl "http://localhost:48888/entity/endpoint?subaccount=5GhDr3xy...abc_0"
+```
 
 ### Get Entity Data
 
@@ -1783,6 +1922,99 @@ Invalid request format or missing required parameters.
 }
 ```
 Entity management service is not running or unavailable.
+
+## Hyperliquid Trader Endpoints
+
+These endpoints expose data for Hyperliquid-linked subaccounts. **No authentication required** — they are public.
+
+### Get HL Trader Dashboard
+
+`GET /hl-traders/<hl_address>`
+
+Resolve a Hyperliquid wallet address to its synthetic hotkey and return the full subaccount dashboard (same structure as `GET /entity/subaccount/<synthetic_hotkey>` v1 format).
+
+**Authentication:** None required.
+
+**Query Parameters (optional):**
+- `positions_time_ms` (int): Only include positions newer than this timestamp (ms)
+- `limit_orders_time_ms` (int): Only include limit orders newer than this timestamp (ms)
+
+**Response:**
+```json
+{
+  "status": "success",
+  "dashboard": {
+    "subaccount_info": {
+      "synthetic_hotkey": "5GhDr3xy...abc_0",
+      "entity_hotkey": "5GhDr3xy...abc",
+      "subaccount_id": 0,
+      "asset_class": "crypto",
+      "hl_address": "0xabcd1234...",
+      "payout_address": "0xAbCd...",
+      "status": "active",
+      "created_at_ms": 1702345678901,
+      "eliminated_at_ms": null
+    },
+    "challenge_period": { "bucket": "CHALLENGE", "start_time_ms": 1702345678901 },
+    "drawdown": { "..." : "..." },
+    "elimination": null,
+    "account_size_data": { "..." : "..." },
+    "positions": { "..." : "..." },
+    "limit_orders": { "..." : "..." }
+  },
+  "timestamp": 1702345690000
+}
+```
+
+**Example:**
+```bash
+curl http://localhost:48888/hl-traders/0xabcd1234...
+```
+
+### Get HL Trader Limits
+
+`GET /hl-traders/<hl_address>/limits`
+
+Returns the trading limits for a Hyperliquid subaccount based on its account size and challenge period status.
+
+**Authentication:** None required.
+
+**Response:**
+```json
+{
+  "status": "success",
+  "hl_address": "0xabcd1234...",
+  "account_size": 50000.0,
+  "max_position_per_pair_usd": 25000.0,
+  "max_portfolio_usd": 500000.0,
+  "in_challenge_period": true,
+  "timestamp": 1702345690000
+}
+```
+
+**Response Fields:**
+- `account_size`: Subaccount account size in USD
+- `max_position_per_pair_usd`: Maximum USD exposure per trade pair (`account_size × max_leverage`; halved during challenge period)
+- `max_portfolio_usd`: Maximum total portfolio value (`account_size × portfolio_cap`; halved during challenge period)
+- `in_challenge_period`: Whether the subaccount is currently in the challenge period
+
+**Example:**
+```bash
+curl http://localhost:48888/hl-traders/0xabcd1234.../limits
+```
+
+### Get HL Leaderboard
+
+`GET /hl-leaderboard`
+
+Returns aggregated leaderboard data for all Hyperliquid traders, including summary metrics and trader rankings.
+
+**Authentication:** None required.
+
+**Example:**
+```bash
+curl http://localhost:48888/hl-leaderboard
+```
 
 ## Compression Support
 

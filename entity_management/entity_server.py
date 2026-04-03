@@ -119,11 +119,13 @@ class EntityServer(RPCServerBase):
         all_entities = self._manager.get_all_entities()
         total_subaccounts = sum(len(entity.subaccounts) for entity in all_entities.values())
         active_subaccounts = sum(len(entity.get_active_subaccounts()) for entity in all_entities.values())
+        hl_subaccounts = len(self._manager.get_all_active_hl_subaccounts())
 
         return {
             "total_entities": len(all_entities),
             "total_subaccounts": total_subaccounts,
-            "active_subaccounts": active_subaccounts
+            "active_subaccounts": active_subaccounts,
+            "hl_subaccounts": hl_subaccounts
         }
 
     # ==================== Entity Registration RPC Methods ====================
@@ -170,6 +172,81 @@ class EntityServer(RPCServerBase):
         subaccount_dict = subaccount_info.model_dump() if subaccount_info else None
 
         return success, subaccount_dict, message
+
+    def create_hl_subaccount_rpc(
+        self,
+        entity_hotkey: str,
+        account_size: float,
+        hl_address: str,
+        asset_class: str = "crypto",
+        admin: bool = False,
+        payout_address: Optional[str] = None
+    ) -> Tuple[bool, Optional[dict], str]:
+        """
+        Create a new subaccount linked to a Hyperliquid address.
+
+        Args:
+            entity_hotkey: The VANTA_ENTITY_HOTKEY
+            account_size: Account size in USD
+            hl_address: Hyperliquid address (0x-prefixed, 40 hex chars)
+            asset_class: Asset class selection (default: "crypto")
+            admin: If True, skip collateral slashing
+            payout_address: Optional EVM address (0x + 40 hex) for USDC payouts
+
+        Returns:
+            (success: bool, subaccount_info_dict: Optional[dict], message: str)
+        """
+        success, subaccount_info, message = self._manager.create_hl_subaccount(
+            entity_hotkey, account_size, hl_address, asset_class=asset_class, admin=admin, payout_address=payout_address
+        )
+        subaccount_dict = subaccount_info.model_dump() if subaccount_info else None
+        return success, subaccount_dict, message
+
+    def get_all_active_hl_subaccounts_rpc(self) -> List[Tuple[str, dict]]:
+        """
+        Get all active subaccounts with HL addresses.
+
+        Returns:
+            List of (hl_address, subaccount_info_dict) tuples
+        """
+        return self._manager.get_all_active_hl_subaccounts()
+
+    def get_synthetic_hotkey_for_hl_address_rpc(self, hl_address: str) -> Optional[str]:
+        """
+        O(1) lookup of synthetic hotkey for a Hyperliquid address.
+
+        Args:
+            hl_address: The Hyperliquid address
+
+        Returns:
+            Synthetic hotkey if found, None otherwise
+        """
+        return self._manager.get_synthetic_hotkey_for_hl_address(hl_address)
+
+    def get_subaccount_info_for_synthetic_rpc(self, synthetic_hotkey: str) -> Optional[dict]:
+        """
+        Get SubaccountInfo for a synthetic hotkey.
+
+        Args:
+            synthetic_hotkey: The synthetic hotkey
+
+        Returns:
+            SubaccountInfo dict if found, None otherwise
+        """
+        info = self._manager.get_subaccount_info_for_synthetic(synthetic_hotkey)
+        return info.model_dump() if info else None
+
+    def get_hl_subaccount_limits_data_rpc(self, hl_address: str) -> Optional[dict]:
+        """
+        Get lightweight limits data for an HL subaccount.
+
+        Args:
+            hl_address: The Hyperliquid address
+
+        Returns:
+            Dict with {account_size, asset_class, challenge_bucket} or None
+        """
+        return self._manager.get_hl_subaccount_limits_data(hl_address)
 
     def eliminate_subaccount_rpc(
         self,
@@ -233,6 +310,15 @@ class EntityServer(RPCServerBase):
         """
         all_entities = self._manager.get_all_entities()
         return {hotkey: entity.model_dump() for hotkey, entity in all_entities.items()}
+
+    def get_hl_leaderboard_data_rpc(self) -> dict:
+        """
+        Get aggregated HL leaderboard data (summary, funded traders, challenge traders).
+
+        Returns:
+            Dict with summary, fundedTraders, challengeTraders, timestamp
+        """
+        return self._manager.get_hl_leaderboard_data()
 
     def validate_hotkey_for_orders_rpc(self, hotkey: str) -> dict:
         """
@@ -316,7 +402,9 @@ class EntityServer(RPCServerBase):
         synthetic_hotkey: str,
         account_size: float,
         asset_class: str,
-        status: str = "active"
+        status: str = "active",
+        hl_address: Optional[str] = None,
+        payout_address: Optional[str] = None
     ) -> None:
         """
         Broadcast subaccount registration to other validators.
@@ -329,10 +417,12 @@ class EntityServer(RPCServerBase):
             account_size: Account size in USD
             asset_class: Asset class selection
             status: Subaccount status (active, admin, etc.)
+            hl_address: Optional Hyperliquid address for HL-linked subaccounts
+            payout_address: Optional EVM address for USDC payouts
         """
         self._manager.broadcast_subaccount_registration(
             entity_hotkey, subaccount_id, subaccount_uuid, synthetic_hotkey,
-            account_size, asset_class, status
+            account_size, asset_class, status, hl_address=hl_address, payout_address=payout_address
         )
 
     def receive_subaccount_registration_update_rpc(self, subaccount_data: dict, sender_hotkey: str = None) -> bool:
@@ -389,6 +479,97 @@ class EntityServer(RPCServerBase):
             synapse.successfully_processed = False
             synapse.error_message = f"Error processing subaccount registration: {e}"
             bt.logging.error(f"[ENTITY_SERVER] Error processing SubaccountRegistration synapse: {e}")
+            import traceback
+            bt.logging.error(traceback.format_exc())
+
+        return synapse
+
+    # ==================== Entity Endpoint URL RPC Methods ====================
+
+    def set_endpoint_url_rpc(
+        self,
+        entity_hotkey: str,
+        endpoint_url: str
+    ) -> Tuple[bool, str]:
+        """
+        Set the public endpoint URL for an entity miner (RPC method).
+
+        Args:
+            entity_hotkey: The VANTA_ENTITY_HOTKEY
+            endpoint_url: The public-facing endpoint URL
+
+        Returns:
+            (success: bool, message: str)
+        """
+        return self._manager.set_endpoint_url(entity_hotkey, endpoint_url)
+
+    def get_endpoint_url_by_address_rpc(
+        self,
+        hl_address: str = None,
+        subaccount: str = None
+    ) -> Optional[str]:
+        """
+        Resolve an HL address or synthetic hotkey to the entity's endpoint URL (RPC method).
+
+        Args:
+            hl_address: Hyperliquid address (0x-prefixed)
+            subaccount: Synthetic hotkey (entity_hotkey_N)
+
+        Returns:
+            The entity's endpoint URL, or None if not found
+        """
+        return self._manager.get_endpoint_url_by_address(hl_address=hl_address, subaccount=subaccount)
+
+    def receive_entity_endpoint_update_rpc(self, endpoint_data: dict, sender_hotkey: str = None) -> bool:
+        """
+        Process an incoming EntityEndpointUpdate and update entity data (RPC method).
+
+        Args:
+            endpoint_data: Dictionary containing entity_hotkey and endpoint_url
+            sender_hotkey: The hotkey of the validator that sent this broadcast
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        return self._manager.receive_entity_endpoint_update(endpoint_data, sender_hotkey)
+
+    def receive_entity_endpoint_synapse_rpc(
+        self,
+        synapse: template.protocol.EntityEndpointUpdate
+    ) -> template.protocol.EntityEndpointUpdate:
+        """
+        Receive EntityEndpointUpdate synapse (RPC method for axon handler).
+
+        Args:
+            synapse: EntityEndpointUpdate synapse from another validator
+
+        Returns:
+            Updated synapse with success/error status
+        """
+        try:
+            sender_hotkey = synapse.dendrite.hotkey
+            bt.logging.info(
+                f"[ENTITY_SERVER] Received EntityEndpointUpdate synapse from validator hotkey [{sender_hotkey}]"
+            )
+            success = self.receive_entity_endpoint_update_rpc(synapse.endpoint_data, sender_hotkey)
+
+            if success:
+                synapse.successfully_processed = True
+                synapse.error_message = ""
+                bt.logging.info(
+                    f"[ENTITY_SERVER] Successfully processed EntityEndpointUpdate synapse from {sender_hotkey}"
+                )
+            else:
+                synapse.successfully_processed = False
+                synapse.error_message = "Failed to process entity endpoint update"
+                bt.logging.warning(
+                    f"[ENTITY_SERVER] Failed to process EntityEndpointUpdate synapse from {sender_hotkey}"
+                )
+
+        except Exception as e:
+            synapse.successfully_processed = False
+            synapse.error_message = f"Error processing entity endpoint update: {e}"
+            bt.logging.error(f"[ENTITY_SERVER] Error processing EntityEndpointUpdate synapse: {e}")
             import traceback
             bt.logging.error(traceback.format_exc())
 

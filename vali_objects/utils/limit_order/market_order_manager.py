@@ -607,7 +607,9 @@ class MarketOrderManager():
                         raise SignalException(f"Proposed order timestamp < position's last order ({now_ms} < {position_last_order})")
 
                 # If we enforce market cooldown, we treat as market order regardless of execution type
-                if enforce_market_cooldown:
+                if signal.get("is_hl"):
+                    new_src = OrderSource.HYPERLIQUID
+                elif enforce_market_cooldown:
                     new_src = OrderSource.ORGANIC
                 elif execution_type == ExecutionType.LIMIT:
                     new_src = OrderSource.LIMIT_FILLED

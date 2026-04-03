@@ -1,9 +1,11 @@
 # developer: Taoshi
+from dataclasses import dataclass
 from datetime import datetime, timezone
 import os
 import math
 from collections import defaultdict
 from enum import Enum
+from typing import Union
 
 from meta import load_version
 
@@ -232,6 +234,9 @@ class ValiConfig:
     RPC_ENTITY_PORT = 50024
     RPC_ENTITY_SERVICE_NAME = "EntityServer"
 
+    RPC_HL_FUNDING_PORT = 50025
+    RPC_HL_FUNDING_SERVICE_NAME = "HLFundingRateServer"
+
     # Public API Configuration (well-known network endpoints)
     REST_API_HOST = "127.0.0.1"
     REST_API_PORT = 48888
@@ -324,6 +329,13 @@ class ValiConfig:
     EQUITIES_MAX_LEVERAGE = 2
     COMMODITIES_MIN_LEVERAGE = 0.1
     COMMODITIES_MAX_LEVERAGE = 4
+
+    # HL dynamic universe — copy-trading leverage mapping
+    HL_LEVERAGE_SCALE_FACTOR = 80       # TBD
+    HL_LEVERAGE_FLOOR = 0.01
+    HL_LEVERAGE_CEILING = 0.5           # TBD
+    HL_MIN_LIQUIDITY_USD = 1_000_000    # TBD
+    HL_UNIVERSE_REFRESH_INTERVAL_S = 3_600
 
     # Minimum position size limits
     FOREX_MIN_POSITION_SIZE_LOTS = 0.01  # 0.01 standard lots
@@ -513,21 +525,66 @@ class ValiConfig:
     ENTITY_COST_PER_THETA = 5000  # USD account size per theta of collateral for entity subaccounts
     MAX_SUBACCOUNT_ACCOUNT_SIZE = 100_000  # Maximum account size in USD for entity subaccounts
 
-    # Hyperliquid L2 orderbook precision
-    HL_L2_COARSE_SIG_FIGS = 2  # Aggregated to 2 sig figs for deep coverage on large orders (max 20 levels)
+    # Hyperliquid tracking configuration
+    HL_USE_TESTNET = False  # Set to True to use Hyperliquid testnet endpoints
+    HL_MAINNET_WS = "wss://api.hyperliquid.xyz/ws"
+    HL_MAINNET_INFO = "https://api.hyperliquid.xyz/info"
+    HL_MAINNET_HOST = "api.hyperliquid.xyz"
 
-    HL_COIN_TO_TRADE_PAIR = {
-        "BTC": "BTCUSD", "ETH": "ETHUSD", "SOL": "SOLUSD",
-        "XRP": "XRPUSD", "DOGE": "DOGEUSD", "ADA": "ADAUSD",
-        "TAO": "TAOUSD", "HYPE": "HYPEUSD", "ZEC": "ZECUSD",
-        "BCH": "BCHUSD", "LINK": "LINKUSD", "XMR": "XMRUSD",
-        "LTC": "LTCUSD"
+    HL_TESTNET_WS = "wss://api.hyperliquid-testnet.xyz/ws"
+    HL_TESTNET_INFO = "https://api.hyperliquid-testnet.xyz/info"
+    HL_TESTNET_HOST = "api.hyperliquid-testnet.xyz"
+
+    @classmethod
+    def hl_ws_url(cls) -> str:
+        return cls.HL_TESTNET_WS if cls.HL_USE_TESTNET else cls.HL_MAINNET_WS
+
+    @classmethod
+    def hl_info_url(cls) -> str:
+        return cls.HL_TESTNET_INFO if cls.HL_USE_TESTNET else cls.HL_MAINNET_INFO
+
+    @classmethod
+    def hl_host(cls) -> str:
+        return cls.HL_TESTNET_HOST if cls.HL_USE_TESTNET else cls.HL_MAINNET_HOST
+
+    HL_MAX_TRACKED_ADDRESSES_PER_IP = 10  # HL WebSocket limit: 10 unique users per IP
+    HL_MAX_TRACKED_ADDRESSES = HL_MAX_TRACKED_ADDRESSES_PER_IP  # backward compat alias
+    HL_WS_HEARTBEAT_INTERVAL_S = 30.0
+    HL_WS_RECONNECT_BACKOFF_MAX_S = 30.0
+    HL_PROXY_SECRET_KEY = "hl_proxy_url"  # key in secrets.json for base proxy URL (without port)
+    HL_PROXY_PORTS_SECRET_KEY = "hl_proxy_ports"  # key in secrets.json for port list/range
+    HL_MAX_PROXY_SHARDS = 20  # safety cap on proxy connections (200 addresses max)
+    HL_SHARD_MAX_CONSECUTIVE_FAILURES = 5  # failures before marking a proxy IP as unhealthy
+    HL_PORT_REST_FAILURE_THRESHOLD = 3
+    HL_PORT_HEALTH_PROBE_INTERVAL_S = 30.0
+    HL_PORT_HEALTH_MAX_COOLDOWN_S = 600.0
+    HL_ADDRESS_REGEX = r"^0x[a-fA-F0-9]{40}$"
+    HL_BACKUP_POLL_INTERVAL_S = 10.0
+    HL_BACKUP_POLL_RATE_BUDGET = 60
+    HL_BACKUP_POLL_LOOKBACK_MS = 60 * 60 * 1000 # TODO: change to 2 min
+    HL_BACKUP_RESTART_LOOKBACK_MS = 60 * 60 * 1000
+
+    # L2 orderbook precision: nSigFigs controls price aggregation granularity.
+    # HL returns max 20 levels per side regardless of nSigFigs.
+    # Coarse (2) = deep coverage but loses granular price distribution.
+    # We subscribe at coarse and full resolution on separate shards and combine them.
+    HL_L2_COARSE_SIG_FIGS = 2
+
+    TRADE_PAIR_ID_TO_HL_COIN = {
+        "BTCUSD": "BTC", "ETHUSD": "ETH", "SOLUSD": "SOL",
+        "XRPUSD": "XRP", "DOGEUSD": "DOGE", "ADAUSD": "ADA",
+        "TAOUSD": "TAO", "HYPEUSD": "HYPE", "ZECUSD": "ZED",
+        "BCHUSD": "BCH", "LINKUSD": "LINK", "XMRUSD": "XMR",
+        "LTCUSD": "LTC"
     }
-    TRADE_PAIR_ID_TO_HL_COIN = {v: k for k, v in HL_COIN_TO_TRADE_PAIR.items()}
 
     # HL fee constants
     HL_TAKER_FEE = 0.00045    # 0.045%
     HL_MAKER_FEE = 0.00015    # 0.015%
+
+    # HL Funding Rate Service
+    HL_FUNDING_DAEMON_INTERVAL_S = 300
+    HL_FUNDING_BACKFILL_HOURS = 4
 
     # Account Size
     COST_PER_THETA = 500  # Account size USD value per theta of collateral
@@ -567,6 +624,43 @@ assert ValiConfig.INDICES_MIN_LEVERAGE >= ValiConfig.ORDER_MIN_LEVERAGE
 assert ValiConfig.INDICES_MAX_LEVERAGE <= ValiConfig.ORDER_MAX_LEVERAGE
 assert ValiConfig.EQUITIES_MIN_LEVERAGE >= ValiConfig.ORDER_MIN_LEVERAGE
 assert ValiConfig.EQUITIES_MAX_LEVERAGE <= ValiConfig.ORDER_MAX_LEVERAGE
+
+@dataclass
+class DynamicTradePair:
+    """HL-only dynamic trade pair. Never added to TRADE_PAIR_ID_TO_TRADE_PAIR."""
+    trade_pair_id: str          # e.g. "HYPEUSD"
+    trade_pair: str             # e.g. "HYPE/USD"
+    hl_coin: str                # original HL name e.g. "HYPE" — needed for funding rate lookups
+    max_leverage: float
+    fees: float = 0.001
+    min_leverage: float = ValiConfig.HL_LEVERAGE_FLOOR
+    trade_pair_category: TradePairCategory = TradePairCategory.CRYPTO
+    is_crypto: bool = True
+    is_forex: bool = False
+    is_equities: bool = False
+    is_indices: bool = False
+    is_blocked: bool = False
+    lot_size: int = 1
+
+    @property
+    def subcategory(self): return CryptoSubcategory.ALTS
+
+    @property
+    def base(self): return self.trade_pair.split("/")[0]
+
+    @property
+    def quote(self): return "USD"
+
+    def __json__(self):
+        return {
+            "trade_pair_id": self.trade_pair_id,
+            "trade_pair": self.trade_pair,
+            "fees": self.fees,
+            "min_leverage": self.min_leverage,
+            "max_leverage": self.max_leverage,
+            "trade_pair_category": self.trade_pair_category,
+        }
+
 
 class TradePair(Enum):
     # crypto
@@ -843,21 +937,17 @@ class TradePair(Enum):
     @staticmethod
     def from_trade_pair_id(trade_pair_id: str):
         """
-        Converts a trade_pair_id string into a TradePair object.
+        Converts a trade_pair_id string into a TradePair or DynamicTradePair object.
 
         Args:
             trade_pair_id (str): The ID of the trade pair to convert.
 
         Returns:
-            TradePair: The corresponding TradePair object.
-
-        Raises:
-            ValueError: If no matching trade pair is found.
+            TradePair | DynamicTradePair | None: The corresponding trade pair object.
         """
         if trade_pair_id in TRADE_PAIR_ID_TO_TRADE_PAIR:
             return TRADE_PAIR_ID_TO_TRADE_PAIR[trade_pair_id]
-        else:
-            return None
+        return HL_DYNAMIC_REGISTRY.get(trade_pair_id)
 
     def __json__(self):
         # Provide a dictionary representation for JSON serialization
@@ -884,7 +974,9 @@ class TradePair(Enum):
 
     @staticmethod
     def get_latest_trade_pair_from_trade_pair_id(trade_pair_id):
-        return TRADE_PAIR_ID_TO_TRADE_PAIR.get(trade_pair_id)
+        if trade_pair_id in TRADE_PAIR_ID_TO_TRADE_PAIR:
+            return TRADE_PAIR_ID_TO_TRADE_PAIR[trade_pair_id]
+        return HL_DYNAMIC_REGISTRY.get(trade_pair_id)
 
     @staticmethod
     def get_latest_tade_pair_from_trade_pair_str(trade_pair_str):
@@ -901,3 +993,36 @@ TRADE_PAIR_STR_TO_TRADE_PAIR = {x.trade_pair: x for x in TradePair}
 # These are trade pairs that have no price data available (not just temporarily halted)
 ValiConfig.UNSUPPORTED_TRADE_PAIRS = (TradePair.SPX, TradePair.DJI, TradePair.NDX, TradePair.VIX,
                                       TradePair.FTSE, TradePair.GDAXI)
+
+# HL dynamic registry — populated at import time from disk, updated hourly by hyperliquid_tracker.
+HL_DYNAMIC_REGISTRY: dict[str, DynamicTradePair] = {}
+TradePairLike = Union[TradePair, DynamicTradePair]
+
+_HL_REGISTRY_PATH = os.path.join(ValiConfig.BASE_DIR, "validation", "hl_dynamic_registry.json")
+
+
+def load_hl_dynamic_registry() -> None:
+    """Populate this process's HL_DYNAMIC_REGISTRY from disk. Safe to call repeatedly — merges, never prunes."""
+    import json as _json
+    if not os.path.exists(_HL_REGISTRY_PATH):
+        return
+    try:
+        with open(_HL_REGISTRY_PATH) as f:
+            data = _json.load(f)
+        for tid, d in data.items():
+            HL_DYNAMIC_REGISTRY[tid] = DynamicTradePair(
+                trade_pair_id=d["trade_pair_id"],
+                trade_pair=d["trade_pair"],
+                hl_coin=d["hl_coin"],
+                max_leverage=d["max_leverage"],
+                min_leverage=d.get("min_leverage", ValiConfig.HL_LEVERAGE_FLOOR),
+                fees=d.get("fees", 0.001),
+                trade_pair_category=TradePairCategory(d["trade_pair_category"]),
+            )
+    except Exception as e:
+        import bittensor as bt
+        bt.logging.warning(f"[HL_REGISTRY] load failed: {e}")
+
+
+# Auto-load so every process that imports vali_config gets the registry populated.
+load_hl_dynamic_registry()

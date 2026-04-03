@@ -1,4 +1,5 @@
 import hashlib
+import re
 from string import hexdigits
 
 import bittensor as bt
@@ -20,7 +21,7 @@ from shared_objects.rpc.rpc_server_base import RPCServerBase
 from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
 from vali_objects.contract.contract_client import ContractClient
 from vali_objects.data_export.core_outputs_client import CoreOutputsClient
-from vali_objects.enums.execution_type_enum import ExecutionType
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.miner_account.miner_account_client import MinerAccountClient
 from vali_objects.position_management.position_manager_client import PositionManagerClient
 from vali_objects.statistics.miner_statistics_client import MinerStatisticsClient
@@ -32,8 +33,8 @@ from vali_objects.miner_account.miner_account_manager import MinerAccountManager
 from vali_objects.utils.limit_order.order_processor import OrderProcessor
 from vali_objects.utils.vali_bkp_utils import CustomEncoder
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
-from vali_objects.enums.miner_bucket_enum import MinerBucket
-from vali_objects.vali_config import TradePairCategory, ValiConfig, RPCConnectionMode
+from vali_objects.vali_config import ValiConfig, RPCConnectionMode, TradePairCategory, TradePair
+from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_client import DebtLedgerClient
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
 from vali_objects.vali_dataclasses.position import Position
@@ -252,6 +253,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         # Trading endpoints
         self.app.route("/limit-orders/<minerid>", methods=["GET"])(self.get_limit_orders_unique)
         self.app.route("/orders/<minerid>", methods=["GET"])(self.get_orders_for_miner)
+        self.app.route("/trade-pairs", methods=["GET"])(self.get_allowed_trade_pairs)
         self.app.route("/asset-selection", methods=["POST"])(self.asset_selection)
         self.app.route("/miner-selections", methods=["GET"])(self.get_miner_selections)
         self.app.route("/development/order", methods=["POST"])(self.process_development_order)
@@ -269,14 +271,24 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         # Entity management endpoints
         self.app.route("/entity/register", methods=["POST"])(self.register_entity)
         self.app.route("/entity/create-subaccount", methods=["POST"])(self.create_subaccount)
+        self.app.route("/entity/create-hl-subaccount", methods=["POST"])(self.create_subaccount)
         self.app.route("/entity/<entity_hotkey>", methods=["GET"])(self.get_entity)
         self.app.route("/entities", methods=["GET"])(self.get_all_entities)
         self.app.route("/entity/subaccount/eliminate", methods=["POST"])(self.eliminate_subaccount)
         self.app.route("/entity/subaccount/<synthetic_hotkey>", methods=["GET"])(self.get_subaccount_dashboard)
         self.app.route("/v2/entity/subaccount/<synthetic_hotkey>", methods=["GET"])(self.v2_get_subaccount_dashboard)
         self.app.route("/entity/subaccount/payout", methods=["POST"])(self.calculate_subaccount_payout)
+        self.app.route("/entity/set-endpoint", methods=["POST"])(self.set_entity_endpoint)
+        self.app.route("/entity/endpoint", methods=["GET"])(self.get_entity_endpoint)
 
-        print(f"[REST-INIT] 30 validator endpoints registered ✓")
+        # Public HL trader lookup (no auth required)
+        self.app.route("/hl-traders/<hl_address>", methods=["GET"])(self.get_hl_trader)
+        self.app.route("/hl-traders/<hl_address>/limits", methods=["GET"])(self.get_hl_trader_limits)
+
+        # Public HL leaderboard (no auth required)
+        self.app.route("/hl-leaderboard", methods=["GET"])(self.get_hl_leaderboard)
+
+        print(f"[REST-INIT] 32 validator endpoints registered ✓")
 
     # ============================================================================
     # MINER POSITION ENDPOINTS
@@ -710,6 +722,33 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         except Exception as e:
             bt.logging.error(f"Error retrieving orders for {minerid}: {e}")
             return jsonify({'error': 'Error retrieving orders'}), 500
+
+    def get_allowed_trade_pairs(self):
+        """Return the currently allowed trading pairs and each pair's max leverage. No API key required."""
+        try:
+            unsupported_trade_pairs = set(ValiConfig.UNSUPPORTED_TRADE_PAIRS or ())
+            allowed_trade_pairs = []
+
+            for trade_pair in TradePair:
+                if trade_pair in unsupported_trade_pairs or trade_pair.is_blocked:
+                    continue
+
+                allowed_trade_pairs.append({
+                    'trade_pair_id': trade_pair.trade_pair_id,
+                    'trade_pair': trade_pair.trade_pair,
+                    'trade_pair_category': trade_pair.trade_pair_category.value,
+                    'max_leverage': trade_pair.max_leverage,
+                })
+
+            return jsonify({
+                'allowed_trade_pairs': allowed_trade_pairs,
+                'allowed_trade_pair_ids': [pair['trade_pair_id'] for pair in allowed_trade_pairs],
+                'total_trade_pairs': len(allowed_trade_pairs),
+                'timestamp': TimeUtil.now_in_millis(),
+            })
+        except Exception as e:
+            bt.logging.error(f"Error retrieving allowed trade pairs: {e}")
+            return jsonify({'error': 'Internal server error retrieving allowed trade pairs'}), 500
 
     # ============================================================================
     # COLLATERAL ENDPOINTS
@@ -1168,6 +1207,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
             trade_pair_id = data.get('trade_pair_id')
             trade_pair = TradePair.from_trade_pair_id(trade_pair_id) if trade_pair_id else None
+            if trade_pair is not None and not isinstance(trade_pair, TradePair):
+                raise SignalException("Dynamic HL coins are not available for direct signal submission.")
 
             signal_obj = Signal(
                 trade_pair=trade_pair,
@@ -1394,10 +1435,11 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         """
         Create a new subaccount for an entity.
 
-        Requires account_size (USD) and asset_class in request payload.
-        These values are immutable once the subaccount is created.
+        When hl_address is provided, creates an HL-linked subaccount whose trades are
+        automatically forwarded from the HyperliquidTracker as Vanta signals.
+        asset_class is required for standard subaccounts; HL subaccounts always use 'crypto'.
 
-        Example:
+        Example (standard):
         curl -X POST http://localhost:48888/entity/create-subaccount \\
           -H "Content-Type: application/json" \\
           -d '{
@@ -1405,6 +1447,19 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             "entity_coldkey": "5FxY...",
             "account_size": 25000,
             "asset_class": "crypto",
+            "signature": "0x..."
+          }'
+
+        Example (HL-linked):
+        curl -X POST http://localhost:48888/entity/create-subaccount \\
+          -H "Content-Type: application/json" \\
+          -d '{
+            "entity_hotkey": "5GhDr...",
+            "entity_coldkey": "5FxY...",
+            "account_size": 25000,
+            "asset_class": "crypto",
+            "hl_address": "0x1234...abcd",
+            "payout_address": "0xAbCd...1234",
             "signature": "0x..."
           }'
         """
@@ -1435,8 +1490,12 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             if vanta_cli_error:
                 return jsonify({'error': vanta_cli_error}), 400
 
+            is_hl = 'hl_address' in data
+
             # Validate required fields
             required_fields = ['entity_coldkey', 'entity_hotkey', 'account_size', 'asset_class', 'signature']
+            if is_hl:
+                required_fields.append('hl_address')
             missing_fields = [field for field in required_fields if field not in data]
             if missing_fields:
                 return jsonify({'error': f'Missing required fields: {", ".join(missing_fields)}'}), 400
@@ -1462,19 +1521,39 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             # Validate asset_class is a non-empty string
             if not isinstance(asset_class, str) or not asset_class.strip():
                 return jsonify({'error': 'asset_class must be a non-empty string'}), 400
-
             asset_class = asset_class.strip()
+
+            if is_hl:
+                hl_address = data['hl_address']
+                payout_address = data.get('payout_address')
+
+                # Validate hl_address format
+                if not isinstance(hl_address, str) or not re.match(ValiConfig.HL_ADDRESS_REGEX, hl_address):
+                    return jsonify({'error': 'hl_address must be a valid Hyperliquid address (0x followed by 40 hex characters)'}), 400
+
+                # Validate payout_address format if provided
+                if payout_address is not None:
+                    if not isinstance(payout_address, str) or not re.match(ValiConfig.HL_ADDRESS_REGEX, payout_address):
+                        return jsonify({'error': 'payout_address must be a valid EVM address (0x followed by 40 hex characters)'}), 400
+            else:
+                hl_address = None
+                payout_address = None
 
             # Verify signature
             t0 = time.time()
             keypair = Keypair(ss58_address=entity_coldkey)
-            message = json.dumps({
+            sig_dict = {
                 "account_size": account_size,
                 "admin": admin,
                 "asset_class": asset_class,
                 "entity_coldkey": entity_coldkey,
-                "entity_hotkey": entity_hotkey
-            }, sort_keys=True).encode('utf-8')
+                "entity_hotkey": entity_hotkey,
+            }
+            if is_hl:
+                sig_dict["hl_address"] = hl_address
+                if payout_address is not None:
+                    sig_dict["payout_address"] = payout_address
+            message = json.dumps(sig_dict, sort_keys=True).encode('utf-8')
 
             is_valid = keypair.verify(message, bytes.fromhex(data['signature']))
             timings['verify_signature'] = int((time.time() - t0) * 1000)
@@ -1490,14 +1569,19 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
             # Create subaccount via RPC
             t0 = time.time()
-            success, subaccount_info, message = self._entity_client.create_subaccount(
-                entity_hotkey, account_size, asset_class, admin=admin
-            )
+            if is_hl:
+                success, subaccount_info, message = self._entity_client.create_hl_subaccount(
+                    entity_hotkey, account_size, hl_address, asset_class=asset_class, admin=admin, payout_address=payout_address
+                )
+            else:
+                success, subaccount_info, message = self._entity_client.create_subaccount(
+                    entity_hotkey, account_size, asset_class, admin=admin
+                )
             timings['create_subaccount_rpc'] = int((time.time() - t0) * 1000)
 
             if success:
                 # Broadcast for admin subaccounts only (regular subaccounts broadcast after slashing completes)
-                if admin:
+                if admin and subaccount_info:
                     try:
                         t0 = time.time()
                         self._entity_client.broadcast_subaccount_registration(
@@ -1507,7 +1591,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                             synthetic_hotkey=subaccount_info['synthetic_hotkey'],
                             account_size=subaccount_info['account_size'],
                             asset_class=subaccount_info['asset_class'],
-                            status=subaccount_info['status']
+                            status=subaccount_info['status'],
+                            **({"hl_address": hl_address, "payout_address": payout_address} if is_hl else {})
                         )
                         timings['broadcast_rpc'] = int((time.time() - t0) * 1000)
                         bt.logging.info(f"[REST_API] Broadcasted admin subaccount registration for {subaccount_info['synthetic_hotkey']}")
@@ -1729,6 +1814,65 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             bt.logging.error(f"Error retrieving dashboard for {synthetic_hotkey}: {e}")
             return jsonify({'error': 'Internal server error retrieving dashboard'}), 500
 
+    def get_hl_trader(self, hl_address: str):
+        """
+        Public endpoint — no authentication required.
+        Resolves a Hyperliquid address to its synthetic hotkey and returns the
+        full subaccount dashboard. subaccount_info includes hl_address and
+        payout_address for HL subaccounts.
+
+        Example:
+        curl http://localhost:48888/hl-traders/0xabcd1234...
+        """
+        if not self._entity_client:
+            return jsonify({'error': 'Entity management not available'}), 503
+
+        # Resolve hl_address -> synthetic_hotkey
+        try:
+            synthetic_hotkey = self._entity_client.get_synthetic_hotkey_for_hl_address(hl_address)
+        except Exception as e:
+            bt.logging.error(f"get_hl_trader: lookup failed for {hl_address}: {e}")
+            return jsonify({'status': 'error', 'message': 'Internal error'}), 500
+
+        if not synthetic_hotkey:
+            return jsonify({'status': 'error', 'message': 'HL address not found'}), 404
+
+        try:
+            subaccount_info = self._entity_client.get_subaccount_dashboard(synthetic_hotkey)
+            if subaccount_info is None:
+                return jsonify({'status': 'error', 'message': 'Trader data not available'}), 404
+        except Exception as e:
+            bt.logging.error(f"get_hl_trader: subaccount lookup failed for {synthetic_hotkey}: {e}")
+            return jsonify({'status': 'error', 'message': 'Internal error'}), 500
+
+        ## TODO: update below when merging websocket v2
+        dashboard = {"subaccount_info": subaccount_info}
+
+        def add_to_dashboard(section, function, *args, **kwargs):
+            try:
+                section_data = function(synthetic_hotkey, *args, **kwargs)
+                if section_data is not None:
+                    dashboard[section] = section_data
+            except Exception as ex:
+                bt.logging.error(f"get_hl_trader: error retrieving {section} for {synthetic_hotkey}: {ex}")
+
+        query_args = request.args
+        positions_time_ms = int(query_args.get("positions_time_ms", 0))
+        limit_orders_time_ms = int(query_args.get("limit_orders_time_ms", 0))
+
+        add_to_dashboard("challenge_period", self._challenge_period_client.get_dashboard)
+        add_to_dashboard("drawdown", self._challenge_period_client.get_drawdown_stats)
+        add_to_dashboard("elimination", self._elimination_client.get_dashboard)
+        add_to_dashboard("account_size_data", self._miner_account_client.get_dashboard)
+        add_to_dashboard("positions", self._position_client.get_dashboard, positions_time_ms)
+        add_to_dashboard("limit_orders", self._limit_order_client.get_dashboard, limit_orders_time_ms)
+
+        return jsonify({
+            'status': 'success',
+            'dashboard': dashboard,
+            'timestamp': TimeUtil.now_in_millis(),
+        })
+
     def v2_get_subaccount_dashboard(self, synthetic_hotkey: str):
         access_error_response = self._get_access_error_response()
         if access_error_response is not None:
@@ -1776,6 +1920,85 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         }
         return jsonify(response)
 
+
+    def get_hl_trader_limits(self, hl_address: str):
+        """
+        Public endpoint — no authentication required.
+        Returns trading limits for a Hyperliquid subaccount: account size,
+        max position per pair, max portfolio value, and challenge period status.
+
+        Example:
+        curl http://localhost:48888/hl-traders/0xabcd1234.../limits
+        """
+        if not self._entity_client:
+            return jsonify({'error': 'Entity management not available'}), 503
+
+        try:
+            limits_data = self._entity_client.get_hl_subaccount_limits_data(hl_address)
+        except Exception as e:
+            bt.logging.error(f"get_hl_trader_limits: lookup failed for {hl_address}: {e}")
+            return jsonify({'status': 'error', 'message': 'Internal error'}), 500
+
+        if limits_data is None:
+            return jsonify({'status': 'error', 'message': 'HL address not found'}), 404
+
+        account_size = limits_data['account_size']
+        asset_class = limits_data['asset_class']
+        challenge_bucket = limits_data['challenge_bucket']
+
+        # HL subaccounts are always crypto
+        try:
+            category = TradePairCategory(asset_class)
+        except ValueError:
+            category = TradePairCategory.CRYPTO
+
+        max_leverage = ValiConfig.CRYPTO_MAX_LEVERAGE
+        portfolio_cap = ValiConfig.PORTFOLIO_LEVERAGE_CAP.get(category, ValiConfig.PORTFOLIO_LEVERAGE_CAP[TradePairCategory.CRYPTO])
+
+        max_position_per_pair_usd = account_size * max_leverage
+        max_portfolio_usd = account_size * portfolio_cap
+
+        # Challenge period miners get reduced limits
+        in_challenge = challenge_bucket == MinerBucket.SUBACCOUNT_CHALLENGE.value
+        if in_challenge:
+            divisor = ValiConfig.SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR
+            max_position_per_pair_usd /= divisor
+            max_portfolio_usd /= divisor
+
+        response_body = json.dumps(
+            {
+                'status': 'success',
+                'hl_address': hl_address,
+                'account_size': account_size,
+                'max_position_per_pair_usd': max_position_per_pair_usd,
+                'max_portfolio_usd': max_portfolio_usd,
+                'in_challenge_period': in_challenge,
+                'timestamp': TimeUtil.now_in_millis(),
+            },
+            cls=CustomEncoder,
+        )
+        return Response(response_body, content_type='application/json'), 200
+
+    def get_hl_leaderboard(self):
+        """
+        Public endpoint — no authentication required.
+        Returns aggregated leaderboard data for all Hyperliquid traders:
+        summary metrics, funded traders table, and in-challenge traders table.
+
+        Example:
+        curl http://localhost:48888/hl-leaderboard
+        """
+        if not self._entity_client:
+            return jsonify({'error': 'Entity management not available'}), 503
+
+        try:
+            leaderboard = self._entity_client.get_hl_leaderboard_data()
+        except Exception as e:
+            bt.logging.error(f"get_hl_leaderboard: failed: {e}")
+            return jsonify({'status': 'error', 'message': 'Internal error'}), 500
+
+        response_body = json.dumps(leaderboard, cls=CustomEncoder)
+        return Response(response_body, content_type='application/json'), 200
 
     def calculate_subaccount_payout(self):
         """
@@ -1872,6 +2095,122 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 'error': 'Internal server error calculating payout',
                 'detail': error_msg if self.running_unit_tests else None
             }), 500
+
+    def set_entity_endpoint(self):
+        """
+        Set the public endpoint URL for an entity miner.
+
+        Requires coldkey signature authentication (same pattern as register_entity).
+
+        Example:
+        curl -X POST http://localhost:48888/entity/set-endpoint \\
+          -H "Content-Type: application/json" \\
+          -d '{
+            "entity_hotkey": "5GhDr...",
+            "entity_coldkey": "5FxY...",
+            "endpoint_url": "https://my-gateway.example.com",
+            "signature": "0x..."
+          }'
+        """
+        if not self._entity_client:
+            return jsonify({'error': 'Entity management not available'}), 503
+
+        try:
+            if not request.is_json:
+                return jsonify({'error': 'Content-Type must be application/json'}), 400
+
+            data = request.get_json()
+            if not data:
+                return jsonify({'error': 'Invalid JSON body'}), 400
+
+            # Validate required fields
+            required_fields = ['entity_coldkey', 'entity_hotkey', 'endpoint_url', 'signature']
+            for field in required_fields:
+                if field not in data:
+                    return jsonify({'error': f'Missing required field: {field}'}), 400
+
+            entity_coldkey = data['entity_coldkey']
+            entity_hotkey = data['entity_hotkey']
+            endpoint_url = data['endpoint_url']
+
+            # Verify signature
+            keypair = Keypair(ss58_address=entity_coldkey)
+            message = json.dumps({
+                "endpoint_url": endpoint_url,
+                "entity_coldkey": entity_coldkey,
+                "entity_hotkey": entity_hotkey
+            }, sort_keys=True).encode('utf-8')
+
+            is_valid = keypair.verify(message, bytes.fromhex(data['signature']))
+            if not is_valid:
+                return jsonify({'error': 'Invalid signature'}), 401
+
+            # Verify coldkey-hotkey ownership
+            owns_hotkey = self._verify_coldkey_owns_hotkey(entity_coldkey, entity_hotkey)
+            if not owns_hotkey:
+                return jsonify({'error': 'Coldkey does not own the specified hotkey'}), 403
+
+            # Set endpoint URL via RPC
+            success, message = self._entity_client.set_endpoint_url(
+                entity_hotkey=entity_hotkey,
+                endpoint_url=endpoint_url
+            )
+
+            if success:
+                return jsonify({
+                    'status': 'success',
+                    'message': message,
+                    'entity_hotkey': entity_hotkey,
+                    'endpoint_url': endpoint_url
+                }), 200
+            else:
+                return jsonify({'error': message}), 400
+
+        except Exception as e:
+            bt.logging.error(f"Error setting entity endpoint: {e}")
+            return jsonify({'error': 'Internal server error setting entity endpoint'}), 500
+
+    def get_entity_endpoint(self):
+        """
+        Look up the public endpoint URL for an entity miner by HL address or subaccount.
+
+        No authentication required.
+
+        Example:
+        curl http://localhost:48888/entity/endpoint?hl_address=0x1234...
+        curl http://localhost:48888/entity/endpoint?subaccount=entity_hotkey_0
+        """
+        if not self._entity_client:
+            return jsonify({'error': 'Entity management not available'}), 503
+
+        try:
+            hl_address = request.args.get('hl_address')
+            subaccount = request.args.get('subaccount')
+
+            if not hl_address and not subaccount:
+                return jsonify({'error': 'Must provide hl_address or subaccount query parameter'}), 400
+
+            endpoint_url = self._entity_client.get_endpoint_url_by_address(
+                hl_address=hl_address,
+                subaccount=subaccount
+            )
+
+            if endpoint_url:
+                return jsonify({
+                    'endpoint_url': endpoint_url,
+                    'hl_address': hl_address,
+                    'subaccount': subaccount
+                }), 200
+            else:
+                return jsonify({
+                    'error': 'No endpoint URL found for the given address',
+                    'hl_address': hl_address,
+                    'subaccount': subaccount
+                }), 404
+
+        except Exception as e:
+            bt.logging.error(f"Error looking up entity endpoint: {e}")
+            return jsonify({'error': 'Internal server error looking up entity endpoint'}), 500
 
     def _verify_coldkey_owns_hotkey(self, coldkey_ss58: str, hotkey_ss58: str) -> bool:
         """

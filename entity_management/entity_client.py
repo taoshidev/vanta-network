@@ -23,10 +23,10 @@ Usage:
     if is_synthetic_hotkey(hotkey):
         entity_hotkey, subaccount_id = parse_synthetic_hotkey(hotkey)
 """
-from typing import Optional, Tuple, Dict
+from typing import Optional, Tuple, Dict, List
 
 import template.protocol
-from template.protocol import SubaccountRegistration
+from template.protocol import SubaccountRegistration, EntityEndpointUpdate
 from shared_objects.rpc.rpc_client_base import RPCClientBase
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 
@@ -109,6 +109,76 @@ class EntityClient(RPCClientBase):
         """
         return self._server.create_subaccount_rpc(entity_hotkey, account_size, asset_class, admin=admin)
 
+    def create_hl_subaccount(
+        self,
+        entity_hotkey: str,
+        account_size: float,
+        hl_address: str,
+        asset_class: str = "crypto",
+        admin: bool = False,
+        payout_address: Optional[str] = None
+    ) -> Tuple[bool, Optional[dict], str]:
+        """
+        Create a new subaccount linked to a Hyperliquid address.
+
+        Args:
+            entity_hotkey: The VANTA_ENTITY_HOTKEY
+            account_size: Account size in USD
+            hl_address: Hyperliquid address (0x-prefixed, 40 hex chars)
+            asset_class: Asset class selection (default: "crypto")
+            admin: If True, skip collateral slashing
+            payout_address: Optional EVM address (0x + 40 hex) for USDC payouts
+
+        Returns:
+            (success: bool, subaccount_info_dict: Optional[dict], message: str)
+        """
+        return self._server.create_hl_subaccount_rpc(entity_hotkey, account_size, hl_address, asset_class=asset_class, admin=admin, payout_address=payout_address)
+
+    def get_all_active_hl_subaccounts(self) -> List[Tuple[str, dict]]:
+        """
+        Get all active subaccounts with HL addresses.
+
+        Returns:
+            List of (hl_address, subaccount_info_dict) tuples
+        """
+        return self._server.get_all_active_hl_subaccounts_rpc()
+
+    def get_synthetic_hotkey_for_hl_address(self, hl_address: str) -> Optional[str]:
+        """
+        O(1) lookup of synthetic hotkey for a Hyperliquid address.
+
+        Args:
+            hl_address: The Hyperliquid address
+
+        Returns:
+            Synthetic hotkey if found, None otherwise
+        """
+        return self._server.get_synthetic_hotkey_for_hl_address_rpc(hl_address)
+
+    def get_subaccount_info_for_synthetic(self, synthetic_hotkey: str) -> Optional[dict]:
+        """
+        Get SubaccountInfo for a synthetic hotkey.
+
+        Args:
+            synthetic_hotkey: The synthetic hotkey
+
+        Returns:
+            SubaccountInfo dict if found, None otherwise
+        """
+        return self._server.get_subaccount_info_for_synthetic_rpc(synthetic_hotkey)
+
+    def get_hl_subaccount_limits_data(self, hl_address: str) -> Optional[dict]:
+        """
+        Get lightweight limits data for an HL subaccount.
+
+        Args:
+            hl_address: The Hyperliquid address
+
+        Returns:
+            Dict with {account_size, asset_class, challenge_bucket} or None
+        """
+        return self._server.get_hl_subaccount_limits_data_rpc(hl_address)
+
     def eliminate_subaccount(
         self,
         entity_hotkey: str,
@@ -177,6 +247,15 @@ class EntityClient(RPCClientBase):
             Dict mapping entity_hotkey -> entity_data_dict
         """
         return self._server.get_all_entities_rpc()
+
+    def get_hl_leaderboard_data(self) -> dict:
+        """
+        Get aggregated HL leaderboard data.
+
+        Returns:
+            Dict with summary, fundedTraders, challengeTraders, timestamp
+        """
+        return self._server.get_hl_leaderboard_data_rpc()
 
     def validate_hotkey_for_orders(self, hotkey: str) -> dict:
         """
@@ -264,7 +343,9 @@ class EntityClient(RPCClientBase):
         synthetic_hotkey: str,
         account_size: float,
         asset_class: str,
-        status: str = "active"
+        status: str = "active",
+        hl_address: Optional[str] = None,
+        payout_address: Optional[str] = None
     ) -> None:
         """
         Broadcast subaccount registration to other validators.
@@ -277,10 +358,12 @@ class EntityClient(RPCClientBase):
             account_size: Account size in USD
             asset_class: Asset class selection
             status: Subaccount status (active, admin, etc.)
+            hl_address: Optional Hyperliquid address for HL-linked subaccounts
+            payout_address: Optional EVM address for USDC payouts
         """
         return self._server.broadcast_subaccount_registration_rpc(
             entity_hotkey, subaccount_id, subaccount_uuid, synthetic_hotkey,
-            account_size, asset_class, status
+            account_size, asset_class, status, hl_address=hl_address, payout_address=payout_address
         )
 
     def receive_subaccount_registration_update(self, subaccount_data: dict, sender_hotkey: str = None) -> bool:
@@ -313,6 +396,72 @@ class EntityClient(RPCClientBase):
             Updated synapse with success/error status
         """
         return self._server.receive_subaccount_registration_rpc(synapse)
+
+    # ==================== Entity Endpoint URL Methods ====================
+
+    def set_endpoint_url(
+        self,
+        entity_hotkey: str,
+        endpoint_url: str
+    ) -> Tuple[bool, str]:
+        """
+        Set the public endpoint URL for an entity miner.
+
+        Args:
+            entity_hotkey: The VANTA_ENTITY_HOTKEY
+            endpoint_url: The public-facing endpoint URL
+
+        Returns:
+            (success: bool, message: str)
+        """
+        return self._server.set_endpoint_url_rpc(entity_hotkey, endpoint_url)
+
+    def get_endpoint_url_by_address(
+        self,
+        hl_address: str = None,
+        subaccount: str = None
+    ) -> Optional[str]:
+        """
+        Resolve an HL address or synthetic hotkey to the entity's endpoint URL.
+
+        Args:
+            hl_address: Hyperliquid address (0x-prefixed)
+            subaccount: Synthetic hotkey (entity_hotkey_N)
+
+        Returns:
+            The entity's endpoint URL, or None if not found
+        """
+        return self._server.get_endpoint_url_by_address_rpc(hl_address=hl_address, subaccount=subaccount)
+
+    def receive_entity_endpoint_update(self, endpoint_data: dict, sender_hotkey: str = None) -> bool:
+        """
+        Process incoming entity endpoint update from another validator.
+
+        Args:
+            endpoint_data: Dict containing entity_hotkey and endpoint_url
+            sender_hotkey: The hotkey of the validator that sent this broadcast
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        return self._server.receive_entity_endpoint_update_rpc(endpoint_data, sender_hotkey)
+
+    def receive_entity_endpoint_synapse(
+        self,
+        synapse: EntityEndpointUpdate
+    ) -> EntityEndpointUpdate:
+        """
+        Receive EntityEndpointUpdate synapse (for axon attachment).
+
+        This delegates to the server's RPC handler. Used by validator_base.py for axon attachment.
+
+        Args:
+            synapse: EntityEndpointUpdate synapse from another validator
+
+        Returns:
+            Updated synapse with success/error status
+        """
+        return self._server.receive_entity_endpoint_synapse_rpc(synapse)
 
     # ==================== Health Check Methods ====================
 

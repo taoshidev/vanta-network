@@ -303,4 +303,3 @@ class MinerAccountServer(RPCServerBase):
     def process_fees(self, hotkey_to_fee: dict) -> None:
         """Batch update total_fees_paid for multiple hotkeys. Saves to disk once."""
         self._manager.process_fees(hotkey_to_fee)
-
