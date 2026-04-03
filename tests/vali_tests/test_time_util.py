@@ -11,7 +11,9 @@ from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMod
 from tests.vali_tests.base_objects.test_base import TestBase
 from time_util.time_util import MS_IN_8_HOURS, MS_IN_24_HOURS, TimeUtil
 from vali_objects.enums.order_type_enum import OrderType
-from vali_objects.vali_dataclasses.position import FEE_V6_TIME_MS, Position
+from vali_objects.vali_dataclasses.position import Position
+
+FEE_V6_TIME_MS = 1720843707000
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair
 from vali_objects.vali_dataclasses.order import Order

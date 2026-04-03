@@ -19,9 +19,6 @@ CRYPTO_CARRY_FEE_PER_INTERVAL = math.exp(math.log(1 - 0.1095) / (365.0*3.0))  # 
 FOREX_CARRY_FEE_PER_INTERVAL = math.exp(math.log(1 - .03) / 365.0)  # 3% per year for 1x leverage. Each interval is 24 hrs
 INDICES_CARRY_FEE_PER_INTERVAL = math.exp(math.log(1 - .0525) / 365.0)  # 5.25% per year for 1x leverage. Each interval is 24 hrs
 
-FEE_V6_TIME_MS = 1720843707000  # V6 PR merged
-SLIPPAGE_V1_TIME_MS = 1739937600000  # Slippage PR merged
-ALWAYS_USE_SLIPPAGE = None  # set as either True or False to control whether slippage is always or never applied. if set as None, slippage will be applied based on SLIPPAGE_V1_TIME_MS time gate
 
 class Position(BaseModel):
     """Represents a position in a trading system.
@@ -342,10 +339,7 @@ class Position(BaseModel):
         if not self.orders or len(self.orders) == 0:
             return 0.0
         first_order = self.orders[0]
-        if ALWAYS_USE_SLIPPAGE or (ALWAYS_USE_SLIPPAGE is None and first_order.processed_ms >= SLIPPAGE_V1_TIME_MS):
-            return first_order.price * (1 + first_order.slippage) if first_order.leverage > 0 else first_order.price * (1 - first_order.slippage)
-        else:
-            return first_order.price
+        return first_order.price * (1 + first_order.slippage) if first_order.leverage > 0 else first_order.price * (1 - first_order.slippage)
 
     @property
     def margin_loan(self) -> float:
@@ -601,10 +595,7 @@ class Position(BaseModel):
         if order:
             # update realized pnl for orders that reduce the size of a position
             if order.order_type != self.position_type or self.position_type == OrderType.FLAT:
-                if ALWAYS_USE_SLIPPAGE or (ALWAYS_USE_SLIPPAGE is None and t_ms >= SLIPPAGE_V1_TIME_MS):
-                    exit_price = current_price * (1 + order.slippage) if order.leverage > 0 else current_price * (1 - order.slippage)
-                else:
-                    exit_price = current_price
+                exit_price = current_price * (1 + order.slippage) if order.leverage > 0 else current_price * (1 - order.slippage)
                 order_realized_pnl_quote = -1 * (exit_price - self.average_entry_price) * (order.quantity * order.trade_pair.lot_size)
                 self.realized_pnl += order_realized_pnl_quote * order.quote_usd_rate
 
@@ -838,19 +829,11 @@ class Position(BaseModel):
         else:
             if self.position_type == order.order_type:
                 # average entry price only changes when an order is in the same direction as the position. reducing a position does not affect average entry price.
-                if ALWAYS_USE_SLIPPAGE is False or (ALWAYS_USE_SLIPPAGE is None and order.processed_ms < SLIPPAGE_V1_TIME_MS):
-                    # no slippage
-                    self.average_entry_price = (
-                        self.average_entry_price * self.net_quantity
-                        + realtime_price * delta_quantity
-                    ) / new_net_quantity
-                else:
-                    # after SLIPPAGE_V1_TIME_MS, average entry price now reflects the average price
-                    entry_price = order.price * (1 + order.slippage) if order.leverage > 0 else order.price * (1 - order.slippage)
-                    self.average_entry_price = (
-                        self.average_entry_price * self.net_quantity
-                        + entry_price * delta_quantity
-                    ) / new_net_quantity
+                entry_price = order.price * (1 + order.slippage) if order.leverage > 0 else order.price * (1 - order.slippage)
+                self.average_entry_price = (
+                    self.average_entry_price * self.net_quantity
+                    + entry_price * delta_quantity
+                ) / new_net_quantity
                 entry_value = order.value
             else:
                 # order is reducing the size of a position, so there is no entry cost.

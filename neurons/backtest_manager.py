@@ -180,7 +180,6 @@ def save_positions_to_manager(position_client, hk_to_positions):
 class BacktestManager:
 
     def __init__(self, positions_at_t_f, start_time_ms, secrets, scoring_func,
-                 use_slippage=None,
                  fetch_slippage_data=False, recalculate_slippage=False, rebuild_all_positions=False,
                  parallel_mode: ParallelizationMode=ParallelizationMode.PYSPARK,
                  pool_size=0, target_ledger_window_ms=ValiConfig.TARGET_LEDGER_WINDOW_MS,
@@ -336,7 +335,6 @@ if __name__ == '__main__':
     use_database_positions = True     # NEW: Use positions from database via taoshi.ts.ptn
     run_challenge = False              # Run challenge period logic
     run_elimination = False            # Run elimination logic
-    use_slippage = None              # Apply slippage modeling
     crypto_only = True              # Only include crypto trade pairs
     parallel_mode = ParallelizationMode.SERIAL  # 1 for pyspark, 2 for multiprocessing
 
@@ -397,7 +395,7 @@ if __name__ == '__main__':
 
     secrets = ValiUtils.get_secrets()  # {'polygon_apikey': '123', 'tiingo_apikey': '456'}
     btm = BacktestManager(hk_to_positions, start_time_ms, secrets, None,
-                          use_slippage=use_slippage, fetch_slippage_data=False, recalculate_slippage=False,
+                          fetch_slippage_data=False, recalculate_slippage=False,
                           parallel_mode=parallel_mode)
 
     # For disk-based positions, load after BacktestManager has initialized servers

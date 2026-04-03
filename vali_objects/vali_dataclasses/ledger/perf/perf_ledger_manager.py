@@ -33,7 +33,7 @@ from entity_management.entity_utils import is_synthetic_hotkey
 
 class PerfLedgerManager(CacheController):
     def __init__(self, connection_mode: "RPCConnectionMode" = RPCConnectionMode.RPC,
-                 use_slippage=None, running_unit_tests=False,
+                 running_unit_tests=False,
                  enable_rss=True, is_backtesting=False, parallel_mode=ParallelizationMode.SERIAL, secrets=None,
                  target_ledger_window_ms=ValiConfig.TARGET_LEDGER_WINDOW_MS):
         super().__init__(running_unit_tests=running_unit_tests, is_backtesting=is_backtesting, connection_mode=connection_mode)
@@ -48,8 +48,6 @@ class PerfLedgerManager(CacheController):
         self.running_unit_tests = running_unit_tests
         self.enable_rss = enable_rss
         self.parallel_mode = parallel_mode
-        self.use_slippage = use_slippage
-        position_file.ALWAYS_USE_SLIPPAGE = use_slippage
 
 
         self.pl_elimination_rows = []
@@ -1931,7 +1929,6 @@ class PerfLedgerManager(CacheController):
             secrets=self.secrets,
             target_ledger_window_ms=self.target_ledger_window_ms,
             is_backtesting=is_backtesting,
-            use_slippage=self.use_slippage,
             running_unit_tests=self.running_unit_tests,
         )
         worker_plm.now_ms = now_ms

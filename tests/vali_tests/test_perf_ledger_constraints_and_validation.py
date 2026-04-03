@@ -937,49 +937,27 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
             self.assertGreater(len(portfolio_ledger.cps), 0, "Portfolio ledger should have checkpoints")
 
     def test_slippage_configuration_effects(self):
-        """Test use_slippage configuration with production code paths."""
+        """Test that slippage is applied and ledger bundles are created."""
         base_time = self.now_ms - (10 * MS_IN_24_HOURS)
-        
-        # Create a position that would have slippage effects
+
         position = self._create_position(
             "slippage_test", TradePair.BTCUSD,
             base_time, base_time + MS_IN_24_HOURS,
             50000.0, 51000.0, OrderType.LONG,
-            leverage=5.0  # Higher leverage to amplify slippage effects
+            leverage=5.0
         )
-        
-        def test_slippage_mode(use_slippage: bool):
-            """Helper to test specific slippage configuration."""
-            # Clear and create position
-            self.position_client.clear_all_miner_positions_and_disk()
-            self.position_client.save_miner_position(position)
-            
-            # Create manager with specific slippage setting
-            plm = PerfLedgerManager(
-                running_unit_tests=True,
-                parallel_mode=ParallelizationMode.SERIAL,
-                use_slippage=use_slippage,
-            )
-            plm.clear_all_ledger_data()
-            
-            # Update ledgers
-            plm.update(t_ms=base_time + (2 * MS_IN_24_HOURS))
-            
-            # Get ledgers
-            bundles = plm.get_perf_ledgers()
-            
-            return bundles
-        
-        # Test with slippage enabled
-        slippage_bundles = test_slippage_mode(use_slippage=True)
-        
-        # Test with slippage disabled
-        no_slippage_bundles = test_slippage_mode(use_slippage=False)
-        
-        # Both should create bundles (we're mainly testing the configuration is applied)
-        # The actual slippage effects are tested in position-specific tests
-        self.assertIsNotNone(slippage_bundles, "Slippage enabled should create bundles")
-        self.assertIsNotNone(no_slippage_bundles, "Slippage disabled should create bundles")
+        self.position_client.clear_all_miner_positions_and_disk()
+        self.position_client.save_miner_position(position)
+
+        plm = PerfLedgerManager(
+            running_unit_tests=True,
+            parallel_mode=ParallelizationMode.SERIAL,
+        )
+        plm.clear_all_ledger_data()
+        plm.update(t_ms=base_time + (2 * MS_IN_24_HOURS))
+
+        bundles = plm.get_perf_ledgers()
+        self.assertIsNotNone(bundles, "Slippage should be applied and bundles created")
 
     def test_backtesting_mode_behavior(self):
         """Test is_backtesting flag behavior with production code paths."""

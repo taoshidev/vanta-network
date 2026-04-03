@@ -10,11 +10,12 @@ from time_util.time_util import MS_IN_8_HOURS, MS_IN_24_HOURS
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.vali_dataclasses.position import (
     CRYPTO_CARRY_FEE_PER_INTERVAL,
-    FEE_V6_TIME_MS,
     FOREX_CARRY_FEE_PER_INTERVAL,
     INDICES_CARRY_FEE_PER_INTERVAL,
     Position,
 )
+
+FEE_V6_TIME_MS = 1720843707000
 from vali_objects.position_management.position_manager_client import PositionManagerClient
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair, ValiConfig
@@ -133,14 +134,8 @@ class TestPositions(TestBase):
 
     def test_profit_position_returns_pre_post_slippage(self):
         """
-        The post slippage position returns calculations calculates a realized PnL and an unrealized PnL.
-        The pre slippage position returns calculation only calculates returns from the weighted avg entry price and the current price.
-
-        If we set the actual slippage to 0, these returns calculations should be the same.
+        With slippage=0.00 on all orders, returns should be the same regardless of slippage application.
         """
-        import vali_objects.vali_dataclasses.position as position_file
-        position_file.ALWAYS_USE_SLIPPAGE = False
-
         open_order = Order(
             price=100,
             slippage=0.00,
@@ -191,25 +186,14 @@ class TestPositions(TestBase):
         closed_position.add_order(close_order, self.live_price_fetcher)
 
         old_returns_calc = closed_position.current_return
-
-        position_file.ALWAYS_USE_SLIPPAGE = True
-
         closed_position.rebuild_position_with_updated_orders(self.live_price_fetcher)
         new_returns_calc = closed_position.current_return
-
         assert old_returns_calc == new_returns_calc
-        position_file.ALWAYS_USE_SLIPPAGE = None
 
     def test_loss_position_returns_pre_post_slippage(self):
         """
-        The post slippage position returns calculations calculates a realized PnL and an unrealized PnL.
-        The pre slippage position returns calculation only calculates returns from the weighted avg entry price and the current price.
-
-        If we set the actual slippage to 0, these returns calculations should be the same.
+        With slippage=0.00 on all orders, returns should be the same on rebuild.
         """
-        import vali_objects.vali_dataclasses.position as position_file
-        position_file.ALWAYS_USE_SLIPPAGE = False
-
         open_order = Order(
             price=100,
             slippage=0.00,
@@ -260,14 +244,9 @@ class TestPositions(TestBase):
         closed_position.add_order(close_order, self.live_price_fetcher)
 
         old_returns_calc = closed_position.current_return
-
-        position_file.ALWAYS_USE_SLIPPAGE = True
-
         closed_position.rebuild_position_with_updated_orders(self.live_price_fetcher)
         new_returns_calc = closed_position.current_return
-
         assert old_returns_calc == new_returns_calc
-        position_file.ALWAYS_USE_SLIPPAGE = None
 
     def test_position_returns_across_slippage_boundary(self):
         """
