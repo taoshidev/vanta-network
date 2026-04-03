@@ -140,6 +140,10 @@ class LivePriceFetcherClient(RPCClientBase):
         """Simulate slippage by walking the Hyperliquid L2 orderbook."""
         return self._server.simulate_slippage(trade_pair, size_usd, is_buy)
 
+    def simulate_avg_fill_price(self, trade_pair: TradePair, size_usd: float, is_buy: bool):
+        """Simulate avg fill price by walking the Hyperliquid L2 orderbook."""
+        return self._server.simulate_avg_fill_price(trade_pair, size_usd, is_buy)
+
     def set_test_price_source(self, trade_pair: TradePair, price_source: PriceSource) -> None:
         """Set test price source for a specific trade pair (test-only)."""
         return self._server.set_test_price_source(trade_pair, price_source)

@@ -67,6 +67,13 @@ class LivePriceFetcher:
         """
         return self.hyperliquid_data_service.simulate_slippage(trade_pair, size_usd, is_buy)
 
+    def simulate_avg_fill_price(self, trade_pair: TradePair, size_usd: float, is_buy: bool) -> Optional[float]:
+        """Simulate avg fill price by walking the Hyperliquid L2 orderbook.
+
+        Returns the average fill price, or None if unavailable.
+        """
+        return self.hyperliquid_data_service.simulate_avg_fill_price(trade_pair, size_usd, is_buy)
+
     def set_test_price_source(self, trade_pair: TradePair, price_source: PriceSource) -> None:
         """
         Test-only method to inject price sources for specific trade pairs.

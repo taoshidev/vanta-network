@@ -414,6 +414,72 @@ class HyperliquidDataService(BaseDataService):
         slippage_pct = (avg_price - mid) / mid if is_buy else (mid - avg_price) / mid
         return max(0.0, slippage_pct)
 
+    def simulate_avg_fill_price(self, trade_pair: TradePairLike, size_usd: float, is_buy: bool) -> float | None:
+        """Simulate the average fill price for a market order using the L2 orderbook.
+
+        Uses the same dual-resolution two-phase orderbook walk as simulate_slippage,
+        but returns the raw avg fill price instead of a slippage fraction. This is used
+        for HL taker fills where we want to record the actual execution price directly.
+
+        Args:
+            trade_pair: The trade pair to simulate.
+            size_usd: The order size in USD.
+            is_buy: True for LONG orders (fill against asks),
+                    False for SHORT orders (fill against bids).
+
+        Returns:
+            Average fill price in quote currency, or None if no orderbook data is available.
+        """
+        coin = trade_pair.base
+        full_book = self._orderbooks_full.get(coin, {})
+        coarse_book = self._orderbooks_coarse.get(coin, {})
+
+        primary = full_book or coarse_book
+        if not primary:
+            return None
+
+        bids = primary.get("bids", [])
+        asks = primary.get("asks", [])
+        if not bids or not asks:
+            return None
+
+        mid = (float(bids[0]["px"]) + float(asks[0]["px"])) / 2.0
+        if mid <= 0:
+            return None
+
+        side = "asks" if is_buy else "bids"
+        full_levels = full_book.get(side, [])
+        coarse_levels = coarse_book.get(side, [])
+
+        # Phase 1: walk full-grained levels
+        if full_levels:
+            fills, remaining = simulate_fill(full_levels, size_usd, "usd")
+        else:
+            fills, remaining = [], size_usd
+
+        # Phase 2: continue with coarse levels beyond full book's price coverage
+        if remaining > 0 and coarse_levels:
+            if full_levels:
+                last_full_px = float(full_levels[-1]["px"])
+                if is_buy:
+                    deeper = [l for l in coarse_levels if float(l["px"]) > last_full_px]
+                else:
+                    deeper = [l for l in coarse_levels if float(l["px"]) < last_full_px]
+            else:
+                deeper = coarse_levels
+            coarse_fills, _ = simulate_fill(deeper, remaining, "usd")
+            fills.extend(coarse_fills)
+
+        if not fills:
+            return None
+
+        total_coins = sum(f[1] for f in fills)
+        total_usd = sum(f[2] for f in fills)
+        if total_coins <= 0:
+            return None
+
+        return total_usd / total_coins
+
     def get_close_rest(self, trade_pair: TradePairLike, timestamp_ms: int) -> PriceSource | None:
         """Single-pair REST fallback."""
         results = self.get_closes_rest([trade_pair], timestamp_ms)

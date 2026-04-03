@@ -1402,9 +1402,25 @@ class HyperliquidTracker:
             order_type = "SHORT"
             leverage = abs(delta)
 
-        # === Step 6: Slippage via HyperliquidDataService orderbook ===
+        # === Step 6: Determine fill price from HL data ===
+        # Taker (market order): simulate avg fill price by walking the local L2 orderbook
+        #   (fine book first for near-spread precision, coarse book for deeper levels).
+        #   Fallback to actual HL fill price if orderbook data is unavailable.
+        # Maker (limit order): use the actual HL fill price directly.
+        # hl_slippage is always 0.0 — the price passed already reflects true execution
+        # quality, so applying slippage on top would double-count it (position.py multiplies
+        # entry/exit price by (1 + slippage)).
         is_taker = fill.get("crossed", True)
-        slippage_pct = 0.0
+        hl_fill_price = None
+
+        raw_px = fill.get("px")
+        raw_fill_price = None
+        if raw_px is not None:
+            try:
+                raw_fill_price = float(raw_px)
+            except (ValueError, TypeError):
+                pass
+
         if is_taker:
             if order_type == "FLAT":
                 translated_size_usd = abs(current_signed_lev) * account_size
@@ -1412,20 +1428,16 @@ class HyperliquidTracker:
             else:
                 translated_size_usd = leverage * account_size
                 is_buying = order_type == "LONG"
-            slippage = self._price_fetcher_client.simulate_slippage(
+
+            hl_fill_price = self._price_fetcher_client.simulate_avg_fill_price(
                 trade_pair, translated_size_usd, is_buying
             )
-            if slippage is not None:
-                slippage_pct = slippage
-
-        # Use actual HL fill price when available (captures real execution quality)
-        hl_fill_price = None
-        raw_px = fill.get("px")
-        if raw_px is not None:
-            try:
-                hl_fill_price = float(raw_px)
-            except (ValueError, TypeError):
-                hl_fill_price = None
+            # Fallback: use actual HL fill price if orderbook simulation produced no result
+            if hl_fill_price is None:
+                hl_fill_price = raw_fill_price
+        else:
+            # Maker (limit order): actual HL fill price is exact, no adjustment needed
+            hl_fill_price = raw_fill_price
 
         # === Build signal ===
         signal = {
@@ -1435,7 +1447,7 @@ class HyperliquidTracker:
             "execution_type": "MARKET",
             "is_hl": True,
             "is_hl_taker": is_taker,
-            "hl_slippage": slippage_pct,
+            "hl_slippage": 0.0,  # price already reflects execution quality; applying slippage on top would double-count it
         }
         if hl_fill_price:
             signal["price"] = hl_fill_price
@@ -1471,7 +1483,7 @@ class HyperliquidTracker:
                 f"[HL_TRACKER] Processed fill: {coin} target_weight={target_signed_weight:+.4f} "
                 f"current_lev={current_signed_lev:+.4f} delta={delta:+.4f} -> "
                 f"{synthetic_hotkey} {order_type} leverage={leverage:.4f} "
-                f"fill_px={hl_fill_price} slippage={slippage_pct:.6f}"
+                f"fill_px={hl_fill_price} is_taker={is_taker}"
             )
 
         except SignalException as e:
