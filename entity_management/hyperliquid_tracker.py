@@ -1043,32 +1043,81 @@ class HyperliquidTracker:
                     bt.logging.warning(f"[HL_TRACKER] candleSnapshot failed for {coin}: {e}")
         return 0.0
 
-    def _refresh_hl_universe(self):
-        """Fetch metaAndAssetCtxs from HL, apply 30-day liquidity filter, update _hl_universe + HL_DYNAMIC_REGISTRY."""
-        from vali_objects.vali_config import HL_DYNAMIC_REGISTRY, DynamicTradePair
+    def _fetch_spot_token_index_map(self) -> Dict[int, str]:
+        """Return {index: token_name} from HL spotMeta, used to resolve collateral token indices."""
         try:
-            resp = requests.post(ValiConfig.hl_info_url(), json={"type": "metaAndAssetCtxs"}, timeout=10)
+            resp = requests.post(ValiConfig.hl_info_url(), json={"type": "spotMeta"}, timeout=10)
             resp.raise_for_status()
-            meta, ctxs = resp.json()
+            return {t["index"]: t["name"] for t in resp.json().get("tokens", [])}
         except Exception as e:
-            bt.logging.warning(f"[HL_TRACKER] _refresh_hl_universe failed: {e} — keeping existing registry")
+            bt.logging.warning(f"[HL_TRACKER] Failed to fetch spotMeta: {e}")
+            return {}
+
+    def _fetch_collateral_token(self, dex: Optional[str], token_index_map: Dict[int, str]) -> str:
+        """Return collateral token name for *dex* (None = default crypto dex → USDC)."""
+        if dex is None:
+            return "USDC"
+        try:
+            resp = requests.post(ValiConfig.hl_info_url(), json={"type": "meta", "dex": dex}, timeout=10)
+            resp.raise_for_status()
+            idx = resp.json().get("collateralToken", 0)
+            return token_index_map.get(idx, "USDC")
+        except Exception as e:
+            bt.logging.warning(f"[HL_TRACKER] Failed to fetch collateral token for dex={dex}: {e}")
+            return "USDC"
+
+    def _fetch_candidates_for_dex(self, dex: Optional[str]) -> List[tuple]:
+        """Return [(coin, maxLeverage), ...] for *dex* (None = default crypto dex)."""
+        payload: dict = {"type": "metaAndAssetCtxs"}
+        if dex is not None:
+            payload["dex"] = dex
+        try:
+            resp = requests.post(ValiConfig.hl_info_url(), json=payload, timeout=10)
+            resp.raise_for_status()
+            meta, _ = resp.json()
+            return [(asset["name"], asset["maxLeverage"]) for asset in meta["universe"]]
+        except Exception as e:
+            bt.logging.warning(f"[HL_TRACKER] Failed to fetch candidates for dex={dex}: {e}")
+            return []
+
+    def _refresh_hl_universe(self):
+        """Discover all dexes, apply 30-day liquidity filter, update _hl_universe + HL_DYNAMIC_REGISTRY."""
+        from vali_objects.vali_config import HL_DYNAMIC_REGISTRY, DynamicTradePair
+
+        # 1. Discover all dex names; None represents the default crypto dex
+        try:
+            resp = requests.post(ValiConfig.hl_info_url(), json={"type": "perpDexs"}, timeout=10)
+            resp.raise_for_status()
+            dex_names: List[Optional[str]] = [None] + resp.json()
+        except Exception as e:
+            bt.logging.warning(f"[HL_TRACKER] Failed to fetch perpDexs: {e} — using default dex only")
+            dex_names = [None]
+
+        # 2. Fetch spotMeta once for collateral token index resolution
+        token_index_map = self._fetch_spot_token_index_map()
+
+        # 3. Collect (coin, maxLeverage, collateral_token) across all dexes
+        all_candidates: List[tuple] = []
+        for dex in dex_names:
+            collateral = self._fetch_collateral_token(dex, token_index_map)
+            for coin, max_lev in self._fetch_candidates_for_dex(dex):
+                all_candidates.append((coin, max_lev, collateral))
+
+        if not all_candidates:
+            bt.logging.warning("[HL_TRACKER] No candidates found — keeping existing registry")
             return
 
-        candidates = [
-            (asset["name"], asset["maxLeverage"])
-            for asset, ctx in zip(meta["universe"], ctxs)
-        ]
-
-        # Fetch 30-day avg USD volume in parallel (20 workers, retry 3x per coin)
+        # 4. Fetch 30-day avg USD volume in parallel (20 workers, retry 3x per coin)
         avg_volumes: Dict[str, float] = {}
         with ThreadPoolExecutor(max_workers=20) as pool:
-            futures = {pool.submit(self._fetch_30d_avg_volume, coin): coin for coin, _ in candidates}
+            futures = {pool.submit(self._fetch_30d_avg_volume, coin): coin for coin, _, _ in all_candidates}
             for future in as_completed(futures):
                 coin = futures[future]
                 avg_volumes[coin] = future.result()
 
+        # 5. Filter and build universe
         new_universe = {}
-        for coin, max_lev in candidates:
+        for coin, max_lev, collateral in all_candidates:
             if avg_volumes.get(coin, 0.0) < ValiConfig.HL_MIN_LIQUIDITY_USD:
                 continue
             vanta_max = max(
@@ -1081,6 +1130,7 @@ class HyperliquidTracker:
                 trade_pair=f"{coin}/USD",
                 hl_coin=coin,
                 max_leverage=vanta_max,
+                collateral_token=collateral,
             )
 
         self._hl_universe = new_universe
@@ -1088,20 +1138,24 @@ class HyperliquidTracker:
             HL_DYNAMIC_REGISTRY[dtp.trade_pair_id] = dtp
         self._persist_hl_dynamic_registry()
         self._last_universe_refresh = time.time()
-        bt.logging.info(f"[HL_TRACKER] Universe: {len(new_universe)} active (30d avg vol ≥ ${ValiConfig.HL_MIN_LIQUIDITY_USD:,}), {len(HL_DYNAMIC_REGISTRY)} total")
+        bt.logging.info(
+            f"[HL_TRACKER] Universe: {len(new_universe)} active across {len(dex_names)} dex(es) "
+            f"(30d avg vol ≥ ${ValiConfig.HL_MIN_LIQUIDITY_USD:,}), {len(HL_DYNAMIC_REGISTRY)} total"
+        )
 
     def _persist_hl_dynamic_registry(self):
         """Write HL_DYNAMIC_REGISTRY to disk so other processes can load it."""
         from vali_objects.vali_config import HL_DYNAMIC_REGISTRY, _HL_REGISTRY_PATH
         data = {
             tid: {
-                "trade_pair_id": dtp.trade_pair_id,
-                "trade_pair":    dtp.trade_pair,
-                "hl_coin":       dtp.hl_coin,
-                "max_leverage":  dtp.max_leverage,
-                "min_leverage":  dtp.min_leverage,
-                "fees":          dtp.fees,
+                "trade_pair_id":    dtp.trade_pair_id,
+                "trade_pair":       dtp.trade_pair,
+                "hl_coin":          dtp.hl_coin,
+                "max_leverage":     dtp.max_leverage,
+                "min_leverage":     dtp.min_leverage,
+                "fees":             dtp.fees,
                 "trade_pair_category": dtp.trade_pair_category.value,
+                "collateral_token": dtp.collateral_token,
             }
             for tid, dtp in HL_DYNAMIC_REGISTRY.items()
         }

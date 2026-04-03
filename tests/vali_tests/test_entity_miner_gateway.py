@@ -718,7 +718,7 @@ class TestHLTrackerRejectionBroadcasts(TestBase):
         # Coin resolves to a valid trade pair via dynamic registry
         tracker._hl_universe = {
             "BTC": DynamicTradePair(
-                trade_pair_id="BTCUSD", trade_pair="BTC/USD", hl_coin="BTC", max_leverage=0.5
+                trade_pair_id="BTCUSD", trade_pair="BTC/USD", hl_coin="BTC", max_leverage=0.5, collateral_token="USDC"
             )
         }
         tracker._entity_client.get_synthetic_hotkey_for_hl_address.return_value = synthetic

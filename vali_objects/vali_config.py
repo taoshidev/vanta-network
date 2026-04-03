@@ -660,6 +660,7 @@ class DynamicTradePair:
     trade_pair: str             # e.g. "HYPE/USD"
     hl_coin: str                # original HL name e.g. "HYPE" or "xyz:TSLA" — needed for funding rate lookups
     max_leverage: float
+    collateral_token: str       # settlement currency, e.g. "USDC", "USDT0", "USDH", "USDE"
     fees: float = 0.001
     min_leverage: float = ValiConfig.HL_LEVERAGE_FLOOR
     trade_pair_category: TradePairCategory = TradePairCategory.CRYPTO
@@ -669,7 +670,6 @@ class DynamicTradePair:
     is_indices: bool = False
     is_blocked: bool = False
     lot_size: int = 1
-    collateral_token: str = "USDC"
 
     @property
     def subcategory(self): return CryptoSubcategory.ALTS
@@ -1059,6 +1059,7 @@ def load_hl_dynamic_registry() -> None:
                 trade_pair=d["trade_pair"],
                 hl_coin=d["hl_coin"],
                 max_leverage=d["max_leverage"],
+                collateral_token=d["collateral_token"],
                 min_leverage=d.get("min_leverage", ValiConfig.HL_LEVERAGE_FLOOR),
                 fees=d.get("fees", 0.001),
                 trade_pair_category=TradePairCategory(d["trade_pair_category"]),

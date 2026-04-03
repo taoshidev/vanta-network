@@ -757,8 +757,8 @@ class TestHyperliquidTracker(TestBase):
 
         # Populate _hl_universe with common test coins so _process_fill coin lookup succeeds.
         self.tracker._hl_universe = {
-            "BTC": DynamicTradePair(trade_pair_id="BTCUSD", trade_pair="BTC/USD", hl_coin="BTC", max_leverage=0.5),
-            "ETH": DynamicTradePair(trade_pair_id="ETHUSD", trade_pair="ETH/USD", hl_coin="ETH", max_leverage=0.5),
+            "BTC": DynamicTradePair(trade_pair_id="BTCUSD", trade_pair="BTC/USD", hl_coin="BTC", max_leverage=0.5, collateral_token="USDC"),
+            "ETH": DynamicTradePair(trade_pair_id="ETHUSD", trade_pair="ETH/USD", hl_coin="ETH", max_leverage=0.5, collateral_token="USDC"),
         }
 
         # Mock account state fetch and current position lookup.
