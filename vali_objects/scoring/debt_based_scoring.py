@@ -414,17 +414,18 @@ class DebtBasedScoring:
             f"paid so far: ${total_actual_payout_usd:.2f}"
         )
 
-        _payouts_sorted = sorted(ledger_dict.keys(), key=lambda hk: miner_remaining_payouts_usd.get(hk, 0.0), reverse=True)
-        for hotkey in _payouts_sorted:
-            remaining = miner_remaining_payouts_usd.get(hotkey, 0.0)
-            actual = miner_actual_payouts_usd.get(hotkey, 0.0)
-            needed = miner_needed_payouts_usd.get(hotkey, 0.0)
-            penalty_loss = miner_penalty_loss_usd.get(hotkey, 0.0)
-            bt.logging.info(
-                f"[PAYOUT_DEBUG] DEBT CALC [{hotkey}] remaining=${remaining:.2f}\t"
-                f"paid=${actual:.2f} / ${needed:.2f},\tpenalty_loss=${penalty_loss:.2f}"
-                f"{'<- needs payout' if remaining > 0 else ''}"
-            )
+        if verbose:
+            _payouts_sorted = sorted(ledger_dict.keys(), key=lambda hk: miner_remaining_payouts_usd.get(hk, 0.0), reverse=True)
+            for hotkey in _payouts_sorted:
+                remaining = miner_remaining_payouts_usd.get(hotkey, 0.0)
+                actual = miner_actual_payouts_usd.get(hotkey, 0.0)
+                needed = miner_needed_payouts_usd.get(hotkey, 0.0)
+                penalty_loss = miner_penalty_loss_usd.get(hotkey, 0.0)
+                bt.logging.info(
+                    f"[PAYOUT_DEBUG] DEBT CALC [{hotkey}] remaining=${remaining:.2f}\t"
+                    f"paid=${actual:.2f} / ${needed:.2f},\tpenalty_loss=${penalty_loss:.2f}"
+                    f"{'<- needs payout' if remaining > 0 else ''}"
+                )
 
         # Calculate projected emissions (needed for weight normalization)
         # Get projected ALPHA emissions
@@ -441,10 +442,11 @@ class DebtBasedScoring:
             verbose=verbose
         )
 
-        bt.logging.info(
-            f"[PAYOUT_DEBUG] PROJECTED EMISSIONS: {projected_alpha_available:.2f} ALPHA = ${projected_usd_available:.2f} USD "
-            f"over {days_until_target} days (${projected_usd_available / days_until_target:.2f}/day)"
-        )
+        if verbose:
+            bt.logging.info(
+                f"[PAYOUT_DEBUG] PROJECTED EMISSIONS: {projected_alpha_available:.2f} ALPHA = ${projected_usd_available:.2f} USD "
+                f"over {days_until_target} days (${projected_usd_available / days_until_target:.2f}/day)"
+            )
 
         if total_remaining_payout_usd > 0:
             DebtBasedScoring.log_projections(metagraph_client, days_until_target, verbose, total_remaining_payout_usd)
@@ -485,18 +487,19 @@ class DebtBasedScoring:
         )
 
         # Log weight summary before normalization
-        bt.logging.info(
-            f"[PAYOUT_DEBUG] WEIGHT SUMMARY: {len(miner_weights_with_minimums)} miners, "
-            f"total_remaining_payout=${total_remaining_payout_usd:.2f}, "
-            f"projected_daily_usd=${projected_daily_usd:.2f}, "
-            f"days_until_target={days_until_target}"
-        )
-        for hk, w in sorted(miner_weights_with_minimums.items(), key=lambda x: -x[1]):
-            daily_target = miner_daily_target_payouts_usd.get(hk, 0.0)
-            if daily_target > 0:
-                bt.logging.info(
-                    f"[PAYOUT_DEBUG] TOP WEIGHT [{hk}]: weight={w:.8f}, daily_target=${daily_target:.2f}"
-                )
+        if verbose:
+            bt.logging.info(
+                f"[PAYOUT_DEBUG] WEIGHT SUMMARY: {len(miner_weights_with_minimums)} miners, "
+                f"total_remaining_payout=${total_remaining_payout_usd:.2f}, "
+                f"projected_daily_usd=${projected_daily_usd:.2f}, "
+                f"days_until_target={days_until_target}"
+            )
+            for hk, w in sorted(miner_weights_with_minimums.items(), key=lambda x: -x[1]):
+                daily_target = miner_daily_target_payouts_usd.get(hk, 0.0)
+                if daily_target > 0:
+                    bt.logging.info(
+                        f"[PAYOUT_DEBUG] TOP WEIGHT [{hk}]: weight={w:.8f}, daily_target=${daily_target:.2f}"
+                    )
 
         # Normalize weights with special burn address logic
         # If sum < 1.0: assign remaining weight to burn address (uid 229 / uid 5)
