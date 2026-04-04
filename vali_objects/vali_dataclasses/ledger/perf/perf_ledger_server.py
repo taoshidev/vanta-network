@@ -119,7 +119,7 @@ class PerfLedgerServer(RPCServerBase):
 
         if self._manager.refresh_allowed(ValiConfig.PERF_LEDGER_REFRESH_TIME_MS):
             bt.logging.info("[PERF_LEDGER_DAEMON] Starting perf ledger update...")
-            self._manager.update(regenerate_all_ledgers=self._regenerate_all_ledgers)
+            self._manager.update(regenerate_all_ledgers=False)
             self._regenerate_all_ledgers = False
             self._manager.set_last_update_time(skip_message=False)  # Enable logging to confirm updates
             bt.logging.success("[PERF_LEDGER_DAEMON] Perf ledger update completed")
