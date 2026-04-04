@@ -1034,8 +1034,8 @@ class EntityManager(ValidatorBroadcastBase):
             checkpoints_to_end = _earning_checkpoints_up_to(end_time_ms)
             checkpoints_to_start = _earning_checkpoints_up_to(start_time_ms)
 
-            payout_to_end = DebtBasedScoring.calculate_payout_from_checkpoints(checkpoints_to_end)
-            payout_to_start = DebtBasedScoring.calculate_payout_from_checkpoints(checkpoints_to_start)
+            payout_to_end = max(0.0, DebtBasedScoring.calculate_payout_from_checkpoints(checkpoints_to_end))
+            payout_to_start = max(0.0, DebtBasedScoring.calculate_payout_from_checkpoints(checkpoints_to_start))
             payout = max(0.0, payout_to_end - payout_to_start)
 
             earning_checkpoints = [
