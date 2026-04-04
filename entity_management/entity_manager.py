@@ -1020,7 +1020,24 @@ class EntityManager(ValidatorBroadcastBase):
             if not debt_ledger:
                 return None
 
-            # Filter checkpoints by time range
+            def _earning_checkpoints_up_to(timestamp_ms: int):
+                return [
+                    cp for cp in debt_ledger.checkpoints
+                    if cp.timestamp_ms <= timestamp_ms
+                       and cp.challenge_period_status in (
+                           MinerBucket.SUBACCOUNT_FUNDED.value,
+                           MinerBucket.SUBACCOUNT_ALPHA.value
+                       )
+                ]
+
+            # payout(0, end) - payout(0, start) for correct HWM-gated calculation
+            checkpoints_to_end = _earning_checkpoints_up_to(end_time_ms)
+            checkpoints_to_start = _earning_checkpoints_up_to(start_time_ms)
+
+            payout_to_end = max(0.0, DebtBasedScoring.calculate_payout_from_checkpoints(checkpoints_to_end))
+            payout_to_start = max(0.0, DebtBasedScoring.calculate_payout_from_checkpoints(checkpoints_to_start))
+            payout = max(0.0, payout_to_end - payout_to_start)
+
             earning_checkpoints = [
                 cp for cp in debt_ledger.checkpoints
                 if start_time_ms <= cp.timestamp_ms <= end_time_ms
@@ -1029,13 +1046,6 @@ class EntityManager(ValidatorBroadcastBase):
                        MinerBucket.SUBACCOUNT_ALPHA.value
                    )
             ]
-
-            # Calculate payout
-            payout = DebtBasedScoring.calculate_payout_from_checkpoints(
-                earning_checkpoints
-            )
-
-            # Convert checkpoints to dict for JSON serialization
             checkpoints_dict = [cp.to_dict() for cp in earning_checkpoints]
 
             return {
