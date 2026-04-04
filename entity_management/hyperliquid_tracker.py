@@ -1130,16 +1130,14 @@ class HyperliquidTracker:
                 continue
             dex_name = coin.split(":")[0] if ":" in coin else ""
             collateral = dex_to_collateral.get(dex_name, "USDC")
-            vanta_max = max(
-                ValiConfig.HL_LEVERAGE_FLOOR,
-                min(max_lev / ValiConfig.HL_LEVERAGE_SCALE_FACTOR,
-                    ValiConfig.HL_LEVERAGE_CEILING)
-            )
+            hs_max_leverage = (ValiConfig.HS_HIGH_TIER_MAX_LEVERAGE
+                               if max_lev >= ValiConfig.HL_HIGH_TIER_THRESHOLD
+                               else ValiConfig.HS_MAX_LEVERAGE)
             new_universe[coin] = DynamicTradePair(
                 trade_pair_id=f"{coin}{collateral}",
                 trade_pair=f"{coin}/{collateral}",
                 hl_coin=coin,
-                max_leverage=vanta_max,
+                max_leverage=hs_max_leverage,
             )
 
         self._hl_universe = new_universe

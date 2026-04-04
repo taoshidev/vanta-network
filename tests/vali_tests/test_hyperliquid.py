@@ -824,7 +824,7 @@ class TestHyperliquidTracker(TestBase):
         pepe_dtp = self.tracker._hl_universe["PEPE"]
         self.assertIsInstance(pepe_dtp, DynamicTradePair)
         self.assertEqual(pepe_dtp.trade_pair_id, "PEPEUSDC")
-        # max_leverage = min(40 / ValiConfig.HL_LEVERAGE_SCALE_FACTOR, HL_LEVERAGE_CEILING) = 0.5
+        # max_leverage: PEPE has 40x HL max lev < HL_HIGH_TIER_THRESHOLD (50) → HS_MAX_LEVERAGE = 0.5
         self.assertAlmostEqual(pepe_dtp.max_leverage, 0.5)
 
     # ==================== Fill Dedup ====================
@@ -1087,11 +1087,11 @@ class TestHyperliquidTracker(TestBase):
 
     @patch('entity_management.hyperliquid_tracker.OrderProcessor')
     def test_leverage_clamped_to_min(self, mock_order_processor):
-        """Test that account weight below HL_LEVERAGE_FLOOR is treated as FLAT (leverage 0)."""
+        """Test that account weight below HS_MIN_LEVERAGE is treated as FLAT (leverage 0)."""
         account_size = 100_000
         mock_result = self._setup_successful_fill_mocks(account_size=account_size)
         mock_order_processor.process_order.return_value = mock_result
-        # Weight 0.001 < HL_LEVERAGE_FLOOR (0.01) => target treated as 0.0 => FLAT order
+        # Weight 0.001 < HS_MIN_LEVERAGE (0.01) => target treated as 0.0 => FLAT order
         self.tracker._fetch_hl_account_state = MagicMock(return_value={
             "total_portfolio_value": account_size,
             "positions": {"BTC": {"weight": 0.001}},
@@ -1107,11 +1107,11 @@ class TestHyperliquidTracker(TestBase):
 
     @patch('entity_management.hyperliquid_tracker.OrderProcessor')
     def test_leverage_clamped_to_max(self, mock_order_processor):
-        """Test account weight above HL_LEVERAGE_CEILING is clamped to HL_LEVERAGE_CEILING."""
+        """Test account weight above HS_MAX_LEVERAGE is clamped to HS_MAX_LEVERAGE."""
         account_size = 10_000
         mock_result = self._setup_successful_fill_mocks(account_size=account_size)
         mock_order_processor.process_order.return_value = mock_result
-        # Weight 5.0 > max_leverage=0.5 (HL_LEVERAGE_CEILING) => clamped to 0.5
+        # Weight 5.0 > max_leverage=0.5 (HS_MAX_LEVERAGE) => clamped to 0.5
         self.tracker._fetch_hl_account_state = MagicMock(return_value={
             "total_portfolio_value": account_size,
             "positions": {"BTC": {"weight": 5.0}},
@@ -1122,7 +1122,7 @@ class TestHyperliquidTracker(TestBase):
 
         call_args = mock_order_processor.process_order.call_args
         signal = call_args.kwargs['signal']
-        self.assertAlmostEqual(signal['leverage'], ValiConfig.HL_LEVERAGE_CEILING, places=4)
+        self.assertAlmostEqual(signal['leverage'], ValiConfig.HS_MAX_LEVERAGE, places=4)
 
     @patch('entity_management.hyperliquid_tracker.OrderProcessor')
     def test_process_fill_signal_structure(self, mock_order_processor):

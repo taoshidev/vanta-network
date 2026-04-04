@@ -336,10 +336,13 @@ class ValiConfig:
     COMMODITIES_MIN_LEVERAGE = 0.05
     COMMODITIES_MAX_LEVERAGE = 2
 
-    # HL dynamic universe — copy-trading leverage mapping
-    HL_LEVERAGE_SCALE_FACTOR = 80       # TBD
-    HL_LEVERAGE_FLOOR = 0.01
-    HL_LEVERAGE_CEILING = 0.5           # TBD
+    # HL dynamic universe — HS position leverage mapping
+    # HL assigns 50x only to its most trusted instruments (major indices, forex pairs)
+    # → HS 5x; all other instruments → HS 0.5x (crypto tier)
+    HL_HIGH_TIER_THRESHOLD = 50         # HL max lev at which HS high tier applies
+    HS_HIGH_TIER_MAX_LEVERAGE = 5.0     # HS max leverage for high-tier instruments (forex/indices)
+    HS_MAX_LEVERAGE = 0.5               # HS max leverage for all other instruments
+    HS_MIN_LEVERAGE = 0.01              # HS minimum leverage for any DynamicTradePair position
     HL_MIN_LIQUIDITY_USD = 2_000_000    # 30-day mean daily USD volume threshold
     HL_LIQUIDITY_LOOKBACK_DAYS = 30     # days of daily candles used to compute mean(v × close)
     HL_UNIVERSE_REFRESH_INTERVAL_S = 86_400  # refresh once daily
@@ -661,7 +664,7 @@ class DynamicTradePair:
     hl_coin: str                # original HL coin name e.g. "HYPE" or "xyz:TSLA" — used for API lookups
     max_leverage: float
     fees: float = 0.001
-    min_leverage: float = ValiConfig.HL_LEVERAGE_FLOOR
+    min_leverage: float = ValiConfig.HS_MIN_LEVERAGE
     trade_pair_category: TradePairCategory = TradePairCategory.CRYPTO
     is_crypto: bool = True
     is_forex: bool = False
@@ -1061,7 +1064,7 @@ def load_hl_dynamic_registry() -> None:
                 trade_pair=d["trade_pair"],
                 hl_coin=d["hl_coin"],
                 max_leverage=d["max_leverage"],
-                min_leverage=d.get("min_leverage", ValiConfig.HL_LEVERAGE_FLOOR),
+                min_leverage=d.get("min_leverage", ValiConfig.HS_MIN_LEVERAGE),
                 fees=d.get("fees", 0.001),
                 trade_pair_category=TradePairCategory(d["trade_pair_category"]),
             )
