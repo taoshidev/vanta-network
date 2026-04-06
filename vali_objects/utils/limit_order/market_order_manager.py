@@ -274,12 +274,24 @@ class MarketOrderManager():
         if not balance:
             balance = self._miner_account_client.get_balance(miner_hotkey) or 0.0
 
-        trade_pair_category = trade_pair.trade_pair_category
-        max_position_leverage = trade_pair.max_leverage
-        account_multiplier = ValiConfig.PORTFOLIO_LEVERAGE_CAP.get(trade_pair.trade_pair_category, 1.0)
-        if self._challenge_period_client.get_miner_bucket(miner_hotkey) == MinerBucket.SUBACCOUNT_CHALLENGE:
-            max_position_leverage /= ValiConfig.SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR[trade_pair_category]
-            account_multiplier /= ValiConfig.SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR[trade_pair_category]
+        bucket = self._challenge_period_client.get_miner_bucket(miner_hotkey)
+        try:
+            subaccount_info = self._entity_client.get_subaccount_info_for_synthetic(miner_hotkey)
+        except Exception:
+            subaccount_info = None
+        is_hs = subaccount_info is not None and subaccount_info.get('hl_address') is not None
+        if is_hs and bucket in (MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA):
+            max_position_leverage = (trade_pair.max_leverage if isinstance(trade_pair, DynamicTradePair)
+                                     else ValiConfig.HS_MAX_LEVERAGE)
+            account_multiplier = ValiConfig.HS_PORTFOLIO_MAX_LEVERAGE
+        else:
+            _, max_position_leverage = leverage_utils.get_position_leverage_bounds(trade_pair)
+            account_multiplier = ValiConfig.PORTFOLIO_LEVERAGE_CAP.get(trade_pair.trade_pair_category, 1.0)
+            if bucket == MinerBucket.SUBACCOUNT_CHALLENGE:
+                divisor = (ValiConfig.HS_SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR if is_hs
+                           else ValiConfig.SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR)
+                max_position_leverage /= divisor
+                account_multiplier /= divisor
         max_position_value = max_position_leverage * balance
 
         # Validate order before processing cash balance (raises ValueError if invalid)

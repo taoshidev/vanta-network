@@ -237,6 +237,10 @@ class MinerAccountClient(RPCClientBase):
         bucket_value = bucket.value if bucket else None
         self._server.set_miner_bucket(hotkey, bucket_value)
 
+    def set_hl_address(self, hotkey: str, hl_address: Optional[str]) -> None:
+        """Set the HL address on an account."""
+        self._server.set_hl_address(hotkey, hl_address)
+
     def get_all_hotkeys(self) -> list:
         """Get all hotkeys with accounts."""
         return self._server.get_all_hotkeys()

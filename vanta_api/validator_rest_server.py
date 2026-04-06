@@ -1959,15 +1959,14 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         if is_funded:
             max_position_per_pair_usd = account_size * ValiConfig.HS_MAX_LEVERAGE
             max_portfolio_usd = account_size * ValiConfig.HS_PORTFOLIO_MAX_LEVERAGE
+        elif in_challenge:
+            max_position_per_pair_usd = account_size * ValiConfig.HS_MAX_LEVERAGE / ValiConfig.HS_SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR
+            max_portfolio_usd = account_size * ValiConfig.HS_PORTFOLIO_MAX_LEVERAGE / ValiConfig.HS_SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR
         else:
             max_leverage = ValiConfig.CRYPTO_MAX_LEVERAGE
             portfolio_cap = ValiConfig.PORTFOLIO_LEVERAGE_CAP.get(category, ValiConfig.PORTFOLIO_LEVERAGE_CAP[TradePairCategory.CRYPTO])
             max_position_per_pair_usd = account_size * max_leverage
             max_portfolio_usd = account_size * portfolio_cap
-            if in_challenge:
-                divisor = ValiConfig.SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR
-                max_position_per_pair_usd /= divisor
-                max_portfolio_usd /= divisor
 
         response_body = json.dumps(
             {

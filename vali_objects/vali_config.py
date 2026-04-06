@@ -338,7 +338,7 @@ class ValiConfig:
 
     # HL dynamic universe — HS position leverage mapping
     # HL assigns 50x only to its most trusted instruments (major indices, forex pairs)
-    # → HS 5x; all other instruments → HS 0.5x (crypto tier)
+    # → HS 5x; all other instruments → HS 1x (standard tier)
     HL_HIGH_TIER_THRESHOLD = 50         # HL max lev at which HS high tier applies
     HS_HIGH_TIER_MAX_LEVERAGE = 5.0     # HS max leverage for high-tier instruments (forex/indices)
     HS_MAX_LEVERAGE = 1.0               # HS max leverage for standard-tier instruments (funded accounts)
@@ -529,12 +529,8 @@ class ValiConfig:
         TradePairCategory.EQUITIES: 0,
     }
 
-    SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR = {
-        TradePairCategory.CRYPTO: 4,
-        TradePairCategory.FOREX: 4,
-        TradePairCategory.INDICES: 4,
-        TradePairCategory.EQUITIES: 2,
-    }
+    SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR = 4    # Vanta Trading: challenge leverage = funded / 4
+    HS_SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR = 2  # HyperScaled: challenge leverage = funded / 2
 
     # Collateral limits
     MIN_COLLATERAL_BALANCE_THETA = 300  # Required minimum total collateral balance per miner in Theta. Approx $150k capital account size

@@ -76,6 +76,7 @@ class MinerAccount:
     asset_class: Optional[TradePairCategory] = None  # EQUITIES, CRYPTO, FOREX
     collateral_records: List[CollateralRecord] = None  # Historical CollateralRecords (List[CollateralRecord])
     miner_bucket: Optional[MinerBucket] = None  # Pushed by ChallengePeriodManager
+    hl_address: Optional[str] = None            # Set for HS subaccounts; None for VT
     max_return: float = 1.0  # High water mark for portfolio return
 
     def __post_init__(self):
@@ -99,10 +100,14 @@ class MinerAccount:
 
     @property
     def multiplier(self) -> float:
-        if not self.asset_class:
-            return 1
-
-        multiplier = ValiConfig.PORTFOLIO_LEVERAGE_CAP.get(self.asset_class, 1.0)
+        is_hs = self.hl_address is not None
+        if is_hs:
+            base = ValiConfig.HS_PORTFOLIO_MAX_LEVERAGE
+            if self.miner_bucket == MinerBucket.SUBACCOUNT_CHALLENGE:
+                return base / ValiConfig.HS_SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR
+            return base
+        # VT path: use asset-class portfolio cap, divided by 4 for challenge accounts
+        multiplier = ValiConfig.PORTFOLIO_LEVERAGE_CAP.get(self.asset_class, 1.0) if self.asset_class else 1.0
         if self.miner_bucket == MinerBucket.SUBACCOUNT_CHALLENGE:
             multiplier /= ValiConfig.SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR.get(self.asset_class, 1.0)
 
@@ -173,6 +178,7 @@ class MinerAccount:
             'total_fees_paid': self.total_fees_paid,
             'total_dividend_income': self.total_dividend_income,
             'miner_bucket': self.miner_bucket.value if self.miner_bucket else None,
+            'hl_address': self.hl_address,
             'max_return': self.max_return
         }
 
@@ -357,6 +363,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     total_fees_paid = last_record.get("total_fees_paid", 0.0)
                     total_dividend_income = last_record.get("total_dividend_income", 0.0)
                     miner_bucket_str = last_record.get("miner_bucket")
+                    hl_address = last_record.get("hl_address")
                     max_return = last_record.get("max_return", 1.0)
                 else:
                     total_realized_pnl = None
@@ -365,6 +372,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     total_fees_paid = 0.0
                     total_dividend_income = 0.0
                     miner_bucket_str = None
+                    hl_address = None
                     max_return = 1.0
 
                 # Parse collateral records
@@ -411,6 +419,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     asset_class=asset_class,
                     collateral_records=collateral_records,
                     miner_bucket=miner_bucket,
+                    hl_address=hl_address,
                     max_return=max_return
                 )
 
@@ -676,6 +685,13 @@ class MinerAccountManager(ValidatorBroadcastBase):
         with self._accounts_lock:
             account = self.get_or_create(hotkey)
             account.miner_bucket = bucket
+            self._save_accounts_to_disk()
+
+    def set_hl_address(self, hotkey: str, hl_address: Optional[str]) -> None:
+        """Set the HL address on an account. Called by EntityManager when an HL subaccount is created/synced."""
+        with self._accounts_lock:
+            account = self.get_or_create(hotkey)
+            account.hl_address = hl_address
             self._save_accounts_to_disk()
 
     def get_all_hotkeys(self) -> list:

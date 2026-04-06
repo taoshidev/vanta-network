@@ -24,15 +24,25 @@ VALID_HL_ADDRESS = "0x" + "a1b2c3d4" * 5
 VALID_HL_ADDRESS_2 = "0x" + "1234567890abcdef" * 2 + "12345678"
 ACCOUNT_SIZE = 50_000.0
 
-# Expected limits for normal (non-challenge) crypto subaccount
+# Expected limits for non-challenge, non-funded crypto subaccount (falls through to legacy path)
 CRYPTO_MAX_LEVERAGE = ValiConfig.CRYPTO_MAX_LEVERAGE  # 2.5
 PORTFOLIO_CAP_CRYPTO = ValiConfig.PORTFOLIO_LEVERAGE_CAP[TradePairCategory.CRYPTO]  # 5
-CHALLENGE_DIVISOR = ValiConfig.SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR  # 4
+CHALLENGE_DIVISOR = ValiConfig.SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR  # 4 (VT, unused in HS endpoint)
 
-EXPECTED_MAX_POSITION = ACCOUNT_SIZE * CRYPTO_MAX_LEVERAGE      # 125_000
-EXPECTED_MAX_PORTFOLIO = ACCOUNT_SIZE * PORTFOLIO_CAP_CRYPTO    # 250_000
-EXPECTED_CHALLENGE_MAX_POSITION = EXPECTED_MAX_POSITION / CHALLENGE_DIVISOR    # 31_250
-EXPECTED_CHALLENGE_MAX_PORTFOLIO = EXPECTED_MAX_PORTFOLIO / CHALLENGE_DIVISOR  # 62_500
+EXPECTED_MAX_POSITION = ACCOUNT_SIZE * CRYPTO_MAX_LEVERAGE      # 125_000  (legacy/else path)
+EXPECTED_MAX_PORTFOLIO = ACCOUNT_SIZE * PORTFOLIO_CAP_CRYPTO    # 250_000  (legacy/else path)
+EXPECTED_CHALLENGE_MAX_POSITION = EXPECTED_MAX_POSITION / CHALLENGE_DIVISOR    # 31_250 (legacy)
+EXPECTED_CHALLENGE_MAX_PORTFOLIO = EXPECTED_MAX_PORTFOLIO / CHALLENGE_DIVISOR  # 62_500 (legacy)
+
+# Expected limits for HS funded accounts
+HS_MAX_LEVERAGE = ValiConfig.HS_MAX_LEVERAGE                    # 1.0
+HS_PORTFOLIO_MAX_LEVERAGE = ValiConfig.HS_PORTFOLIO_MAX_LEVERAGE  # 5.0
+HS_CHALLENGE_DIVISOR = ValiConfig.HS_SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR  # 2
+
+EXPECTED_HS_FUNDED_MAX_POSITION = ACCOUNT_SIZE * HS_MAX_LEVERAGE            # 50_000
+EXPECTED_HS_FUNDED_MAX_PORTFOLIO = ACCOUNT_SIZE * HS_PORTFOLIO_MAX_LEVERAGE  # 250_000
+EXPECTED_HS_CHALLENGE_MAX_POSITION = EXPECTED_HS_FUNDED_MAX_POSITION / HS_CHALLENGE_DIVISOR   # 25_000
+EXPECTED_HS_CHALLENGE_MAX_PORTFOLIO = EXPECTED_HS_FUNDED_MAX_PORTFOLIO / HS_CHALLENGE_DIVISOR  # 125_000
 
 
 def _build_limits_data(
@@ -81,7 +91,7 @@ class TestHlTraderLimitsEndpoint(unittest.TestCase):
     # ==================== Happy path — normal (funded) ====================
 
     def test_success_normal(self):
-        """200 with correct limits for a funded (non-challenge) subaccount."""
+        """200 with correct HS limits for a funded subaccount."""
         self.mock_entity.get_hl_subaccount_limits_data.return_value = _build_limits_data(
             challenge_bucket=MinerBucket.SUBACCOUNT_FUNDED.value
         )
@@ -92,8 +102,8 @@ class TestHlTraderLimitsEndpoint(unittest.TestCase):
         self.assertEqual(data['status'], 'success')
         self.assertEqual(data['hl_address'], VALID_HL_ADDRESS)
         self.assertEqual(data['account_size'], ACCOUNT_SIZE)
-        self.assertEqual(data['max_position_per_pair_usd'], EXPECTED_MAX_POSITION)
-        self.assertEqual(data['max_portfolio_usd'], EXPECTED_MAX_PORTFOLIO)
+        self.assertEqual(data['max_position_per_pair_usd'], EXPECTED_HS_FUNDED_MAX_POSITION)
+        self.assertEqual(data['max_portfolio_usd'], EXPECTED_HS_FUNDED_MAX_PORTFOLIO)
         self.assertFalse(data['in_challenge_period'])
         self.assertIn('timestamp', data)
         self.assertIsInstance(data['timestamp'], int)
@@ -114,7 +124,7 @@ class TestHlTraderLimitsEndpoint(unittest.TestCase):
     # ==================== Happy path — challenge period ====================
 
     def test_success_challenge_period(self):
-        """200 with reduced limits for a challenge-period subaccount."""
+        """200 with HS-reduced limits for a challenge-period subaccount (÷2 from funded)."""
         self.mock_entity.get_hl_subaccount_limits_data.return_value = _build_limits_data(
             challenge_bucket=MinerBucket.SUBACCOUNT_CHALLENGE.value
         )
@@ -123,8 +133,8 @@ class TestHlTraderLimitsEndpoint(unittest.TestCase):
 
         self.assertEqual(status, 200)
         self.assertTrue(data['in_challenge_period'])
-        self.assertEqual(data['max_position_per_pair_usd'], EXPECTED_CHALLENGE_MAX_POSITION)
-        self.assertEqual(data['max_portfolio_usd'], EXPECTED_CHALLENGE_MAX_PORTFOLIO)
+        self.assertEqual(data['max_position_per_pair_usd'], EXPECTED_HS_CHALLENGE_MAX_POSITION)
+        self.assertEqual(data['max_portfolio_usd'], EXPECTED_HS_CHALLENGE_MAX_PORTFOLIO)
 
     # ==================== Response structure ====================
 
@@ -219,8 +229,8 @@ class TestHlTraderLimitsEndpoint(unittest.TestCase):
 
         self.assertEqual(status, 200)
         self.assertEqual(data['account_size'], custom_size)
-        self.assertEqual(data['max_position_per_pair_usd'], custom_size * CRYPTO_MAX_LEVERAGE)
-        self.assertEqual(data['max_portfolio_usd'], custom_size * PORTFOLIO_CAP_CRYPTO)
+        self.assertEqual(data['max_position_per_pair_usd'], custom_size * HS_MAX_LEVERAGE)
+        self.assertEqual(data['max_portfolio_usd'], custom_size * HS_PORTFOLIO_MAX_LEVERAGE)
 
 
 if __name__ == '__main__':
