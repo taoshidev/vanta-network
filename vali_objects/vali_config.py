@@ -341,7 +341,8 @@ class ValiConfig:
     # → HS 5x; all other instruments → HS 0.5x (crypto tier)
     HL_HIGH_TIER_THRESHOLD = 50         # HL max lev at which HS high tier applies
     HS_HIGH_TIER_MAX_LEVERAGE = 5.0     # HS max leverage for high-tier instruments (forex/indices)
-    HS_MAX_LEVERAGE = 0.5               # HS max leverage for all other instruments
+    HS_MAX_LEVERAGE = 1.0               # HS max leverage for standard-tier instruments (funded accounts)
+    HS_PORTFOLIO_MAX_LEVERAGE = 5.0     # HS portfolio-level leverage cap (funded accounts)
     HS_MIN_LEVERAGE = 0.01              # HS minimum leverage for any DynamicTradePair position
     HL_MIN_LIQUIDITY_USD = 2_000_000    # 30-day mean daily USD volume threshold
     HL_LIQUIDITY_LOOKBACK_DAYS = 30     # days of daily candles used to compute mean(v × close)

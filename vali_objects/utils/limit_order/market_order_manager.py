@@ -16,7 +16,7 @@ import bittensor as bt
 
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.utils.price_slippage_model import PriceSlippageModel
-from vali_objects.vali_config import ValiConfig, TradePair, RPCConnectionMode
+from vali_objects.vali_config import ValiConfig, TradePair, DynamicTradePair, RPCConnectionMode
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.enums.miner_bucket_enum import MinerBucket
