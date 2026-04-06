@@ -78,6 +78,13 @@ Each miner selects a single asset class to compete in (crypto, forex, or equitie
 | CADCHF | CAD/CHF |
 | NZDCAD | NZD/CAD |
 | NZDCHF | NZD/CHF |
+| AUDJPY | AUD/JPY |
+| CADJPY | CAD/JPY |
+| CHFJPY | CHF/JPY |
+| EURJPY | EUR/JPY |
+| NZDJPY | NZD/JPY |
+| GBPJPY | GBP/JPY |
+| USDJPY | USD/JPY |
 
 ### Commodities
 
@@ -151,13 +158,6 @@ The following pairs are defined in the system but currently disabled:
 
 | Symbol  | Category | Reason                            |
 |---------|----------|-----------------------------------|
-| AUDJPY  | Forex    | Align with copy trading on Glitch |
-| CADJPY  | Forex    | Align with copy trading on Glitch |
-| CHFJPY  | Forex    | Align with copy trading on Glitch |
-| EURJPY  | Forex    | Align with copy trading on Glitch |
-| NZDJPY  | Forex    | Align with copy trading on Glitch |
-| GBPJPY  | Forex    | Align with copy trading on Glitch |
-| USDJPY  | Forex    | Align with copy trading on Glitch |
 | USDMXN  | Forex    | Exotic, larger spreads            |
 | SPX     | Indices  | Disabled indices                  |
 | DJI     | Indices  | Disabled indices                  |
