@@ -90,9 +90,9 @@ class Validator(ValidatorBase):
         # Run any pending migrations before initializing validator state
         print("Checking for pending migrations...")
         if not run_migrations():
-            print("ERROR: Migration failed. Aborting validator startup.")
-            sys.exit(1)
-        print("Migrations completed successfully.")
+            print("ERROR: Migration failed. Starting validator without executing migrations")
+        else:
+            print("Migrations completed successfully.")
 
         ValiBkpUtils.clear_tmp_dir()
         self.uuid_tracker = UUIDTracker()
