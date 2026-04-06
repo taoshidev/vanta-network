@@ -992,22 +992,42 @@ class HyperliquidTracker:
             bt.logging.warning(f"[HL_TRACKER] _refresh_hl_universe failed: {e} — keeping existing registry")
             return
 
+        # Build reverse map once: HL coin name -> static TradePair (e.g. "BTC" -> TradePair.BTCUSD)
+        hl_coin_to_static_tp = {
+            coin: TradePair[tp_id]
+            for tp_id, coin in ValiConfig.TRADE_PAIR_ID_TO_HL_COIN.items()
+        }
+
         new_universe = {}
         for asset, ctx in zip(meta["universe"], ctxs):
             coin = asset["name"]
             if float(ctx.get("dayNtlVlm", 0)) < ValiConfig.HL_MIN_LIQUIDITY_USD:
                 continue
-            vanta_max = max(
-                ValiConfig.HL_LEVERAGE_FLOOR,
-                min(asset["maxLeverage"] / ValiConfig.HL_LEVERAGE_SCALE_FACTOR,
-                    ValiConfig.HL_LEVERAGE_CEILING)
-            )
-            new_universe[coin] = DynamicTradePair(
-                trade_pair_id=f"{coin}USD",
-                trade_pair=f"{coin}/USD",
-                hl_coin=coin,
-                max_leverage=vanta_max,
-            )
+            static_tp = hl_coin_to_static_tp.get(coin)
+            if static_tp:
+                # Use the static TradePair's leverage rules so these coins behave
+                # identically to regular miners (e.g. CRYPTO_MAX_LEVERAGE=2.5 for BTC).
+                new_universe[coin] = DynamicTradePair(
+                    trade_pair_id=static_tp.trade_pair_id,
+                    trade_pair=static_tp.trade_pair,
+                    hl_coin=coin,
+                    max_leverage=static_tp.max_leverage,
+                    min_leverage=static_tp.min_leverage,
+                    fees=static_tp.fees,
+                    trade_pair_category=static_tp.trade_pair_category,
+                )
+            else:
+                vanta_max = max(
+                    ValiConfig.HL_LEVERAGE_FLOOR,
+                    min(asset["maxLeverage"] / ValiConfig.HL_LEVERAGE_SCALE_FACTOR,
+                        ValiConfig.HL_LEVERAGE_CEILING)
+                )
+                new_universe[coin] = DynamicTradePair(
+                    trade_pair_id=f"{coin}USD",
+                    trade_pair=f"{coin}/USD",
+                    hl_coin=coin,
+                    max_leverage=vanta_max,
+                )
 
         self._hl_universe = new_universe
         for dtp in new_universe.values():
