@@ -130,7 +130,7 @@ class EntityManager(ValidatorBroadcastBase):
 
         # Determine is_testnet before calling ValidatorBroadcastBase.__init__
         # This prevents wallet creation blocking in ValidatorBroadcastBase
-        is_testnet = (config.netuid == 116) if (config and hasattr(config, 'netuid')) else False
+        is_testnet = (config.netuid in (116, 171)) if (config and hasattr(config, 'netuid')) else False
 
         # ValidatorBroadcastBase derives is_mothership internally
         # CRITICAL: Pass running_unit_tests AND is_testnet to prevent blocking wallet creation
