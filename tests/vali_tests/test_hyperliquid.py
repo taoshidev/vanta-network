@@ -753,7 +753,7 @@ class TestHyperliquidTracker(TestBase):
             "is_valid": True, "error_message": ""
         }
         self.price_fetcher_client.is_market_open.return_value = True
-        self.price_fetcher_client.simulate_slippage.return_value = None
+        self.price_fetcher_client.simulate_avg_fill_price.return_value = None
 
         # Populate _hl_universe with common test coins so _process_fill coin lookup succeeds.
         self.tracker._hl_universe = {
