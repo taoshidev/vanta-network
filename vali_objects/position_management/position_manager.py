@@ -1275,7 +1275,7 @@ class PositionManager:
                 if position.is_closed_position and position.close_ms < recent_cutoff_ms:
                     continue
                 if position.trade_pair.is_equities:
-                    fee = position.refresh_interest_fee_usd(time_ms)
+                    fee = position.refresh_equities_fee_usd(time_ms)
                 else:
                     hl_fr = self._get_hl_funding_rates(position, time_ms)
                     fee = position.refresh_carry_fee_usd(time_ms, hl_funding_rates=hl_fr)

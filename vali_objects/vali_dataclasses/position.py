@@ -237,31 +237,8 @@ class Position(BaseModel):
         if self.is_closed_position:
             current_time_ms = self.close_ms
 
-        market_value = abs(self.net_value) + self.unrealized_pnl
-        if market_value <= 0:
-            return 0.0
-
-        if self.is_hl:
-            if not hl_funding_rates:
-                return 0
-
-            last_accrual_ms = self.last_fee_time_ms("hl_funding")
-            sign = 1.0 if self.position_type == OrderType.LONG else -1.0
-            total_fee = 0.0
-            last_settlement_ms = last_accrual_ms
-            for settlement_ms, rate in sorted(hl_funding_rates.items()):
-                if settlement_ms <= last_accrual_ms:
-                    continue
-                if settlement_ms > current_time_ms:
-                    break
-                total_fee += market_value * rate * sign
-                last_settlement_ms = settlement_ms
-            if total_fee > 0:
-                self.record_fee_event("hl_funding", total_fee, last_settlement_ms)
-
-            return total_fee
-
-        last_accrual_ms = self.last_fee_time_ms("carry")
+        last_carry_event = self.last_fee_event("carry")
+        last_carry_fee_accrual_ms = last_carry_event["time_ms"] if last_carry_event else self.open_ms
 
         if self.trade_pair.is_crypto:
             interval_ms = MS_IN_8_HOURS
@@ -284,35 +261,53 @@ class Position(BaseModel):
 
         return carry_fee
 
-    def refresh_interest_fee_usd(self, current_time_ms: int) -> float:
+    def refresh_equities_fee_usd(self, current_time_ms: int) -> float:
         """
-        Calculate and record interest on the borrowed (margin loan) amount for equities positions.
-        Interest accrues every 24 hours using DAILY_INTEREST_RATE (6.6% annual / 365).
-        Only applies to equities trade pairs.
+        Calculate and record equity-specific fees accruing at UTC midnight:
+          - SHORT positions: stock borrow fee (3% annual / 365) on position market value.
+          - LONG positions: margin interest (6.6% annual / 365) on borrowed (margin loan) amount.
+        Returns total fee charged.
         """
         if self.is_closed_position or not self.trade_pair.is_equities:
             return 0.0
 
-        borrowed = self.margin_loan
-        if borrowed <= 0:
-            return 0.0
-
-        last_interest_accrual_ms = (self.open_ms // MS_IN_24_HOURS) * MS_IN_24_HOURS
-        for fee_event in reversed(self.fee_history):
-            if fee_event["fee_type"] == "interest":
-                last_interest_accrual_ms = fee_event["time_ms"]
-                break
-
         most_recent_midnight_ms = (current_time_ms // MS_IN_24_HOURS) * MS_IN_24_HOURS
-        intervals = (most_recent_midnight_ms - last_interest_accrual_ms) // MS_IN_24_HOURS
-        if intervals <= 0:
-            return 0.0
+        total_fee = 0.0
 
-        interest_usd = borrowed * ValiConfig.DAILY_INTEREST_RATE * intervals
-        if interest_usd > 0:
-            self.record_fee_event("interest", interest_usd, most_recent_midnight_ms)
+        if self.position_type == OrderType.SHORT:
+            short_position_value = abs(self.net_value) + self.unrealized_pnl
+            if short_position_value > 0:
+                last_borrow_event = self.last_fee_event("borrow")
+                last_borrow_accrual_ms = last_borrow_event["time_ms"] if last_borrow_event else (self.open_ms // MS_IN_24_HOURS) * MS_IN_24_HOURS
 
-        return interest_usd
+                intervals = (most_recent_midnight_ms - last_borrow_accrual_ms) // MS_IN_24_HOURS
+                if intervals > 0:
+                    borrow_fee = short_position_value * ValiConfig.DAILY_STOCK_BORROW_RATE * intervals
+                    if borrow_fee > 0:
+                        self.record_fee_event("borrow", borrow_fee, most_recent_midnight_ms)
+                        total_fee += borrow_fee
+
+        elif self.position_type == OrderType.LONG:
+            borrowed = self.margin_loan
+            if borrowed > 0:
+                last_interest_event = self.last_fee_event("interest")
+                last_interest_accrual_ms = last_interest_event["time_ms"] if last_interest_event else (self.open_ms // MS_IN_24_HOURS) * MS_IN_24_HOURS
+
+                intervals = (most_recent_midnight_ms - last_interest_accrual_ms) // MS_IN_24_HOURS
+                if intervals > 0:
+                    interest_fee = borrowed * ValiConfig.DAILY_INTEREST_RATE * intervals
+                    if interest_fee > 0:
+                        self.record_fee_event("interest", interest_fee, most_recent_midnight_ms)
+                        total_fee += interest_fee
+
+        return total_fee
+
+    def last_fee_event(self, fee_type: str) -> Optional[dict]:
+        """Return the most recent fee event of the given fee_type, or None if not found."""
+        for fee_event in reversed(self.fee_history):
+            if fee_event["fee_type"] == fee_type:
+                return fee_event
+        return None
 
     def last_fee_time_ms(self, fee_type: str) -> int:
         for fee_event in reversed(self.fee_history):

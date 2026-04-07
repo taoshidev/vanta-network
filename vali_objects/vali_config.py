@@ -601,6 +601,9 @@ class ValiConfig:
     ANNUAL_INTEREST_RATE = 0.066  # 6.6%
     DAILY_INTEREST_RATE = ANNUAL_INTEREST_RATE / 365
 
+    ANNUAL_STOCK_BORROW_RATE = 0.03  # 3% annual borrow rate for short equity positions
+    DAILY_STOCK_BORROW_RATE = ANNUAL_STOCK_BORROW_RATE / 365
+
     # 100% percent of collateral deposit is at risk of slashing based on drawdown
     DRAWDOWN_SLASH_PROPORTION = 1.0
 
