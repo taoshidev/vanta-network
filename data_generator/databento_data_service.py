@@ -343,8 +343,12 @@ class DatabentoDataService(BaseDataService):
         for d in dates_in_range:
             self._corporate_actions_cache[d] = result.get(d, CorporateActions(splits={}, dividends={}))
 
-        return {d: self._corporate_actions_cache[d] for d in self._corporate_actions_cache
+        actions_in_range = {d: self._corporate_actions_cache[d] for d in self._corporate_actions_cache
                 if start_date_str <= d < end_date_str}
+
+        bt.logging.info(f"Databento corporate actions in range ({start_date_str} - {end_date_str}) {actions_in_range}")
+
+        return actions_in_range
 
 if __name__ == "__main__":
     import asyncio
