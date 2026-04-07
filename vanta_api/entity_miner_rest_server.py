@@ -154,8 +154,7 @@ class EntityMinerRestServer(MinerRestServer):
         self._hotkey = None
         self._coldkey = None
         self._validator_url = None
-        self._validator_ws_host = None
-        self._validator_ws_port = None
+        self._validator_ws_url = None
         self._mappings_file: Optional[str] = None
 
         super().__init__(
@@ -179,8 +178,7 @@ class EntityMinerRestServer(MinerRestServer):
             wallet_hotkey = secrets.get('wallet_hotkey')
             wallet_password = ValiUtils.get_secret('wallet_password', secrets_path=MinerConfig.get_secrets_file_path())
             self._validator_url = secrets.get('validator_url')
-            self._validator_ws_host = secrets.get('validator_ws_host')
-            self._validator_ws_port = int(secrets.get('validator_ws_port', 8765))
+            self._validator_ws_url = secrets.get('validator_ws_url')
 
             if Wallet and wallet_name and wallet_hotkey:
                 wallet = Wallet(name=wallet_name, hotkey=wallet_hotkey)
@@ -648,8 +646,8 @@ class EntityMinerRestServer(MinerRestServer):
 
     def _start_ws_listener(self):
         """Start the WebSocket listener thread."""
-        if not self._hotkey or not self._validator_ws_host:
-            bt.logging.warning("[ENTITY-GW] Cannot start WS listener: missing hotkey or ws host config")
+        if not self._hotkey or not self._validator_ws_url:
+            bt.logging.warning("[ENTITY-GW] Cannot start WS listener: missing hotkey or ws url config")
             return
 
         self._ws_stop_event.clear()
@@ -679,7 +677,7 @@ class EntityMinerRestServer(MinerRestServer):
             return
 
         backoff_s = 1.0
-        ws_url = f"ws://{self._validator_ws_host}:{self._validator_ws_port}"
+        ws_url = self._validator_ws_url
 
         while not self._ws_stop_event.is_set():
             try:

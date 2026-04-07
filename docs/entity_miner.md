@@ -198,8 +198,7 @@ Create `mining/miner_secrets.json` with your wallet credentials and validator co
   "wallet_hotkey": "your_hotkey_name",
   "wallet_password": "your_wallet_password",
   "validator_url": "http://validator_ip:48888",
-  "validator_ws_host": "validator_ip",
-  "validator_ws_port": 8765
+  "validator_ws_url": "ws://validator_ip:8765"
 }
 ```
 
@@ -210,8 +209,7 @@ Create `mining/miner_secrets.json` with your wallet credentials and validator co
 | `wallet_hotkey` | Bittensor hotkey name |
 | `wallet_password` | Wallet coldkey password (used for signing subaccount creation requests) |
 | `validator_url` | Validator REST API URL (port 48888) |
-| `validator_ws_host` | Validator WebSocket host (for real-time dashboard/rejection streams) |
-| `validator_ws_port` | Validator WebSocket port (default: 8765) |
+| `validator_ws_url` | Validator WebSocket URL (e.g. `ws://validator_ip:8765`) |
 | `max_hl_traders` | Maximum number of Hyperliquid traders that can be registered (optional, no limit if unset). Can also be set via `MAX_HL_TRADERS` env var (env var takes precedence). |
 
 To register your entity miner's public endpoint URL with the validator, add:
@@ -595,7 +593,7 @@ Log in using a [polkadot.js](https://polkadot.js.org/extension/) browser wallet.
 - Ensure port 8088 is not already in use
 
 ### WebSocket not connecting
-- Confirm `validator_ws_host` and `validator_ws_port` in secrets match the validator's WebSocket server
+- Confirm `validator_ws_url` in secrets matches the validator's WebSocket server (e.g. `ws://validator_ip:8765`)
 - Check network connectivity to the validator
 - The gateway retries with exponential backoff (1s to 60s) on connection failures
 
