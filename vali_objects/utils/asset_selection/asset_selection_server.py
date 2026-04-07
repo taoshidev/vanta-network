@@ -79,7 +79,7 @@ class AssetSelectionServer(RPCServerBase):
 
         # Determine testnet from config
         if not running_unit_tests and config is not None:
-            self.is_testnet = config.netuid == 116
+            self.is_testnet = config.netuid in (116, 171)
         else:
             self.is_testnet = False
 

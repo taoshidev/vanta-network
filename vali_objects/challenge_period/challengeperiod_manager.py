@@ -469,7 +469,7 @@ class ChallengePeriodManager(CacheController):
         today_midnight_ms = (now_ms // 86400000) * 86400000
         today_open_cp = next((cp for cp in midnight_cps if cp.last_update_ms == today_midnight_ms), None)
         daily_open_equity = today_open_cp.equity_ret if today_open_cp else last_eod
-        eod_hwm = max(cp.equity_ret for cp in midnight_cps) if midnight_cps else 1.0
+        eod_hwm = max(max(cp.equity_ret for cp in midnight_cps), 1.0) if midnight_cps else 1.0
         return midnight_cps, last_eod, daily_open_equity, eod_hwm
 
     def _get_funded_drawdown_thresholds(self, hotkey: str) -> tuple[float, float]:

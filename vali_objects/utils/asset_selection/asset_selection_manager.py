@@ -60,7 +60,7 @@ class AssetSelectionManager(ValidatorBroadcastBase):
 
         # Determine is_testnet before calling ValidatorBroadcastBase.__init__
         # This prevents wallet creation blocking in ValidatorBroadcastBase
-        is_testnet = (config.netuid == 116) if (config and hasattr(config, 'netuid')) else False
+        is_testnet = (config.netuid in (116, 171)) if (config and hasattr(config, 'netuid')) else False
         self.is_testnet = is_testnet
         bt.logging.info("[ASSET_MGR] Wallet initialized")
 

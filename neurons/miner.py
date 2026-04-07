@@ -27,8 +27,8 @@ class Miner:
     def __init__(self, running_unit_tests=False):
         self.running_unit_tests = running_unit_tests
         self.config = self.get_config()
-        assert self.config.netuid in (8, 116), "Taoshi runs on netuid 8 (mainnet) and 116 (testnet)"
-        self.is_testnet = self.config.netuid == 116
+        assert self.config.netuid in (8, 116, 171), "Taoshi runs on netuid 8 (mainnet) and 116/171 (testnet)"
+        self.is_testnet = self.config.netuid in (116, 171)
 
         self.setup_logging_directory()
 
