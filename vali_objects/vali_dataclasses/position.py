@@ -6,6 +6,7 @@ from pydantic import model_validator, BaseModel, Field
 
 from time_util.time_util import TimeUtil, MS_IN_1_HOUR, MS_IN_8_HOURS, MS_IN_24_HOURS
 from vali_objects.vali_config import TradePair, TradePairCategory, TradePairLike, DynamicTradePair, ValiConfig
+from vali_objects.vali_dataclasses.corporate_actions import DividendHistoryEntry
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.enums.order_type_enum import OrderType
@@ -62,9 +63,7 @@ class Position(BaseModel):
     fee_history: List[Dict] = Field(default_factory=list) # [{"fee_type": "carry", "amount": 123, "time_ms": 123}]
     is_hl: bool = False  # True for Hyperliquid entity miner positions
     last_stock_split_date: Optional[str] = None  # Only set for equities
-    dividend_history: List[Dict] = Field(default_factory=list)  # Audit log of short dividend debits
-    # Each entry: {"type": "short_debit", "gross_dividend": float,
-    #              "quantity": float, "amount": float, "ex_date": str, "time_ms": int} TODO use dataclass for dividend and fee events
+    dividend_history: List[DividendHistoryEntry] = Field(default_factory=list)  # Audit log of dividend events
     unfilled_orders: list = Field(default=[], exclude=True)
 
     @model_validator(mode='before')
@@ -983,7 +982,7 @@ class Position(BaseModel):
             return None
 
         # only one entry per ex_date per position
-        if any(e["ex_date"] == ex_date_str for e in self.dividend_history):
+        if any(e.ex_date == ex_date_str for e in self.dividend_history):
             return None
 
         shares = self.net_quantity  # positive = long, negative = short
@@ -992,39 +991,39 @@ class Position(BaseModel):
 
         amount = abs(shares) * gross_dividend
         if shares > 0:  # LONG: record pending credit to be released on payment_date
-            self.dividend_history.append({
-                "type": "long_credit",
-                "gross_dividend": gross_dividend,
-                "quantity": shares,
-                "amount": amount,
-                "ex_date": ex_date_str,
-                "payment_date": payment_date_str,
-                "applied": False,
-                "time_ms": time_ms
-            })
+            self.dividend_history.append(DividendHistoryEntry(
+                type="long_credit",
+                gross_dividend=gross_dividend,
+                quantity=shares,
+                amount=amount,
+                ex_date=ex_date_str,
+                payment_date=payment_date_str,
+                time_ms=time_ms,
+                applied=False,
+            ))
             return None
         else:  # SHORT: debit immediately
-            self.dividend_history.append({
-                "type": "short_debit",
-                "gross_dividend": gross_dividend,
-                "quantity": abs(shares),
-                "amount": amount,
-                "ex_date": ex_date_str,
-                "payment_date": ex_date_str,
-                "applied": True,
-                "time_ms": time_ms
-            })
+            self.dividend_history.append(DividendHistoryEntry(
+                type="short_debit",
+                gross_dividend=gross_dividend,
+                quantity=abs(shares),
+                amount=amount,
+                ex_date=ex_date_str,
+                payment_date=ex_date_str,
+                time_ms=time_ms,
+                applied=True,
+            ))
             return -amount
 
     def refresh_pending_dividends(self, current_date_str: str) -> float:
         """Mark long_credit entries with matching payment_date as applied. Returns total USD credit."""
         total = 0.0
         for entry in self.dividend_history:
-            if (entry.get("type") == "long_credit"
-                    and entry.get("payment_date") == current_date_str
-                    and not entry.get("applied", True)):
-                entry["applied"] = True
-                total += entry.get("amount", 0.0)
+            if (entry.type == "long_credit"
+                    and entry.payment_date == current_date_str
+                    and not entry.applied):
+                entry.applied = True
+                total += entry.amount
         return total
 
     def _update_position(self, price_fetcher_client=None):

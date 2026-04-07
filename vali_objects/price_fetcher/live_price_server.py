@@ -195,11 +195,8 @@ class LivePriceFetcherServer(RPCServerBase):
         """Delegate to fetcher."""
         return self._fetcher.get_quote_usd_conversion(order, position)
 
-    def get_stock_splits(self, time_ms: int) -> dict[str, float]:
-        return self._fetcher.get_stock_splits(time_ms)
-
-    def get_dividend_events(self, time_ms: int) -> dict[str, dict]:
-        return self._fetcher.get_dividend_events(time_ms)
+    def get_corporate_actions(self, start_date_str: str, end_date_str: str | None = None) -> dict:
+        return self._fetcher.get_corporate_actions(start_date_str, end_date_str)
 
     def set_test_price_source(self, trade_pair: TradePair, price_source: PriceSource) -> None:
         """

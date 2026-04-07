@@ -48,11 +48,6 @@ class LivePriceFetcher:
             running_unit_tests=running_unit_tests
         )
 
-        # Stock splits cache - keyed by date string "YYYY-MM-DD"
-        self._stock_splits_by_date: dict[str, dict] = {}
-
-        # Dividend events cache - keyed by date string "YYYY-MM-DD"
-        self._dividend_events_by_date: dict[str, dict] = {}
 
     def stop_all_threads(self):
         self.tiingo_data_service.stop_threads()
@@ -525,10 +520,10 @@ class LivePriceFetcher:
         bt.logging.error(f"Unable to fetch USD to base currency {trade_pair.base} conversion at time {time_ms}. No price sources available (websocket or REST).")
         return 1.0
 
-    def get_stock_splits(self, time_ms: int) -> dict[str, float]:
+    def get_corporate_actions(self, start_date_str: str, end_date_str: str | None = None) -> dict:
         if not self.databento_data_service:
             return {}
-        return self.databento_data_service.get_stock_splits(time_ms)
+        return self.databento_data_service.get_corporate_actions(start_date_str, end_date_str)
 
 
 if __name__ == "__main__":

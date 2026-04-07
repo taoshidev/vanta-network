@@ -71,7 +71,6 @@ class MDDChecker(CacheController):
         self._miner_account_client = MinerAccountClient(connection_mode=connection_mode)
 
         self.all_trade_pairs = [trade_pair for trade_pair in TradePair if not trade_pair.is_blocked]
-        self._last_corporate_actions_call_ms: int = 0
         self.reset_debug_counters()
         self.n_poly_api_requests = 0
 
@@ -187,36 +186,24 @@ class MDDChecker(CacheController):
             sources_str = ", ".join(ps.debug_str(now_ms) for ps in sources)
             bt.logging.info(f"[MDD_PRICE_SOURCES] {tp.trade_pair_id}: [{sources_str}]")
 
-        today_date_str = TimeUtil.millis_to_formatted_date_str(now_ms)
+        today_date_str = TimeUtil.millis_to_short_date_str(now_ms)
 
-        if now_ms - self._last_corporate_actions_call_ms >= MS_IN_24_HOURS:
-            bt.logging.info(f"[CORPORATE ACTIONS] Fetching stock splits and dividends for {today_date_str}")
-            try:
-                stock_splits = self._live_price_client.get_stock_splits(now_ms)
-                if stock_splits:
-                    bt.logging.info(f"[STOCK SPLITS] Found splits: {stock_splits}")
-                    for trade_pair_id, stock_split_ratio in stock_splits.items():
-                        self._position_client.apply_stock_split(trade_pair_id, stock_split_ratio, today_date_str)
-                else:
-                    bt.logging.info(f"[STOCK SPLITS] No splits found for {today_date_str}")
-            except Exception as e:
-                bt.logging.error(f"[STOCK SPLITS] Failed to fetch or apply: {e}")
-
-            try:
-                dividend_events = self._live_price_client.get_dividend_events(now_ms)
-                if dividend_events:
-                    bt.logging.info(f"[DIVIDENDS] ex-date events: {dividend_events}")
-                    for trade_pair_id, dividend_info in dividend_events.items():
+        try:
+            actions_by_date = self._live_price_client.get_corporate_actions(today_date_str)
+            today_actions = actions_by_date.get(today_date_str)
+            if today_actions:
+                if today_actions.splits:
+                    bt.logging.info(f"[STOCK SPLITS] Found splits: {today_actions.splits}")
+                    for symbol, ratio in today_actions.splits.items():
+                        self._position_client.apply_stock_split(symbol, ratio, today_date_str)
+                if today_actions.dividends:
+                    bt.logging.info(f"[DIVIDENDS] ex-date events: {today_actions.dividends}")
+                    for symbol, div in today_actions.dividends.items():
                         self._position_client.process_dividend_ex_date(
-                            trade_pair_id, dividend_info["gross_dividend"], dividend_info["payment_date"], today_date_str
+                            symbol, div.gross_dividend, div.payment_date, today_date_str
                         )
-                else:
-                    bt.logging.info(f"[DIVIDENDS] No dividend events found for {today_date_str}")
-            except Exception as e:
-                bt.logging.error(f"[DIVIDENDS] Failed to fetch or apply: {e}")
-
-            # Align to UTC midnight so next trigger fires after the next midnight boundary
-            self._last_corporate_actions_call_ms = (now_ms // MS_IN_24_HOURS) * MS_IN_24_HOURS
+        except Exception as e:
+            bt.logging.error(f"[CORPORATE ACTIONS] Failed to fetch or apply: {e}")
 
         for hotkey, sorted_positions in hotkey_to_positions.items():
             self.perform_price_corrections(hotkey, sorted_positions, tp_to_price_sources, iteration_epoch)
