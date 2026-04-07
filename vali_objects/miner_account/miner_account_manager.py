@@ -187,6 +187,8 @@ class MinerAccount:
             'total_realized_pnl': self.total_realized_pnl,
             'capital_used': self.capital_used,
             'balance': self.balance,
+            'total_borrowed_amount': self.total_borrowed_amount,
+            'total_fees_paid': self.total_fees_paid,
             'buying_power': self.buying_power,
             'max_return': self.max_return
         }
