@@ -1309,7 +1309,7 @@ class PositionManager:
             for _, position in positions_dict.items():
                 if not position.trade_pair.is_equities:
                     continue
-                credit = position.refresh_pending_dividends(today_date_str)
+                credit = position.settle_pending_dividends(today_date_str)
                 if credit > 0:
                     hotkey_to_credit[hotkey] = hotkey_to_credit.get(hotkey, 0.0) + credit
                     self._write_position_to_disk(position)

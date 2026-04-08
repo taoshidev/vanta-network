@@ -1015,7 +1015,7 @@ class Position(BaseModel):
             self.record_fee_event("dividend_liability", amount, time_ms)
             return -amount
 
-    def refresh_pending_dividends(self, current_date_str: str) -> float:
+    def settle_pending_dividends(self, current_date_str: str) -> float:
         """Mark long_credit entries with matching payment_date as applied. Returns total USD credit."""
         total = 0.0
         for entry in self.dividend_history:
