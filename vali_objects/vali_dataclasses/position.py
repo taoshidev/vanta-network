@@ -976,6 +976,10 @@ class Position(BaseModel):
         if self.is_closed_position or not self.trade_pair.is_equities:
             return None
 
+        # Position must have been opened before the ex-dividend date to be eligible
+        if TimeUtil.millis_to_short_date_str(self.open_ms) >= ex_date_str:
+            return None
+
         # only one entry per ex_date per position
         if any(e.ex_date == ex_date_str for e in self.dividend_history):
             return None
@@ -984,7 +988,7 @@ class Position(BaseModel):
         if shares == 0:
             return None
 
-        amount = abs(shares) * gross_dividend
+        amount = abs(self.net_quantity) * gross_dividend
         if shares > 0:  # LONG: record pending credit to be released on payment_date
             self.dividend_history.append(DividendHistoryEntry(
                 type="long_credit",
@@ -1008,6 +1012,7 @@ class Position(BaseModel):
                 time_ms=time_ms,
                 applied=True,
             ))
+            self.record_fee_event("dividend_liability", amount, time_ms)
             return -amount
 
     def refresh_pending_dividends(self, current_date_str: str) -> float:
