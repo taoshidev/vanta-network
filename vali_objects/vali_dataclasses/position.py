@@ -1020,7 +1020,7 @@ class Position(BaseModel):
         total = 0.0
         for entry in self.dividend_history:
             if (entry.type == "long_credit"
-                    and entry.payment_date == current_date_str
+                    and entry.payment_date <= current_date_str
                     and not entry.applied):
                 entry.applied = True
                 total += entry.amount

@@ -86,7 +86,6 @@ class PositionManagerServer(RPCServerBase):
         bt.logging.success("PositionManager initialized")
 
         self._last_compact_time_s: float = 0.0  # Track last compact_price_sources run time
-        self._last_dividend_settle_time_s: float = 0.0  # Track last compact_price_sources run time
 
         # Initialize RPCServerBase (may start RPC server immediately if start_server=True)
         # At this point, self._manager exists, so RPC calls won't fail
@@ -131,12 +130,10 @@ class PositionManagerServer(RPCServerBase):
             except Exception as e:
                 bt.logging.error(f"Error in compaction daemon iteration: {traceback.format_exc()}")
 
-        if now - self._last_dividend_settle_time_s >= S_IN_24_HOURS:
-            try:
-                self._manager.settle_dividend_payments()
-                self._last_dividend_settle_time_s = (now // S_IN_24_HOURS) * S_IN_24_HOURS
-            except Exception as e:
-                bt.logging.error(f"Error settling dividend payments: {traceback.format_exc()}")
+        try:
+            self._manager.settle_dividend_payments()
+        except Exception as e:
+            bt.logging.error(f"Error settling dividend payments: {traceback.format_exc()}")
 
         try:
             self._manager.refresh_position_fees()

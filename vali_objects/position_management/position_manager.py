@@ -1305,7 +1305,7 @@ class PositionManager:
 
         today_date_str = TimeUtil.millis_to_short_date_str(time_ms)
         hotkey_to_credit = {}
-        for hotkey, positions_dict in self.hotkey_to_open_positions.items():
+        for hotkey, positions_dict in self.hotkey_to_positions.items():
             for _, position in positions_dict.items():
                 if not position.trade_pair.is_equities:
                     continue
@@ -1314,8 +1314,6 @@ class PositionManager:
                     hotkey_to_credit[hotkey] = hotkey_to_credit.get(hotkey, 0.0) + credit
                     self._write_position_to_disk(position)
 
-        # TODO: after rebase check recently-closed positions for pending long_credit entries
-        # (positions closed between ex-date and payment date are still entitled to the dividend)
         if hotkey_to_credit:
             self._miner_account_client.process_dividend_income(hotkey_to_credit)
             bt.logging.info(f"[DIVIDEND PAYMENTS] Released credits for {len(hotkey_to_credit)} miners on {today_date_str}")
