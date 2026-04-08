@@ -715,8 +715,7 @@ class ChallengePeriodManager(CacheController):
         self,
         inspection_hotkeys: dict[str, int],
         positions: dict[str, list[Position]],
-        ledger: dict[str, dict[str, PerfLedger]],
-        portfolio_only_ledgers: dict[str, PerfLedger],
+        ledger: dict[str, PerfLedger],
         success_hotkeys: list[str],
         probation_hotkeys: list[str],
         current_time: int,
@@ -760,7 +759,7 @@ class ChallengePeriodManager(CacheController):
 
             # Unified check: Minimum ledger
             has_minimum_ledger, inspection_ledger = self._check_minimum_ledger(
-                portfolio_only_ledgers, hotkey
+                ledger, hotkey
             )
             if not has_minimum_ledger:
                 continue
@@ -856,10 +855,9 @@ class ChallengePeriodManager(CacheController):
     def _inspect_hotkeys_unified(
         self,
         inspection_hotkeys: dict[str, int],
-        portfolio_only_ledgers: dict[str, PerfLedger],
         current_time: int,
         positions: dict[str, list[Position]],
-        ledger: dict[str, dict[str, PerfLedger]],
+        ledger: dict[str, PerfLedger],
         success_hotkeys: list[str],
         probation_hotkeys: list[str],
         hk_to_first_order_time: dict[str, int] | None = None,
@@ -902,7 +900,7 @@ class ChallengePeriodManager(CacheController):
         if synthetic_challenge_hotkeys:
             synthetic_promotions, synthetic_eliminations = self._evaluate_synthetic_challenge(
                 synthetic_challenge_hotkeys,
-                portfolio_only_ledgers,
+                ledger,
                 current_time
             )
             hotkeys_to_promote.extend(synthetic_promotions)
@@ -912,7 +910,7 @@ class ChallengePeriodManager(CacheController):
         if synthetic_funded_hotkeys:
             funded_eliminations = self._evaluate_subaccount_funded(
                 synthetic_funded_hotkeys,
-                portfolio_only_ledgers,
+                ledger,
                 current_time
             )
             miners_to_eliminate.update(funded_eliminations)
@@ -923,7 +921,6 @@ class ChallengePeriodManager(CacheController):
                 rank_based_hotkeys,
                 positions,
                 ledger,
-                portfolio_only_ledgers,
                 success_hotkeys,
                 probation_hotkeys,
                 current_time,
@@ -939,7 +936,7 @@ class ChallengePeriodManager(CacheController):
     def inspect(
         self,
         positions: dict[str, list[Position]],
-        ledger: dict[str, dict[str, PerfLedger]],
+        ledger: dict[str, PerfLedger],
         success_hotkeys: list[str],
         probation_hotkeys: list[str],
         inspection_hotkeys: dict[str, int],
@@ -976,13 +973,9 @@ class ChallengePeriodManager(CacheController):
         if not current_time:
             current_time = TimeUtil.now_in_millis()
 
-        # ledger is now dict[str, PerfLedger] — use directly as portfolio_only_ledgers
-        portfolio_only_ledgers = ledger
-
         # Use unified inspection logic
         hotkeys_to_promote, hotkeys_to_demote, miners_to_eliminate = self._inspect_hotkeys_unified(
             inspection_hotkeys=inspection_hotkeys,
-            portfolio_only_ledgers=portfolio_only_ledgers,
             current_time=current_time,
             positions=positions,
             ledger=ledger,

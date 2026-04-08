@@ -557,7 +557,7 @@ class MockScoring:
 
     @staticmethod
     def compute_results_checkpoint(
-        ledger_dict: Dict[str, Dict[str, PerfLedger]],
+        ledger_dict: Dict[str, PerfLedger],
         full_positions: Dict[str, List[Position]],
         evaluation_time_ms: int = None,
         **kwargs
