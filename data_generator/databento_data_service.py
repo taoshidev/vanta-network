@@ -1,6 +1,7 @@
 import threading
 import time
 from datetime import datetime, timedelta
+from typing import List
 from zoneinfo import ZoneInfo
 import bittensor as bt
 import databento as db
@@ -107,6 +108,7 @@ class DatabentoDataService(BaseDataService):
         )
         self._api_key = api_key
         self._ref_client = db.Reference(key=api_key)
+        self._hist_client = db.Historical(key=api_key)
         self._corporate_actions_cache: dict[str, CorporateActions] = {}
 
         # Start websocket manager thread (uses base class implementation)
@@ -252,6 +254,69 @@ class DatabentoDataService(BaseDataService):
             return value.strftime("%Y-%m-%d")
         # Already a string — take first 10 chars to strip any time component
         return str(value)[:10]
+
+    def get_closes_rest(self, trade_pairs: List[TradePair], time_ms: int, live: bool = False) -> dict[TradePair, PriceSource]:
+        """Historical daily closes from Databento (equities only). Returns empty if live=True."""
+        if live:
+            return {}
+
+        if self.running_unit_tests:
+            from data_generator.polygon_data_service import PolygonDataService
+            return {tp: PolygonDataService.DEFAULT_TESTING_FALLBACK_PRICE_SOURCE for tp in trade_pairs}
+
+        equity_pairs = [tp for tp in trade_pairs if tp.trade_pair_category == TradePairCategory.EQUITIES]
+        if not equity_pairs:
+            return {}
+
+        target_dt = datetime.fromtimestamp(time_ms / 1000, tz=ZoneInfo("UTC"))
+        start_dt = target_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+        end_dt = start_dt + timedelta(days=1)
+
+        tp_to_price: dict[TradePair, PriceSource] = {}
+        time_now_ms = int(time.time() * 1000)
+
+        for tp in equity_pairs:
+            try:
+                store = self._hist_client.timeseries.get_range(
+                    dataset="EQUS.MINI",
+                    schema="ohlcv-1d",
+                    symbols=[tp.trade_pair],
+                    start=start_dt,
+                    end=end_dt,
+                )
+                df = store.to_df(pretty_px=True)
+                if df.empty:
+                    bt.logging.warning(f"Databento: no ohlcv-1d data for {tp.trade_pair} on {start_dt.date()}")
+                    continue
+
+                row = df.iloc[-1]
+                close = float(row["close"])
+                open_ = float(row["open"])
+                high = float(row["high"])
+                low = float(row["low"])
+
+                # ts_event is the index as a pandas Timestamp (nanoseconds -> Timestamp by pandas)
+                ts_event = df.index[-1]
+                bar_start_ms = int(ts_event.timestamp() * 1000)
+
+                tp_to_price[tp] = PriceSource(
+                    source=f"{DATABENTO_PROVIDER_NAME}_rest",
+                    timespan_ms=86_400_000,
+                    open=open_,
+                    close=close,
+                    vwap=close,
+                    high=high,
+                    low=low,
+                    start_ms=bar_start_ms,
+                    websocket=False,
+                    lag_ms=time_now_ms - bar_start_ms,
+                    bid=0,
+                    ask=0,
+                )
+            except Exception as e:
+                bt.logging.error(f"Databento historical REST failed for {tp.trade_pair}: {e}")
+
+        return tp_to_price
 
     def get_corporate_actions(
         self,
