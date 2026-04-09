@@ -9,7 +9,6 @@ from vali_objects.vali_dataclasses.position import Position
 from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import (
-    TP_ID_PORTFOLIO,
     PerfCheckpoint,
     PerfLedger,
 )
@@ -131,7 +130,7 @@ def generate_ledger(
         )
 
     base_ledger = ledger_generator(checkpoints=checkpoint_list)
-    return {TP_ID_PORTFOLIO: base_ledger, TradePair.BTCUSD.trade_pair_id: base_ledger}
+    return base_ledger
 
 
 def ledger_generator(
@@ -175,23 +174,11 @@ def checkpoint_generator(
 
 def generate_winning_ledger(start, end):
     # Designed with challenge period in mind
-    btc_ledger = generate_ledger(start_time=start, end_time=end, gain=0.1, loss=-0.08, mdd=0.99)
-    portfolio_ledger = generate_ledger(start_time=start, end_time=end, gain=0.1, loss=-0.08, mdd=0.99)
-
-    return {
-            TP_ID_PORTFOLIO: portfolio_ledger[TP_ID_PORTFOLIO],
-            TradePair.BTCUSD.trade_pair_id: btc_ledger[TP_ID_PORTFOLIO]
-            }
+    return generate_ledger(start_time=start, end_time=end, gain=0.1, loss=-0.08, mdd=0.99)
 
 def generate_losing_ledger(start, end):
     # Designed with challenge period in mind
-    btc_ledger = generate_ledger(start_time=start, end_time=end, gain=0.1, loss=-0.2, mdd=(1 - (ValiConfig.DRAWDOWN_MAXVALUE_PERCENTAGE / 100)) - 0.01)
-    portfolio_ledger = generate_ledger(start_time=start, end_time=end, gain=0.1, loss=-0.2, mdd=(1 - (ValiConfig.DRAWDOWN_MAXVALUE_PERCENTAGE / 100)) - 0.01)
-
-    return {
-        TP_ID_PORTFOLIO: portfolio_ledger[TP_ID_PORTFOLIO],
-        TradePair.BTCUSD.trade_pair_id: btc_ledger[TP_ID_PORTFOLIO]
-    }
+    return generate_ledger(start_time=start, end_time=end, gain=0.1, loss=-0.2, mdd=(1 - (ValiConfig.DRAWDOWN_MAXVALUE_PERCENTAGE / 100)) - 0.01)
 
 def create_daily_checkpoints_with_pnl(realized_pnl_values: list[float], unrealized_pnl_values: list[float]) -> PerfLedger:
         """Helper method to create checkpoints for complete days with specific PnL values"""

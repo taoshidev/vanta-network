@@ -363,7 +363,6 @@ if __name__ == "__main__":
         position_manager=position_manager,
         running_unit_tests=False,
         enable_rss=False,
-        build_portfolio_ledgers_only=True
     )
 
     # Build performance ledgers

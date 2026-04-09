@@ -305,33 +305,111 @@ e.x:
 
 Everything required for a validator to restore it's state when starting for the first time. This includes all miner positions as well as derived data such as perf ledgers, challenge period data, and eliminations.
 
+Perf ledgers are portfolio-level only (no per-trade-pair ledgers). Each hotkey maps directly to a single `PerfLedger` object.
+
 Perf Ledger schema
 ```json
 "perf_ledgers": {
     "5C5GANtAKokcPvJBGyLcFgY5fYuQaXC3MpVt75codZbLLZrZ": {
+      "initialization_time_ms": 1714140000000,
+      "max_return": 1.0423,
+      "target_cp_duration_ms": 21600000,
+      "target_ledger_window_ms": 15552000000,
+      "last_known_prices": {
+        "BTCUSD": [67000.0, 1714182650595]
+      },
       "cps": [
         {
-          "accum_ms": 21600000,
-          "gain": 0.12586433994869853,
           "last_update_ms": 1714161050595,
-          "loss": -0.12587360888356938,
-          "n_updates": 17213,
-          "open_ms": 21599768,
-          "prev_portfolio_ret": 0.9999907311080851
-        },
-        {
+          "prev_portfolio_ret": 0.9999907311080851,
+          "prev_portfolio_realized_pnl": -12.34,
+          "prev_portfolio_unrealized_pnl": 5.67,
           "accum_ms": 21600000,
-          "gain": 0.017040557887505504,
-          "last_update_ms": 1714182650595,
-          "loss": -0.016984326534111933,
-          "n_updates": 2219,
           "open_ms": 21599768,
-          "prev_portfolio_ret": 1.0000469635212756
-        },
-        {
-...
+          "n_updates": 17213,
+          "gain": 0.12586433994869853,
+          "loss": -0.12587360888356938,
+          "mdd": 0.9998,
+          "mpv": 1.0001,
+          "realized_pnl": -12.34,
+          "unrealized_pnl": 5.67,
+          "equity_ret": 0.9999,
+          "cumulative_fees_usd": 8.21
+        }
+      ]
+    }
+}
 ```
+
+**PerfCheckpoint fields:**
+| Field | Type | Description |
+|-------|------|-------------|
+| `last_update_ms` | int | Timestamp of the last price update in this checkpoint |
+| `prev_portfolio_ret` | float | Portfolio return multiplier at checkpoint end (1.0 = break-even) |
+| `prev_portfolio_realized_pnl` | float | Cumulative realized PnL in USD up to this checkpoint |
+| `prev_portfolio_unrealized_pnl` | float | Unrealized PnL snapshot in USD at checkpoint end |
+| `accum_ms` | int | Total accumulated time covered by this checkpoint (ms) |
+| `open_ms` | int | Time with at least one open position during checkpoint (ms) |
+| `n_updates` | int | Number of price ticks processed in this checkpoint |
+| `gain` | float | Sum of positive return contributions |
+| `loss` | float | Sum of negative return contributions |
+| `mdd` | float | Maximum drawdown ratio within this checkpoint (1.0 = no drawdown) |
+| `mpv` | float | Maximum portfolio value achieved in this checkpoint |
+| `realized_pnl` | float | Realized PnL in USD during this checkpoint period only (not cumulative) |
+| `unrealized_pnl` | float | Unrealized PnL snapshot in USD at end of checkpoint |
+| `equity_ret` | float | `(account_size + cumulative_realized_pnl - cumulative_fees_usd + unrealized_pnl) / account_size` |
+| `cumulative_fees_usd` | float | Running total of all fees paid up to and including this checkpoint |
+
 Perf ledgers are built based off realtime price data and are consumed in the scoring logic. More info in the Vanta repo.
+
+### Perf Ledger (Single Miner)
+
+`GET /perf-ledger/<minerid>`
+
+Returns the portfolio-level performance ledger for a single miner. Requires a valid API key.
+
+**Parameters:**
+- `minerid`: The miner's hotkey (SS58 address)
+
+**Response:**
+```json
+{
+  "<hotkey>": {
+    "initialization_time_ms": 1714140000000,
+    "max_return": 1.0423,
+    "target_cp_duration_ms": 21600000,
+    "target_ledger_window_ms": 15552000000,
+    "last_known_prices": {
+      "BTCUSD": [67000.0, 1714182650595]
+    },
+    "cps": [
+      {
+        "last_update_ms": 1714161050595,
+        "prev_portfolio_ret": 0.9999907311080851,
+        "prev_portfolio_realized_pnl": -12.34,
+        "prev_portfolio_unrealized_pnl": 5.67,
+        "accum_ms": 21600000,
+        "open_ms": 21599768,
+        "n_updates": 17213,
+        "gain": 0.12586433994869853,
+        "loss": -0.12587360888356938,
+        "mdd": 0.9998,
+        "mpv": 1.0001,
+        "realized_pnl": -12.34,
+        "unrealized_pnl": 5.67,
+        "equity_ret": 0.9999,
+        "cumulative_fees_usd": 8.21
+      }
+    ]
+  }
+}
+```
+
+**Error responses:**
+- `404` — miner not found or no ledger data available
+- `503` — perf ledger service not available
+
+> **Breaking change from V2 bundle format:** Previously the response was nested as `{ hotkey: { "portfolio": { "cps": [...] }, "BTCUSD": { "cps": [...] }, ... } }`. The ledger is now portfolio-only and returned flat as `{ hotkey: { "cps": [...], ... } }`.
 
 
 ## Collateral Management
@@ -1433,7 +1511,7 @@ curl -H "Authorization: Bearer YOUR_TIER_200_API_KEY" \
       "subaccount_challenge_intraday_drawdown_threshold": 0.05,
       "subaccount_challenge_eod_drawdown_threshold": 0.05
     },
-    // eliminination is only included if the subaccount is eliminated
+    // elimination is only included if the subaccount is eliminated
     "elimination": {
       "elimination_initiated_time_ms": 1771893304364,
       "reason": "FAILED_CHALLENGE_PERIOD_DRAWDOWN",

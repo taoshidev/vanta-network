@@ -35,7 +35,6 @@ from dataclasses import dataclass
 from enum import Enum
 
 from time_util.time_util import TimeUtil
-from vali_objects.utils.asset_segmentation import AssetSegmentation
 from vali_objects.vali_config import ValiConfig, TradePair, RPCConnectionMode
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils, CustomEncoder
 from vali_objects.position_management.position_utils import PositionUtils
@@ -43,7 +42,7 @@ from vali_objects.position_management.position_utils.position_penalties import P
 from vali_objects.vali_dataclasses.ledger.ledger_utils import LedgerUtils
 from vali_objects.scoring.scoring import Scoring
 from vali_objects.utils.metrics import Metrics
-from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import TP_ID_PORTFOLIO, PerfLedger
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger
 from vali_objects.utils.risk_profiling import RiskProfiling
 from vali_objects.vali_dataclasses.position import Position
 
@@ -148,7 +147,7 @@ class MetricsCalculator:
         scores = {}
         for hotkey, miner_data in data.items():
             log_returns = miner_data.get("log_returns", [])
-            ledger = miner_data.get("ledger", {}).get(TP_ID_PORTFOLIO)
+            ledger = miner_data.get("ledger")
             value = metric.metric_func(
                 log_returns=log_returns,
                 ledger=ledger,
@@ -330,10 +329,10 @@ class MinerStatisticsManager:
         """
         Combines the minimal fields needed for the metrics plus the extra data.
         """
-        miner_ledger: Dict = filtered_ledger.get(hotkey, {})
+        miner_ledger = filtered_ledger.get(hotkey)
         if not miner_ledger:
             return {}
-        overall_miner_ledger = miner_ledger.get(TP_ID_PORTFOLIO)
+        overall_miner_ledger = miner_ledger
         cumulative_miner_returns_ledger: PerfLedger = LedgerUtils.cumulative(overall_miner_ledger)
         miner_daily_returns: list[float] = LedgerUtils.daily_return_log(overall_miner_ledger)
         miner_positions: list[Position] = filtered_positions.get(hotkey, [])
@@ -363,7 +362,7 @@ class MinerStatisticsManager:
         """
         results = {}
         for hotkey, data in miner_data.items():
-            ledger = data.get("ledger", {}).get(TP_ID_PORTFOLIO)
+            ledger = data.get("ledger")
             positions = data.get("positions", [])
 
             # For functions that still require checkpoints directly
@@ -457,7 +456,7 @@ class MinerStatisticsManager:
 
     # ==================== Daily Returns ====================
 
-    def calculate_all_daily_returns(self, filtered_ledger: dict[str, dict[str, PerfLedger]], return_type: str) -> dict[str, list[float]]:
+    def calculate_all_daily_returns(self, filtered_ledger: dict[str, PerfLedger], return_type: str) -> dict[str, list[float]]:
         """Calculate daily returns for all miners.
 
         Args:
@@ -468,8 +467,8 @@ class MinerStatisticsManager:
             Dictionary mapping hotkeys to daily returns
         """
         return {
-            hotkey: LedgerUtils.daily_returns_by_date_json(ledgers.get(TP_ID_PORTFOLIO), return_type=return_type)
-            for hotkey, ledgers in filtered_ledger.items()
+            hotkey: LedgerUtils.daily_returns_by_date_json(ledger, return_type=return_type)
+            for hotkey, ledger in filtered_ledger.items()
         }
 
     # ==================== Risk Profile ====================
@@ -570,13 +569,12 @@ class MinerStatisticsManager:
 
     # ==================== Raw PnL Calculation ====================
 
-    def calculate_pnl_info(self, filtered_ledger: Dict[str, Dict[str, PerfLedger]]) -> Dict[str, Dict[str, float]]:
+    def calculate_pnl_info(self, filtered_ledger: Dict[str, PerfLedger]) -> Dict[str, Dict[str, float]]:
         """Calculate raw PnL values, rankings and percentiles for all miners."""
 
         raw_pnl_values = []
         # Calculate raw PnL for each miner
-        for hotkey, ledgers in filtered_ledger.items():
-            portfolio_ledger = ledgers.get(TP_ID_PORTFOLIO)
+        for hotkey, portfolio_ledger in filtered_ledger.items():
             if portfolio_ledger:
                 raw_pnl = LedgerUtils.raw_pnl(portfolio_ledger)
                 raw_pnl_values.append((hotkey, raw_pnl))
@@ -718,7 +716,7 @@ class MinerStatisticsManager:
         filtered_positions, _ = self.position_manager.filtered_positions_for_scoring(all_miner_hotkeys)
 
         maincomp_ledger = self._perf_ledger_client.filtered_ledger_for_scoring(hotkeys=[*challengeperiod_success_hotkeys, *challengeperiod_probation_hotkeys])  # ledger of all miners in maincomp, including probation
-        asset_classes = list(AssetSegmentation.distill_asset_classes(ValiConfig.ASSET_CLASS_BREAKDOWN))
+        asset_classes = list(ValiConfig.ASSET_CLASS_BREAKDOWN.keys())
         asset_class_min_days = LedgerUtils.calculate_dynamic_minimum_days_for_asset_classes(
             maincomp_ledger, asset_classes
         )

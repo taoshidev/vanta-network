@@ -299,7 +299,7 @@ class CoreOutputsManager:
         upload_to_gcloud=True
     ):
         """Create and optionally upload production files."""
-        perf_ledgers = self._perf_ledger_client.get_perf_ledgers(portfolio_only=False)
+        perf_ledgers = self._perf_ledger_client.get_perf_ledgers()
 
         # Get asset selections via RPC client (forward compatibility)
         asset_selections = {}

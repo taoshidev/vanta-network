@@ -159,7 +159,6 @@ class TestEntityDashboardIntegration(TestBase):
         6. Account size data
         """
         from tests.shared_objects.test_utilities import create_daily_checkpoints_with_pnl
-        from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import TP_ID_PORTFOLIO
         from vali_objects.vali_config import TradePairCategory
         import numpy as np
 
@@ -182,10 +181,7 @@ class TestEntityDashboardIntegration(TestBase):
         btc_ledger = create_daily_checkpoints_with_pnl(realized_pnl_list, unrealized_pnl_list)
 
         ledgers = {
-            hotkey: {
-                TP_ID_PORTFOLIO: portfolio_ledger,
-                TradePair.BTCUSD.trade_pair_id: btc_ledger
-            }
+            hotkey: portfolio_ledger
         }
 
         # Get perf ledger client and save ledgers

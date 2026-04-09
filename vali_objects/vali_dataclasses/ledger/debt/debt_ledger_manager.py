@@ -13,6 +13,7 @@ from time_util.time_util import TimeUtil
 from vali_objects.utils.vali_bkp_utils import CustomEncoder
 from vali_objects.vali_config import RPCConnectionMode
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger import DebtLedger, DebtCheckpoint
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from entity_management import entity_utils
 
@@ -218,7 +219,6 @@ class DebtLedgerManager():
             'latest_checkpoint_ms': latest.timestamp_ms,
             'realized_pnl': latest.realized_pnl,
             'unrealized_pnl': latest.unrealized_pnl,
-            'total_fees': latest.total_fees,
         }
 
     def get_all_summaries(self) -> Dict[str, dict]:
@@ -433,8 +433,6 @@ class DebtLedgerManager():
             verbose: Enable detailed logging
             delta_update: If True, only process new checkpoints since last update. If False, rebuild from scratch.
         """
-        from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import TP_ID_PORTFOLIO
-
         # Build into candidate dict to prevent race conditions (don't clear existing ledgers yet)
         if delta_update:
             # Delta update: start with copies of existing ledgers
@@ -448,9 +446,7 @@ class DebtLedgerManager():
             bt.logging.info("Full rebuild mode: building new debt ledgers from scratch")
 
         # Read all perf ledgers from perf ledger client
-        all_perf_ledgers: Dict[str, Dict[str, any]] = self._perf_ledger_client.get_perf_ledgers(
-            portfolio_only=False
-        )
+        all_perf_ledgers: Dict[str, PerfLedger] = self._perf_ledger_client.get_perf_ledgers()
 
         if not all_perf_ledgers:
             bt.logging.warning("No performance ledgers found")
@@ -461,8 +457,7 @@ class DebtLedgerManager():
         reference_hotkey = None
         max_checkpoints = 0
 
-        for hotkey, ledger_dict in all_perf_ledgers.items():
-            portfolio_ledger = ledger_dict.get(TP_ID_PORTFOLIO)
+        for hotkey, portfolio_ledger in all_perf_ledgers.items():
             if portfolio_ledger and portfolio_ledger.cps:
                 if len(portfolio_ledger.cps) > max_checkpoints:
                     max_checkpoints = len(portfolio_ledger.cps)
@@ -576,12 +571,8 @@ class DebtLedgerManager():
 
             # Process ALL hotkeys at this timestamp
             for hotkey in all_hotkeys_to_track:
-                # Get ledgers for this hotkey
-                ledger_dict = all_perf_ledgers.get(hotkey)
-                if not ledger_dict:
-                    continue
-
-                portfolio_ledger = ledger_dict.get(TP_ID_PORTFOLIO)
+                # Get ledger for this hotkey
+                portfolio_ledger = all_perf_ledgers.get(hotkey)
                 if not portfolio_ledger or not portfolio_ledger.cps:
                     continue
 
@@ -701,8 +692,7 @@ class DebtLedgerManager():
                     portfolio_return=miner_perf_checkpoint.gain,  # Current portfolio multiplier
                     realized_pnl=miner_perf_checkpoint.realized_pnl,  # Realized PnL during this checkpoint period
                     unrealized_pnl=miner_perf_checkpoint.unrealized_pnl,  # Unrealized PnL during this checkpoint period
-                    spread_fee_loss=miner_perf_checkpoint.spread_fee_loss,  # Spread fees during this checkpoint
-                    carry_fee_loss=miner_perf_checkpoint.carry_fee_loss,  # Carry fees during this checkpoint
+                    cumulative_fees_usd=miner_perf_checkpoint.cumulative_fees_usd,  # Unrealized PnL during this checkpoint period
                     max_drawdown=miner_perf_checkpoint.mdd,  # Max drawdown
                     max_portfolio_value=miner_perf_checkpoint.mpv,  # Max portfolio value achieved
                     open_ms=miner_perf_checkpoint.open_ms,
@@ -856,9 +846,11 @@ class DebtLedgerManager():
                             checkpoints_at_time.append(checkpoint)
 
                             subaccount_cum_realized[synthetic_hotkey] += checkpoint.realized_pnl
-                            if subaccount_cum_realized[synthetic_hotkey] > subaccount_hwm[synthetic_hotkey]:
-                                delta = subaccount_cum_realized[synthetic_hotkey] - subaccount_hwm[synthetic_hotkey]
-                                subaccount_hwm[synthetic_hotkey] = subaccount_cum_realized[synthetic_hotkey]
+
+                            net_realized = subaccount_cum_realized[synthetic_hotkey] - checkpoint.cumulative_fees_usd
+                            if net_realized > subaccount_hwm[synthetic_hotkey]:
+                                delta = net_realized - subaccount_hwm[synthetic_hotkey]
+                                subaccount_hwm[synthetic_hotkey] = net_realized
 
                                 agg_realized_pnl += delta
 
@@ -879,8 +871,7 @@ class DebtLedgerManager():
                     tao_balance = getattr(entity_emissions_cp, "tao_balance_snapshot", 0.0)
                     alpha_balance = getattr(entity_emissions_cp, "alpha_balance_snapshot", 0.0)
                     agg_unrealized_pnl = 0.0    # ignore unrealized pnl
-                    agg_spread_fee = sum(cp.spread_fee_loss for cp in checkpoints_at_time)
-                    agg_carry_fee = sum(cp.carry_fee_loss for cp in checkpoints_at_time)
+                    agg_cumulative_fees_usd = 0.0    # ignore fees - included in agg realized pnl
                     agg_max_portfolio_value = sum(cp.max_portfolio_value for cp in checkpoints_at_time)
                     agg_open_ms = sum(cp.open_ms for cp in checkpoints_at_time)
                     agg_n_updates = sum(cp.n_updates for cp in checkpoints_at_time)
@@ -921,8 +912,7 @@ class DebtLedgerManager():
                         portfolio_return=agg_portfolio_return,
                         realized_pnl=agg_realized_pnl,
                         unrealized_pnl=agg_unrealized_pnl,
-                        spread_fee_loss=agg_spread_fee,
-                        carry_fee_loss=agg_carry_fee,
+                        cumulative_fees_usd=agg_cumulative_fees_usd,
                         max_drawdown=agg_max_drawdown,
                         max_portfolio_value=agg_max_portfolio_value,
                         open_ms=agg_open_ms,

@@ -122,6 +122,9 @@ class WeightCalculatorManager(CacheController):
         self._external_slack_notifier = slack_notifier
         self._slack_notifier = None
 
+        # Verbose logging cooldown
+        self._last_verbose_ms: int = 0
+
         # Store results for external access
         self.checkpoint_results: List[Tuple[str, float]] = []
         self.transformed_list: List[Tuple[int, float]] = []
@@ -308,13 +311,16 @@ class WeightCalculatorManager(CacheController):
             return [], []
 
         # Use debt-based scoring with shared metagraph
+        verbose = current_time - self._last_verbose_ms >= 30 * 60 * 1000
+        if verbose:
+            self._last_verbose_ms = current_time
         checkpoint_results = DebtBasedScoring.compute_results(
             ledger_dict=filtered_debt_ledgers,
             metagraph_client=self._metagraph_client,
             challengeperiod_client=self._challengeperiod_client,
             miner_account_client=self._miner_account_client,
             current_time_ms=current_time,
-            verbose=True,
+            verbose=verbose,
             is_testnet=not self.is_mainnet,
             eligible_hotkeys=hotkeys_to_compute_weights_for
         )

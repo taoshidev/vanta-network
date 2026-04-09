@@ -123,7 +123,6 @@ class TestMinerStatistics(TestBase):
         # Build ledgers dictionary with VARIED performance data
         # Each miner needs different performance to get non-zero scores from metrics
         from tests.shared_objects.test_utilities import create_daily_checkpoints_with_pnl
-        from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import TP_ID_PORTFOLIO
         import numpy as np
 
         ledgers = {}
@@ -148,12 +147,8 @@ class TestMinerStatistics(TestBase):
 
             # Create ledger with varied daily checkpoints
             portfolio_ledger = create_daily_checkpoints_with_pnl(realized_pnl_list, unrealized_pnl_list)
-            btc_ledger = create_daily_checkpoints_with_pnl(realized_pnl_list, unrealized_pnl_list)
 
-            ledgers[hotkey] = {
-                TP_ID_PORTFOLIO: portfolio_ledger,
-                TradePair.BTCUSD.trade_pair_id: btc_ledger
-            }
+            ledgers[hotkey] = portfolio_ledger
 
             # Create a simple test position for this hotkey
             # NOTE: Positions MUST be closed for scoring (filter_positions_for_duration skips open positions)
@@ -184,11 +179,10 @@ class TestMinerStatistics(TestBase):
 
         # Verify ledgers were saved and can be retrieved for scoring
         filtered_ledgers = self.perf_ledger_client.filtered_ledger_for_scoring(hotkeys=self.test_hotkeys)
-        from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import TP_ID_PORTFOLIO
         from vali_objects.vali_dataclasses.ledger.ledger_utils import LedgerUtils
         for hotkey in self.test_hotkeys:
-            if hotkey in filtered_ledgers and TP_ID_PORTFOLIO in filtered_ledgers[hotkey]:
-                ledger = filtered_ledgers[hotkey][TP_ID_PORTFOLIO]
+            if hotkey in filtered_ledgers and filtered_ledgers[hotkey] is not None:
+                ledger = filtered_ledgers[hotkey]
                 daily_returns = LedgerUtils.daily_return_log(ledger)
                 assert len(daily_returns) >= 60, f"{hotkey} has only {len(daily_returns)} daily returns (need 60+)"
             else:
@@ -422,7 +416,6 @@ class TestMinerStatistics(TestBase):
 
         # Create varied ledgers for each miner
         from tests.shared_objects.test_utilities import create_daily_checkpoints_with_pnl
-        from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import TP_ID_PORTFOLIO
         import numpy as np
 
         ledgers = {}
@@ -433,10 +426,7 @@ class TestMinerStatistics(TestBase):
             unrealized_pnl = [0.0] * 60
 
             ledger = create_daily_checkpoints_with_pnl(realized_pnl, unrealized_pnl)
-            ledgers[hotkey] = {
-                TP_ID_PORTFOLIO: ledger,
-                TradePair.BTCUSD.trade_pair_id: ledger
-            }
+            ledgers[hotkey] = ledger
 
             # Create closed position
             test_position = Position(
@@ -530,7 +520,6 @@ class TestMinerStatistics(TestBase):
 
         # Create ledgers with different performance to ensure both appear in results
         from tests.shared_objects.test_utilities import create_daily_checkpoints_with_pnl
-        from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import TP_ID_PORTFOLIO
         import numpy as np
 
         ledgers = {}
@@ -541,10 +530,7 @@ class TestMinerStatistics(TestBase):
             unrealized_pnl = [0.0] * 60
 
             ledger = create_daily_checkpoints_with_pnl(realized_pnl, unrealized_pnl)
-            ledgers[hotkey] = {
-                TP_ID_PORTFOLIO: ledger,
-                TradePair.BTCUSD.trade_pair_id: ledger
-            }
+            ledgers[hotkey] = ledger
 
             test_position = Position(
                 miner_hotkey=hotkey,
@@ -641,7 +627,6 @@ class TestMinerStatistics(TestBase):
 
         # Create ledgers with different volatility/drawdown patterns
         from tests.shared_objects.test_utilities import create_daily_checkpoints_with_pnl
-        from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import TP_ID_PORTFOLIO
         import numpy as np
 
         ledgers = {}
@@ -668,14 +653,8 @@ class TestMinerStatistics(TestBase):
 
         volatile_ledger = create_daily_checkpoints_with_pnl(volatile_pnl, [0.0] * 60)
 
-        ledgers[safe_miner] = {
-            TP_ID_PORTFOLIO: safe_ledger,
-            TradePair.BTCUSD.trade_pair_id: safe_ledger
-        }
-        ledgers[volatile_miner] = {
-            TP_ID_PORTFOLIO: volatile_ledger,
-            TradePair.BTCUSD.trade_pair_id: volatile_ledger
-        }
+        ledgers[safe_miner] = safe_ledger
+        ledgers[volatile_miner] = volatile_ledger
 
         for hotkey in miners:
             test_position = Position(
@@ -757,7 +736,6 @@ class TestMinerStatistics(TestBase):
 
         # Create varied performance
         from tests.shared_objects.test_utilities import create_daily_checkpoints_with_pnl
-        from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import TP_ID_PORTFOLIO
         import numpy as np
 
         ledgers = {}
@@ -774,10 +752,7 @@ class TestMinerStatistics(TestBase):
             unrealized_pnl = [0.0] * 60
 
             ledger = create_daily_checkpoints_with_pnl(realized_pnl, unrealized_pnl)
-            ledgers[hotkey] = {
-                TP_ID_PORTFOLIO: ledger,
-                TradePair.BTCUSD.trade_pair_id: ledger
-            }
+            ledgers[hotkey] = ledger
 
             test_position = Position(
                 miner_hotkey=hotkey,
@@ -853,7 +828,6 @@ class TestMinerStatistics(TestBase):
         self.asset_selection_client.sync_miner_asset_selection_data({solo_miner: TradePairCategory.CRYPTO.value})
 
         from tests.shared_objects.test_utilities import create_daily_checkpoints_with_pnl
-        from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import TP_ID_PORTFOLIO
         import numpy as np
 
         np.random.seed(123)
@@ -862,10 +836,7 @@ class TestMinerStatistics(TestBase):
 
         ledger = create_daily_checkpoints_with_pnl(realized_pnl, unrealized_pnl)
         ledgers = {
-            solo_miner: {
-                TP_ID_PORTFOLIO: ledger,
-                TradePair.BTCUSD.trade_pair_id: ledger
-            }
+            solo_miner: ledger
         }
 
         test_position = Position(

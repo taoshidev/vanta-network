@@ -1059,10 +1059,8 @@ class EmissionsLedgerManager:
         if self.rate_limit_per_second < 10:
             bt.logging.warning(f"Emissions ledger network rate limit set to {self.rate_limit_per_second} req/sec - queries will be slow")
 
-        # Get all perf ledgers (portfolio only) to use as checkpoint reference
-        all_perf_ledgers: dict[str, 'PerfLedger'] = self._perf_ledger_client.get_perf_ledgers(
-            portfolio_only=True
-        )
+        # Get all perf ledgers to use as checkpoint reference
+        all_perf_ledgers: dict[str, 'PerfLedger'] = self._perf_ledger_client.get_perf_ledgers()
 
         if not all_perf_ledgers:
             raise ValueError("No performance ledgers found - cannot build emissions without perf ledger alignment")
@@ -1074,7 +1072,7 @@ class EmissionsLedgerManager:
         max_checkpoints = 0
 
         for hotkey, ledger in all_perf_ledgers.items():
-            portfolio_ledger = ledger  # Already a PerfLedger when portfolio_only=True
+            portfolio_ledger = ledger
 
             if portfolio_ledger and portfolio_ledger.cps:
                 if len(portfolio_ledger.cps) > max_checkpoints:
@@ -1458,7 +1456,7 @@ class EmissionsLedgerManager:
                                          avg_alpha_to_tao_rate, avg_tao_to_usd_rate, num_blocks)
         """
         # Get hotkeys from perf ledgers to generate mock emissions
-        all_perf_ledgers = self._perf_ledger_client.get_perf_ledgers(portfolio_only=False)
+        all_perf_ledgers = self._perf_ledger_client.get_perf_ledgers()
 
         if not all_perf_ledgers:
             return {}

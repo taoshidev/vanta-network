@@ -7,7 +7,7 @@ from typing import Union
 #from vali_objects.utils.contract_manager import CollateralRecord
 from vali_objects.vali_config import ValiConfig
 from vali_objects.vali_dataclasses.ledger.ledger_utils import LedgerUtils
-from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger, TP_ID_PORTFOLIO
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger
 
 class Metrics:
 
@@ -402,10 +402,7 @@ class Metrics:
             return []
 
         for miner, weight in miner_scores:
-            if isinstance(ledgers.get(miner), dict):
-                miner_ledger = ledgers.get(miner).get(TP_ID_PORTFOLIO)
-            else:
-                miner_ledger = ledgers.get(miner)
+            miner_ledger = ledgers.get(miner)
             miner_trading_days = LedgerUtils.get_trading_days(miner_ledger)
             time_weighted_scores.append((miner, weight * math.sqrt(miner_trading_days / LEDGER_WINDOW_DAYS)))
 

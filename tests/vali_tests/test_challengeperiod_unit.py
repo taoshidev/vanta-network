@@ -20,7 +20,6 @@ from vali_objects.enums.miner_bucket_enum import BucketEntry, MinerBucket
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.vali_dataclasses.order import Order
-from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import TP_ID_PORTFOLIO
 import vali_objects.vali_config as vali_file
 
 
@@ -265,15 +264,15 @@ class TestChallengePeriodUnit(TestBase):
             base_positions[i].return_at_close = 1.1
 
         # Drawdown is high - 50% drawdown on the first period
-        base_ledger[TP_ID_PORTFOLIO].cps[0].mdd = 0.5
+        base_ledger.cps[0].mdd = 0.5
 
         # Drawdown criteria
-        max_drawdown = LedgerUtils.instantaneous_max_drawdown(base_ledger[TP_ID_PORTFOLIO])
+        max_drawdown = LedgerUtils.instantaneous_max_drawdown(base_ledger)
         max_drawdown_percentage = LedgerUtils.drawdown_percentage(max_drawdown)
         self.assertGreater(max_drawdown_percentage, ValiConfig.DRAWDOWN_MAXVALUE_PERCENTAGE)
 
         # Check that the miner is successfully screened as failing
-        screening_logic, _ = LedgerUtils.is_beyond_max_drawdown(ledger_element=base_ledger[TP_ID_PORTFOLIO])
+        screening_logic, _ = LedgerUtils.is_beyond_max_drawdown(ledger_element=base_ledger)
         self.assertTrue(screening_logic)
 
     # ------ Time Constrained Tests (Inspect) ------
@@ -450,7 +449,7 @@ class TestChallengePeriodUnit(TestBase):
         base_ledger = deepcopy(self.DEFAULT_LEDGER)
 
         base_position = deepcopy(self.DEFAULT_POSITION)
-        base_position.orders[0].processed_ms = base_ledger[TP_ID_PORTFOLIO].start_time_ms + 1
+        base_position.orders[0].processed_ms = base_ledger.start_time_ms + 1
 
         inspection_positions, hk_to_first_order_time = self.save_and_get_positions([base_position], ["miner"])
         inspection_ledger = {"miner": base_ledger}
@@ -606,7 +605,7 @@ class TestChallengePeriodUnit(TestBase):
 
         base_ledger = deepcopy(self.DEFAULT_LEDGER)
 
-        base_ledger_portfolio = base_ledger[TP_ID_PORTFOLIO]
+        base_ledger_portfolio = base_ledger
         base_positions = deepcopy(self.DEFAULT_POSITIONS)
 
         # Return True if there are enough trading days
@@ -654,7 +653,7 @@ class TestChallengePeriodUnit(TestBase):
         self._populate_active_miners(maincomp=self.SUCCESS_MINER_NAMES, challenge=["miner"])
 
         base_ledger = deepcopy(self.DEFAULT_LEDGER)
-        base_ledger_portfolio = base_ledger[TP_ID_PORTFOLIO]
+        base_ledger_portfolio = base_ledger
 
         base_positions = deepcopy(self.DEFAULT_POSITIONS)
 

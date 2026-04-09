@@ -6,10 +6,8 @@ from typing import Optional
 import numpy as np
 import copy
 from datetime import datetime, timezone, timedelta, date
-from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import TP_ID_PORTFOLIO
-from vali_objects.vali_config import ValiConfig, TradePair
+from vali_objects.vali_config import ValiConfig
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger
-from vali_objects.utils.asset_segmentation import AssetSegmentation
 from time_util.time_util import ForexHolidayCalendar
 import bittensor as bt
 
@@ -175,7 +173,7 @@ class LedgerUtils:
             full_cell = cp.accum_ms == ValiConfig.TARGET_CHECKPOINT_DURATION_MS
 
             running_date = datetime.fromtimestamp(start_time / 1000, tz=timezone.utc).date()
-            if not LedgerUtils.is_valid_trading_day(ledger, running_date):
+            if not LedgerUtils.is_valid_trading_day(ledger, running_date, is_portfolio=True):
                 continue
             if full_cell:
                 if running_date not in daily_groups:
@@ -262,7 +260,7 @@ class LedgerUtils:
         return list(date_pnl_map.values())
 
     @staticmethod
-    def is_valid_trading_day(ledger: PerfLedger, testing_date: date) -> bool:
+    def is_valid_trading_day(ledger: PerfLedger, testing_date: date, is_portfolio: bool = False) -> bool:
         """
         Verifies if a particular forex day has polygon data at the start and end of a day.
         If the fx market is closed for an entire day (Saturdays with UTC), we don't
@@ -271,29 +269,20 @@ class LedgerUtils:
         Args:
             ledger: PerfLedger - the ledger of the miner
             testing_date: datetime - the date at which to check for valid forex days
+            is_portfolio: bool - if True, the ledger is a portfolio ledger (always valid)
         Returns:
             bool - True if a valid forex day is found, False otherwise
         """
         if ledger is None:
             bt.logging.info("ledger is None, returning False")
             return False
-        
+
         if testing_date is None or not isinstance(testing_date, date):
             bt.logging.info(f"testing_date is invalid, returning False: {testing_date}")
             return False
-        
-        asset_id = ledger.tp_id
-        # TODO We may need to revisit this if portfolio ledgers become asset specific
-        if asset_id == TP_ID_PORTFOLIO:
-            return True
 
-        trade_pair = TradePair.from_trade_pair_id(asset_id)
-        if trade_pair is None:
-            bt.logging.info(f"trade_pair not found for asset_id: {asset_id}, returning False")
-            return False
-            
-        if trade_pair.is_forex and LedgerUtils.forex_holiday_calendar.is_forex_market_closed_full_day(testing_date):
-            return False
+        if is_portfolio:
+            return True
 
         return True
 
@@ -603,7 +592,7 @@ class LedgerUtils:
 
     @staticmethod
     def calculate_dynamic_minimum_days_for_asset_classes(
-        ledger_dict: dict[str, dict[str, PerfLedger]],
+        ledger_dict: dict[str, PerfLedger],
         asset_classes: list
     ) -> dict:
         """
@@ -611,8 +600,11 @@ class LedgerUtils:
         Returns the number of days that the Nth longest participating miner has (where N is
         configured by DYNAMIC_MIN_DAYS_PERCENTILE_RANK), capped at 60 days and floored at 7 days.
 
+        Since all ledgers are portfolio-level, every miner's portfolio trading days are used
+        for all asset classes uniformly.
+
         Args:
-            ledger_dict: Dictionary mapping hotkeys to their full ledger data
+            ledger_dict: Dictionary mapping hotkeys to their portfolio PerfLedger
             asset_classes: List of asset classes (TradePairCategory) to calculate dynamic minimum days for
 
         Returns:
@@ -632,36 +624,28 @@ class LedgerUtils:
             return asset_class_min_days
 
         try:
-            # Create asset segmentation to get miners participating in this asset class
-            segmentation_machine = AssetSegmentation(ledger_dict)
+            # Calculate participation days for each miner using their portfolio ledger
+            miner_participation_days = []
+            for hotkey, ledger in ledger_dict.items():
+                if ledger is not None:
+                    days_participating = LedgerUtils.get_trading_days(ledger)
+                    if days_participating > 0:
+                        miner_participation_days.append(days_participating)
 
+            # Sort in descending order (longest participation first)
+            miner_participation_days.sort(reverse=True)
+
+            # If fewer than DYNAMIC_MIN_DAYS_NUM_MINERS (20) valid participants exist, return FLOOR (7 days)
+            if len(miner_participation_days) < ValiConfig.DYNAMIC_MIN_DAYS_NUM_MINERS:
+                minimum_days = ValiConfig.STATISTICAL_CONFIDENCE_MINIMUM_N_FLOOR
+            else:
+                # Use the shorter of Nth longest participating miner (index N-1), or median of all participating miners
+                minimum_days = min(miner_participation_days[ValiConfig.DYNAMIC_MIN_DAYS_NUM_MINERS - 1], int(statistics.median(miner_participation_days)))
+
+            # Apply bounds: floor of 7 days, cap of 60 days
+            bounded_minimum = max(ValiConfig.STATISTICAL_CONFIDENCE_MINIMUM_N_FLOOR, min(ValiConfig.STATISTICAL_CONFIDENCE_MINIMUM_N_CEIL, minimum_days))
             for asset_class in asset_classes:
-                asset_ledger = segmentation_machine.segmentation(asset_class)
-
-                # Calculate participation days for each miner in this asset class
-                miner_participation_days = []
-                for hotkey, ledger in asset_ledger.items():
-                    if ledger is not None:
-                        days_participating = LedgerUtils.get_trading_days(ledger)
-                        if days_participating > 0:
-                            miner_participation_days.append(days_participating)
-
-                # Sort in descending order (longest participation first)
-                miner_participation_days.sort(reverse=True)
-
-                # If fewer than DYNAMIC_MIN_DAYS_NUM_MINERS (20) valid participants exist, return FLOOR (7 days)
-                # This includes cases where:
-                #   - Invalid/malformed entries were filtered out by AssetSegmentation (logs warnings)
-                #   - No miners participate in this asset class (e.g., all miners trade forex, none trade crypto)
-                # Both scenarios mean: "insufficient competition data for this asset class" → use minimum requirement
-                if len(miner_participation_days) < ValiConfig.DYNAMIC_MIN_DAYS_NUM_MINERS:
-                    minimum_days = ValiConfig.STATISTICAL_CONFIDENCE_MINIMUM_N_FLOOR
-                else:
-                    # Use the shorter of Nth longest participating miner (index N-1), or median of all participating miners
-                    minimum_days = min(miner_participation_days[ValiConfig.DYNAMIC_MIN_DAYS_NUM_MINERS - 1], int(statistics.median(miner_participation_days)))
-
-                # Apply bounds: floor of 7 days, cap of 60 days
-                asset_class_min_days[asset_class] = max(ValiConfig.STATISTICAL_CONFIDENCE_MINIMUM_N_FLOOR, min(ValiConfig.STATISTICAL_CONFIDENCE_MINIMUM_N_CEIL, minimum_days))
+                asset_class_min_days[asset_class] = bounded_minimum
             return asset_class_min_days
         except Exception as e:
             bt.logging.warning(f"Error calculating dynamic minimum days: {e}")

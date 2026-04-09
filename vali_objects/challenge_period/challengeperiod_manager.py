@@ -19,7 +19,6 @@ from datetime import datetime
 from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.utils.elimination.elimination_client import EliminationClient
 from vali_objects.position_management.position_manager_client import PositionManagerClient
-from vali_objects.utils.asset_segmentation import AssetSegmentation
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePairCategory, ValiConfig, RPCConnectionMode
@@ -28,7 +27,7 @@ from vali_objects.utils.asset_selection.asset_selection_client import AssetSelec
 from shared_objects.cache_controller import CacheController
 from vali_objects.scoring.scoring import Scoring
 from time_util.time_util import TimeUtil
-from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger, TP_ID_PORTFOLIO
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
 from vali_objects.vali_dataclasses.ledger.ledger_utils import LedgerUtils
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_client import DebtLedgerClient
@@ -207,7 +206,7 @@ class ChallengePeriodManager(CacheController):
             self._refresh_challengeperiod_start_time(hk_to_first_order_time)
             self._sync_all_miner_buckets()
 
-        ledger = self._perf_ledger_client.filtered_ledger_for_scoring(hotkeys=all_miners, portfolio_only=False)
+        ledger = self._perf_ledger_client.filtered_ledger_for_scoring(hotkeys=all_miners)
 
         inspection_miners = self.get_testing_miners() | self.get_probation_miners() | self.get_funded_miners()
         challengeperiod_success, challengeperiod_demoted, challengeperiod_eliminations = self.inspect(
@@ -716,8 +715,7 @@ class ChallengePeriodManager(CacheController):
         self,
         inspection_hotkeys: dict[str, int],
         positions: dict[str, list[Position]],
-        ledger: dict[str, dict[str, PerfLedger]],
-        portfolio_only_ledgers: dict[str, PerfLedger],
+        ledger: dict[str, PerfLedger],
         success_hotkeys: list[str],
         probation_hotkeys: list[str],
         current_time: int,
@@ -761,7 +759,7 @@ class ChallengePeriodManager(CacheController):
 
             # Unified check: Minimum ledger
             has_minimum_ledger, inspection_ledger = self._check_minimum_ledger(
-                portfolio_only_ledgers, hotkey
+                ledger, hotkey
             )
             if not has_minimum_ledger:
                 continue
@@ -810,7 +808,7 @@ class ChallengePeriodManager(CacheController):
         # Calculate dynamic minimum participation days for asset classes
         combined_hotkeys = set(success_hotkeys + probation_hotkeys)
         maincomp_ledger = {hotkey: ledger_data for hotkey, ledger_data in ledger.items() if hotkey in combined_hotkeys}
-        asset_classes = list(AssetSegmentation.distill_asset_classes(ValiConfig.ASSET_CLASS_BREAKDOWN))
+        asset_classes = list(ValiConfig.ASSET_CLASS_BREAKDOWN.keys())
         asset_class_min_days = LedgerUtils.calculate_dynamic_minimum_days_for_asset_classes(
             maincomp_ledger, asset_classes
         )
@@ -857,10 +855,9 @@ class ChallengePeriodManager(CacheController):
     def _inspect_hotkeys_unified(
         self,
         inspection_hotkeys: dict[str, int],
-        portfolio_only_ledgers: dict[str, PerfLedger],
         current_time: int,
         positions: dict[str, list[Position]],
-        ledger: dict[str, dict[str, PerfLedger]],
+        ledger: dict[str, PerfLedger],
         success_hotkeys: list[str],
         probation_hotkeys: list[str],
         hk_to_first_order_time: dict[str, int] | None = None,
@@ -903,7 +900,7 @@ class ChallengePeriodManager(CacheController):
         if synthetic_challenge_hotkeys:
             synthetic_promotions, synthetic_eliminations = self._evaluate_synthetic_challenge(
                 synthetic_challenge_hotkeys,
-                portfolio_only_ledgers,
+                ledger,
                 current_time
             )
             hotkeys_to_promote.extend(synthetic_promotions)
@@ -913,7 +910,7 @@ class ChallengePeriodManager(CacheController):
         if synthetic_funded_hotkeys:
             funded_eliminations = self._evaluate_subaccount_funded(
                 synthetic_funded_hotkeys,
-                portfolio_only_ledgers,
+                ledger,
                 current_time
             )
             miners_to_eliminate.update(funded_eliminations)
@@ -924,7 +921,6 @@ class ChallengePeriodManager(CacheController):
                 rank_based_hotkeys,
                 positions,
                 ledger,
-                portfolio_only_ledgers,
                 success_hotkeys,
                 probation_hotkeys,
                 current_time,
@@ -940,7 +936,7 @@ class ChallengePeriodManager(CacheController):
     def inspect(
         self,
         positions: dict[str, list[Position]],
-        ledger: dict[str, dict[str, PerfLedger]],
+        ledger: dict[str, PerfLedger],
         success_hotkeys: list[str],
         probation_hotkeys: list[str],
         inspection_hotkeys: dict[str, int],
@@ -977,19 +973,9 @@ class ChallengePeriodManager(CacheController):
         if not current_time:
             current_time = TimeUtil.now_in_millis()
 
-        # Extract portfolio-only ledgers for base case checking
-        portfolio_only_ledgers = {}
-        for hotkey, asset_ledgers in ledger.items():
-            if asset_ledgers is not None:
-                if isinstance(asset_ledgers, dict):
-                    portfolio_only_ledgers[hotkey] = asset_ledgers.get(TP_ID_PORTFOLIO)
-                else:
-                    raise TypeError(f"Expected asset_ledgers to be dict, got {type(asset_ledgers)}")
-
         # Use unified inspection logic
         hotkeys_to_promote, hotkeys_to_demote, miners_to_eliminate = self._inspect_hotkeys_unified(
             inspection_hotkeys=inspection_hotkeys,
-            portfolio_only_ledgers=portfolio_only_ledgers,
             current_time=current_time,
             positions=positions,
             ledger=ledger,

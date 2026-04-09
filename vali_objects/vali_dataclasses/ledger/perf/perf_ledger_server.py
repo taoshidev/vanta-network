@@ -155,20 +155,18 @@ class PerfLedgerServer(RPCServerBase):
     def update_rpc(self, testing_one_hotkey=None, regenerate_all_ledgers=False, t_ms=None) -> dict:
         return self._manager.update(testing_one_hotkey=testing_one_hotkey, regenerate_all_ledgers=regenerate_all_ledgers, t_ms=t_ms)
 
-    def get_perf_ledgers_rpc(self, portfolio_only: bool = True, from_disk: bool = False) -> dict:
+    def get_perf_ledgers_rpc(self, from_disk: bool = False) -> dict:
         """Get performance ledgers via RPC."""
         # Return PerfLedger objects directly - BaseManager's pickle handles serialization
-        return self._manager.get_perf_ledgers(portfolio_only=portfolio_only, from_disk=from_disk)
+        return self._manager.get_perf_ledgers(from_disk=from_disk)
 
     def filtered_ledger_for_scoring_rpc(
         self,
-        portfolio_only: bool = False,
         hotkeys: List[str] = None
-    ) -> dict[str, dict[str, PerfLedger]] | dict[str, PerfLedger]:
+    ) -> dict[str, PerfLedger]:
         """Get filtered ledger for scoring via RPC."""
         # Return PerfLedger objects directly - BaseManager's pickle handles serialization
         return self._manager.filtered_ledger_for_scoring(
-            portfolio_only=portfolio_only,
             hotkeys=hotkeys
         )
 
@@ -214,7 +212,7 @@ class PerfLedgerServer(RPCServerBase):
         bt.logging.info(f'[PERFLEDGER_SERVER] Wiping perf ledgers for {len(miners_to_wipe)} miners')
 
         # Get current ledgers
-        perf_ledgers = self._manager.get_perf_ledgers(portfolio_only=False)
+        perf_ledgers = self._manager.get_perf_ledgers()
         n_before = len(perf_ledgers)
 
         # Filter out miners to wipe
@@ -275,7 +273,7 @@ class PerfLedgerServer(RPCServerBase):
             return True
         return False
 
-    def generate_perf_ledgers_for_analysis_rpc(self, hotkey_to_positions: dict[str, List[Position]], t_ms: int = None) -> dict[str, dict[str, PerfLedger]]:
+    def generate_perf_ledgers_for_analysis_rpc(self, hotkey_to_positions: dict[str, List[Position]], t_ms: int = None) -> dict[str, PerfLedger]:
         if t_ms is None:
             t_ms = TimeUtil.now_in_millis()  # Time to build the perf ledgers up to. Goes back 30 days from this time.
         existing_perf_ledgers = {}

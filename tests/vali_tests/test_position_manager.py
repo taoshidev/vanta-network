@@ -19,7 +19,7 @@ from vali_objects.vali_dataclasses.position import Position
 from vali_objects.position_management.position_manager_client import PositionManagerClient
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair
-from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger, PerfCheckpoint, TP_ID_PORTFOLIO
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger, PerfCheckpoint
 
 
 class TestPositionManager(TestBase):
@@ -327,12 +327,11 @@ class TestPositionManager(TestBase):
                     initialization_time_ms=base_time_ms - 1000000,
                     max_return=max_portfolio_value,
                     cps=[checkpoint],
-                    tp_id=TP_ID_PORTFOLIO # Mark as portfolio ledger
                 )
 
-                # Save the perf ledger in V2 format: {hotkey: {asset_class: PerfLedger}}
+                # Save the perf ledger: {hotkey: PerfLedger}
                 self.perf_ledger_client.save_perf_ledgers({
-                    self.DEFAULT_MINER_HOTKEY: {TP_ID_PORTFOLIO: perf_ledger}
+                    self.DEFAULT_MINER_HOTKEY: perf_ledger
                 })
 
                 # Create a position with return_at_close = current_value to get the desired current portfolio value

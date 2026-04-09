@@ -14,7 +14,7 @@ class PerfLedgerClient(RPCClientBase):
 
     Example:
         client = PerfLedgerClient()
-        ledgers = client.get_perf_ledgers(portfolio_only=True)
+        ledgers = client.get_perf_ledgers()
     """
 
     def __init__(
@@ -46,19 +46,18 @@ class PerfLedgerClient(RPCClientBase):
 
     # ==================== Query Methods ====================
 
-    def get_perf_ledgers(self, portfolio_only: bool = True, from_disk: bool = False) -> dict:
+    def get_perf_ledgers(self, from_disk: bool = False) -> dict:
         """
         Get performance ledgers.
 
         Args:
-            portfolio_only: If True, only return portfolio ledgers
             from_disk: If True, read from disk instead of memory
 
         Returns:
-            Dict mapping hotkey to performance ledger(s)
+            Dict mapping hotkey to PerfLedger
         """
         # PerfLedger objects returned directly - BaseManager's pickle handles serialization
-        return self._server.get_perf_ledgers_rpc(portfolio_only=portfolio_only, from_disk=from_disk)
+        return self._server.get_perf_ledgers_rpc(from_disk=from_disk)
 
     def generate_perf_ledgers_for_analysis(self, hotkey_to_positions, t_ms: int = None) -> dict:
         """Generate performance ledgers for analysis."""
@@ -66,22 +65,19 @@ class PerfLedgerClient(RPCClientBase):
 
     def filtered_ledger_for_scoring(
         self,
-        portfolio_only: bool = False,
         hotkeys: List[str] = None
-    ) -> dict[str, dict[str, PerfLedger]] | dict[str, PerfLedger]:
+    ) -> dict[str, PerfLedger]:
         """
         Get filtered ledger for scoring.
 
         Args:
-            portfolio_only: If True, only return portfolio ledgers
             hotkeys: Optional list of hotkeys to filter
 
         Returns:
-            Dict mapping hotkey to filtered performance ledger
+            Dict mapping hotkey to portfolio PerfLedger
         """
         # PerfLedger objects returned directly - BaseManager's pickle handles serialization
         return self._server.filtered_ledger_for_scoring_rpc(
-            portfolio_only=portfolio_only,
             hotkeys=hotkeys
         )
 

@@ -14,13 +14,12 @@ from scipy.stats import percentileofscore
 
 from vali_objects.contract.validator_contract_manager import ValidatorContractManager
 from vali_objects.vali_config import ValiConfig
-from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger, TP_ID_PORTFOLIO
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger
 from time_util.time_util import TimeUtil
 from vali_objects.position_management.position_utils import PositionFiltering
 from vali_objects.vali_dataclasses.ledger.ledger_utils import LedgerUtils
 from vali_objects.utils.metrics import Metrics
 from vali_objects.position_management.position_utils import PositionPenalties
-from vali_objects.utils.asset_segmentation import AssetSegmentation
 from vali_objects.vali_config import TradePairCategory
 from entity_management.entity_utils import is_synthetic_hotkey
 import bittensor as bt
@@ -79,7 +78,7 @@ class Scoring:
 
     @staticmethod
     def compute_results_checkpoint(
-            ledger_dict: dict[str, dict[str, PerfLedger]],
+            ledger_dict: dict[str, PerfLedger],
             full_positions: dict[str, list[Position]],
             asset_class_min_days: dict[str, int],
             evaluation_time_ms: int = None,
@@ -144,7 +143,7 @@ class Scoring:
 
     @staticmethod
     def score_miner_asset_classes(
-            ledger_dict: dict[str, dict[str, PerfLedger]],
+            ledger_dict: dict[str, PerfLedger],
             positions: dict[str, list[Position]],
             asset_class_min_days: dict[TradePairCategory, int],
             evaluation_time_ms: int = None,
@@ -176,7 +175,10 @@ class Scoring:
 
         # Combine and penalize scores
         asset_combined_scores = Scoring.combine_scores(asset_penalized_scores_dict)
-        asset_competitiveness = AssetSegmentation.asset_competitiveness_dictionary(asset_combined_scores)
+        # Compute asset competitiveness as normalized sum of combined scores per asset class
+        asset_competitiveness = {
+            asset_class: sum(scores.values()) for asset_class, scores in asset_combined_scores.items()
+        }
         bt.logging.debug(f"Asset competitiveness: {asset_competitiveness}")
 
         # Now we probably want to apply the softmax to the asset combined scores
@@ -186,7 +188,7 @@ class Scoring:
 
     @staticmethod
     def score_miners(
-            ledger_dict: dict[str, dict[str, PerfLedger]],
+            ledger_dict: dict[str, PerfLedger],
             positions: dict[str, list[Position]],
             asset_class_min_days: dict[TradePairCategory, int],
             evaluation_time_ms: int = None,
@@ -231,30 +233,28 @@ class Scoring:
             miner for miner, penalty in miner_penalties.items() if penalty == 0
         ])
 
-        # We now want to track miner incentive between each asset class
+        # Single-pool scoring across all miners using portfolio ledgers directly
         asset_class_breakdown = ValiConfig.ASSET_CLASS_BREAKDOWN
-        asset_classes = AssetSegmentation.distill_asset_classes(asset_class_breakdown)
+        asset_classes = asset_class_breakdown.keys()
+        days_in_year = 365
 
-        segmentation_machine = AssetSegmentation(ledger_dict)
-
-        # This is going to track miner scores on each asset class
+        # Use a single representative asset class for the combined pool
+        # We iterate all asset classes but each miner's portfolio ledger is used for all of them
         miner_asset_benefit = {}
 
         for asset_class in asset_classes:
-            asset_ledger = segmentation_machine.segmentation(asset_class)
-            filtered_ledger_returns = LedgerUtils.ledger_returns_log(asset_ledger)
-            days_in_year = segmentation_machine.days_in_year_from_asset_category(asset_class)
+            filtered_ledger_returns = LedgerUtils.ledger_returns_log(ledger_dict)
+            min_days = asset_class_min_days.get(asset_class, 0)
 
             scores_dict = {"metrics": {}}
             for config_name, config in scoring_config.items():
                 scores = []
                 for miner, returns in filtered_ledger_returns.items():
-                    # Get the miner ledger
-                    ledger = asset_ledger.get(miner, PerfLedger())
+                    # Get the miner portfolio ledger directly
+                    ledger = ledger_dict.get(miner, PerfLedger())
 
                     # Check if the miner has full penalty - if not include them in the scoring competition
                     if miner in full_penalty_miners:
-                        #bt.logging.info(f"Skipping {miner} in {asset_class.value}/{config_name} (full penalty)")
                         continue
 
                     score = config['function'](
@@ -262,7 +262,7 @@ class Scoring:
                         ledger=ledger,
                         weighting=weighting,
                         days_in_year=days_in_year,
-                        min_days=asset_class_min_days[asset_class],
+                        min_days=min_days,
                     )
 
                     scores.append((miner, float(score)))
@@ -312,7 +312,7 @@ class Scoring:
     @staticmethod
     def miner_penalties(
             hotkey_positions: dict[str, list[Position]],
-            ledger_dict: dict[str, dict[str, PerfLedger]],
+            ledger_dict: dict[str, PerfLedger],
             all_miner_account_sizes: dict[str, float]
     ) -> dict[str, float]:
         # Compute miner penalties
@@ -326,7 +326,7 @@ class Scoring:
                 empty_ledger_miners.append((miner, len(positions)))
                 continue
 
-            portfolio_ledger = ledger.get(TP_ID_PORTFOLIO) if ledger else PerfLedger()
+            portfolio_ledger = ledger if ledger else PerfLedger()
 
             miner_account_size = all_miner_account_sizes.get(miner, 0)
             if miner_account_size is None:
