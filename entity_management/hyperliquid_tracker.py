@@ -1072,11 +1072,6 @@ class HyperliquidTracker:
         loop = asyncio.get_event_loop()
         session = self._make_proxied_session()
         proxy_port = getattr(session, "_hl_proxy_port", None)
-        bt.logging.info(
-            f"[HL_BACKUP] userFillsByTime request address={hl_address} "
-            f"start_ms={start_time_ms} url={api_url} "
-            f"hl_use_testnet={ValiConfig.HL_USE_TESTNET} proxy_port={proxy_port}"
-        )
 
         try:
             def _do_request():
@@ -1143,17 +1138,9 @@ class HyperliquidTracker:
                         hl_address,
                         now_ms - ValiConfig.HL_BACKUP_POLL_LOOKBACK_MS,
                     )
-                    bt.logging.info(
-                        f"[HL_BACKUP] REST check address={hl_address} "
-                        f"start_ms={start_ms}"
-                    )
                     fills = await self._fetch_fills_by_time(hl_address, start_ms)
 
                     if fills is not None:
-                        bt.logging.info(
-                            f"[HL_BACKUP] REST check result address={hl_address} "
-                            f"fills_returned={len(fills)}"
-                        )
                         for fill in fills:
                             fill_hash = fill.get("hash") or fill.get("tid")
                             if not fill_hash or fill_hash in self._processed_hashes:
