@@ -257,7 +257,7 @@ class LivePriceFetcher:
             if trade_pair.is_equities:
                 databento_price = websocket_prices_databento.get(trade_pair)
                 if databento_price:
-                    sources = self.sorted_valid_price_sources([databento_price], time_ms, filter_recent_only=True)
+                    sources = self.sorted_valid_price_sources([databento_price], time_ms, filter_recent_only=False)
                     if sources:
                         results[trade_pair] = sources
                         continue
