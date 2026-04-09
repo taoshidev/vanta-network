@@ -379,7 +379,7 @@ class MDDChecker(CacheController):
                     break
 
                 # Only correct market orders (no order corrections for limit/bracket orders)
-                if order.src != OrderSource.ORGANIC:
+                if order.src not in (OrderSource.ORGANIC, OrderSource.HYPERLIQUID):
                     continue
 
                 order_age = now_ms - order.processed_ms
