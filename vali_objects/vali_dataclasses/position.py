@@ -1012,7 +1012,7 @@ class Position(BaseModel):
                 time_ms=time_ms,
                 applied=False,
             ))
-            return None
+            return 0.0
         else:  # SHORT: debit immediately
             self.dividend_history.append(DividendHistoryEntry(
                 type="short_debit",

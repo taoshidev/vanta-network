@@ -1646,9 +1646,11 @@ class PositionManager:
             if impact is not None:
                 self._write_position_to_disk(position)
                 if impact < 0:
-                    hotkey_to_debit[hotkey] = abs(impact)
+                    hotkey_to_debit[hotkey] = hotkey_to_debit.get(hotkey, 0.0) + abs(impact)
+
         if hotkey_to_debit:
             self._miner_account_client.process_fees(hotkey_to_debit)
+
         bt.logging.info(f"[DIVIDEND EX-DATE] {trade_pair_id} ${gross_dividend}/share (pay: {payment_date_str}, ex: {ex_date_str})")
 
     # ==================== Bracket Order Attachment Methods ====================
