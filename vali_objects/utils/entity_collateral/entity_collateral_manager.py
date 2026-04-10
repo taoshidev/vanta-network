@@ -86,8 +86,10 @@ class EntityCollateralManager(CacheController):
         self._cache_file = ValiBkpUtils.get_entity_collateral_cache_file_location(running_unit_tests)
         self._slash_file = ValiBkpUtils.get_entity_slash_tracking_file_location(running_unit_tests)
 
-        # MDD percentage: MAX_TOTAL_DRAWDOWN is 0.9, meaning 10% max drawdown
-        self.mdd_percent = 1.0 - ValiConfig.MAX_TOTAL_DRAWDOWN  # 0.10
+        # Intraday drawdown threshold for funded subaccounts (8%).
+        # This is the actual elimination threshold applied to funded subaccounts,
+        # so it is also the maximum loss that can ever be slashed from a subaccount.
+        self.mdd_percent = ValiConfig.SUBACCOUNT_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD  # 0.08
 
         # Load persisted state from disk
         self._collateral_cache = self._load_cache_from_disk()
@@ -214,10 +216,13 @@ class EntityCollateralManager(CacheController):
         """
         Compute the total required collateral for an entity in theta.
 
-        Formula:
-            required_theta = n_subaccounts / CPT_SUBACCOUNT + active_risk_usd / CPT_RISK
+        Only funded (non-challenge) subaccounts with open positions contribute.
 
-        Challenge period subaccounts are excluded from both counts.
+        Formula per qualifying subaccount:
+            margin_usd     = min(open_position_value, max_slash_usd - cumulative_slashed_usd)
+            required_theta += margin_usd / CPT_RISK
+
+        where max_slash_usd = account_size * SUBACCOUNT_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD.
 
         Args:
             entity_hotkey: The entity's hotkey.
@@ -230,8 +235,7 @@ class EntityCollateralManager(CacheController):
             return 0.0
 
         subaccounts = entity_data.get("subaccounts", {})
-        n_active_subaccounts = 0
-        total_active_risk_usd = 0.0
+        total_required_theta = 0.0
 
         for sa_id, sa_info in subaccounts.items():
             if sa_info.get("status") not in ("active", "admin"):
@@ -241,51 +245,48 @@ class EntityCollateralManager(CacheController):
             if not synthetic_hotkey:
                 continue
 
-            # Skip challenge period subaccounts
+            # Only funded (non-challenge) subaccounts require margin
             bucket = self._challenge_period_client.get_miner_bucket(synthetic_hotkey)
             if bucket == MinerBucket.SUBACCOUNT_CHALLENGE:
                 continue
 
-            n_active_subaccounts += 1
+            margin_usd = self.compute_subaccount_margin_requirement(synthetic_hotkey)
+            total_required_theta += margin_usd / ValiConfig.ENTITY_COLLATERAL_CPT_RISK
 
-            account_balance = self._miner_account_client.get_balance(synthetic_hotkey)
-            if not account_balance or account_balance <= 0:
-                continue
+        return total_required_theta
 
-            total_active_risk_usd += self.compute_subaccount_risk_exposure(synthetic_hotkey, account_balance)
-
-        return (
-            n_active_subaccounts / ValiConfig.ENTITY_COLLATERAL_CPT_SUBACCOUNT
-            + total_active_risk_usd / ValiConfig.ENTITY_COLLATERAL_CPT_RISK
-        )
-
-    def compute_subaccount_risk_exposure(
-        self,
-        synthetic_hotkey: str,
-        account_balance: float,
-    ) -> float:
+    def compute_subaccount_margin_requirement(self, synthetic_hotkey: str) -> float:
         """
-        Compute the risk exposure for a single subaccount.
+        Compute the margin requirement in USD for a single funded subaccount.
 
-        risk_exposure = min(sum(abs(position_value)), account_balance * MDD%)
+        margin_usd = min(total_open_position_value, max_slash_usd - cumulative_slashed_usd)
+
+        The position value caps the requirement from below: small positions require
+        proportionally less collateral. The remaining slash headroom caps it from above:
+        once a subaccount has been substantially slashed, less collateral is needed
+        because the worst-case future loss is smaller.
+
+        Returns 0 if the subaccount has no open positions or has been fully slashed.
 
         Args:
             synthetic_hotkey: The subaccount's synthetic hotkey.
-            account_balance: The subaccount's account balance in USD.
 
         Returns:
-            Risk exposure in USD.
+            Margin requirement in USD.
         """
         open_positions = self._position_client.get_positions_for_one_hotkey(
             synthetic_hotkey, only_open_positions=True
         )
+        if not open_positions:
+            return 0.0
 
-        total_position_value = 0.0
-        for position in open_positions:
-            total_position_value += abs(position.net_value)
+        total_position_value = sum(abs(p.net_value) for p in open_positions)
 
-        max_exposure = account_balance * self.mdd_percent
-        return min(total_position_value, max_exposure)
+        max_slash = self.get_max_slash(synthetic_hotkey)
+        cumulative_slashed = self.get_cumulative_slashed(synthetic_hotkey)
+        remaining_headroom = max(0.0, max_slash - cumulative_slashed)
+
+        return min(total_position_value, remaining_headroom)
 
     # ==================== Order Gating ====================
 
@@ -301,8 +302,10 @@ class EntityCollateralManager(CacheController):
 
         Skips the check if the subaccount is in challenge period.
 
-        Compares entity's deposited theta against required theta:
-            required_theta = n_subaccounts / CPT_SUBACCOUNT + active_risk_usd / CPT_RISK
+        Computes the projected required collateral in theta if this order goes through:
+            For all other funded subaccounts: margin = min(position_value, max_slash - slashed)
+            For the ordering subaccount:      margin = min(position_value + additional, max_slash - slashed)
+            projected_required_theta = sum(margin_usd) / CPT_RISK
 
         Args:
             entity_hotkey: The entity's hotkey.
@@ -318,26 +321,29 @@ class EntityCollateralManager(CacheController):
         if bucket == MinerBucket.SUBACCOUNT_CHALLENGE:
             return True, ""
 
-        # Compute current required collateral in theta across all entity subaccounts
+        # Current required collateral across all funded subaccounts with open positions.
+        # This already includes the ordering subaccount if it has open positions.
         current_required_theta = self.compute_entity_required_collateral(entity_hotkey)
 
-        # Compute the risk delta from the proposed new position (in USD),
-        # then convert to theta via CPT_RISK
-        account_balance = self._miner_account_client.get_balance(synthetic_hotkey) or 0.0
-        max_subaccount_exposure = account_balance * self.mdd_percent
-
-        current_subaccount_exposure = self.compute_subaccount_risk_exposure(synthetic_hotkey, account_balance)
-
+        # Compute the delta from adding this order to the ordering subaccount.
+        # current_margin already accounts for it if it has open positions; we compute
+        # projected margin and add only the incremental difference.
         open_positions = self._position_client.get_positions_for_one_hotkey(
             synthetic_hotkey, only_open_positions=True
         )
         current_position_value = sum(abs(p.net_value) for p in open_positions)
         projected_position_value = current_position_value + abs(additional_position_value)
-        projected_subaccount_exposure = min(projected_position_value, max_subaccount_exposure)
 
-        risk_delta_usd = projected_subaccount_exposure - current_subaccount_exposure
-        risk_delta_theta = risk_delta_usd / ValiConfig.ENTITY_COLLATERAL_CPT_RISK
-        projected_required_theta = current_required_theta + risk_delta_theta
+        max_slash = self.get_max_slash(synthetic_hotkey)
+        cumulative_slashed = self.get_cumulative_slashed(synthetic_hotkey)
+        remaining_headroom = max(0.0, max_slash - cumulative_slashed)
+
+        current_margin_usd = min(current_position_value, remaining_headroom)
+        projected_margin_usd = min(projected_position_value, remaining_headroom)
+        margin_delta_usd = projected_margin_usd - current_margin_usd
+        margin_delta_theta = margin_delta_usd / ValiConfig.ENTITY_COLLATERAL_CPT_RISK
+
+        projected_required_theta = current_required_theta + margin_delta_theta
 
         # Look up deposited collateral from cache (theta)
         deposited_theta = self.get_cached_collateral(entity_hotkey)
@@ -351,7 +357,7 @@ class EntityCollateralManager(CacheController):
             return False, (
                 f"Insufficient entity collateral. "
                 f"Required: {projected_required_theta:.2f} theta, Deposited: {deposited_theta:.2f} theta. "
-                f"Order would add {risk_delta_theta:.2f} theta to requirement."
+                f"Order would add {margin_delta_theta:.2f} theta to requirement."
             )
 
         return True, ""
@@ -423,9 +429,10 @@ class EntityCollateralManager(CacheController):
             tracking["cumulative_slashed"] = cumulative_slashed + slash_delta
             self._slash_tracking[synthetic_hotkey] = tracking
 
-        # Convert USD to theta for the on-chain slash (skip in test mode)
+        slash_theta = slash_delta / ValiConfig.ENTITY_COLLATERAL_CPT_RISK
+
+        # Execute on-chain slash (skip in test mode)
         if not self.running_unit_tests:
-            slash_theta = slash_delta / ValiConfig.ENTITY_COLLATERAL_CPT_RISK
             try:
                 success = self._contract_client.slash_miner_collateral(entity_hotkey, slash_theta)
                 if not success:
@@ -445,7 +452,6 @@ class EntityCollateralManager(CacheController):
 
         # Persist and update collateral cache (theta) after successful slash
         self._save_slash_tracking_to_disk()
-        slash_theta = slash_delta / ValiConfig.ENTITY_COLLATERAL_CPT_RISK
         with self._cache_lock:
             if entity_hotkey in self._collateral_cache:
                 self._collateral_cache[entity_hotkey] -= slash_theta

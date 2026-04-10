@@ -537,9 +537,11 @@ class ValiConfig:
     ENTITY_COST_PER_THETA = 5000  # USD account size per theta of collateral for entity subaccounts
     MAX_SUBACCOUNT_ACCOUNT_SIZE = 100_000  # Maximum account size in USD for entity subaccounts
 
-    # Entity collateral requirement: required_theta = n_subaccounts / CPT_SUBACCOUNT + active_risk_usd / CPT_RISK
-    ENTITY_COLLATERAL_CPT_SUBACCOUNT = 500  # Subaccounts per theta (1 theta covers 500 subaccount slots)
-    ENTITY_COLLATERAL_CPT_RISK = 10  # USD of active risk per theta (1 theta covers $10 of risk)
+    # Entity margin collateral requirement (funded subaccounts only):
+    #   required_theta = sum(max_slash_usd - cumulative_slashed_usd) / CPT_RISK
+    #   for each funded subaccount with open positions (or placing this order)
+    # max_slash_usd = account_size * SUBACCOUNT_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD
+    ENTITY_COLLATERAL_CPT_RISK = 10  # USD of remaining loss capacity per theta ($10 of capacity = 1 theta)
 
     # Hyperliquid tracking configuration
     HL_USE_TESTNET = False  # Set to True to use Hyperliquid testnet endpoints

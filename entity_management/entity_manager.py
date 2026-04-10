@@ -510,8 +510,8 @@ class EntityManager(ValidatorBroadcastBase):
                     account_size=account_size,
                     asset_class=asset_class,
                     status="active",
-                    hl_address=subaccount.hl_address,
-                    payout_address=subaccount.payout_address
+                    hl_address=subaccount_info.hl_address,
+                    payout_address=subaccount_info.payout_address
                 )
             self.broadcast_subaccount_dashboard(synthetic_hotkey)
 

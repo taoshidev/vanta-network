@@ -87,7 +87,7 @@ class TestEntityCollateral(TestBase):
         ])
 
         # MDD percentage (same as manager uses)
-        self.mdd_percent = 1.0 - ValiConfig.MAX_TOTAL_DRAWDOWN  # 0.10
+        self.mdd_percent = ValiConfig.SUBACCOUNT_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD  # 0.08
 
     def tearDown(self):
         """Per-test teardown: Clear data."""
@@ -193,8 +193,8 @@ class TestEntityCollateral(TestBase):
             account_size=100_000
         )
 
-        # Required: 1/500 (subaccount) + min(50K, 10K)/10 (risk) = 0.002 + 1000 = ~1000 theta
-        # Set 5000 theta (well above 1000)
+        # Required delta: min(50K, 8K)/10 = 800 theta (first order, no existing positions)
+        # Set 5000 theta (well above 800)
         self._set_collateral_cache(entity_hotkey, 5000.0)
 
         allowed, reason = self.entity_collateral_client.can_open_position(
@@ -210,7 +210,7 @@ class TestEntityCollateral(TestBase):
             account_size=100_000
         )
 
-        # Required: 1/500 + 10000/10 = ~1000 theta. Set only 10 theta.
+        # Required delta: min(50K, 8K)/10 = 800 theta. Set only 10 theta → insufficient.
         self._set_collateral_cache(entity_hotkey, 10.0)
 
         allowed, reason = self.entity_collateral_client.can_open_position(
@@ -247,8 +247,7 @@ class TestEntityCollateral(TestBase):
         synthetic_1 = sa_info_1['synthetic_hotkey']
         synthetic_2 = sa_info_2['synthetic_hotkey']
 
-        # 2 subaccounts = 2/500 = 0.004 theta base. $1K order risk = min(1K,10K)/10 = 100 theta.
-        # Total projected: 0.004 + 100 = ~100 theta. Set 500 theta (sufficient).
+        # Required delta: min(1K, 8K)/10 = 100 theta. Set 500 theta (sufficient).
         self._set_collateral_cache(self.ENTITY_HOTKEY, 500.0)
 
         # First subaccount with small order should work
@@ -266,7 +265,7 @@ class TestEntityCollateral(TestBase):
         )
         self._set_collateral_cache(entity_hotkey, 100.0)  # 100 theta
 
-        # Loss of $5,000 on an account with max_slash = $100K * 10% = $10K
+        # Loss of $5,000 on an account with max_slash = $100K * 8% = $8K
         slashed = self.entity_collateral_client.slash_on_realized_loss(
             entity_hotkey, synthetic_hotkey, 5_000.0
         )
@@ -313,7 +312,7 @@ class TestEntityCollateral(TestBase):
         )
         self._set_collateral_cache(entity_hotkey, 100.0)
 
-        # max_slash = $100K * 10% = $10K
+        # max_slash = $100K * 8% = $8K
 
         # Trade 1: Lose $3K
         slashed_1 = self.entity_collateral_client.slash_on_realized_loss(
@@ -339,23 +338,23 @@ class TestEntityCollateral(TestBase):
         )
         self._set_collateral_cache(entity_hotkey, 100.0)
 
-        # max_slash = $100K * 10% = $10K
+        # max_slash = $100K * 8% = $8K
 
-        # Trade 1: Lose $8K → slash $8K (under cap)
+        # Trade 1: Lose $8K → exactly at cap, slash $8K
         slashed_1 = self.entity_collateral_client.slash_on_realized_loss(
             entity_hotkey, synthetic_hotkey, 8_000.0
         )
         self.assertAlmostEqual(slashed_1, 8_000.0)
 
-        # Trade 2: Lose $5K → only slash $2K more (cap at $10K)
+        # Trade 2: Lose $5K → already at cap, slash $0
         slashed_2 = self.entity_collateral_client.slash_on_realized_loss(
             entity_hotkey, synthetic_hotkey, 5_000.0
         )
-        self.assertAlmostEqual(slashed_2, 2_000.0)
+        self.assertAlmostEqual(slashed_2, 0.0)
 
-        # Total slashed should be capped at $10K
+        # Total slashed should be capped at $8K
         tracking = self._get_slash_tracking(synthetic_hotkey)
-        self.assertAlmostEqual(tracking["cumulative_slashed"], 10_000.0)
+        self.assertAlmostEqual(tracking["cumulative_slashed"], 8_000.0)
         self.assertAlmostEqual(tracking["cumulative_realized_loss"], 13_000.0)
 
     def test_slash_completely_at_cap_returns_zero(self):
@@ -365,8 +364,8 @@ class TestEntityCollateral(TestBase):
         )
         self._set_collateral_cache(entity_hotkey, 100.0)
 
-        # Pre-fill tracking to exactly at cap ($10K)
-        self._set_slash_tracking(synthetic_hotkey, 10_000.0, 10_000.0)
+        # Pre-fill tracking to exactly at cap ($8K = $100K * 8%)
+        self._set_slash_tracking(synthetic_hotkey, 8_000.0, 8_000.0)
 
         # Try to slash more — should return 0
         slashed = self.entity_collateral_client.slash_on_realized_loss(
@@ -376,8 +375,8 @@ class TestEntityCollateral(TestBase):
 
         # cumulative_realized_loss should still be updated
         tracking = self._get_slash_tracking(synthetic_hotkey)
-        self.assertAlmostEqual(tracking["cumulative_realized_loss"], 15_000.0)
-        self.assertAlmostEqual(tracking["cumulative_slashed"], 10_000.0)
+        self.assertAlmostEqual(tracking["cumulative_realized_loss"], 13_000.0)
+        self.assertAlmostEqual(tracking["cumulative_slashed"], 8_000.0)
 
     def test_slash_no_account_size_returns_zero(self):
         """Test that slashing returns 0 when account has no size (max_slash=0)."""
@@ -449,8 +448,8 @@ class TestEntityCollateral(TestBase):
         )
         self._set_collateral_cache(entity_hotkey, 100.0)
 
-        # Pre-fill: already at cap
-        self._set_slash_tracking(synthetic_hotkey, 10_000.0, 10_000.0)
+        # Pre-fill: already at cap ($8K = $100K * 8%)
+        self._set_slash_tracking(synthetic_hotkey, 8_000.0, 8_000.0)
 
         # Another loss of $3K → no slash, but loss tracked
         slashed = self.entity_collateral_client.slash_on_realized_loss(
@@ -459,8 +458,8 @@ class TestEntityCollateral(TestBase):
         self.assertAlmostEqual(slashed, 0.0)
 
         tracking = self._get_slash_tracking(synthetic_hotkey)
-        self.assertAlmostEqual(tracking["cumulative_realized_loss"], 13_000.0)
-        self.assertAlmostEqual(tracking["cumulative_slashed"], 10_000.0)
+        self.assertAlmostEqual(tracking["cumulative_realized_loss"], 11_000.0)
+        self.assertAlmostEqual(tracking["cumulative_slashed"], 8_000.0)
 
     # ==================== Cumulative Slashed Query Tests ====================
 
@@ -485,7 +484,7 @@ class TestEntityCollateral(TestBase):
         )
 
         max_slash = self.entity_collateral_client.get_max_slash(synthetic_hotkey)
-        expected = 100_000 * self.mdd_percent  # $10,000
+        expected = 100_000 * self.mdd_percent  # $8,000
         self.assertAlmostEqual(max_slash, expected)
 
     def test_get_max_slash_zero_for_unknown(self):
@@ -584,8 +583,7 @@ class TestEntityCollateral(TestBase):
             account_size=100_000
         )
 
-        # Entity has 5000 theta. 1 subaccount = 1/500 = 0.002 theta base.
-        # $1K order risk = min(1K, 10K)/10 = 100 theta. Total = ~100 theta. 5000 > 100 → allowed.
+        # Entity has 5000 theta. $1K order delta: min(1K, 8K)/10 = 100 theta. 5000 > 100 → allowed.
         self._set_collateral_cache(entity_hotkey, 5000.0)
 
         allowed, _ = self.entity_collateral_client.can_open_position(
@@ -622,15 +620,15 @@ class TestEntityCollateral(TestBase):
         )
         self._set_collateral_cache(entity_hotkey, 100.0)
 
-        # max_slash = $10K, loss exactly $10K
+        # max_slash = $8K, loss exactly $8K
         slashed = self.entity_collateral_client.slash_on_realized_loss(
-            entity_hotkey, synthetic_hotkey, 10_000.0
+            entity_hotkey, synthetic_hotkey, 8_000.0
         )
-        self.assertAlmostEqual(slashed, 10_000.0)
+        self.assertAlmostEqual(slashed, 8_000.0)
 
         # Verify at cap
         tracking = self._get_slash_tracking(synthetic_hotkey)
-        self.assertAlmostEqual(tracking["cumulative_slashed"], 10_000.0)
+        self.assertAlmostEqual(tracking["cumulative_slashed"], 8_000.0)
 
     def test_slash_loss_exceeds_max_slash_single_trade(self):
         """Test that a single trade loss exceeding max_slash is capped."""
@@ -639,15 +637,15 @@ class TestEntityCollateral(TestBase):
         )
         self._set_collateral_cache(entity_hotkey, 100.0)
 
-        # max_slash = $10K, loss = $50K → only slash $10K
+        # max_slash = $8K, loss = $50K → only slash $8K
         slashed = self.entity_collateral_client.slash_on_realized_loss(
             entity_hotkey, synthetic_hotkey, 50_000.0
         )
-        self.assertAlmostEqual(slashed, 10_000.0)
+        self.assertAlmostEqual(slashed, 8_000.0)
 
         tracking = self._get_slash_tracking(synthetic_hotkey)
         self.assertAlmostEqual(tracking["cumulative_realized_loss"], 50_000.0)
-        self.assertAlmostEqual(tracking["cumulative_slashed"], 10_000.0)
+        self.assertAlmostEqual(tracking["cumulative_slashed"], 8_000.0)
 
     def test_sequential_slashes_track_cumulative_loss_correctly(self):
         """Test a sequence of losses accumulates correctly in tracking."""
@@ -656,7 +654,8 @@ class TestEntityCollateral(TestBase):
         )
         self._set_collateral_cache(entity_hotkey, 100.0)
 
-        # max_slash = $10K
+        # max_slash = $8K
+        # losses: $1K, $2K, $3K, $4K (capped at $8K so only $2K), $5K ($0)
         losses = [1_000, 2_000, 3_000, 4_000, 5_000]
         total_slashed = 0
         for loss in losses:
@@ -665,13 +664,13 @@ class TestEntityCollateral(TestBase):
             )
             total_slashed += slashed
 
-        # Total losses = $15K, max slash = $10K
-        # Should have slashed exactly $10K total
-        self.assertAlmostEqual(total_slashed, 10_000.0)
+        # Total losses = $15K, max slash = $8K
+        # Should have slashed exactly $8K total
+        self.assertAlmostEqual(total_slashed, 8_000.0)
 
         tracking = self._get_slash_tracking(synthetic_hotkey)
         self.assertAlmostEqual(tracking["cumulative_realized_loss"], 15_000.0)
-        self.assertAlmostEqual(tracking["cumulative_slashed"], 10_000.0)
+        self.assertAlmostEqual(tracking["cumulative_slashed"], 8_000.0)
 
     # ==================== MarketOrderManager Wiring Tests ====================
 
