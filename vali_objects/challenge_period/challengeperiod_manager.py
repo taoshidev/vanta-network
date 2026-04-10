@@ -867,7 +867,8 @@ class ChallengePeriodManager(CacheController):
         hotkeys_to_promote, hotkeys_to_demote = self.evaluate_promotions(
             success_hotkeys,
             promotion_eligible_hotkeys,
-            asset_softmaxed_scores
+            asset_softmaxed_scores,
+            accounts=accounts
         )
 
         bt.logging.info(f"[RANK_BASED] Challenge Period: evaluated {len(promotion_eligible_hotkeys)}/{len(inspection_hotkeys)} miners eligible for promotion")
@@ -1025,7 +1026,8 @@ class ChallengePeriodManager(CacheController):
             self,
             success_hotkeys,
             promotion_eligible_hotkeys,
-            asset_softmaxed_scores
+            asset_softmaxed_scores,
+            accounts: dict = None
             ) -> tuple[list[str], list[str]]:
         # Get asset class selections for filtering during threshold calculation
         miner_asset_selections = {}
@@ -1068,6 +1070,32 @@ class ChallengePeriodManager(CacheController):
 
         # Only promote miners who are in top ranks AND are valid candidates (passed minimum days)
         promote_hotkeys = (maincomp_hotkeys - set(success_hotkeys)) & set(promotion_eligible_hotkeys)
+
+        # Filter promotion candidates by minimum returns threshold.
+        exceeds_ret_threshold = []
+        for hotkey in promote_hotkeys:
+            asset_class = miner_asset_selections.get(hotkey)
+            returns_threshold = (
+                ValiConfig.SUBACCOUNT_CRYPTO_CHALLENGE_RETURNS_THRESHOLD
+                if asset_class == TradePairCategory.CRYPTO
+                else ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD
+            )
+            account = accounts.get(hotkey, None)
+            result = self._compute_portfolio_return(hotkey, account)
+            if result is None:
+                bt.logging.info(
+                    f"[RANK_BASED] {hotkey} ranked for promotion but blocked - no miner account"
+                )
+                continue
+            returns = result[0] - 1.0
+            if returns >= returns_threshold:
+                exceeds_ret_threshold.append(hotkey)
+            else:
+                bt.logging.info(
+                    f"[RANK_BASED] {hotkey} ranked for promotion but blocked - "
+                    f"returns {returns:.2%} < required {returns_threshold:.2%}"
+                )
+        promote_hotkeys = exceeds_ret_threshold
 
         # Demote miners who are no longer in top ranks
         # IMPORTANT: Synthetic hotkeys (subaccounts) can NEVER be demoted from MAINCOMP
