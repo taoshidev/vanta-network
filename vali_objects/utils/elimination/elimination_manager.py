@@ -788,7 +788,7 @@ class EliminationManager(CacheController):
     def handle_idle_miners(self, iteration_epoch=None):
         """Eliminate MAINCOMP, CHALLENGE, and PROBATION miners that have not submitted any orders in the past 60 days."""
         now_ms = TimeUtil.now_in_millis()
-        IDLE_ELIMINATION_ACTIVATION_MS = 1774310400000 + ValiConfig.IDLE_MINER_MAXIMUM_MS  # 60 days after 2026-03-20
+        IDLE_ELIMINATION_ACTIVATION_MS = 1775026800000 + ValiConfig.IDLE_MINER_MAXIMUM_MS  # 60 days after 2026-04-01
         if now_ms < IDLE_ELIMINATION_ACTIVATION_MS:
             return
 
