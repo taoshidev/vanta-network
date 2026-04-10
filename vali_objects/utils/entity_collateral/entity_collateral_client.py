@@ -146,6 +146,22 @@ class EntityCollateralClient(RPCClientBase):
 
         return self.slash_on_realized_loss(entity_hotkey, hotkey, abs(realized_pnl))
 
+    def try_slash_on_elimination(self, hotkey: str) -> float:
+        """
+        Slash all remaining collateral for a funded subaccount being eliminated.
+
+        Passes the remaining max_slash (max_slash - cumulative_slashed) to
+        slash_on_realized_loss to collect all outstanding collateral in one shot.
+        Challenge subaccounts and non-synthetic hotkeys are skipped.
+
+        Args:
+            hotkey: The miner hotkey (may or may not be a synthetic subaccount).
+
+        Returns:
+            Actual amount slashed in USD, or 0.0 if not applicable or nothing remaining.
+        """
+        return self._server.try_slash_on_elimination_rpc(hotkey)
+
     # ==================== Query Methods ====================
 
     def get_cached_collateral(self, entity_hotkey: str) -> Optional[float]:

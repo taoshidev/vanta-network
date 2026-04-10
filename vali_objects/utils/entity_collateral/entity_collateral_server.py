@@ -110,6 +110,10 @@ class EntityCollateralServer(RPCServerBase):
         """Slash entity collateral on subaccount realized loss (RPC method)."""
         return self._manager.slash_on_realized_loss(entity_hotkey, synthetic_hotkey, realized_loss)
 
+    def try_slash_on_elimination_rpc(self, hotkey: str) -> float:
+        """Slash all remaining collateral for a funded subaccount being eliminated (RPC method)."""
+        return self._manager.try_slash_on_elimination(hotkey)
+
     def get_cumulative_slashed_rpc(self, synthetic_hotkey: str) -> float:
         """Get cumulative slashed amount for a subaccount (RPC method)."""
         return self._manager.get_cumulative_slashed(synthetic_hotkey)

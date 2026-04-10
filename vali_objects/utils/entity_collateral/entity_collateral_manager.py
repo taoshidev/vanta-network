@@ -464,6 +464,41 @@ class EntityCollateralManager(CacheController):
         )
         return slash_delta
 
+    def try_slash_on_elimination(self, hotkey: str) -> float:
+        """
+        Slash all remaining collateral for a funded subaccount being eliminated.
+
+        Determines the remaining max_slash (max_slash - cumulative_slashed) for the
+        subaccount and passes it to slash_on_realized_loss to collect all outstanding
+        collateral in one shot. Challenge subaccounts are exempt.
+
+        Args:
+            hotkey: The miner hotkey (may or may not be a synthetic subaccount).
+
+        Returns:
+            Actual amount slashed in USD, or 0.0 if not applicable or nothing remaining.
+        """
+        if not is_synthetic_hotkey(hotkey):
+            return 0.0
+
+        entity_hotkey, _ = parse_synthetic_hotkey(hotkey)
+        if not entity_hotkey:
+            return 0.0
+
+        # Only slash funded subaccounts
+        bucket = self._challenge_period_client.get_miner_bucket(hotkey)
+        if bucket == MinerBucket.SUBACCOUNT_CHALLENGE:
+            return 0.0
+
+        max_slash = self.get_max_slash(hotkey)
+        cumulative_slashed = self.get_cumulative_slashed(hotkey)
+        remaining = max(0.0, max_slash - cumulative_slashed)
+
+        if remaining <= 0:
+            return 0.0
+
+        return self.slash_on_realized_loss(entity_hotkey, hotkey, remaining)
+
     def get_cumulative_slashed(self, synthetic_hotkey: str) -> float:
         """
         Get the cumulative amount slashed for a subaccount.

@@ -409,6 +409,9 @@ class EliminationManager(CacheController):
             if self._contract_client:
                 self._contract_client.slash_miner_collateral_proportion(e['hotkey'])
 
+            # slash entity collateral
+            self._entity_collateral_client.try_slash_on_elimination(e['hotkey'])
+
     def add_manual_flat_order(self, hotkey: str, position: Position, corresponding_elimination,
                              source_for_elimination, iteration_epoch=None):
         """Add flat orders for eliminated miner"""
@@ -486,10 +489,6 @@ class EliminationManager(CacheController):
             self._position_client.save_miner_position(position, delete_open_position_if_exists=True)
             if self.serve and self.websocket_notifier_client:
                 self.websocket_notifier_client.broadcast_position_update(position)
-
-            # Slash entity collateral on elimination-driven position close
-            if position.is_closed_position:
-                self._entity_collateral_client.try_slash_on_position_close(hotkey, position.realized_pnl)
 
             bt.logging.info(
                 f'Added flat order for miner {hotkey} that has been eliminated. '
@@ -581,6 +580,9 @@ class EliminationManager(CacheController):
             # Skip slashing in test mode (no contract manager)
             if self._contract_client:
                 self._contract_client.slash_miner_collateral_proportion(hotkey)
+
+            # slash entity collateral
+            self._entity_collateral_client.try_slash_on_elimination(hotkey)
 
     def handle_first_refresh(self, iteration_epoch=None):
         """
@@ -760,6 +762,9 @@ class EliminationManager(CacheController):
                 # Skip slashing in test mode (no contract manager)
                 if self._contract_client:
                     self._contract_client.slash_miner_collateral_proportion(miner_hotkey)
+
+                # slash entity collateral
+                self._entity_collateral_client.try_slash_on_elimination(miner_hotkey)
 
     def handle_zombies(self, iteration_epoch=None):
         """Handle zombie miners"""

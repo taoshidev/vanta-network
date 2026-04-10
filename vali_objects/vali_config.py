@@ -541,7 +541,7 @@ class ValiConfig:
     #   required_theta = sum(max_slash_usd - cumulative_slashed_usd) / CPT_RISK
     #   for each funded subaccount with open positions (or placing this order)
     # max_slash_usd = account_size * SUBACCOUNT_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD
-    ENTITY_COLLATERAL_CPT_RISK = 10  # USD of remaining loss capacity per theta ($10 of capacity = 1 theta)
+    ENTITY_COLLATERAL_CPT_RISK = 35  # USD of remaining loss capacity per theta ($35 of capacity = 1 theta)
 
     # Hyperliquid tracking configuration
     HL_USE_TESTNET = False  # Set to True to use Hyperliquid testnet endpoints
