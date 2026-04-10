@@ -427,6 +427,10 @@ class PositionManagerClient(RPCClientBase):
     def apply_stock_split(self, trade_pair_id: str, stock_split_ratio: float, execution_date: str):
         return self._server.apply_stock_split_rpc(trade_pair_id, stock_split_ratio, execution_date)
 
+    def process_dividend_ex_date(self, trade_pair_id: str, gross_dividend: float,
+                               payment_date_str: str, ex_date_str: str):
+        return self._server.process_dividend_ex_date(trade_pair_id, gross_dividend, payment_date_str, ex_date_str)
+
     @staticmethod
     def positions_are_the_same(position1: Position, position2: Position | dict) -> (bool, str):
         # Iterate through all the attributes of position1 and compare them to position2.

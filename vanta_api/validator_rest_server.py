@@ -1504,10 +1504,10 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             entity_hotkey = data['entity_hotkey']
             account_size = data['account_size']
             asset_class = data['asset_class']
-            admin = data.get('admin', False)
+            admin = data.get('admin')
 
             # Validate admin flag type early
-            if not isinstance(admin, bool):
+            if admin is not None and not isinstance(admin, bool):
                 return jsonify({'error': 'admin must be a boolean'}), 400
 
             # Validate account_size is a positive number
@@ -1544,11 +1544,12 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             keypair = Keypair(ss58_address=entity_coldkey)
             sig_dict = {
                 "account_size": account_size,
-                "admin": admin,
                 "asset_class": asset_class,
                 "entity_coldkey": entity_coldkey,
                 "entity_hotkey": entity_hotkey,
             }
+            if admin is not None:
+                sig_dict["admin"] = admin
             if is_hl:
                 sig_dict["hl_address"] = hl_address
                 if payout_address is not None:
@@ -1571,11 +1572,11 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             t0 = time.time()
             if is_hl:
                 success, subaccount_info, message = self._entity_client.create_hl_subaccount(
-                    entity_hotkey, account_size, hl_address, asset_class=asset_class, admin=admin, payout_address=payout_address
+                    entity_hotkey, account_size, hl_address, asset_class=asset_class, admin=bool(admin), payout_address=payout_address
                 )
             else:
                 success, subaccount_info, message = self._entity_client.create_subaccount(
-                    entity_hotkey, account_size, asset_class, admin=admin
+                    entity_hotkey, account_size, asset_class, admin=bool(admin)
                 )
             timings['create_subaccount_rpc'] = int((time.time() - t0) * 1000)
 

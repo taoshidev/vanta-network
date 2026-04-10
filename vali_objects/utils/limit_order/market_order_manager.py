@@ -151,13 +151,6 @@ class MarketOrderManager():
         if order_type == OrderType.FLAT:
             open_position = None
         else:
-            if trade_pair.is_equities and order_type == OrderType.SHORT:
-                raise SignalException(
-                    f"Cannot open a SHORT position for equities. "
-                    f"Miner [{miner_hotkey}] attempted to open a new position with SHORT order for [{trade_pair.trade_pair_id}]. "
-                    f"Equities can only be opened with LONG orders."
-                )
-
             # if a position doesn't exist, then make a new one
             open_position = Position(
                 miner_hotkey=miner_hotkey,
@@ -267,32 +260,36 @@ class MarketOrderManager():
         slippage_calc_ms = TimeUtil.now_in_millis() - step_start
         bt.logging.info(f"[ADD_ORDER_DETAIL] Slippage calculation took {slippage_calc_ms}ms")
 
+        account = self._miner_account_client.get_or_create(miner_hotkey)
+        buying_power = account['buying_power']
+        capital_used = account['capital_used']
+        total_borrowed_usd = account['total_borrowed_amount']
 
-        # Get balance and leverage bounds for USD-based validation
+        # Get balance and leverage bounds for USD-based validation TODO use account object
         if not balance:
             balance = self._miner_account_client.get_balance(miner_hotkey) or 0.0
 
+        trade_pair_category = trade_pair.trade_pair_category
         _, max_position_leverage = leverage_utils.get_position_leverage_bounds(trade_pair)
         account_multiplier = ValiConfig.PORTFOLIO_LEVERAGE_CAP.get(trade_pair.trade_pair_category, 1.0)
         if self._challenge_period_client.get_miner_bucket(miner_hotkey) == MinerBucket.SUBACCOUNT_CHALLENGE:
-            max_position_leverage /= ValiConfig.SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR
-            account_multiplier /= ValiConfig.SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR
+            max_position_leverage /= ValiConfig.SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR[trade_pair_category]
+            account_multiplier /= ValiConfig.SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR[trade_pair_category]
         max_position_value = max_position_leverage * balance
-
-        # Calculate transaction fee AFTER clamping based on final order value
-        transaction_fee_rate = ValiConfig.TRANSACTION_FEE_RATE.get(trade_pair.trade_pair_category, 0)
-        buying_power = self._miner_account_client.get_buying_power(miner_hotkey)
-        if self.running_unit_tests:
-            buying_power = ValiConfig.MIN_CAPITAL
 
         # Validate order before processing cash balance (raises ValueError if invalid)
         # Note: validate_order_size may clamp order.value/quantity/leverage in place
         bt.logging.info(f"[ORDER DETAIL] pre-validation quantity: {order.quantity}, value: {order.value}")
         existing_position.set_returns(order.price)
         order_resized = existing_position.validate_order_size(order, max_position_value)
+
+        # Calculate transaction fee AFTER clamping based on final order value
+        transaction_fee_rate = ValiConfig.TRANSACTION_FEE_RATE.get(trade_pair_category, 0)
+
         if order.order_type == existing_position.position_type:
             if buying_power <= 0:
                 raise SignalException(f"Insufficient buying power (${buying_power:.2f})")
+
             if abs(order.value) * (1 + transaction_fee_rate * account_multiplier) >= buying_power:
                 sign = (-1 if order.order_type == OrderType.SHORT else 1)
                 order.value = buying_power / (1 + transaction_fee_rate * account_multiplier) * sign
@@ -307,25 +304,31 @@ class MarketOrderManager():
         if order.order_type == existing_position.position_type:
             # Buy: pay value plus transaction fee (raises SignalException if invalid)
             transaction_fee = abs(order.value) * transaction_fee_rate
-            order.margin_loan = self._miner_account_client.process_order_buy(miner_hotkey, abs(order.value), transaction_fee)
+
+            # Equities: use margin if order value cannot be covered by cash
+            if trade_pair.is_equities and abs(order.value) > balance - (capital_used - total_borrowed_usd):
+                order.margin_loan = abs(order.value) * 0.5
+
+            self._miner_account_client.process_order_buy(miner_hotkey, abs(order.value), order.margin_loan, transaction_fee)
         else:
             # Sell: free capital_used and compound realized PNL to equity
-            processed_qty = existing_position.net_quantity if order.order_type == OrderType.FLAT else order.quantity
-            entry_value = abs(processed_qty) * trade_pair.lot_size * existing_position.average_entry_price * order.quote_usd_rate
+            entry_value = abs(order.quantity) * trade_pair.lot_size * existing_position.average_entry_price * order.quote_usd_rate
 
             if existing_position.position_type == OrderType.SHORT:
                 exit_price = order.price * (1 + order.slippage)
-                order_realized_pnl = (existing_position.average_entry_price - exit_price) * abs(processed_qty) * trade_pair.lot_size * order.quote_usd_rate
+                order_realized_pnl = (existing_position.average_entry_price - exit_price) * abs(order.quantity) * trade_pair.lot_size * order.quote_usd_rate
             else:
                 exit_price = order.price * (1 - order.slippage)
-                order_realized_pnl = (exit_price - existing_position.average_entry_price) * abs(processed_qty) * trade_pair.lot_size * order.quote_usd_rate
+                order_realized_pnl = (exit_price - existing_position.average_entry_price) * abs(order.quantity) * trade_pair.lot_size * order.quote_usd_rate
 
-            # Calculate fee based on entry value
-            transaction_fee = entry_value * transaction_fee_rate
+            exit_value = entry_value + order_realized_pnl
 
-            bt.logging.info(f"[ORDER] entry_value=${entry_value:.2f} realized_pnl=${order_realized_pnl:.2f} fee=${transaction_fee:.2f}")
+            # Calculate fee based on exit value (entry value +/- realized PNL)
+            transaction_fee = exit_value * transaction_fee_rate
 
-            loan_repaid = self._miner_account_client.process_order_sell(miner_hotkey, entry_value, order_realized_pnl, existing_position.margin_loan, transaction_fee)
+            loan_repaid = min(existing_position.margin_loan, exit_value)
+            self._miner_account_client.process_order_sell(miner_hotkey, entry_value, order_realized_pnl, loan_repaid, transaction_fee)
+
             # Store loan repayment as negative margin_loan so position.margin_loan sums correctly
             order.margin_loan = -loan_repaid
 

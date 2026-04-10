@@ -27,7 +27,7 @@ import traceback
 from typing import List, Dict, Optional
 
 from shared_objects.rpc.rpc_server_base import RPCServerBase
-from time_util.time_util import timeme
+from time_util.time_util import MS_IN_24_HOURS, S_IN_24_HOURS, timeme
 from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
@@ -91,7 +91,7 @@ class PositionManagerServer(RPCServerBase):
         # At this point, self._manager exists, so RPC calls won't fail
         # daemon_interval_s: 1 hour (frequent carry fee charging; compact is separately rate-limited)
         # hang_timeout_s: Dynamically set to 2x interval to prevent false alarms during normal sleep
-        daemon_interval_s = 3600 + 60  # 1 hour + 1 min buffer to ensure interval boundary has passed
+        daemon_interval_s = 3600 # 1 hour
         hang_timeout_s = daemon_interval_s * 2.0  # 2 hours (2x interval)
 
         super().__init__(
@@ -131,9 +131,20 @@ class PositionManagerServer(RPCServerBase):
                 bt.logging.error(f"Error in compaction daemon iteration: {traceback.format_exc()}")
 
         try:
+            self._manager.settle_dividend_payments()
+        except Exception as e:
+            bt.logging.error(f"Error settling dividend payments: {traceback.format_exc()}")
+
+        try:
             self._manager.refresh_position_fees()
         except Exception as e:
             bt.logging.error(f"Error in carry fee daemon iteration: {traceback.format_exc()}")
+
+        # Align next daemon iteration to UTC hour boundary
+        now = time.time()
+        next_hour_s = (int(now) // 3600 + 1) * 3600
+        self.daemon_interval_s = next_hour_s - now
+        bt.logging.info(f"PositionManager daemon interval complete, next iteration in {self.daemon_interval_s} seconds")
 
 
     # ==================== RPC Methods (called by client via RPC) ====================
@@ -302,6 +313,10 @@ class PositionManagerServer(RPCServerBase):
 
     def apply_stock_split_rpc(self, trade_pair_id: str, stock_split_ratio: float, execution_date: str):
         return self._manager.apply_stock_split(trade_pair_id, stock_split_ratio, execution_date)
+
+    def process_dividend_ex_date(self, trade_pair_id: str, gross_dividend: float,
+                                   payment_date_str: str, ex_date_str: str):
+        return self._manager.process_dividend_ex_date(trade_pair_id, gross_dividend, payment_date_str, ex_date_str)
 
     # ==================== Bracket Order Attachment RPC Methods ====================
 

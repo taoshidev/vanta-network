@@ -122,7 +122,7 @@ class EntityMinerRestServer(MinerRestServer):
     DASHBOARD_CACHE_TTL_MS = 10_000
     MAPPING_REFRESH_TTL_MS = 5_000
 
-    def __init__(self, api_keys_file, flask_host="0.0.0.0", flask_port=8089,
+    def __init__(self, api_keys_file, flask_host="0.0.0.0", flask_port=8088,
                  slack_notifier=None, prop_net_order_placer=None, **kwargs):
         # Internal state (initialized before super().__init__ calls _initialize_clients)
         self._event_store = OrderEventStore()
@@ -992,14 +992,14 @@ class EntityMinerRestServer(MinerRestServer):
                     return jsonify({'status': 'error', 'message': 'Missing required field: asset_class'}), 400
                 asset_class = request_data["asset_class"]
 
-            admin = request_data.get("admin", False)
+            admin = request_data.get("admin")
 
             try:
                 account_size = float(request_data["account_size"])
             except (ValueError, TypeError):
                 return jsonify({'status': 'error', 'message': 'account_size must be a number'}), 400
 
-            if not isinstance(admin, bool):
+            if admin is not None and not isinstance(admin, bool):
                 return jsonify({'status': 'error', 'message': 'admin must be a boolean'}), 400
 
             if asset_class not in ["crypto", "forex", "equities"]:
@@ -1050,11 +1050,12 @@ class EntityMinerRestServer(MinerRestServer):
         try:
             message_dict = {
                 "account_size": account_size,
-                "admin": admin,
                 "asset_class": asset_class,
                 "entity_coldkey": self._coldkey.ss58_address,
                 "entity_hotkey": self._hotkey.ss58_address,
             }
+            if admin is not None:
+                message_dict["admin"] = admin
             if is_hl:
                 message_dict["hl_address"] = hl_address
                 if payout_address is not None:
@@ -1072,10 +1073,11 @@ class EntityMinerRestServer(MinerRestServer):
                 "entity_coldkey": self._coldkey.ss58_address,
                 "account_size": account_size,
                 "asset_class": asset_class,
-                "admin": admin,
                 "signature": signature,
                 "version": "2.0.0"
             }
+            if admin is not None:
+                payload["admin"] = admin
             if is_hl:
                 payload["hl_address"] = hl_address
                 if payout_address is not None:

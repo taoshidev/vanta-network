@@ -1275,7 +1275,7 @@ class PositionManager:
                 if position.is_closed_position and position.close_ms < recent_cutoff_ms:
                     continue
                 if position.trade_pair.is_equities:
-                    fee = position.refresh_interest_fee_usd(time_ms)
+                    fee = position.refresh_equities_fee_usd(time_ms)
                 else:
                     hl_fr = self._get_hl_funding_rates(position, time_ms)
                     fee = position.refresh_carry_fee_usd(time_ms, hl_funding_rates=hl_fr)
@@ -1297,6 +1297,27 @@ class PositionManager:
                 self._miner_account_client.process_fees(hotkey_to_fee)
             except Exception as e:
                 bt.logging.error(f"Failed to charge position fees: {e}")
+
+    def settle_dividend_payments(self, time_ms: Optional[int] = None):
+        """Release pending long credits whose payment_date is today."""
+        if not time_ms:
+            time_ms = TimeUtil.now_in_millis()
+
+        today_date_str = TimeUtil.millis_to_short_date_str(time_ms)
+        hotkey_to_credit = {}
+        for hotkey, positions_dict in self.hotkey_to_positions.items():
+            for _, position in positions_dict.items():
+                if not position.trade_pair.is_equities:
+                    continue
+                credit = position.settle_pending_dividends(today_date_str)
+                if credit > 0:
+                    hotkey_to_credit[hotkey] = hotkey_to_credit.get(hotkey, 0.0) + credit
+                    self._write_position_to_disk(position)
+
+        if hotkey_to_credit:
+            self._miner_account_client.process_dividend_income(hotkey_to_credit)
+            bt.logging.info(f"[DIVIDEND PAYMENTS] Released credits for {len(hotkey_to_credit)} miners on {today_date_str}")
+
 
     # ==================== Index Management ====================
 
@@ -1612,6 +1633,25 @@ class PositionManager:
                 _cnt += 1
 
         bt.logging.info(f"Applied {trade_pair_id} stock split (ratio: {stock_split_ratio}, date: {execution_date}) to {_cnt} positions")
+
+    def process_dividend_ex_date(self, trade_pair_id: str, gross_dividend: float, payment_date_str: str, ex_date_str: str):
+        """Apply dividend at ex-date: immediate fee for shorts, pending credit on longs."""
+        hotkey_to_debit = {}
+        now_ms = TimeUtil.now_in_millis()
+        for hotkey, positions_dict in self.hotkey_to_open_positions.items():
+            position = positions_dict.get(trade_pair_id)
+            if not position:
+                continue
+            impact = position.apply_dividend(gross_dividend, ex_date_str, payment_date_str, now_ms)
+            if impact is not None:
+                self._write_position_to_disk(position)
+                if impact < 0:
+                    hotkey_to_debit[hotkey] = hotkey_to_debit.get(hotkey, 0.0) + abs(impact)
+
+        if hotkey_to_debit:
+            self._miner_account_client.process_fees(hotkey_to_debit)
+
+        bt.logging.info(f"[DIVIDEND EX-DATE] {trade_pair_id} ${gross_dividend}/share (pay: {payment_date_str}, ex: {ex_date_str})")
 
     # ==================== Bracket Order Attachment Methods ====================
 

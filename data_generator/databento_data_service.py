@@ -1,11 +1,15 @@
 import threading
 import time
+from datetime import datetime, timedelta
+from typing import List
+from zoneinfo import ZoneInfo
 import bittensor as bt
 import databento as db
 
 from data_generator.base_data_service import BaseDataService
 from time_util.time_util import TimeUtil
 from vali_objects.vali_config import TradePair, TradePairCategory
+from vali_objects.vali_dataclasses.corporate_actions import CorporateActions, DividendEvent
 from vali_objects.vali_dataclasses.price_source import PriceSource
 
 DATABENTO_PROVIDER_NAME = "Databento"
@@ -104,6 +108,8 @@ class DatabentoDataService(BaseDataService):
         )
         self._api_key = api_key
         self._ref_client = db.Reference(key=api_key)
+        self._hist_client = db.Historical(key=api_key)
+        self._corporate_actions_cache: dict[str, CorporateActions] = {}
 
         # Start websocket manager thread (uses base class implementation)
         if disable_ws:
@@ -112,6 +118,9 @@ class DatabentoDataService(BaseDataService):
             self.websocket_manager_thread = threading.Thread(target=self.websocket_manager, daemon=True)
             self.websocket_manager_thread.start()
 
+    # Symbols not present in Databento's corporate actions dataset
+    CORPORATE_ACTIONS_EXCLUDED_SYMBOLS = {"BRK.B"}
+
     def _get_equity_symbols(self) -> list[str]:
         """Get all equity symbols from TradePair config."""
         symbols = []
@@ -119,6 +128,9 @@ class DatabentoDataService(BaseDataService):
             if tp.is_equities and tp not in self.UNSUPPORTED_TRADE_PAIRS:
                 symbols.append(tp.trade_pair)
         return symbols
+
+    def _get_corporate_action_symbols(self) -> list[str]:
+        return [s for s in self._get_equity_symbols() if s not in self.CORPORATE_ACTIONS_EXCLUDED_SYMBOLS]
 
     def _create_websocket_client(self, tpc: TradePairCategory):
         """Create or reuse Databento websocket client wrapper for equities."""
@@ -225,44 +237,183 @@ class DatabentoDataService(BaseDataService):
         # Live client will be created in _create_websocket_client
         pass
 
-    def get_stock_splits(self, time_ms) -> dict[str, float]:
+    @staticmethod
+    def _add_days(date_str: str, days: int) -> str:
+        """Return a date string offset by the given number of days."""
+        d = datetime.strptime(date_str, "%Y-%m-%d")
+        return (d + timedelta(days=days)).strftime("%Y-%m-%d")
+
+    @staticmethod
+    def _to_date_str(value) -> str:
         """
-        Get stock splits for all equity symbols on a given date.
+        Databento returns ISO 8601 dates expressed in the local time of the
+        listing exchange. The value may arrive as a str, datetime.date, or
+        pd.Timestamp depending on the client version.
+        """
+        if hasattr(value, "strftime"):
+            return value.strftime("%Y-%m-%d")
+        # Already a string — take first 10 chars to strip any time component
+        return str(value)[:10]
+
+    def get_closes_rest(self, trade_pairs: List[TradePair], time_ms: int, live: bool = False) -> dict[TradePair, PriceSource]:
+        """Historical daily closes from Databento (equities only). Returns empty if live=True."""
+        if live:
+            return {}
+
+        if self.running_unit_tests:
+            from data_generator.polygon_data_service import PolygonDataService
+            return {tp: PolygonDataService.DEFAULT_TESTING_FALLBACK_PRICE_SOURCE for tp in trade_pairs}
+
+        equity_pairs = [tp for tp in trade_pairs if tp.trade_pair_category == TradePairCategory.EQUITIES]
+        if not equity_pairs:
+            return {}
+
+        target_dt = datetime.fromtimestamp(time_ms / 1000, tz=ZoneInfo("UTC"))
+        start_dt = target_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+        end_dt = start_dt + timedelta(days=1)
+
+        tp_to_price: dict[TradePair, PriceSource] = {}
+        time_now_ms = int(time.time() * 1000)
+
+        for tp in equity_pairs:
+            try:
+                store = self._hist_client.timeseries.get_range(
+                    dataset="EQUS.MINI",
+                    schema="ohlcv-1d",
+                    symbols=[tp.trade_pair],
+                    start=start_dt,
+                    end=end_dt,
+                )
+                df = store.to_df(pretty_px=True)
+                if df.empty:
+                    bt.logging.warning(f"Databento: no ohlcv-1d data for {tp.trade_pair} on {start_dt.date()}")
+                    continue
+
+                row = df.iloc[-1]
+                close = float(row["close"])
+                open_ = float(row["open"])
+                high = float(row["high"])
+                low = float(row["low"])
+
+                # ts_event is the index as a pandas Timestamp (nanoseconds -> Timestamp by pandas)
+                ts_event = df.index[-1]
+                bar_start_ms = int(ts_event.timestamp() * 1000)
+
+                tp_to_price[tp] = PriceSource(
+                    source=f"{DATABENTO_PROVIDER_NAME}_rest",
+                    timespan_ms=86_400_000,
+                    open=open_,
+                    close=close,
+                    vwap=close,
+                    high=high,
+                    low=low,
+                    start_ms=bar_start_ms,
+                    websocket=False,
+                    lag_ms=time_now_ms - bar_start_ms,
+                    bid=0,
+                    ask=0,
+                )
+            except Exception as e:
+                bt.logging.error(f"Databento historical REST failed for {tp.trade_pair}: {e}")
+
+        return tp_to_price
+
+    def get_corporate_actions(
+        self,
+        start_date_str: str,
+        end_date_str: str | None = None,
+    ) -> dict[str, CorporateActions]:
+        """
+        Fetch stock splits and dividends for all equity symbols over a date range.
+
+        Args:
+            start_date_str: Start date (inclusive) in YYYY-MM-DD format.
+            end_date_str: End date (exclusive) in YYYY-MM-DD format.
+                          Defaults to 3 days after start_date_str.
 
         Returns:
-            dict mapping trade_pair_id to split ratio (ratio_new / ratio_old)
+            dict mapping ex_date string to CorporateActions for that date.
         """
-        execution_date_str = TimeUtil.timestamp_ms_to_eastern_time_str(time_ms, short=True)
+        if end_date_str is None:
+            end_date_str = self._add_days(start_date_str, 3)
 
+        # Determine which dates in the range are not yet cached
+        dates_in_range = []
+        d = start_date_str
+        while d < end_date_str:
+            if d not in self._corporate_actions_cache:
+                dates_in_range.append(d)
+            d = self._add_days(d, 1)
+
+        if not dates_in_range:
+            return {d: self._corporate_actions_cache[d] for d in self._corporate_actions_cache
+                    if start_date_str <= d < end_date_str}
+
+        symbols = self._get_corporate_action_symbols()
+        result: dict[str, CorporateActions] = {}
+
+        # Fetch splits
         try:
-            df_raw = self._ref_client.corporate_actions.get_range(
-                symbols=self._get_equity_symbols(),
-                start=execution_date_str,
-                end=execution_date_str,
+            df_splits = self._ref_client.corporate_actions.get_range(
+                symbols=symbols,
+                stype_in="nasdaq_symbol",
+                start=start_date_str,
+                end=end_date_str,
                 index="ex_date",
                 events=["FSPLT", "RSPLT"],
                 countries=["US"]
             )
+            if df_splits is not None and not df_splits.empty:
+                for ex_date, row in df_splits.iterrows():
+                    symbol = row.get("symbol")
+                    ratio_old = row.get("ratio_old")
+                    ratio_new = row.get("ratio_new")
+                    if symbol and ratio_old and ratio_new and ratio_old != 0:
+                        date_str = self._to_date_str(ex_date)
+                        if date_str not in result:
+                            result[date_str] = CorporateActions(splits={}, dividends={})
+                        result[date_str].splits[symbol] = ratio_new / ratio_old
         except Exception as e:
             bt.logging.error(f"Failed to fetch stock splits from Databento: {e}")
-            return {}
 
-        if df_raw is None or df_raw.empty:
-            return {}
+        # Fetch dividends
+        try:
+            df_divs = self._ref_client.corporate_actions.get_range(
+                symbols=symbols,
+                stype_in="nasdaq_symbol",
+                start=start_date_str,
+                end=end_date_str,
+                index="ex_date",
+                events=["DIV"],
+                countries=["US"]
+            )
+            if df_divs is not None and not df_divs.empty:
+                for ex_date, row in df_divs.iterrows():
+                    symbol = row.get("symbol")
+                    gross_dividend = row.get("gross_dividend", 0)
+                    payment_date = row.get("payment_date", "")
+                    if symbol and gross_dividend is not None and gross_dividend > 0:
+                        date_str = self._to_date_str(ex_date)
+                        if date_str not in result:
+                            result[date_str] = CorporateActions(splits={}, dividends={})
+                        result[date_str].dividends[symbol] = DividendEvent(
+                            gross_dividend=float(gross_dividend),
+                            ex_date=date_str,
+                            payment_date=str(payment_date) if payment_date else "",
+                        )
+        except Exception as e:
+            bt.logging.error(f"Failed to fetch dividend events from Databento: {e}")
 
-        result = {}
-        for _, row in df_raw.iterrows():
-            symbol = row.get("symbol")
-            ratio_old = row.get("ratio_old")
-            ratio_new = row.get("ratio_new")
+        # Cache each date individually (including empty dates so we don't re-fetch)
+        for d in dates_in_range:
+            self._corporate_actions_cache[d] = result.get(d, CorporateActions(splits={}, dividends={}))
 
-            if symbol and ratio_old and ratio_new and ratio_old != 0:
-                # trade_pair_id is the symbol for equities
-                result[symbol] = ratio_new / ratio_old
+        actions_in_range = {d: self._corporate_actions_cache[d] for d in self._corporate_actions_cache
+                if start_date_str <= d < end_date_str}
 
-        return result
+        bt.logging.info(f"Databento corporate actions in range ({start_date_str} - {end_date_str}) {actions_in_range}")
 
-
+        return actions_in_range
 
 if __name__ == "__main__":
     import asyncio

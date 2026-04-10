@@ -254,7 +254,7 @@ class PolygonDataService(BaseDataService):
         super().__init__(
             provider_name=POLYGON_PROVIDER_NAME,
             running_unit_tests=running_unit_tests,
-            enabled_websocket_categories={TradePairCategory.CRYPTO, TradePairCategory.FOREX} #, TradePairCategory.EQUITIES}
+            enabled_websocket_categories={TradePairCategory.CRYPTO, TradePairCategory.FOREX}
         )
 
         self.MARKET_STATUS = None
@@ -663,6 +663,8 @@ class PolygonDataService(BaseDataService):
                 if test_price:
                     result[trade_pair] = test_price
             return result
+
+        trade_pairs = [tp for tp in trade_pairs if tp.trade_pair_category in self.enabled_websocket_categories]
 
         all_trade_pair_closes = {}
         # Multi-threaded fetching of REST data over all requested trade pairs. Max parallelism is 5.

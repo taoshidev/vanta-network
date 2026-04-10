@@ -20,7 +20,7 @@ from collections import defaultdict
 
 from shared_objects.cache_controller import CacheController
 from shared_objects.rpc.common_data_client import CommonDataClient
-from time_util.time_util import TimeUtil
+from time_util.time_util import TimeUtil, MS_IN_24_HOURS
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.price_fetcher.live_price_client import LivePriceFetcherClient
 from shared_objects.locks.position_lock_client import PositionLockClient
@@ -58,6 +58,7 @@ class MDDChecker(CacheController):
 
         self.last_price_fetch_time_ms = None
         self.last_quote_fetch_time_ms = None
+        self.last_corporate_actions_date = None
         self.price_correction_enabled = True
 
         # Create RPC clients for external dependencies
@@ -70,8 +71,7 @@ class MDDChecker(CacheController):
         self._position_lock_client = PositionLockClient(running_unit_tests=running_unit_tests)
         self._miner_account_client = MinerAccountClient(connection_mode=connection_mode)
 
-        self.all_trade_pairs = [trade_pair for trade_pair in TradePair]
-        self._prev_iteration_prices = {}
+        self.all_trade_pairs = [trade_pair for trade_pair in TradePair if not trade_pair.is_blocked]
         self.reset_debug_counters()
         self.n_poly_api_requests = 0
 
@@ -187,37 +187,25 @@ class MDDChecker(CacheController):
             sources_str = ", ".join(ps.debug_str(now_ms) for ps in sources)
             bt.logging.info(f"[MDD_PRICE_SOURCES] {tp.trade_pair_id}: [{sources_str}]")
 
-        today_date_est = TimeUtil.timestamp_ms_to_eastern_time_str(now_ms, short=True)
-        last_update_date_est = TimeUtil.timestamp_ms_to_eastern_time_str(self._last_update_time_ms, short=True)
-        is_new_day = today_date_est != last_update_date_est
-
-        # Fetch all stock splits once for efficiency
-        stock_splits = {}
-        should_check_splits = is_new_day or any(
-            tp.is_equities and self._prev_iteration_prices.get(tp) and sources[0].close
-            and abs((sources[0].close - self._prev_iteration_prices[tp]) / self._prev_iteration_prices[tp]) >= 0.1
-            for tp, sources in tp_to_price_sources.items()
-        )
-        if should_check_splits:
-            bt.logging.info(f"[STOCK SPLITS] Fetching stock splits for {today_date_est}")
-            stock_splits = self._live_price_client.get_stock_splits(now_ms)
-            if stock_splits:
-                bt.logging.info(f"[STOCK SPLITS] Found splits: {stock_splits}")
-            else:
-                bt.logging.info(f"[STOCK SPLITS] No stock splits found for {today_date_est}")
-
-        # Check and apply if a stock split occurred on new trading day (EST) or price fluctuation > 10%
-        for tp, sources in tp_to_price_sources.items():
-            if not tp.is_equities:
-                continue
-            new_price = sources[0].close
-            prev_price = self._prev_iteration_prices.get(tp)
-
-            stock_split_ratio = stock_splits.get(tp.trade_pair_id)
-            if stock_split_ratio is not None:
-                self._position_client.apply_stock_split(tp.trade_pair_id, stock_split_ratio, today_date_est)
-
-            self._prev_iteration_prices[tp] = sources[0].close
+        today_date_str = TimeUtil.millis_to_short_date_str(now_ms)
+        if self.last_corporate_actions_date != today_date_str:
+            try:
+                actions_by_date = self._live_price_client.get_corporate_actions(today_date_str)
+                today_actions = actions_by_date.get(today_date_str)
+                if today_actions:
+                    if today_actions.splits:
+                        bt.logging.info(f"[STOCK SPLITS] Found splits: {today_actions.splits}")
+                        for symbol, ratio in today_actions.splits.items():
+                            self._position_client.apply_stock_split(symbol, ratio, today_date_str)
+                    if today_actions.dividends:
+                        bt.logging.info(f"[DIVIDENDS] ex-date events: {today_actions.dividends}")
+                        for symbol, div in today_actions.dividends.items():
+                            self._position_client.process_dividend_ex_date(
+                                symbol, div.gross_dividend, div.payment_date, today_date_str
+                            )
+                self.last_corporate_actions_date = today_date_str
+            except Exception as e:
+                bt.logging.error(f"[CORPORATE ACTIONS] Failed to fetch or apply: {e}")
 
         for hotkey, sorted_positions in hotkey_to_positions.items():
             self.perform_price_corrections(hotkey, sorted_positions, tp_to_price_sources, iteration_epoch)

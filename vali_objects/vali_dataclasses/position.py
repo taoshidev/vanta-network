@@ -6,6 +6,7 @@ from pydantic import model_validator, BaseModel, Field
 
 from time_util.time_util import TimeUtil, MS_IN_1_HOUR, MS_IN_8_HOURS, MS_IN_24_HOURS
 from vali_objects.vali_config import TradePair, TradePairCategory, TradePairLike, DynamicTradePair, ValiConfig
+from vali_objects.vali_dataclasses.corporate_actions import DividendHistoryEntry
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.enums.order_type_enum import OrderType
@@ -62,6 +63,7 @@ class Position(BaseModel):
     fee_history: List[Dict] = Field(default_factory=list) # [{"fee_type": "carry", "amount": 123, "time_ms": 123}]
     is_hl: bool = False  # True for Hyperliquid entity miner positions
     last_stock_split_date: Optional[str] = None  # Only set for equities
+    dividend_history: List[DividendHistoryEntry] = Field(default_factory=list)  # Audit log of dividend events
     unfilled_orders: list = Field(default=[], exclude=True)
 
     @model_validator(mode='before')
@@ -243,7 +245,7 @@ class Position(BaseModel):
             if not hl_funding_rates:
                 return 0
 
-            last_accrual_ms = self.last_fee_time_ms("hl_funding")
+            last_accrual_ms = self._last_fee_time_ms("hl_funding")
             sign = 1.0 if self.position_type == OrderType.LONG else -1.0
             total_fee = 0.0
             last_settlement_ms = last_accrual_ms
@@ -259,7 +261,7 @@ class Position(BaseModel):
 
             return total_fee
 
-        last_accrual_ms = self.last_fee_time_ms("carry")
+        last_accrual_ms = self._last_fee_time_ms("carry")
 
         if self.trade_pair.is_crypto:
             interval_ms = MS_IN_8_HOURS
@@ -282,37 +284,44 @@ class Position(BaseModel):
 
         return carry_fee
 
-    def refresh_interest_fee_usd(self, current_time_ms: int) -> float:
+    def refresh_equities_fee_usd(self, current_time_ms: int) -> float:
         """
-        Calculate and record interest on the borrowed (margin loan) amount for equities positions.
-        Interest accrues every 24 hours using DAILY_INTEREST_RATE (6.6% annual / 365).
-        Only applies to equities trade pairs.
+        Calculate and record equity-specific fees accruing at UTC midnight:
+          - SHORT positions: stock borrow fee (3% annual / 365) on position market value.
+          - LONG positions: margin interest (6.6% annual / 365) on borrowed (margin loan) amount.
+        Returns total fee charged.
         """
         if self.is_closed_position or not self.trade_pair.is_equities:
             return 0.0
 
-        borrowed = self.margin_loan
-        if borrowed <= 0:
-            return 0.0
-
-        last_interest_accrual_ms = (self.open_ms // MS_IN_24_HOURS) * MS_IN_24_HOURS
-        for fee_event in reversed(self.fee_history):
-            if fee_event["fee_type"] == "interest":
-                last_interest_accrual_ms = fee_event["time_ms"]
-                break
-
         most_recent_midnight_ms = (current_time_ms // MS_IN_24_HOURS) * MS_IN_24_HOURS
-        intervals = (most_recent_midnight_ms - last_interest_accrual_ms) // MS_IN_24_HOURS
-        if intervals <= 0:
-            return 0.0
+        total_fee = 0.0
 
-        interest_usd = borrowed * ValiConfig.DAILY_INTEREST_RATE * intervals
-        if interest_usd > 0:
-            self.record_fee_event("interest", interest_usd, most_recent_midnight_ms)
+        if self.position_type == OrderType.SHORT:
+            short_position_value = abs(self.net_value) + self.unrealized_pnl
+            if short_position_value > 0:
+                last_borrow_accrual_ms = self._last_fee_time_ms("borrow")
+                intervals = (most_recent_midnight_ms - last_borrow_accrual_ms) // MS_IN_24_HOURS
+                if intervals > 0:
+                    borrow_fee = short_position_value * ValiConfig.DAILY_STOCK_BORROW_RATE * intervals
+                    if borrow_fee > 0:
+                        self.record_fee_event("borrow", borrow_fee, most_recent_midnight_ms)
+                        total_fee += borrow_fee
 
-        return interest_usd
+        elif self.position_type == OrderType.LONG:
+            borrowed = self.margin_loan
+            if borrowed > 0:
+                last_interest_accrual_ms = self._last_fee_time_ms("interest")
+                intervals = (most_recent_midnight_ms - last_interest_accrual_ms) // MS_IN_24_HOURS
+                if intervals > 0:
+                    interest_fee = borrowed * ValiConfig.DAILY_INTEREST_RATE * intervals
+                    if interest_fee > 0:
+                        self.record_fee_event("interest", interest_fee, most_recent_midnight_ms)
+                        total_fee += interest_fee
 
-    def last_fee_time_ms(self, fee_type: str) -> int:
+        return total_fee
+
+    def _last_fee_time_ms(self, fee_type: str) -> int:
         for fee_event in reversed(self.fee_history):
             if fee_event["fee_type"] == fee_type:
                 return fee_event["time_ms"]
@@ -930,16 +939,21 @@ class Position(BaseModel):
             proposed_lots = abs(proposed_quantity)
             if proposed_lots > 0 and proposed_lots < ValiConfig.FOREX_MIN_POSITION_SIZE_LOTS:
                 raise ValueError(
-                    f"{self.trade_pair.trade_pair_id}: below min {ValiConfig.FOREX_MIN_POSITION_SIZE_LOTS} lots ({proposed_lots:.4f})")
+                    f"{self.trade_pair.trade_pair_id}: position size {proposed_lots:.4f} lots is below minimum {ValiConfig.FOREX_MIN_POSITION_SIZE_LOTS} lots")
         elif self.trade_pair.is_crypto:
             if abs(proposed_value) > 0 and abs(proposed_value) < ValiConfig.CRYPTO_MIN_POSITION_SIZE_USD:
                 raise ValueError(
-                    f"{self.trade_pair.trade_pair_id}: below min ${ValiConfig.CRYPTO_MIN_POSITION_SIZE_USD} (${abs(proposed_value):.2f})")
+                    f"{self.trade_pair.trade_pair_id}: position size ${abs(proposed_value):.2f} is below minimum ${ValiConfig.CRYPTO_MIN_POSITION_SIZE_USD:.2f}")
+        elif self.trade_pair.is_equities:
+            proposed_shares = abs(proposed_quantity)
+            if proposed_shares > 0 and proposed_shares < ValiConfig.EQUITIES_MIN_POSITION_SIZE_SHARES:
+                raise ValueError(
+                    f"{self.trade_pair.trade_pair_id}: position size {proposed_shares:.4f} shares is below minimum {ValiConfig.EQUITIES_MIN_POSITION_SIZE_SHARES} shares")
         else:  # for other asset classes
             min_position_leverage, _ = leverage_utils.get_position_leverage_bounds(self.trade_pair)
             if abs(proposed_leverage) < min_position_leverage:
                 raise ValueError(
-                    f"{self.trade_pair.trade_pair_id}: below min leverage {min_position_leverage} ({abs(proposed_leverage)})")
+                    f"{self.trade_pair.trade_pair_id}: position leverage {abs(proposed_leverage):.4f}x is below minimum {min_position_leverage}x")
 
         return clamped
 
@@ -962,6 +976,67 @@ class Position(BaseModel):
         self.last_stock_split_date = execution_date
         self._update_position()
         return True
+
+    def apply_dividend(self, gross_dividend: float, ex_date_str: str, payment_date_str: str, time_ms: int) -> Optional[float]:
+        """
+        Apply dividend at ex-date.
+        - SHORT positions dividends are deducted on ex-date
+        - LONG positions are entitled to dividends for shares held before the ex date.
+
+        Returns -amount for shorts (immediate debit), None for longs (pending credit recorded), or None if inapplicable.
+        """
+        if self.is_closed_position or not self.trade_pair.is_equities:
+            return None
+
+        # Position must have been opened before the ex-dividend date to be eligible
+        if TimeUtil.millis_to_short_date_str(self.open_ms) >= ex_date_str:
+            return None
+
+        # only one entry per ex_date per position
+        if any(e.ex_date == ex_date_str for e in self.dividend_history):
+            return None
+
+        shares = self.net_quantity  # positive = long, negative = short
+        if shares == 0:
+            return None
+
+        amount = abs(self.net_quantity) * gross_dividend
+        if shares > 0:  # LONG: record pending credit to be released on payment_date
+            self.dividend_history.append(DividendHistoryEntry(
+                type="long_credit",
+                gross_dividend=gross_dividend,
+                quantity=shares,
+                amount=amount,
+                ex_date=ex_date_str,
+                payment_date=payment_date_str,
+                time_ms=time_ms,
+                applied=False,
+            ))
+            return 0.0
+        else:  # SHORT: debit immediately
+            self.dividend_history.append(DividendHistoryEntry(
+                type="short_debit",
+                gross_dividend=gross_dividend,
+                quantity=abs(shares),
+                amount=amount,
+                ex_date=ex_date_str,
+                payment_date=ex_date_str,
+                time_ms=time_ms,
+                applied=True,
+            ))
+            self.record_fee_event("dividend_liability", amount, time_ms)
+            return -amount
+
+    def settle_pending_dividends(self, current_date_str: str) -> float:
+        """Mark long_credit entries with matching payment_date as applied. Returns total USD credit."""
+        total = 0.0
+        for entry in self.dividend_history:
+            if (entry.type == "long_credit"
+                    and entry.payment_date <= current_date_str
+                    and not entry.applied):
+                entry.applied = True
+                total += entry.amount
+        return total
 
     def _update_position(self, price_fetcher_client=None):
         self.net_leverage = 0.0

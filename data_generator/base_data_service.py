@@ -476,11 +476,13 @@ class BaseDataService():
         # log how long it has been since the last ping
         formatted_lags = {tp: f"{lag:.2f}" for tp, lag in self.trade_pair_to_longest_seen_lag_s.items()}
         formatted_lags = {k: v for k, v in formatted_lags.items() if float(v) > 10}
+        formatted_lags = dict(sorted(formatted_lags.items(), key=lambda x: float(x[1]), reverse=True))
         bt.logging.info(f"{self.provider_name} Worst lags seen: {formatted_lags}")
         # Log the last time since websocket ping
         now_ms = TimeUtil.now_in_millis()
         formatted_lags = {tp: f"{(now_ms - price_source.end_ms) / 1000.0:.2f}" for tp, price_source in
                           self.latest_websocket_events.items()}
+        formatted_lags = dict(sorted(formatted_lags.items(), key=lambda x: float(x[1]), reverse=True))
         bt.logging.info(f"{self.provider_name} Current websocket lags (s): {formatted_lags}")
         # Log the prices
         formatted_prices = {}

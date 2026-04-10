@@ -325,7 +325,7 @@ class ValiConfig:
     FOREX_MAX_LEVERAGE = 10
     INDICES_MIN_LEVERAGE = 0.1
     INDICES_MAX_LEVERAGE = 5
-    EQUITIES_MIN_LEVERAGE = 0.1
+    EQUITIES_MIN_LEVERAGE = 0.01
     EQUITIES_MAX_LEVERAGE = 2
     COMMODITIES_MIN_LEVERAGE = 0.1
     COMMODITIES_MAX_LEVERAGE = 4
@@ -340,6 +340,7 @@ class ValiConfig:
     # Minimum position size limits
     FOREX_MIN_POSITION_SIZE_LOTS = 0.01  # 0.01 standard lots
     CRYPTO_MIN_POSITION_SIZE_USD = 10.0  # $10 USD
+    EQUITIES_MIN_POSITION_SIZE_SHARES = 0.01 # 0.01 shares
 
     MAX_DAILY_DRAWDOWN = 0.95  # Portfolio should never fall below .95 x of initial value when measured day to day
     MAX_TOTAL_DRAWDOWN = 0.9  # Portfolio should never fall below .90 x of initial value when measured at any instant
@@ -500,10 +501,10 @@ class ValiConfig:
         TradePairCategory.EQUITIES: 2,
     }
     TRANSACTION_FEE_RATE = {
-        TradePairCategory.CRYPTO: 0.0005,
+        TradePairCategory.CRYPTO: 0.0005,    # 0.5%
         TradePairCategory.FOREX: 0,
         TradePairCategory.INDICES: 0,
-        TradePairCategory.EQUITIES: 0,
+        TradePairCategory.EQUITIES: 0.0005,  # 0.5%
     }
     CARRY_FEE_RATE_PER_INTERVAL = {
         TradePairCategory.CRYPTO: 0.0001,          # 10.95% annual / (365*3 intervals)
@@ -512,7 +513,12 @@ class ValiConfig:
         TradePairCategory.EQUITIES: 0,
     }
 
-    SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR = 4
+    SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR = {
+        TradePairCategory.CRYPTO: 4,
+        TradePairCategory.FOREX: 4,
+        TradePairCategory.INDICES: 4,
+        TradePairCategory.EQUITIES: 2,
+    }
 
     # Collateral limits
     MIN_COLLATERAL_BALANCE_THETA = 300  # Required minimum total collateral balance per miner in Theta. Approx $150k capital account size
@@ -594,6 +600,9 @@ class ValiConfig:
 
     ANNUAL_INTEREST_RATE = 0.066  # 6.6%
     DAILY_INTEREST_RATE = ANNUAL_INTEREST_RATE / 365
+
+    ANNUAL_STOCK_BORROW_RATE = 0.03  # 3% annual borrow rate for short equity positions
+    DAILY_STOCK_BORROW_RATE = ANNUAL_STOCK_BORROW_RATE / 365
 
     # 100% percent of collateral deposit is at risk of slashing based on drawdown
     DRAWDOWN_SLASH_PROPORTION = 1.0

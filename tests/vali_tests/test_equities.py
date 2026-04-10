@@ -881,7 +881,7 @@ class TestEquities(TestBase):
     # ==================== SUBACCOUNT_CHALLENGE Buying Power Tests ====================
 
     EQUITIES_MULTIPLIER = ValiConfig.PORTFOLIO_LEVERAGE_CAP[TradePairCategory.EQUITIES]
-    DIVISOR = ValiConfig.SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR
+    DIVISOR = ValiConfig.SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR[TradePairCategory.EQUITIES]
     REDUCED_MULTIPLIER = EQUITIES_MULTIPLIER / DIVISOR
 
     def test_subaccount_challenge_buying_power_reduced(self):

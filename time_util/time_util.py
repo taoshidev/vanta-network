@@ -21,6 +21,7 @@ from pandas.tseries.holiday import Holiday, nearest_workday, GoodFriday  # noqa:
 MS_IN_1_HOUR = 3600000
 MS_IN_8_HOURS =  28800000
 MS_IN_24_HOURS = 86400000
+S_IN_24_HOURS = 86400
 
 
 class ForexHolidayCalendar(USFederalHolidayCalendar):
