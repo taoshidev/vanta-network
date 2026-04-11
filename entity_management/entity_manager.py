@@ -411,8 +411,9 @@ class EntityManager(ValidatorBroadcastBase):
             if active_count >= ValiConfig.ENTITY_MAX_SUBACCOUNTS:
                 return False, None, f"Entity {entity_hotkey} has reached maximum subaccounts ({ValiConfig.ENTITY_MAX_SUBACCOUNTS})"
 
-            # Calculate required collateral: account_size / ENTITY_COST_PER_THETA
-            required_theta = account_size / ValiConfig.ENTITY_COST_PER_THETA if not admin else 0
+            # Calculate required collateral: account_size / ENTITY_COST_PER_THETA (lower rate for <=10k accounts)
+            cpt = ValiConfig.ENTITY_COST_PER_THETA_LOW if account_size <= ValiConfig.ENTITY_COST_PER_THETA_LOW_THRESHOLD else ValiConfig.ENTITY_COST_PER_THETA
+            required_theta = account_size / cpt if not admin else 0
             current_balance = None  # dummy init for collateral tracking on miner
 
             # Verify collateral balance
@@ -470,7 +471,7 @@ class EntityManager(ValidatorBroadcastBase):
                 t0 = time.time()
                 set_size_success = self._miner_account_client.set_miner_account_size(
                     synthetic_hotkey,
-                    collateral_balance_theta=account_size / ValiConfig.ENTITY_COST_PER_THETA,
+                    collateral_balance_theta=account_size / cpt,
                     timestamp_ms=TimeUtil.now_in_millis(),
                     account_size=account_size,
                     bucket=MinerBucket.SUBACCOUNT_CHALLENGE

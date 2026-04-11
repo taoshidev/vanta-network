@@ -705,7 +705,8 @@ class ValidatorContractManager(ValidatorBroadcastBase):
                 return False
         else:
             # Subaccount miner
-            collateral_balance = account_size / ValiConfig.ENTITY_COST_PER_THETA
+            cpt = ValiConfig.ENTITY_COST_PER_THETA_LOW if account_size <= ValiConfig.ENTITY_COST_PER_THETA_LOW_THRESHOLD else ValiConfig.ENTITY_COST_PER_THETA
+            collateral_balance = account_size / cpt
 
         if account_size is None:
             account_size = min(ValiConfig.MAX_COLLATERAL_BALANCE_THETA, collateral_balance) * ValiConfig.COST_PER_THETA

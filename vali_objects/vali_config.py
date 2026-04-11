@@ -535,6 +535,8 @@ class ValiConfig:
     # Entity Miner Collateral
     ENTITY_REGISTRATION_FEE = 5000  # Theta required to register an entity
     ENTITY_COST_PER_THETA = 5000  # USD account size per theta of collateral for entity subaccounts
+    ENTITY_COST_PER_THETA_LOW = 2500  # CPT value used for smaller account sizes <=10k
+    ENTITY_COST_PER_THETA_LOW_THRESHOLD = 10_000  # Account sizes at or below this use ENTITY_COST_PER_THETA_LOW
     MAX_SUBACCOUNT_ACCOUNT_SIZE = 100_000  # Maximum account size in USD for entity subaccounts
 
     # Entity margin collateral requirement (funded subaccounts only):
