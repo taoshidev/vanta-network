@@ -196,16 +196,14 @@ On success, the entity hotkey is assigned to the `ENTITY` bucket and receives a 
 
 ### 7. Configure Miner Secrets
 
-Create `mining/miner_secrets.json` with your wallet credentials and validator connection details:
+Create `mining/miner_secrets.json` with your wallet credentials:
 
 ```json
 {
   "api_key": "your_api_key",
   "wallet_name": "your_wallet_name",
   "wallet_hotkey": "your_hotkey_name",
-  "wallet_password": "your_wallet_password",
-  "validator_url": "http://validator_ip:48888",
-  "validator_ws_url": "ws://validator_ip:8765"
+  "wallet_password": "your_wallet_password"
 }
 ```
 
@@ -215,9 +213,6 @@ Create `mining/miner_secrets.json` with your wallet credentials and validator co
 | `wallet_name` | Bittensor wallet name |
 | `wallet_hotkey` | Bittensor hotkey name |
 | `wallet_password` | Wallet coldkey password (used for signing subaccount creation requests) |
-| `validator_url` | Validator REST API URL (port 48888) |
-| `validator_ws_url` | Validator WebSocket URL (e.g. `ws://validator_ip:8765`) |
-| `max_hl_traders` | Maximum number of Hyperliquid traders that can be registered (optional, no limit if unset). Can also be set via `MAX_HL_TRADERS` env var (env var takes precedence). |
 
 To register your entity miner's public endpoint URL with the validator, add:
 
@@ -252,12 +247,12 @@ python neurons/miner.py \
 
 ### Command-Line Options
 
-| Flag | Default | Description |
-|---|---|---|
-| `--netuid` | 1 | Subnet UID (8 for mainnet, 116 for testnet) |
+| Flag | Default  | Description |
+|---|----------|---|
+| `--netuid` | 8        | Subnet UID (8 for mainnet, 116 for testnet) |
 | `--entity-miner` | disabled | Enable the Entity Miner Gateway |
-| `--api-host` | 0.0.0.0 | Host address for the API server |
-| `--api-rest-port` | 8088 | Port for the standard Miner REST API |
+| `--api-host` | 0.0.0.0  | Host address for the API server |
+| `--api-rest-port` | 8088     | Port for the standard Miner REST API |
 | `--run-position-inspector` | disabled | Enable the position inspector thread |
 
 This starts the miner REST API on port 8088, which handles both order submission and subaccount management.
@@ -283,29 +278,6 @@ curl -X POST http://localhost:8088/api/create-subaccount \
   -d '{"asset_class": "crypto", "account_size": 10000.0}'
 ```
 
-#### Hyperliquid-Linked Subaccount
-
-Hyperliquid-linked subaccounts automatically forward trades from a Hyperliquid address as Vanta signals. They always use `crypto` as their asset class.
-
-```bash
-# Via Vanta CLI
-vanta entity create-hl-subaccount \
-  --wallet-name <wallet> \
-  --wallet-hotkey <entity> \
-  --account-size <usd_amount> \
-  --hl-address <0x...>
-
-# Via Entity Miner Gateway (requires miner running)
-curl -X POST http://localhost:8088/api/create-hl-subaccount \
-  -H "Content-Type: application/json" \
-  -H "Authorization: your_api_key" \
-  -d '{
-    "hl_address": "0xYourHyperliquidAddress",
-    "account_size": 10000.0,
-    "payout_address": "0xOptionalPayoutAddress"
-  }'
-```
-
 #### Response
 
 ```json
@@ -325,13 +297,10 @@ curl -X POST http://localhost:8088/api/create-hl-subaccount \
 
 #### Subaccount Fields
 
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `asset_class` | string | Yes (standard) | `"crypto"` or `"forex"` |
-| `account_size` | float | Yes | Account size in USD |
-| `hl_address` | string | Yes (HL) | Hyperliquid wallet address (0x + 40 hex chars) |
-| `payout_address` | string | No | Optional EVM payout address for HL subaccounts |
-| `admin` | bool | No | Admin subaccount flag (default: false) |
+| Field | Type | Required | Description                            |
+|---|---|---|----------------------------------------|
+| `asset_class` | string | Yes | `"crypto"`, `"forex"`, or `"equities"`   |
+| `account_size` | float | Yes | Account size in USD                    |
 
 ### 10. Submit Orders
 
@@ -369,40 +338,8 @@ curl http://localhost:8088/api/health \
 {
   "status": "healthy",
   "service": "EntityMinerRestServer",
-  "ws_connected": true,
-  "hl_addresses_tracked": 5,
-  "max_hl_traders": 50,
-  "dashboard_cache_size": 3,
-  "sse_subscribers": 0,
   "timestamp": 1700000000.0
 }
-```
-
-### Hyperliquid Dashboard (HL subaccounts only)
-
-Get cached dashboard data for a Hyperliquid address:
-
-```bash
-curl http://localhost:8088/api/hl/<hl_address>/dashboard \
-  -H "Authorization: your_api_key"
-```
-
-### Order Events (HL subaccounts only)
-
-Get the ring buffer of recent order events (accepted/rejected):
-
-```bash
-curl "http://localhost:8088/api/hl/<hl_address>/events?since=1700000000000" \
-  -H "Authorization: your_api_key"
-```
-
-### Real-Time SSE Stream (HL subaccounts only)
-
-Subscribe to a server-sent events stream for real-time dashboard updates and rejection notifications:
-
-```bash
-curl -N http://localhost:8088/api/hl/<hl_address>/stream \
-  -H "Authorization: your_api_key"
 ```
 
 ## Payout Computation
@@ -464,17 +401,16 @@ All validator endpoints require a valid API key (tier 200) in the `Authorization
 - Testnet: `https://validator.testnet.vantatrading.io`
 - Local: `http://<validator-ip>:48888`
 
-| Method | Endpoint | Description |
-|---|---|---|
-| POST | `/entity/register` | Register a new entity (requires coldkey signature + 5,000 Theta) |
-| POST | `/entity/create-subaccount` | Create a subaccount — standard or HL-linked (requires coldkey signature + collateral) |
-| POST | `/entity/create-hl-subaccount` | Alias for `/entity/create-subaccount` with `hl_address` |
-| GET | `/entity/<entity_hotkey>` | Get entity data and subaccount list |
-| GET | `/entities` | List all registered entities |
-| GET | `/entity/subaccount/<synthetic_hotkey>` | Get subaccount dashboard data |
-| GET | `/v2/entity/subaccount/<synthetic_hotkey>` | Get v2 subaccount dashboard data |
-| POST | `/entity/subaccount/payout` | Calculate payout for a subaccount by UUID and time range |
-| POST | `/entity/subaccount/eliminate` | Manually eliminate a subaccount |
+| Method | Endpoint | Description                                                       |
+|---|---|-------------------------------------------------------------------|
+| POST | `/entity/register` | Register a new entity (requires coldkey signature + 5,000 Theta)  |
+| POST | `/entity/create-subaccount` | Create a subaccount (requires coldkey signature + collateral)     |
+| GET | `/entity/<entity_hotkey>` | Get entity data and subaccount list                               |
+| GET | `/entities` | List all registered entities                                      |
+| GET | `/entity/subaccount/<synthetic_hotkey>` | Get subaccount dashboard data (deprecated, use v2 endpoint below) |
+| GET | `/v2/entity/subaccount/<synthetic_hotkey>` | Get v2 subaccount dashboard data                                  |
+| POST | `/entity/subaccount/payout` | Calculate payout for a subaccount by UUID and time range          |
+| POST | `/entity/subaccount/eliminate` | Manually eliminate a subaccount                                   |
 
 #### POST /entity/register
 
@@ -490,8 +426,6 @@ The signature is produced by signing `{"entity_coldkey": "...", "entity_hotkey":
 
 #### POST /entity/create-subaccount
 
-Standard subaccount:
-
 ```json
 {
   "entity_coldkey": "<coldkey_ss58>",
@@ -502,20 +436,7 @@ Standard subaccount:
 }
 ```
 
-HL-linked subaccount (include `hl_address`; `asset_class` is always `"crypto"`):
-
-```json
-{
-  "entity_coldkey": "<coldkey_ss58>",
-  "entity_hotkey": "<hotkey_ss58>",
-  "account_size": 10000.0,
-  "hl_address": "0x1234...abcd",
-  "payout_address": "0xAbCd...1234",
-  "signature": "<coldkey_signature>"
-}
-```
-
-The signature for a standard subaccount covers `{account_size, admin, asset_class, entity_coldkey, entity_hotkey}` (JSON, sorted keys). For an HL subaccount, `hl_address` (and `payout_address` if provided) are also included in the signed payload.
+The signature covers `{account_size, admin, asset_class, entity_coldkey, entity_hotkey}` (JSON, sorted keys).
 
 Response:
 
@@ -538,10 +459,6 @@ Response:
 | Method | Endpoint | Description |
 |---|---|---|
 | POST | `/api/create-subaccount` | Create a standard subaccount (proxies to validator) |
-| POST | `/api/create-hl-subaccount` | Create an HL-linked subaccount (proxies to validator) |
-| GET | `/api/hl/<hl_address>/dashboard` | Cached HL dashboard data |
-| GET | `/api/hl/<hl_address>/events` | Order event ring buffer |
-| GET | `/api/hl/<hl_address>/stream` | SSE real-time stream |
 | GET | `/api/health` | Health check |
 
 ### Miner REST Server (port 8088)
@@ -566,7 +483,6 @@ Each subaccount is identified by a synthetic hotkey with the format `{entity_hot
 | Constraint                          | Value                                                                    |
 |-------------------------------------|--------------------------------------------------------------------------|
 | Max entities on the network         | 5                                                                        |
-| Max HL traders per entity miner     | Configurable via `max_hl_traders` / `MAX_HL_TRADERS` (no limit if unset) |
 | Max account size per subaccount     | $100,000 USD                                                             |
 | Challenge period return threshold   | ≥ 8% for fx + equities, 10% for crypto                                   |
 | Challenge period drawdown threshold | 5%                                                                       |
@@ -597,21 +513,156 @@ Log in using a [polkadot.js](https://polkadot.js.org/extension/) browser wallet.
 - Check that `wallet_password` decrypts the coldkey successfully
 - Ensure port 8088 is not already in use
 
-### WebSocket not connecting
-- Confirm `validator_ws_url` in secrets matches the validator's WebSocket server (`ws://34.65.245.134:8765`)
-- Check network connectivity to the validator
-- The gateway retries with exponential backoff (1s to 60s) on connection failures
-
 ### Subaccount creation fails
 - Ensure your entity is registered with the validator
 - Verify you have sufficient Theta collateral for the requested account size
-- Verify the validator REST API is reachable at the configured `validator_url` (`https://validator.mainnet.vantatrading.io`)
 - Check that you haven't exceeded the maximum number of active subaccounts
 
 ### Orders rejected for subaccount
 - Confirm the subaccount is active (not eliminated or still in `pending` status)
 - Verify you're using `subaccount_id` (not the full synthetic hotkey) in the order request
 - Check that the subaccount's asset class matches the trade pair
+
+## Hyperliquid Subaccounts
+
+Hyperliquid-linked subaccounts automatically forward trades from a Hyperliquid address as Vanta signals. They always use `crypto` as their asset class. This section applies only if you intend to link Hyperliquid traders — it is not required for standard entity miners.
+
+The information below is optional for entity miners that do not choose to host Hyperliquid subaccount miners.
+
+### Miner Secrets
+
+Add the following fields to `mining/miner_secrets.json`:
+
+```json
+{
+  "validator_url": "https://validator.mainnet.vantatrading.io",
+  "validator_ws_url": "ws://34.65.245.134:8765"
+}
+```
+
+| Field | Description |
+|---|---|
+| `validator_url` | Validator REST API URL  |
+| `validator_ws_url` | Validator WebSocket URL |
+| `max_hl_traders` | Maximum number of Hyperliquid traders that can be registered (optional, no limit if unset). Can also be set via `MAX_HL_TRADERS` env var (env var takes precedence). |
+
+### Creating HL-Linked Subaccounts
+
+```bash
+# Via Vanta CLI
+vanta entity create-hl-subaccount \
+  --wallet-name <wallet> \
+  --wallet-hotkey <entity> \
+  --account-size <usd_amount> \
+  --hl-address <0x...>
+
+# Via Entity Miner Gateway (requires miner running)
+curl -X POST http://localhost:8088/api/create-hl-subaccount \
+  -H "Content-Type: application/json" \
+  -H "Authorization: your_api_key" \
+  -d '{
+    "hl_address": "0xYourHyperliquidAddress",
+    "account_size": 10000.0,
+    "payout_address": "0xOptionalPayoutAddress"
+  }'
+```
+
+#### Fields
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `hl_address` | string | Yes | Hyperliquid wallet address (0x + 40 hex chars) |
+| `account_size` | float | Yes | Account size in USD |
+| `payout_address` | string | No | Optional EVM payout address |
+
+### Monitoring
+
+#### Health Check (HL fields)
+
+When HL is configured, the health check response includes additional fields:
+
+| Field | Description |
+|---|---|
+| `ws_connected` | Whether the WebSocket connection to the validator is active |
+| `hl_addresses_tracked` | Number of Hyperliquid addresses currently being tracked |
+| `max_hl_traders` | Configured limit on HL traders |
+| `dashboard_cache_size` | Number of HL dashboards cached |
+| `sse_subscribers` | Number of active SSE stream subscribers |
+
+#### Hyperliquid Dashboard
+
+Get cached dashboard data for a Hyperliquid address:
+
+```bash
+curl http://localhost:8088/api/hl/<hl_address>/dashboard \
+  -H "Authorization: your_api_key"
+```
+
+#### Order Events
+
+Get the ring buffer of recent order events (accepted/rejected):
+
+```bash
+curl "http://localhost:8088/api/hl/<hl_address>/events?since=1700000000000" \
+  -H "Authorization: your_api_key"
+```
+
+#### Real-Time SSE Stream
+
+Subscribe to a server-sent events stream for real-time dashboard updates and rejection notifications:
+
+```bash
+curl -N http://localhost:8088/api/hl/<hl_address>/stream \
+  -H "Authorization: your_api_key"
+```
+
+### REST API
+
+#### Validator REST Server
+
+| Method | Endpoint | Description |
+|---|---|---|
+| POST | `/entity/create-hl-subaccount` | Alias for `/entity/create-subaccount` with `hl_address` |
+
+HL-linked subaccount creation (include `hl_address`; `asset_class` is always `"crypto"`):
+
+```json
+{
+  "entity_coldkey": "<coldkey_ss58>",
+  "entity_hotkey": "<hotkey_ss58>",
+  "account_size": 10000.0,
+  "hl_address": "0x1234...abcd",
+  "payout_address": "0xAbCd...1234",
+  "signature": "<coldkey_signature>"
+}
+```
+
+The signature covers `{account_size, admin, asset_class, entity_coldkey, entity_hotkey, hl_address}` (JSON, sorted keys), plus `payout_address` if provided.
+
+#### Entity Miner Gateway (port 8088)
+
+| Method | Endpoint | Description |
+|---|---|---|
+| POST | `/api/create-hl-subaccount` | Create an HL-linked subaccount (proxies to validator) |
+| GET | `/api/hl/<hl_address>/dashboard` | Cached HL dashboard data |
+| GET | `/api/hl/<hl_address>/events` | Order event ring buffer |
+| GET | `/api/hl/<hl_address>/stream` | SSE real-time stream |
+
+### Limits
+
+| Constraint | Value |
+|---|---|
+| Max HL traders per entity miner | Configurable via `max_hl_traders` / `MAX_HL_TRADERS` (no limit if unset) |
+
+### Troubleshooting
+
+#### WebSocket not connecting
+- Confirm `validator_ws_url` in secrets matches the validator's WebSocket server (`ws://34.65.245.134:8765`)
+- Check network connectivity to the validator
+- The gateway retries with exponential backoff (1s to 60s) on connection failures
+
+#### Subaccount creation fails
+- Verify the validator REST API is reachable at the configured `validator_url` (`https://validator.mainnet.vantatrading.io`)
 
 ## Security Notes
 

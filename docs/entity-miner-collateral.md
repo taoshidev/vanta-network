@@ -26,8 +26,6 @@ If the entity's current balance is below `required_theta`, the request is reject
 
 If the balance is sufficient, the subaccount is created with `status = "pending"` and a background thread calls `slash_miner_collateral(entity_hotkey, required_theta)` on-chain. On success the subaccount becomes `status = "active"`; on failure it becomes `status = "failed"`.
 
-Admin subaccounts skip this check and are created immediately as `status = "admin"`.
-
 ### Example
 
 | Account Size | CPT   | Required Theta |
@@ -39,16 +37,16 @@ Admin subaccounts skip this check and are created immediately as `status = "admi
 
 ---
 
-## 2. Cross-Margin Requirement (Ongoing)
+## 2. Cross-Margin Requirement
 
 After subaccounts are active, the entity must maintain enough theta to cover the combined open-position exposure of all its funded subaccounts. This is computed dynamically on every incoming order.
 
 ### Key parameters
 
-| Parameter | Value | Meaning |
-|-----------|-------|---------|
-| `SUBACCOUNT_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD` | 8% | MDD cap — maximum loss that can ever be slashed per subaccount |
-| `ENTITY_COLLATERAL_CPT_RISK` | 35 | USD of remaining loss capacity per theta |
+| Parameter | Value | Meaning                                                                                  |
+|-----------|-------|------------------------------------------------------------------------------------------|
+| `SUBACCOUNT_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD` | 8% | MDD cap — maximum loss that can ever be slashed per subaccount                           |
+| `ENTITY_COLLATERAL_CPT_RISK` | 35 | USD of remaining loss capacity per theta (Subject to change based on Theta market price) |
 
 ### Per-subaccount margin (USD)
 
@@ -59,7 +57,7 @@ margin_usd         = min(total_open_position_value, remaining_headroom)
 ```
 
 - **Challenge period subaccounts are fully exempt** — their payout is zero, so no margin is required.
-- Once `cumulative_slashed >= max_slash`, `remaining_headroom = 0` and the subaccount contributes nothing to the margin requirement (it will also be eliminated).
+- Once `cumulative_slashed >= max_slash`, `remaining_headroom = 0` and the subaccount contributes nothing to the margin requirement.
 
 ### Entity-level required collateral (theta)
 
