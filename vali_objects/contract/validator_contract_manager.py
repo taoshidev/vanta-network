@@ -25,6 +25,7 @@ import template.protocol
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
 from vali_objects.miner_account.miner_account_client import MinerAccountClient
 from entity_management.entity_client import EntityClient
+from vali_objects.utils.entity_collateral.entity_collateral_client import EntityCollateralClient
 
 
 # ==================== Constants ====================
@@ -103,6 +104,9 @@ class ValidatorContractManager(ValidatorBroadcastBase):
 
         # EntityClient for checking entity subaccounts during withdrawals
         self._entity_client = EntityClient(connection_mode=connection_mode, connect_immediately=False)
+
+        # EntityCollateralClient for required collateral checks during withdrawals
+        self._entity_collateral_client = EntityCollateralClient(connection_mode=connection_mode, connect_immediately=False)
 
         # Lock for test collateral balances dict (prevents concurrent modifications in tests)
         self._test_balances_lock = threading.Lock()
@@ -454,27 +458,18 @@ class ValidatorContractManager(ValidatorBroadcastBase):
                 bt.logging.error(error_msg)
                 return {"successfully_processed": False, "error_message": error_msg}
 
-            # Block entity withdrawals when subaccounts have open positions
-            entity_data = self._entity_client.get_entity_data(miner_hotkey)
-            if entity_data:
-                subaccounts = entity_data.get("subaccounts", {})
-                for sa_id, sa_info in subaccounts.items():
-                    synthetic_hotkey = sa_info.get("synthetic_hotkey")
-                    if not synthetic_hotkey:
-                        continue
-                    if sa_info.get("status") not in ("active", "admin"):
-                        continue
-                    open_positions = self._position_client.get_positions_for_one_hotkey(
-                        synthetic_hotkey, only_open_positions=True
+            # For entity miners, reject only if withdrawal leaves insufficient collateral
+            if self._entity_client.get_entity_data(miner_hotkey):
+                required_theta = self._entity_collateral_client.compute_entity_required_collateral(miner_hotkey)
+                balance_after = theta_current_balance - amount
+                if balance_after < required_theta:
+                    error_msg = (
+                        f"Cannot withdraw {amount:.2f} Theta. Post-withdrawal balance of "
+                        f"{balance_after:.2f} theta would be below the required {required_theta:.2f} theta "
+                        f"to cover open subaccount positions."
                     )
-                    if open_positions:
-                        error_msg = (
-                            f"Cannot withdraw collateral. Subaccount {sa_id} ({synthetic_hotkey}) "
-                            f"has {len(open_positions)} open position(s). "
-                            f"Please close all subaccount positions before withdrawing."
-                        )
-                        bt.logging.error(error_msg)
-                        return {"successfully_processed": False, "error_message": error_msg}
+                    bt.logging.error(error_msg)
+                    return {"successfully_processed": False, "error_message": error_msg}
 
             # Determine amount slashed and remaining amount eligible for withdrawal
             drawdown = self._position_client.compute_realtime_drawdown(miner_hotkey)
