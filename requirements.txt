@@ -22,4 +22,4 @@ python-socks==2.7.1
 PySocks==1.7.1
 web3==7.12.1
 git+https://github.com/taoshidev/collateral_sdk.git@1.0.7#egg=collateral_sdk
-git+https://github.com/taoshidev/vanta-cli.git@2.0.3#egg=vanta-cli
+git+https://github.com/taoshidev/vanta-cli.git@2.1.0#egg=vanta-cli
