@@ -392,6 +392,11 @@ class EntityCollateralManager(CacheController):
         if realized_loss <= 0:
             return 0.0
 
+        # Challenge period subaccounts are exempt from slashing
+        bucket = self._challenge_period_client.get_miner_bucket(synthetic_hotkey)
+        if bucket == MinerBucket.SUBACCOUNT_CHALLENGE:
+            return 0.0
+
         max_slash = self.get_max_slash(synthetic_hotkey)
         if max_slash <= 0:
             bt.logging.warning(

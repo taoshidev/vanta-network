@@ -107,7 +107,7 @@ The deposited balance is read from a local cache refreshed every ~60 seconds fro
 
 ### On position close with loss
 
-Triggered in `MarketOrderManager` via `EntityCollateralClient.try_slash_on_position_close`. Only fires when `realized_pnl < 0`.
+Triggered in `MarketOrderManager` via `EntityCollateralClient.try_slash_on_position_close`. Only fires when `realized_pnl < 0`. Challenge period subaccounts and regular miners are exempt.
 
 ```
 cumulative_realized_loss += abs(realized_pnl)
