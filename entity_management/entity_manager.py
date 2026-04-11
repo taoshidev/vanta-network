@@ -411,8 +411,9 @@ class EntityManager(ValidatorBroadcastBase):
             if active_count >= ValiConfig.ENTITY_MAX_SUBACCOUNTS:
                 return False, None, f"Entity {entity_hotkey} has reached maximum subaccounts ({ValiConfig.ENTITY_MAX_SUBACCOUNTS})"
 
-            # Calculate required collateral: account_size / ENTITY_COST_PER_THETA
-            required_theta = account_size / ValiConfig.ENTITY_COST_PER_THETA if not admin else 0
+            # Calculate required collateral: account_size / ENTITY_COST_PER_THETA (lower rate for <=10k accounts)
+            cpt = ValiConfig.ENTITY_COST_PER_THETA_LOW if account_size <= ValiConfig.ENTITY_COST_PER_THETA_LOW_THRESHOLD else ValiConfig.ENTITY_COST_PER_THETA
+            required_theta = account_size / cpt if not admin else 0
             current_balance = None  # dummy init for collateral tracking on miner
 
             # Verify collateral balance
@@ -470,7 +471,7 @@ class EntityManager(ValidatorBroadcastBase):
                 t0 = time.time()
                 set_size_success = self._miner_account_client.set_miner_account_size(
                     synthetic_hotkey,
-                    collateral_balance_theta=account_size / ValiConfig.ENTITY_COST_PER_THETA,
+                    collateral_balance_theta=account_size / cpt,
                     timestamp_ms=TimeUtil.now_in_millis(),
                     account_size=account_size,
                     bucket=MinerBucket.SUBACCOUNT_CHALLENGE
@@ -498,8 +499,6 @@ class EntityManager(ValidatorBroadcastBase):
                 return False, None, f"Error creating subaccount: {str(e)}"
 
             # Create subaccount info
-            # Admin subaccounts get "admin" status (no slashing, excluded from payouts)
-            # Regular subaccounts get "pending" status (slashing happens async)
             now_ms = TimeUtil.now_in_millis()
             initial_status = "admin" if admin else "pending"
             subaccount_info = SubaccountInfo(
@@ -1807,7 +1806,7 @@ class EntityManager(ValidatorBroadcastBase):
                     existing_sub = entity_data.subaccounts[subaccount_id]
                     if existing_sub.subaccount_uuid == subaccount_uuid:
                         changed = False
-                        # Update status if changed (e.g., pending -> active after slashing)
+                        # Update status if changed
                         if existing_sub.status != status:
                             bt.logging.info(
                                 f"[ENTITY_MANAGER] Updating subaccount {synthetic_hotkey} status: "

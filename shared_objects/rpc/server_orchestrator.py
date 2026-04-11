@@ -291,6 +291,14 @@ class ServerOrchestrator:
             required_in_validator=True,  # Validators need entity management for subaccount tracking
             spawn_kwargs={'start_daemon': False}  # Daemon started later via orchestrator
         ),
+        'entity_collateral': ServerConfig(
+            server_class=None,
+            client_class=None,
+            required_in_testing=True,
+            required_in_miner=False,  # Miners don't need entity collateral management
+            required_in_validator=True,  # Validators need entity collateral for cross-margin gating
+            spawn_kwargs={'start_daemon': False}  # Daemon started later via orchestrator
+        ),
         'weight_calculator': ServerConfig(
             server_class=None,
             client_class=None,
@@ -412,6 +420,8 @@ class ServerOrchestrator:
         from vali_objects.miner_account.miner_account_client import MinerAccountClient
         from entity_management.entity_server import EntityServer
         from entity_management.entity_client import EntityClient
+        from vali_objects.utils.entity_collateral.entity_collateral_server import EntityCollateralServer
+        from vali_objects.utils.entity_collateral.entity_collateral_client import EntityCollateralClient
         from vali_objects.hl_funding.hl_funding_rate_server import HLFundingRateServer
         from vali_objects.hl_funding.hl_funding_rate_client import HLFundingRateClient
 
@@ -475,6 +485,9 @@ class ServerOrchestrator:
 
         self.SERVERS['entity'].server_class = EntityServer
         self.SERVERS['entity'].client_class = EntityClient
+
+        self.SERVERS['entity_collateral'].server_class = EntityCollateralServer
+        self.SERVERS['entity_collateral'].client_class = EntityCollateralClient
 
         self.SERVERS['hl_funding'].server_class = HLFundingRateServer
         self.SERVERS['hl_funding'].client_class = HLFundingRateClient

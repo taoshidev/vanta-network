@@ -191,6 +191,7 @@ class Validator(ValidatorBase):
         self.perf_ledger_client = orchestrator.get_client('perf_ledger')
         self.debt_ledger_client = orchestrator.get_client('debt_ledger')
         self.entity_client = orchestrator.get_client('entity')
+        self.entity_collateral_client = orchestrator.get_client('entity_collateral')
 
         # Get subtensor from SubtensorOpsServer
         subtensor_ops_server = orchestrator.get_server('subtensor_ops')
@@ -213,7 +214,8 @@ class Validator(ValidatorBase):
             'core_outputs',
             'miner_statistics',
             'weight_calculator',
-            'entity'
+            'entity',
+            'entity_collateral'
         ])
         bt.logging.success("[INIT] All daemons started, caches warmed")
         # ============================================================================

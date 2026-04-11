@@ -237,6 +237,12 @@ class ValiConfig:
     RPC_HL_FUNDING_PORT = 50025
     RPC_HL_FUNDING_SERVICE_NAME = "HLFundingRateServer"
 
+    RPC_ENTITY_COLLATERAL_PORT = 50026
+    RPC_ENTITY_COLLATERAL_SERVICE_NAME = "EntityCollateralServer"
+
+    # Entity collateral cache refresh interval (seconds)
+    ENTITY_COLLATERAL_CACHE_REFRESH_S = 60
+
     # Public API Configuration (well-known network endpoints)
     REST_API_HOST = "127.0.0.1"
     REST_API_PORT = 48888
@@ -529,7 +535,15 @@ class ValiConfig:
     # Entity Miner Collateral
     ENTITY_REGISTRATION_FEE = 5000  # Theta required to register an entity
     ENTITY_COST_PER_THETA = 5000  # USD account size per theta of collateral for entity subaccounts
+    ENTITY_COST_PER_THETA_LOW = 2500  # CPT value used for smaller account sizes <=10k
+    ENTITY_COST_PER_THETA_LOW_THRESHOLD = 10_000  # Account sizes at or below this use ENTITY_COST_PER_THETA_LOW
     MAX_SUBACCOUNT_ACCOUNT_SIZE = 100_000  # Maximum account size in USD for entity subaccounts
+
+    # Entity margin collateral requirement (funded subaccounts only):
+    #   required_theta = sum(max_slash_usd - cumulative_slashed_usd) / CPT_RISK
+    #   for each funded subaccount with open positions (or placing this order)
+    # max_slash_usd = account_size * SUBACCOUNT_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD
+    ENTITY_COLLATERAL_CPT_RISK = 35  # USD of remaining loss capacity per theta ($35 of capacity = 1 theta)
 
     # Hyperliquid tracking configuration
     HL_USE_TESTNET = False  # Set to True to use Hyperliquid testnet endpoints

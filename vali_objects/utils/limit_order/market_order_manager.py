@@ -47,6 +47,10 @@ class MarketOrderManager():
         # Create EntityClient for subaccount dashboard broadcasts
         self._entity_client = EntityClient(connection_mode=connection_mode, connect_immediately=False)
 
+        # Create EntityCollateralClient for cross-margin gating and slashing
+        from vali_objects.utils.entity_collateral.entity_collateral_client import EntityCollateralClient
+        self._entity_collateral_client = EntityCollateralClient(connection_mode=connection_mode, connect_immediately=False)
+
         # Create own PositionManagerClient (forward compatibility - no parameter passing)
         from vali_objects.position_management.position_manager_client import PositionManagerClient
         self._position_client = PositionManagerClient(
@@ -300,6 +304,14 @@ class MarketOrderManager():
             order.quantity, order.leverage, order.value = order_sizes
             bt.logging.info(f"[ADD_ORDER_DETAIL] order resized to ${order.value} (max position: {max_position_value}, max_cash: {buying_power}")
 
+        # Entity cross-margin gating for subaccounts
+        if order.order_type == existing_position.position_type:
+            allowed, reason = self._entity_collateral_client.try_gate_position_open(miner_hotkey, order.value)
+            if not allowed:
+                raise SignalException(
+                    f"Entity cross-margin check failed for subaccount [{miner_hotkey}]: {reason}"
+                )
+
         # Process cash balance after validation passes
         if order.order_type == existing_position.position_type:
             # Buy: pay value plus transaction fee (raises SignalException if invalid)
@@ -331,6 +343,9 @@ class MarketOrderManager():
 
             # Store loan repayment as negative margin_loan so position.margin_loan sums correctly
             order.margin_loan = -loan_repaid
+
+            # Slash entity collateral on realized loss for subaccounts
+            self._entity_collateral_client.try_slash_on_position_close(miner_hotkey, order_realized_pnl)
 
         step_start = TimeUtil.now_in_millis()
         existing_position.add_order(order, transaction_fee=transaction_fee)

@@ -24,6 +24,8 @@ from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 import template.protocol
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
 from vali_objects.miner_account.miner_account_client import MinerAccountClient
+from entity_management.entity_client import EntityClient
+from vali_objects.utils.entity_collateral.entity_collateral_client import EntityCollateralClient
 
 
 # ==================== Constants ====================
@@ -99,6 +101,12 @@ class ValidatorContractManager(ValidatorBroadcastBase):
 
         # MinerAccountClient for account size operations
         self._miner_account_client = MinerAccountClient(connection_mode=connection_mode)
+
+        # EntityClient for checking entity subaccounts during withdrawals
+        self._entity_client = EntityClient(connection_mode=connection_mode, connect_immediately=False)
+
+        # EntityCollateralClient for required collateral checks during withdrawals
+        self._entity_collateral_client = EntityCollateralClient(connection_mode=connection_mode, connect_immediately=False)
 
         # Lock for test collateral balances dict (prevents concurrent modifications in tests)
         self._test_balances_lock = threading.Lock()
@@ -450,6 +458,19 @@ class ValidatorContractManager(ValidatorBroadcastBase):
                 bt.logging.error(error_msg)
                 return {"successfully_processed": False, "error_message": error_msg}
 
+            # For entity miners, reject only if withdrawal leaves insufficient collateral
+            if self._entity_client.get_entity_data(miner_hotkey):
+                required_theta = self._entity_collateral_client.compute_entity_required_collateral(miner_hotkey)
+                balance_after = theta_current_balance - amount
+                if balance_after < required_theta:
+                    error_msg = (
+                        f"Cannot withdraw {amount:.2f} Theta. Post-withdrawal balance of "
+                        f"{balance_after:.2f} theta would be below the required {required_theta:.2f} theta "
+                        f"to cover open subaccount positions."
+                    )
+                    bt.logging.error(error_msg)
+                    return {"successfully_processed": False, "error_message": error_msg}
+
             # Determine amount slashed and remaining amount eligible for withdrawal
             drawdown = self._position_client.compute_realtime_drawdown(miner_hotkey)
 
@@ -684,7 +705,8 @@ class ValidatorContractManager(ValidatorBroadcastBase):
                 return False
         else:
             # Subaccount miner
-            collateral_balance = account_size / ValiConfig.ENTITY_COST_PER_THETA
+            cpt = ValiConfig.ENTITY_COST_PER_THETA_LOW if account_size <= ValiConfig.ENTITY_COST_PER_THETA_LOW_THRESHOLD else ValiConfig.ENTITY_COST_PER_THETA
+            collateral_balance = account_size / cpt
 
         if account_size is None:
             account_size = min(ValiConfig.MAX_COLLATERAL_BALANCE_THETA, collateral_balance) * ValiConfig.COST_PER_THETA
