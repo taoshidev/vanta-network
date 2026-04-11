@@ -23,9 +23,9 @@ from vali_objects.price_fetcher.live_price_client import LivePriceFetcherClient
 from vali_objects.utils.elimination.elimination_client import EliminationClient
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
-from vali_objects.vali_config import RPCConnectionMode, ValiConfig, DynamicTradePair
+from vali_objects.vali_config import RPCConnectionMode, ValiConfig
 from vali_objects.vali_dataclasses import position as position_file
-from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import FeeCache, PerfLedger
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger
 
 from vali_objects.vali_dataclasses.position import Position
 from entity_management.entity_utils import is_synthetic_hotkey
@@ -95,13 +95,6 @@ class PerfLedgerManager(CacheController):
         # Create own LivePriceFetcherClient (forward compatibility - no parameter passing)
         self._live_price_client = LivePriceFetcherClient(running_unit_tests=running_unit_tests)
 
-        # HL funding rate client for HL position carry fees
-        from vali_objects.hl_funding.hl_funding_rate_client import HLFundingRateClient
-        self._hl_funding_client = HLFundingRateClient(
-            connection_mode=connection_mode,
-            connect_immediately=False,
-        )
-
         # Every update, pick a hotkey to rebuild in case polygon 1s candle data changed.
         self.trade_pair_to_price_info = {'second':{}, 'minute':{}}
         self.portfolio_ret = None
@@ -120,8 +113,6 @@ class PerfLedgerManager(CacheController):
         self.hk_to_last_order_processed_ms = {}
         self.mode_to_n_updates = {}
         self.update_to_n_open_positions = {}
-        self.position_uuid_to_cache = defaultdict(FeeCache)
-        self._hl_funding_rates_cache: dict = {}  # (coin, position_uuid) -> funding_rates dict
         self.target_ledger_window_ms = target_ledger_window_ms
         bt.logging.info(f"Running performance ledger manager with mode {self.parallel_mode.name}")
         if self.is_backtesting or self.parallel_mode != ParallelizationMode.SERIAL:
@@ -143,25 +134,6 @@ class PerfLedgerManager(CacheController):
             self.secrets = secrets
         else:
             self.secrets = ValiUtils.get_secrets(running_unit_tests=self.running_unit_tests)
-
-    def _get_hl_funding_rates(self, position, current_time_ms: int):
-        """Fetch HL funding rates for a position if it is an HL position, otherwise return None."""
-        if not position.is_hl:
-            return None
-        tp = position.trade_pair
-        if isinstance(tp, DynamicTradePair):
-            coin = tp.hl_coin
-        else:
-            coin = ValiConfig.TRADE_PAIR_ID_TO_HL_COIN.get(tp.trade_pair_id)
-        if not coin:
-            return None
-        try:
-            return self._hl_funding_client.get_rates_for_position(
-                coin, position.open_ms, current_time_ms
-            )
-        except Exception as e:
-            bt.logging.warning(f"[PERF_LEDGER] Failed to fetch HL funding rates for {coin}: {e}")
-            return None
 
     @property
     def contract_manager(self):
@@ -677,11 +649,6 @@ class PerfLedgerManager(CacheController):
                 if self._is_shutdown():
                     return portfolio_return, portfolio_realized_pnl, portfolio_unrealized_pnl, any_open_status
 
-                # Calculate fees for this position
-                position_spread_fee, psf_updated = self.position_uuid_to_cache[historical_position.position_uuid].get_spread_fee(historical_position, t_ms)
-                hl_fr = self._get_hl_funding_rates(historical_position, t_ms)
-                position_carry_fee, pcf_updated = self.position_uuid_to_cache[historical_position.position_uuid].get_carry_fee(t_ms, historical_position, funding_rates=hl_fr)
-
                 # Check if market is open
                 if not self.market_calendar.is_market_open(historical_position.trade_pair, t_ms):
                     # Check if this position closes at or before this checkpoint time
@@ -720,10 +687,10 @@ class PerfLedgerManager(CacheController):
 
                 # Update position returns based on current price
                 if historical_position.is_open_position and price_at_t_ms is not None:
-                    historical_position.set_returns(price_at_t_ms, self._live_price_client, time_ms=t_ms, total_fees=position_spread_fee * position_carry_fee)
+                    historical_position.set_returns(price_at_t_ms)
                 else:
                     # Closed positions or no price available - just update fees
-                    historical_position.set_returns_with_updated_fees(position_spread_fee * position_carry_fee, t_ms, self._live_price_client)
+                    historical_position.return_at_close = historical_position.current_return
 
                 # Track last known prices for portfolio ledger to maintain continuity
                 if price_at_t_ms is not None:
@@ -1320,10 +1287,7 @@ class PerfLedgerManager(CacheController):
                         old_return = position.return_at_close
 
                         # Calculate the return at the last known price point
-                        position_spread_fee, _ = self.position_uuid_to_cache[position.position_uuid].get_spread_fee(position, t_ms)
-                        hl_fr = self._get_hl_funding_rates(position, t_ms)
-                        position_carry_fee, _ = self.position_uuid_to_cache[position.position_uuid].get_carry_fee(t_ms, position, funding_rates=hl_fr)
-                        position.set_returns(last_price, self._live_price_client, time_ms=t_ms, total_fees=position_spread_fee * position_carry_fee)
+                        position.set_returns(last_price)
 
                         # Store info for aggregate logging with both price and return changes
                         new_return = position.return_at_close

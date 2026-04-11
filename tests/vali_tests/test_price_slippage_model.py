@@ -69,7 +69,7 @@ class TestPriceSlippageModel(TestBase):
         assert self.open_position.initial_entry_price == 105  # 100 * (1 + 0.05) = 105
         assert self.open_position.average_entry_price == 105
 
-        self.open_position.set_returns(110, self.live_price_fetcher)  # say the current price has grown from 100 -> 110
+        self.open_position.set_returns(110)  # say the current price has grown from 100 -> 110
         # the current return only applies slippage to the entry price, for unrealized PnL
         assert self.open_position.current_return == 1.05  # 5000 / 100_000 or (110-105) / 100
 

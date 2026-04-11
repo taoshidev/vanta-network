@@ -110,7 +110,7 @@ class ReturnCalculator:
             position=position_copy
         )
 
-        position_copy.set_returns(realtime_price=price, time_ms=target_date_ms)
+        position_copy.set_returns(price)
         return position_copy.return_at_close
 
 

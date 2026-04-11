@@ -8,6 +8,7 @@ from vali_objects.vali_config import ValiConfig
 from vali_objects.enums.order_type_enum import OrderType
 import uuid
 import logging
+import re
 
 from time_util.time_util import TimeUtil
 
@@ -347,3 +348,18 @@ class PositionUtils:
             cumulative_returns.append(cumulative_return)
             
         return cumulative_returns
+
+    @staticmethod
+    def to_copyable_str(position: Position):
+        ans = position.model_dump()
+        ans['trade_pair'] = f'TradePair.{position.trade_pair.trade_pair_id}'
+        ans['position_type'] = f'OrderType.{position.position_type.name}'
+        for o in ans['orders']:
+            o['trade_pair'] = f'TradePair.{position.trade_pair.trade_pair_id}'
+            o['order_type'] = f'OrderType.{o["order_type"].name}'
+
+        s = str(ans)
+        s = re.sub(r"'(TradePair\.[A-Z]+|OrderType\.[A-Z]+|FLAT|SHORT|LONG)'", r"\1", s)
+
+        return s
+

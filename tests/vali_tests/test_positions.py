@@ -9,9 +9,6 @@ from tests.vali_tests.base_objects.test_base import TestBase
 from time_util.time_util import MS_IN_8_HOURS, MS_IN_24_HOURS
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.vali_dataclasses.position import (
-    CRYPTO_CARRY_FEE_PER_INTERVAL,
-    FOREX_CARRY_FEE_PER_INTERVAL,
-    INDICES_CARRY_FEE_PER_INTERVAL,
     Position,
 )
 
@@ -308,134 +305,14 @@ class TestPositions(TestBase):
         open_position.add_order(open_order, self.live_price_fetcher)
         assert open_position.current_return == 1
 
-        open_position.set_returns(90, price_fetcher_client=self.live_price_fetcher)
+        open_position.set_returns(90)
         r1 = open_position.current_return
         assert r1 != 1.0
 
-        open_position.set_returns(80, price_fetcher_client=self.live_price_fetcher)
+        open_position.set_returns(80)
         r2 = open_position.current_return
         assert r2 != 1.0
         assert r1 < r2
-
-    def test_maximum_leverage_in_interval_monotone_increasing(self):
-        position = deepcopy(self.default_position)
-        position.orders = []
-        for i in range(10):
-            o = Order(order_type=OrderType.LONG,
-                      leverage=.1 + i / 10,
-                      price=100,
-                      trade_pair=TradePair.BTCUSD,
-                      processed_ms=1000 + i * 10,
-                      order_uuid=str(i))
-            position.orders.append(o)
-        position.rebuild_position_with_updated_orders(self.live_price_fetcher)
-
-        # Test various intervals
-        test_intervals = [
-            (1000, 1001, 0.1),  # 0.1
-            (1000, 1010, 0.3),  # 0.1 + 0.2
-            (1000, 1020, 0.6),  # 0.1 + 0.2 + 0.3
-            (1000, 1030, 1.0),  # 0.1 + 0.2 + 0.3 + 0.4
-            (1000, 1040, 1.5),  # 0.1 + 0.2 + 0.3 + 0.4 + 0.5
-            (1000, 1050, 2.1),  # 0.1 + 0.2 + 0.3 + 0.4 + 0.5 + 0.6
-            (1000, 1060, 2.8),  # 0.1 + 0.2 + 0.3 + 0.4 + 0.5 + 0.6 + 0.7
-            (1000, 1070, 3.6),  # 0.1 + 0.2 + 0.3 + 0.4 + 0.5 + 0.6 + 0.7 + 0.8
-            (1000, 1080, 4.5),  # 0.1 + 0.2 + 0.3 + 0.4 + 0.5 + 0.6 + 0.7 + 0.8 + 0.9
-            (1000, 1090, 5.5),  # 0.1 + 0.2 + 0.3 + 0.4 + 0.5 + 0.6 + 0.7 + 0.8 + 0.9 + 1.0
-            (1000, 1100, 5.5),  # 0.1 + 0.2 + 0.3 + 0.4 + 0.5 + 0.6 + 0.7 + 0.8 + 0.9 + 1.0
-
-            (1085, 1085, 4.5),  # zero interval length is still valid since we check inclusive.
-            (1090, 1090, 5.5),  # zero interval length is still valid since we check inclusive.
-
-            (1010, 1020, 0.6),  # max at 1020 unchanged
-            (1020, 1030, 1.0),  # max at ... unchanged
-            (1030, 1040, 1.5),  # max at ... unchanged
-            (1040, 1050, 2.1),  # max at ... unchanged
-            (1050, 1060, 2.8),  # max at ... unchanged
-            (1060, 1070, 3.6),  # max at ... unchanged
-            (1070, 1080, 4.5),  # max at ... unchanged
-            (1080, 1090, 5.5),  # 1090 unchanged
-            (1090, 1100, 5.5),  # 1090 unchanged
-
-            (1100, 1150, 5.5),
-            # Interval after any order timestamps but the position hasn't closed so it is the most recent leverage
-            (1500, 1500, 5.5),
-            # Interval after any order timestamps but the position hasn't closed so it is the most recent leverage
-
-        ]
-
-        for start, end, expected_leverage in test_intervals:
-            msg = f"start: {start}, end: {end}, expected_leverage: {expected_leverage}"
-            self.assertAlmostEqual(position.max_leverage_seen_in_interval(start, end), expected_leverage, 7, msg)
-
-        # throw an exception for invalid interval
-        invalid_intervals = [
-            (900, 950),  # Interval before any order timestamps
-            (1050, 1000),  # End timestamp smaller than start timestamp
-            (-100, 1000),  # Negative start timestamp
-            (1000, -100),  # Negative end timestamp
-        ]
-        for start, end in invalid_intervals:
-            msg = f"start: {start}, end: {end}"
-            with self.assertRaises(ValueError, msg=msg):
-                _ = position.max_leverage_seen_in_interval(start, end)
-
-    def test_maximum_leverage_in_interval_ups_and_downs(self):
-        position = deepcopy(self.default_position)
-        position.orders = []
-        for i in range(10):
-            if i % 2 == 0:
-                lev = -1
-            else:
-                lev = 0.5
-
-            ot = OrderType.LONG if lev > 0 else OrderType.SHORT
-            o = Order(order_type=ot,
-                      leverage=lev,
-                      price=100,
-                      trade_pair=TradePair.BTCUSD,
-                      processed_ms=1000 + i * 10,
-                      order_uuid=str(i))
-            position.orders.append(o)
-        position.rebuild_position_with_updated_orders(self.live_price_fetcher)
-
-        # Test various intervals
-        test_intervals = [
-            (1000, 1001, 1),  # -1 = -1
-            (1000, 1010, 1),  # -1 + 0.5 = -0.5
-            (1000, 1020, 1.5),  # -1 + 0.5 - 1 = -1.5
-            (1000, 1030, 1.5),  # -1 + 0.5 - 1 + 0.5 = -1
-            (1000, 1040, 2.0),  # -1 + 0.5 - 1 + 0.5 - 1 = -2
-            (1000, 1050, 2.0),  # -1 + 0.5 - 1 + 0.5 - 1 + 0.5 = -1.5
-            (1000, 1060, 2.5),  # -1 + 0.5 - 1 + 0.5 - 1 + 0.5 - 1 = -2.5
-            (1000, 1070, 2.5),  # -1 + 0.5 - 1 + 0.5 - 1 + 0.5 - 1 + 0.5 = -2
-            (1000, 1080, 3.0),  # -1 + 0.5 - 1 + 0.5 - 1 + 0.5 - 1 + 0.5 - 1 = -3
-            (1000, 1090, 3.0),  # -1 + 0.5 - 1 + 0.5 - 1 + 0.5 - 1 + 0.5 - 1 + 0.5 = -2.5
-            (1000, 1100, 3.0),  # -1 + 0.5 - 1 + 0.5 - 1 + 0.5 - 1 + 0.5 - 1 + 0.5 = -2.5
-
-            (1085, 1085, 3.0),  # zero interval length is still valid since we check inclusive.
-            (1090, 1090, 2.5),  # zero interval length is still valid since we check inclusive.
-
-            (1010, 1020, 1.5),  # max at 1020 unchanged
-            (1020, 1030, 1.5),  # max at ... unchanged
-            (1030, 1040, 2.0),  # max at ... unchanged
-            (1040, 1050, 2.0),  # max at ... unchanged
-            (1050, 1060, 2.5),  # max at ... unchanged
-            (1060, 1070, 2.5),  # max at ... unchanged
-            (1070, 1080, 3.0),  # max at ... unchanged
-            (1080, 1090, 3.0),  # 1090 unchanged
-            (1090, 1100, 2.5),  # 1090 unchanged
-
-            (1100, 1150, 2.5),
-            # Interval after any order timestamps but the position hasn't closed so it is the most recent leverage
-            (1500, 1500, 2.5),
-            # Interval after any order timestamps but the position hasn't closed so it is the most recent leverage
-
-        ]
-
-        for start, end, expected_leverage in test_intervals:
-            msg = f"start: {start}, end: {end}, expected_leverage: {expected_leverage}"
-            self.assertAlmostEqual(position.max_leverage_seen_in_interval(start, end), expected_leverage, 7, msg)
 
     def test_simple_long_position_with_explicit_FLAT(self):
         position = deepcopy(self.default_position)
@@ -504,53 +381,6 @@ class TestPositions(TestBase):
             'unfilled_orders': []
         })
 
-        self.assertEqual(position.max_leverage_seen(), 1.0)
-        self.assertEqual(position.get_cumulative_leverage(), 2.0)
-
-        self.assertEqual(position.get_carry_fee(o2.processed_ms)[0], CRYPTO_CARRY_FEE_PER_INTERVAL)
-
-    def test_carry_fee_edge_case(self):
-        """
-        assert next_update_time_ms > current_time_ms,
-        [TimeUtil.millis_to_verbose_formatted_date_str(x) for x in
-         (self.carry_fee_next_increase_time_ms, next_update_time_ms, current_time_ms)] + [carry_fee, position]
-        AssertionError: ['2024-07-24 04:00:00.000', '2024-07-24 04:00:00.000', '2024-07-24 04:00:00.000', 0.9999979876994218,
-         Position(miner_hotkey='5EUTaAo7vCGxvLDWRXRrEuqctPjt9fKZmgkaeFZocWECUe9X',
-          position_uuid='6955409a-031e-47df-8614-4488208497a6',
-          open_ms=1721228840870,
-          trade_pair=<TradePair.BTCUSD: ['BTCUSD', 'BTC/USD', 0.001, 0.001, 20, <TradePairCategory.CRYPTO: 'crypto'>]>,
-          orders=[Order(trade_pair=<TradePair.BTCUSD: ['BTCUSD', 'BTC/USD', 0.001, 0.001, 20, <TradePairCategory.CRYPTO: 'crypto'>]>,
-                    order_type=<OrderType.LONG: 'LONG'>, leverage=0.001, price=64900.41, processed_ms=1721228840870,
-                    order_uuid='6955409a-031e-47df-8614-4488208497a6', price_sources=[])],
-           current_return=1.0000177396413983,
-           close_ms=None,
-           return_at_close=1.0000152272972591,
-            net_leverage=0.001,
-            average_entry_price=64900.41,
-            position_type=<OrderType.LONG: 'LONG'>, is_closed_position=False)]
-        """
-        timestamp_ms_july_24_2024_4am = datetime.datetime(2024, 7, 24, 4, 0, 0,
-                                                          tzinfo=datetime.timezone.utc).timestamp() * 1000
-        timestamp_ms_july_24_2024_4am = int(timestamp_ms_july_24_2024_4am)
-        t0 = 1721228840870  # Wednesday, July 17, 2024 3:07:20.870 PM
-        position = Position(
-            open_ms=t0,
-            miner_hotkey='5EUTaAo7vCGxvLDWRXRrEuqctPjt9fKZmgkaeFZocWECUe9X',
-            position_uuid='6955409a-031e-47df-8614-4488208497a6',
-            trade_pair=TradePair.BTCUSD,
-            account_size=ValiConfig.DEFAULT_CAPITAL
-        )
-        o1 = Order(order_type=OrderType.LONG,
-                   leverage=1.0,
-                   price=500,
-                   trade_pair=TradePair.BTCUSD,
-                   processed_ms=t0,
-                   order_uuid="1000")
-        position.add_order(o1, self.live_price_fetcher)
-        carry_fee, next_update_time_ms = position.get_carry_fee(timestamp_ms_july_24_2024_4am)
-        self.assertNotEqual(next_update_time_ms, timestamp_ms_july_24_2024_4am)
-        self.assertEqual(next_update_time_ms, timestamp_ms_july_24_2024_4am + MS_IN_8_HOURS,
-                         msg=next_update_time_ms - timestamp_ms_july_24_2024_4am)
 
     def test_simple_long_position_with_implicit_FLAT(self):
         position = deepcopy(self.default_position)
@@ -618,10 +448,6 @@ class TestPositions(TestBase):
             'unrealized_pnl': 0,
             'unfilled_orders': []
         })
-        self.assertEqual(position.max_leverage_seen(), 1.0)
-        self.assertEqual(position.get_cumulative_leverage(), 2.0)
-
-        self.assertAlmostEqual(position.get_carry_fee(o2.processed_ms)[0], CRYPTO_CARRY_FEE_PER_INTERVAL ** 10, 7)
 
     def test_simple_short_position_with_explicit_FLAT(self):
         position = deepcopy(self.default_position)
@@ -639,7 +465,6 @@ class TestPositions(TestBase):
                    order_uuid="2000")
 
         self.add_order_to_position_and_save(position, o1)
-        self.assertAlmostEqual(position.get_carry_fee(o1.processed_ms)[0], 1.0)
 
         net_value = -1.0 * ValiConfig.DEFAULT_CAPITAL
         net_quantity = net_value / o1.price
@@ -690,9 +515,6 @@ class TestPositions(TestBase):
             'unrealized_pnl': 0,
             'unfilled_orders': []
         })
-        self.assertEqual(position.max_leverage_seen(), 1.0)
-        self.assertEqual(position.get_cumulative_leverage(), 2.0)
-        self.assertAlmostEqual(position.get_carry_fee(o2.processed_ms)[0], CRYPTO_CARRY_FEE_PER_INTERVAL ** 3)
 
     def test_liquidated_long_position_with_explicit_FLAT(self):
         position = deepcopy(self.default_position)
@@ -756,9 +578,6 @@ class TestPositions(TestBase):
             'net_quantity': 2000.0,
             'unfilled_orders': []
         })
-        self.assertEqual(position.max_leverage_seen(), 2.0)
-        self.assertEqual(position.get_cumulative_leverage(), 4.0)
-        self.assertAlmostEqual(position.get_carry_fee(o2.processed_ms)[0], 1.0)
 
     def test_liquidated_short_position_with_explicit_FLAT(self):
         position = deepcopy(self.default_position)
@@ -822,8 +641,6 @@ class TestPositions(TestBase):
             'net_quantity': -1000.0,
             'unfilled_orders': []
         })
-        self.assertEqual(position.max_leverage_seen(), 1.0)
-        self.assertEqual(position.get_cumulative_leverage(), 2.0)
 
     def test_liquidated_short_position_with_no_FLAT(self):
         position = deepcopy(self.default_position)
@@ -926,8 +743,6 @@ class TestPositions(TestBase):
             'net_quantity': -1000.0,
             'unfilled_orders': []
         })
-        self.assertEqual(position.max_leverage_seen(), 1.0)
-        self.assertEqual(position.get_cumulative_leverage(), 2.0)
 
     def test_liquidated_long_position_with_no_FLAT(self):
         o1 = Order(order_type=OrderType.LONG,
@@ -1031,8 +846,6 @@ class TestPositions(TestBase):
             'unfilled_orders': []
         })
 
-        self.assertEqual(position.max_leverage_seen(), 2.0)
-        self.assertEqual(position.get_cumulative_leverage(), 4.0)
 
     def test_simple_short_position_with_implicit_FLAT(self):
         o1 = Order(order_type=OrderType.SHORT,
@@ -1096,8 +909,6 @@ class TestPositions(TestBase):
             'net_quantity': 0.0,
             'unfilled_orders': []
         })
-        self.assertEqual(position.max_leverage_seen(), 1.0)
-        self.assertEqual(position.get_cumulative_leverage(), 2.0)
 
     def test_invalid_leverage_order(self):
         """Test that zero leverage raises ValueError (other leverage bounds are now clamped, not rejected)."""
@@ -1224,8 +1035,6 @@ class TestPositions(TestBase):
             'net_quantity': 0.0,
             'unfilled_orders': []
         })
-        self.assertEqual(position.max_leverage_seen(), 1.1)
-        self.assertEqual(position.get_cumulative_leverage(), 2.2)
 
     def test_two_orders_with_a_loss(self):
         o1 = Order(order_type=OrderType.LONG,
@@ -1289,10 +1098,6 @@ class TestPositions(TestBase):
             'net_quantity': 0.0,
             'unfilled_orders': []
         })
-        self.assertEqual(position.max_leverage_seen(), 1.0)
-        self.assertEqual(position.get_cumulative_leverage(), 2.0)
-        self.assertEqual(position.get_spread_fee(o2.processed_ms), 1.0 - position.trade_pair.fees * 2)
-        self.assertEqual(position.get_carry_fee(o2.processed_ms)[0], 1.0)
 
     def test_three_orders_with_a_loss_and_then_a_gain(self):
         o1 = Order(order_type=OrderType.LONG,
@@ -1387,8 +1192,6 @@ class TestPositions(TestBase):
             'unfilled_orders': []
         })
 
-        self.assertEqual(position.max_leverage_seen(), 1.1)
-        self.assertAlmostEqual(position.get_cumulative_leverage(), 1.2, 8)
 
     def test_returns_on_large_price_increase(self):
         o1 = Order(order_type=OrderType.LONG,
@@ -1451,8 +1254,6 @@ class TestPositions(TestBase):
             'net_quantity': 0.0,
             'unfilled_orders': []
         })
-        self.assertEqual(position.max_leverage_seen(), 1.12)
-        self.assertEqual(position.get_cumulative_leverage(), 2.24)
 
     def test_returns_on_many_shorts(self):
         o1 = Order(order_type=OrderType.SHORT,
@@ -1515,8 +1316,6 @@ class TestPositions(TestBase):
             'net_quantity': 0.0,
             'unfilled_orders': []
         })
-        self.assertEqual(position.max_leverage_seen(), 1.12)
-        self.assertEqual(position.get_cumulative_leverage(), 2.24)
 
     def test_returns_on_alternating_long_short(self):
         o1 = Order(order_type=OrderType.SHORT,
@@ -1579,9 +1378,6 @@ class TestPositions(TestBase):
             'net_quantity': 0.0,
             'unfilled_orders': []
         })
-        self.assertEqual(position.max_leverage_seen(), 2.5)
-        # -1 +.5 - 2.0 + 2.1 = 1.44 (abs 5.6) , (flat from -.4) -> 6.0
-        self.assertEqual(position.get_cumulative_leverage(), 6.0)
 
     def test_error_adding_mismatched_trade_pair(self):
         position = deepcopy(self.default_position)
@@ -1693,15 +1489,6 @@ class TestPositions(TestBase):
             'unfilled_orders': []
         })
 
-        self.assertEqual(position1.max_leverage_seen(), 0.4)
-        self.assertEqual(position2.max_leverage_seen(), 0.4)
-        self.assertEqual(position1.get_cumulative_leverage(), 0.4)
-        self.assertEqual(position2.get_cumulative_leverage(), 0.4)
-
-        self.assertEqual(position1.get_carry_fee(o1.processed_ms + MS_IN_24_HOURS)[0],
-                         INDICES_CARRY_FEE_PER_INTERVAL ** position1.max_leverage_seen())
-        self.assertEqual(position2.get_carry_fee(o2.processed_ms + MS_IN_24_HOURS)[0],
-                         FOREX_CARRY_FEE_PER_INTERVAL ** position2.max_leverage_seen())
 
     def test_leverage_clamping_long(self):
         """Test that exceeding max leverage is clamped (not rejected)"""

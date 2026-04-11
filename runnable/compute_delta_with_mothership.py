@@ -4,6 +4,7 @@ import requests
 import json
 
 from time_util.time_util import TimeUtil
+from vali_objects.position_management.position_utils.position_utils import PositionUtils
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.utils.elimination.elimination_server import EliminationServer
 from vali_objects.position_management.position_manager import PositionManager
@@ -104,7 +105,7 @@ def compute_delta(mothership_json, min_time_ms):
                     break
 
     print(f"Found {len(delta_positions)} positions to snap to and {len(delta_orders)} order deltas to snap to ")
-    ans = ',\n\n'.join([p.to_copyable_str() for p in delta_positions + delta_order_positions])
+    ans = ',\n\n'.join([PositionUtils.to_copyable_str(p) for p in delta_positions + delta_order_positions])
     print(ans)
 
 def get_mothership_checkpoint(url, api_key):

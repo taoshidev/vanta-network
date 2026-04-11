@@ -190,7 +190,7 @@ class PositionFixer:
             last_order_time = max(order.processed_ms for order in position_copy.orders)
 
             # Set returns based on current state
-            position_copy.set_returns(realtime_price=new_price, time_ms=last_order_time, live_price_fetcher=self.live_price_fetcher)
+            position_copy.set_returns(new_price)
 
             old_return_at_close = position.return_at_close
             old_curr_return = position.current_return  # Position object uses 'current_return'

@@ -119,8 +119,6 @@ class TestTimeUtil(TestBase):
             )
             position.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
 
-            self.assertEqual(position.max_leverage_seen(), 1.0)
-            self.assertEqual(position.get_cumulative_leverage(), 2.0)
             n_intervals, time_until_next_interval_ms = TimeUtil.n_intervals_elapsed_crypto(
                 o1.processed_ms, o2.processed_ms
             )
@@ -213,8 +211,6 @@ class TestTimeUtil(TestBase):
                 orders=[o1, o2]
             )
             position.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
-            self.assertEqual(position.max_leverage_seen(), 1.0)
-            self.assertEqual(position.get_cumulative_leverage(), 2.0)
             n_intervals, time_until_next_interval_ms = TimeUtil.n_intervals_elapsed_forex_indices(
                 o1.processed_ms, o2.processed_ms
             )

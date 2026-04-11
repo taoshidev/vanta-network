@@ -603,40 +603,28 @@ class PositionManager:
 
     def _calculate_current_portfolio_value(self, miner_hotkey: str) -> float:
         """
-        Calculate current portfolio value with live prices.
+        Calculate current portfolio value as a return multiplier (1.0 = no change).
+
+        Uses dollar-based PnL: (account_size + total_realized_pnl + total_unrealized_pnl) / account_size
         """
-        positions = self.get_positions_for_one_hotkey(
-            miner_hotkey,
-            only_open_positions=False
-        )
+        account = self._miner_account_client.get_account(miner_hotkey)
+        if not account:
+            return 1.0
 
-        if not positions:
-            return 1.0  # No positions = starting value
+        account_size = account.get('account_size', 0.0)
+        if not account_size or account_size <= 0:
+            return 1.0
 
-        portfolio_return = 1.0
-        now_ms = TimeUtil.now_in_millis()
+        # Sum realized PnL, unrealized PnL, and fees across all positions
+        total_realized_pnl = 0.0
+        total_fees = 0.0
+        for p in self.hotkey_to_positions.get(miner_hotkey, {}).values():
+            total_realized_pnl += p.realized_pnl
+            total_fees += p.total_fees
 
-        for position in positions:
-            if position.is_open_position:
-                # Get live price for open positions
-                price_sources = self._live_price_client.get_sorted_price_sources_for_trade_pair(
-                    position.trade_pair,
-                    now_ms
-                )
+        total_unrealized_pnl = self.get_unrealized_pnl(miner_hotkey)
 
-                if price_sources and price_sources[0]:
-                    realtime_price = price_sources[0].close
-                    # Calculate return with fees at this moment
-                    position_return = position.get_open_position_return_with_fees(realtime_price, None, now_ms)
-                    portfolio_return *= position_return
-                else:
-                    # Fallback to last known return
-                    portfolio_return *= position.return_at_close
-            else:
-                # Use stored return for closed positions
-                portfolio_return *= position.return_at_close
-
-        return portfolio_return
+        return (account_size + total_realized_pnl + total_unrealized_pnl - total_fees) / account_size
 
     def get_unrealized_pnl(self, hotkey: str) -> float:
         """

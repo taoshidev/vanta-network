@@ -959,7 +959,7 @@ class ReturnCalculator:
             position=position_copy
         )
         
-        position_copy.set_returns(price, live_price_fetcher, time_ms=target_date_ms)
+        position_copy.set_returns(price)
         if do_special_fetch:
             bt.logging.warning(f'Special fetch for closed position {position.position_uuid} at {position.close_ms} ms. '
                                f'Trade pair {position.trade_pair.trade_pair} Return: {position_copy.return_at_close}. price_source: {price_source}')

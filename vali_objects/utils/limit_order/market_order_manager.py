@@ -280,7 +280,7 @@ class MarketOrderManager():
         # Validate order before processing cash balance (raises ValueError if invalid)
         # Note: validate_order_size may clamp order.value/quantity/leverage in place
         bt.logging.info(f"[ORDER DETAIL] pre-validation quantity: {order.quantity}, value: {order.value}")
-        existing_position.set_returns(order.price)
+        existing_position.set_returns(order.price, quote_usd_conversion=order.quote_usd_rate)
         order_resized = existing_position.validate_order_size(order, max_position_value)
 
         # Calculate transaction fee AFTER clamping based on final order value

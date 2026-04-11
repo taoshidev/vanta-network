@@ -492,11 +492,8 @@ class TestEquities(TestBase):
 
         # Calculate return at a higher price (simulating profit)
         current_price_before_split = 120.0
-        return_before_split = position.calculate_pnl(
-            current_price_before_split,
-            self.live_price_fetcher,
-            t_ms=self.DEFAULT_OPEN_MS + 1000
-        )
+        position.set_returns(current_price_before_split)
+        return_before_split = position.current_return
 
         # Sanity check: should have positive return
         self.assertGreater(return_before_split, 1.0, "Position should be profitable")
@@ -514,11 +511,8 @@ class TestEquities(TestBase):
         # Calculate return at split-adjusted current price
         # After split, the market price would also be adjusted
         current_price_after_split = current_price_before_split / split_ratio
-        return_after_split = updated_position.calculate_pnl(
-            current_price_after_split,
-            self.live_price_fetcher,
-            t_ms=self.DEFAULT_OPEN_MS + 1000
-        )
+        updated_position.set_returns(current_price_after_split)
+        return_after_split = updated_position.current_return
 
         # Returns should be identical
         self.assertAlmostEqual(
@@ -560,11 +554,8 @@ class TestEquities(TestBase):
 
         # Calculate return at a lower price (profit for short)
         current_price_before_split = 80.0
-        return_before_split = position.calculate_pnl(
-            current_price_before_split,
-            self.live_price_fetcher,
-            t_ms=self.DEFAULT_OPEN_MS + 1000
-        )
+        position.set_returns(current_price_before_split)
+        return_before_split = position.current_return
 
         # Sanity check: should have positive return (price dropped, short profits)
         self.assertGreater(return_before_split, 1.0, "Short position should be profitable when price drops")
@@ -581,11 +572,8 @@ class TestEquities(TestBase):
 
         # Calculate return at split-adjusted price
         current_price_after_split = current_price_before_split / split_ratio
-        return_after_split = updated_position.calculate_pnl(
-            current_price_after_split,
-            self.live_price_fetcher,
-            t_ms=self.DEFAULT_OPEN_MS + 1000
-        )
+        updated_position.set_returns(current_price_after_split)
+        return_after_split = updated_position.current_return
 
         # Returns should be identical
         self.assertAlmostEqual(
