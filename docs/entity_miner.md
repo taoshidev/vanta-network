@@ -11,7 +11,7 @@ The **entity hotkey** identifies the operator on the validator. Under it, the en
 1. Entity hotkeys must be registered on the Bittensor network and have sufficient Theta collateral.
 2. An entity pays a one-time registration fee of **5,000 Theta**, which is permanently slashed on registration.
 3. Each subaccount requires collateral proportional to its account size (see [Collateral Requirements](#collateral-requirements)).
-4. Each subaccount selects an asset class (`crypto` or `forex`) at creation — this **cannot be changed**.
+   4. Each subaccount selects an asset class (`crypto`, `forex`, or `equities`) at creation. This **cannot be changed**.
 5. New subaccounts enter a **challenge period** with stricter thresholds and reduced leverage (see [Challenge Period](#challenge-period--subaccount-lifecycle)).
 6. Entity hotkeys **cannot place orders**. Orders must be submitted using the subaccount's synthetic hotkey.
 7. Subaccounts follow the same trading rules as regular miners: uni-directional positions, leverage limits, market hours, rate limits, etc.
@@ -24,15 +24,17 @@ The **entity hotkey** identifies the operator on the validator. Under it, the en
 Collateral is denominated in **Theta**, deposited via the Vanta CLI.
 
 | Action | Theta Required |
-|---|---|
-| Entity registration (one-time) | 5,000 Theta |
-| Subaccount with $5,000 account size | 1 Theta |
-| Subaccount with $10,000 account size | 2 Theta |
-| Subaccount with $25,000 account size | 5 Theta |
-| Subaccount with $50,000 account size | 10 Theta |
-| Subaccount with $100,000 account size (max) | 20 Theta |
+|---|----------------|
+| Entity registration (one-time) | 5,000 Theta    |
+| Subaccount with $5,000 account size | 2 Theta        |
+| Subaccount with $10,000 account size | 4 Theta        |
+| Subaccount with $25,000 account size | 5 Theta        |
+| Subaccount with $50,000 account size | 10 Theta       |
+| Subaccount with $100,000 account size (max) | 20 Theta       |
 
 **Formula:** `required_theta = account_size_usd / 5,000`
+
+**Formula (for account sizes <= $10,000):** `required_theta = account_size_usd / 2,500`
 
 The maximum account size per subaccount is **$100,000 USD**. Collateral for each subaccount is slashed asynchronously after creation. A subaccount starts in `pending` status and transitions to `active` once the slash succeeds. If the slash fails (e.g., insufficient balance), the subaccount is marked `failed`.
 
@@ -41,7 +43,7 @@ The maximum account size per subaccount is **$100,000 USD**. Collateral for each
 Every new subaccount enters a challenge period. The lifecycle is:
 
 ```
-pending → active → [SUBACCOUNT_CHALLENGE] → [SUBACCOUNT_FUNDED] → [SUBACCOUNT_ALPHA]
+pending → active → [SUBACCOUNT_CHALLENGE] → [SUBACCOUNT_FUNDED]
                                 ↓
                            eliminated
 ```
@@ -50,29 +52,34 @@ pending → active → [SUBACCOUNT_CHALLENGE] → [SUBACCOUNT_FUNDED] → [SUBAC
 |---|---|---|
 | SUBACCOUNT_CHALLENGE | 1× dust | Challenge phase — reduced leverage, no payout |
 | SUBACCOUNT_FUNDED | earning | Passed challenge — full leverage, earns payouts |
-| SUBACCOUNT_ALPHA | earning | 90+ days in FUNDED — continues earning payouts |
 | eliminated | — | Permanently removed from competition |
 
 ### Challenge Period Requirements
 
 **To pass the challenge period**, a subaccount must achieve:
 
-| Asset Class | Minimum Return Required |
-|---|-------------------------|
-| Forex | ≥ 8%                    |
-| Crypto | ≥ 10%                   |
+| Asset Class     | Minimum Return Required |
+|-----------------|-------------------------|
+| Forex, Equities | ≥ 8%                    |
+| Crypto          | ≥ 10%                   |
 
-Passing is evaluated continuously — a subaccount is promoted immediately upon hitting the threshold. Assessment runs automatically via the validator's EntityServer daemon every 5 minutes.
+Passing is evaluated continuously — a subaccount is promoted immediately once `min(account balance, account equity)` meets the threshold. Assessment runs automatically via the validator's EntityServer daemon every 5 minutes.
 
 **Elimination during challenge:** A subaccount is eliminated if its intraday drawdown or drawdown from the end-of-day high-water mark reaches **5%**.
 
-**Leverage reduction:** During the challenge period, a subaccount's maximum leverage and account multiplier are divided by **4** to limit risk exposure.
+**Leverage reduction:** During the challenge period, a subaccount's maximum portfolio leverage is as follows. These are 4x lower than the funded status limits to limit risk exposure.
+
+| Asset Class | Leverage Limit |
+|-------------|----------------|
+| Crypto      | 1.25x          |
+| Forex       | 5x             |
+| Equities    | 1x             |
 
 ### After the Challenge Period
 
 Once in SUBACCOUNT_FUNDED:
 - Standard **8% max drawdown** elimination applies (same as regular miners).
-- After **90 days** in SUBACCOUNT_FUNDED meeting the thresholds, the subaccount is promoted to SUBACCOUNT_ALPHA and is eligible for additional funding.
+- After **90 days** in SUBACCOUNT_FUNDED meeting the thresholds, the subaccount is eligible for additional funding.
 
 ## Getting Started
 
@@ -249,11 +256,9 @@ python neurons/miner.py \
 |---|---|---|
 | `--netuid` | 1 | Subnet UID (8 for mainnet, 116 for testnet) |
 | `--entity-miner` | disabled | Enable the Entity Miner Gateway |
-| `--entity-api-port` | 8088 | Port for the Entity Miner Gateway REST server |
 | `--api-host` | 0.0.0.0 | Host address for the API server |
 | `--api-rest-port` | 8088 | Port for the standard Miner REST API |
 | `--run-position-inspector` | disabled | Enable the position inspector thread |
-| `--start-dashboard` | disabled | Start the miner dashboard frontend |
 
 This starts the miner REST API on port 8088, which handles both order submission and subaccount management.
 
@@ -405,18 +410,17 @@ curl -N http://localhost:8088/api/hl/<hl_address>/stream \
 Entity miner payouts use the same **debt-based scoring system** as regular miners, with a few differences:
 
 - **SUBACCOUNT_CHALLENGE**: No payout — subaccounts in the challenge period do not earn incentives.
-- **SUBACCOUNT_FUNDED** and **SUBACCOUNT_ALPHA**: Subaccounts earn payouts based on their PnL performance checkpoints, exactly like MAINCOMP miners.
+- **SUBACCOUNT_FUNDED**: Subaccounts earn payouts based on their PnL performance checkpoints, exactly like MAINCOMP miners.
 - **Entity hotkey**: Receives a baseline **4× dust weight** (the minimum floor weight) regardless of subaccount performance.
 
-The payout for a subaccount is calculated from its debt ledger checkpoints that fall within the SUBACCOUNT_FUNDED or SUBACCOUNT_ALPHA status window. Performance is weighted 100% on average daily PnL (same as regular miners). All subaccount debt ledgers are aggregated into a single entity-level ledger for weight calculation. Eliminated subaccounts are excluded from aggregation.
+The payout for a subaccount is calculated from its debt ledger checkpoints that fall within the SUBACCOUNT_FUNDED status window. Performance is weighted 100% on average daily PnL (same as regular miners). All subaccount debt ledgers are aggregated into a single entity-level ledger for weight calculation. Eliminated subaccounts are excluded from aggregation.
 
 **Dust weight multipliers:**
 
 | Bucket | Dust Multiplier |
 |---|---|
 | ENTITY (entity hotkey) | 4× dust |
-| MAINCOMP (regular miner) | 3× dust |
-| SUBACCOUNT_FUNDED / SUBACCOUNT_ALPHA | earning (proportional to debt) |
+| SUBACCOUNT_FUNDED | earning (proportional to debt) |
 | SUBACCOUNT_CHALLENGE | 1× dust |
 | UNKNOWN | 0× dust |
 
@@ -548,7 +552,7 @@ Response:
 | GET | `/api/order-status/<order_uuid>` | Query order processing status |
 | GET | `/api/health` | Health check |
 
-## Key Concepts
+## Notes
 
 ### Synthetic Hotkeys
 
@@ -559,22 +563,23 @@ Each subaccount is identified by a synthetic hotkey with the format `{entity_hot
 
 ### Limits
 
-| Constraint | Value                                                                    |
-|---|--------------------------------------------------------------------------|
-| Max entities on the network | 5                                                                        |
-| Max HL traders per entity miner | Configurable via `max_hl_traders` / `MAX_HL_TRADERS` (no limit if unset) |
-| Max account size per subaccount | $100,000 USD                                                             |
-| Challenge period return threshold | ≥ 8% for fx, 10% for crypto                                              |
-| Challenge period drawdown threshold | 5% elimination                                                           |
+| Constraint                          | Value                                                                    |
+|-------------------------------------|--------------------------------------------------------------------------|
+| Max entities on the network         | 5                                                                        |
+| Max HL traders per entity miner     | Configurable via `max_hl_traders` / `MAX_HL_TRADERS` (no limit if unset) |
+| Max account size per subaccount     | $100,000 USD                                                             |
+| Challenge period return threshold   | ≥ 8% for fx + equities, 10% for crypto                                   |
+| Challenge period drawdown threshold | 5%                                                                       |
+| Funded period drawdown threshold    | 8%                                                                       |
 
 ### Elimination
 
 Subaccounts can be eliminated for:
 - **Challenge period failure** — drawdown exceeds 5% before achieving the 8% return threshold
-- **Max drawdown** — exceeding 8% drawdown after the challenge period
+- **Funded period failure** — drawdown exceeds 8%
 - **Plagiarism** — detected order similarity with other miners
 
-Eliminated subaccounts are permanently retired. Create a new subaccount to replace an eliminated one.
+Eliminated subaccount ids are permanently retired. Create a new subaccount to replace an eliminated one.
 
 ## Dashboard
 
@@ -583,7 +588,7 @@ Monitor subaccount performance at:
 - Mainnet: https://dashboard.taoshi.io
 - Testnet: https://testnet.dashboard.taoshi.io
 
-Log in using a [polkadot.js](https://polkadot.js.org/extension/) browser wallet. API key tier 200 is required to access subaccount dashboard data.
+Log in using a [polkadot.js](https://polkadot.js.org/extension/) browser wallet. API key tier 200 is required to access subaccount dashboard data. Contact a team member for an API key if you are interested in registering an entity miner.
 
 ## Troubleshooting
 
@@ -593,14 +598,14 @@ Log in using a [polkadot.js](https://polkadot.js.org/extension/) browser wallet.
 - Ensure port 8088 is not already in use
 
 ### WebSocket not connecting
-- Confirm `validator_ws_url` in secrets matches the validator's WebSocket server (e.g. `ws://validator_ip:8765`)
+- Confirm `validator_ws_url` in secrets matches the validator's WebSocket server (`ws://34.65.245.134:8765`)
 - Check network connectivity to the validator
 - The gateway retries with exponential backoff (1s to 60s) on connection failures
 
 ### Subaccount creation fails
 - Ensure your entity is registered with the validator
 - Verify you have sufficient Theta collateral for the requested account size
-- Verify the validator REST API is reachable at the configured `validator_url`
+- Verify the validator REST API is reachable at the configured `validator_url` (`https://validator.mainnet.vantatrading.io`)
 - Check that you haven't exceeded the maximum number of active subaccounts
 
 ### Orders rejected for subaccount
