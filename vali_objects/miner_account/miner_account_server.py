@@ -291,7 +291,7 @@ class MinerAccountServer(RPCServerBase):
         hotkey: str,
         positions: list,
         miner_bucket: Optional[str] = None,
-        max_return: float = 1.0,
+        max_return: Optional[float] = None,
     ) -> None:
         """Rebuild a miner's account state from a list of Position dicts."""
         from vali_objects.vali_dataclasses.position import Position

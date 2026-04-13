@@ -25,6 +25,7 @@ from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.exceptions.signal_exception import SignalException
 from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
 from vali_objects.enums.miner_bucket_enum import MinerBucket
+from vali_objects.vali_dataclasses.position import Position
 from vali_objects.validator_broadcast_base import ValidatorBroadcastBase
 
 
@@ -879,7 +880,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
         hotkey: str,
         positions: List['Position'],
         miner_bucket: Optional[MinerBucket] = None,
-        max_return: float = 1.0,
+        max_return: Optional[float] = None,
     ) -> None:
         """
         Rebuild a miner's account state (capital_used, total_realized_pnl, total_fees_paid)
@@ -889,14 +890,19 @@ class MinerAccountManager(ValidatorBroadcastBase):
             hotkey: Miner's hotkey
             positions: All positions (open and closed) for this miner
             miner_bucket: Miner bucket to restore after reset
-            max_return: Max return (high water mark) to restore after reset
+            max_return: Max return (high water mark) to restore after reset. If None, preserves existing value.
         """
         computed = self.compute_account_state_from_positions(positions)
+        account = self.get_or_create(hotkey)
+
+        if miner_bucket is None:
+            miner_bucket = account.miner_bucket
+
+        if max_return is None:
+            max_return = account.max_return
 
         with self._accounts_lock:
-            account = self.get_or_create(hotkey)
             account.reset_account_fields()
-
             account.miner_bucket = miner_bucket
             account.max_return = max_return
             account.total_realized_pnl = computed['total_realized_pnl']
@@ -909,6 +915,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
             bt.logging.info(
                 f"[REBUILD {hotkey}] capital_used=${account.capital_used:.2f}, "
                 f"realized_pnl=${account.total_realized_pnl:.2f}, "
+                f"fees_paid=${account.total_fees_paid:.2f}, "
                 f"fees_paid=${account.total_fees_paid:.2f}, "
                 f"balance=${account.balance:.2f}"
             )

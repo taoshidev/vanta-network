@@ -1337,12 +1337,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 rebuilt_account['buying_power'] = rebuilt_account['balance'] * multiplier - computed['capital_used']
             else:
                 # Actual rebuild - persists to disk, preserving bucket and max_return
-                bucket_str = original_account.get('miner_bucket')
-                bucket = MinerBucket(bucket_str) if bucket_str else None
-                max_return = original_account.get('max_return', 1.0)
-                self._miner_account_client.rebuild_account_state_from_positions(
-                    hotkey, positions, miner_bucket=bucket, max_return=max_return
-                )
+                self._miner_account_client.rebuild_account_state_from_positions(hotkey, positions)
                 rebuilt_account = self._miner_account_client.get_account(hotkey)
 
             return jsonify({
