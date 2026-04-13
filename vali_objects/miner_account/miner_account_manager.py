@@ -829,9 +829,8 @@ class MinerAccountManager(ValidatorBroadcastBase):
             True if withdrawal is allowed, False otherwise
         """
         # No asset selection = no positions possible = no restrictions
-        # TODO update for crypto and forex, ignore initially for equities
         asset_selection = self._asset_selection_client.get_asset_selection(hotkey)
-        if asset_selection is None or asset_selection != TradePairCategory.EQUITIES:
+        if asset_selection is None:
             return True
 
         with self._accounts_lock:
