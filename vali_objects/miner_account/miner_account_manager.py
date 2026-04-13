@@ -893,15 +893,16 @@ class MinerAccountManager(ValidatorBroadcastBase):
             max_return: Max return (high water mark) to restore after reset. If None, preserves existing value.
         """
         computed = self.compute_account_state_from_positions(positions)
-        account = self.get_or_create(hotkey)
-
-        if miner_bucket is None:
-            miner_bucket = account.miner_bucket
-
-        if max_return is None:
-            max_return = account.max_return
 
         with self._accounts_lock:
+            account = self.get_or_create(hotkey)
+
+            if miner_bucket is None:
+                miner_bucket = account.miner_bucket
+
+            if max_return is None:
+                max_return = account.max_return
+
             account.reset_account_fields()
             account.miner_bucket = miner_bucket
             account.max_return = max_return
@@ -915,7 +916,6 @@ class MinerAccountManager(ValidatorBroadcastBase):
             bt.logging.info(
                 f"[REBUILD {hotkey}] capital_used=${account.capital_used:.2f}, "
                 f"realized_pnl=${account.total_realized_pnl:.2f}, "
-                f"fees_paid=${account.total_fees_paid:.2f}, "
                 f"fees_paid=${account.total_fees_paid:.2f}, "
                 f"balance=${account.balance:.2f}"
             )
