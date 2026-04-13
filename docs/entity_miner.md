@@ -21,22 +21,131 @@ The **entity hotkey** identifies the operator on the validator. Under it, the en
 
 ## Collateral Requirements
 
-Collateral is denominated in **Theta**, deposited via the Vanta CLI.
+Collateral is denominated in **Theta**, deposited via the Vanta CLI. Entity miners must hold theta for two distinct purposes: a one-time registration fee per subaccount, and an ongoing cross-margin requirement based on open positions.
+
+### Registration Fee
+
+When a subaccount is created, the required theta is burned from the entity's collateral balance. The amount depends on account size:
 
 | Action | Theta Required |
 |---|----------------|
-| Entity registration (one-time) | 5,000 Theta    |
-| Subaccount with $5,000 account size | 2 Theta        |
-| Subaccount with $10,000 account size | 4 Theta        |
-| Subaccount with $25,000 account size | 5 Theta        |
-| Subaccount with $50,000 account size | 10 Theta       |
-| Subaccount with $100,000 account size (max) | 20 Theta       |
+| Entity registration (one-time) | 5,000 Theta |
+| Subaccount with $5,000 account size | 2 Theta |
+| Subaccount with $10,000 account size | 4 Theta |
+| Subaccount with $25,000 account size | 5 Theta |
+| Subaccount with $50,000 account size | 10 Theta |
+| Subaccount with $100,000 account size (max) | 20 Theta |
 
-**Formula:** `required_theta = account_size_usd / 5,000`
+### Registration Fee Formula
 
-**Formula (for account sizes <= $10,000):** `required_theta = account_size_usd / 2,500`
+```
+required_theta = account_size / CPT
 
-The maximum account size per subaccount is **$100,000 USD**. Collateral for each subaccount is slashed asynchronously after creation. A subaccount starts in `pending` status and transitions to `active` once the slash succeeds. If the slash fails (e.g., insufficient balance), the subaccount is marked `failed`.
+CPT = 2,500  (if account_size ≤ $10,000)
+CPT = 5,000  (if account_size > $10,000)
+```
+If the entity's balance is below the required theta, subaccount creation is rejected immediately. Otherwise the subaccount is created with `status = "pending"` and collateral is burned asynchronously — transitioning to `active` on success or `failed` if the balance is insufficient.
+
+### Cross-Margin Requirement
+
+After subaccounts are funded, the entity must maintain enough theta on-chain to cover the combined open-position exposure of all funded subaccounts. Each funded subaccount's margin is capped at 8% of its account size (the max drawdown threshold), and theta is consumed at a rate of **35 USD per theta**. Challenge period subaccounts are fully exempt, and do not require or consume any margin collateral.
+
+Incoming orders from funded subaccounts are blocked if the projected required collateral would exceed the entity's deposited balance. The validator reads deposited balances from an on-chain cache refreshed every ~60 seconds — if the cache has no entry for the entity, orders are rejected.
+
+Collateral is slashed proportionally to realized losses each time a position closes at a loss, up to a maximum of 8% of the subaccount's account size. If a subaccount is eliminated, all remaining collateral headroom is slashed in a single call. Withdrawals are rejected if they would leave the entity below its current cross-margin requirement.
+
+### Cross-Margin Formulas
+
+Per-subaccount margin (USD):
+
+```
+max_slash_usd      = account_size × 8%
+remaining_headroom = max_slash_usd - cumulative_slashed_usd
+margin_usd         = min(total_open_position_value, remaining_headroom)
+```
+
+Entity-level required collateral (theta):
+
+```
+required_theta = sum(margin_usd across all funded subaccounts) / 35
+```
+
+<details>
+<summary><strong>Collateral System Details</strong></summary>
+
+### Cross-Margin Example
+
+Entity has three subaccounts. `CPT_RISK = 35`, `MDD = 8%`.
+
+| Subaccount | Account Size | Max Slash (8%) | Cum. Slashed | Remaining Headroom | Open Position Value | Margin (USD) | Margin (theta) |
+|-----------|-------------|---------------|-------------|-------------------|---------------------|-------------|---------------|
+| A (funded)     | $100,000    | $8,000        | $2,000      | $6,000             | $50,000             | $6,000       | 171.4 theta   |
+| B (funded)     | $25,000     | $2,000        | $0          | $2,000             | $800                | $800         | 22.9 theta    |
+| C (challenge)  | $50,000     | $4,000        | $0          | $4,000             | $30,000             | **$0** (exempt) | 0 theta   |
+| **Total**  |             |               |             |                    |                     |             | **194.3 theta** |
+
+### Order Blocking Formula
+
+```
+margin_delta_usd   = min(current_position + new_position, headroom) - min(current_position, headroom)
+margin_delta_theta = margin_delta_usd / 35
+projected_required = current_required_theta + margin_delta_theta
+
+if projected_required > deposited_theta → ORDER REJECTED
+```
+
+### Slashing on Position Close
+
+```
+cumulative_realized_loss += abs(realized_pnl)
+target_slash  = min(cumulative_realized_loss, max_slash_usd)
+slash_delta   = target_slash - cumulative_slashed
+slash_theta   = slash_delta / 35
+
+if slash_delta > 0:
+    slash_miner_collateral(entity_hotkey, slash_theta)
+    cumulative_slashed += slash_delta
+```
+
+**Example** (\$25,000 account, 8% MDD → \$2,000 max slash, CPT_RISK = 35):
+
+| Trade | Loss   | Cum. Loss | Target Slash | Cum. Slashed | Slash Delta | Theta Slashed |
+|-------|--------|-----------|-------------|-------------|-------------|---------------|
+| 1     | $800   | $800      | $800        | $0          | $800        | 22.9 theta |
+| 2     | $900   | $1,700    | $1,700      | $800        | $900        | 25.7 theta |
+| 3     | $1,200 | $2,900    | $2,000 (cap)| $1,700      | $300        | 8.6 theta (eliminated) |
+
+### Slashing on Elimination
+
+```
+remaining = max_slash_usd - cumulative_slashed
+slash_on_realized_loss(entity_hotkey, hotkey, remaining)
+```
+
+### Withdrawal Check
+
+```
+balance_after = current_balance - withdrawal_amount
+
+if balance_after < required_theta → WITHDRAWAL REJECTED
+```
+
+If the entity has no open positions, `required_theta = 0` and the full balance is withdrawable.
+
+### Configuration Reference
+
+| Config Key | Value | Description |
+|-----------|-------|-------------|
+| `ENTITY_COST_PER_THETA` | 5,000 | USD per theta for subaccount registration (accounts > $10k) |
+| `ENTITY_COST_PER_THETA_LOW` | 2,500 | USD per theta for subaccount registration (accounts ≤ $10k) |
+| `ENTITY_COST_PER_THETA_LOW_THRESHOLD` | $10,000 | Account size threshold for two-tier CPT |
+| `MAX_SUBACCOUNT_ACCOUNT_SIZE` | $100,000 | Maximum USD account size per subaccount |
+| `ENTITY_MAX_SUBACCOUNTS` | 10,000 | Maximum subaccounts per entity |
+| `SUBACCOUNT_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD` | 8% | MDD cap applied to funded subaccounts |
+| `ENTITY_COLLATERAL_CPT_RISK` | 35 | USD of loss capacity per theta (used for margin and slash-to-theta conversion) |
+| `ENTITY_COLLATERAL_CACHE_REFRESH_S` | 60 | Seconds between on-chain collateral cache refreshes |
+
+</details>
 
 ## Challenge Period & Subaccount Lifecycle
 
