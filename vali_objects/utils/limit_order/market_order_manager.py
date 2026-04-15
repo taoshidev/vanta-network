@@ -274,7 +274,7 @@ class MarketOrderManager():
             balance = self._miner_account_client.get_balance(miner_hotkey) or 0.0
 
         trade_pair_category = trade_pair.trade_pair_category
-        _, max_position_leverage = leverage_utils.get_position_leverage_bounds(trade_pair)
+        max_position_leverage = trade_pair.max_leverage
         account_multiplier = ValiConfig.PORTFOLIO_LEVERAGE_CAP.get(trade_pair.trade_pair_category, 1.0)
         if self._challenge_period_client.get_miner_bucket(miner_hotkey) == MinerBucket.SUBACCOUNT_CHALLENGE:
             max_position_leverage /= ValiConfig.SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR[trade_pair_category]
