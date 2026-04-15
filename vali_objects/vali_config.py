@@ -344,7 +344,9 @@ class ValiConfig:
     HL_UNIVERSE_REFRESH_INTERVAL_S = 3_600
 
     # Minimum position size limits
-    FOREX_MIN_POSITION_SIZE_LOTS = 0.01  # 0.01 standard lots
+    FOREX_MIN_POSITION_SIZE_LOTS = 0.01        # micro lot — subaccounts > $10K
+    FOREX_MIN_POSITION_SIZE_LOTS_NANO = 0.001  # nano lot  — subaccounts ≤ $10K
+    FOREX_SMALL_ACCOUNT_THRESHOLD = 10_000.0   # USD; subaccounts at or below this use nano lot minimum
     CRYPTO_MIN_POSITION_SIZE_USD = 10.0  # $10 USD
     EQUITIES_MIN_POSITION_SIZE_SHARES = 0.01 # 0.01 shares
 
