@@ -937,9 +937,12 @@ class Position(BaseModel):
         # Validate against min position size
         if self.trade_pair.is_forex:
             proposed_lots = abs(proposed_quantity)
-            if proposed_lots > 0 and proposed_lots < ValiConfig.FOREX_MIN_POSITION_SIZE_LOTS:
+            min_lots = (ValiConfig.FOREX_MIN_POSITION_SIZE_LOTS_NANO
+                        if self.account_size <= ValiConfig.FOREX_SMALL_ACCOUNT_THRESHOLD
+                        else ValiConfig.FOREX_MIN_POSITION_SIZE_LOTS)
+            if proposed_lots > 0 and proposed_lots < min_lots:
                 raise ValueError(
-                    f"{self.trade_pair.trade_pair_id}: position size {proposed_lots:.4f} lots is below minimum {ValiConfig.FOREX_MIN_POSITION_SIZE_LOTS} lots")
+                    f"{self.trade_pair.trade_pair_id}: position size {proposed_lots:.4f} lots is below minimum {min_lots} lots")
         elif self.trade_pair.is_crypto:
             if abs(proposed_value) > 0 and abs(proposed_value) < ValiConfig.CRYPTO_MIN_POSITION_SIZE_USD:
                 raise ValueError(

@@ -344,7 +344,9 @@ class ValiConfig:
     HL_UNIVERSE_REFRESH_INTERVAL_S = 3_600
 
     # Minimum position size limits
-    FOREX_MIN_POSITION_SIZE_LOTS = 0.01  # 0.01 standard lots
+    FOREX_MIN_POSITION_SIZE_LOTS = 0.01        # micro lot — subaccounts > $10K
+    FOREX_MIN_POSITION_SIZE_LOTS_NANO = 0.001  # nano lot  — subaccounts ≤ $10K
+    FOREX_SMALL_ACCOUNT_THRESHOLD = 10_000.0   # USD; subaccounts at or below this use nano lot minimum
     CRYPTO_MIN_POSITION_SIZE_USD = 10.0  # $10 USD
     EQUITIES_MIN_POSITION_SIZE_SHARES = 0.01 # 0.01 shares
 
@@ -456,7 +458,7 @@ class ValiConfig:
     METAGRAPH_UPDATE_REFRESH_TIME_MINER_MS = 60 * 1000 * 15  # 15 minutes
     ELIMINATION_CHECK_INTERVAL_MS = 60 * 5 * 1000  # 5 minutes
     ELIMINATION_CACHE_REFRESH_INTERVAL_S = 5  # Elimination cache refresh interval in seconds
-    ELIMINATION_FILE_DELETION_DELAY_MS = 7 * 24 * 60 * 60 * 1000  # 7 days
+    ELIMINATION_FILE_DELETION_DELAY_MS = 30 * 24 * 60 * 60 * 1000  # 30 days
 
     # Entity Miners Configuration
     ENTITY_ELIMINATION_CHECK_INTERVAL = 300  # 5 minutes (in seconds) - for challenge period + elimination checks
