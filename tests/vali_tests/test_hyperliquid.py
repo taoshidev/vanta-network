@@ -1240,6 +1240,125 @@ class TestHyperliquidTracker(TestBase):
 
         self.assertIn("tid_hash_1", self.tracker._processed_hashes)
 
+    # ==================== Reconcile szi-change gating ====================
+
+    def _setup_reconcile_mocks(self):
+        """Shared scaffolding for _reconcile_address_positions tests."""
+        self.entity_client.get_synthetic_hotkey_for_hl_address.return_value = "entity_alpha_0"
+        self.tracker._position_client = MagicMock()
+        self.tracker._position_client.get_positions_for_one_hotkey.return_value = []
+
+    def test_reconcile_skips_when_szi_unchanged(self):
+        """szi unchanged since last observation => no delta orders emitted."""
+        self._setup_reconcile_mocks()
+        self.tracker._last_observed_szi[VALID_HL_ADDRESS.lower()] = {"BTC": 1.5}
+        self.tracker._fetch_hl_account_state = MagicMock(return_value={
+            "total_portfolio_value": 100_000,
+            "positions": {"BTC": {"szi": 1.5, "positionValue": 50_000, "weight": 0.5}},
+        })
+
+        with patch.object(self.tracker, '_process_fill') as mock_process:
+            self.tracker._reconcile_address_positions(VALID_HL_ADDRESS)
+            mock_process.assert_not_called()
+
+    def test_reconcile_fires_when_szi_changed(self):
+        """szi delta since last observation => one reconcile _process_fill call."""
+        self._setup_reconcile_mocks()
+        self.tracker._last_observed_szi[VALID_HL_ADDRESS.lower()] = {"BTC": 1.0}
+        self.tracker._fetch_hl_account_state = MagicMock(return_value={
+            "total_portfolio_value": 100_000,
+            "positions": {"BTC": {"szi": 1.5, "positionValue": 75_000, "weight": 0.75}},
+        })
+
+        with patch.object(self.tracker, '_process_fill') as mock_process:
+            self.tracker._reconcile_address_positions(VALID_HL_ADDRESS)
+            mock_process.assert_called_once()
+            args, kwargs = mock_process.call_args
+            self.assertEqual(args[0], VALID_HL_ADDRESS)
+            self.assertEqual(args[1], {"coin": "BTC", "crossed": False})
+
+    def test_reconcile_fires_when_hl_closed_coin_vanta_still_open(self):
+        """HL no longer lists coin but Vanta has it open => reconcile drives to FLAT."""
+        self._setup_reconcile_mocks()
+        # No prior szi observation; reconcile must still notice the stale Vanta open.
+        self.tracker._fetch_hl_account_state = MagicMock(return_value={
+            "total_portfolio_value": 100_000,
+            "positions": {},  # HL sees nothing
+        })
+
+        fake_tp = MagicMock()
+        fake_tp.trade_pair_id = "BTCUSD"
+        fake_pos = MagicMock()
+        fake_pos.is_closed_position = False
+        fake_pos.trade_pair = fake_tp
+        self.tracker._position_client.get_positions_for_one_hotkey.return_value = [fake_pos]
+
+        from vali_objects.vali_config import HL_DYNAMIC_REGISTRY
+        previous_btc = HL_DYNAMIC_REGISTRY.get("BTCUSD")
+        HL_DYNAMIC_REGISTRY["BTCUSD"] = DynamicTradePair(
+            trade_pair_id="BTCUSD", trade_pair="BTC/USD", hl_coin="BTC", max_leverage=0.5
+        )
+        try:
+            with patch.object(self.tracker, '_process_fill') as mock_process:
+                self.tracker._reconcile_address_positions(VALID_HL_ADDRESS)
+                mock_process.assert_called_once()
+                args, _ = mock_process.call_args
+                self.assertEqual(args[1], {"coin": "BTC", "crossed": False})
+        finally:
+            if previous_btc is None:
+                HL_DYNAMIC_REGISTRY.pop("BTCUSD", None)
+            else:
+                HL_DYNAMIC_REGISTRY["BTCUSD"] = previous_btc
+
+    def test_reconcile_ignores_pnl_only_weight_drift(self):
+        """weight halved via portfolio_value drop, szi unchanged => no reconcile."""
+        self._setup_reconcile_mocks()
+        self.tracker._last_observed_szi[VALID_HL_ADDRESS.lower()] = {"BTC": 1.5}
+        # Portfolio value halved (e.g., unrealized loss); szi stays the same.
+        self.tracker._fetch_hl_account_state = MagicMock(return_value={
+            "total_portfolio_value": 50_000,
+            "positions": {"BTC": {"szi": 1.5, "positionValue": 50_000, "weight": 1.0}},
+        })
+
+        with patch.object(self.tracker, '_process_fill') as mock_process:
+            self.tracker._reconcile_address_positions(VALID_HL_ADDRESS)
+            mock_process.assert_not_called()
+
+    def test_observed_szi_persists_across_restart(self):
+        """_remember_hl_szi persists; a fresh tracker loads the same snapshot."""
+        account_state = {
+            "total_portfolio_value": 100_000,
+            "positions": {"BTC": {"szi": 3.25, "positionValue": 50_000, "weight": 0.5}},
+        }
+        self.tracker._remember_hl_szi(VALID_HL_ADDRESS, account_state)
+
+        # New tracker instance should rehydrate _last_observed_szi from disk.
+        fresh = HyperliquidTracker(
+            entity_client=self.entity_client,
+            elimination_client=self.elimination_client,
+            price_fetcher_client=self.price_fetcher_client,
+            asset_selection_client=self.asset_selection_client,
+            market_order_manager=self.market_order_manager,
+            limit_order_client=self.limit_order_client,
+            uuid_tracker=self.uuid_tracker,
+            rate_limiter=self.rate_limiter,
+        )
+        cached = fresh._last_observed_szi.get(VALID_HL_ADDRESS.lower())
+        self.assertEqual(cached, {"BTC": 3.25})
+
+    def test_remember_hl_szi_populates_cache(self):
+        """_remember_hl_szi stores per-coin szi keyed by lowercased address."""
+        account_state = {
+            "total_portfolio_value": 100_000,
+            "positions": {
+                "BTC": {"szi": 1.25, "positionValue": 50_000, "weight": 0.5},
+                "ETH": {"szi": -2.0, "positionValue": 6_000, "weight": -0.06},
+            },
+        }
+        self.tracker._remember_hl_szi(VALID_HL_ADDRESS, account_state)
+        cached = self.tracker._last_observed_szi.get(VALID_HL_ADDRESS.lower())
+        self.assertEqual(cached, {"BTC": 1.25, "ETH": -2.0})
+
 
 if __name__ == '__main__':
     unittest.main()

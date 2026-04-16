@@ -115,6 +115,9 @@ class HyperliquidTracker:
     ADDRESS_REFRESH_INTERVAL_S = 60.0
     # Persistent backup watermark file (under validator state dir).
     BACKUP_WATERMARK_FILE = "hl_backup_poll_watermarks.json"
+    # Persistent per-address {coin: szi} snapshot used to gate reconcile
+    # against PnL-driven weight drift across restarts.
+    OBSERVED_SZI_FILE = "hl_observed_szi.json"
 
     # ==================== Inner class: _WebSocketShard ====================
 
@@ -381,7 +384,12 @@ class HyperliquidTracker:
         self._proxy_index_rest = 0
         self._hl_universe: dict = {}       # keyed by coin name, refreshed hourly
         self._last_universe_refresh: float = 0.0
+        # (hl_address_lower) -> {coin: last_observed_szi_float}
+        # Used by reconciliation to detect real HL position-size changes vs
+        # PnL-driven weight drift. Populated from _fetch_hl_account_state results.
+        self._last_observed_szi: Dict[str, Dict[str, float]] = {}
         self._load_backup_poll_watermarks()
+        self._load_observed_szi()
 
     @property
     def _unhealthy_ports(self) -> Set[int]:
@@ -952,7 +960,27 @@ class HyperliquidTracker:
             weight = pos_value / total_portfolio_value if total_portfolio_value > 0 else 0
             positions[coin] = {"szi": szi, "positionValue": pos_value_abs, "weight": weight}
 
-        return {"total_portfolio_value": total_portfolio_value, "positions": positions}
+        result = {"total_portfolio_value": total_portfolio_value, "positions": positions}
+        self._remember_hl_szi(hl_address, result)
+        return result
+
+    def _remember_hl_szi(self, hl_address: str, account_state: dict) -> None:
+        """Cache per-coin szi from the latest HL account state for reconcile gating.
+
+        Persists on every update so a validator restart sees the same szi map
+        the pre-restart process had — otherwise the first reconcile cycle
+        post-restart would recompute fresh weights against an empty cache and
+        emit one drift order per open HL position.
+        """
+        key = hl_address.lower() if isinstance(hl_address, str) else hl_address
+        new_snapshot = {
+            coin: float(info.get("szi", 0.0))
+            for coin, info in account_state.get("positions", {}).items()
+        }
+        if self._last_observed_szi.get(key) == new_snapshot:
+            return
+        self._last_observed_szi[key] = new_snapshot
+        self._save_observed_szi()
 
     # ==================== Backup REST Poll ====================
 
@@ -1064,6 +1092,42 @@ class HyperliquidTracker:
             ValiBkpUtils.safe_save_dict_to_disk(self.BACKUP_WATERMARK_FILE, serializable)
         except Exception as e:
             bt.logging.warning(f"[HL_BACKUP] Failed to persist watermarks: {e}")
+
+    def _load_observed_szi(self):
+        """Load persisted per-address szi snapshot for restart continuity."""
+        try:
+            data = ValiBkpUtils.safe_load_dict_from_disk(self.OBSERVED_SZI_FILE, {})
+            if not isinstance(data, dict):
+                return
+            loaded: Dict[str, Dict[str, float]] = {}
+            for addr, coin_map in data.items():
+                if not isinstance(addr, str) or not isinstance(coin_map, dict):
+                    continue
+                parsed: Dict[str, float] = {}
+                for coin, szi in coin_map.items():
+                    try:
+                        parsed[str(coin)] = float(szi)
+                    except (TypeError, ValueError):
+                        continue
+                loaded[addr] = parsed
+            self._last_observed_szi = loaded
+            if loaded:
+                bt.logging.info(
+                    f"[HL_BACKUP] Loaded szi snapshot for {len(loaded)} address(es)"
+                )
+        except Exception as e:
+            bt.logging.warning(f"[HL_BACKUP] Failed to load observed szi: {e}")
+
+    def _save_observed_szi(self):
+        """Persist per-address szi snapshot so reconcile gate survives restart."""
+        try:
+            serializable = {
+                addr: {coin: float(szi) for coin, szi in coin_map.items()}
+                for addr, coin_map in self._last_observed_szi.items()
+            }
+            ValiBkpUtils.safe_save_dict_to_disk(self.OBSERVED_SZI_FILE, serializable)
+        except Exception as e:
+            bt.logging.warning(f"[HL_BACKUP] Failed to persist observed szi: {e}")
 
     async def _fetch_fills_by_time(self, hl_address: str, start_time_ms: int) -> Optional[List[dict]]:
         """Fetch fills for a tracked address via userFillsByTime REST endpoint."""
@@ -1188,19 +1252,34 @@ class HyperliquidTracker:
             await asyncio.sleep(ValiConfig.HL_BACKUP_POLL_INTERVAL_S)
 
     def _reconcile_address_positions(self, hl_address: str):
-        """Reconcile all relevant HL coins for an address using current account state."""
+        """Reconcile only coins whose szi changed since last observation.
+
+        PnL- or funding-driven changes to total_portfolio_value (which shifts
+        weight but not szi) no longer trigger delta orders.
+        """
+        key = hl_address.lower() if isinstance(hl_address, str) else hl_address
+        prev_szi = dict(self._last_observed_szi.get(key, {}))  # snapshot before fetch
+
         account_state = self._fetch_hl_account_state(hl_address)
         if not account_state:
             return
 
-        # Resolve synthetic hotkey to include currently open Vanta positions in reconciliation.
         synthetic_hotkey = self._entity_client.get_synthetic_hotkey_for_hl_address(hl_address)
         if not synthetic_hotkey and isinstance(hl_address, str):
             synthetic_hotkey = self._entity_client.get_synthetic_hotkey_for_hl_address(hl_address.lower())
         if not synthetic_hotkey:
             return
 
-        coins_to_check = set(account_state.get("positions", {}).keys())
+        current_positions = account_state.get("positions", {})
+
+        # coins seen now (real open or newly flat)
+        current_szi = {c: float(info.get("szi", 0.0)) for c, info in current_positions.items()}
+        # coins that were open before but vanished in current state (closed outside of our ws feed)
+        for coin in prev_szi:
+            current_szi.setdefault(coin, 0.0)
+
+        # Include any Vanta-open coins the HL account no longer lists, so we can
+        # drive them to FLAT if HL closed behind our back.
         from vali_objects.vali_config import HL_DYNAMIC_REGISTRY
         trade_pair_to_coin = {
             dtp.trade_pair_id: dtp.hl_coin
@@ -1213,17 +1292,32 @@ class HyperliquidTracker:
         except Exception as e:
             bt.logging.debug(f"[HL_BACKUP] Failed to fetch open positions for reconcile {synthetic_hotkey}: {e}")
             open_positions = []
-
+        # Coins Vanta has open but HL no longer lists must always be reconciled,
+        # even when prev_szi is empty (e.g., first cycle after restart), so the
+        # szi-unchanged-at-zero compare can't mask a stale Vanta open.
+        force_reconcile: Set[str] = set()
         for pos in open_positions or []:
             if pos and not pos.is_closed_position:
                 coin = trade_pair_to_coin.get(pos.trade_pair.trade_pair_id)
-                if coin:
-                    coins_to_check.add(coin)
+                if coin and coin not in current_szi:
+                    current_szi[coin] = 0.0
+                    force_reconcile.add(coin)
 
-        if not coins_to_check:
-            return
+        # Only act on coins whose szi changed (creation, close, or any delta)
+        # or on Vanta-open coins with no current HL exposure.
+        coins_to_reconcile = [
+            coin for coin, new_sz in current_szi.items()
+            if coin in force_reconcile or new_sz != prev_szi.get(coin, 0.0)
+        ]
 
-        for coin in sorted(coins_to_check):
+        if not coins_to_reconcile:
+            return  # pure PnL / funding drift — nothing to do
+
+        bt.logging.info(
+            f"[HL_BACKUP] Reconciling {len(coins_to_reconcile)} coin(s) for {hl_address} "
+            f"with szi changes: {coins_to_reconcile}"
+        )
+        for coin in sorted(coins_to_reconcile):
             try:
                 self._process_fill(
                     hl_address,
