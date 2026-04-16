@@ -658,6 +658,7 @@ class ChallengePeriodManager(CacheController):
         for hotkey, bucket_start_time in inspection_hotkeys.items():
             has_minimum_ledger, ledger = self._check_minimum_ledger(portfolio_only_ledgers, hotkey)
             if not has_minimum_ledger or not ledger:
+                self._reset_drawdown_stats_cache(hotkey)
                 continue
 
             current_return = self._compute_portfolio_return(hotkey, accounts.get(hotkey))
