@@ -435,6 +435,26 @@ class ChallengePeriodManager(CacheController):
         """
         return self._drawdown_stats_cache.get(synthetic_hotkey)
 
+    def _reset_drawdown_stats_cache(self, hotkey: str) -> None:
+        """Reset a hotkey's drawdown stats cache to neutral default values.
+
+        Sets equity fields to 1.0 (starting equity), drawdown percentages to 0.0,
+        and thresholds to the challenge-period config defaults.
+        """
+        self._drawdown_stats_cache[hotkey] = {
+            'current_equity': 1.0,
+            'daily_open_equity': 1.0,
+            'eod_hwm': 1.0,
+            'last_eod_equity': 1.0,
+            'intraday_drawdown_pct': 0.0,
+            'eod_drawdown_pct': 0.0,
+            'intraday_drawdown_threshold': ValiConfig.SUBACCOUNT_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD,
+            'eod_drawdown_threshold': ValiConfig.SUBACCOUNT_CHALLENGE_EOD_DRAWDOWN_THRESHOLD,
+            # TODO: remove legacy fields below
+            'subaccount_challenge_intraday_drawdown_threshold': ValiConfig.SUBACCOUNT_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD,
+            'subaccount_challenge_eod_drawdown_threshold': ValiConfig.SUBACCOUNT_CHALLENGE_EOD_DRAWDOWN_THRESHOLD,
+        }
+
     def _compute_portfolio_return(self, hotkey: str, account: Optional[dict] = None) -> Optional[float]:
         """Compute current portfolio return as (balance + unrealized_pnl) / account_size.
 
@@ -1222,6 +1242,8 @@ class ChallengePeriodManager(CacheController):
                 self._perf_ledger_client.wipe_miners_perf_ledgers([hotkey])
                 # Delete debt ledger to match new perf ledger checkpoints
                 self._debt_ledger_client.delete_debt_ledger(hotkey)
+
+                self._reset_drawdown_stats_cache(hotkey)
 
             elif bucket_value == MinerBucket.SUBACCOUNT_FUNDED:
                 # Synthetic funded miners cannot be promoted past SUBACCOUNT_FUNDED
