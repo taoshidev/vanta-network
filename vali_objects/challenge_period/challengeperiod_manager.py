@@ -441,6 +441,8 @@ class ChallengePeriodManager(CacheController):
         Sets equity fields to 1.0 (starting equity), drawdown percentages to 0.0,
         and thresholds to the challenge-period config defaults.
         """
+        intraday_threshold, eod_threshold = self._get_drawdown_thresholds(hotkey)
+
         self._drawdown_stats_cache[hotkey] = {
             'current_equity': 1.0,
             'daily_open_equity': 1.0,
@@ -448,14 +450,14 @@ class ChallengePeriodManager(CacheController):
             'last_eod_equity': 1.0,
             'intraday_drawdown_pct': 0.0,
             'eod_drawdown_pct': 0.0,
-            'intraday_drawdown_threshold': ValiConfig.SUBACCOUNT_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD,
-            'eod_drawdown_threshold': ValiConfig.SUBACCOUNT_CHALLENGE_EOD_DRAWDOWN_THRESHOLD,
+            'intraday_drawdown_threshold': intraday_threshold,
+            'eod_drawdown_threshold': eod_threshold,
             # TODO: remove legacy fields below
-            'subaccount_challenge_intraday_drawdown_threshold': ValiConfig.SUBACCOUNT_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD,
-            'subaccount_challenge_eod_drawdown_threshold': ValiConfig.SUBACCOUNT_CHALLENGE_EOD_DRAWDOWN_THRESHOLD,
+            'subaccount_challenge_intraday_drawdown_threshold': intraday_threshold,
+            'subaccount_challenge_eod_drawdown_threshold': eod_threshold,
         }
 
-    def _compute_portfolio_return(self, hotkey: str, account: Optional[dict] = None) -> Optional[float]:
+    def _compute_portfolio_return(self, hotkey: str, account: Optional[dict] = None) -> tuple[float, float] | None:
         """Compute current portfolio return as (balance + unrealized_pnl) / account_size.
 
         Returns None if account data is unavailable.
@@ -467,7 +469,12 @@ class ChallengePeriodManager(CacheController):
             return None
         balance = account.get('balance', 0)
         unrealized_pnl = self._position_client.get_unrealized_pnl(hotkey)
-        return (balance + unrealized_pnl) / account_size
+        equity = balance + unrealized_pnl
+
+        equity_ret = equity / account_size
+        balance_ret = balance / account_size
+
+        return equity_ret, balance_ret
 
     # ==================== Evaluation Methods ====================
 
@@ -491,11 +498,18 @@ class ChallengePeriodManager(CacheController):
         eod_hwm = max(max(cp.equity_ret for cp in midnight_cps), 1.0) if midnight_cps else 1.0
         return midnight_cps, last_eod, daily_open_equity, eod_hwm
 
-    def _get_funded_drawdown_thresholds(self, hotkey: str) -> tuple[float, float]:
+    def _get_drawdown_thresholds(self, hotkey: str) -> tuple[float, float]:
         """
-        Returns (intraday_threshold, eod_threshold) for a SUBACCOUNT_FUNDED miner.
-        Uses V0 thresholds if the miner's SUBACCOUNT_CHALLENGE bucket started before Mar 14, 2026.
+        Returns (intraday_threshold, eod_threshold) for a subaccount miner.
+        - SUBACCOUNT_CHALLENGE: returns challenge thresholds.
+        - SUBACCOUNT_FUNDED: returns V0 thresholds if the miner's SUBACCOUNT_CHALLENGE bucket
+          started before Mar 14, 2026, otherwise V1 thresholds.
         """
+        if self.get_miner_bucket(hotkey) == MinerBucket.SUBACCOUNT_CHALLENGE:
+            return (
+                ValiConfig.SUBACCOUNT_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD,
+                ValiConfig.SUBACCOUNT_CHALLENGE_EOD_DRAWDOWN_THRESHOLD,
+            )
         history = self.active_miners.get(hotkey, [])
         challenge_entry = next((e for e in history if e.bucket == MinerBucket.SUBACCOUNT_CHALLENGE), None)
         if challenge_entry and challenge_entry.start_time_ms < self._SUBACCOUNT_FUNDED_V0_CUTOFF_MS:
@@ -542,15 +556,16 @@ class ChallengePeriodManager(CacheController):
                 portfolio_only_ledgers, hotkey
             )
             if not has_minimum_ledger or not ledger:
+                self._reset_drawdown_stats_cache(hotkey)
                 continue
 
             # Compute portfolio return: (balance + unrealized_pnl) / account_size
-            current_return = self._compute_portfolio_return(hotkey, accounts.get(hotkey))
+            current_return, balance_return = self._compute_portfolio_return(hotkey, accounts.get(hotkey))
             if current_return is None:
                 continue
 
             # returns_percentage = current_return - 1.0 (e.g. 1.08 -> 8%)
-            returns_percentage = current_return - 1.0
+            returns_percentage = min(current_return, balance_return) - 1.0
 
             subaccount_asset_class = asset_classes.get(hotkey)
             if subaccount_asset_class is None:
@@ -560,15 +575,6 @@ class ChallengePeriodManager(CacheController):
             returns_threshold = ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD
             if subaccount_asset_class == TradePairCategory.CRYPTO:
                 returns_threshold = ValiConfig.SUBACCOUNT_CRYPTO_CHALLENGE_RETURNS_THRESHOLD
-
-            # Promote if returns meet threshold
-            if returns_percentage >= returns_threshold:
-                bt.logging.info(
-                    f"[SYNTHETIC_CP] {hotkey} promoted - "
-                    f"returns {returns_percentage:.2f}% >= {returns_threshold}%"
-                )
-                hotkeys_to_promote.append(hotkey)
-                continue
 
             now_ms = current_time if current_time is not None else TimeUtil.now_in_millis()
             midnight_cps, last_eod, daily_open_equity, eod_hwm = self._parse_eod_checkpoints(ledger, now_ms)
@@ -590,12 +596,22 @@ class ChallengePeriodManager(CacheController):
                 'subaccount_challenge_eod_drawdown_threshold': ValiConfig.SUBACCOUNT_CHALLENGE_EOD_DRAWDOWN_THRESHOLD,
             }
 
+            # Promote if returns meet threshold
+            if returns_percentage >= returns_threshold:
+                bt.logging.info(
+                    f"[SYNTHETIC_CP] {hotkey} promoted - "
+                    f"returns {returns_percentage:.2f}% >= {returns_threshold}% "
+                    f"balance {accounts.get(hotkey).get('balance')}, unrealized_pnl {self._position_client.get_unrealized_pnl(hotkey)} "
+                    f"drawdown stats: {self._drawdown_stats_cache[hotkey]}"
+                )
+                hotkeys_to_promote.append(hotkey)
+                continue
+
             # Rule 1: Intraday drawdown — current equity cannot drop >5% from today's opening equity
             if current_return < daily_open_equity * (1.0 - ValiConfig.SUBACCOUNT_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD):
                 bt.logging.info(
                     f"[SYNTHETIC_CP] {hotkey} intraday drawdown violation, failed challenge period - "
-                    f"current_equity={current_return:.6f} < floor={daily_open_equity * (1.0 - ValiConfig.SUBACCOUNT_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD):.6f} "
-                    f"(day_open={daily_open_equity:.6f}, drawdown={intraday_drawdown_pct:.2f}%)"
+                    f"drawdown stats: {self._drawdown_stats_cache[hotkey]}"
                 )
                 miners_to_eliminate[hotkey] = (
                     EliminationReason.FAILED_CHALLENGE_PERIOD_INTRADAY_DRAWDOWN.value,
@@ -608,8 +624,7 @@ class ChallengePeriodManager(CacheController):
             if midnight_cps and last_eod < eod_hwm * (1.0 - ValiConfig.SUBACCOUNT_CHALLENGE_EOD_DRAWDOWN_THRESHOLD):
                 bt.logging.info(
                     f"[SYNTHETIC_CP] {hotkey} EOD drawdown violation, failed challenge period - "
-                    f"last_eod={last_eod:.6f} < floor={eod_hwm * (1.0 - ValiConfig.SUBACCOUNT_CHALLENGE_EOD_DRAWDOWN_THRESHOLD):.6f} "
-                    f"(hwm={eod_hwm:.6f}, drawdown={eod_drawdown_pct:.2f}%)"
+                    f"drawdown stats: {self._drawdown_stats_cache[hotkey]}"
                 )
                 miners_to_eliminate[hotkey] = (
                     EliminationReason.FAILED_CHALLENGE_PERIOD_EOD_DRAWDOWN.value,
@@ -625,9 +640,8 @@ class ChallengePeriodManager(CacheController):
             near_promotion = returns_percentage >= returns_threshold * 0.75
             if near_elimination or near_promotion:
                 bt.logging.info(
-                    f"[SYNTH_EVAL {hotkey}] current_return={current_return:.6f}, returns={returns_percentage:.2%}, "
-                    f"intraday_drawdown={intraday_drawdown_pct:.2f}% eod_drawdown={eod_drawdown_pct:.2f}% "
-                    f"(elim threshold={threshold_pct:.1f}%)"
+                    f"[SYNTH_EVAL {hotkey}] near elimination - "
+                    f"drawdown stats: {self._drawdown_stats_cache[hotkey]}"
                 )
 
         bt.logging.info(
@@ -656,18 +670,19 @@ class ChallengePeriodManager(CacheController):
         accounts = self._miner_account_client.get_accounts(list(inspection_hotkeys.keys()))
 
         for hotkey, bucket_start_time in inspection_hotkeys.items():
+            intraday_threshold, eod_threshold = self._get_drawdown_thresholds(hotkey)
+
             has_minimum_ledger, ledger = self._check_minimum_ledger(portfolio_only_ledgers, hotkey)
             if not has_minimum_ledger or not ledger:
                 self._reset_drawdown_stats_cache(hotkey)
                 continue
 
-            current_return = self._compute_portfolio_return(hotkey, accounts.get(hotkey))
+            current_return, _ = self._compute_portfolio_return(hotkey, accounts.get(hotkey))
             if current_return is None:
                 continue
 
             now_ms = current_time if current_time is not None else TimeUtil.now_in_millis()
             midnight_cps, last_eod, daily_open_equity, eod_hwm = self._parse_eod_checkpoints(ledger, now_ms)
-            intraday_threshold, eod_threshold = self._get_funded_drawdown_thresholds(hotkey)
 
             intraday_drawdown_pct = (1.0 - current_return / daily_open_equity) * 100.0
             eod_drawdown_pct = (1.0 - last_eod / eod_hwm) * 100.0
@@ -683,16 +698,15 @@ class ChallengePeriodManager(CacheController):
                 'intraday_drawdown_threshold': intraday_threshold,
                 'eod_drawdown_threshold': eod_threshold,
                 # TODO: remove legacy fields below
-                'subaccount_funded_intraday_drawdown_threshold': intraday_threshold,
-                'subaccount_funded_eod_drawdown_threshold': eod_threshold,
+                'subaccount_challenge_intraday_drawdown_threshold': intraday_threshold,
+                'subaccount_challenge_eod_drawdown_threshold': eod_threshold,
             }
 
             # Rule 1: Intraday drawdown
             if current_return < daily_open_equity * (1.0 - intraday_threshold):
                 bt.logging.info(
                     f"[FUNDED_EVAL {hotkey}] intraday drawdown violation - "
-                    f"current_equity={current_return:.6f} < floor={daily_open_equity * (1.0 - intraday_threshold):.6f} "
-                    f"(day_open={daily_open_equity:.6f}, drawdown={intraday_drawdown_pct:.2f}%)"
+                    f"drawdown stats: {self._drawdown_stats_cache[hotkey]}"
                 )
                 miners_to_eliminate[hotkey] = (
                     EliminationReason.FAILED_FUNDED_PERIOD_INTRADAY_DRAWDOWN.value,
@@ -705,8 +719,7 @@ class ChallengePeriodManager(CacheController):
             if midnight_cps and last_eod < eod_hwm * (1.0 - eod_threshold):
                 bt.logging.info(
                     f"[FUNDED_EVAL {hotkey}] EOD drawdown violation - "
-                    f"last_eod={last_eod:.6f} < floor={eod_hwm * (1.0 - eod_threshold):.6f} "
-                    f"(hwm={eod_hwm:.6f}, drawdown={eod_drawdown_pct:.2f}%)"
+                    f"drawdown stats: {self._drawdown_stats_cache[hotkey]}"
                 )
                 miners_to_eliminate[hotkey] = (
                     EliminationReason.FAILED_FUNDED_PERIOD_EOD_DRAWDOWN.value,
@@ -720,9 +733,7 @@ class ChallengePeriodManager(CacheController):
             if worst_drawdown_pct >= threshold_pct * 0.75:
                 bt.logging.info(
                     f"[FUNDED_EVAL {hotkey}] near elimination - "
-                    f"current_return={current_return:.6f}, "
-                    f"intraday_drawdown={intraday_drawdown_pct:.2f}%, eod_drawdown={eod_drawdown_pct:.2f}% "
-                    f"(threshold={threshold_pct:.1f}%)"
+                    f"drawdown stats: {self._drawdown_stats_cache[hotkey]}"
                 )
 
         bt.logging.info(
@@ -788,7 +799,7 @@ class ChallengePeriodManager(CacheController):
             # Unified check: Drawdown during challenge/probation period
             # NOTE: This is for FAILING the challenge period (FAILED_CHALLENGE_PERIOD_DRAWDOWN)
             # EliminationManager separately handles ongoing 10% max drawdown for all miners
-            current_return = self._compute_portfolio_return(hotkey, accounts.get(hotkey))
+            current_return, _ = self._compute_portfolio_return(hotkey, accounts.get(hotkey))
             account = accounts.get(hotkey, {})
             max_return = account.get('max_return', 1.0)
             if current_return is not None:
@@ -861,7 +872,8 @@ class ChallengePeriodManager(CacheController):
         hotkeys_to_promote, hotkeys_to_demote = self.evaluate_promotions(
             success_hotkeys,
             promotion_eligible_hotkeys,
-            asset_softmaxed_scores
+            asset_softmaxed_scores,
+            accounts=accounts
         )
 
         bt.logging.info(f"[RANK_BASED] Challenge Period: evaluated {len(promotion_eligible_hotkeys)}/{len(inspection_hotkeys)} miners eligible for promotion")
@@ -1019,7 +1031,8 @@ class ChallengePeriodManager(CacheController):
             self,
             success_hotkeys,
             promotion_eligible_hotkeys,
-            asset_softmaxed_scores
+            asset_softmaxed_scores,
+            accounts: dict
             ) -> tuple[list[str], list[str]]:
         # Get asset class selections for filtering during threshold calculation
         miner_asset_selections = {}
@@ -1062,6 +1075,32 @@ class ChallengePeriodManager(CacheController):
 
         # Only promote miners who are in top ranks AND are valid candidates (passed minimum days)
         promote_hotkeys = (maincomp_hotkeys - set(success_hotkeys)) & set(promotion_eligible_hotkeys)
+
+        # Filter promotion candidates by minimum returns threshold.
+        exceeds_ret_threshold = []
+        for hotkey in promote_hotkeys:
+            asset_class = miner_asset_selections.get(hotkey)
+            returns_threshold = (
+                ValiConfig.SUBACCOUNT_CRYPTO_CHALLENGE_RETURNS_THRESHOLD
+                if asset_class == TradePairCategory.CRYPTO
+                else ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD
+            )
+            account = accounts.get(hotkey, None)
+            result = self._compute_portfolio_return(hotkey, account)
+            if result is None:
+                bt.logging.info(
+                    f"[RANK_BASED] {hotkey} ranked for promotion but blocked - no miner account"
+                )
+                continue
+            returns = result[0] - 1.0
+            if returns >= returns_threshold:
+                exceeds_ret_threshold.append(hotkey)
+            else:
+                bt.logging.info(
+                    f"[RANK_BASED] {hotkey} ranked for promotion but blocked - "
+                    f"returns {returns:.2%} < required {returns_threshold:.2%}"
+                )
+        promote_hotkeys = exceeds_ret_threshold
 
         # Demote miners who are no longer in top ranks
         # IMPORTANT: Synthetic hotkeys (subaccounts) can NEVER be demoted from MAINCOMP

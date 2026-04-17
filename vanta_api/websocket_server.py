@@ -29,7 +29,7 @@ except ImportError:
     Keypair = None
 
 # Maximum number of websocket connections allowed per API key
-MAX_N_WS_PER_API_KEY = 20
+MAX_N_WS_PER_API_KEY = 50
 
 # Maximum number of websocket connections allowed per entity hotkey
 MAX_N_WS_PER_ENTITY = 5
