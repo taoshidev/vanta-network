@@ -435,6 +435,26 @@ class ChallengePeriodManager(CacheController):
         """
         return self._drawdown_stats_cache.get(synthetic_hotkey)
 
+    def _reset_drawdown_stats_cache(self, hotkey: str) -> None:
+        """Reset a hotkey's drawdown stats cache to neutral default values.
+
+        Sets equity fields to 1.0 (starting equity), drawdown percentages to 0.0,
+        and thresholds to the challenge-period config defaults.
+        """
+        self._drawdown_stats_cache[hotkey] = {
+            'current_equity': 1.0,
+            'daily_open_equity': 1.0,
+            'eod_hwm': 1.0,
+            'last_eod_equity': 1.0,
+            'intraday_drawdown_pct': 0.0,
+            'eod_drawdown_pct': 0.0,
+            'intraday_drawdown_threshold': ValiConfig.SUBACCOUNT_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD,
+            'eod_drawdown_threshold': ValiConfig.SUBACCOUNT_CHALLENGE_EOD_DRAWDOWN_THRESHOLD,
+            # TODO: remove legacy fields below
+            'subaccount_challenge_intraday_drawdown_threshold': ValiConfig.SUBACCOUNT_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD,
+            'subaccount_challenge_eod_drawdown_threshold': ValiConfig.SUBACCOUNT_CHALLENGE_EOD_DRAWDOWN_THRESHOLD,
+        }
+
     def _compute_portfolio_return(self, hotkey: str, account: Optional[dict] = None) -> tuple[float, float] | None:
         """Compute current portfolio return as (balance + unrealized_pnl) / account_size.
 
@@ -527,19 +547,7 @@ class ChallengePeriodManager(CacheController):
                 portfolio_only_ledgers, hotkey
             )
             if not has_minimum_ledger or not ledger:
-                self._drawdown_stats_cache[hotkey] = {
-                    'current_equity': 1.0,
-                    'daily_open_equity': 1.0,
-                    'eod_hwm': 1.0,
-                    'last_eod_equity': 1.0,
-                    'intraday_drawdown_pct': 0,
-                    'eod_drawdown_pct': 0,
-                    'intraday_drawdown_threshold': ValiConfig.SUBACCOUNT_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD,
-                    'eod_drawdown_threshold': ValiConfig.SUBACCOUNT_CHALLENGE_EOD_DRAWDOWN_THRESHOLD,
-                    # TODO: remove legacy fields below
-                    'subaccount_challenge_intraday_drawdown_threshold': ValiConfig.SUBACCOUNT_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD,
-                    'subaccount_challenge_eod_drawdown_threshold': ValiConfig.SUBACCOUNT_CHALLENGE_EOD_DRAWDOWN_THRESHOLD,
-                }
+                self._reset_drawdown_stats_cache(hotkey)
                 continue
 
             # Compute portfolio return: (balance + unrealized_pnl) / account_size
@@ -657,19 +665,7 @@ class ChallengePeriodManager(CacheController):
 
             has_minimum_ledger, ledger = self._check_minimum_ledger(portfolio_only_ledgers, hotkey)
             if not has_minimum_ledger or not ledger:
-                self._drawdown_stats_cache[hotkey] = {
-                    'current_equity': 1.0,
-                    'daily_open_equity': 1.0,
-                    'eod_hwm': 1.0,
-                    'last_eod_equity': 1.0,
-                    'intraday_drawdown_pct': 0,
-                    'eod_drawdown_pct': 0,
-                    'intraday_drawdown_threshold': intraday_threshold,
-                    'eod_drawdown_threshold': eod_threshold,
-                    # TODO: remove legacy fields below
-                    'subaccount_challenge_intraday_drawdown_threshold': intraday_threshold,
-                    'subaccount_challenge_eod_drawdown_threshold': eod_threshold,
-                }
+                self._reset_drawdown_stats_cache(hotkey)
                 continue
 
             current_return, _ = self._compute_portfolio_return(hotkey, accounts.get(hotkey))
