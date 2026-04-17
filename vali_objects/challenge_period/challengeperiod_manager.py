@@ -441,6 +441,8 @@ class ChallengePeriodManager(CacheController):
         Sets equity fields to 1.0 (starting equity), drawdown percentages to 0.0,
         and thresholds to the challenge-period config defaults.
         """
+        intraday_threshold, eod_threshold = self._get_drawdown_thresholds(hotkey)
+
         self._drawdown_stats_cache[hotkey] = {
             'current_equity': 1.0,
             'daily_open_equity': 1.0,
@@ -448,11 +450,11 @@ class ChallengePeriodManager(CacheController):
             'last_eod_equity': 1.0,
             'intraday_drawdown_pct': 0.0,
             'eod_drawdown_pct': 0.0,
-            'intraday_drawdown_threshold': ValiConfig.SUBACCOUNT_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD,
-            'eod_drawdown_threshold': ValiConfig.SUBACCOUNT_CHALLENGE_EOD_DRAWDOWN_THRESHOLD,
+            'intraday_drawdown_threshold': intraday_threshold,
+            'eod_drawdown_threshold': eod_threshold,
             # TODO: remove legacy fields below
-            'subaccount_challenge_intraday_drawdown_threshold': ValiConfig.SUBACCOUNT_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD,
-            'subaccount_challenge_eod_drawdown_threshold': ValiConfig.SUBACCOUNT_CHALLENGE_EOD_DRAWDOWN_THRESHOLD,
+            'subaccount_challenge_intraday_drawdown_threshold': intraday_threshold,
+            'subaccount_challenge_eod_drawdown_threshold': eod_threshold,
         }
 
     def _compute_portfolio_return(self, hotkey: str, account: Optional[dict] = None) -> tuple[float, float] | None:
@@ -496,11 +498,18 @@ class ChallengePeriodManager(CacheController):
         eod_hwm = max(max(cp.equity_ret for cp in midnight_cps), 1.0) if midnight_cps else 1.0
         return midnight_cps, last_eod, daily_open_equity, eod_hwm
 
-    def _get_funded_drawdown_thresholds(self, hotkey: str) -> tuple[float, float]:
+    def _get_drawdown_thresholds(self, hotkey: str) -> tuple[float, float]:
         """
-        Returns (intraday_threshold, eod_threshold) for a SUBACCOUNT_FUNDED miner.
-        Uses V0 thresholds if the miner's SUBACCOUNT_CHALLENGE bucket started before Mar 14, 2026.
+        Returns (intraday_threshold, eod_threshold) for a subaccount miner.
+        - SUBACCOUNT_CHALLENGE: returns challenge thresholds.
+        - SUBACCOUNT_FUNDED: returns V0 thresholds if the miner's SUBACCOUNT_CHALLENGE bucket
+          started before Mar 14, 2026, otherwise V1 thresholds.
         """
+        if self.get_miner_bucket(hotkey) == MinerBucket.SUBACCOUNT_CHALLENGE:
+            return (
+                ValiConfig.SUBACCOUNT_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD,
+                ValiConfig.SUBACCOUNT_CHALLENGE_EOD_DRAWDOWN_THRESHOLD,
+            )
         history = self.active_miners.get(hotkey, [])
         challenge_entry = next((e for e in history if e.bucket == MinerBucket.SUBACCOUNT_CHALLENGE), None)
         if challenge_entry and challenge_entry.start_time_ms < self._SUBACCOUNT_FUNDED_V0_CUTOFF_MS:
@@ -661,7 +670,7 @@ class ChallengePeriodManager(CacheController):
         accounts = self._miner_account_client.get_accounts(list(inspection_hotkeys.keys()))
 
         for hotkey, bucket_start_time in inspection_hotkeys.items():
-            intraday_threshold, eod_threshold = self._get_funded_drawdown_thresholds(hotkey)
+            intraday_threshold, eod_threshold = self._get_drawdown_thresholds(hotkey)
 
             has_minimum_ledger, ledger = self._check_minimum_ledger(portfolio_only_ledgers, hotkey)
             if not has_minimum_ledger or not ledger:
