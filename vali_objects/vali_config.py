@@ -529,11 +529,28 @@ class ValiConfig:
         TradePairCategory.EQUITIES: 0,
     }
 
-    SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR = {
-        TradePairCategory.CRYPTO: 4,
-        TradePairCategory.FOREX: 4,
-        TradePairCategory.INDICES: 4,
-        TradePairCategory.EQUITIES: 2,
+    # Account size thresholds for leverage tier progression (non-challenge entity subaccounts)
+    LEVERAGE_TIER3_MIN_ACCOUNT_SIZE = 200_000    # $200K: Tier 2 → Tier 3
+    LEVERAGE_TIER4_MIN_ACCOUNT_SIZE = 1_000_000  # $1M:   Tier 3 → Tier 4
+
+    # Per-tier positional leverage limits for entity subaccounts.
+    # XAUUSD/XAGUSD (gold/silver) use the 'COMMODITIES' key despite being in TradePairCategory.FOREX;
+    # they share the FOREX portfolio cap but have their own positional column.
+    TIER_POSITIONAL_LEVERAGE = {
+        1: {TradePairCategory.CRYPTO: 0.5,  TradePairCategory.FOREX: 2.5,  TradePairCategory.EQUITIES: 0.5, TradePairCategory.INDICES: 2.5,  'COMMODITIES': 0.5},
+        2: {TradePairCategory.CRYPTO: 1.0,  TradePairCategory.FOREX: 5.0,  TradePairCategory.EQUITIES: 1.0, TradePairCategory.INDICES: 5.0,  'COMMODITIES': 1.0},
+        3: {TradePairCategory.CRYPTO: 1.5,  TradePairCategory.FOREX: 7.5,  TradePairCategory.EQUITIES: 1.5, TradePairCategory.INDICES: 7.5,  'COMMODITIES': 1.5},
+        4: {TradePairCategory.CRYPTO: 2.0,  TradePairCategory.FOREX: 10.0, TradePairCategory.EQUITIES: 2.0, TradePairCategory.INDICES: 10.0, 'COMMODITIES': 2.0},
+    }
+
+    # Per-tier portfolio leverage caps for entity subaccounts.
+    # XAUUSD/XAGUSD share the TradePairCategory.FOREX portfolio cap.
+    # Equity portfolio is intentionally capped at 2x from Tier 3 onward (Reg T overnight limit).
+    TIER_PORTFOLIO_LEVERAGE = {
+        1: {TradePairCategory.CRYPTO: 1.0,  TradePairCategory.FOREX: 5.0,  TradePairCategory.EQUITIES: 1.0, TradePairCategory.INDICES: 5.0},
+        2: {TradePairCategory.CRYPTO: 2.0,  TradePairCategory.FOREX: 10.0, TradePairCategory.EQUITIES: 1.5, TradePairCategory.INDICES: 10.0},
+        3: {TradePairCategory.CRYPTO: 3.0,  TradePairCategory.FOREX: 15.0, TradePairCategory.EQUITIES: 2.0, TradePairCategory.INDICES: 15.0},
+        4: {TradePairCategory.CRYPTO: 4.0,  TradePairCategory.FOREX: 20.0, TradePairCategory.EQUITIES: 2.0, TradePairCategory.INDICES: 20.0},
     }
     HS_SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR = 2
 

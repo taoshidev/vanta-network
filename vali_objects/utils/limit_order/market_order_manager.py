@@ -16,11 +16,11 @@ import bittensor as bt
 
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.utils.price_slippage_model import PriceSlippageModel
-from vali_objects.vali_config import ValiConfig, TradePair, DynamicTradePair, RPCConnectionMode
+from vali_objects.vali_config import ValiConfig, TradePair, RPCConnectionMode
+from vali_objects.utils.leverage_utils import get_leverage_tier, get_tier_positional_leverage
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.enums.miner_bucket_enum import MinerBucket
-from vali_objects.utils import leverage_utils
 from entity_management.entity_client import EntityClient
 from entity_management.entity_utils import is_synthetic_hotkey
 
@@ -275,21 +275,15 @@ class MarketOrderManager():
             balance = self._miner_account_client.get_balance(miner_hotkey) or 0.0
 
         trade_pair_category = trade_pair.trade_pair_category
-        bucket = self._challenge_period_client.get_miner_bucket(miner_hotkey)
-        is_hs = self._miner_account_client.get_hl_address(miner_hotkey) is not None
-        if is_hs and bucket in (MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA):
-            max_position_leverage = (trade_pair.max_leverage if isinstance(trade_pair, DynamicTradePair)
-                                     else ValiConfig.HS_MAX_LEVERAGE)
-            account_multiplier = ValiConfig.HS_PORTFOLIO_MAX_LEVERAGE
+        miner_bucket = self._challenge_period_client.get_miner_bucket(miner_hotkey)
+        _subaccount_buckets = {MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED}
+        if miner_bucket in _subaccount_buckets:
+            tier = get_leverage_tier(miner_bucket, balance)
+            max_position_leverage = get_tier_positional_leverage(tier, trade_pair)
+            account_multiplier = ValiConfig.TIER_PORTFOLIO_LEVERAGE[tier].get(trade_pair_category, 1.0)
         else:
             max_position_leverage = trade_pair.max_leverage
-            account_multiplier = (ValiConfig.HS_PORTFOLIO_MAX_LEVERAGE if is_hs
-                                  else ValiConfig.PORTFOLIO_LEVERAGE_CAP.get(trade_pair_category, 1.0))
-            if bucket == MinerBucket.SUBACCOUNT_CHALLENGE:
-                divisor = (ValiConfig.HS_SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR if is_hs
-                           else ValiConfig.SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR[trade_pair_category])
-                max_position_leverage /= divisor
-                account_multiplier /= divisor
+            account_multiplier = ValiConfig.PORTFOLIO_LEVERAGE_CAP.get(trade_pair_category, 1.0)
         max_position_value = max_position_leverage * balance
 
         # Validate order before processing cash balance (raises ValueError if invalid)
