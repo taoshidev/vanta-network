@@ -22,27 +22,21 @@ from vali_objects.enums.miner_bucket_enum import MinerBucket
 # ==================== Test constants ====================
 VALID_HL_ADDRESS = "0x" + "a1b2c3d4" * 5
 VALID_HL_ADDRESS_2 = "0x" + "1234567890abcdef" * 2 + "12345678"
-ACCOUNT_SIZE = 50_000.0
+ACCOUNT_SIZE = 50_000.0  # Tier 2 (<$200K)
 
-# Expected limits for non-challenge, non-funded crypto subaccount (falls through to legacy path)
-CRYPTO_MAX_LEVERAGE = ValiConfig.CRYPTO_MAX_LEVERAGE  # 2.5
-PORTFOLIO_CAP_CRYPTO = ValiConfig.PORTFOLIO_LEVERAGE_CAP[TradePairCategory.CRYPTO]  # 5
-CHALLENGE_DIVISOR = ValiConfig.SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR[TradePairCategory.CRYPTO]  # 4 (VT, unused in HS endpoint)
+# Expected limits — Tier 2 (SUBACCOUNT_FUNDED, account_size < $200K), crypto
+TIER2_POSITIONAL = ValiConfig.TIER_POSITIONAL_LEVERAGE[2][TradePairCategory.CRYPTO]  # 1.0x
+TIER2_PORTFOLIO  = ValiConfig.TIER_PORTFOLIO_LEVERAGE[2][TradePairCategory.CRYPTO]   # 2.0x
 
-EXPECTED_MAX_POSITION = ACCOUNT_SIZE * CRYPTO_MAX_LEVERAGE      # 125_000  (legacy/else path)
-EXPECTED_MAX_PORTFOLIO = ACCOUNT_SIZE * PORTFOLIO_CAP_CRYPTO    # 250_000  (legacy/else path)
-EXPECTED_CHALLENGE_MAX_POSITION = EXPECTED_MAX_POSITION / CHALLENGE_DIVISOR    # 31_250 (legacy)
-EXPECTED_CHALLENGE_MAX_PORTFOLIO = EXPECTED_MAX_PORTFOLIO / CHALLENGE_DIVISOR  # 62_500 (legacy)
+EXPECTED_MAX_POSITION = ACCOUNT_SIZE * TIER2_POSITIONAL   # 50_000
+EXPECTED_MAX_PORTFOLIO = ACCOUNT_SIZE * TIER2_PORTFOLIO   # 100_000
 
-# Expected limits for HS funded accounts
-HS_MAX_LEVERAGE = ValiConfig.HS_MAX_LEVERAGE                    # 1.0
-HS_PORTFOLIO_MAX_LEVERAGE = ValiConfig.HS_PORTFOLIO_MAX_LEVERAGE  # 5.0
-HS_CHALLENGE_DIVISOR = ValiConfig.HS_SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR  # 2
+# Expected limits — Tier 1 (SUBACCOUNT_CHALLENGE), crypto
+TIER1_POSITIONAL = ValiConfig.TIER_POSITIONAL_LEVERAGE[1][TradePairCategory.CRYPTO]  # 0.5x
+TIER1_PORTFOLIO  = ValiConfig.TIER_PORTFOLIO_LEVERAGE[1][TradePairCategory.CRYPTO]   # 1.0x
 
-EXPECTED_HS_FUNDED_MAX_POSITION = ACCOUNT_SIZE * HS_MAX_LEVERAGE            # 50_000
-EXPECTED_HS_FUNDED_MAX_PORTFOLIO = ACCOUNT_SIZE * HS_PORTFOLIO_MAX_LEVERAGE  # 250_000
-EXPECTED_HS_CHALLENGE_MAX_POSITION = EXPECTED_HS_FUNDED_MAX_POSITION / HS_CHALLENGE_DIVISOR   # 25_000
-EXPECTED_HS_CHALLENGE_MAX_PORTFOLIO = EXPECTED_HS_FUNDED_MAX_PORTFOLIO / HS_CHALLENGE_DIVISOR  # 125_000
+EXPECTED_CHALLENGE_MAX_POSITION = ACCOUNT_SIZE * TIER1_POSITIONAL  # 25_000
+EXPECTED_CHALLENGE_MAX_PORTFOLIO = ACCOUNT_SIZE * TIER1_PORTFOLIO   # 50_000
 
 
 def _build_limits_data(
@@ -229,8 +223,8 @@ class TestHlTraderLimitsEndpoint(unittest.TestCase):
 
         self.assertEqual(status, 200)
         self.assertEqual(data['account_size'], custom_size)
-        self.assertEqual(data['max_position_per_pair_usd'], custom_size * HS_MAX_LEVERAGE)
-        self.assertEqual(data['max_portfolio_usd'], custom_size * HS_PORTFOLIO_MAX_LEVERAGE)
+        self.assertEqual(data['max_position_per_pair_usd'], custom_size * TIER2_POSITIONAL)
+        self.assertEqual(data['max_portfolio_usd'], custom_size * TIER2_PORTFOLIO)
 
 
 if __name__ == '__main__':
