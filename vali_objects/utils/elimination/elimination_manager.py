@@ -880,8 +880,6 @@ class EliminationManager(CacheController):
 
     def _delete_eliminated_expired_miners(self):
         """Delete expired eliminated miners."""
-        deleted_hotkeys = set()
-        any_challenege_period_changes = False
         now_ms = TimeUtil.now_in_millis()
         metagraph_hotkeys_set = set(self._metagraph_client.get_hotkeys())
 
@@ -900,14 +898,9 @@ class EliminationManager(CacheController):
                 bt.logging.trace(f"miner [{hotkey}] has not been deregistered by BT yet. Not deleting miner dir.")
                 continue
 
-            if self.cp_client.has_miner(hotkey):
-                self.cp_client.remove_miner(hotkey)
-                any_challenege_period_changes = True
-
             # Delete limit orders for eliminated miner (both in-memory and on-disk)
             result = self._limit_order_client.delete_all_limit_orders_for_hotkey(hotkey)
             bt.logging.info(f"Deleted limit orders for expired elimination [{hotkey}]: {result}")
-
 
             miner_dir = ValiBkpUtils.get_miner_dir(running_unit_tests=self.running_unit_tests) + hotkey
             all_positions = self._position_client.get_positions_for_one_hotkey(hotkey)
@@ -921,14 +914,6 @@ class EliminationManager(CacheController):
                 f"miner eliminated with hotkey [{hotkey}] with max dd of [{x.get('dd', 'N/A')}]. "
                 f"reason: [{x['reason']}] Removing miner dir [{miner_dir}]"
             )
-            deleted_hotkeys.add(hotkey)
-
-        # Write challengeperiod changes to disk if any changes were made
-        if any_challenege_period_changes:
-            self.cp_client.write_challengeperiod_from_memory_to_disk()
-
-        if deleted_hotkeys:
-            self.delete_eliminations(deleted_hotkeys)
 
     def _get_departed_hotkeys_from_disk(self) -> dict:
         """Load departed hotkeys from disk"""
