@@ -600,8 +600,8 @@ class ChallengePeriodManager(CacheController):
             if returns_percentage >= returns_threshold:
                 bt.logging.info(
                     f"[SYNTHETIC_CP] {hotkey} promoted - "
-                    f"returns {returns_percentage:.2f}% >= {returns_threshold}%"
-                    f"balance {accounts.get(hotkey).get('balance')}, unrealized_pnl {self._position_client.get_unrealized_pnl(hotkey)}"
+                    f"returns {returns_percentage:.2f}% >= {returns_threshold}% "
+                    f"balance {accounts.get(hotkey).get('balance')}, unrealized_pnl {self._position_client.get_unrealized_pnl(hotkey)} "
                     f"drawdown stats: {self._drawdown_stats_cache[hotkey]}"
                 )
                 hotkeys_to_promote.append(hotkey)
@@ -1032,7 +1032,7 @@ class ChallengePeriodManager(CacheController):
             success_hotkeys,
             promotion_eligible_hotkeys,
             asset_softmaxed_scores,
-            accounts: dict = None
+            accounts: dict
             ) -> tuple[list[str], list[str]]:
         # Get asset class selections for filtering during threshold calculation
         miner_asset_selections = {}
