@@ -1316,10 +1316,17 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
                 # Recompute buying_power = balance * multiplier - capital_used
                 asset_class_str = original_account.get('asset_class')
+                bucket_str = original_account.get('miner_bucket')
+                bucket = MinerBucket(bucket_str) if bucket_str else None
+                _subaccount_buckets = {MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED}
                 if asset_class_str:
                     try:
                         asset_class = TradePairCategory(asset_class_str)
-                        multiplier = ValiConfig.PORTFOLIO_LEVERAGE_CAP.get(asset_class, 1.0)
+                        if bucket in _subaccount_buckets:
+                            tier = get_leverage_tier(bucket, account_size)
+                            multiplier = ValiConfig.TIER_PORTFOLIO_LEVERAGE[tier].get(asset_class, 1.0)
+                        else:
+                            multiplier = ValiConfig.PORTFOLIO_LEVERAGE_CAP.get(asset_class, 1.0)
                     except ValueError:
                         multiplier = 1.0
                 else:
