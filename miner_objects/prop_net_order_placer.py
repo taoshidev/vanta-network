@@ -7,6 +7,7 @@ import json
 import os
 import threading
 import time
+import uuid
 
 import bittensor as bt
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -388,6 +389,10 @@ class PropNetOrderPlacer:
             }
         """
         start_time = time.time()
+        file_uuid = order_uuid
+        if len(file_uuid) > 36:
+            file_uuid = uuid.uuid4()
+            bt.logging.info(f"mapping long uuid to file uuid {file_uuid}")
 
         try:
             mothership_axon, other_axons = self._get_mothership_and_other_axons()
@@ -438,10 +443,10 @@ class PropNetOrderPlacer:
             processing_time = time.time() - start_time
 
             # Archive result
-            fake_signal_file_path = f"/rest-api/{order_uuid}"
+            fake_signal_file_path = f"/rest-api/{file_uuid}"
             if result["success"]:
                 self.write_signal_to_processed_directory(signal_data, fake_signal_file_path, result["order_json"])
-                message = "Order successfully processed by Vanta Network"
+                message = f"Order successfully processed by Vanta Network"
             else:
                 self.write_signal_to_failure_directory(signal_data, fake_signal_file_path, result["error_message"])
                 message = f"Order failed on Vanta Network: {result['error_message']}"
@@ -459,7 +464,7 @@ class PropNetOrderPlacer:
             bt.logging.error(f"Error processing REST order {order_uuid}: {e}")
 
             # Archive to failed_signals/ for audit trail
-            fake_signal_file_path = f"/rest-api/{order_uuid}"
+            fake_signal_file_path = f"/rest-api/{file_uuid}"
             if self.config.write_failed_signal_logs:
                 try:
                     signal_data = signal.model_dump(mode='json')
