@@ -293,7 +293,7 @@ class MarketOrderManager():
 
         if order.order_type == existing_position.position_type:
             if buying_power <= 0:
-                raise SignalException(f"Insufficient buying power (${buying_power:.2f})")
+                raise SignalException(f"Order Rejected: Insufficient buying power (available: ${buying_power:.2f})")
 
             if abs(order.value) * (1 + transaction_fee_rate * account_multiplier) >= buying_power:
                 sign = (-1 if order.order_type == OrderType.SHORT else 1)
@@ -307,7 +307,7 @@ class MarketOrderManager():
 
         if order.value == 0 or order.quantity == 0:
             raise SignalException(
-                f"Order rejected: position is already at its maximum allowed size of ${max_position_value:.2f}"
+                f"Order rejected: 0 order size due to max position value ${max_position_value} or max buying power ${buying_power}"
             )
 
         # Entity cross-margin gating for subaccounts
@@ -552,7 +552,7 @@ class MarketOrderManager():
 
         if not price_sources:
             raise SignalException(
-                f"Ignoring order for [{miner_hotkey}] due to no live prices being found for trade_pair [{trade_pair}]. Please try again.")
+                    f"Order Rejected: no live prices being found for {trade_pair.trade_pair_id}. Please try again.")
 
         # TIMING: Extract signal data
         extract_start = TimeUtil.now_in_millis()
