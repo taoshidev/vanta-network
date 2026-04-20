@@ -30,7 +30,7 @@ from vali_objects.utils.entity_collateral.entity_collateral_client import Entity
 
 # ==================== Constants ====================
 
-TARGET_MS = 1771217940000
+TARGET_MS = 1776719424000
 NOV_1_MS = 1761951599000
 
 
@@ -175,7 +175,7 @@ class ValidatorContractManager(ValidatorBroadcastBase):
         if now_ms > TARGET_MS:
             return
 
-        miners_to_reinstate = {"5FdxufcVWB8kn5nbRz3RiWZckfEN1q6ZrmyVUVrLD8dmQkdf": 160.55}
+        miners_to_reinstate = {"5EXbr7gL2bZgXpUdxDBwyKzYq3Lqa3EJ1Kes3f7DqhWvMpjP": 4000}
         for miner, amount in miners_to_reinstate.items():
             self.force_deposit(amount, miner)
 
