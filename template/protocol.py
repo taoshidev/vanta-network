@@ -48,7 +48,7 @@ class SendSignal(bt.Synapse):
     should_retry: bool = Field(True, title="Whether miner should retry this validator on failure", frozen=False)
     validator_hotkey: str = Field("", title="Hotkey set by validator", frozen=False, max_length=256)
     order_json: str = Field("", title="New Order JSON set by validator", frozen=False)
-    miner_order_uuid: str = Field("", title="Order UUID set by miner", frozen=False, max_length=256)
+    miner_order_uuid: str = Field("", title="Order UUID set by miner", frozen=False, max_length=2048)
     subaccount_id: typing.Optional[int] = Field(default=None, title="Subaccount ID for entity miners", frozen=False)
     computed_body_hash: str = Field("", title="Computed Body Hash", frozen=False)
 
