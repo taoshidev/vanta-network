@@ -9,9 +9,9 @@ The **entity hotkey** identifies the operator on the validator. Under it, the en
 ## Basic Rules
 
 1. Entity hotkeys must be registered on the Bittensor network and have sufficient Theta collateral.
-2. An entity pays a one-time registration fee of **5,000 Theta**, which is permanently slashed on registration.
+2. An entity pays a one-time registration fee of **1,000 Theta**, which is permanently slashed on registration.
 3. Each subaccount requires collateral proportional to its account size (see [Collateral Requirements](#collateral-requirements)).
-   4. Each subaccount selects an asset class (`crypto`, `forex`, or `equities`) at creation. This **cannot be changed**.
+4. Each subaccount selects an asset class (`crypto`, `forex`, or `equities`) at creation. This **cannot be changed**.
 5. New subaccounts enter a **challenge period** with stricter thresholds and reduced leverage (see [Challenge Period](#challenge-period--subaccount-lifecycle)).
 6. Entity hotkeys **cannot place orders**. Orders must be submitted using the subaccount's synthetic hotkey.
 7. Subaccounts follow the same trading rules as regular miners: uni-directional positions, leverage limits, market hours, rate limits, etc.
@@ -29,12 +29,12 @@ When a subaccount is created, the required theta is burned from the entity's col
 
 | Action | Theta Required |
 |---|----------------|
-| Entity registration (one-time) | 5,000 Theta |
-| Subaccount with $5,000 account size | 2 Theta |
-| Subaccount with $10,000 account size | 4 Theta |
-| Subaccount with $25,000 account size | 5 Theta |
-| Subaccount with $50,000 account size | 10 Theta |
-| Subaccount with $100,000 account size (max) | 20 Theta |
+| Entity registration (one-time) | 1,000 Theta    |
+| Subaccount with $5,000 account size | 2 Theta        |
+| Subaccount with $10,000 account size | 4 Theta        |
+| Subaccount with $25,000 account size | 5 Theta        |
+| Subaccount with $50,000 account size | 10 Theta       |
+| Subaccount with $100,000 account size (max) | 20 Theta       |
 
 ### Registration Fee Formula
 
@@ -267,7 +267,7 @@ btcli stake add --wallet.name <wallet> --wallet.hotkey <entity> --subtensor.netw
 
 ### 5. Deposit Collateral
 
-Deposit Theta collateral via the Vanta CLI. You need at least **5,000 Theta** to register an entity, plus additional Theta for each subaccount you plan to create.
+Deposit Theta collateral via the Vanta CLI. You need at least **1,000 Theta** to register an entity, plus additional Theta for each subaccount you plan to create.
 
 ```bash
 # Mainnet
@@ -291,7 +291,7 @@ vanta collateral withdraw --wallet-name <wallet> --wallet-hotkey <entity> --amou
 
 ### 6. Register the Entity
 
-Register your entity hotkey on the validator. This costs **5,000 Theta** (permanently slashed):
+Register your entity hotkey on the validator. This costs **1,000 Theta** (permanently slashed):
 
 ```bash
 # Mainnet
@@ -512,7 +512,7 @@ All validator endpoints require a valid API key (tier 200) in the `Authorization
 
 | Method | Endpoint | Description                                                       |
 |---|---|-------------------------------------------------------------------|
-| POST | `/entity/register` | Register a new entity (requires coldkey signature + 5,000 Theta)  |
+| POST | `/entity/register` | Register a new entity (requires coldkey signature + 1,000 Theta)  |
 | POST | `/entity/create-subaccount` | Create a subaccount (requires coldkey signature + collateral)     |
 | GET | `/entity/<entity_hotkey>` | Get entity data and subaccount list                               |
 | GET | `/entities` | List all registered entities                                      |
@@ -589,13 +589,13 @@ Each subaccount is identified by a synthetic hotkey with the format `{entity_hot
 
 ### Limits
 
-| Constraint                          | Value                                                                    |
-|-------------------------------------|--------------------------------------------------------------------------|
-| Max entities on the network         | 5                                                                        |
-| Max account size per subaccount     | $100,000 USD                                                             |
-| Challenge period return threshold   | ≥ 8% for fx + equities, 10% for crypto                                   |
-| Challenge period drawdown threshold | 5%                                                                       |
-| Funded period drawdown threshold    | 8%                                                                       |
+| Constraint                          | Value                                  |
+|-------------------------------------|----------------------------------------|
+| Max entities on the network         | 10                                     |
+| Max account size per subaccount     | $100,000 USD                           |
+| Challenge period return threshold   | ≥ 8% for fx + equities, 10% for crypto |
+| Challenge period drawdown threshold | 5%                                     |
+| Funded period drawdown threshold    | 8%                                     |
 
 ### Elimination
 
