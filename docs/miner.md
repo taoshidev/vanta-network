@@ -52,6 +52,13 @@ Each miner selects a single asset class to compete in (crypto, forex, or equitie
 | XRPUSD  | XRP/USD   |
 | DOGEUSD | DOGE/USD  |
 | ADAUSD  | ADA/USD   |
+| TAOUSD  | TAO/USD   |
+| HYPEUSD | HYPE/USD  |
+| ZECUSD  | ZEC/USD   |
+| BCHUSD  | BCH/USD   |
+| LINKUSD | LINK/USD  |
+| XMRUSD  | XMR/USD   |
+| LTCUSD  | LTC/USD   |
 
 ### Forex
 
@@ -151,6 +158,25 @@ Each miner selects a single asset class to compete in (crypto, forex, or equitie
 | VPU    | Utilities (Vanguard)                 |
 | XLRE   | Real Estate (SPDR)                   |
 | VNQ    | Real Estate (Vanguard)               |
+
+**Index ETFs:**
+
+| Symbol | Description                              |
+|--------|------------------------------------------|
+| SPY    | S&P 500 ETF (SPDR)                       |
+| QQQ    | Nasdaq 100 ETF (Invesco)                 |
+| DIA    | Dow Jones ETF (SPDR)                     |
+| IWM    | Russell 2000 ETF (iShares)               |
+| EWU    | UK ETF (iShares)                         |
+| EWG    | Germany ETF (iShares)                    |
+| EWJ    | Japan ETF (iShares)                      |
+| EWH    | Hong Kong ETF (iShares)                  |
+| EWA    | Australia ETF (iShares)                  |
+| EWQ    | France ETF (iShares)                     |
+| EFA    | Developed Markets ETF (iShares)          |
+| IEMG   | Emerging Markets ETF (iShares)           |
+| INDA   | India ETF (iShares)                      |
+| VT     | Total World ETF (Vanguard)               |
 
 ### Blocked / Disabled Trade Pairs
 
