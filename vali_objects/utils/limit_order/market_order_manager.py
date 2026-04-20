@@ -305,6 +305,11 @@ class MarketOrderManager():
             order.quantity, order.leverage, order.value = order_sizes
             bt.logging.info(f"[ADD_ORDER_DETAIL] order resized to ${order.value} (max position: {max_position_value}, max_cash: {buying_power}")
 
+        if order.value == 0 or order.quantity == 0:
+            raise SignalException(
+                f"Order rejected: position is already at its maximum allowed size of ${max_position_value:.2f}"
+            )
+
         # Entity cross-margin gating for subaccounts
         if order.order_type == existing_position.position_type:
             allowed, reason = self._entity_collateral_client.try_gate_position_open(miner_hotkey, order.value)
