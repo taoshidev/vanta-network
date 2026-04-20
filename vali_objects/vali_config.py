@@ -465,7 +465,7 @@ class ValiConfig:
 
     # Entity Miners Configuration
     ENTITY_ELIMINATION_CHECK_INTERVAL = 300  # 5 minutes (in seconds) - for challenge period + elimination checks
-    MAX_REGISTERED_ENTITIES = 5  # Maximum number of entities that can register
+    MAX_REGISTERED_ENTITIES = 10  # Maximum number of entities that can register
     ENTITY_MAX_SUBACCOUNTS = 10_000  # Default maximum subaccounts per entity (Phase 1)
     ENTITY_DATA_DIR = "validation/entities/"  # Entity data persistence directory
     FIXED_SUBACCOUNT_SIZE = 10000.0  # Fixed account size for subaccounts (USD) - placeholder
@@ -538,7 +538,7 @@ class ValiConfig:
     MAX_COLLATERAL_BALANCE_TESTNET = 10000.0
 
     # Entity Miner Collateral
-    ENTITY_REGISTRATION_FEE = 5000  # Theta required to register an entity
+    ENTITY_REGISTRATION_FEE = 1000  # Theta required to register an entity
     ENTITY_COST_PER_THETA = 5000  # USD account size per theta of collateral for entity subaccounts
     ENTITY_COST_PER_THETA_LOW = 2500  # CPT value used for smaller account sizes <=10k
     ENTITY_COST_PER_THETA_LOW_THRESHOLD = 10_000  # Account sizes at or below this use ENTITY_COST_PER_THETA_LOW
