@@ -1043,13 +1043,14 @@ class EntityManager(ValidatorBroadcastBase):
                 return None
 
             weekly_settlements = []
-            def _record_week(start_ms, end_ms, balance, prev_hwm, eow_unrealized):
+            def _record_week(start_ms, end_ms, balance, prev_hwm, eow_unrealized, week_orders):
                 weekly_settlements.append({
                     'start_ms': start_ms,
                     'end_ms': end_ms,
                     'eow_balance': balance,
                     'eow_unrealized': eow_unrealized,
                     'payout': max(0.0, balance - prev_hwm + min(0.0, eow_unrealized)),
+                    'orders': [o.to_python_dict() for o in week_orders],
                 })
 
             running_balance = 0
@@ -1066,8 +1067,11 @@ class EntityManager(ValidatorBroadcastBase):
             idx_order, idx_fee = 0, 0
             while week_start < end_time_ms:
                 end_time = min(week_end, end_time_ms)
+                week_orders = []
                 while idx_order < len(orders) and orders[idx_order].processed_ms < end_time:
                     running_balance += orders[idx_order].realized_pnl
+                    if orders[idx_order].realized_pnl != 0:
+                        week_orders.append(orders[idx_order])
                     idx_order += 1
                 while idx_fee < len(fees) and fees[idx_fee]["time_ms"] < end_time:
                     running_balance -= fees[idx_fee]["amount"]
@@ -1076,7 +1080,7 @@ class EntityManager(ValidatorBroadcastBase):
                 # debt checkpoint timestamp is start_ms, but unrealized pnl is at the end_ms
                 # so must offset by a checkpoint for correct unrealized pnl at end time
                 cp = debt_ledger.get_checkpoint_at_time(end_time - CP_DURATION, CP_DURATION)
-                _record_week(week_start, week_end, running_balance, eow_hwm, cp.unrealized_pnl if cp else 0.0)
+                _record_week(week_start, week_end, running_balance, eow_hwm, cp.unrealized_pnl if cp else 0.0, week_orders)
                 eow_hwm = max(eow_hwm, running_balance)
                 week_start, week_end = week_end, week_end + MS_IN_WEEK
 
