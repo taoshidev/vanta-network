@@ -373,7 +373,7 @@ class EntityServer(RPCServerBase):
         self,
         subaccount_uuid: str,
         start_time_ms: int,
-        end_time_ms: int
+        end_time_ms: Optional[int]
     ) -> Optional[dict]:
         """
         RPC method to calculate payout for a subaccount.
@@ -381,7 +381,7 @@ class EntityServer(RPCServerBase):
         Args:
             subaccount_uuid: The subaccount UUID
             start_time_ms: Start timestamp (inclusive)
-            end_time_ms: End timestamp (inclusive)
+            end_time_ms: End timestamp (inclusive); if None, uses current time
 
         Returns:
             Dict with payout data or None if not found

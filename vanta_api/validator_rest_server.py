@@ -2049,7 +2049,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 return jsonify({'error': 'Invalid JSON body'}), 400
 
             # Validate required fields
-            required_fields = ['subaccount_uuid', 'start_time_ms', 'end_time_ms']
+            required_fields = ['subaccount_uuid', 'start_time_ms']
             for field in required_fields:
                 if field not in data:
                     return jsonify({'error': f'Missing required field: {field}'}), 400
@@ -2059,13 +2059,16 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             # Validate timestamps
             try:
                 start_time_ms = int(data['start_time_ms'])
-                end_time_ms = int(data['end_time_ms'])
+                end_time_ms = int(data['end_time_ms']) if data.get('end_time_ms') is not None else None
 
-                if start_time_ms < 0 or end_time_ms < 0:
+                if start_time_ms < 0:
                     return jsonify({'error': 'Timestamps must be non-negative'}), 400
 
-                if start_time_ms > end_time_ms:
-                    return jsonify({'error': 'start_time_ms must be <= end_time_ms'}), 400
+                if end_time_ms is not None:
+                    if end_time_ms < 0:
+                        return jsonify({'error': 'Timestamps must be non-negative'}), 400
+                    if start_time_ms > end_time_ms:
+                        return jsonify({'error': 'start_time_ms must be <= end_time_ms'}), 400
             except (ValueError, TypeError):
                 return jsonify({'error': 'Timestamps must be valid integers'}), 400
 
@@ -2078,7 +2081,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                     return jsonify({'error': 'start_time_ms must be Monday 00:00:00 UTC'}), 400
 
             # Validate end_time_ms aligns to 12-hour boundary
-            if end_time_ms % ValiConfig.TARGET_CHECKPOINT_DURATION_MS != 0:
+            if end_time_ms is not None and end_time_ms % ValiConfig.TARGET_CHECKPOINT_DURATION_MS != 0:
                 return jsonify({'error': 'end_time_ms must align to a 12-hour boundary'}), 400
 
             # Calculate payout via EntityClient

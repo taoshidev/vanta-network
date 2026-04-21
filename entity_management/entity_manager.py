@@ -975,7 +975,7 @@ class EntityManager(ValidatorBroadcastBase):
         self,
         subaccount_uuid: str,
         start_time_ms: int,
-        end_time_ms: int
+        end_time_ms: Optional[int]
     ) -> Optional[dict]:
         """
         Calculate payout for a subaccount based on debt ledger checkpoints in time range.
@@ -989,7 +989,7 @@ class EntityManager(ValidatorBroadcastBase):
         Args:
             subaccount_uuid: The subaccount UUID
             start_time_ms: Start timestamp (inclusive)
-            end_time_ms: End timestamp (inclusive)
+            end_time_ms: End timestamp (inclusive); if None, uses current time
 
         Returns:
             Dict with {
@@ -999,6 +999,11 @@ class EntityManager(ValidatorBroadcastBase):
                 'payout': float
             } or None if subaccount not found
         """
+        realtime = False
+        if end_time_ms is None:
+            end_time_ms = TimeUtil.now_in_millis()
+            realtime = True
+
         # Translate UUID to hotkey
         synthetic_hotkey = self.get_synthetic_hotkey_from_uuid(subaccount_uuid)
         if not synthetic_hotkey:
@@ -1029,6 +1034,7 @@ class EntityManager(ValidatorBroadcastBase):
             positions = self._position_client.get_positions_for_one_hotkey(synthetic_hotkey, sort_positions=True)
             orders = []
             fees = []
+            realtime_unrealized = 0
             for position in positions:
                 for order in position.orders:
                     if order.processed_ms < end_time_ms:
@@ -1037,10 +1043,18 @@ class EntityManager(ValidatorBroadcastBase):
                     if fee["time_ms"] < end_time_ms:
                         fees.append(fee)
 
+                realtime_unrealized += position.unrealized_pnl
+
             orders.sort(key=lambda x: x.processed_ms)
             fees.sort(key=lambda x: x["time_ms"])
             if not orders:
-                return None
+                return {
+                    'hotkey': synthetic_hotkey,
+                    'total_checkpoints': 0,
+                    'checkpoints': {},
+                    'weekly_settlements': [],
+                    'payout': 0,
+                }
 
             weekly_settlements = []
             def _record_week(start_ms, end_ms, balance, prev_hwm, eow_unrealized, week_orders):
@@ -1080,7 +1094,10 @@ class EntityManager(ValidatorBroadcastBase):
                 # debt checkpoint timestamp is start_ms, but unrealized pnl is at the end_ms
                 # so must offset by a checkpoint for correct unrealized pnl at end time
                 cp = debt_ledger.get_checkpoint_at_time(end_time - CP_DURATION, CP_DURATION)
-                _record_week(week_start, week_end, running_balance, eow_hwm, cp.unrealized_pnl if cp else 0.0, week_orders)
+                unrealized_pnl = cp.unrealized_pnl if cp else 0.0
+                if end_time == end_time_ms:
+                    unrealized_pnl = realtime_unrealized
+                _record_week(week_start, week_end, running_balance, eow_hwm, unrealized_pnl, week_orders)
                 eow_hwm = max(eow_hwm, running_balance)
                 week_start, week_end = week_end, week_end + MS_IN_WEEK
 
