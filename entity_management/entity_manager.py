@@ -1097,7 +1097,7 @@ class EntityManager(ValidatorBroadcastBase):
                 unrealized_pnl = cp.unrealized_pnl if cp else 0.0
                 if end_time == end_time_ms:
                     unrealized_pnl = realtime_unrealized
-                _record_week(week_start, week_end, running_balance, eow_hwm, unrealized_pnl, week_orders)
+                _record_week(week_start, end_time, running_balance, eow_hwm, unrealized_pnl, week_orders)
                 eow_hwm = max(eow_hwm, running_balance)
                 week_start, week_end = week_end, week_end + MS_IN_WEEK
 
