@@ -1810,8 +1810,8 @@ Calculate payout for a subaccount based on debt ledger checkpoints within a spec
 ```json
 {
   "subaccount_uuid": "550e8400-e29b-41d4-a716-446655440000",
-  "start_time_ms": 1702345678901,
-  "end_time_ms": 1702432078901
+  "start_time_ms": 1772409600000,
+  "end_time_ms": 1775088000000
 }
 ```
 
@@ -1825,8 +1825,8 @@ Calculate payout for a subaccount based on debt ledger checkpoints within a spec
     "checkpoints": [...],
     "weekly_settlements": [
       {
-        "start_ms": 1702252800000,
-        "end_ms": 1702857600000,
+        "start_ms": 1772409600000,
+        "end_ms": 1773014400000,
         "eow_balance": 130.0,
         "eow_unrealized": -5.0,
         "payout": 125.0,
