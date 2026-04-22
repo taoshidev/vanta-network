@@ -408,8 +408,6 @@ class HyperliquidTracker:
             return
 
         self._stop_event.clear()
-        # Populate universe before the thread starts so _process_fill has coins ready.
-        self._refresh_hl_universe()
         self._thread = threading.Thread(target=self._run_loop, daemon=True, name="hl-tracker")
         self._thread.start()
         bt.logging.info("[HL_TRACKER] Started daemon thread")
@@ -570,6 +568,10 @@ class HyperliquidTracker:
     async def _run_stream(self):
         """Orchestrator: loads proxy config, then loops assigning addresses and managing shards."""
         self._load_proxy_config()
+        # Kick off universe refresh in a thread so WebSocket shards can start immediately.
+        self._last_universe_refresh = time.time()
+        loop = asyncio.get_running_loop()
+        asyncio.ensure_future(loop.run_in_executor(None, self._refresh_hl_universe))
         self._backup_poll_task = asyncio.ensure_future(self._backup_poll_cycle())
 
         try:
