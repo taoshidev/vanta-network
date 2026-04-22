@@ -1063,6 +1063,7 @@ class HyperliquidTracker:
         for dex in dex_names:
             if dex is None:
                 continue
+            time.sleep(1)
             try:
                 resp = requests.post(ValiConfig.hl_info_url(), json={"type": "meta", "dex": dex}, timeout=10)
                 resp.raise_for_status()
@@ -1079,14 +1080,21 @@ class HyperliquidTracker:
         payload: dict = {"type": "metaAndAssetCtxs"}
         if dex is not None:
             payload["dex"] = dex
-        try:
-            resp = requests.post(ValiConfig.hl_info_url(), json=payload, timeout=10)
-            resp.raise_for_status()
-            meta, _ = resp.json()
-            return [(asset["name"], asset["maxLeverage"]) for asset in meta["universe"]]
-        except Exception as e:
-            bt.logging.warning(f"[HL_TRACKER] Failed to fetch candidates for dex={dex}: {e}")
-            return []
+        for attempt in range(3):
+            try:
+                resp = requests.post(ValiConfig.hl_info_url(), json=payload, timeout=10)
+                if resp.status_code == 429:
+                    bt.logging.warning(f"[HL_TRACKER] 429 fetching candidates for dex={dex}, waiting 60s...")
+                    time.sleep(60)
+                    continue
+                resp.raise_for_status()
+                meta, _ = resp.json()
+                return [(asset["name"], asset["maxLeverage"]) for asset in meta["universe"]]
+            except Exception as e:
+                if attempt == 2:
+                    bt.logging.warning(f"[HL_TRACKER] Failed to fetch candidates for dex={dex}: {e}")
+                time.sleep(2 ** attempt)
+        return []
 
     def _refresh_hl_universe(self):
         """Discover all dexes, apply 30-day liquidity filter, update _hl_universe + HL_DYNAMIC_REGISTRY."""
@@ -1107,11 +1115,12 @@ class HyperliquidTracker:
         # 2. Fetch collateral token per dex (one spotMeta call + one meta call per named dex)
         dex_to_collateral = self._fetch_dex_collateral_map(dex_names)
 
-        # 3. Collect (coin, maxLeverage) across all dexes
+        # 3. Collect (coin, maxLeverage) across all dexes (1s sleep between dexes to stay under rate limit)
         all_candidates: List[tuple] = []
         for dex in dex_names:
             for coin, max_lev in self._fetch_candidates_for_dex(dex):
                 all_candidates.append((coin, max_lev))
+            time.sleep(1)
 
         if not all_candidates:
             bt.logging.warning("[HL_TRACKER] No candidates found — keeping existing registry")
