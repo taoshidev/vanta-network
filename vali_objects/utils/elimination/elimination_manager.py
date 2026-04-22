@@ -576,14 +576,19 @@ class EliminationManager(CacheController):
         bt.logging.info(f"[ELIM_DEBUG] After processing, eliminations dict has {len(self.eliminations)} entries")
 
         # Handle cleanup outside lock (I/O operations - only for newly added eliminations)
+        _funded_elim_reasons = {
+            EliminationReason.FAILED_FUNDED_PERIOD_INTRADAY_DRAWDOWN.value,
+            EliminationReason.FAILED_FUNDED_PERIOD_EOD_DRAWDOWN.value,
+        }
         for hotkey, elim_reason, elim_mdd in newly_added_eliminations:
             self.handle_eliminated_miner(hotkey, {}, iteration_epoch)
             # Skip slashing in test mode (no contract manager)
             if self._contract_client:
                 self._contract_client.slash_miner_collateral_proportion(hotkey)
 
-            # slash entity collateral
-            self._entity_collateral_client.try_slash_on_elimination(hotkey)
+            # slash entity collateral only for funded subaccount eliminations
+            if elim_reason in _funded_elim_reasons:
+                self._entity_collateral_client.try_slash_on_elimination(hotkey)
 
     def handle_first_refresh(self, iteration_epoch=None):
         """
@@ -766,9 +771,6 @@ class EliminationManager(CacheController):
                 # Skip slashing in test mode (no contract manager)
                 if self._contract_client:
                     self._contract_client.slash_miner_collateral_proportion(miner_hotkey)
-
-                # slash entity collateral
-                self._entity_collateral_client.try_slash_on_elimination(miner_hotkey)
 
     def handle_zombies(self, iteration_epoch=None):
         """Handle zombie miners"""

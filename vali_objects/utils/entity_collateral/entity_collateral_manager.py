@@ -492,7 +492,7 @@ class EntityCollateralManager(CacheController):
 
         # Only slash funded subaccounts
         bucket = self._challenge_period_client.get_miner_bucket(hotkey)
-        if bucket == MinerBucket.SUBACCOUNT_CHALLENGE:
+        if bucket is not None and bucket not in (MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA):
             return 0.0
 
         max_slash = self.get_max_slash(hotkey)
