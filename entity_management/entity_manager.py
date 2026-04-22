@@ -1021,13 +1021,20 @@ class EntityManager(ValidatorBroadcastBase):
 
         # Get debt ledger for this hotkey
         try:
-            miner_bucket = self._challenge_period_client.get_miner_bucket(synthetic_hotkey, end_time_ms)
-            if miner_bucket not in (MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA):
-                return None
-
             debt_ledger = self._debt_ledger_client.get_ledger(synthetic_hotkey)
             if not debt_ledger:
                 return None
+
+            EMPTY_RESPONSE = {
+                'hotkey': synthetic_hotkey,
+                'total_checkpoints': 0,
+                'checkpoints': {},
+                'weekly_settlements': [],
+                'payout': 0,
+            }
+            miner_bucket = self._challenge_period_client.get_miner_bucket(synthetic_hotkey, end_time_ms)
+            if miner_bucket not in (MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA):
+                return EMPTY_RESPONSE
 
             checkpoints_dict = [cp.to_dict() for cp in debt_ledger.checkpoints]
 
@@ -1048,13 +1055,7 @@ class EntityManager(ValidatorBroadcastBase):
             orders.sort(key=lambda x: x.processed_ms)
             fees.sort(key=lambda x: x["time_ms"])
             if not orders:
-                return {
-                    'hotkey': synthetic_hotkey,
-                    'total_checkpoints': 0,
-                    'checkpoints': {},
-                    'weekly_settlements': [],
-                    'payout': 0,
-                }
+                return EMPTY_RESPONSE
 
             weekly_settlements = []
             def _record_week(start_ms, end_ms, balance, prev_hwm, eow_unrealized, week_orders):
