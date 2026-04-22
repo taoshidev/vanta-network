@@ -27,7 +27,7 @@ ACCOUNT_SIZE = 50_000.0
 # Expected limits for non-challenge, non-funded crypto subaccount (falls through to legacy path)
 CRYPTO_MAX_LEVERAGE = ValiConfig.CRYPTO_MAX_LEVERAGE  # 2.5
 PORTFOLIO_CAP_CRYPTO = ValiConfig.PORTFOLIO_LEVERAGE_CAP[TradePairCategory.CRYPTO]  # 5
-CHALLENGE_DIVISOR = ValiConfig.SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR  # 4 (VT, unused in HS endpoint)
+CHALLENGE_DIVISOR = ValiConfig.SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR[TradePairCategory.CRYPTO]  # 4 (VT, unused in HS endpoint)
 
 EXPECTED_MAX_POSITION = ACCOUNT_SIZE * CRYPTO_MAX_LEVERAGE      # 125_000  (legacy/else path)
 EXPECTED_MAX_PORTFOLIO = ACCOUNT_SIZE * PORTFOLIO_CAP_CRYPTO    # 250_000  (legacy/else path)

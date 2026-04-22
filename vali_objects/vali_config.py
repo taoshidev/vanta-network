@@ -529,8 +529,13 @@ class ValiConfig:
         TradePairCategory.EQUITIES: 0,
     }
 
-    SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR = 4    # Vanta Trading: challenge leverage = funded / 4
-    HS_SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR = 2  # HyperScaled: challenge leverage = funded / 2
+    SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR = {
+        TradePairCategory.CRYPTO: 4,
+        TradePairCategory.FOREX: 4,
+        TradePairCategory.INDICES: 4,
+        TradePairCategory.EQUITIES: 2,
+    }
+    HS_SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR = 2
 
     # Collateral limits
     MIN_COLLATERAL_BALANCE_THETA = 300  # Required minimum total collateral balance per miner in Theta. Approx $150k capital account size

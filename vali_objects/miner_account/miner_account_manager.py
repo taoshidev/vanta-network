@@ -107,7 +107,9 @@ class MinerAccount:
                 return base / ValiConfig.HS_SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR
             return base
         # VT path: use asset-class portfolio cap, divided by 4 for challenge accounts
-        multiplier = ValiConfig.PORTFOLIO_LEVERAGE_CAP.get(self.asset_class, 1.0) if self.asset_class else 1.0
+        if not self.asset_class:
+            return 1.0
+        multiplier = ValiConfig.PORTFOLIO_LEVERAGE_CAP.get(self.asset_class, 1.0)
         if self.miner_bucket == MinerBucket.SUBACCOUNT_CHALLENGE:
             multiplier /= ValiConfig.SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR.get(self.asset_class, 1.0)
 
