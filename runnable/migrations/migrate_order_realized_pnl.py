@@ -80,16 +80,16 @@ def _log_pnl_diff(hotkey: str, position: Position, before: dict, after: dict) ->
         return
 
     print(
-        f"[DIFF] hotkey={hotkey[:8]}... uuid={position.position_uuid} "
+        f"[DIFF] hotkey={hotkey}... uuid={position.position_uuid} "
         f"pair={position.trade_pair.trade_pair_id}"
     )
     if realized_changed:
         print(
-            f"       realized_pnl:   {before['realized_pnl']:.6f} -> {after['realized_pnl']:.6f}"
+            f"       realized_pnl:   {before['realized_pnl']} -> {after['realized_pnl']}"
         )
     if unrealized_changed:
         print(
-            f"       unrealized_pnl: {before['unrealized_pnl']:.6f} -> {after['unrealized_pnl']:.6f}"
+            f"       unrealized_pnl: {before['unrealized_pnl']} -> {after['unrealized_pnl']}"
         )
 
 
