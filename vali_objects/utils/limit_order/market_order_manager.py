@@ -287,7 +287,8 @@ class MarketOrderManager():
             account_multiplier = ValiConfig.HS_PORTFOLIO_MAX_LEVERAGE
         else:
             max_position_leverage = trade_pair.max_leverage
-            account_multiplier = ValiConfig.PORTFOLIO_LEVERAGE_CAP.get(trade_pair_category, 1.0)
+            account_multiplier = (ValiConfig.HS_PORTFOLIO_MAX_LEVERAGE if is_hs
+                                  else ValiConfig.PORTFOLIO_LEVERAGE_CAP.get(trade_pair_category, 1.0))
             if bucket == MinerBucket.SUBACCOUNT_CHALLENGE:
                 divisor = (ValiConfig.HS_SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR if is_hs
                            else ValiConfig.SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR[trade_pair_category])

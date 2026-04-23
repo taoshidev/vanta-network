@@ -719,7 +719,8 @@ class EntityManager(ValidatorBroadcastBase):
                         self._hl_address_to_synthetic[normalized_hl_address] = subaccount.synthetic_hotkey
                     self._write_entities_from_memory_to_disk()
                     # Persist hl_address on the MinerAccount so multiplier/buying_power use HS divisor
-                    self._miner_account_client.set_hl_address(subaccount.synthetic_hotkey, hl_address)
+                    if self._miner_account_client:
+                        self._miner_account_client.set_hl_address(subaccount.synthetic_hotkey, hl_address)
 
         return True, subaccount_info, message
 
@@ -1658,7 +1659,8 @@ class EntityManager(ValidatorBroadcastBase):
                             normalized_hl = self._normalize_hl_address(sub.hl_address)
                             if normalized_hl:
                                 self._hl_address_to_synthetic[normalized_hl] = sub.synthetic_hotkey
-                            self._miner_account_client.set_hl_address(sub.synthetic_hotkey, sub.hl_address)
+                            if self._miner_account_client:
+                                self._miner_account_client.set_hl_address(sub.synthetic_hotkey, sub.hl_address)
 
                     stats['entities_added'] += 1
                     stats['subaccounts_added'] += len(incoming_entity.subaccounts)
@@ -1684,7 +1686,8 @@ class EntityManager(ValidatorBroadcastBase):
                                     normalized_hl = self._normalize_hl_address(incoming_sub.hl_address)
                                     if normalized_hl:
                                         self._hl_address_to_synthetic[normalized_hl] = incoming_sub.synthetic_hotkey
-                                    self._miner_account_client.set_hl_address(incoming_sub.synthetic_hotkey, incoming_sub.hl_address)
+                                    if self._miner_account_client:
+                                        self._miner_account_client.set_hl_address(incoming_sub.synthetic_hotkey, incoming_sub.hl_address)
 
                                 stats['subaccounts_added'] += 1
                                 bt.logging.info(f"[ENTITY_MANAGER] Added subaccount {incoming_sub.synthetic_hotkey} from sync")
@@ -1703,7 +1706,8 @@ class EntityManager(ValidatorBroadcastBase):
                                     normalized_hl = self._normalize_hl_address(incoming_sub.hl_address)
                                     if normalized_hl:
                                         self._hl_address_to_synthetic[normalized_hl] = incoming_sub.synthetic_hotkey
-                                    self._miner_account_client.set_hl_address(incoming_sub.synthetic_hotkey, incoming_sub.hl_address)
+                                    if self._miner_account_client:
+                                        self._miner_account_client.set_hl_address(incoming_sub.synthetic_hotkey, incoming_sub.hl_address)
                                     stats['subaccounts_updated'] += 1
 
                                 # Update payout_address if added
@@ -1883,7 +1887,8 @@ class EntityManager(ValidatorBroadcastBase):
                             existing_sub.hl_address = hl_address
                             if normalized_hl:
                                 self._hl_address_to_synthetic[normalized_hl] = synthetic_hotkey
-                            self._miner_account_client.set_hl_address(synthetic_hotkey, hl_address)
+                            if self._miner_account_client:
+                                self._miner_account_client.set_hl_address(synthetic_hotkey, hl_address)
                             bt.logging.info(
                                 f"[ENTITY_MANAGER] Set hl_address {hl_address} for subaccount {synthetic_hotkey}"
                             )

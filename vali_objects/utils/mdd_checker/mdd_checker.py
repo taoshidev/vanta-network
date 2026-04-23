@@ -381,11 +381,6 @@ class MDDChecker(CacheController):
                 # Only correct market orders (no order corrections for limit/bracket orders)
                 if order.src != OrderSource.ORGANIC:
                     continue
-                
-                # Skip hyperliquid orders as we trust the prices from the HL tracker 
-                # and it has high liquidity
-                if order.src == OrderSource.HYPERLIQUID:
-                    continue
 
                 order_age = now_ms - order.processed_ms
                 if order_age > ValiConfig.RECENT_EVENT_TRACKER_OLDEST_ALLOWED_RECORD_MS:
