@@ -276,11 +276,7 @@ class MarketOrderManager():
 
         trade_pair_category = trade_pair.trade_pair_category
         bucket = self._challenge_period_client.get_miner_bucket(miner_hotkey)
-        try:
-            subaccount_info = self._entity_client.get_subaccount_info_for_synthetic(miner_hotkey)
-        except Exception:
-            subaccount_info = None
-        is_hs = subaccount_info is not None and subaccount_info.get('hl_address') is not None
+        is_hs = self._miner_account_client.get_hl_address(miner_hotkey) is not None
         if is_hs and bucket in (MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA):
             max_position_leverage = (trade_pair.max_leverage if isinstance(trade_pair, DynamicTradePair)
                                      else ValiConfig.HS_MAX_LEVERAGE)

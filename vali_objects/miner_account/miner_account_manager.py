@@ -689,6 +689,12 @@ class MinerAccountManager(ValidatorBroadcastBase):
             account.miner_bucket = bucket
             self._save_accounts_to_disk()
 
+    def get_hl_address(self, hotkey: str) -> Optional[str]:
+        """Return the HL address for an account, or None if not an HS subaccount."""
+        with self._accounts_lock:
+            account = self.accounts.get(hotkey)
+            return account.hl_address if account else None
+
     def set_hl_address(self, hotkey: str, hl_address: Optional[str]) -> None:
         """Set the HL address on an account. Called by EntityManager when an HL subaccount is created/synced."""
         with self._accounts_lock:
