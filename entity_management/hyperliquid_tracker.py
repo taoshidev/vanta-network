@@ -794,6 +794,11 @@ class HyperliquidTracker:
             if not fill_hash:
                 continue
 
+            # Skip fills without a builder fee — not placed through our builder
+            builder_fee = fill.get("builderFee")
+            if not builder_fee or float(builder_fee) == 0:
+                continue
+
             # Record hash for dedup (even for snapshots)
             if fill_hash in self._processed_hashes:
                 continue
@@ -1206,6 +1211,11 @@ class HyperliquidTracker:
 
                     if fills is not None:
                         for fill in fills:
+                            # Skip fills without a builder fee — not placed through our builder
+                            builder_fee = fill.get("builderFee")
+                            if not builder_fee or float(builder_fee) == 0:
+                                continue
+
                             fill_hash = fill.get("hash") or fill.get("tid")
                             if not fill_hash or fill_hash in self._processed_hashes:
                                 continue
