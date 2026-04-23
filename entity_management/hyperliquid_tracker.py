@@ -930,6 +930,14 @@ class HyperliquidTracker:
         finally:
             session.close()
 
+        if not isinstance(perp, dict):
+            bt.logging.info(f"[HL_TRACKER] No perp account for {hl_address}")
+            return None
+        if not isinstance(spot, dict):
+            spot = {}
+        if not isinstance(all_mids, dict):
+            all_mids = {}
+
         margin = perp.get("crossMarginSummary", perp.get("marginSummary", {}))
         perp_value = float(margin.get("accountValue", 0))
 
@@ -1030,6 +1038,8 @@ class HyperliquidTracker:
         }
         for attempt in range(3):
             try:
+                if attempt > 0:
+                    time.sleep(2 ** attempt)
                 resp = requests.post(ValiConfig.hl_info_url(), json=payload, timeout=15)
                 if resp.status_code == 429:
                     bt.logging.warning(f"[HL_TRACKER] 429 on {coin}, waiting 60s...")
@@ -1044,7 +1054,6 @@ class HyperliquidTracker:
             except Exception as e:
                 if attempt == 2:
                     bt.logging.warning(f"[HL_TRACKER] candleSnapshot failed for {coin}: {e}")
-                time.sleep(2 ** attempt)
         return 0.0
 
     def _fetch_dex_collateral_map(self, dex_names: List[Optional[str]]) -> Dict[str, str]:
@@ -1054,13 +1063,22 @@ class HyperliquidTracker:
         Fetches spotMeta once for token index resolution, then queries each named dex.
         """
         result: Dict[str, str] = {"": "USDC"}  # default crypto dex is always USDC
-        try:
-            resp = requests.post(ValiConfig.hl_info_url(), json={"type": "spotMeta"}, timeout=10)
-            resp.raise_for_status()
-            token_index_map: Dict[int, str] = {t["index"]: t["name"] for t in resp.json().get("tokens", [])}
-        except Exception as e:
-            bt.logging.warning(f"[HL_TRACKER] Failed to fetch spotMeta: {e}")
-            token_index_map = {}
+        token_index_map: Dict[int, str] = {}
+        for attempt in range(3):
+            try:
+                if attempt > 0:
+                    time.sleep(2 ** attempt)
+                resp = requests.post(ValiConfig.hl_info_url(), json={"type": "spotMeta"}, timeout=10)
+                if resp.status_code == 429:
+                    bt.logging.warning(f"[HL_TRACKER] 429 fetching spotMeta, waiting 60s...")
+                    time.sleep(60)
+                    continue
+                resp.raise_for_status()
+                token_index_map = {t["index"]: t["name"] for t in resp.json().get("tokens", [])}
+                break
+            except Exception as e:
+                if attempt == 2:
+                    bt.logging.warning(f"[HL_TRACKER] Failed to fetch spotMeta: {e}")
 
         for dex in dex_names:
             if dex is None:
@@ -1084,6 +1102,8 @@ class HyperliquidTracker:
             payload["dex"] = dex
         for attempt in range(3):
             try:
+                if attempt > 0:
+                    time.sleep(2 ** attempt)
                 resp = requests.post(ValiConfig.hl_info_url(), json=payload, timeout=10)
                 if resp.status_code == 429:
                     bt.logging.warning(f"[HL_TRACKER] 429 fetching candidates for dex={dex}, waiting 60s...")
@@ -1095,7 +1115,6 @@ class HyperliquidTracker:
             except Exception as e:
                 if attempt == 2:
                     bt.logging.warning(f"[HL_TRACKER] Failed to fetch candidates for dex={dex}: {e}")
-                time.sleep(2 ** attempt)
         return []
 
     def _refresh_hl_universe(self):
@@ -1106,12 +1125,21 @@ class HyperliquidTracker:
         # perpDexs returns a list where the first element is None (default dex) and the rest
         # are dicts like {"name": "xyz", ...} — extract the name strings from those dicts.
         named_dexes: List[str] = []
-        try:
-            resp = requests.post(ValiConfig.hl_info_url(), json={"type": "perpDexs"}, timeout=10)
-            resp.raise_for_status()
-            named_dexes = [d["name"] for d in resp.json() if isinstance(d, dict) and d.get("name")]
-        except Exception as e:
-            bt.logging.warning(f"[HL_TRACKER] Failed to fetch perpDexs: {e} — using default dex only")
+        for attempt in range(3):
+            try:
+                if attempt > 0:
+                    time.sleep(2 ** attempt)
+                resp = requests.post(ValiConfig.hl_info_url(), json={"type": "perpDexs"}, timeout=10)
+                if resp.status_code == 429:
+                    bt.logging.warning(f"[HL_TRACKER] 429 fetching perpDexs, waiting 60s...")
+                    time.sleep(60)
+                    continue
+                resp.raise_for_status()
+                named_dexes = [d["name"] for d in resp.json() if isinstance(d, dict) and d.get("name")]
+                break
+            except Exception as e:
+                if attempt == 2:
+                    bt.logging.warning(f"[HL_TRACKER] Failed to fetch perpDexs: {e} — using default dex only")
         dex_names: List[Optional[str]] = [None] + named_dexes
 
         # 2. Fetch collateral token per dex (one spotMeta call + one meta call per named dex)
