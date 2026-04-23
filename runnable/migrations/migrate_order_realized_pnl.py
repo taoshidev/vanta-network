@@ -132,6 +132,10 @@ def main(dry_run: bool = False) -> bool:
 
                 position.rebuild_position_with_updated_orders(price_fetcher_client=None)
 
+                # Restore unrealized_pnl — rebuild uses order prices rather than live prices,
+                # so the recomputed value is stale for open positions.
+                position.unrealized_pnl = before["unrealized_pnl"]
+
                 after = {
                     "realized_pnl": position.realized_pnl,
                     "unrealized_pnl": position.unrealized_pnl,
