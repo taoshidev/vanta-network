@@ -757,8 +757,8 @@ class TestHyperliquidTracker(TestBase):
 
         # Populate _hl_universe with common test coins so _process_fill coin lookup succeeds.
         self.tracker._hl_universe = {
-            "BTC": DynamicTradePair(trade_pair_id="BTCUSD", trade_pair="BTC/USD", hl_coin="BTC", max_leverage=0.5),
-            "ETH": DynamicTradePair(trade_pair_id="ETHUSD", trade_pair="ETH/USD", hl_coin="ETH", max_leverage=0.5),
+            "BTC": DynamicTradePair(trade_pair_id="BTCUSDC", trade_pair="BTC/USDC", hl_coin="BTC", max_leverage=ValiConfig.HS_MAX_LEVERAGE),
+            "ETH": DynamicTradePair(trade_pair_id="ETHUSDC", trade_pair="ETH/USDC", hl_coin="ETH", max_leverage=ValiConfig.HS_MAX_LEVERAGE),
         }
 
         # Mock account state fetch and current position lookup.
@@ -795,25 +795,37 @@ class TestHyperliquidTracker(TestBase):
                 {"name": "LOWVOL", "maxLeverage": 10},
             ]
         }
-        fake_ctxs = [
-            {"dayNtlVlm": "5000000"},  # above liquidity threshold
-            {"dayNtlVlm": "100"},       # below liquidity threshold
-        ]
+
+        def fake_avg_volume(coin):
+            # PEPE passes the 2M threshold; LOWVOL does not
+            return 5_000_000.0 if coin == "PEPE" else 100.0
+
+        def post_side_effect(url, json=None, timeout=None):
+            r = MagicMock()
+            t = (json or {}).get("type", "")
+            if t == "perpDexs":
+                r.json.return_value = []  # no named dexes — default dex only
+            elif t == "spotMeta":
+                r.json.return_value = {"tokens": [{"index": 0, "name": "USDC"}]}
+            elif t == "metaAndAssetCtxs":
+                r.json.return_value = [fake_meta, [{}, {}]]
+            else:
+                r.json.return_value = {}
+            return r
 
         with patch.object(self.tracker, '_persist_hl_dynamic_registry'), \
+             patch.object(self.tracker, '_fetch_30d_avg_volume', side_effect=fake_avg_volume), \
              patch('entity_management.hyperliquid_tracker.requests') as mock_req:
-            mock_resp = MagicMock()
-            mock_resp.json.return_value = [fake_meta, fake_ctxs]
-            mock_req.post.return_value = mock_resp
+            mock_req.post.side_effect = post_side_effect
             self.tracker._refresh_hl_universe()
 
         self.assertIn("PEPE", self.tracker._hl_universe)
         self.assertNotIn("LOWVOL", self.tracker._hl_universe)
         pepe_dtp = self.tracker._hl_universe["PEPE"]
         self.assertIsInstance(pepe_dtp, DynamicTradePair)
-        self.assertEqual(pepe_dtp.trade_pair_id, "PEPEUSD")
-        # max_leverage = min(40 / ValiConfig.HL_LEVERAGE_SCALE_FACTOR, HL_LEVERAGE_CEILING) = 0.5
-        self.assertAlmostEqual(pepe_dtp.max_leverage, 0.5)
+        self.assertEqual(pepe_dtp.trade_pair_id, "PEPEUSDC")
+        # max_leverage: PEPE has 40x HL max lev < HL_HIGH_TIER_THRESHOLD (50) → HS_MAX_LEVERAGE = 1.0
+        self.assertAlmostEqual(pepe_dtp.max_leverage, ValiConfig.HS_MAX_LEVERAGE)
 
     # ==================== Fill Dedup ====================
 
@@ -1075,11 +1087,11 @@ class TestHyperliquidTracker(TestBase):
 
     @patch('entity_management.hyperliquid_tracker.OrderProcessor')
     def test_leverage_clamped_to_min(self, mock_order_processor):
-        """Test that account weight below HL_LEVERAGE_FLOOR is treated as FLAT (leverage 0)."""
+        """Test that account weight below HS_MIN_LEVERAGE is treated as FLAT (leverage 0)."""
         account_size = 100_000
         mock_result = self._setup_successful_fill_mocks(account_size=account_size)
         mock_order_processor.process_order.return_value = mock_result
-        # Weight 0.001 < HL_LEVERAGE_FLOOR (0.01) => target treated as 0.0 => FLAT order
+        # Weight 0.001 < HS_MIN_LEVERAGE (0.01) => target treated as 0.0 => FLAT order
         self.tracker._fetch_hl_account_state = MagicMock(return_value={
             "total_portfolio_value": account_size,
             "positions": {"BTC": {"weight": 0.001}},
@@ -1095,11 +1107,11 @@ class TestHyperliquidTracker(TestBase):
 
     @patch('entity_management.hyperliquid_tracker.OrderProcessor')
     def test_leverage_clamped_to_max(self, mock_order_processor):
-        """Test account weight above HL_LEVERAGE_CEILING is clamped to HL_LEVERAGE_CEILING."""
+        """Test account weight above HS_MAX_LEVERAGE is clamped to HS_MAX_LEVERAGE."""
         account_size = 10_000
         mock_result = self._setup_successful_fill_mocks(account_size=account_size)
         mock_order_processor.process_order.return_value = mock_result
-        # Weight 5.0 > max_leverage=0.5 (HL_LEVERAGE_CEILING) => clamped to 0.5
+        # Weight 5.0 > max_leverage=1.0 (HS_MAX_LEVERAGE) => clamped to 1.0
         self.tracker._fetch_hl_account_state = MagicMock(return_value={
             "total_portfolio_value": account_size,
             "positions": {"BTC": {"weight": 5.0}},
@@ -1110,7 +1122,7 @@ class TestHyperliquidTracker(TestBase):
 
         call_args = mock_order_processor.process_order.call_args
         signal = call_args.kwargs['signal']
-        self.assertAlmostEqual(signal['leverage'], ValiConfig.HL_LEVERAGE_CEILING, places=4)
+        self.assertAlmostEqual(signal['leverage'], ValiConfig.HS_MAX_LEVERAGE, places=4)
 
     @patch('entity_management.hyperliquid_tracker.OrderProcessor')
     def test_process_fill_signal_structure(self, mock_order_processor):
@@ -1125,7 +1137,7 @@ class TestHyperliquidTracker(TestBase):
         signal = call_args.kwargs['signal']
 
         self.assertEqual(signal['order_type'], 'LONG')
-        self.assertEqual(signal['trade_pair'], {'trade_pair_id': 'ETHUSD'})
+        self.assertEqual(signal['trade_pair'], {'trade_pair_id': 'ETHUSDC'})
         self.assertEqual(signal['execution_type'], 'MARKET')
         # leverage = (2.0 * 3000.0) / 100000 = 0.06
         self.assertAlmostEqual(signal['leverage'], 0.06, places=4)

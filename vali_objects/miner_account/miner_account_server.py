@@ -238,6 +238,14 @@ class MinerAccountServer(RPCServerBase):
         bucket = MinerBucket(bucket_value) if bucket_value else None
         self._manager.set_miner_bucket(hotkey, bucket)
 
+    def get_hl_address(self, hotkey: str) -> Optional[str]:
+        """Return the HL address for an account, or None if not an HS subaccount."""
+        return self._manager.get_hl_address(hotkey)
+
+    def set_hl_address(self, hotkey: str, hl_address: Optional[str]) -> None:
+        """Set the HL address on an account."""
+        self._manager.set_hl_address(hotkey, hl_address)
+
     def get_all_hotkeys(self) -> list:
         """Get all hotkeys with accounts."""
         return self._manager.get_all_hotkeys()

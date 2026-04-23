@@ -336,12 +336,17 @@ class ValiConfig:
     COMMODITIES_MIN_LEVERAGE = 0.05
     COMMODITIES_MAX_LEVERAGE = 2
 
-    # HL dynamic universe — copy-trading leverage mapping
-    HL_LEVERAGE_SCALE_FACTOR = 80       # TBD
-    HL_LEVERAGE_FLOOR = 0.01
-    HL_LEVERAGE_CEILING = 0.5           # TBD
-    HL_MIN_LIQUIDITY_USD = 1_000_000    # TBD
-    HL_UNIVERSE_REFRESH_INTERVAL_S = 3_600
+    # HL dynamic universe — HS position leverage mapping
+    # HL assigns 50x only to its most trusted instruments (spx, forex pairs)
+    # → HS 5x; all other instruments → HS 1x (standard tier)
+    HL_HIGH_TIER_THRESHOLD = 50         # HL max lev at which HS high tier applies
+    HS_HIGH_TIER_MAX_LEVERAGE = 5.0     # HS max leverage for high-tier instruments (forex/spx)
+    HS_MAX_LEVERAGE = 1.0               # HS max leverage for standard-tier instruments (funded accounts)
+    HS_PORTFOLIO_MAX_LEVERAGE = 4.0     # HS portfolio-level leverage cap (funded accounts)
+    HS_MIN_LEVERAGE = 0.01              # HS minimum leverage for any DynamicTradePair position
+    HL_MIN_LIQUIDITY_USD = 2_000_000    # 30-day mean daily USD volume threshold
+    HL_LIQUIDITY_LOOKBACK_DAYS = 30     # days of daily candles used to compute mean(v × close)
+    HL_UNIVERSE_REFRESH_INTERVAL_S = 86_400  # refresh once daily
 
     # Minimum position size limits
     FOREX_MIN_POSITION_SIZE_LOTS = 0.01        # micro lot — subaccounts > $10K
@@ -530,6 +535,7 @@ class ValiConfig:
         TradePairCategory.INDICES: 4,
         TradePairCategory.EQUITIES: 2,
     }
+    HS_SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR = 2
 
     # Collateral limits
     MIN_COLLATERAL_BALANCE_THETA = 300  # Required minimum total collateral balance per miner in Theta. Approx $150k capital account size
@@ -655,12 +661,12 @@ assert ValiConfig.EQUITIES_MAX_LEVERAGE <= ValiConfig.ORDER_MAX_LEVERAGE
 @dataclass
 class DynamicTradePair:
     """HL-only dynamic trade pair. Never added to TRADE_PAIR_ID_TO_TRADE_PAIR."""
-    trade_pair_id: str          # e.g. "HYPEUSD"
-    trade_pair: str             # e.g. "HYPE/USD"
-    hl_coin: str                # original HL name e.g. "HYPE" — needed for funding rate lookups
+    trade_pair_id: str          # e.g. "HYPEUSDC" or "xyz:TSLAUSDC"
+    trade_pair: str             # e.g. "HYPE/USDC" or "xyz:TSLA/USDC"
+    hl_coin: str                # original HL coin name e.g. "HYPE" or "xyz:TSLA" — used for API lookups
     max_leverage: float
     fees: float = 0.001
-    min_leverage: float = ValiConfig.HL_LEVERAGE_FLOOR
+    min_leverage: float = ValiConfig.HS_MIN_LEVERAGE
     trade_pair_category: TradePairCategory = TradePairCategory.CRYPTO
     is_crypto: bool = True
     is_forex: bool = False
@@ -669,6 +675,9 @@ class DynamicTradePair:
     is_blocked: bool = False
     lot_size: int = 1
 
+    def __hash__(self):
+        return hash(self.trade_pair_id)
+
     @property
     def subcategory(self): return CryptoSubcategory.ALTS
 
@@ -676,7 +685,7 @@ class DynamicTradePair:
     def base(self): return self.trade_pair.split("/")[0]
 
     @property
-    def quote(self): return "USD"
+    def quote(self): return self.trade_pair.split("/")[1]
 
     def __json__(self):
         return {
@@ -1036,15 +1045,18 @@ TRADE_PAIR_STR_TO_TRADE_PAIR = {x.trade_pair: x for x in TradePair}
 ValiConfig.UNSUPPORTED_TRADE_PAIRS = (TradePair.SPX, TradePair.DJI, TradePair.NDX, TradePair.VIX,
                                       TradePair.FTSE, TradePair.GDAXI)
 
-# HL dynamic registry — populated at import time from disk, updated hourly by hyperliquid_tracker.
+# HL dynamic registry — populated at import time from disk, updated daily by hyperliquid_tracker.
+# HL_DYNAMIC_REGISTRY    : trade_pair_id → DynamicTradePair  (used by from_trade_pair_id)
+# HL_COIN_TO_DYNAMIC_TRADE_PAIR: hl_coin → DynamicTradePair  (used for coin-name lookups in fill/price processing)
 HL_DYNAMIC_REGISTRY: dict[str, DynamicTradePair] = {}
+HL_COIN_TO_DYNAMIC_TRADE_PAIR: dict[str, DynamicTradePair] = {}
 TradePairLike = Union[TradePair, DynamicTradePair]
 
 _HL_REGISTRY_PATH = os.path.join(ValiConfig.BASE_DIR, "validation", "hl_dynamic_registry.json")
 
 
 def load_hl_dynamic_registry() -> None:
-    """Populate this process's HL_DYNAMIC_REGISTRY from disk. Safe to call repeatedly — merges, never prunes."""
+    """Populate HL_DYNAMIC_REGISTRY and HL_COIN_TO_DYNAMIC_TRADE_PAIR from disk. Safe to call repeatedly — merges, never prunes."""
     import json as _json
     if not os.path.exists(_HL_REGISTRY_PATH):
         return
@@ -1052,15 +1064,17 @@ def load_hl_dynamic_registry() -> None:
         with open(_HL_REGISTRY_PATH) as f:
             data = _json.load(f)
         for tid, d in data.items():
-            HL_DYNAMIC_REGISTRY[tid] = DynamicTradePair(
+            dtp = DynamicTradePair(
                 trade_pair_id=d["trade_pair_id"],
                 trade_pair=d["trade_pair"],
                 hl_coin=d["hl_coin"],
                 max_leverage=d["max_leverage"],
-                min_leverage=d.get("min_leverage", ValiConfig.HL_LEVERAGE_FLOOR),
+                min_leverage=d.get("min_leverage", ValiConfig.HS_MIN_LEVERAGE),
                 fees=d.get("fees", 0.001),
                 trade_pair_category=TradePairCategory(d["trade_pair_category"]),
             )
+            HL_DYNAMIC_REGISTRY[tid] = dtp
+            HL_COIN_TO_DYNAMIC_TRADE_PAIR[dtp.hl_coin] = dtp
     except Exception as e:
         import bittensor as bt
         bt.logging.warning(f"[HL_REGISTRY] load failed: {e}")
