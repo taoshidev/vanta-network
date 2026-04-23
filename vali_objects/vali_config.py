@@ -675,6 +675,9 @@ class DynamicTradePair:
     is_blocked: bool = False
     lot_size: int = 1
 
+    def __hash__(self):
+        return hash(self.trade_pair_id)
+
     @property
     def subcategory(self): return CryptoSubcategory.ALTS
 
