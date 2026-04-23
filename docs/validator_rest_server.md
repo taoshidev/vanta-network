@@ -1810,8 +1810,8 @@ Calculate payout for a subaccount based on debt ledger checkpoints within a spec
 ```json
 {
   "subaccount_uuid": "550e8400-e29b-41d4-a716-446655440000",
-  "start_time_ms": 1702345678901,
-  "end_time_ms": 1702432078901
+  "start_time_ms": 1772409600000,
+  "end_time_ms": 1775088000000
 }
 ```
 
@@ -1822,19 +1822,27 @@ Calculate payout for a subaccount based on debt ledger checkpoints within a spec
   "data": {
     "hotkey": "5GhDr3xy...abc_0",
     "total_checkpoints": 10,
-    "checkpoints": [
-      ...
+    "checkpoints": [...],
+    "weekly_settlements": [
+      {
+        "start_ms": 1772409600000,
+        "end_ms": 1773014400000,
+        "eow_balance": 130.0,
+        "eow_unrealized": -5.0,
+        "payout": 125.0,
+        "orders": [...]
+      }
     ],
     "payout": 125.5
   },
-  "timestamp": 1702432078901
+  "timestamp": 1702857600000
 }
 ```
 
 **Parameters:**
 - `subaccount_uuid` (string, required): The unique UUID of the subaccount
-- `start_time_ms` (int, required): Start timestamp in milliseconds (inclusive)
-- `end_time_ms` (int, required): End timestamp in milliseconds (inclusive)
+- `start_time_ms` (int, required): Start timestamp in milliseconds (inclusive). Must be Monday 00:00:00 UTC or `0`
+- `end_time_ms` (int, required): End timestamp in milliseconds (inclusive). Must align to a 12-hour boundary
 
 **Example:**
 ```bash
@@ -1843,22 +1851,31 @@ curl -X POST http://localhost:48888/entity/subaccount/payout \
   -H "Content-Type: application/json" \
   -d '{
     "subaccount_uuid": "550e8400-e29b-41d4-a716-446655440000",
-    "start_time_ms": 1702345678901,
-    "end_time_ms": 1702432078901
+    "start_time_ms": 1702252800000,
+    "end_time_ms": 1702857600000
   }'
 ```
 
 **Response Fields:**
 - `hotkey`: The synthetic hotkey of the subaccount
-- `total_checkpoints`: Number of debt ledger checkpoints in the time range
-- `checkpoints`: Array of checkpoint data with emissions and performance metrics
-- `payout`: Calculated payout amount based on the ledger data
+- `total_checkpoints`: Total number of debt ledger checkpoints across the subaccount's history
+- `checkpoints`: Array of all debt ledger checkpoint data for the subaccount
+- `weekly_settlements`: Array of per-week payout breakdowns. Each entry includes:
+  - `start_ms`: Monday 00:00:00 UTC start of the week
+  - `end_ms`: Monday 00:00:00 UTC end of the week (exclusive)
+  - `eow_balance`: Cumulative realized PnL minus fees at end of week
+  - `eow_unrealized`: Unrealized PnL at the nearest checkpoint before week end
+  - `payout`: `max(0, eow_balance - prev_hwm + min(0, eow_unrealized))` for this week
+  - `orders`: Orders with non-zero realized PnL that settled in this week
+- `payout`: Sum of weekly payouts for weeks whose `start_ms >= start_time_ms`
 
 **Important Notes:**
 - Timestamps must be valid integers and non-negative
+- `start_time_ms` must be Monday 00:00:00 UTC or `0`
+- `end_time_ms` must align to a 12-hour boundary
 - `start_time_ms` must be less than or equal to `end_time_ms`
-- Returns 404 if the subaccount has no debt ledger data in the specified time range
-- Payout calculation is based on debt ledger checkpoints that fall within the time range
+- Returns 404 if the subaccount is not found, is not in a funded/alpha bucket, or has no orders
+- Payout uses a weekly high-water mark (HWM) model: only weeks where balance exceeds the previous HWM contribute to payout
 
 ### Entity Trading Workflow
 

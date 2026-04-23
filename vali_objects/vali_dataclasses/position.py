@@ -606,7 +606,8 @@ class Position(BaseModel):
             if order.order_type != self.position_type or self.position_type == OrderType.FLAT:
                 exit_price = current_price * (1 + order.slippage) if order.leverage > 0 else current_price * (1 - order.slippage)
                 order_realized_pnl_quote = -1 * (exit_price - self.average_entry_price) * (order.quantity * order.trade_pair.lot_size)
-                self.realized_pnl += order_realized_pnl_quote * order.quote_usd_rate
+                order.realized_pnl = order_realized_pnl_quote * order.quote_usd_rate
+                self.realized_pnl += order.realized_pnl
 
             unrealized_quantity = min(self.net_quantity, self.net_quantity + order.quantity, key=abs)
             unrealized_pnl_quote = (current_price - self.average_entry_price) * (unrealized_quantity * order.trade_pair.lot_size)

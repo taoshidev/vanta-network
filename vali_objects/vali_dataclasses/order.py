@@ -25,6 +25,7 @@ class Order(Signal):
     order_uuid: str
     price_sources: list = []
     src: int = OrderSource.ORGANIC
+    realized_pnl: float = 0
     margin_loan: float = 0.0
     is_hl_taker: OptionalType[bool] = None  # None=not HL, True=taker (0.045%), False=maker (0.015%)
 
@@ -178,6 +179,7 @@ class Order(Signal):
                 'order_uuid': self.order_uuid,
                 'src': self.src,
                 'execution_type': self.execution_type.name if self.execution_type else None,
+                'realized_pnl': self.realized_pnl,
                 'limit_price': self.limit_price,
                 'stop_loss': self.stop_loss,
                 'take_profit': self.take_profit,

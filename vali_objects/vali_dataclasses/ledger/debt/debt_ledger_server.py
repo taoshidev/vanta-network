@@ -134,9 +134,10 @@ class DebtLedgerServer(RPCServerBase):
         # Step 1: Update penalty ledgers
         bt.logging.info("Step 1/3: Updating penalty ledgers...")
         penalty_start = time.time()
+        self._penalty_delta_update = True
         self._manager.penalty_ledger_manager.build_penalty_ledgers(delta_update=self._penalty_delta_update)
         bt.logging.info(f"Penalty ledgers updated in {time.time() - penalty_start:.2f}s")
-        self._penalty_delta_update = True
+        # self._penalty_delta_update = True
 
         # Step 2: Update emissions ledgers
         bt.logging.info("Step 2/3: Updating emissions ledgers...")
@@ -156,10 +157,10 @@ class DebtLedgerServer(RPCServerBase):
         bt.logging.info("="*80)
 
         # Run at the next checkpoint aligned time interval
-        # + 1 hour delay for autosync (midnight utc) and perf ledger checkpoint regen
+        # + delay for autosync (midnight utc) and perf ledger checkpoint regen
         now = time.time()
         checkpoint_duration_s = ValiConfig.TARGET_CHECKPOINT_DURATION_MS // 1000
-        next_checkpoint_timestamp_s = (int(now) // checkpoint_duration_s + 1) * checkpoint_duration_s + MS_IN_1_HOUR // 1000
+        next_checkpoint_timestamp_s = (int(now) // checkpoint_duration_s + 1) * checkpoint_duration_s + (MS_IN_1_HOUR/2) // 1000
         self.daemon_interval_s = next_checkpoint_timestamp_s - now
 
         bt.logging.info(f"DebtLedger daemon next iteration in {self.daemon_interval_s} seconds")

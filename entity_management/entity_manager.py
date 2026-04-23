@@ -30,6 +30,7 @@ from pydantic import BaseModel, Field
 import template.protocol
 from entity_management.entity_utils import is_synthetic_hotkey, parse_synthetic_hotkey
 from vali_objects.miner_account import MinerAccountClient
+from vali_objects.position_management.position_utils.position_utils import PositionUtils
 from vali_objects.scoring.debt_based_scoring import DebtBasedScoring
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
@@ -46,7 +47,7 @@ from vali_objects.contract.contract_client import ContractClient
 from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
 from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
 from vali_objects.enums.miner_bucket_enum import MinerBucket
-from time_util.time_util import TimeUtil
+from time_util.time_util import MS_IN_24_HOURS, TimeUtil
 from vanta_api.websocket_notifier import WebSocketNotifierClient
 
 
@@ -974,7 +975,7 @@ class EntityManager(ValidatorBroadcastBase):
         self,
         subaccount_uuid: str,
         start_time_ms: int,
-        end_time_ms: int
+        end_time_ms: Optional[int]
     ) -> Optional[dict]:
         """
         Calculate payout for a subaccount based on debt ledger checkpoints in time range.
@@ -988,7 +989,7 @@ class EntityManager(ValidatorBroadcastBase):
         Args:
             subaccount_uuid: The subaccount UUID
             start_time_ms: Start timestamp (inclusive)
-            end_time_ms: End timestamp (inclusive)
+            end_time_ms: End timestamp (inclusive); if None, uses current time
 
         Returns:
             Dict with {
@@ -998,6 +999,11 @@ class EntityManager(ValidatorBroadcastBase):
                 'payout': float
             } or None if subaccount not found
         """
+        realtime = False
+        if end_time_ms is None:
+            end_time_ms = TimeUtil.now_in_millis()
+            realtime = True
+
         # Translate UUID to hotkey
         synthetic_hotkey = self.get_synthetic_hotkey_from_uuid(subaccount_uuid)
         if not synthetic_hotkey:
@@ -1019,39 +1025,92 @@ class EntityManager(ValidatorBroadcastBase):
             if not debt_ledger:
                 return None
 
-            def _earning_checkpoints_up_to(timestamp_ms: int):
-                return [
-                    cp for cp in debt_ledger.checkpoints
-                    if cp.timestamp_ms <= timestamp_ms
-                       and cp.challenge_period_status in (
-                           MinerBucket.SUBACCOUNT_FUNDED.value,
-                           MinerBucket.SUBACCOUNT_ALPHA.value
-                       )
-                ]
+            EMPTY_RESPONSE = {
+                'hotkey': synthetic_hotkey,
+                'total_checkpoints': 0,
+                'checkpoints': {},
+                'weekly_settlements': [],
+                'payout': 0,
+            }
+            miner_bucket = self._challenge_period_client.get_miner_bucket(synthetic_hotkey, end_time_ms)
+            if miner_bucket not in (MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA):
+                return EMPTY_RESPONSE
 
-            # payout(0, end) - payout(0, start) for correct HWM-gated calculation
-            checkpoints_to_end = _earning_checkpoints_up_to(end_time_ms)
-            checkpoints_to_start = _earning_checkpoints_up_to(start_time_ms)
+            checkpoints_dict = [cp.to_dict() for cp in debt_ledger.checkpoints]
 
-            payout_to_end = max(0.0, DebtBasedScoring.calculate_payout_from_checkpoints(checkpoints_to_end))
-            payout_to_start = max(0.0, DebtBasedScoring.calculate_payout_from_checkpoints(checkpoints_to_start))
-            payout = max(0.0, payout_to_end - payout_to_start)
+            positions = self._position_client.get_positions_for_one_hotkey(synthetic_hotkey, sort_positions=True)
+            orders = []
+            fees = []
+            realtime_unrealized = 0
+            for position in positions:
+                for order in position.orders:
+                    if order.processed_ms < end_time_ms:
+                        orders.append(order)
+                for fee in position.fee_history:
+                    if fee["time_ms"] < end_time_ms:
+                        fees.append(fee)
 
-            earning_checkpoints = [
-                cp for cp in debt_ledger.checkpoints
-                if start_time_ms <= cp.timestamp_ms <= end_time_ms
-                   and cp.challenge_period_status in (
-                       MinerBucket.SUBACCOUNT_FUNDED.value,
-                       MinerBucket.SUBACCOUNT_ALPHA.value
-                   )
-            ]
-            checkpoints_dict = [cp.to_dict() for cp in earning_checkpoints]
+                realtime_unrealized += position.unrealized_pnl
+
+            orders.sort(key=lambda x: x.processed_ms)
+            fees.sort(key=lambda x: x["time_ms"])
+            if not orders:
+                return EMPTY_RESPONSE
+
+            weekly_settlements = []
+            def _record_week(start_ms, end_ms, balance, prev_hwm, eow_unrealized, week_orders):
+                weekly_settlements.append({
+                    'start_ms': start_ms,
+                    'end_ms': end_ms,
+                    'eow_balance': balance,
+                    'eow_unrealized': eow_unrealized,
+                    'payout': max(0.0, balance - prev_hwm + min(0.0, eow_unrealized)),
+                    'orders': [o.to_python_dict() for o in week_orders],
+                })
+
+            running_balance = 0
+            eow_hwm = 0
+            MS_IN_WEEK = MS_IN_24_HOURS * 7
+            CP_DURATION = ValiConfig.TARGET_CHECKPOINT_DURATION_MS
+
+            # Always start week_start at the Monday 00:00 UTC of the first order.
+            first_day_index = orders[0].processed_ms // MS_IN_24_HOURS
+            days_since_monday = (first_day_index + 3) % 7
+            week_start = (first_day_index - days_since_monday) * MS_IN_24_HOURS
+            week_end = week_start + MS_IN_WEEK
+
+            idx_order, idx_fee = 0, 0
+            while week_start < end_time_ms:
+                end_time = min(week_end, end_time_ms)
+                week_orders = []
+                while idx_order < len(orders) and orders[idx_order].processed_ms < end_time:
+                    running_balance += orders[idx_order].realized_pnl
+                    if orders[idx_order].realized_pnl != 0:
+                        week_orders.append(orders[idx_order])
+                    idx_order += 1
+                while idx_fee < len(fees) and fees[idx_fee]["time_ms"] < end_time:
+                    running_balance -= fees[idx_fee]["amount"]
+                    idx_fee += 1
+
+                # debt checkpoint timestamp is start_ms, but unrealized pnl is at the end_ms
+                # so must offset by a checkpoint for correct unrealized pnl at end time
+                cp = debt_ledger.get_checkpoint_at_time(end_time - CP_DURATION, CP_DURATION)
+                unrealized_pnl = cp.unrealized_pnl if cp else 0.0
+                if end_time == end_time_ms and realtime:
+                    unrealized_pnl = realtime_unrealized
+                _record_week(week_start, end_time, running_balance, eow_hwm, unrealized_pnl, week_orders)
+                eow_hwm = max(eow_hwm, running_balance)
+                week_start, week_end = week_end, week_end + MS_IN_WEEK
+
+            # Only sum weeks that fall within the requested period.
+            payout = sum(w['payout'] for w in weekly_settlements if w['start_ms'] >= start_time_ms)
 
             return {
                 'hotkey': synthetic_hotkey,
-                'total_checkpoints': len(earning_checkpoints),
+                'total_checkpoints': len(checkpoints_dict),
                 'checkpoints': checkpoints_dict,
-                'payout': payout
+                'weekly_settlements': weekly_settlements,
+                'payout': payout,
             }
 
         except Exception as e:

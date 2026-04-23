@@ -16,7 +16,7 @@ import traceback
 from bittensor_wallet import Keypair
 
 from entity_management.entity_client import EntityClient
-from time_util.time_util import TimeUtil
+from time_util.time_util import MS_IN_24_HOURS, TimeUtil
 from shared_objects.rpc.rpc_server_base import RPCServerBase
 from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
 from vali_objects.contract.contract_client import ContractClient
@@ -2049,7 +2049,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 return jsonify({'error': 'Invalid JSON body'}), 400
 
             # Validate required fields
-            required_fields = ['subaccount_uuid', 'start_time_ms', 'end_time_ms']
+            required_fields = ['subaccount_uuid', 'start_time_ms']
             for field in required_fields:
                 if field not in data:
                     return jsonify({'error': f'Missing required field: {field}'}), 400
@@ -2059,15 +2059,30 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             # Validate timestamps
             try:
                 start_time_ms = int(data['start_time_ms'])
-                end_time_ms = int(data['end_time_ms'])
+                end_time_ms = int(data['end_time_ms']) if data.get('end_time_ms') is not None else None
 
-                if start_time_ms < 0 or end_time_ms < 0:
+                if start_time_ms < 0:
                     return jsonify({'error': 'Timestamps must be non-negative'}), 400
 
-                if start_time_ms > end_time_ms:
-                    return jsonify({'error': 'start_time_ms must be <= end_time_ms'}), 400
+                if end_time_ms is not None:
+                    if end_time_ms < 0:
+                        return jsonify({'error': 'Timestamps must be non-negative'}), 400
+                    if start_time_ms > end_time_ms:
+                        return jsonify({'error': 'start_time_ms must be <= end_time_ms'}), 400
             except (ValueError, TypeError):
                 return jsonify({'error': 'Timestamps must be valid integers'}), 400
+
+            # Validate start_time_ms is Monday 00:00:00 UTC or 0
+            # Unix epoch (1970-01-01) was a Thursday; Monday offset = (day_index + 3) % 7
+            if start_time_ms != 0:
+                start_day_index = start_time_ms // MS_IN_24_HOURS
+                days_since_monday = (start_day_index + 3) % 7
+                if start_time_ms % MS_IN_24_HOURS != 0 or days_since_monday != 0:
+                    return jsonify({'error': 'start_time_ms must be Monday 00:00:00 UTC'}), 400
+
+            # Validate end_time_ms aligns to 12-hour boundary
+            if end_time_ms is not None and end_time_ms % ValiConfig.TARGET_CHECKPOINT_DURATION_MS != 0:
+                return jsonify({'error': 'end_time_ms must align to a 12-hour boundary'}), 400
 
             # Calculate payout via EntityClient
             payout_data = self._entity_client.calculate_subaccount_payout(
