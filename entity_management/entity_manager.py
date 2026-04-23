@@ -1096,7 +1096,7 @@ class EntityManager(ValidatorBroadcastBase):
                 # so must offset by a checkpoint for correct unrealized pnl at end time
                 cp = debt_ledger.get_checkpoint_at_time(end_time - CP_DURATION, CP_DURATION)
                 unrealized_pnl = cp.unrealized_pnl if cp else 0.0
-                if end_time == end_time_ms:
+                if end_time == end_time_ms and realtime:
                     unrealized_pnl = realtime_unrealized
                 _record_week(week_start, end_time, running_balance, eow_hwm, unrealized_pnl, week_orders)
                 eow_hwm = max(eow_hwm, running_balance)
