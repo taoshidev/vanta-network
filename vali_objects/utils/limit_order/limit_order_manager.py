@@ -1506,7 +1506,10 @@ class LimitOrderManager(CacheController):
                     self._last_fill_time[trade_pair][hotkey] = 0
 
                 except Exception as e:
-                    bt.logging.error(f"Error reading limit order from disk: {e}")
+                    bt.logging.error(
+                        f"Error reading limit order from disk for hotkey {hotkey}: {e} | "
+                        f"order_dict={order_dict}"
+                    )
                     continue
 
         # Sort orders by processed_ms for each (trade_pair, hotkey)
