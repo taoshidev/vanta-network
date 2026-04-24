@@ -96,8 +96,8 @@ class TestHlTraderLimitsEndpoint(unittest.TestCase):
         self.assertEqual(data['status'], 'success')
         self.assertEqual(data['hl_address'], VALID_HL_ADDRESS)
         self.assertEqual(data['account_size'], ACCOUNT_SIZE)
-        self.assertEqual(data['max_position_per_pair_usd'], EXPECTED_HS_FUNDED_MAX_POSITION)
-        self.assertEqual(data['max_portfolio_usd'], EXPECTED_HS_FUNDED_MAX_PORTFOLIO)
+        self.assertEqual(data['max_position_per_pair_usd'], EXPECTED_MAX_POSITION)
+        self.assertEqual(data['max_portfolio_usd'], EXPECTED_MAX_PORTFOLIO)
         self.assertFalse(data['in_challenge_period'])
         self.assertIn('timestamp', data)
         self.assertIsInstance(data['timestamp'], int)
@@ -127,8 +127,8 @@ class TestHlTraderLimitsEndpoint(unittest.TestCase):
 
         self.assertEqual(status, 200)
         self.assertTrue(data['in_challenge_period'])
-        self.assertEqual(data['max_position_per_pair_usd'], EXPECTED_HS_CHALLENGE_MAX_POSITION)
-        self.assertEqual(data['max_portfolio_usd'], EXPECTED_HS_CHALLENGE_MAX_PORTFOLIO)
+        self.assertEqual(data['max_position_per_pair_usd'], EXPECTED_CHALLENGE_MAX_POSITION)
+        self.assertEqual(data['max_portfolio_usd'], EXPECTED_CHALLENGE_MAX_PORTFOLIO)
 
     # ==================== Response structure ====================
 
