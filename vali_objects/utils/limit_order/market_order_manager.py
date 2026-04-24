@@ -276,9 +276,9 @@ class MarketOrderManager():
 
         trade_pair_category = trade_pair.trade_pair_category
         miner_bucket = self._challenge_period_client.get_miner_bucket(miner_hotkey)
-        _subaccount_buckets = {MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED}
+        _subaccount_buckets = {MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA}
         if miner_bucket in _subaccount_buckets:
-            tier = get_leverage_tier(miner_bucket, balance)
+            tier = get_leverage_tier(miner_bucket, account['account_size'])
             max_position_leverage = get_tier_positional_leverage(tier, trade_pair)
             account_multiplier = ValiConfig.TIER_PORTFOLIO_LEVERAGE[tier].get(trade_pair_category, 1.0)
         else:

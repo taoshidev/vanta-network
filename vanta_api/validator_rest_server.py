@@ -1318,7 +1318,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 asset_class_str = original_account.get('asset_class')
                 bucket_str = original_account.get('miner_bucket')
                 bucket = MinerBucket(bucket_str) if bucket_str else None
-                _subaccount_buckets = {MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED}
+                _subaccount_buckets = {MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA}
                 if asset_class_str:
                     try:
                         asset_class = TradePairCategory(asset_class_str)
