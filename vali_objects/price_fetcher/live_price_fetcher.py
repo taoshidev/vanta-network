@@ -291,7 +291,8 @@ class LivePriceFetcher:
                 rest_prices_tiingo_data.get(trade_pair),
                 rest_prices_hyperliquid.get(trade_pair),
             ], time_ms, filter_recent_only=False)
-            results[trade_pair] = sources
+            if sources:
+                results[trade_pair] = sources
 
         return results
 
