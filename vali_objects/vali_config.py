@@ -620,7 +620,7 @@ class ValiConfig:
     TRADE_PAIR_ID_TO_HL_COIN = {
         "BTCUSD": "BTC", "ETHUSD": "ETH", "SOLUSD": "SOL",
         "XRPUSD": "XRP", "DOGEUSD": "DOGE", "ADAUSD": "ADA",
-        "TAOUSD": "TAO", "HYPEUSD": "HYPE", "ZECUSD": "ZED",
+        "TAOUSD": "TAO", "HYPEUSD": "HYPE", "ZECUSD": "ZEC",
         "BCHUSD": "BCH", "LINKUSD": "LINK", "XMRUSD": "XMR",
         "LTCUSD": "LTC"
     }
