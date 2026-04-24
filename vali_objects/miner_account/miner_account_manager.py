@@ -100,21 +100,12 @@ class MinerAccount:
 
     @property
     def multiplier(self) -> float:
-        is_hs = self.hl_address is not None
-        if is_hs:
-            base = ValiConfig.HS_PORTFOLIO_MAX_LEVERAGE
-            if self.miner_bucket == MinerBucket.SUBACCOUNT_CHALLENGE:
-                return base / ValiConfig.HS_SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR
-            return base
-        # VT path: use asset-class portfolio cap, divided by 4 for challenge accounts
         if not self.asset_class:
-            return 1.0
-        multiplier = ValiConfig.PORTFOLIO_LEVERAGE_CAP.get(self.asset_class, 1.0)
-        if self.miner_bucket == MinerBucket.SUBACCOUNT_CHALLENGE:
-            multiplier /= ValiConfig.SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR.get(self.asset_class, 1.0)
+            return 1
 
-        return multiplier
-
+        from vali_objects.utils.leverage_utils import get_leverage_tier
+        tier = get_leverage_tier(self.miner_bucket, self.get_account_size())
+        return ValiConfig.TIER_PORTFOLIO_LEVERAGE[tier].get(self.asset_class, 1.0)
 
     def add_collateral_record(self, record: 'CollateralRecord'):
         """Add a new collateral record. Account size flows through balance property."""
@@ -847,7 +838,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
             if account is None:
                 return True
 
-            multiplier = ValiConfig.PORTFOLIO_LEVERAGE_CAP.get(asset_selection, 1.0)
+            multiplier = account.multiplier
 
             # Max collateral freeable = buying_power / multiplier
             max_withdrawable_usd = account.buying_power / multiplier

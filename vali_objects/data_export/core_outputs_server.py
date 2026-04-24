@@ -33,7 +33,7 @@ Usage:
 import bittensor as bt
 
 from time_util.time_util import TimeUtil
-from vali_objects.vali_config import ValiConfig, RPCConnectionMode
+from vali_objects.vali_config import ValiConfig, RPCConnectionMode, load_hl_dynamic_registry
 from vali_objects.data_export.core_outputs_manager import CoreOutputsManager
 
 from shared_objects.rpc.rpc_server_base import RPCServerBase
@@ -111,6 +111,8 @@ class CoreOutputsServer(RPCServerBase):
         Runs every ~60 seconds (controlled by daemon_interval_s in __init__).
         """
         try:
+            load_hl_dynamic_registry()
+
             time_now = TimeUtil.now_in_millis()
             bt.logging.debug(f"CoreOutputsServer daemon: generating checkpoint cache...")
 

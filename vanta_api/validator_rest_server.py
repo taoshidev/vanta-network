@@ -28,6 +28,7 @@ from vali_objects.statistics.miner_statistics_client import MinerStatisticsClien
 from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
 from vali_objects.utils.elimination.elimination_client import EliminationClient
 from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
+from vali_objects.utils.leverage_utils import get_leverage_tier
 from vali_objects.utils.limit_order.market_order_manager import MarketOrderManager
 from vali_objects.miner_account.miner_account_manager import MinerAccountManager
 from vali_objects.utils.limit_order.order_processor import OrderProcessor
@@ -1315,10 +1316,17 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
                 # Recompute buying_power = balance * multiplier - capital_used
                 asset_class_str = original_account.get('asset_class')
+                bucket_str = original_account.get('miner_bucket')
+                bucket = MinerBucket(bucket_str) if bucket_str else None
+                _subaccount_buckets = {MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA}
                 if asset_class_str:
                     try:
                         asset_class = TradePairCategory(asset_class_str)
-                        multiplier = ValiConfig.PORTFOLIO_LEVERAGE_CAP.get(asset_class, 1.0)
+                        if bucket in _subaccount_buckets:
+                            tier = get_leverage_tier(bucket, account_size)
+                            multiplier = ValiConfig.TIER_PORTFOLIO_LEVERAGE[tier].get(asset_class, 1.0)
+                        else:
+                            multiplier = ValiConfig.PORTFOLIO_LEVERAGE_CAP.get(asset_class, 1.0)
                     except ValueError:
                         multiplier = 1.0
                 else:
@@ -1954,19 +1962,10 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             category = TradePairCategory.CRYPTO
 
         in_challenge = challenge_bucket == MinerBucket.SUBACCOUNT_CHALLENGE.value
-        is_funded = challenge_bucket in (MinerBucket.SUBACCOUNT_FUNDED.value, MinerBucket.SUBACCOUNT_ALPHA.value)
-
-        if is_funded:
-            max_position_per_pair_usd = account_size * ValiConfig.HS_MAX_LEVERAGE
-            max_portfolio_usd = account_size * ValiConfig.HS_PORTFOLIO_MAX_LEVERAGE
-        elif in_challenge:
-            max_position_per_pair_usd = account_size * ValiConfig.HS_MAX_LEVERAGE / ValiConfig.HS_SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR
-            max_portfolio_usd = account_size * ValiConfig.HS_PORTFOLIO_MAX_LEVERAGE / ValiConfig.HS_SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR
-        else:
-            max_leverage = ValiConfig.CRYPTO_MAX_LEVERAGE
-            portfolio_cap = ValiConfig.PORTFOLIO_LEVERAGE_CAP.get(category, ValiConfig.PORTFOLIO_LEVERAGE_CAP[TradePairCategory.CRYPTO])
-            max_position_per_pair_usd = account_size * max_leverage
-            max_portfolio_usd = account_size * portfolio_cap
+        _bucket = MinerBucket.SUBACCOUNT_CHALLENGE if in_challenge else MinerBucket.SUBACCOUNT_FUNDED
+        tier = get_leverage_tier(_bucket, account_size)
+        max_position_per_pair_usd = account_size * ValiConfig.TIER_POSITIONAL_LEVERAGE[tier][category]
+        max_portfolio_usd = account_size * ValiConfig.TIER_PORTFOLIO_LEVERAGE[tier][category]
 
         response_body = json.dumps(
             {

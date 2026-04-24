@@ -602,28 +602,26 @@ class TestEquities(TestBase):
         Test purchasing equities within buying power and available cash.
         When order <= available_cash, no borrowing occurs.
 
-        Note: Initial buying_power = account_size * 2 = $200,000 (EQUITIES multiplier of 2).
+        Note: Initial buying_power = account_size * 1.5 = $150,000 (Tier 2 EQUITIES multiplier of 1.5).
         Available cash = balance = $100,000.
         """
         account = self.miner_account_manager.get_account(self.DEFAULT_MINER_HOTKEY)
         initial_bp = account['buying_power']
 
         # Verify we start with account_size * multiplier buying power
-        self.assertEqual(initial_bp, self.DEFAULT_ACCOUNT_SIZE * 2)  # $200K
+        self.assertEqual(initial_bp, self.DEFAULT_ACCOUNT_SIZE * 1.5)  # $150K
 
         # Purchase for $50,000 (within available cash of $100K, no borrowing needed)
         order_value = 50_000.0
-        borrowed = self.miner_account_manager.process_order_buy(
-            self.DEFAULT_MINER_HOTKEY,
-            order_value
-        )
+        borrowed = 0.0  # within available cash, no borrowing
+        self.miner_account_manager.process_order_buy(self.DEFAULT_MINER_HOTKEY, order_value, borrowed)
 
         # No borrowing when order <= available_cash
         self.assertAlmostEqual(borrowed, 0.0, places=2)
 
-        # Buying power should decrease by order value, capital_used should increase
+        # bp = (balance - cash_used) * mult = ($100K - $50K) * 1.5 = $75K
         account = self.miner_account_manager.get_account(self.DEFAULT_MINER_HOTKEY)
-        self.assertAlmostEqual(account['buying_power'], initial_bp - order_value, places=2)  # $150K
+        self.assertAlmostEqual(account['buying_power'], 75_000.0, places=2)  # $75K
         self.assertAlmostEqual(account['capital_used'], order_value, places=2)
         self.assertAlmostEqual(account['total_borrowed_amount'], 0.0, places=2)
 
@@ -632,27 +630,25 @@ class TestEquities(TestBase):
         Test purchasing equities for a large position that exceeds available cash.
         When order > available_cash, equities borrow half the order value.
 
-        Initial buying_power = $100K * 2 = $200K, available_cash = $100K.
+        Initial buying_power = $100K * 1.5 = $150K, available_cash = $100K.
         """
         account = self.miner_account_manager.get_account(self.DEFAULT_MINER_HOTKEY)
         initial_bp = account['buying_power']
-        self.assertEqual(initial_bp, self.DEFAULT_ACCOUNT_SIZE * 2)  # $200K
+        self.assertEqual(initial_bp, self.DEFAULT_ACCOUNT_SIZE * 1.5)  # $150K
 
-        # Purchase for $150,000 (within buying power of $200K, but exceeds available cash)
+        # Purchase for $150,000 (within buying power of $150K, but exceeds available cash)
         order_value = 150_000.0
         expected_borrowed = order_value * 0.5  # $75,000
 
-        borrowed = self.miner_account_manager.process_order_buy(
-            self.DEFAULT_MINER_HOTKEY,
-            order_value
-        )
+        borrowed = expected_borrowed  # order > available_cash → borrow half
+        self.miner_account_manager.process_order_buy(self.DEFAULT_MINER_HOTKEY, order_value, borrowed)
 
         # Should borrow half the order value
         self.assertAlmostEqual(borrowed, expected_borrowed, places=2)
 
-        # Buying power decreases, capital_used increases
+        # bp = (balance - cash_used) * mult = ($100K - $75K) * 1.5 = $37.5K
         account = self.miner_account_manager.get_account(self.DEFAULT_MINER_HOTKEY)
-        self.assertAlmostEqual(account['buying_power'], initial_bp - order_value, places=2)  # $50K
+        self.assertAlmostEqual(account['buying_power'], 37_500.0, places=2)  # $37.5K
         self.assertAlmostEqual(account['capital_used'], order_value, places=2)
         self.assertAlmostEqual(account['total_borrowed_amount'], expected_borrowed, places=2)
 
@@ -660,15 +656,14 @@ class TestEquities(TestBase):
         """
         Test that buying with insufficient buying power raises SignalException.
 
-        Initial buying_power = $100K * 2 = $200K.
+        Initial buying_power = $100K * 1.5 = $150K (Tier 2).
         """
-        # Try to purchase $250,000 worth (buying power is only $200K)
+        # Try to purchase $250,000 worth (buying power is only $150K)
         order_value = 250_000.0
 
         with self.assertRaises(SignalException) as context:
             self.miner_account_manager.process_order_buy(
-                self.DEFAULT_MINER_HOTKEY,
-                order_value
+                self.DEFAULT_MINER_HOTKEY, order_value, order_value * 0.5
             )
 
         self.assertIn("Insufficient buying power", str(context.exception))
@@ -677,32 +672,27 @@ class TestEquities(TestBase):
         """
         Test selling equities repays margin loan and compounds realized PNL to balance.
         """
-        # Buy $150K: capital_used=$150K, borrowed=$75K (half), bp=$50K
+        # Buy $150K: capital_used=$150K, borrowed=$75K (half), bp=($100K-$75K)*1.5=$37.5K
         order_value = 150_000.0
         expected_borrowed = order_value * 0.5  # $75K
-        borrowed = self.miner_account_manager.process_order_buy(
-            self.DEFAULT_MINER_HOTKEY,
-            order_value
-        )
+        borrowed = expected_borrowed  # order > available_cash → borrow half
+        self.miner_account_manager.process_order_buy(self.DEFAULT_MINER_HOTKEY, order_value, borrowed)
         self.assertAlmostEqual(borrowed, expected_borrowed, places=2)
 
         # Sell with $10K profit: entry=$150K, pnl=$10K
         entry_value = 150_000.0
         realized_pnl = 10_000.0
-        loan_repaid = self.miner_account_manager.process_order_sell(
+        self.miner_account_manager.process_order_sell(
             self.DEFAULT_MINER_HOTKEY,
             entry_value,
             realized_pnl,
-            borrowed  # position margin loan
+            borrowed  # full loan repaid (exit_value=$160K > loan=$75K)
         )
 
-        # Should repay full loan ($75K)
-        self.assertAlmostEqual(loan_repaid, borrowed, places=2)
-
-        # Balance = $100K + $10K = $110K, buying_power = $110K * 2 = $220K
+        # Balance = $100K + $10K = $110K, buying_power = $110K * 1.5 = $165K
         account = self.miner_account_manager.get_account(self.DEFAULT_MINER_HOTKEY)
         self.assertAlmostEqual(account['balance'], 110_000.0, places=2)
-        self.assertAlmostEqual(account['buying_power'], 220_000.0, places=2)
+        self.assertAlmostEqual(account['buying_power'], 165_000.0, places=2)
         self.assertAlmostEqual(account['capital_used'], 0.0, places=2)
         self.assertEqual(account['total_borrowed_amount'], 0.0)
 
@@ -711,19 +701,14 @@ class TestEquities(TestBase):
         Test that equities purchases borrow half the order value only when order exceeds available cash.
         Small purchases within available cash don't use margin.
         """
-        account = self.miner_account_manager.get_account(self.DEFAULT_MINER_HOTKEY)
-        initial_bp = account['buying_power']
-
         # Buy $50K - within available cash ($100K), no borrowing
         order_value = 50_000.0
-        borrowed = self.miner_account_manager.process_order_buy(
-            self.DEFAULT_MINER_HOTKEY,
-            order_value
-        )
+        borrowed = 0.0  # within available cash, no borrowing
+        self.miner_account_manager.process_order_buy(self.DEFAULT_MINER_HOTKEY, order_value, borrowed)
 
         self.assertAlmostEqual(borrowed, 0.0, places=2)
         account = self.miner_account_manager.get_account(self.DEFAULT_MINER_HOTKEY)
-        self.assertAlmostEqual(account['buying_power'], initial_bp - order_value, places=2)
+        self.assertAlmostEqual(account['buying_power'], 75_000.0, places=2)  # ($100K-$50K)*1.5
         self.assertAlmostEqual(account['total_borrowed_amount'], 0.0, places=2)
 
     def test_multiple_positions_cumulative_loan(self):
@@ -733,17 +718,15 @@ class TestEquities(TestBase):
         # First purchase ($150K, borrows $75K - half the order)
         order_value_1 = 150_000.0
         expected_borrowed = order_value_1 * 0.5  # $75K
-        borrowed_1 = self.miner_account_manager.process_order_buy(
-            self.DEFAULT_MINER_HOTKEY,
-            order_value_1
-        )
+        borrowed_1 = expected_borrowed  # order > available_cash → borrow half
+        self.miner_account_manager.process_order_buy(self.DEFAULT_MINER_HOTKEY, order_value_1, borrowed_1)
 
         # Should have borrowed $75K (half of $150K)
         self.assertAlmostEqual(borrowed_1, expected_borrowed, places=2)
 
-        # bp = $200K - $150K = $50K, capital_used = $150K, borrowed = $75K
+        # bp = ($100K - $75K) * 1.5 = $37.5K, capital_used = $150K, borrowed = $75K
         account = self.miner_account_manager.get_account(self.DEFAULT_MINER_HOTKEY)
-        self.assertAlmostEqual(account['buying_power'], 50_000.0, places=2)
+        self.assertAlmostEqual(account['buying_power'], 37_500.0, places=2)
         self.assertAlmostEqual(account['capital_used'], 150_000.0, places=2)
         self.assertAlmostEqual(account['total_borrowed_amount'], expected_borrowed, places=2)
 
@@ -766,10 +749,8 @@ class TestEquities(TestBase):
         # Buy $150K, borrows $75K (half the order)
         order_value = 150_000.0
         expected_borrowed = order_value * 0.5  # $75K
-        borrowed = self.miner_account_manager.process_order_buy(
-            self.DEFAULT_MINER_HOTKEY,
-            order_value
-        )
+        borrowed = expected_borrowed  # order > available_cash → borrow half
+        self.miner_account_manager.process_order_buy(self.DEFAULT_MINER_HOTKEY, order_value, borrowed)
 
         # Verify total borrowed amount is tracked
         total_borrowed = self.miner_account_manager.get_total_borrowed_amount(
@@ -797,10 +778,10 @@ class TestEquities(TestBase):
             timestamp_ms=yesterday_ms
         )
 
-        # Buying power should increase by delta * multiplier (2x for equities)
+        # Buying power should increase by delta * multiplier (1.5x for Tier 2 equities)
         account = self.miner_account_manager.get_account(self.DEFAULT_MINER_HOTKEY)
         expected_account_size_increase = 150_000 - initial_account_size
-        expected_bp_increase = expected_account_size_increase * 2  # multiplier=2
+        expected_bp_increase = expected_account_size_increase * 1.5  # multiplier=1.5
 
         self.assertAlmostEqual(
             account['buying_power'],
@@ -816,62 +797,55 @@ class TestEquities(TestBase):
         2. Partial sell ($100,000 entry value, no PNL)
         3. Close remaining position with FLAT order ($50,000 entry value, no PNL)
 
-        Starting with $100,000 equity, $200,000 buying power (2x multiplier):
-        - After 1.5x open: capital_used=$150K, borrowed=$75K, bp=$50K
-        - After partial sell: capital_used=$50K, borrowed=$0, bp=$150K
-        - After FLAT: capital_used=$0, borrowed=$0, bp=$200K
+        Starting with $100,000 equity, $150,000 buying power (Tier 2, 1.5x multiplier):
+        - After 1.5x open: capital_used=$150K, borrowed=$75K, bp=($100K-$75K)*1.5=$37.5K
+        - After partial sell: capital_used=$50K, borrowed=$0, bp=($100K-$50K)*1.5=$75K
+        - After FLAT: capital_used=$0, borrowed=$0, bp=$100K*1.5=$150K
         """
         account = self.miner_account_manager.get_account(self.DEFAULT_MINER_HOTKEY)
         initial_bp = account['buying_power']
-        self.assertEqual(initial_bp, self.DEFAULT_ACCOUNT_SIZE * 2)  # $200K
+        self.assertEqual(initial_bp, self.DEFAULT_ACCOUNT_SIZE * 1.5)  # $150K
 
         # Step 1: Open position at 1.5x leverage ($150K position)
         order_value_1 = 150_000.0
-        borrowed_1 = self.miner_account_manager.process_order_buy(
-            self.DEFAULT_MINER_HOTKEY,
-            order_value_1
-        )
+        borrowed_1 = order_value_1 * 0.5  # order > cash → borrow half = $75K
+        self.miner_account_manager.process_order_buy(self.DEFAULT_MINER_HOTKEY, order_value_1, borrowed_1)
 
         self.assertAlmostEqual(borrowed_1, 75_000.0, places=2)
 
         account = self.miner_account_manager.get_account(self.DEFAULT_MINER_HOTKEY)
-        self.assertAlmostEqual(account['buying_power'], 50_000.0, places=2,
-                             msg="After 1.5x open: bp should be $50K")
+        self.assertAlmostEqual(account['buying_power'], 37_500.0, places=2,
+                             msg="After 1.5x open: bp should be $37.5K")
         self.assertAlmostEqual(account['total_borrowed_amount'], 75_000.0, places=2,
                              msg="After 1.5x open: Borrowed should be $75K")
 
         # Step 2: Partial sell (close $100K entry value, no PNL)
-        loan_repaid_1 = self.miner_account_manager.process_order_sell(
+        # loan_repaid = min(borrowed_1, exit_value) = min($75K, $100K) = $75K (full loan repaid)
+        self.miner_account_manager.process_order_sell(
             self.DEFAULT_MINER_HOTKEY,
             100_000.0,  # entry_value
             0.0,        # realized_pnl
-            borrowed_1  # position's margin loan
+            borrowed_1  # position's full margin loan
         )
 
-        # Full loan repaid
-        self.assertAlmostEqual(loan_repaid_1, 75_000.0, places=2)
-
         account = self.miner_account_manager.get_account(self.DEFAULT_MINER_HOTKEY)
-        self.assertAlmostEqual(account['buying_power'], 150_000.0, places=2,
-                             msg="After partial sell: bp should be $150K")
+        self.assertAlmostEqual(account['buying_power'], 75_000.0, places=2,
+                             msg="After partial sell: bp should be $75K")
         self.assertAlmostEqual(account['capital_used'], 50_000.0, places=2)
         self.assertAlmostEqual(account['total_borrowed_amount'], 0.0, places=2,
                              msg="After partial sell: Borrowed should be $0")
 
         # Step 3: FLAT order closes remaining position ($50K entry value, no PNL)
-        remaining_loan = borrowed_1 - loan_repaid_1  # Should be 0
-        loan_repaid_2 = self.miner_account_manager.process_order_sell(
+        self.miner_account_manager.process_order_sell(
             self.DEFAULT_MINER_HOTKEY,
-            50_000.0,       # entry_value
-            0.0,            # realized_pnl
-            remaining_loan  # 0
+            50_000.0,  # entry_value
+            0.0,       # realized_pnl
+            0.0        # no remaining loan
         )
 
-        self.assertAlmostEqual(loan_repaid_2, 0.0, places=2)
-
         account = self.miner_account_manager.get_account(self.DEFAULT_MINER_HOTKEY)
-        self.assertAlmostEqual(account['buying_power'], 200_000.0, places=2,
-                             msg="After FLAT: bp should return to $200K")
+        self.assertAlmostEqual(account['buying_power'], 150_000.0, places=2,
+                             msg="After FLAT: bp should return to $150K")
         self.assertAlmostEqual(account['capital_used'], 0.0, places=2)
         self.assertAlmostEqual(account['total_borrowed_amount'], 0.0, places=2,
                              msg="After FLAT: Borrowed should be $0")
@@ -880,13 +854,12 @@ class TestEquities(TestBase):
 
     # ==================== SUBACCOUNT_CHALLENGE Buying Power Tests ====================
 
-    EQUITIES_MULTIPLIER = ValiConfig.PORTFOLIO_LEVERAGE_CAP[TradePairCategory.EQUITIES]
-    DIVISOR = ValiConfig.SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR[TradePairCategory.EQUITIES]
-    REDUCED_MULTIPLIER = EQUITIES_MULTIPLIER / DIVISOR
+    EQUITIES_MULTIPLIER = ValiConfig.TIER_PORTFOLIO_LEVERAGE[2][TradePairCategory.EQUITIES]   # 1.5 (Tier 2, <$200K)
+    REDUCED_MULTIPLIER = ValiConfig.TIER_PORTFOLIO_LEVERAGE[1][TradePairCategory.EQUITIES]    # 1.0 (Tier 1, challenge)
 
     def test_subaccount_challenge_buying_power_reduced(self):
         """
-        SUBACCOUNT_CHALLENGE reduces buying power multiplier by SUBACCOUNT_CHALLENGE_LEVERAGE_DIVISOR.
+        SUBACCOUNT_CHALLENGE (Tier 1) has a lower buying power multiplier than non-challenge (Tier 2).
         """
         # Verify normal buying power first
         account = self.miner_account_manager.get_account(self.DEFAULT_MINER_HOTKEY)
@@ -914,8 +887,8 @@ class TestEquities(TestBase):
         reduced_bp = self.DEFAULT_ACCOUNT_SIZE * self.REDUCED_MULTIPLIER
         order_value = 30_000.0
 
-        # Buy within reduced buying power
-        self.miner_account_manager.process_order_buy(self.DEFAULT_MINER_HOTKEY, order_value)
+        # Buy within reduced buying power (within available cash, no borrowing)
+        self.miner_account_manager.process_order_buy(self.DEFAULT_MINER_HOTKEY, order_value, 0.0)
 
         account = self.miner_account_manager.get_account(self.DEFAULT_MINER_HOTKEY)
         self.assertAlmostEqual(account['buying_power'], reduced_bp - order_value, places=2)
@@ -935,12 +908,15 @@ class TestEquities(TestBase):
         )
 
         with self.assertRaises(SignalException):
-            self.miner_account_manager.process_order_buy(self.DEFAULT_MINER_HOTKEY, order_value)
+            self.miner_account_manager.process_order_buy(
+                self.DEFAULT_MINER_HOTKEY, order_value, order_value * 0.5
+            )
 
-        # Remove bucket — normal buying power restored, same order should succeed
+        # Remove bucket — Tier 2 buying power ($150K) > order_value, same order should succeed
         self.miner_account_client.set_miner_bucket(self.DEFAULT_MINER_HOTKEY, None)
-        borrowed = self.miner_account_manager.process_order_buy(self.DEFAULT_MINER_HOTKEY, order_value)
-        self.assertAlmostEqual(borrowed, 0.0, places=2)  # within cash, no borrowing
+        borrowed = order_value * 0.5  # order ($110K) > cash ($100K) → borrow half
+        self.miner_account_manager.process_order_buy(self.DEFAULT_MINER_HOTKEY, order_value, borrowed)
+        self.assertAlmostEqual(borrowed, 55_000.0, places=2)  # half of $110K
 
     def test_buying_power_restored_after_bucket_change(self):
         """
