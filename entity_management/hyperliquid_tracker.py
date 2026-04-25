@@ -1668,6 +1668,12 @@ class HyperliquidTracker:
 
         miner_order_uuid = str(uuid.uuid4())
 
+        bt.logging.info(
+            f"[HL_TRACKER] Attempting order: {coin} {order_type} leverage={leverage:.4f} "
+            f"target_weight={target_signed_weight:+.4f} current_lev={current_signed_lev:+.4f} "
+            f"delta={delta:+.4f} fill_px={hl_fill_price} is_taker={is_taker} -> {synthetic_hotkey}"
+        )
+
         # === Process order ===
         try:
             result = OrderProcessor.process_order(
