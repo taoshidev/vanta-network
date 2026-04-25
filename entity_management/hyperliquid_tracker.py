@@ -1512,14 +1512,14 @@ class HyperliquidTracker:
         # Rate limiting
         allowed, wait_time = self._rate_limiter.is_allowed(synthetic_hotkey)
         if not allowed:
-            bt.logging.debug(f"[HL_TRACKER] Rate limited: {synthetic_hotkey}, wait {wait_time:.1f}s")
+            bt.logging.info(f"[HL_TRACKER] Rate limited: {synthetic_hotkey} {coin}, wait {wait_time:.1f}s")
             self._broadcast_rejection(synthetic_hotkey, f"Rate limited. Please wait {wait_time:.0f}s.")
             return
 
         # Elimination check
         elimination_info = self._elimination_client.get_elimination_local_cache(synthetic_hotkey)
         if elimination_info:
-            bt.logging.debug(f"[HL_TRACKER] Eliminated miner: {synthetic_hotkey}")
+            bt.logging.info(f"[HL_TRACKER] Eliminated miner: {synthetic_hotkey} {coin}")
             self._broadcast_rejection(synthetic_hotkey, f"Miner {synthetic_hotkey} has been eliminated.")
             return
 
@@ -1527,13 +1527,13 @@ class HyperliquidTracker:
         validation = self._entity_client.validate_hotkey_for_orders(synthetic_hotkey)
         if not validation.get("is_valid"):
             error_message = validation.get('error_message', 'Subaccount validation failed')
-            bt.logging.debug(f"[HL_TRACKER] Invalid hotkey: {synthetic_hotkey} - {error_message}")
+            bt.logging.info(f"[HL_TRACKER] Invalid hotkey: {synthetic_hotkey} {coin} - {error_message}")
             self._broadcast_rejection(synthetic_hotkey, error_message)
             return
 
         # Trade pair blocked check
         if trade_pair.is_blocked:
-            bt.logging.debug(f"[HL_TRACKER] Blocked trade pair: {trade_pair_id}")
+            bt.logging.info(f"[HL_TRACKER] Blocked trade pair: {trade_pair_id} ({synthetic_hotkey})")
             self._broadcast_rejection(synthetic_hotkey, f"Trade pair {trade_pair_id} is no longer supported.")
             return
 
@@ -1546,7 +1546,7 @@ class HyperliquidTracker:
         else:
             is_market_open = self._price_fetcher_client.is_market_open(trade_pair, now_ms)
         if not is_market_open:
-            bt.logging.debug(f"[HL_TRACKER] Market closed for {trade_pair_id}")
+            bt.logging.info(f"[HL_TRACKER] Market closed for {trade_pair_id} ({synthetic_hotkey})")
             self._broadcast_rejection(synthetic_hotkey, f"Market is closed for {trade_pair_id}.")
             return
 
@@ -1593,7 +1593,10 @@ class HyperliquidTracker:
         delta = target_signed_weight - current_signed_lev
 
         if abs(delta) < min_lev and target_signed_weight != 0.0:
-            bt.logging.debug(f"[HL_TRACKER] Delta {delta:.4f} below min leverage, skipping")
+            bt.logging.info(
+                f"[HL_TRACKER] Skipping fill: {coin} delta={delta:+.4f} below min leverage {min_lev} "
+                f"target={target_signed_weight:+.4f} current={current_signed_lev:+.4f} -> {synthetic_hotkey}"
+            )
             return
 
         # Block position increases for coins below the liquidity threshold.
@@ -1601,7 +1604,10 @@ class HyperliquidTracker:
             would_increase = (current_signed_lev >= 0 and delta > 0) or \
                              (current_signed_lev <= 0 and delta < 0)
             if would_increase:
-                bt.logging.debug(f"[HL_TRACKER] Blocking position increase for below-threshold coin {coin}")
+                bt.logging.info(
+                    f"[HL_TRACKER] Skipping fill: {coin} delta={delta:+.4f} blocked (below liquidity threshold) "
+                    f"current={current_signed_lev:+.4f} -> {synthetic_hotkey}"
+                )
                 return
             # delta reduces or closes — allow through
 

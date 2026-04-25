@@ -630,6 +630,7 @@ class Validator(ValidatorBase):
         if self.should_fail_early(miner_hotkey, synapse, SynapseMethod.SIGNAL, signal=signal, now_ms=now_ms):
             fail_early_ms = TimeUtil.now_in_millis() - fail_early_start
             bt.logging.info(f"[TIMING] should_fail_early took {fail_early_ms}ms (rejected)")
+            bt.logging.info(f"Order rejected for {miner_hotkey}: {synapse.error_message}")
             return synapse
         fail_early_ms = TimeUtil.now_in_millis() - fail_early_start
         bt.logging.info(f"[TIMING] should_fail_early took {fail_early_ms}ms")
@@ -638,7 +639,7 @@ class Validator(ValidatorBase):
         if self.order_sync.is_sync_waiting():
             synapse.successfully_processed = False
             synapse.error_message = "Validator is syncing positions. Please try again shortly."
-            bt.logging.debug(f"Rejected order from {miner_hotkey} - sync waiting")
+            bt.logging.info(f"Rejected order from {miner_hotkey}: {synapse.error_message}")
             return synapse
 
         # Track order processing with context manager (auto-increments/decrements counter)
