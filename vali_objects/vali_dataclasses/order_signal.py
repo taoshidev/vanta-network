@@ -26,11 +26,11 @@ class Signal(BaseModel):
     @classmethod
     def convert_trade_pair(cls, v):
         if isinstance(v, str):
-            return TradePair.from_trade_pair_id(v)
+            return TradePair.from_trade_pair_id(v) or v
         if isinstance(v, dict) and 'trade_pair_id' in v:
-            return TradePair.from_trade_pair_id(v['trade_pair_id'])
+            return TradePair.from_trade_pair_id(v['trade_pair_id']) or v['trade_pair_id']
         if isinstance(v, list) and len(v) >= 1:
-            return TradePair.from_trade_pair_id(v[0])
+            return TradePair.from_trade_pair_id(v[0]) or v[0]
         return v
 
     # Pydantic v2 runs mode='before' validators in REVERSE definition order.

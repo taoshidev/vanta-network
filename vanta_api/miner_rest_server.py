@@ -28,7 +28,6 @@ from vanta_api.base_rest_server import BaseRestServer
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from miner_config import MinerConfig
 from vali_objects.vali_dataclasses.order_signal import Signal
-from vali_objects.vali_config import TradePair
 from vali_objects.enums.order_type_enum import OrderType, StopCondition
 from vali_objects.enums.execution_type_enum import ExecutionType
 
@@ -179,17 +178,9 @@ class MinerRestServer(BaseRestServer):
 
         # 2.5. Validate signal data
         try:
-            # Convert trade_pair string to TradePair enum
-            if isinstance(signal_data.get('trade_pair'), str):
-                trade_pair = TradePair.from_trade_pair_id(signal_data['trade_pair'])
-            elif isinstance(signal_data.get('trade_pair'), dict):
-                trade_pair = TradePair.from_trade_pair_id(signal_data['trade_pair'].get('trade_pair_id'))
-            else:
-                trade_pair = signal_data.get('trade_pair')  # Might already be TradePair enum
-
             # let Signal class model validators handle validation
             signal = Signal(
-                trade_pair=trade_pair,
+                trade_pair=signal_data.get('trade_pair'),
                 order_type=OrderType.from_string(signal_data['order_type'].upper()) if 'order_type' in signal_data else None,
                 leverage=float(signal_data['leverage']) if 'leverage' in signal_data else None,
                 value=float(signal_data['value']) if 'value' in signal_data else None,
