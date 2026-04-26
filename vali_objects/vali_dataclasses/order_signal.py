@@ -5,7 +5,7 @@ from typing import Optional
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.vali_config import TradePair, TradePairLike, ValiConfig
 from vali_objects.enums.order_type_enum import OrderType, StopCondition
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, model_validator, field_validator
 
 class Signal(BaseModel):
     trade_pair: Optional[TradePairLike] = None  # Optional for FLAT_ALL and LIMIT_CANCEL
@@ -21,6 +21,17 @@ class Signal(BaseModel):
     stop_condition: Optional[StopCondition] = None
     trailing_stop: Optional[dict] = None
     bracket_orders: Optional[list[dict]] = None
+
+    @field_validator('trade_pair', mode='before')
+    @classmethod
+    def convert_trade_pair(cls, v):
+        if isinstance(v, str):
+            return TradePair.from_trade_pair_id(v)
+        if isinstance(v, dict) and 'trade_pair_id' in v:
+            return TradePair.from_trade_pair_id(v['trade_pair_id'])
+        if isinstance(v, list) and len(v) >= 1:
+            return TradePair.from_trade_pair_id(v[0])
+        return v
 
     # Pydantic v2 runs mode='before' validators in REVERSE definition order.
     # normalize_bracket_orders is defined first so it runs LAST.
