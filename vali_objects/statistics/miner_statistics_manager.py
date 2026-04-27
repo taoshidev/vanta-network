@@ -298,7 +298,7 @@ class MinerStatisticsManager:
         n_positions = len(miner_positions)
         pos_duration = PositionUtils.total_duration(miner_positions)
         percentage_profitable = self.position_manager.get_percent_profitable_positions(miner_positions)
-        total_volume = sum(pos.cumulative_entry_value for pos in miner_positions)
+        total_volume = sum(abs(o.value) for pos in miner_positions for o in pos.orders if o.value is not None)
 
         # Engagement: checkpoints
         n_checkpoints = len([cp for cp in miner_cps if cp.open_ms > 0])
