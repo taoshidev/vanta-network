@@ -165,6 +165,66 @@ class TestHyperliquidSubaccounts(TestBase):
         self.assertFalse(success)
         self.assertIn("already registered", message.lower())
 
+    def test_create_hl_subaccount_reregister_after_elimination(self):
+        """Test HL address can be re-registered after the subaccount is eliminated."""
+        self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
+
+        # Register address
+        success, subaccount_info, _ = self.entity_client.create_hl_subaccount(
+            entity_hotkey=self.ENTITY_HOTKEY_1,
+            account_size=50_000,
+            hl_address=VALID_HL_ADDRESS
+        )
+        self.assertTrue(success)
+
+        # Eliminate the subaccount
+        success, _ = self.entity_client.eliminate_subaccount(
+            entity_hotkey=self.ENTITY_HOTKEY_1,
+            subaccount_id=subaccount_info['subaccount_id'],
+            reason="test_elimination"
+        )
+        self.assertTrue(success)
+
+        # Re-registration with the same address should now succeed
+        success, new_sub, message = self.entity_client.create_hl_subaccount(
+            entity_hotkey=self.ENTITY_HOTKEY_1,
+            account_size=50_000,
+            hl_address=VALID_HL_ADDRESS
+        )
+        self.assertTrue(success, f"Re-registration after elimination failed: {message}")
+        self.assertIsNotNone(new_sub)
+        self.assertNotEqual(new_sub['subaccount_id'], subaccount_info['subaccount_id'])
+
+    def test_create_hl_subaccount_reregister_after_elimination_cross_entity(self):
+        """Test HL address eliminated on one entity can be registered on another."""
+        self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
+        self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_2)
+
+        # Register on entity 1
+        success, subaccount_info, _ = self.entity_client.create_hl_subaccount(
+            entity_hotkey=self.ENTITY_HOTKEY_1,
+            account_size=50_000,
+            hl_address=VALID_HL_ADDRESS
+        )
+        self.assertTrue(success)
+
+        # Eliminate on entity 1
+        success, _ = self.entity_client.eliminate_subaccount(
+            entity_hotkey=self.ENTITY_HOTKEY_1,
+            subaccount_id=subaccount_info['subaccount_id'],
+            reason="test_elimination"
+        )
+        self.assertTrue(success)
+
+        # Register same address on entity 2
+        success, new_sub, message = self.entity_client.create_hl_subaccount(
+            entity_hotkey=self.ENTITY_HOTKEY_2,
+            account_size=50_000,
+            hl_address=VALID_HL_ADDRESS
+        )
+        self.assertTrue(success, f"Cross-entity re-registration after elimination failed: {message}")
+        self.assertIsNotNone(new_sub)
+
     def test_create_hl_subaccount_unregistered_entity(self):
         """Test HL subaccount creation fails for unregistered entity."""
         success, _, message = self.entity_client.create_hl_subaccount(
@@ -781,7 +841,7 @@ class TestHyperliquidTracker(TestBase):
         expected = {
             "BTCUSD": "BTC", "ETHUSD": "ETH", "SOLUSD": "SOL",
             "XRPUSD": "XRP", "DOGEUSD": "DOGE", "ADAUSD": "ADA",
-            "TAOUSD": "TAO", "HYPEUSD": "HYPE", "ZECUSD": "ZED",
+            "TAOUSD": "TAO", "HYPEUSD": "HYPE", "ZECUSD": "ZEC",
             "BCHUSD": "BCH", "LINKUSD": "LINK", "XMRUSD": "XMR",
             "LTCUSD": "LTC",
         }
