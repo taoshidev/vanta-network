@@ -1475,7 +1475,7 @@ class EntityManager(ValidatorBroadcastBase):
                     'sharpe': sharpe,
                     'trades': n_positions,
                     'winRate': win_rate,
-                    'volume': round(trader_volume, 2),
+                    'volume': trader_volume,
                     'payouts': 0,
                     'since': since,
                     'rank': weight_info.get('rank'),
@@ -1511,7 +1511,7 @@ class EntityManager(ValidatorBroadcastBase):
                     'sharpe': sharpe,
                     'trades': n_positions,
                     'winRate': win_rate,
-                    'volume': round(trader_volume, 2),
+                    'volume': trader_volume,
                     'drawdown': drawdown_percent,
                     'since': since,
                 })
@@ -1530,7 +1530,7 @@ class EntityManager(ValidatorBroadcastBase):
             'fundedTraders': len(funded_traders),
             'inChallenge': len(challenge_traders),
             'eliminated': len(eliminated_subaccounts),
-            'totalVolume': round(total_volume, 2),
+            'totalVolume': total_volume,
         }
 
         return {
