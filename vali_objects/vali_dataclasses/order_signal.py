@@ -1,6 +1,6 @@
 # developer: Taoshidev
 # Copyright (c) 2024 Taoshi Inc
-from typing import Optional
+from typing import Optional, Union, Union
 
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.vali_config import TradePair, TradePairLike, ValiConfig
@@ -8,7 +8,7 @@ from vali_objects.enums.order_type_enum import OrderType, StopCondition
 from pydantic import BaseModel, model_validator, field_validator
 
 class Signal(BaseModel):
-    trade_pair: Optional[TradePairLike] = None  # Optional for FLAT_ALL and LIMIT_CANCEL
+    trade_pair: Optional[Union[TradePairLike, str]] = None  # str fallback for dynamic pairs not in local registry
     order_type: Optional[OrderType] = None
     leverage: Optional[float] = None    # Multiplier of account size
     value: Optional[float] = None       # USD notional value
