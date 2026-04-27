@@ -298,6 +298,7 @@ class MinerStatisticsManager:
         n_positions = len(miner_positions)
         pos_duration = PositionUtils.total_duration(miner_positions)
         percentage_profitable = self.position_manager.get_percent_profitable_positions(miner_positions)
+        total_volume = sum(pos.cumulative_entry_value for pos in miner_positions)
 
         # Engagement: checkpoints
         n_checkpoints = len([cp for cp in miner_cps if cp.open_ms > 0])
@@ -314,7 +315,8 @@ class MinerStatisticsManager:
             "positions_info": {
                 "n_positions": n_positions,
                 "positional_duration": pos_duration,
-                "percentage_profitable": percentage_profitable
+                "percentage_profitable": percentage_profitable,
+                "total_volume": total_volume,
             },
             "checkpoints_info": {
                 "n_checkpoints": n_checkpoints,
@@ -880,6 +882,7 @@ class MinerStatisticsManager:
                 "checkpoint_durations": extra.get("checkpoints_info", {}).get("checkpoint_durations"),
                 "minimum_days_boolean": extra.get("minimum_days_boolean"),
                 "percentage_profitable": extra.get("positions_info", {}).get("percentage_profitable"),
+                "total_volume": extra.get("positions_info", {}).get("total_volume", 0.0),
             }
             # Raw PnL
             raw_pnl_info = raw_pnl_dict.get(hotkey)
