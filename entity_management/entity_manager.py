@@ -1439,6 +1439,7 @@ class EntityManager(ValidatorBroadcastBase):
             # Extract common fields
             engagement = stats.get('engagement') or {}
             n_positions = engagement.get('n_positions') or 0
+            trader_volume = engagement.get('total_volume', 0.0)
             percentage_profitable = engagement.get('percentage_profitable')
             win_rate = round(percentage_profitable * 100, 1) if percentage_profitable is not None else None
             drawdowns = stats.get('drawdowns') or {}
@@ -1458,6 +1459,8 @@ class EntityManager(ValidatorBroadcastBase):
             balance = account.get('balance', account_size) if isinstance(account, dict) else account_size
             total_realized_pnl = account.get('total_realized_pnl', 0.0) if isinstance(account, dict) else 0.0
 
+            total_volume += trader_volume
+
             # Since date from created_at_ms
             since = datetime.fromtimestamp(
                 subaccount.created_at_ms / 1000, tz=timezone.utc
@@ -1472,6 +1475,7 @@ class EntityManager(ValidatorBroadcastBase):
                     'sharpe': sharpe,
                     'trades': n_positions,
                     'winRate': win_rate,
+                    'volume': trader_volume,
                     'payouts': 0,
                     'since': since,
                     'rank': weight_info.get('rank'),
@@ -1507,6 +1511,7 @@ class EntityManager(ValidatorBroadcastBase):
                     'sharpe': sharpe,
                     'trades': n_positions,
                     'winRate': win_rate,
+                    'volume': trader_volume,
                     'drawdown': drawdown_percent,
                     'since': since,
                 })
@@ -1525,7 +1530,7 @@ class EntityManager(ValidatorBroadcastBase):
             'fundedTraders': len(funded_traders),
             'inChallenge': len(challenge_traders),
             'eliminated': len(eliminated_subaccounts),
-            'totalVolume': 0,
+            'totalVolume': total_volume,
         }
 
         return {
