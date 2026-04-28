@@ -1165,13 +1165,16 @@ class HyperliquidTracker:
         # 5. Filter and build universe
         new_universe = {}
         for coin, max_lev in all_candidates:
+            if coin.split(":")[-1] in ValiConfig.HL_EXCLUDED_ASSETS:
+                continue
             if avg_volumes.get(coin, 0.0) < ValiConfig.HL_MIN_LIQUIDITY_USD:
                 continue
             dex_name = coin.split(":")[0] if ":" in coin else ""
             collateral = dex_to_collateral.get(dex_name, "USDC")
-            hs_max_leverage = (ValiConfig.HS_HIGH_TIER_MAX_LEVERAGE
-                               if max_lev >= ValiConfig.HL_HIGH_TIER_THRESHOLD
-                               else ValiConfig.HS_MAX_LEVERAGE)
+            # hs_max_leverage = (ValiConfig.HS_HIGH_TIER_MAX_LEVERAGE
+            #                    if max_lev >= ValiConfig.HL_HIGH_TIER_THRESHOLD
+            #                    else ValiConfig.HS_MAX_LEVERAGE)
+            hs_max_leverage = ValiConfig.HS_MAX_LEVERAGE
             new_universe[coin] = DynamicTradePair(
                 trade_pair_id=f"{coin}{collateral}",
                 trade_pair=f"{coin}/{collateral}",
