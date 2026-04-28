@@ -23,6 +23,7 @@ from entity_management.entity_client import EntityClient
 from entity_management.entity_utils import (
     create_subaccount_dashboard,
     is_synthetic_hotkey,
+    parse_synthetic_hotkey,
 )
 from shared_objects.rpc.rpc_server_base import RPCServerBase
 from time_util.time_util import TimeUtil
@@ -76,7 +77,7 @@ class DashboardSubscription:
         self.limit_orders_time_ms = self._get_subkey(
             dashboard,
             ["limit_orders", "limit_orders_time_ms"],
-            self.positions_time_ms,
+            self.limit_orders_time_ms,
         )
         self.checkpoints_time_ms = self._get_subkey(
             dashboard,
@@ -113,15 +114,6 @@ class WebSocketServerClient:
         self.sequence_number += 1
         await self.websocket.send(serialized_message)
 
-
-# Minimum tier required for subaccount dashboard subscriptions
-SUBACCOUNT_SUBSCRIPTION_TIER = 200
-
-# Entity auth: timestamp validity window (5 minutes)
-ENTITY_AUTH_TIMESTAMP_TTL_MS = 5 * 60 * 1000
-
-# Entity auth: max nonces to track per entity (bounded to prevent memory growth)
-ENTITY_AUTH_MAX_NONCES = 10_000
 
 class WebSocketServer(APIKeyMixin, RPCServerBase):
     """
@@ -221,11 +213,6 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
             connect_immediately=False,
             running_unit_tests=running_unit_tests
         )
-
-        # Entity auth tracking
-        self.entity_clients: Dict[str, Deque[str]] = defaultdict(deque)  # entity_hotkey -> [client_ids]
-        self._entity_auth_nonces: Dict[str, Dict[str, int]] = defaultdict(dict)  # entity_hotkey -> {nonce: ts}
-        self._entity_nonce_lock = asyncio.Lock()
 
         # Test order configuration
         self.send_test_positions = send_test_positions
@@ -523,9 +510,8 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
     async def _handle_client(self, websocket) -> None:
         """Handle client connection with authentication and subscriptions.
 
-        Supports two auth paths:
-        - API key auth: {"api_key": "..."}
-        - Entity hotkey auth: {"entity_hotkey": "...", "timestamp": ..., "nonce": "...", "signature": "..."}
+        API key is read from the Authorization: Bearer header set during the
+        WebSocket upgrade handshake. No auth message exchange is required.
 
         Args:
             websocket: WebSocket connection
@@ -534,94 +520,113 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
         bt.logging.info(f"WebSocketServer: New client connected (ID: {client_id})")
 
         try:
-            # Wait for authentication message
-            auth_message = await websocket.recv()
-            auth_data = json.loads(auth_message)
-
-            # Route to appropriate auth handler
-            if 'entity_hotkey' in auth_data:
-                auth_success = await self._authenticate_entity(client_id, websocket, auth_data)
-            elif 'api_key' in auth_data:
-                auth_success = await self._authenticate_api_key(client_id, websocket, auth_data)
-            else:
+            # Read API key from Authorization: Bearer header (websockets 15+: websocket.request.headers)
+            auth_header = websocket.request.headers.get("Authorization", "")
+            if not auth_header.startswith("Bearer "):
                 await websocket.send(json.dumps({
                     "status": "error",
-                    "message": "Authentication required. Provide 'api_key' or 'entity_hotkey'."
+                    "message": "Authentication required. Provide API key in Authorization: Bearer header."
                 }))
                 return
 
-            api_key = auth_data['api_key']
+            api_key = auth_header[7:]
 
             # Validate API key
             try:
                 is_valid = self.is_valid_api_key(api_key)
             except Exception as e:
-                error_msg = f"Error validating API key: {e}"
                 await websocket.send(json.dumps({
                     "status": "error",
-                    "message": error_msg
+                    "message": f"Error validating API key: {e}"
                 }))
                 return
 
             if not is_valid:
-                error_msg = "Invalid API key. Authentication failed."
                 await websocket.send(json.dumps({
                     "status": "error",
-                    "message": error_msg
+                    "message": "Invalid API key. Authentication failed."
                 }))
                 return
 
-            # Get the API key's tier
             api_key_tier = self.get_api_key_tier(api_key)
 
-            # Websockets are only available for tier 100 clients
             if api_key_tier < 100:
-                error_msg = "WebSocket connections require tier 100 access. Please upgrade your API key."
                 await websocket.send(json.dumps({
                     "status": "error",
-                    "message": error_msg,
+                    "message": "WebSocket connections require tier 100 access. Please upgrade your API key.",
                     "code": "INSUFFICIENT_TIER"
                 }))
                 return
 
             if api_key_tier < ValiConfig.SUBACCOUNT_SUBSCRIPTION_TIER:
-                # Check if we've reached the maximum number of clients for this API key
+                # Enforce per-key connection limit for non-entity clients
                 if len(self._api_key_client_ids[api_key]) >= MAX_N_WS_PER_API_KEY:
-                    # Get the oldest client ID for this API key
                     oldest_client_id = self._api_key_client_ids[api_key].popleft()
                     oldest_client = self._clients.get(oldest_client_id)
                     if oldest_client is not None:
                         try:
-                            # Send disconnection message to the client
                             await oldest_client.websocket.send(json.dumps({
                                 "status": "error",
                                 "message": "Disconnected due to too many connections for this API key",
                                 "code": "MAX_CONNECTIONS_EXCEEDED"
                             }))
-                            # Close the connection
                             await oldest_client.websocket.close()
                         except Exception as e:
                             bt.logging.error(f"WebSocketServer: Error closing oldest connection {oldest_client_id}: {e}")
-
-                    # Remove the client from our records
                     self._remove_client(oldest_client_id)
                     api_key_alias = self.api_key_to_alias.get(api_key, "Unknown")
-
                     bt.logging.info(f"WebSocketServer: Dropped oldest client {oldest_client_id} for API key "
                           f"{api_key_alias} to make room for new client {client_id}")
+
+            # Register client
+            client = WebSocketServerClient(client_id=client_id, websocket=websocket, api_key=api_key, tier=api_key_tier)
+            self._clients[client_id] = client
+            self._api_key_client_ids[api_key].append(client_id)
+
+            bt.logging.info(f"WebSocketServer: Client {client_id} authenticated successfully with tier {api_key_tier}")
+
+            # For entity clients (tier >= 200), auto-subscribe to all active subaccounts
+            hl_mappings = {}
+            subscribed_subaccounts = 0
+
+            if api_key_tier >= ValiConfig.SUBACCOUNT_SUBSCRIPTION_TIER:
+                entity_hotkey = self.api_key_to_alias.get(api_key)
+                if entity_hotkey:
+                    try:
+                        loop = asyncio.get_running_loop()
+                        entity_data = await loop.run_in_executor(
+                            self._thread_pool,
+                            self._entity_client.get_entity_data,
+                            entity_hotkey
+                        )
+                        if entity_data:
+                            subaccounts = entity_data.get('subaccounts', {})
+                            for sub_id, sub_info in subaccounts.items():
+                                if sub_info.get('status') not in ('active', 'admin'):
+                                    continue
+                                synthetic_hotkey = sub_info.get('synthetic_hotkey') or f"{entity_hotkey}_{sub_id}"
+                                client.dashboard_subscriptions[synthetic_hotkey] = DashboardSubscription()
+                                subscribed_subaccounts += 1
+                                hl_addr = sub_info.get('hl_address')
+                                if hl_addr:
+                                    hl_mappings[hl_addr] = synthetic_hotkey
+                            if subscribed_subaccounts > 0:
+                                bt.logging.info(
+                                    f"WebSocketServer: Auto-subscribed client {client_id} to "
+                                    f"{subscribed_subaccounts} subaccounts for entity {entity_hotkey}"
+                                )
+                    except Exception as e:
+                        bt.logging.error(f"WebSocketServer: Error auto-subscribing entity {entity_hotkey}: {e}")
+                        bt.logging.error(traceback.format_exc())
 
             await websocket.send(json.dumps({
                 "status": "success",
                 "message": "Authentication successful.",
                 "current_sequence": 0,
-                "tier": api_key_tier
+                "tier": api_key_tier,
+                "subscribed_subaccounts": subscribed_subaccounts,
+                "hl_mappings": hl_mappings
             }))
-
-            bt.logging.info(f"WebSocketServer: Client {client_id} authenticated successfully with tier {api_key_tier}")
-
-            client = WebSocketServerClient(client_id=client_id, websocket=websocket, api_key=api_key, tier=api_key_tier)
-            self._clients[client_id] = client
-            self._api_key_client_ids[api_key].append(client_id)
 
             # Process client messages (subscriptions, etc.)
             while True:
@@ -669,9 +674,9 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                     elif message_type == "subscribe_subaccount":
                         synthetic_hotkey = data.get("synthetic_hotkey")
                         positions_time_ms = data.get("positions_time_ms", 0)
-                        limit_orders_time_ms= data.get("limit_orders_time_ms", 0)
-                        checkpoints_time_ms= data.get("checkpoints_time_ms", 0)
-                        daily_returns_time_ms= data.get("daily_returns_time_ms", 0)
+                        limit_orders_time_ms = data.get("limit_orders_time_ms", 0)
+                        checkpoints_time_ms = data.get("checkpoints_time_ms", 0)
+                        daily_returns_time_ms = data.get("daily_returns_time_ms", 0)
 
                         if not synthetic_hotkey:
                             await websocket.send(json.dumps({
@@ -680,29 +685,52 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                                 "action": "subscribe_subaccount",
                                 "message": "Missing synthetic_hotkey parameter"
                             }))
-                        elif client.tier < ValiConfig.SUBACCOUNT_SUBSCRIPTION_TIER:
-                            await websocket.send(json.dumps({
-                                "type": "subscription_status",
-                                "status": "error",
-                                "action": "subscribe_subaccount",
-                                "synthetic_hotkey": synthetic_hotkey,
-                                "message": "Subaccount subscriptions require tier 200 access.",
-                                "code": "INSUFFICIENT_TIER"
-                            }))
                         else:
-                            client.dashboard_subscriptions[synthetic_hotkey] = DashboardSubscription(
-                                positions_time_ms=positions_time_ms,
-                                limit_orders_time_ms=limit_orders_time_ms,
-                                checkpoints_time_ms=checkpoints_time_ms,
-                                daily_returns_time_ms=daily_returns_time_ms,
-                            )
-                            bt.logging.info(f"WebSocketServer: Client {client_id} subscribed to subaccount {synthetic_hotkey}")
-                            await websocket.send(json.dumps({
-                                "type": "subscription_status",
-                                "status": "success",
-                                "action": "subscribe_subaccount",
-                                "subscribed_to": synthetic_hotkey
-                            }))
+                            # Ownership check: entity clients may only subscribe to their own subaccounts
+                            api_key_alias = self.api_key_to_alias.get(client.api_key)
+                            try:
+                                parsed_entity, _ = parse_synthetic_hotkey(synthetic_hotkey)
+                            except Exception:
+                                parsed_entity = None
+
+                            if api_key_alias and parsed_entity and api_key_alias == parsed_entity:
+                                # Entity subscribing to own subaccount — no tier check needed
+                                client.dashboard_subscriptions[synthetic_hotkey] = DashboardSubscription(
+                                    positions_time_ms=positions_time_ms,
+                                    limit_orders_time_ms=limit_orders_time_ms,
+                                    checkpoints_time_ms=checkpoints_time_ms,
+                                    daily_returns_time_ms=daily_returns_time_ms,
+                                )
+                                bt.logging.info(f"WebSocketServer: Client {client_id} subscribed to subaccount {synthetic_hotkey}")
+                                await websocket.send(json.dumps({
+                                    "type": "subscription_status",
+                                    "status": "success",
+                                    "action": "subscribe_subaccount",
+                                    "subscribed_to": synthetic_hotkey
+                                }))
+                            elif client.tier < ValiConfig.SUBACCOUNT_SUBSCRIPTION_TIER:
+                                await websocket.send(json.dumps({
+                                    "type": "subscription_status",
+                                    "status": "error",
+                                    "action": "subscribe_subaccount",
+                                    "synthetic_hotkey": synthetic_hotkey,
+                                    "message": "Subaccount subscriptions require tier 200 access.",
+                                    "code": "INSUFFICIENT_TIER"
+                                }))
+                            else:
+                                client.dashboard_subscriptions[synthetic_hotkey] = DashboardSubscription(
+                                    positions_time_ms=positions_time_ms,
+                                    limit_orders_time_ms=limit_orders_time_ms,
+                                    checkpoints_time_ms=checkpoints_time_ms,
+                                    daily_returns_time_ms=daily_returns_time_ms,
+                                )
+                                bt.logging.info(f"WebSocketServer: Client {client_id} subscribed to subaccount {synthetic_hotkey}")
+                                await websocket.send(json.dumps({
+                                    "type": "subscription_status",
+                                    "status": "success",
+                                    "action": "subscribe_subaccount",
+                                    "subscribed_to": synthetic_hotkey
+                                }))
 
                     elif message_type == "unsubscribe_subaccount":
                         synthetic_hotkey = data.get("synthetic_hotkey")
@@ -731,292 +759,62 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
             bt.logging.error(f"WebSocketServer: Error handling client {client_id}: {e}")
             bt.logging.error(traceback.format_exc())
         finally:
-            # Remove client from all subscriptions and connected clients
             self._remove_client(client_id)
 
-    # ==================== Authentication Methods ====================
-
-    async def _authenticate_api_key(self, client_id: str, websocket, auth_data: dict) -> bool:
-        """Authenticate a client using API key. Returns True on success."""
-        api_key = auth_data['api_key']
-
-        try:
-            is_valid = self.is_valid_api_key(api_key)
-        except Exception as e:
-            await websocket.send(json.dumps({
-                "status": "error",
-                "message": f"Error validating API key: {e}"
-            }))
-            return False
-
-        if not is_valid:
-            await websocket.send(json.dumps({
-                "status": "error",
-                "message": "Invalid API key. Authentication failed."
-            }))
-            return False
-
-        api_key_tier = self.get_api_key_tier(api_key)
-
-        if api_key_tier < 100:
-            await websocket.send(json.dumps({
-                "status": "error",
-                "message": "WebSocket connections require tier 100 access. Please upgrade your API key.",
-                "code": "INSUFFICIENT_TIER"
-            }))
-            return False
-
-        # FIFO eviction at MAX_N_WS_PER_API_KEY
-        if len(self.api_key_clients.get(api_key, [])) >= MAX_N_WS_PER_API_KEY:
-            oldest_client_id = self.api_key_clients[api_key][0]
-            if oldest_client_id in self.connected_clients:
-                try:
-                    await self.connected_clients[oldest_client_id].send(json.dumps({
-                        "status": "error",
-                        "message": "Disconnected due to too many connections for this API key",
-                        "code": "MAX_CONNECTIONS_EXCEEDED"
-                    }))
-                    await self.connected_clients[oldest_client_id].close()
-                except Exception as e:
-                    bt.logging.error(f"WebSocketServer: Error closing oldest connection {oldest_client_id}: {e}")
-            self._remove_client(oldest_client_id)
-            api_key_alias = self.api_key_to_alias.get(api_key, "Unknown")
-            bt.logging.info(f"WebSocketServer: Dropped oldest client {oldest_client_id} for API key "
-                  f"{api_key_alias} to make room for new client {client_id}")
-
-        await websocket.send(json.dumps({
-            "status": "success",
-            "message": "Authentication successful.",
-            "auth_type": "api_key",
-            "current_sequence": self.sequence_number,
-            "tier": api_key_tier
-        }))
-
-        bt.logging.info(f"WebSocketServer: Client {client_id} authenticated successfully with tier {api_key_tier}")
-
-        self.connected_clients[client_id] = websocket
-        self.client_auth[client_id] = {
-            "auth_type": "api_key",
-            "api_key": api_key,
-            "tier": api_key_tier
-        }
-        self.api_key_clients[api_key].append(client_id)
-        api_key_alias = self.api_key_to_alias.get(api_key, "Unknown")
-        bt.logging.info(
-            f"WebSocketServer: Client {client_id} added to API key {api_key_alias} "
-            f"(active: {len(self.api_key_clients[api_key])}/{MAX_N_WS_PER_API_KEY})")
-        return True
-
-    async def _authenticate_entity(self, client_id: str, websocket, auth_data: dict) -> bool:
+    def notify_new_subaccount_rpc(self, entity_hotkey: str, synthetic_hotkey: str) -> bool:
         """
-        Authenticate a client using entity hotkey + cryptographic signature.
+        RPC method to auto-subscribe connected entity clients to a newly created subaccount.
 
-        Expected auth_data:
-        {
-            "entity_hotkey": "5xxx...",
-            "timestamp": 1709000000000,
-            "nonce": "random-uuid",
-            "signature": "hex-encoded-signature"
-        }
-
-        Returns True on success.
-        """
-        entity_hotkey = auth_data.get('entity_hotkey')
-        timestamp = auth_data.get('timestamp')
-        nonce = auth_data.get('nonce')
-        signature = auth_data.get('signature')
-
-        # 1. Validate all fields present
-        if not all([entity_hotkey, timestamp, nonce, signature]):
-            await websocket.send(json.dumps({
-                "status": "error",
-                "message": "Entity auth requires: entity_hotkey, timestamp, nonce, signature"
-            }))
-            return False
-
-        # 2. Timestamp within window (replay prevention)
-        now_ms = TimeUtil.now_in_millis()
-        try:
-            timestamp = int(timestamp)
-        except (ValueError, TypeError):
-            await websocket.send(json.dumps({
-                "status": "error",
-                "message": "Invalid timestamp format"
-            }))
-            return False
-
-        if abs(now_ms - timestamp) > ENTITY_AUTH_TIMESTAMP_TTL_MS:
-            await websocket.send(json.dumps({
-                "status": "error",
-                "message": "Timestamp expired or too far in the future"
-            }))
-            return False
-
-        # 3. Nonce replay prevention
-        async with self._entity_nonce_lock:
-            self._cleanup_expired_nonces(entity_hotkey, now_ms)
-            if nonce in self._entity_auth_nonces[entity_hotkey]:
-                await websocket.send(json.dumps({
-                    "status": "error",
-                    "message": "Nonce already used"
-                }))
-                return False
-            self._entity_auth_nonces[entity_hotkey][nonce] = timestamp
-
-        # 4. Entity registered check
-        try:
-            loop = asyncio.get_running_loop()
-            entity_data = await loop.run_in_executor(
-                None, self._entity_client.get_entity_data, entity_hotkey
-            )
-        except Exception as e:
-            bt.logging.error(f"WebSocketServer: Entity lookup failed for {entity_hotkey}: {e}")
-            await websocket.send(json.dumps({
-                "status": "error",
-                "message": "Entity lookup failed"
-            }))
-            return False
-
-        if not entity_data:
-            await websocket.send(json.dumps({
-                "status": "error",
-                "message": f"Entity {entity_hotkey} is not registered"
-            }))
-            return False
-
-        # 5. Signature verification
-        if Keypair is None:
-            await websocket.send(json.dumps({
-                "status": "error",
-                "message": "Server cannot verify signatures (bittensor_wallet not available)"
-            }))
-            return False
-
-        try:
-            message_dict = {
-                "entity_hotkey": entity_hotkey,
-                "nonce": nonce,
-                "timestamp": timestamp
-            }
-            message_bytes = json.dumps(message_dict, sort_keys=True).encode('utf-8')
-            signature_bytes = bytes.fromhex(signature)
-            keypair = Keypair(ss58_address=entity_hotkey)
-            if not keypair.verify(message_bytes, signature_bytes):
-                await websocket.send(json.dumps({
-                    "status": "error",
-                    "message": "Invalid signature"
-                }))
-                return False
-        except Exception as e:
-            bt.logging.warning(f"WebSocketServer: Signature verification failed for {entity_hotkey}: {e}")
-            await websocket.send(json.dumps({
-                "status": "error",
-                "message": f"Signature verification failed: {e}"
-            }))
-            return False
-
-        # 6. Connection limit: FIFO eviction at MAX_N_WS_PER_ENTITY
-        if len(self.entity_clients.get(entity_hotkey, [])) >= MAX_N_WS_PER_ENTITY:
-            oldest_client_id = self.entity_clients[entity_hotkey][0]
-            if oldest_client_id in self.connected_clients:
-                try:
-                    await self.connected_clients[oldest_client_id].send(json.dumps({
-                        "status": "error",
-                        "message": "Disconnected due to too many connections for this entity",
-                        "code": "MAX_CONNECTIONS_EXCEEDED"
-                    }))
-                    await self.connected_clients[oldest_client_id].close()
-                except Exception as e:
-                    bt.logging.error(f"WebSocketServer: Error closing oldest entity connection {oldest_client_id}: {e}")
-            self._remove_client(oldest_client_id)
-            bt.logging.info(f"WebSocketServer: Dropped oldest entity client {oldest_client_id} for {entity_hotkey}")
-
-        # Register client
-        self.connected_clients[client_id] = websocket
-        self.client_auth[client_id] = {
-            "auth_type": "entity",
-            "entity_hotkey": entity_hotkey
-        }
-        self.entity_clients[entity_hotkey].append(client_id)
-
-        bt.logging.info(
-            f"WebSocketServer: Entity client {client_id} authenticated for {entity_hotkey} "
-            f"(active: {len(self.entity_clients[entity_hotkey])}/{MAX_N_WS_PER_ENTITY})")
-
-        # Auto-subscribe to all active subaccounts
-        subscribed_count = await self._auto_subscribe_entity_subaccounts(client_id, entity_hotkey, entity_data)
-
-        # Build HL address mappings to include in auth response
-        subaccounts = entity_data.get('subaccounts', {})
-        hl_mappings = {}
-        for sub_id, sub_info in subaccounts.items():
-            hl_addr = sub_info.get('hl_address')
-            synthetic = sub_info.get('synthetic_hotkey', f"{entity_hotkey}_{sub_id}")
-            if hl_addr and synthetic:
-                hl_mappings[hl_addr] = synthetic
-
-        await websocket.send(json.dumps({
-            "status": "success",
-            "message": "Entity authentication successful.",
-            "auth_type": "entity",
-            "current_sequence": self.sequence_number,
-            "entity_hotkey": entity_hotkey,
-            "subscribed_subaccounts": subscribed_count,
-            "hl_mappings": hl_mappings
-        }))
-
-        return True
-
-    async def _auto_subscribe_entity_subaccounts(self, client_id: str, entity_hotkey: str, entity_data: dict) -> int:
-        """Auto-subscribe an entity client to all their active subaccounts.
+        Called by EntityManager when a new subaccount is created while the entity is connected.
 
         Args:
-            client_id: The client ID to subscribe
-            entity_hotkey: The entity's hotkey
-            entity_data: Entity data dict from EntityClient
+            entity_hotkey: The entity hotkey that owns the new subaccount
+            synthetic_hotkey: The synthetic hotkey of the new subaccount
 
         Returns:
-            Number of subaccounts subscribed to
+            bool: True if notification was sent (or no clients to notify)
         """
-        subscribed_count = 0
-        subaccounts = entity_data.get('subaccounts', {})
+        try:
+            # Reverse-lookup entity_hotkey → api_key
+            api_key = next(
+                (k for k, v in self.api_key_to_alias.items() if v == entity_hotkey),
+                None
+            )
+            if api_key is None:
+                return True  # Entity has no API key yet
 
-        for sub_id, sub_info in subaccounts.items():
-            status = sub_info.get('status', '')
-            if status not in ('active', 'admin'):
-                continue
+            client_ids = list(self._api_key_client_ids.get(api_key, []))
+            if not client_ids:
+                return True  # No connected clients
 
-            synthetic_hotkey = sub_info.get('synthetic_hotkey')
-            if not synthetic_hotkey:
-                synthetic_hotkey = f"{entity_hotkey}_{sub_id}"
+            for client_id in client_ids:
+                client = self._clients.get(client_id)
+                if client is not None:
+                    client.dashboard_subscriptions[synthetic_hotkey] = DashboardSubscription()
 
-            self.subaccount_subscriptions[synthetic_hotkey].add(client_id)
-            self._ensure_subaccount_poll_task(synthetic_hotkey)
-            subscribed_count += 1
+            self.broadcast_subaccount_dashboard_rpc(synthetic_hotkey)
 
-        if subscribed_count > 0:
+            message = {
+                "type": "subscription_status",
+                "action": "new_subaccount_subscribed",
+                "synthetic_hotkey": synthetic_hotkey,
+                "entity_hotkey": entity_hotkey
+            }
+            if self._event_loop is not None:
+                for client_id in client_ids:
+                    client = self._clients.get(client_id)
+                    if client is not None:
+                        asyncio.run_coroutine_threadsafe(
+                            self._send_message(client, message),
+                            self._event_loop
+                        )
+
             bt.logging.info(
-                f"WebSocketServer: Auto-subscribed entity client {client_id} to {subscribed_count} subaccounts")
-
-        return subscribed_count
-
-    def _cleanup_expired_nonces(self, entity_hotkey: str, current_ms: int) -> None:
-        """Remove expired nonces for an entity and bound the set size."""
-        nonces = self._entity_auth_nonces.get(entity_hotkey)
-        if not nonces:
-            return
-
-        # Remove expired nonces
-        expired = [n for n, ts in nonces.items() if current_ms - ts > ENTITY_AUTH_TIMESTAMP_TTL_MS]
-        for n in expired:
-            del nonces[n]
-
-        # Bound set size: remove oldest if over limit
-        if len(nonces) > ENTITY_AUTH_MAX_NONCES:
-            sorted_nonces = sorted(nonces.items(), key=lambda x: x[1])
-            to_remove = len(nonces) - ENTITY_AUTH_MAX_NONCES
-            for n, _ in sorted_nonces[:to_remove]:
-                del nonces[n]
+                f"WebSocketServer: Auto-subscribed {len(client_ids)} entity client(s) to new subaccount {synthetic_hotkey}")
+            return True
+        except Exception as e:
+            bt.logging.error(f"WebSocketServer: Error notifying new subaccount {synthetic_hotkey}: {e}")
+            return False
 
     async def start(self) -> None:
         # Store the event loop reference for thread-safe operations

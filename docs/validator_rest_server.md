@@ -814,6 +814,53 @@ curl -X POST http://localhost:48888/entity/register \
   -d '{"entity_hotkey": "5GhDr3xy...abc"}'
 ```
 
+### Request Entity API Key
+
+`POST /request-api-key`
+
+Returns (or creates) the validator API key for a registered entity. This key grants tier 200 access and is used to authenticate the entity miner gateway's WebSocket connection. Calling this endpoint multiple times for the same entity hotkey returns the same key (idempotent).
+
+**Authentication:** Coldkey signature (no existing API key required).
+
+**Request Body:**
+```json
+{
+  "entity_coldkey": "<coldkey_ss58>",
+  "entity_hotkey": "<hotkey_ss58>",
+  "signature": "<coldkey_signature>"
+}
+```
+
+The signature is produced by signing `{"entity_coldkey": "...", "entity_hotkey": "..."}` (JSON, sorted keys) with the coldkey — the same signing scheme as `/entity/register`.
+
+**Response (200):**
+```json
+{
+  "api_key": "<token>"
+}
+```
+
+**Error Responses:**
+
+| Code | Cause |
+|------|-------|
+| 400 | Missing or invalid field |
+| 401 | Signature verification failed or coldkey does not own hotkey |
+| 403 | Entity hotkey is not registered |
+
+**Example:**
+```bash
+curl -X POST http://localhost:48888/request-api-key \
+  -H "Content-Type: application/json" \
+  -d '{
+    "entity_coldkey": "5FxY...",
+    "entity_hotkey": "5GhDr3xy...abc",
+    "signature": "0x..."
+  }'
+```
+
+Store the returned `api_key` as `validator_api_key` in the entity miner's `miner_secrets.json`. This key is typically obtained via `vanta entity apikey` rather than calling this endpoint directly.
+
 ### Create Subaccount
 
 `POST /entity/create-subaccount`

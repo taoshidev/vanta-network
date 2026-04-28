@@ -382,7 +382,23 @@ class Position(BaseModel):
                 order.pop('trade_pair', None)
 
         tp = d['trade_pair']
-        d['trade_pair'] = tp[:5]
+        if isinstance(tp, list):
+            d['trade_pair'] = tp[:5]
+        else:
+            # Pydantic v2 serializes TradePairLike as a dict in Union contexts;
+            # reconstruct the 5-element list from the live object instead
+            tp_obj = self.trade_pair
+            if isinstance(tp_obj, TradePair):
+                d['trade_pair'] = tp_obj.value[:5]
+            else:
+                # DynamicTradePair (HL-only pair not in the static enum)
+                d['trade_pair'] = [
+                    tp_obj.trade_pair_id,
+                    tp_obj.trade_pair,
+                    tp_obj.fees,
+                    tp_obj.min_leverage,
+                    tp_obj.max_leverage,
+                ]
         return d
 
     def to_dict(self):
@@ -443,9 +459,10 @@ class Position(BaseModel):
         return not self.is_closed_position
 
     def add_unfilled_order(self, order_dict: dict) -> None:
-        """Add an unfilled bracket order dict to this position."""
-        existing_uuids = {o.order_uuid for o in self.unfilled_orders}
-        if order_dict.get('order_uuid') not in existing_uuids:
+        """Add or update an unfilled bracket order dict on this position."""
+        order_uuid = order_dict.get('order_uuid')
+        if order_uuid:
+            self.unfilled_orders = [o for o in self.unfilled_orders if o.order_uuid != order_uuid]
             self.unfilled_orders.append(Order.from_dict(order_dict))
 
     def remove_unfilled_order(self, order_uuid: str) -> bool:

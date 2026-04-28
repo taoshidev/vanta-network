@@ -113,11 +113,6 @@ class HyperliquidTracker:
     MAX_DEDUP_HASHES = 50_000
     # How often to refresh the list of subscribed addresses (seconds)
     ADDRESS_REFRESH_INTERVAL_S = 60.0
-    # Persistent backup watermark file (under validator state dir).
-    BACKUP_WATERMARK_FILE = "hl_backup_poll_watermarks.json"
-    # Persistent per-address {coin: szi} snapshot used to gate reconcile
-    # against PnL-driven weight drift across restarts.
-    OBSERVED_SZI_FILE = "hl_observed_szi.json"
 
     # ==================== Inner class: _WebSocketShard ====================
 
@@ -828,9 +823,7 @@ class HyperliquidTracker:
             bt.logging.debug(f"[HL_TRACKER] No WS notifier client, skipping rejection broadcast")
             return
         try:
-            self._ws_notifier_client.broadcast_subaccount_dashboard(
-                synthetic_hotkey, {"error_msg": error_msg}
-            )
+            self._ws_notifier_client.broadcast_subaccount_dashboard(synthetic_hotkey)
             bt.logging.debug(f"[HL_TRACKER] Rejection broadcast sent for {synthetic_hotkey}")
         except Exception as e:
             bt.logging.debug(f"[HL_TRACKER] Rejection broadcast failed for {synthetic_hotkey}: {e}")
@@ -846,17 +839,7 @@ class HyperliquidTracker:
         if not self._ws_notifier_client:
             return
         try:
-            self._ws_notifier_client.broadcast_subaccount_dashboard(
-                synthetic_hotkey,
-                {
-                    "order_event": {
-                        "status": "accepted",
-                        "trade_pair": trade_pair,
-                        "order_type": order_type,
-                        "fill_hash": fill_hash or "",
-                    }
-                },
-            )
+            self._ws_notifier_client.broadcast_subaccount_dashboard(synthetic_hotkey)
         except Exception as e:
             bt.logging.debug(f"[HL_TRACKER] Accepted event broadcast failed for {synthetic_hotkey}: {e}")
 
@@ -997,10 +980,10 @@ class HyperliquidTracker:
     def _load_backup_poll_watermarks(self):
         """Load persisted HL backup watermarks for restart continuity."""
         try:
-            data = ValiBkpUtils.safe_load_dict_from_disk(
-                self.BACKUP_WATERMARK_FILE,
-                {},
-            )
+            try:
+                data = json.loads(ValiBkpUtils.get_file(ValiBkpUtils.get_hl_backup_watermarks_path()))
+            except (FileNotFoundError, json.JSONDecodeError):
+                data = {}
             if not isinstance(data, dict):
                 return
             loaded: Dict[str, int] = {}
@@ -1165,16 +1148,13 @@ class HyperliquidTracker:
         # 5. Filter and build universe
         new_universe = {}
         for coin, max_lev in all_candidates:
-            if coin.split(":")[-1] in ValiConfig.HL_EXCLUDED_ASSETS:
-                continue
             if avg_volumes.get(coin, 0.0) < ValiConfig.HL_MIN_LIQUIDITY_USD:
                 continue
             dex_name = coin.split(":")[0] if ":" in coin else ""
             collateral = dex_to_collateral.get(dex_name, "USDC")
-            # hs_max_leverage = (ValiConfig.HS_HIGH_TIER_MAX_LEVERAGE
-            #                    if max_lev >= ValiConfig.HL_HIGH_TIER_THRESHOLD
-            #                    else ValiConfig.HS_MAX_LEVERAGE)
-            hs_max_leverage = ValiConfig.HS_MAX_LEVERAGE
+            hs_max_leverage = (ValiConfig.HS_HIGH_TIER_MAX_LEVERAGE
+                               if max_lev >= ValiConfig.HL_HIGH_TIER_THRESHOLD
+                               else ValiConfig.HS_MAX_LEVERAGE)
             new_universe[coin] = DynamicTradePair(
                 trade_pair_id=f"{coin}{collateral}",
                 trade_pair=f"{coin}/{collateral}",
@@ -1219,14 +1199,17 @@ class HyperliquidTracker:
         """Persist HL backup watermarks for restart continuity."""
         try:
             serializable = {k: int(v) for k, v in self._last_poll_time_ms.items()}
-            ValiBkpUtils.safe_save_dict_to_disk(self.BACKUP_WATERMARK_FILE, serializable)
+            ValiBkpUtils.write_file(ValiBkpUtils.get_hl_backup_watermarks_path(), serializable)
         except Exception as e:
             bt.logging.warning(f"[HL_BACKUP] Failed to persist watermarks: {e}")
 
     def _load_observed_szi(self):
         """Load persisted per-address szi snapshot for restart continuity."""
         try:
-            data = ValiBkpUtils.safe_load_dict_from_disk(self.OBSERVED_SZI_FILE, {})
+            try:
+                data = json.loads(ValiBkpUtils.get_file(ValiBkpUtils.get_hl_observed_szi_path()))
+            except (FileNotFoundError, json.JSONDecodeError):
+                data = {}
             if not isinstance(data, dict):
                 return
             loaded: Dict[str, Dict[str, float]] = {}
@@ -1255,7 +1238,7 @@ class HyperliquidTracker:
                 addr: {coin: float(szi) for coin, szi in coin_map.items()}
                 for addr, coin_map in self._last_observed_szi.items()
             }
-            ValiBkpUtils.safe_save_dict_to_disk(self.OBSERVED_SZI_FILE, serializable)
+            ValiBkpUtils.write_file(ValiBkpUtils.get_hl_observed_szi_path(), serializable)
         except Exception as e:
             bt.logging.warning(f"[HL_BACKUP] Failed to persist observed szi: {e}")
 

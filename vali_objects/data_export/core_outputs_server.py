@@ -29,6 +29,8 @@ Usage:
     checkpoint = client.generate_request_core()
 """
 
+import traceback
+
 import bittensor as bt
 
 from time_util.time_util import TimeUtil
@@ -136,6 +138,7 @@ class CoreOutputsServer(RPCServerBase):
 
         except Exception as e:
             bt.logging.error(f"CoreOutputsServer daemon error: {e}")
+            bt.logging.error(traceback.format_exc())
             # Don't re-raise - let daemon continue on next iteration
 
     # ==================== Properties (Forward Compatibility) ====================

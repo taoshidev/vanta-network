@@ -307,6 +307,14 @@ class ValiBkpUtils:
         return ValiConfig.BASE_DIR + f"{suffix}/validation/entity_slash_tracking.json"
 
     @staticmethod
+    def get_hl_backup_watermarks_path() -> str:
+        return ValiConfig.BASE_DIR + "/validation/hl_backup_poll_watermarks.json"
+
+    @staticmethod
+    def get_hl_observed_szi_path() -> str:
+        return ValiConfig.BASE_DIR + "/validation/hl_observed_szi.json"
+
+    @staticmethod
     def get_secrets_dir():
         return ValiConfig.BASE_DIR + "/secrets.json"
 

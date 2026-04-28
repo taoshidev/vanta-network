@@ -843,14 +843,6 @@ class EntityManager(ValidatorBroadcastBase):
 
             subaccount.status = "eliminated"
             subaccount.eliminated_at_ms = TimeUtil.now_in_millis()
-
-            # Remove HL address from reverse index so the wallet can be re-registered
-            if subaccount.hl_address:
-                normalized_hl = self._normalize_hl_address(subaccount.hl_address)
-                if normalized_hl:
-                    with self._entities_lock:
-                        self._hl_address_to_synthetic.pop(normalized_hl, None)
-
             self._write_entities_from_memory_to_disk()
 
             bt.logging.info(
@@ -885,14 +877,6 @@ class EntityManager(ValidatorBroadcastBase):
 
             subaccount.status = "active"
             subaccount.eliminated_at_ms = None
-
-            # Re-add HL address to reverse index
-            if subaccount.hl_address:
-                normalized_hl = self._normalize_hl_address(subaccount.hl_address)
-                if normalized_hl:
-                    with self._entities_lock:
-                        self._hl_address_to_synthetic[normalized_hl] = subaccount.synthetic_hotkey
-
             self._write_entities_from_memory_to_disk()
 
         self.broadcast_subaccount_dashboard(synthetic_hotkey)
