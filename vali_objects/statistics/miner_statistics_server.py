@@ -28,6 +28,7 @@ Usage:
     compressed = client.get_compressed_statistics(include_checkpoints=True)
     client.generate_request_minerstatistics(time_now=...)
 """
+import traceback
 
 import bittensor as bt
 
@@ -130,6 +131,7 @@ class MinerStatisticsServer(RPCServerBase):
 
         except Exception as e:
             bt.logging.error(f"MinerStatisticsServer daemon error: {e}")
+            bt.logging.error(traceback.format_exc())
             # Don't re-raise - let daemon continue on next iteration
 
     # ==================== Properties (Forward Compatibility) ====================

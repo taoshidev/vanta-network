@@ -509,7 +509,7 @@ class ValiBkpUtils:
                 stream.write(b":")
 
                 if large_collection:
-                    stream.write(orjson.dumps(value, default=orjson_encoder))
+                    stream.write(orjson.dumps(value, default=orjson_encoder, option=orjson.OPT_NON_STR_KEYS))
                 else:
                     ValiBkpUtils.write_json_stream(stream, value)
             stream.write(b"}")
@@ -524,13 +524,13 @@ class ValiBkpUtils:
                 else:
                     stream.write(b",")
                 if large_collection:
-                    stream.write(orjson.dumps(item, default=orjson_encoder))
+                    stream.write(orjson.dumps(item, default=orjson_encoder, option=orjson.OPT_NON_STR_KEYS))
                 else:
                     ValiBkpUtils.write_json_stream(stream, item)
             stream.write(b"]")
 
         else:
-            stream.write(orjson.dumps(data, default=orjson_encoder))
+            stream.write(orjson.dumps(data, default=orjson_encoder, option=orjson.OPT_NON_STR_KEYS))
 
     @staticmethod
     def write_compressed_json(file_path: str, data: dict) -> None:
