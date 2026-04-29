@@ -377,7 +377,8 @@ class HyperliquidTracker:
         self._backup_fills_caught = 0
         self._backup_polls_total = 0
         self._proxy_index_rest = 0
-        self._hl_universe: dict = {}       # keyed by coin name, refreshed hourly
+        from vali_objects.vali_config import HL_COIN_TO_DYNAMIC_TRADE_PAIR
+        self._hl_universe: dict = dict(HL_COIN_TO_DYNAMIC_TRADE_PAIR)  # seed from persisted registry; replaced on first refresh
         self._last_universe_refresh: float = 0.0
         # (hl_address_lower) -> {coin: last_observed_szi_float}
         # Used by reconciliation to detect real HL position-size changes vs
