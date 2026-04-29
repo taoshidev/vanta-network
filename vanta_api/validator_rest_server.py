@@ -2025,7 +2025,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         except ValueError:
             category = TradePairCategory.CRYPTO
 
-        in_challenge = challenge_bucket == MinerBucket.SUBACCOUNT_CHALLENGE.value
+        in_challenge = challenge_bucket is None or challenge_bucket == MinerBucket.SUBACCOUNT_CHALLENGE.value
         _bucket = MinerBucket.SUBACCOUNT_CHALLENGE if in_challenge else MinerBucket.SUBACCOUNT_FUNDED
         tier = get_leverage_tier(_bucket, account_size)
         max_position_per_pair_usd = account_size * ValiConfig.TIER_POSITIONAL_LEVERAGE[tier][category]
