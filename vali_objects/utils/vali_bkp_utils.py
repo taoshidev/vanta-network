@@ -28,7 +28,7 @@ def orjson_encoder(obj):
         return obj.model_dump(mode="json")
     elif isinstance(obj, DictProxy):
         return dict(obj)
-    return obj
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
 class CustomEncoder(json.JSONEncoder):
     def default(self, obj):
