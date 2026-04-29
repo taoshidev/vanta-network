@@ -9,6 +9,7 @@ from tempfile import NamedTemporaryFile
 from multiprocessing.managers import DictProxy
 
 import bittensor as bt
+import numpy as np
 import orjson
 from pydantic import BaseModel
 
@@ -28,6 +29,12 @@ def orjson_encoder(obj):
         return obj.model_dump(mode="json")
     elif isinstance(obj, DictProxy):
         return dict(obj)
+    elif isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
     raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
 class CustomEncoder(json.JSONEncoder):
