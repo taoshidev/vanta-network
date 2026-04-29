@@ -1,6 +1,6 @@
 # developer: Taoshidev
 # Copyright (c) 2024 Taoshi Inc
-from typing import Optional, Union, Union
+from typing import Optional, Union
 
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.vali_config import TradePair, TradePairLike, ValiConfig
