@@ -712,6 +712,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                     'trade_pair_id': trade_pair.trade_pair_id,
                     'trade_pair': trade_pair.trade_pair,
                     'trade_pair_category': trade_pair.trade_pair_category.value,
+                    'trade_pair_source': trade_pair.src.value,
                     'max_leverage': trade_pair.max_leverage,
                 })
 
@@ -722,6 +723,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                     'trade_pair_id': dtp.trade_pair_id,
                     'trade_pair': dtp.trade_pair,
                     'trade_pair_category': dtp.trade_pair_category.value,
+                    'trade_pair_source': dtp.src.value,
                     'max_leverage': dtp.max_leverage,
                 })
 

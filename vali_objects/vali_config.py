@@ -47,6 +47,11 @@ class TradePairCategory(str, Enum):
     EQUITIES = "equities"
 
 
+class TradePairSource(str, Enum):
+    VANTA = "vanta"
+    HYPERLIQUID = "hyperliquid"
+
+
 class TradePairSubcategory(str, Enum):
     """
     All concrete sub‑category enums must set `ASSET_CLASS`
@@ -692,6 +697,7 @@ class DynamicTradePair:
     is_indices: bool = False
     is_blocked: bool = False
     lot_size: int = 1
+    src: TradePairSource = TradePairSource.HYPERLIQUID
 
     def __hash__(self):
         return hash(self.trade_pair_id)
@@ -924,6 +930,10 @@ class TradePair(Enum):
         if len(self.value) > 6:
             return self.value[6]
         return None
+
+    @property
+    def src(self):
+        return TradePairSource.VANTA
 
     @property
     def is_crypto(self):
