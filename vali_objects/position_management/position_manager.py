@@ -34,7 +34,7 @@ from vali_objects.challenge_period.challengeperiod_client import ChallengePeriod
 from entity_management.entity_client import EntityClient
 from entity_management.entity_utils import is_synthetic_hotkey
 
-TARGET_MS = 1776183387000 + (1000 * 60 * 60 * 6)  # + 6 hours
+TARGET_MS = 1777510103000 + (1000 * 60 * 60 * 6)  # + 6 hours
 
 
 class PositionManager:
@@ -982,8 +982,14 @@ class PositionManager:
             # bt.logging.info(f"Applied {n_slippage_corrections} forex slippage corrections")
 
             # All miners that wanted their challenge period restarted
-            miners_to_wipe = ["5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_57"]
-            position_uuids_to_delete = []
+            miners_to_wipe = ["5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_139"]
+            position_uuids_to_delete = [
+                "a74ecf1c-a30c-40d8-bd2d-42f3eef1414d",
+                "e6555a84-3f65-4827-bf18-91b4bc0d366b",
+                "a396b46d-d6d5-4244-9a1c-4b397349ad92",
+                "d372bc38-5301-4fb2-b933-a825a8a26985",
+                "667fb81a-b35d-44ab-b793-4d4d10b61501",
+            ]
             position_uuids_to_archive = []
             miners_to_promote = []
 
