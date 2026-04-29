@@ -303,7 +303,21 @@ vanta entity register --wallet-name <wallet> --wallet-hotkey <entity> --network 
 
 On success, the entity hotkey is assigned to the `ENTITY` bucket and receives a baseline 4× dust weight in the incentive system.
 
-### 7. Configure Miner Secrets
+### 7. Obtain Validator API Key
+
+After registering your entity, request a validator API key. This key authenticates the entity miner gateway's WebSocket connection to the validator, which is required for real-time subaccount dashboard streaming.
+
+```bash
+# Mainnet
+vanta entity apikey --wallet-name <wallet> --wallet-hotkey <entity>
+
+# Testnet
+vanta entity apikey --wallet-name <wallet> --wallet-hotkey <entity> --network test
+```
+
+The command prints your API key. Store it — you will need it in `miner_secrets.json` as `validator_api_key`. Running the command again returns the same key (idempotent).
+
+### 8. Configure Miner Secrets
 
 Create `mining/miner_secrets.json` with your wallet credentials:
 
@@ -312,7 +326,8 @@ Create `mining/miner_secrets.json` with your wallet credentials:
   "api_key": "your_api_key",
   "wallet_name": "your_wallet_name",
   "wallet_hotkey": "your_hotkey_name",
-  "wallet_password": "your_wallet_password"
+  "wallet_password": "your_wallet_password",
+  "validator_api_key": "your_validator_api_key"
 }
 ```
 
@@ -322,6 +337,7 @@ Create `mining/miner_secrets.json` with your wallet credentials:
 | `wallet_name` | Bittensor wallet name |
 | `wallet_hotkey` | Bittensor hotkey name |
 | `wallet_password` | Wallet coldkey password (used for signing subaccount creation requests) |
+| `validator_api_key` | API key for the validator WebSocket connection (obtained via `vanta entity apikey`) |
 
 To register your entity miner's public endpoint URL with the validator, add:
 
@@ -333,7 +349,7 @@ To register your entity miner's public endpoint URL with the validator, add:
 
 Or set the `ENTITY_MINER_ENDPOINT_URL` environment variable instead.
 
-### 8. Run the Miner
+### 9. Run the Miner
 
 Run the miner with the `--entity-miner` flag to enable the Entity Miner Gateway:
 
@@ -366,7 +382,7 @@ python neurons/miner.py \
 
 This starts the miner REST API on port 8088, which handles both order submission and subaccount management.
 
-### 9. Create Subaccounts
+### 10. Create Subaccounts
 
 Create subaccounts under your entity via the Vanta CLI or directly via the Entity Miner Gateway.
 
@@ -411,7 +427,7 @@ curl -X POST http://localhost:8088/api/create-subaccount \
 | `asset_class` | string | Yes | `"crypto"`, `"forex"`, or `"equities"`   |
 | `account_size` | float | Yes | Account size in USD                    |
 
-### 10. Submit Orders
+### 11. Submit Orders
 
 Send orders to specific subaccounts by including `subaccount_id` in your order request:
 
@@ -645,7 +661,8 @@ Add the following fields to `mining/miner_secrets.json`:
 ```json
 {
   "validator_url": "https://validator.mainnet.vantatrading.io",
-  "validator_ws_url": "ws://34.65.245.134:8765"
+  "validator_ws_url": "ws://34.65.245.134:8765",
+  "validator_api_key": "your_validator_api_key"
 }
 ```
 
@@ -653,6 +670,7 @@ Add the following fields to `mining/miner_secrets.json`:
 |---|---|
 | `validator_url` | Validator REST API URL  |
 | `validator_ws_url` | Validator WebSocket URL |
+| `validator_api_key` | API key for the validator WebSocket connection (obtained via `vanta entity apikey`) |
 | `max_hl_traders` | Maximum number of Hyperliquid traders that can be registered (optional, no limit if unset). Can also be set via `MAX_HL_TRADERS` env var (env var takes precedence). |
 
 ### Creating HL-Linked Subaccounts
@@ -767,6 +785,7 @@ The signature covers `{account_size, admin, asset_class, entity_coldkey, entity_
 
 #### WebSocket not connecting
 - Confirm `validator_ws_url` in secrets matches the validator's WebSocket server (`ws://34.65.245.134:8765`)
+- Confirm `validator_api_key` is set in `miner_secrets.json` and was obtained via `vanta entity apikey`. An invalid or missing key causes an immediate disconnect after the WebSocket upgrade.
 - Check network connectivity to the validator
 - The gateway retries with exponential backoff (1s to 60s) on connection failures
 

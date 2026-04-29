@@ -27,7 +27,6 @@ from typing import Dict, List, Optional
 
 from shared_objects.rpc.rpc_client_base import RPCClientBase
 from time_util.time_util import TimeUtil
-from vali_objects.decoders.generalized_json_decoder import GeneralizedJSONDecoder
 from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.position_management.position_manager import PositionManager
 from vali_objects.position_management.position_utils import PositionUtils
@@ -110,7 +109,7 @@ class PositionManagerClient(RPCClientBase):
             # Instead, create the dict representation and modify only the dict
             PositionManager.strip_old_price_sources(p, time_now_ms)
 
-            position_dict = json.loads(str(p), cls=GeneralizedJSONDecoder)
+            position_dict = p.to_dict()
             # Convert None to 0 for JSON serialization (avoids null in JSON)
             # This is safe because we're only modifying the dict, not the position object
             if position_dict.get('close_ms') is None:
@@ -118,7 +117,7 @@ class PositionManagerClient(RPCClientBase):
 
             # Add unfilled_orders for API response (excluded from disk serialization)
             if p.unfilled_orders:
-                position_dict['unfilled_orders'] = p.unfilled_orders
+                position_dict['unfilled_orders'] = [o.to_python_dict() for o in p.unfilled_orders]
 
             ans["positions"].append(position_dict)
         return ans

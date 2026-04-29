@@ -22,7 +22,6 @@ Usage:
 """
 
 import copy
-import gzip
 import json
 import os
 import hashlib
@@ -33,9 +32,8 @@ from google.cloud import storage
 from time_util.time_util import TimeUtil
 from vali_objects.price_fetcher import LivePriceFetcherClient
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
-from vali_objects.decoders.generalized_json_decoder import GeneralizedJSONDecoder
 from vali_objects.vali_dataclasses.position import Position
-from vali_objects.utils.vali_bkp_utils import ValiBkpUtils, CustomEncoder
+from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
 from vali_objects.data_sync.validator_sync_base import AUTO_SYNC_ORDER_LAG_MS
 
@@ -91,9 +89,6 @@ class CoreOutputsManager:
         self._asset_selection_client = AssetSelectionClient(connection_mode=connection_mode)
         self._entity_client = EntityClient(connection_mode=connection_mode, running_unit_tests=running_unit_tests)
 
-        # Manager uses regular dict (no IPC needed - managed by server)
-        self.validator_checkpoint_cache = {}
-
         bt.logging.info(f"[COREOUTPUTS_MANAGER] CoreOutputsManager initialized")
 
     # ==================== Properties (Forward Compatibility) ====================
@@ -131,52 +126,61 @@ class CoreOutputsManager:
     def filter_new_positions_random_sample(
         self,
         percent_new_positions_keep: float,
-        hotkey_to_positions: dict[str:[dict]],
+        hotkey_to_positions: dict,
         time_of_position_read_ms: int
     ) -> None:
         """Filter positions based on tier percentage."""
-        def filter_orders(p: Position) -> bool:
+        def filter_orders(p: dict) -> bool:
             nonlocal stale_date_threshold_ms
-            if p.is_closed_position and p.close_ms < stale_date_threshold_ms:
-                return False
-            if p.is_open_position and p.orders[-1].processed_ms < stale_date_threshold_ms:
-                return False
+            if p["is_closed_position"]:
+                if p["close_ms"] < stale_date_threshold_ms:
+                    return False
+            else:
+                if p["orders"][-1]["processed_ms"] < stale_date_threshold_ms:
+                    return False
             if percent_new_positions_keep == 100:
                 return False
-            if percent_new_positions_keep and self.hash_string_to_int(p.position_uuid) % 100 < percent_new_positions_keep:
+            if percent_new_positions_keep and (
+                    (self.hash_string_to_int(p["position_uuid"]) % 100) < percent_new_positions_keep
+            ):
                 return False
             return True
 
-        def truncate_position(position_to_truncate: Position) -> Position:
+        def truncate_position(p: dict) -> dict | None:
             nonlocal stale_date_threshold_ms
 
-            new_orders = []
-            for order in position_to_truncate.orders:
-                if order.processed_ms < stale_date_threshold_ms:
-                    new_orders.append(order)
+            filtered_orders = []
+            order_filtered = False
+            for order in p["orders"]:
+                if order["processed_ms"] < stale_date_threshold_ms:
+                    filtered_orders.append(order)
+                else:
+                    order_filtered = True
 
-            if len(new_orders):
-                position_to_truncate.orders = new_orders
-                position_to_truncate.rebuild_position_with_updated_orders(self.live_price_client)
-                return position_to_truncate
-            else:  # no orders left. erase position
+            if not order_filtered:
+                return p
+            elif len(filtered_orders):
+                p["orders"] = filtered_orders
+                position = Position(**p)
+                position.rebuild_position_with_updated_orders(self.live_price_client)
+                return position.to_dict()
+            else:
+                # Mo orders left. erase position
                 return None
 
         assert percent_new_positions_keep in PERCENT_NEW_POSITIONS_TIERS
         stale_date_threshold_ms = time_of_position_read_ms - AUTO_SYNC_ORDER_LAG_MS
-        for hotkey, positions in hotkey_to_positions.items():
-            new_positions = []
-            positions_deserialized = [Position(**json_positions_dict) for json_positions_dict in positions['positions']]
-            for position in positions_deserialized:
-                if filter_orders(position):
-                    truncated_position = truncate_position(position)
+        for hotkey, hotkey_position_data in hotkey_to_positions.items():
+            unfiltered_positions = hotkey_position_data['positions']
+            filtered_positions = []
+            for unfiltered_position in unfiltered_positions:
+                if filter_orders(unfiltered_position):
+                    truncated_position = truncate_position(unfiltered_position)
                     if truncated_position:
-                        new_positions.append(truncated_position)
+                        filtered_positions.append(truncated_position)
                 else:
-                    new_positions.append(position)
-
-            # Turn the positions back into json dicts. Note we are overwriting the original positions
-            positions['positions'] = [json.loads(str(p), cls=GeneralizedJSONDecoder) for p in new_positions]
+                    filtered_positions.append(unfiltered_position)
+            hotkey_position_data['positions'] = filtered_positions
 
     @staticmethod
     def cleanup_test_files():
@@ -205,55 +209,11 @@ class CoreOutputsManager:
             except Exception as e:
                 print(f"Error removing positions file for tier {tier}: {e}")
 
-    def compress_dict(self, data: dict) -> bytes:
-        """Compress dict to gzip bytes."""
-        str_to_write = json.dumps(data, cls=CustomEncoder)
-        compressed = gzip.compress(str_to_write.encode("utf-8"))
-        return compressed
-
-    def decompress_dict(self, compressed_data: bytes) -> dict:
-        """Decompress gzip bytes to dict."""
-        decompressed = gzip.decompress(compressed_data)
-        data = json.loads(decompressed.decode("utf-8"))
-        return data
-
-    def store_checkpoint_in_memory(self, checkpoint_data: dict):
-        """Store compressed validator checkpoint data in memory cache."""
-        try:
-            compressed_data = self.compress_dict(checkpoint_data)
-            self.validator_checkpoint_cache['checkpoint'] = {
-                'data': compressed_data,
-                'timestamp_ms': TimeUtil.now_in_millis()
-            }
-        except Exception as e:
-            bt.logging.error(f"Error storing checkpoint in memory: {e}")
-
-    def get_compressed_checkpoint_from_memory(self) -> bytes | None:
-        """
-        Retrieve compressed validator checkpoint data directly from memory cache.
-
-        Returns:
-            Cached compressed gzip bytes of checkpoint JSON (None if cache not built yet)
-        """
-        try:
-            cached_entry = self.validator_checkpoint_cache.get('checkpoint', {})
-            if not cached_entry or 'data' not in cached_entry:
-                return None
-
-            return cached_entry['data']
-        except Exception as e:
-            bt.logging.error(f"Error retrieving compressed checkpoint from memory: {e}")
-            return None
-
-    def upload_checkpoint_to_gcloud(self, final_dict):
+    def upload_checkpoint_file_to_gcloud(self, checkpoint_file_path: str):
         """
         Upload a zipped, time lagged validator checkpoint to google cloud for auto restoration
         on other validators as well as transparency with the community.
         """
-        datetime_now = TimeUtil.generate_start_timestamp(0)  # UTC
-        if not (datetime_now.minute == 24):
-            return
-
         # check if file exists
         KEY_PATH = ValiConfig.BASE_DIR + '/gcloud_new.json'
         if not os.path.exists(KEY_PATH):
@@ -277,11 +237,11 @@ class CoreOutputsManager:
 
         # Create a new blob and upload data
         blob = bucket.blob(blob_name)
+        blob.content_type = "application/gzip"
 
-        # Create a zip file in memory
-        zip_buffer = self.compress_dict(final_dict)
-        # Upload the content of the zip_buffer to Google Cloud Storage
-        blob.upload_from_string(zip_buffer)
+        # Upload the contents of the file to Google Cloud Storage
+        bt.logging.info(f'Uploading {blob_name} to {bucket_name}')
+        blob.upload_from_filename(filename=checkpoint_file_path)
         bt.logging.info(f'Uploaded {blob_name} to {bucket_name}')
 
     def create_and_upload_production_files(
@@ -332,44 +292,31 @@ class CoreOutputsManager:
             'archived_positions': archived_positions or {}
         }
 
-        if save_to_disk:
-            # Write compressed checkpoint only - saves disk space and bandwidth
-            compressed_data = self.compress_dict(final_dict)
-
-            # Write compressed file directly
-            compressed_path = ValiBkpUtils.get_vcp_output_path(
+        if save_to_disk or upload_to_gcloud:
+            checkpoint_file_path = ValiBkpUtils.get_vcp_output_path(
                 running_unit_tests=self.running_unit_tests
             )
-            with open(compressed_path, 'wb') as f:
-                f.write(compressed_data)
+            ValiBkpUtils.write_compressed_json(checkpoint_file_path, final_dict)
 
-            # Store compressed checkpoint data in memory cache
-            self.store_checkpoint_in_memory(final_dict)
+            if save_to_disk:
+                # Write positions data at different tiers (highest to lowest)
+                for tier in PERCENT_NEW_POSITIONS_TIERS:
 
-            # Write positions data at different tiers
-            for t in PERCENT_NEW_POSITIONS_TIERS:
-                if t == 100:  # no filtering
-                    # Write legacy location as well. no compression
-                    ValiBkpUtils.write_file(
-                        ValiBkpUtils.get_miner_positions_output_path(suffix_dir=None),
-                        ord_dict_hotkey_position_map,
+                    # Filter tiers below the highest tier
+                    if tier != 100:
+                        self.filter_new_positions_random_sample(tier, ord_dict_hotkey_position_map, time_now)
+
+                    # Add tier information
+                    for hotkey, dat in ord_dict_hotkey_position_map.items():
+                        dat['tier'] = tier
+
+                    ValiBkpUtils.write_compressed_json(
+                        ValiBkpUtils.get_miner_positions_output_path(suffix_dir=str(tier)),
+                        ord_dict_hotkey_position_map
                     )
-                else:
-                    self.filter_new_positions_random_sample(t, ord_dict_hotkey_position_map, time_now)
 
-                # "v2" add a tier. compress the data
-                for hotkey, dat in ord_dict_hotkey_position_map.items():
-                    dat['tier'] = t
-
-                compressed_positions = self.compress_dict(ord_dict_hotkey_position_map)
-                ValiBkpUtils.write_file(
-                    ValiBkpUtils.get_miner_positions_output_path(suffix_dir=str(t)),
-                    compressed_positions, is_binary=True
-                )
-
-        # Max filtering
-        if upload_to_gcloud:
-            self.upload_checkpoint_to_gcloud(final_dict)
+            if upload_to_gcloud:
+                self.upload_checkpoint_file_to_gcloud(checkpoint_file_path)
 
     def generate_request_core(
         self,
@@ -448,8 +395,11 @@ class CoreOutputsManager:
             )
         )
 
-        # unfiltered positions dict for checkpoints
-        unfiltered_positions = copy.deepcopy(ord_dict_hotkey_position_map)
+        # Only create a deep copy if the positions are local references
+        if self.connection_mode == RPCConnectionMode.LOCAL:
+            unfiltered_positions = copy.deepcopy(ord_dict_hotkey_position_map)
+        else:
+            unfiltered_positions = ord_dict_hotkey_position_map
 
         n_orders_original = 0
         for positions in hotkey_positions.values():

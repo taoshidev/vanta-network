@@ -315,12 +315,18 @@ curl -X POST http://localhost:8088/api/create-hl-subaccount \
 
 The entity miner gateway maintains a persistent WebSocket connection to the validator at startup. This connection:
 
-- Authenticates with the entity hotkey signature
+- Authenticates via `Authorization: Bearer <validator_api_key>` header sent during the WebSocket upgrade handshake — no post-connect auth message is required
 - Receives real-time dashboard updates for all registered subaccounts
 - Receives order rejection notifications
 - Populates the dashboard cache and SSE subscriber queues
 
-Connection is automatic and includes exponential backoff reconnection (1s → 60s max). The validator sends the full HL address mapping on every successful authentication, which the gateway uses to keep its local `hl_address ↔ synthetic_hotkey` mapping up to date.
+The API key is obtained via `vanta entity apikey` and stored as `validator_api_key` in `miner_secrets.json`.
+
+On successful authentication, the validator immediately sends a JSON message containing:
+- `subscribed_subaccounts`: list of synthetic hotkeys the gateway has been auto-subscribed to
+- `hl_mappings`: mapping of `synthetic_hotkey → hl_address` for all HL-linked subaccounts
+
+Connection is automatic and includes exponential backoff reconnection (1s → 60s max). The validator sends the full HL address mapping on every successful connection, which the gateway uses to keep its local `hl_address ↔ synthetic_hotkey` mapping up to date.
 
 ## USDC Payment Daemon
 

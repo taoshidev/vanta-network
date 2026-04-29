@@ -26,7 +26,6 @@ import queue
 import re
 import threading
 import time
-import uuid
 from collections import deque
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone, timedelta
@@ -155,6 +154,7 @@ class EntityMinerRestServer(MinerRestServer):
         self._coldkey = None
         self._validator_url = None
         self._validator_ws_url = None
+        self._api_key = None
         self._mappings_file: Optional[str] = None
 
         super().__init__(
@@ -179,6 +179,7 @@ class EntityMinerRestServer(MinerRestServer):
             wallet_password = ValiUtils.get_secret('wallet_password', secrets_path=MinerConfig.get_secrets_file_path())
             self._validator_url = secrets.get('validator_url')
             self._validator_ws_url = secrets.get('validator_ws_url')
+            self._api_key = secrets.get('validator_api_key')
 
             if Wallet and wallet_name and wallet_hotkey:
                 wallet = Wallet(name=wallet_name, hotkey=wallet_hotkey)
@@ -681,27 +682,12 @@ class EntityMinerRestServer(MinerRestServer):
 
         while not self._ws_stop_event.is_set():
             try:
-                async with websockets.connect(ws_url, ping_interval=30) as ws:
-                    # Authenticate with entity hotkey + signature
-                    now_ms = int(time.time() * 1000)
-                    nonce = str(uuid.uuid4())
-                    message_dict = {
-                        "entity_hotkey": self._hotkey.ss58_address,
-                        "nonce": nonce,
-                        "timestamp": now_ms
-                    }
-                    message_bytes = json.dumps(message_dict, sort_keys=True).encode('utf-8')
-                    signature = self._hotkey.sign(message_bytes).hex()
+                extra_headers = {}
+                if self._api_key:
+                    extra_headers["Authorization"] = f"Bearer {self._api_key}"
 
-                    auth_msg = {
-                        "entity_hotkey": self._hotkey.ss58_address,
-                        "timestamp": now_ms,
-                        "nonce": nonce,
-                        "signature": signature
-                    }
-                    await ws.send(json.dumps(auth_msg))
-
-                    # Wait for auth response
+                async with websockets.connect(ws_url, additional_headers=extra_headers, ping_interval=30) as ws:
+                    # Wait for auth response (server sends it immediately after header validation)
                     auth_resp = json.loads(await ws.recv())
                     if auth_resp.get("status") != "success":
                         bt.logging.error(f"[ENTITY-GW] WS auth failed: {auth_resp.get('message')}")

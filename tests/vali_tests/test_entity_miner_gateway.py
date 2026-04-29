@@ -733,7 +733,7 @@ class TestHLTrackerRejectionBroadcasts(TestBase):
         tracker._broadcast_rejection("5Entity_0", "Test error message")
 
         tracker._ws_notifier_client.broadcast_subaccount_dashboard.assert_called_once_with(
-            "5Entity_0", {"error_msg": "Test error message"}
+            "5Entity_0"
         )
 
     def test_broadcast_rejection_no_notifier(self):
@@ -765,15 +765,7 @@ class TestHLTrackerRejectionBroadcasts(TestBase):
         )
 
         tracker._ws_notifier_client.broadcast_subaccount_dashboard.assert_called_once_with(
-            "5Entity_0",
-            {
-                "order_event": {
-                    "status": "accepted",
-                    "trade_pair": "BTCUSD",
-                    "order_type": "LONG",
-                    "fill_hash": "0xabc123",
-                }
-            },
+            "5Entity_0"
         )
 
     def test_rate_limit_rejection_broadcasts(self):
@@ -788,8 +780,6 @@ class TestHLTrackerRejectionBroadcasts(TestBase):
         tracker._process_fill("0xaddr", self._make_fill())
 
         tracker._ws_notifier_client.broadcast_subaccount_dashboard.assert_called_once()
-        call_args = tracker._ws_notifier_client.broadcast_subaccount_dashboard.call_args
-        self.assertIn("Rate limited", call_args[0][1]["error_msg"])
 
     def test_elimination_rejection_broadcasts(self):
         """Eliminated miner rejection triggers broadcast."""
@@ -805,8 +795,7 @@ class TestHLTrackerRejectionBroadcasts(TestBase):
 
         tracker._process_fill("0xaddr", self._make_fill())
 
-        call_args = tracker._ws_notifier_client.broadcast_subaccount_dashboard.call_args
-        self.assertIn("eliminated", call_args[0][1]["error_msg"].lower())
+        tracker._ws_notifier_client.broadcast_subaccount_dashboard.assert_called_once()
 
     def test_signal_exception_rejection_broadcasts(self):
         """SignalException during order processing triggers broadcast."""
@@ -833,9 +822,7 @@ class TestHLTrackerRejectionBroadcasts(TestBase):
 
             tracker._process_fill("0xaddr", self._make_fill())
 
-        call_args = tracker._ws_notifier_client.broadcast_subaccount_dashboard.call_args
-        self.assertIn("Order rejected", call_args[0][1]["error_msg"])
-        self.assertIn("Leverage too high", call_args[0][1]["error_msg"])
+        tracker._ws_notifier_client.broadcast_subaccount_dashboard.assert_called_once()
 
     def test_unexpected_exception_rejection_broadcasts(self):
         """Unexpected exceptions during order processing also trigger rejection broadcast."""
@@ -860,9 +847,7 @@ class TestHLTrackerRejectionBroadcasts(TestBase):
 
             tracker._process_fill("0xaddr", self._make_fill())
 
-        call_args = tracker._ws_notifier_client.broadcast_subaccount_dashboard.call_args
-        self.assertIn("Order rejected", call_args[0][1]["error_msg"])
-        self.assertIn("Position at max", call_args[0][1]["error_msg"])
+        tracker._ws_notifier_client.broadcast_subaccount_dashboard.assert_called_once()
 
 
 # ==================== EntityMinerRestServer WS Message Handling Tests ====================

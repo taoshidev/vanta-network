@@ -186,7 +186,7 @@ class TestPositions(TestBase):
         position.orders = orders
         position.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
 
-        checkpoint1 = {"positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [json.loads(position.to_json_string())]}}}
+        checkpoint1 = {"positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [position.to_dict()]}}}
 
         order1 = deepcopy(self.default_order)
         order1.order_uuid = "test_order1"
@@ -196,7 +196,7 @@ class TestPositions(TestBase):
         position.orders = orders
         position.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
 
-        checkpoint2 = {"positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [json.loads(position.to_json_string())]}}}
+        checkpoint2 = {"positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [position.to_dict()]}}}
 
         order1 = deepcopy(self.default_order)
         order1.order_uuid = "test_order1"
@@ -206,7 +206,7 @@ class TestPositions(TestBase):
         position.orders = orders
         position.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
 
-        checkpoint3 = {"positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [json.loads(position.to_json_string())]}}}
+        checkpoint3 = {"positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [position.to_dict()]}}}
 
         # print(json.dumps(checkpoint1, indent=4))
 
@@ -231,7 +231,7 @@ class TestPositions(TestBase):
         position.orders = orders
         position.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
 
-        checkpoint1 = {"positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [json.loads(position.to_json_string())]}}}
+        checkpoint1 = {"positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [position.to_dict()]}}}
 
         order0 = deepcopy(self.default_order)
         order0.order_uuid = "test_order0"
@@ -242,7 +242,7 @@ class TestPositions(TestBase):
         position.orders = orders
         position.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
 
-        checkpoint2 = {"positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [json.loads(position.to_json_string())]}}}
+        checkpoint2 = {"positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [position.to_dict()]}}}
 
         order1 = deepcopy(self.default_order)
         order1.order_uuid = "test_order1"
@@ -253,7 +253,7 @@ class TestPositions(TestBase):
         position.orders = orders
         position.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
 
-        checkpoint3 = {"positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [json.loads(position.to_json_string())]}}}
+        checkpoint3 = {"positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [position.to_dict()]}}}
 
         checkpoints = {"test_validator1": [0, checkpoint1], "test_validator2": [0, checkpoint2], "test_validator3": [0, checkpoint3]}
         self.p2p_syncer.create_golden(checkpoints)
@@ -271,7 +271,7 @@ class TestPositions(TestBase):
         position.orders = orders
         position.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
 
-        checkpoint1 = {"positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [json.loads(position.to_json_string())]}}}
+        checkpoint1 = {"positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [position.to_dict()]}}}
 
         order0 = deepcopy(self.default_order)
         order0.order_uuid = "test_order0"
@@ -290,7 +290,7 @@ class TestPositions(TestBase):
         position2.orders = orders
         position2.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
 
-        checkpoint2 = {"positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [json.loads(position.to_json_string()), json.loads(position2.to_json_string())]}}}
+        checkpoint2 = {"positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [position.to_dict(), position2.to_dict()]}}}
 
         order1 = deepcopy(self.default_order)
         order1.order_uuid = "test_order1"
@@ -309,7 +309,7 @@ class TestPositions(TestBase):
         position2.orders = orders
         position2.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
 
-        checkpoint3 = {"positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [json.loads(position.to_json_string()), json.loads(position2.to_json_string())]}}}
+        checkpoint3 = {"positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [position.to_dict(), position2.to_dict()]}}}
 
         checkpoints = {"test_validator1": [0, checkpoint1], "test_validator2": [0, checkpoint2], "test_validator3": [0, checkpoint3]}
         self.p2p_syncer.create_golden(checkpoints)
@@ -327,7 +327,7 @@ class TestPositions(TestBase):
         position.orders = orders
         position.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
 
-        checkpoint1 = {"positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [json.loads(position.to_json_string())]}}}
+        checkpoint1 = {"positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [position.to_dict()]}}}
 
         order0 = deepcopy(self.default_order)
         order0.order_uuid = "test_order0"
@@ -338,7 +338,7 @@ class TestPositions(TestBase):
         position.orders = orders
         position.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
 
-        checkpoint2 = {"positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [json.loads(position.to_json_string())]}}}
+        checkpoint2 = {"positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [position.to_dict()]}}}
 
         order1 = deepcopy(self.default_order)
         order1.order_uuid = "test_order1"
@@ -348,7 +348,7 @@ class TestPositions(TestBase):
         position.orders = orders
         position.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
 
-        checkpoint3 = {"positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [json.loads(position.to_json_string())]}}}
+        checkpoint3 = {"positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [position.to_dict()]}}}
 
         checkpoints = {"test_validator1": [0, checkpoint1], "test_validator2": [0, checkpoint2],
                        "test_validator3": [0, checkpoint3]}
@@ -366,7 +366,7 @@ class TestPositions(TestBase):
         position1.orders = orders
         position1.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
 
-        checkpoint1 = {"positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [json.loads(position1.to_json_string())]}}}
+        checkpoint1 = {"positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [position1.to_dict()]}}}
 
         order1 = deepcopy(self.default_order)
         order1.order_uuid = "test_order1"
@@ -384,7 +384,7 @@ class TestPositions(TestBase):
         position2.orders = orders
         position2.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
 
-        checkpoint2 = {"positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [json.loads(position1.to_json_string()), json.loads(position2.to_json_string())]}}}
+        checkpoint2 = {"positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [position1.to_dict(), position2.to_dict()]}}}
 
         order0 = deepcopy(self.default_order)
         order0.order_uuid = "test_order0"
@@ -394,7 +394,7 @@ class TestPositions(TestBase):
         position2.orders = orders
         position2.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
 
-        checkpoint3 = {"positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [json.loads(position2.to_json_string())]}}}
+        checkpoint3 = {"positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [position2.to_dict()]}}}
 
         checkpoints = {"test_validator1": [0, checkpoint1], "test_validator2": [0, checkpoint2],
                        "test_validator3": [0, checkpoint3]}
@@ -412,8 +412,8 @@ class TestPositions(TestBase):
         position.orders = orders
         position.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
 
-        checkpoint1 = {"positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [json.loads(position.to_json_string())]}}}
-        checkpoint2 = {"positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [json.loads(position.to_json_string())]}}}
+        checkpoint1 = {"positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [position.to_dict()]}}}
+        checkpoint2 = {"positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [position.to_dict()]}}}
 
         order0 = deepcopy(self.default_order)
         order0.order_uuid = "test_order0"
@@ -423,8 +423,8 @@ class TestPositions(TestBase):
         position.orders = orders
         position.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
 
-        checkpoint3 = {"positions": {"diff_miner": {"positions": [json.loads(position.to_json_string())]}}}
-        checkpoint4 = {"positions": {"diff_miner": {"positions": [json.loads(position.to_json_string())]}}}
+        checkpoint3 = {"positions": {"diff_miner": {"positions": [position.to_dict()]}}}
+        checkpoint4 = {"positions": {"diff_miner": {"positions": [position.to_dict()]}}}
 
         checkpoints = {"test_validator1": [0, checkpoint1], "test_validator2": [0, checkpoint2],
                        "test_validator3": [0, checkpoint3], "test_validator4": [0, checkpoint4]}
@@ -451,7 +451,7 @@ class TestPositions(TestBase):
         position.orders = orders
         position.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
 
-        checkpoint1 = {"positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [json.loads(position.to_json_string())]}}}
+        checkpoint1 = {"positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [position.to_dict()]}}}
 
         order0 = deepcopy(self.default_order)
         order0.order_uuid = "test_order0"
@@ -461,7 +461,7 @@ class TestPositions(TestBase):
         position.orders = orders
         position.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
 
-        checkpoint2 = {"positions": {"diff_miner": {"positions": [json.loads(position.to_json_string())]}}}
+        checkpoint2 = {"positions": {"diff_miner": {"positions": [position.to_dict()]}}}
 
         order1 = deepcopy(self.default_order)
         order1.order_uuid = "test_order1"
@@ -471,7 +471,7 @@ class TestPositions(TestBase):
         position.orders = orders
         position.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
 
-        checkpoint3 = {"positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [json.loads(position.to_json_string())]}}}
+        checkpoint3 = {"positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [position.to_dict()]}}}
 
         checkpoints = {"test_validator1": [0, checkpoint1], "test_validator2": [0, checkpoint2],
                        "test_validator3": [0, checkpoint3]}
@@ -520,8 +520,8 @@ class TestPositions(TestBase):
         position4.orders = orders
         position4.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
 
-        matrix = {'miner_hotkey_1': {self.DEFAULT_TRADE_PAIR: {'validator_hotkey_1': [json.loads(position1.to_json_string())], 'validator_hotkey_2': [json.loads(position2.to_json_string())]}},
-                  'miner_hotkey_2': {self.DEFAULT_TRADE_PAIR: {'validator_hotkey_3': [json.loads(position3.to_json_string())], 'validator_hotkey_4': [json.loads(position4.to_json_string())]}}}
+        matrix = {'miner_hotkey_1': {self.DEFAULT_TRADE_PAIR: {'validator_hotkey_1': [position1.to_dict()], 'validator_hotkey_2': [position2.to_dict()]}},
+                  'miner_hotkey_2': {self.DEFAULT_TRADE_PAIR: {'validator_hotkey_3': [position3.to_dict()], 'validator_hotkey_4': [position4.to_dict()]}}}
 
         matched_positions = self.p2p_syncer.heuristic_resolve_positions(matrix, 2, set())
 
@@ -544,7 +544,7 @@ class TestPositions(TestBase):
         position.orders = orders
         position.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
 
-        checkpoint = {"positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [json.loads(position.to_json_string())]}}}
+        checkpoint = {"positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [position.to_dict()]}}}
 
         assert self.p2p_syncer.last_order_time_in_checkpoint(checkpoint) == 150
 
@@ -597,7 +597,7 @@ class TestPositions(TestBase):
         position1.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
 
         checkpoint1 = {
-            "positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [json.loads(position1.to_json_string())]}}}
+            "positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [position1.to_dict()]}}}
 
         order2x = deepcopy(self.default_order)
         order2x.order_uuid = "test_order2x"
@@ -614,7 +614,7 @@ class TestPositions(TestBase):
         position1x.orders = orders
         position1x.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
 
-        checkpoint2 = {"positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [json.loads(position1x.to_json_string())]}}}
+        checkpoint2 = {"positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [position1x.to_dict()]}}}
 
         order3x = deepcopy(self.default_order)
         order3x.order_uuid = "test_order3x"
@@ -627,7 +627,7 @@ class TestPositions(TestBase):
         position1y.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
 
         checkpoint3 = {
-            "positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [json.loads(position1y.to_json_string())]}}}
+            "positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [position1y.to_dict()]}}}
 
         checkpoints = {"test_validator1": [1, checkpoint1], "test_validator2": [1, checkpoint2],"test_validator3": [1, checkpoint3]}
 
@@ -665,7 +665,7 @@ class TestPositions(TestBase):
         position2.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
 
         checkpoint1 = {
-            "positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [json.loads(position1.to_json_string()), json.loads(position2.to_json_string())]}}}
+            "positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [position1.to_dict(), position2.to_dict()]}}}
 
         orders = [order1, order2]
         position1x = deepcopy(self.default_position)
@@ -674,7 +674,7 @@ class TestPositions(TestBase):
         position1x.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
 
         checkpoint2 = {
-            "positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [json.loads(position1x.to_json_string())]}}}
+            "positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [position1x.to_dict()]}}}
 
         orders = [order1, order2]
         position1y = deepcopy(self.default_position)
@@ -689,7 +689,7 @@ class TestPositions(TestBase):
         position2x.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
 
         checkpoint3 = {
-            "positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [json.loads(position1y.to_json_string()), json.loads(position2x.to_json_string())]}}}
+            "positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [position1y.to_dict(), position2x.to_dict()]}}}
 
         orders = [order1, order2]
         position1z = deepcopy(self.default_position)
@@ -698,7 +698,7 @@ class TestPositions(TestBase):
         position1z.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
 
         checkpoint4 = {
-            "positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [json.loads(position1z.to_json_string())]}}}
+            "positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [position1z.to_dict()]}}}
 
         orders = [order1, order2]
         position1a = deepcopy(self.default_position)
@@ -707,7 +707,7 @@ class TestPositions(TestBase):
         position1a.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
 
         checkpoint5 = {
-            "positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [json.loads(position1a.to_json_string())]}}}
+            "positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [position1a.to_dict()]}}}
 
         checkpoints = {"test_validator1": [1, checkpoint1], "test_validator2": [1, checkpoint2],
                        "test_validator3": [1, checkpoint3], "test_validator4": [1, checkpoint4],
@@ -740,7 +740,7 @@ class TestPositions(TestBase):
         position1.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
 
         checkpoint1 = {
-            "positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [json.loads(position1.to_json_string())]}}}
+            "positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [position1.to_dict()]}}}
 
         order1 = deepcopy(self.default_order)
         order1.order_uuid = "test_order1y"
@@ -756,7 +756,7 @@ class TestPositions(TestBase):
         position1.orders = orders
         position1.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
 
-        checkpoint2 = {"positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [json.loads(position1.to_json_string())]}}}
+        checkpoint2 = {"positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [position1.to_dict()]}}}
 
         order1 = deepcopy(self.default_order)
         order1.order_uuid = "test_order1z"
@@ -773,7 +773,7 @@ class TestPositions(TestBase):
         position1.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
 
         checkpoint3 = {
-            "positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [json.loads(position1.to_json_string())]}}}
+            "positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [position1.to_dict()]}}}
 
         checkpoints = {"test_validator1": [1, checkpoint1], "test_validator2": [1, checkpoint2],"test_validator3": [1, checkpoint3]}
 
@@ -806,7 +806,7 @@ class TestPositions(TestBase):
         position1.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
 
         checkpoint1 = {
-            "positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [json.loads(position1.to_json_string())]}}}
+            "positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [position1.to_dict()]}}}
 
         order1 = deepcopy(self.default_order)
         order1.order_uuid = "test_order1y"
@@ -825,7 +825,7 @@ class TestPositions(TestBase):
         position1.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
 
         checkpoint2 = {
-            "positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [json.loads(position1.to_json_string())]}}}
+            "positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [position1.to_dict()]}}}
 
         order1 = deepcopy(self.default_order)
         order1.order_uuid = "test_order1z"
@@ -844,7 +844,7 @@ class TestPositions(TestBase):
         position1.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
 
         checkpoint3 = {
-            "positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [json.loads(position1.to_json_string())]}}}
+            "positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [position1.to_dict()]}}}
 
         checkpoints = {"test_validator1": [1, checkpoint1], "test_validator2": [1, checkpoint2],
                        "test_validator3": [1, checkpoint3]}
@@ -879,7 +879,7 @@ class TestPositions(TestBase):
         position1.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
 
         checkpoint1 = {
-            "positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [json.loads(position1.to_json_string())]}}}
+            "positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [position1.to_dict()]}}}
 
         position1x = deepcopy(self.default_position)
         position1x.position_uuid = "test_position1"
@@ -892,10 +892,10 @@ class TestPositions(TestBase):
         position2.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
 
         checkpoint2 = {
-            "positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [json.loads(position1x.to_json_string()), json.loads(position2.to_json_string())]}}}
+            "positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [position1x.to_dict(), position2.to_dict()]}}}
 
         checkpoint3 = {
-            "positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [json.loads(position1x.to_json_string()), json.loads(position2.to_json_string())]}}}
+            "positions": {self.DEFAULT_MINER_HOTKEY: {"positions": [position1x.to_dict(), position2.to_dict()]}}}
 
         checkpoints = {"test_validator1": [1, checkpoint1], "test_validator2": [1, checkpoint2],
                        "test_validator3": [1, checkpoint3]}

@@ -27,8 +27,9 @@ Usage:
     # In consumers - create client
     client = CoreOutputsClient()
     checkpoint = client.generate_request_core()
-    compressed = client.get_compressed_checkpoint_from_memory()
 """
+
+import traceback
 
 import bittensor as bt
 
@@ -72,6 +73,7 @@ class CoreOutputsServer(RPCServerBase):
             connection_mode: RPCConnectionMode.LOCAL for tests, RPCConnectionMode.RPC for production
         """
         self.running_unit_tests = running_unit_tests
+        self._last_upload_hour = -1
 
         # Initialize RPCServerBase (handles RPC server lifecycle, daemon, watchdog)
         super().__init__(
@@ -116,11 +118,19 @@ class CoreOutputsServer(RPCServerBase):
             time_now = TimeUtil.now_in_millis()
             bt.logging.debug(f"CoreOutputsServer daemon: generating checkpoint cache...")
 
+            # Ensure upload occurs at least once per hour, after the 24 minute mark
+            datetime_now = TimeUtil.generate_start_timestamp(0)
+            if (datetime_now.hour != self._last_upload_hour) and (datetime_now.minute >= 24):
+                upload_needed = True
+                self._last_upload_hour = datetime_now.hour
+            else:
+                upload_needed = False
+
             # Delegate to manager for checkpoint generation
             self._manager.generate_request_core(
                 create_production_files=True,
                 save_production_files=True,
-                upload_production_files=True  # Only uploads at specific minute (minute 24)
+                upload_production_files=upload_needed
             )
 
             elapsed_ms = TimeUtil.now_in_millis() - time_now
@@ -128,6 +138,7 @@ class CoreOutputsServer(RPCServerBase):
 
         except Exception as e:
             bt.logging.error(f"CoreOutputsServer daemon error: {e}")
+            bt.logging.error(traceback.format_exc())
             # Don't re-raise - let daemon continue on next iteration
 
     # ==================== Properties (Forward Compatibility) ====================
@@ -154,13 +165,6 @@ class CoreOutputsServer(RPCServerBase):
 
     # ==================== RPC Methods (exposed to clients) ====================
 
-    def get_health_check_details(self) -> dict:
-        """Add service-specific health check details."""
-        cache_status = 'cached' if self._manager.validator_checkpoint_cache.get('checkpoint') else 'empty'
-        return {
-            "cache_status": cache_status
-        }
-
     def generate_request_core_rpc(
         self,
         get_dash_data_hotkey: str | None = None,
@@ -181,14 +185,6 @@ class CoreOutputsServer(RPCServerBase):
             save_production_files=save_production_files,
             upload_production_files=upload_production_files
         )
-
-    def get_compressed_checkpoint_from_memory_rpc(self) -> bytes | None:
-        """
-        Retrieve compressed validator checkpoint data directly from memory cache via RPC.
-
-        Delegates to manager for cache retrieval.
-        """
-        return self._manager.get_compressed_checkpoint_from_memory()
 
     # ==================== Forward-Compatible Aliases (without _rpc suffix) ====================
     # These allow direct use of the server in tests without RPC
@@ -213,10 +209,6 @@ class CoreOutputsServer(RPCServerBase):
             save_production_files=save_production_files,
             upload_production_files=upload_production_files
         )
-
-    def get_compressed_checkpoint_from_memory(self) -> bytes | None:
-        """Get compressed checkpoint from memory - delegates to manager."""
-        return self._manager.get_compressed_checkpoint_from_memory()
 
     @staticmethod
     def cleanup_test_files():

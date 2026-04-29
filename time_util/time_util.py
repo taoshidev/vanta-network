@@ -293,7 +293,7 @@ class TimeUtil:
 
     @staticmethod
     def now_in_millis() -> int:
-        return int(datetime.now(timezone.utc).timestamp() * 1000)
+        return int(time.time() * 1000)
 
     @staticmethod
     def millis_to_datetime(millis: int) -> datetime:

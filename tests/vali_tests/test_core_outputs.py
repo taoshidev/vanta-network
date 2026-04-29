@@ -230,22 +230,6 @@ class TestCoreOutputs(TestBase):
         self.assertIsNotNone(checkpoint_dict)
         self.assertIsInstance(checkpoint_dict, dict)
 
-    def test_get_compressed_checkpoint_from_memory(self):
-        """Test retrieving compressed checkpoint from memory cache."""
-        # First generate a checkpoint to potentially populate the cache
-        self.core_outputs_client.generate_request_core(
-            create_production_files=True,
-            save_production_files=False,
-            upload_production_files=False
-        )
-
-        # Try to retrieve compressed checkpoint
-        compressed = self.core_outputs_client.get_compressed_checkpoint_from_memory()
-
-        # May be None if cache not populated (which is OK for tests)
-        # The important thing is it doesn't raise an error
-        self.assertIsInstance(compressed, (bytes, type(None)))
-
     # ==================== Integration Test ====================
 
     def test_full_production_pipeline(self):

@@ -374,16 +374,9 @@ class MarketOrderManager():
         if self.serve:
             # Broadcast position update via RPC to WebSocket clients
             # Skip websocket messages for development hotkey
-            step_start = TimeUtil.now_in_millis()
-            success = self.websocket_notifier.broadcast_position_update(
+            self.websocket_notifier.broadcast_position_update(
                 existing_position, miner_repo_version=miner_repo_version
             )
-            websocket_ms = TimeUtil.now_in_millis() - step_start
-            bt.logging.info(f"[ADD_ORDER_DETAIL] Websocket RPC broadcast took {websocket_ms}ms (success={success})")
-
-            # Broadcast subaccount dashboard update for synthetic hotkeys
-            if is_synthetic_hotkey(miner_hotkey):
-                self._entity_client.broadcast_subaccount_dashboard(miner_hotkey)
 
         return order
 

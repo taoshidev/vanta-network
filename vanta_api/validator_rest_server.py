@@ -1,11 +1,12 @@
 import hashlib
 import re
+import secrets
 from string import hexdigits
 
 import bittensor as bt
 from typing import Optional
 
-from flask import jsonify, request, Response
+from flask import jsonify, request, Response, send_file, make_response
 from http import HTTPStatus
 import os
 import time
@@ -17,6 +18,7 @@ from bittensor_wallet import Keypair
 
 from entity_management.entity_client import EntityClient
 from time_util.time_util import MS_IN_24_HOURS, TimeUtil
+from entity_management.entity_utils import create_subaccount_dashboard
 from shared_objects.rpc.rpc_server_base import RPCServerBase
 from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
 from vali_objects.contract.contract_client import ContractClient
@@ -38,7 +40,6 @@ from vali_objects.vali_config import ValiConfig, RPCConnectionMode, TradePairCat
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_client import DebtLedgerClient
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
-from vali_objects.vali_dataclasses.position import Position
 from vali_objects.exceptions.signal_exception import SignalException
 from vanta_api.base_rest_server import BaseRestServer
 from vanta_api.nonce_manager import NonceManager
@@ -59,7 +60,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
     service_name = ValiConfig.RPC_REST_SERVER_SERVICE_NAME
     service_port = ValiConfig.RPC_REST_SERVER_PORT
 
-    def __init__(self, api_keys_file, shared_queue=None, refresh_interval=15,
+    def __init__(self, api_keys_file, refresh_interval=15,
                  metrics_interval_minutes=5, running_unit_tests=False,
                  connection_mode:RPCConnectionMode = RPCConnectionMode.RPC,
                  start_server=True, flask_host=None, flask_port=None, **kwargs):
@@ -86,7 +87,6 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
         Args:
             api_keys_file: Path to the JSON file containing API keys
-            shared_queue: Optional shared queue for communication with WebSocket server
             refresh_interval: How often to check for API key changes (seconds)
             metrics_interval_minutes: How often to log API metrics (minutes)
             running_unit_tests: Whether running in unit test mode
@@ -97,7 +97,6 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         """
         # Store validator-specific config before initializing base classes
         self.running_unit_tests = running_unit_tests
-        self.shared_queue = shared_queue
         self.nonce_manager = NonceManager()
         self.market_order_manager = MarketOrderManager(serve=False)
         self.data_path = ValiConfig.BASE_DIR
@@ -271,6 +270,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
         # Entity management endpoints
         self.app.route("/entity/register", methods=["POST"])(self.register_entity)
+        self.app.route("/request-api-key", methods=["POST"])(self.request_entity_api_key)
         self.app.route("/entity/create-subaccount", methods=["POST"])(self.create_subaccount)
         self.app.route("/entity/create-hl-subaccount", methods=["POST"])(self.create_subaccount)
         self.app.route("/entity/<entity_hotkey>", methods=["GET"])(self.get_entity)
@@ -289,7 +289,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         # Public HL leaderboard (no auth required)
         self.app.route("/hl-leaderboard", methods=["GET"])(self.get_hl_leaderboard)
 
-        print(f"[REST-INIT] 32 validator endpoints registered ✓")
+        print(f"[REST-INIT] Validator endpoints registered ✓")
 
     # ============================================================================
     # MINER POSITION ENDPOINTS
@@ -305,7 +305,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             return jsonify({"error": "Unauthorized access"}), HTTPStatus.UNAUTHORIZED
 
         if not self.can_access_tier(api_key, tier_required):
-            return jsonify({"error": "Your API key does not have access to tier 200 data"}), HTTPStatus.FORBIDDEN
+            return jsonify({"error": f"Your API key does not have access to tier {tier_required} data"}), HTTPStatus.FORBIDDEN
 
         if entity_management_required:
             if not self._entity_client:
@@ -502,45 +502,19 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
     # ============================================================================
 
     def get_validator_checkpoint(self):
-        api_key = self._get_api_key_safe()
+        access_error_response = self._get_access_error_response(
+            tier_required = ValiConfig.CHECKPOINT_TIER,
+            entity_management_required = False,
+        )
+        if access_error_response is not None:
+            return access_error_response
 
-        # Check if the API key is valid
-        if not self.is_valid_api_key(api_key):
-            return jsonify({'error': 'Unauthorized access'}), 401
+        checkpoint_filename = ValiBkpUtils.get_vcp_output_path()
 
-        # Validator checkpoint data is only available for tier 100
-        if not self.can_access_tier(api_key, 100):
-            return jsonify({'error': 'Validator checkpoint data requires tier 100 access'}), 403
-
-        # Try to get compressed data from memory cache first via CoreOutputsClient
-        compressed_data = None
-        if self._core_outputs_client:
-            try:
-                compressed_data = self._core_outputs_client.get_compressed_checkpoint_from_memory()
-            except Exception as e:
-                bt.logging.debug(f"Error accessing compressed checkpoint cache: {e}")
-
-        if compressed_data is not None:
-            # Return pre-compressed data with appropriate headers
-            return Response(compressed_data, content_type='application/json', headers={
-                'Content-Encoding': 'gzip'
-            })
-
-        # Fallback to file read if memory unavailable
-        # Checkpoint is always stored as compressed file
-        f_gz = ValiBkpUtils.get_vcp_output_path()
-
-        if os.path.exists(f_gz):
-            # Read pre-compressed file directly
-            try:
-                with open(f_gz, 'rb') as fh:
-                    compressed_data = fh.read()
-                return Response(compressed_data, content_type='application/json', headers={
-                    'Content-Encoding': 'gzip'
-                })
-            except Exception as e:
-                bt.logging.error(f"Failed to read compressed checkpoint: {e}")
-                return jsonify({'error': 'Failed to read checkpoint data'}), 500
+        if os.path.exists(checkpoint_filename):
+            response = make_response(send_file(checkpoint_filename, mimetype="application/json"))
+            response.headers["Content-Encoding"] = "gzip"
+            return response
         else:
             return jsonify({'error': 'Checkpoint data not found'}), 404
 
@@ -1439,6 +1413,90 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             bt.logging.error(f"Error registering entity: {e}")
             return jsonify({'error': 'Internal server error registering entity'}), 500
 
+    def request_entity_api_key(self):
+        """
+        Issue an API key (tier 200) for a registered entity miner.
+
+        Idempotent: returns the existing key if one has already been issued for this entity.
+
+        Example:
+        curl -X POST http://localhost:48888/request-api-key \\
+          -H "Content-Type: application/json" \\
+          -d '{
+            "entity_coldkey": "5FxY...",
+            "entity_hotkey": "5GhDr...",
+            "signature": "0x..."
+          }'
+        """
+        if not self._entity_client:
+            return jsonify({'error': 'Entity management not available'}), 503
+
+        try:
+            if not request.is_json:
+                return jsonify({'error': 'Content-Type must be application/json'}), 400
+
+            data = request.get_json()
+            if not data:
+                return jsonify({'error': 'Invalid JSON body'}), 400
+
+            required_fields = ['entity_coldkey', 'entity_hotkey', 'signature']
+            for field in required_fields:
+                if field not in data:
+                    return jsonify({'error': f'Missing required field: {field}'}), 400
+
+            entity_coldkey = data['entity_coldkey']
+            entity_hotkey = data['entity_hotkey']
+
+            # Verify coldkey signature (same pattern as register_entity)
+            keypair = Keypair(ss58_address=entity_coldkey)
+            message = json.dumps({
+                "entity_coldkey": entity_coldkey,
+                "entity_hotkey": entity_hotkey
+            }, sort_keys=True).encode('utf-8')
+
+            is_valid = keypair.verify(message, bytes.fromhex(data['signature']))
+            if not is_valid:
+                return jsonify({'error': 'Invalid signature. Request unauthorized'}), 401
+
+            # Verify coldkey owns hotkey
+            owns_hotkey = self._verify_coldkey_owns_hotkey(entity_coldkey, entity_hotkey)
+            if not owns_hotkey:
+                return jsonify({'error': 'Coldkey does not own the specified hotkey'}), 403
+
+            # Verify entity is registered
+            entity_data = self._entity_client.get_entity_data(entity_hotkey)
+            if entity_data is None:
+                return jsonify({'error': f'Entity {entity_hotkey} is not registered'}), 404
+
+            # Idempotent: return existing key if already issued for this entity
+            existing_key = next(
+                (k for k, v in self.api_key_to_alias.items() if v == entity_hotkey),
+                None
+            )
+            if existing_key:
+                return jsonify({'api_key': existing_key}), 200
+
+            # Generate new API key and persist to api_keys.json
+            new_api_key = secrets.token_urlsafe(32)
+
+            try:
+                existing_data = json.loads(ValiBkpUtils.get_file(self.api_keys_file))
+            except (FileNotFoundError, json.JSONDecodeError):
+                existing_data = {}
+
+            existing_data[entity_hotkey] = {
+                "key": new_api_key,
+                "tier": ValiConfig.SUBACCOUNT_SUBSCRIPTION_TIER
+            }
+            ValiBkpUtils.write_file(self.api_keys_file, existing_data)
+
+            return jsonify({'api_key': new_api_key}), 200
+
+        except Exception as e:
+            bt.logging.error(f"Error requesting entity API key: {e}")
+            bt.logging.error(traceback.format_exc())
+            return jsonify({'error': 'Internal server error'}), 500
+
     def create_subaccount(self):
         """
         Create a new subaccount for an entity.
@@ -1895,38 +1953,34 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             bt.logging.error(f"Error retrieving dashboard for {synthetic_hotkey}: {e}")
             return jsonify({'error': 'Internal server error retrieving dashboard'}), HTTPStatus.INTERNAL_SERVER_ERROR
 
-        dashboard = {"subaccount_info": subaccount_dashboard}
-
-        # Fail gracefully if other services are not available
-        def add_to_dashboard(section, function, *args, **kwargs):
-            try:
-                # Assume the first parameter is the synthetic_hotkey
-                section_data = function(synthetic_hotkey, *args, **kwargs)
-                if section_data is not None:
-                    dashboard[section] = section_data
-            except Exception as ex:
-                bt.logging.error(f"Error retrieving {section} for {synthetic_hotkey}: {ex}")
-
         query_args = request.args
         positions_time_ms = int(query_args.get("positions_time_ms", 0))
         limit_orders_time_ms = int(query_args.get("limit_orders_time_ms", 0))
         checkpoints_time_ms = int(query_args.get("checkpoints_time_ms", 0))
         daily_returns_time_ms = int(query_args.get("daily_returns_time_ms", 0))
 
-        add_to_dashboard("challenge_period", self._challenge_period_client.get_dashboard)
-        add_to_dashboard("drawdown", self._challenge_period_client.get_drawdown_stats)
-        add_to_dashboard("elimination", self._elimination_client.get_dashboard)
-        add_to_dashboard("account_size_data", self._miner_account_client.get_dashboard)
-        add_to_dashboard("positions", self._position_client.get_dashboard, positions_time_ms)
-        add_to_dashboard("limit_orders", self._limit_order_client.get_dashboard, limit_orders_time_ms)
-        add_to_dashboard("ledger", self._debt_ledger_client.get_dashboard, checkpoints_time_ms)
-        add_to_dashboard("statistics", self._statistics_client.get_dashboard, daily_returns_time_ms)
+        dashboard = create_subaccount_dashboard(
+                synthetic_hotkey,
+                subaccount_dashboard,
+                self._challenge_period_client,
+                self._elimination_client,
+                self._miner_account_client,
+                self._position_client,
+                self._limit_order_client,
+                self._debt_ledger_client,
+                self._statistics_client,
+                positions_time_ms,
+                limit_orders_time_ms,
+                checkpoints_time_ms,
+                daily_returns_time_ms,
+        )
 
         response = {
             'status': 'success',
             'dashboard': dashboard,
             'timestamp': TimeUtil.now_in_millis()
         }
+
         return jsonify(response)
 
 

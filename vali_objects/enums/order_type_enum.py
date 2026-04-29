@@ -10,10 +10,6 @@ class OrderType(Enum):
         return self.value
 
     @staticmethod
-    def order_type_map():
-        return {ote.value: ote for ote in OrderType}
-
-    @staticmethod
     def from_string(order_type_value: str):
         """
         Converts an order_type string into a OrderType object.
@@ -27,10 +23,9 @@ class OrderType(Enum):
         Raises:
             ValueError: If no matching order type is found.
         """
-        otm = OrderType.order_type_map()
-        if order_type_value in otm:
-            return otm[order_type_value]
-        else:
+        try:
+            return OrderType(order_type_value)
+        except ValueError:
             raise ValueError(f"No matching order type found for value '{order_type_value}'. Please check the input "
                              f"and try again.")
 
@@ -56,18 +51,13 @@ class StopCondition(Enum):
         return self.value
 
     @staticmethod
-    def stop_condition_map():
-        return {sc.value: sc for sc in StopCondition}
-
-    @staticmethod
     def from_string(stop_condition_value: str):
-        scm = StopCondition.stop_condition_map()
         upper_value = stop_condition_value.upper() if stop_condition_value else None
-        if upper_value in scm:
-            return scm[upper_value]
-        else:
+        try:
+            return StopCondition(upper_value)
+        except ValueError:
             raise ValueError(f"No matching stop condition found for value '{stop_condition_value}'. "
-                             f"Valid values are: {', '.join(scm.keys())}")
+                             f"Valid values are: {', '.join([e.value for e in StopCondition])}")
 
     def __json__(self):
         return self.__str__()

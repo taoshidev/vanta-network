@@ -5,27 +5,37 @@ import gzip
 import json
 import os
 import shutil
-import pickle
-import uuid
+from tempfile import NamedTemporaryFile
 from multiprocessing.managers import DictProxy
 
 import bittensor as bt
+import orjson
 from pydantic import BaseModel
 
 from vali_objects.vali_config import ValiConfig
-from vali_objects.vali_dataclasses.position import Position
 from vali_objects.enums.misc import OrderStatus
 from vali_objects.enums.order_type_enum import OrderType, StopCondition
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.vali_config import TradePair, DynamicTradePair
 
 
+def orjson_encoder(obj):
+    if hasattr(obj, '__json__'):
+        return obj.__json__()
+    elif hasattr(obj, 'to_dict'):
+        return obj.to_dict()
+    elif isinstance(obj, BaseModel):
+        return obj.model_dump(mode="json")
+    elif isinstance(obj, DictProxy):
+        return dict(obj)
+    return obj
+
 class CustomEncoder(json.JSONEncoder):
     def default(self, obj):
         if isinstance(obj, (TradePair, DynamicTradePair, OrderType, ExecutionType, StopCondition)):
             return obj.__json__()
         elif isinstance(obj, BaseModel):
-            return obj.model_dump()
+            return obj.model_dump(mode="json")
         elif hasattr(obj, 'to_dict'):
             return obj.to_dict()
         elif isinstance(obj, DictProxy):
@@ -89,11 +99,6 @@ class ValiBkpUtils:
 
         # Default to vanta_api path if neither exists
         return vanta_path
-
-    @staticmethod
-    def get_sequence_number_file_path():
-        return ValiConfig.BASE_DIR + "/vanta_api/sequence_number.json"
-
 
     @staticmethod
     def get_positions_override_dir(running_unit_tests=False) -> str:
@@ -302,6 +307,14 @@ class ValiBkpUtils:
         return ValiConfig.BASE_DIR + f"{suffix}/validation/entity_slash_tracking.json"
 
     @staticmethod
+    def get_hl_backup_watermarks_path() -> str:
+        return ValiConfig.BASE_DIR + "/validation/hl_backup_poll_watermarks.json"
+
+    @staticmethod
+    def get_hl_observed_szi_path() -> str:
+        return ValiConfig.BASE_DIR + "/validation/hl_observed_szi.json"
+
+    @staticmethod
     def get_secrets_dir():
         return ValiConfig.BASE_DIR + "/secrets.json"
 
@@ -402,14 +415,6 @@ class ValiBkpUtils:
             os.makedirs(vali_dir)
 
     @staticmethod
-    def get_write_type(is_pickle: bool, is_binary:bool) -> str:
-        return "wb" if is_pickle or is_binary else "w"
-
-    @staticmethod
-    def get_read_type(is_pickle: bool) -> str:
-        return "rb" if is_pickle else "r"
-
-    @staticmethod
     def clear_tmp_dir():
         temp_dir = ValiBkpUtils.get_temp_file_path()
         if os.path.exists(temp_dir):
@@ -448,60 +453,86 @@ class ValiBkpUtils:
         os.makedirs(miner_dir, exist_ok=True)
 
     @staticmethod
-    def write_to_dir(
-        vali_file: str, vali_data: dict | object, is_pickle: bool = False, is_binary:bool = False
-    ) -> None:
-        temp_dir = ValiBkpUtils.get_temp_file_path()
-        os.makedirs(os.path.dirname(vali_file), exist_ok=True)
-        os.makedirs(os.path.dirname(temp_dir), exist_ok=True)
-        # Create uuid file name
-        temp_file_path = temp_dir + str(uuid.uuid4())
-        # Write to temp file first
-        with open(temp_file_path, ValiBkpUtils.get_write_type(is_pickle, is_binary)) as f:
-            if is_binary:
-                f.write(vali_data)
-            elif isinstance(vali_data, Position):
-                f.write(vali_data.to_json_string())
-            elif is_pickle:
-                pickle.dump(vali_data, f)
-            else:
-                f.write(json.dumps(vali_data, cls=CustomEncoder))
-        # Move the file from temp to the final location
-        shutil.move(temp_file_path, vali_file)
+    def write_json_stream(stream, data) -> None:
+        """
+        Writes a JSON document to a stream in a more efficient manner than the built-in json
+        module. In addition to using the orjson library, which is faster at encoding, it
+        also attempts to break up documents that contain large collections into smaller,
+        more manageable chunks to reduce peak memory usage. It relies on the assumption that
+        most large collections contain relatively small elements (less than 1 MiB). This is
+        an imperfect solution, but a sensible compromise between performance and memory
+        usage.
+
+        The non-streaming method causes memory issues for large documents because it
+        encodes the entire document into memory before writing to the stream:
+
+          stream.write(json.dumps(data))
+
+        The streaming method is very slow for large documents because it iterates over
+        every element in a very inefficient manner:
+
+          json.dump(stream, data)
+
+        Fixes to address the iteration performance issue in json.dump have been submitted to
+        CPython for several years but have always been rejected because they would increase
+        the complexity of the reference source code. The standard recommendation is to use
+        alternative libraries when writing large documents to a stream.
+        See: https://github.com/python/cpython/pull/130076
+        """
+        _LARGE_COLLECTION_SIZE = 32
+
+        if isinstance(data, dict):
+            large_collection = len(data) > _LARGE_COLLECTION_SIZE
+            stream.write(b"{")
+            first = True
+            for key, value in data.items():
+                if first:
+                    first = False
+                else:
+                    stream.write(b",")
+
+                # Add quotes around keys that are not strings
+                key_is_not_str = not isinstance(key, str)
+                if key_is_not_str:
+                    stream.write(b'"')
+                stream.write(orjson.dumps(key))
+                if key_is_not_str:
+                    stream.write(b'"')
+
+                stream.write(b":")
+
+                if large_collection:
+                    stream.write(orjson.dumps(value, default=orjson_encoder))
+                else:
+                    ValiBkpUtils.write_json_stream(stream, value)
+            stream.write(b"}")
+
+        elif isinstance(data, list) or isinstance(data, tuple):
+            large_collection = len(data) > _LARGE_COLLECTION_SIZE
+            stream.write(b"[")
+            first = True
+            for item in data:
+                if first:
+                    first = False
+                else:
+                    stream.write(b",")
+                if large_collection:
+                    stream.write(orjson.dumps(item, default=orjson_encoder))
+                else:
+                    ValiBkpUtils.write_json_stream(stream, item)
+            stream.write(b"]")
+
+        else:
+            stream.write(orjson.dumps(data, default=orjson_encoder))
 
     @staticmethod
     def write_compressed_json(file_path: str, data: dict) -> None:
         """Write JSON data compressed with gzip (atomic write via temp file)."""
-        temp_path = file_path + ".tmp"
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
-        with gzip.open(temp_path, 'wt', encoding='utf-8') as f:
-            json.dump(data, f, cls=CustomEncoder)
-        shutil.move(temp_path, file_path)
-
-    @staticmethod
-    def write_pickle(file_path: str, data: dict) -> None:
-        """Write pickle data (atomic write via temp file)."""
-        temp_path = file_path + ".tmp"
-        os.makedirs(os.path.dirname(file_path), exist_ok=True)
-        with open(temp_path, 'wb') as f:
-            pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
-        shutil.move(temp_path, file_path)
-
-    @staticmethod
-    def read_pickle(file_path: str) -> dict:
-        """Read pickle data (handles both compressed and uncompressed)."""
-        # Check if file is gzip-compressed by reading magic number
-        with open(file_path, 'rb') as f:
-            magic = f.read(2)
-
-        # If gzip-compressed (magic number is \x1f\x8b), decompress first
-        if magic == b'\x1f\x8b':
-            with gzip.open(file_path, 'rb') as gz_f:
-                return pickle.load(gz_f)
-        else:
-            # Regular pickle file
-            with open(file_path, 'rb') as f:
-                return pickle.load(f)
+        with NamedTemporaryFile(mode="wb", delete=False) as temp_file:
+            with gzip.open(temp_file, "wb") as gzip_stream:
+                ValiBkpUtils.write_json_stream(gzip_stream, data)
+        shutil.move(temp_file.name, file_path)
 
     @staticmethod
     def read_compressed_json(file_path: str) -> dict:
@@ -510,54 +541,16 @@ class ValiBkpUtils:
             return json.load(f)
 
     @staticmethod
-    def write_file(
-        vali_dir: str, vali_data: dict | object, is_pickle: bool = False, is_binary: bool = False
-    ) -> None:
-        ValiBkpUtils.write_to_dir(vali_dir, vali_data, is_pickle, is_binary=is_binary)
+    def write_file(file_path: str, data: dict | object) -> None:
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        with NamedTemporaryFile(mode="wb", delete=False) as temp_file:
+            ValiBkpUtils.write_json_stream(temp_file, data)
+        shutil.move(temp_file.name, file_path)
 
     @staticmethod
-    def get_file(vali_file: str, is_pickle: bool = False) -> str | object:
-        #bt.logging.info(f"attempting to read vali_file: {vali_file}")
-        with open(vali_file, ValiBkpUtils.get_read_type(is_pickle)) as f:
-            ans = pickle.load(f) if is_pickle else f.read()
-            return ans
-
-
-    @staticmethod
-    def safe_load_dict_from_disk(filename, default_value):
-        try:
-            full_path = ValiBkpUtils.get_vali_dir(running_unit_tests=False) + filename
-            if os.path.exists(full_path):
-                with open(full_path, 'r') as f:
-                    return json.load(f)
-
-            temp_filename = f"{filename}.tmp"
-            full_path_temp = ValiBkpUtils.get_vali_dir(running_unit_tests=False) + temp_filename
-            if os.path.exists(full_path_temp):
-                with open(full_path_temp, 'r') as f:
-                    ans = json.load(f)
-                    # Write to disk with the correct filename
-                    ValiBkpUtils.safe_save_dict_to_disk(filename, ans, skip_temp_write=True)
-        except Exception as e:
-            bt.logging.error(f"Error loading {filename} from disk: {e}")
-
-        return default_value
-
-    @staticmethod
-    def safe_save_dict_to_disk(filename, data, skip_temp_write=False):
-        try:
-            temp_filename = f"{filename}.tmp"
-            full_path_temp = ValiBkpUtils.get_vali_dir(running_unit_tests=False) + temp_filename
-            full_path_orig = ValiBkpUtils.get_vali_dir(running_unit_tests=False) + filename
-            if skip_temp_write:
-                with open(full_path_orig, 'w') as f:
-                    json.dump(data, f)
-            else:
-                with open(full_path_temp, 'w') as f:
-                    json.dump(data, f)
-                os.replace(full_path_temp, full_path_orig)
-        except Exception as e:
-            bt.logging.error(f"Error saving {filename} to disk: {e}")
+    def get_file(vali_file: str) -> str | object:
+        with open(vali_file, "r") as f:
+            return f.read()
 
     @staticmethod
     def get_all_files_in_dir(vali_dir: str) -> list[str]:

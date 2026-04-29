@@ -365,7 +365,7 @@ class P2PSyncer(ValidatorSyncBase):
                 new_position.orders.sort(key=lambda o: o.processed_ms)
                 try:
                     new_position.rebuild_position_with_updated_orders(self._price_fetcher_client)
-                    position_dict = json.loads(new_position.to_json_string())
+                    position_dict = new_position.to_dict()
                     uuid_matched_positions.append(position_dict)
                 except ValueError as v:
                     bt.logging.info(f"Miner [{new_position.miner_hotkey}] Position [{new_position.position_uuid}] Orders {[o.order_uuid for o in new_position.orders]} ValueError {v}")

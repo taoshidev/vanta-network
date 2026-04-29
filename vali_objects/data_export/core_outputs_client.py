@@ -14,7 +14,6 @@ class CoreOutputsClient(RPCClientBase):
     Example:
         client = CoreOutputsClient()
         checkpoint = client.generate_request_core()
-        compressed = client.get_compressed_checkpoint_from_memory()
     """
 
     def __init__(
@@ -72,15 +71,6 @@ class CoreOutputsClient(RPCClientBase):
             save_production_files=save_production_files,
             upload_production_files=upload_production_files
         )
-
-    def get_compressed_checkpoint_from_memory(self) -> bytes | None:
-        """
-        Get pre-compressed checkpoint data from memory cache.
-
-        Returns:
-            Cached compressed gzip bytes of checkpoint JSON (None if cache not built yet)
-        """
-        return self._server.get_compressed_checkpoint_from_memory_rpc()
 
     def health_check(self) -> bool:
         """Check server health."""

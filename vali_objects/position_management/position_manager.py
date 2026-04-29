@@ -501,9 +501,10 @@ class PositionManager:
                     snapshot_time_ms = max(snapshot_time_ms, order.processed_ms)
                     dashboard_filled_orders[order.order_uuid] = order.to_dashboard()
 
-            dashboard_unfilled_orders = []
-            for order in position.unfilled_orders:
-                dashboard_unfilled_orders.append(order['order_uuid'])
+            dashboard_unfilled_orders = {
+                order.order_uuid: order.to_dashboard()
+                for order in position.unfilled_orders
+            }
 
             dashboard_position = position.to_dashboard(
                 positions_time_ms,
