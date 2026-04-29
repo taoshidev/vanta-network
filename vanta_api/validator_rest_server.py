@@ -36,7 +36,7 @@ from vali_objects.miner_account.miner_account_manager import MinerAccountManager
 from vali_objects.utils.limit_order.order_processor import OrderProcessor
 from vali_objects.utils.vali_bkp_utils import CustomEncoder
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
-from vali_objects.vali_config import ValiConfig, RPCConnectionMode, TradePairCategory, TradePair
+from vali_objects.vali_config import ValiConfig, RPCConnectionMode, TradePairCategory, TradePair, HL_DYNAMIC_REGISTRY
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_client import DebtLedgerClient
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
@@ -712,7 +712,21 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                     'trade_pair_id': trade_pair.trade_pair_id,
                     'trade_pair': trade_pair.trade_pair,
                     'trade_pair_category': trade_pair.trade_pair_category.value,
+                    'trade_pair_source': trade_pair.src.value,
                     'max_leverage': trade_pair.max_leverage,
+                })
+
+            for dtp in HL_DYNAMIC_REGISTRY.values():
+                if dtp.is_blocked:
+                    continue
+                if dtp.hl_coin.split(":")[-1] in ValiConfig.HL_EXCLUDED_ASSETS:
+                    continue
+                allowed_trade_pairs.append({
+                    'trade_pair_id': dtp.trade_pair_id,
+                    'trade_pair': dtp.trade_pair,
+                    'trade_pair_category': dtp.trade_pair_category.value,
+                    'trade_pair_source': dtp.src.value,
+                    'max_leverage': dtp.max_leverage,
                 })
 
             return jsonify({
@@ -2015,7 +2029,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         except ValueError:
             category = TradePairCategory.CRYPTO
 
-        in_challenge = challenge_bucket == MinerBucket.SUBACCOUNT_CHALLENGE.value
+        in_challenge = challenge_bucket is None or challenge_bucket == MinerBucket.SUBACCOUNT_CHALLENGE.value
         _bucket = MinerBucket.SUBACCOUNT_CHALLENGE if in_challenge else MinerBucket.SUBACCOUNT_FUNDED
         tier = get_leverage_tier(_bucket, account_size)
         max_position_per_pair_usd = account_size * ValiConfig.TIER_POSITIONAL_LEVERAGE[tier][category]

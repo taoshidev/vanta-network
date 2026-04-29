@@ -9,6 +9,7 @@ from tempfile import NamedTemporaryFile
 from multiprocessing.managers import DictProxy
 
 import bittensor as bt
+import numpy as np
 import orjson
 from pydantic import BaseModel
 
@@ -28,7 +29,13 @@ def orjson_encoder(obj):
         return obj.model_dump(mode="json")
     elif isinstance(obj, DictProxy):
         return dict(obj)
-    return obj
+    elif isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
 class CustomEncoder(json.JSONEncoder):
     def default(self, obj):
@@ -502,7 +509,7 @@ class ValiBkpUtils:
                 stream.write(b":")
 
                 if large_collection:
-                    stream.write(orjson.dumps(value, default=orjson_encoder))
+                    stream.write(orjson.dumps(value, default=orjson_encoder, option=orjson.OPT_NON_STR_KEYS))
                 else:
                     ValiBkpUtils.write_json_stream(stream, value)
             stream.write(b"}")
@@ -517,13 +524,13 @@ class ValiBkpUtils:
                 else:
                     stream.write(b",")
                 if large_collection:
-                    stream.write(orjson.dumps(item, default=orjson_encoder))
+                    stream.write(orjson.dumps(item, default=orjson_encoder, option=orjson.OPT_NON_STR_KEYS))
                 else:
                     ValiBkpUtils.write_json_stream(stream, item)
             stream.write(b"]")
 
         else:
-            stream.write(orjson.dumps(data, default=orjson_encoder))
+            stream.write(orjson.dumps(data, default=orjson_encoder, option=orjson.OPT_NON_STR_KEYS))
 
     @staticmethod
     def write_compressed_json(file_path: str, data: dict) -> None:

@@ -52,7 +52,7 @@ from vali_objects.position_management.position_manager_client import PositionMan
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.limit_order.order_processor import OrderProcessor
 from vali_objects.utils.vali_utils import ValiUtils
-from vali_objects.vali_config import ValiConfig, TradePair, TRADE_PAIR_ID_TO_TRADE_PAIR, RPCConnectionMode
+from vali_objects.vali_config import ValiConfig, RPCConnectionMode, HL_COIN_TO_DYNAMIC_TRADE_PAIR
 from vanta_api.websocket_notifier import WebSocketNotifierClient
 
 
@@ -377,7 +377,7 @@ class HyperliquidTracker:
         self._backup_fills_caught = 0
         self._backup_polls_total = 0
         self._proxy_index_rest = 0
-        self._hl_universe: dict = {}       # keyed by coin name, refreshed hourly
+        self._hl_universe: dict = dict(HL_COIN_TO_DYNAMIC_TRADE_PAIR)  # seed from persisted registry; replaced on first refresh
         self._last_universe_refresh: float = 0.0
         # (hl_address_lower) -> {coin: last_observed_szi_float}
         # Used by reconciliation to detect real HL position-size changes vs

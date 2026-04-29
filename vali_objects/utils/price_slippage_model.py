@@ -459,8 +459,8 @@ class PriceSlippageModel:
                 annualized_volatility = row_selected['annualized_vol'] # recalculate slippage false
                 avg_daily_volume = row_selected[f'adv_last_{adv_lookback_window}_days']
 
-                tp_to_vol[trade_pair.trade_pair_id] = annualized_volatility
-                tp_to_adv[trade_pair.trade_pair_id] = avg_daily_volume
+                tp_to_vol[trade_pair.trade_pair_id] = float(annualized_volatility)
+                tp_to_adv[trade_pair.trade_pair_id] = float(avg_daily_volume)
             except Exception as e:
                 bt.logging.info(f"Unable to calculate slippage model features for trade pair {trade_pair.trade_pair_id} with exception {e}")
         return tp_to_adv, tp_to_vol
