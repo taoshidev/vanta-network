@@ -1446,6 +1446,22 @@ class EntityManager(ValidatorBroadcastBase):
         for hl_address, subaccount, synthetic_hotkey in active_subaccounts:
             bucket_info = challenge_buckets.get(synthetic_hotkey)
             if not bucket_info:
+                # Registered but no trades placed yet — include with null stats at bottom
+                since = datetime.fromtimestamp(
+                    subaccount.created_at_ms / 1000, tz=timezone.utc
+                ).strftime('%b %Y')
+                challenge_traders.append({
+                    'address': hl_address,
+                    'pnl': None,
+                    'progress': None,
+                    'sharpe': None,
+                    'trades': 0,
+                    'winRate': None,
+                    'volume': 0,
+                    'drawdown': None,
+                    'since': since,
+                    'noTrades': True,
+                })
                 continue
 
             bucket_str, bucket_start_time = bucket_info
@@ -1537,7 +1553,7 @@ class EntityManager(ValidatorBroadcastBase):
         for i, trader in enumerate(funded_traders, 1):
             trader['rank'] = i
 
-        challenge_traders.sort(key=lambda t: t.get('progress', 0), reverse=True)
+        challenge_traders.sort(key=lambda t: (t.get('noTrades', False), -(t.get('pnl') or 0)))
 
         # 5. Build summary
         summary = {
