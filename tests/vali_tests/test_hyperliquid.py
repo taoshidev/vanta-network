@@ -847,46 +847,6 @@ class TestHyperliquidTracker(TestBase):
         }
         self.assertEqual(ValiConfig.TRADE_PAIR_ID_TO_HL_COIN, expected)
 
-    def test_dynamic_registry_populated_by_refresh(self):
-        """_refresh_hl_universe populates _hl_universe with DynamicTradePair objects for liquid coins."""
-        fake_meta = {
-            "universe": [
-                {"name": "PEPE", "maxLeverage": 40},
-                {"name": "LOWVOL", "maxLeverage": 10},
-            ]
-        }
-
-        def fake_avg_volume(coin):
-            # PEPE passes the 2M threshold; LOWVOL does not
-            return 5_000_000.0 if coin == "PEPE" else 100.0
-
-        def post_side_effect(url, json=None, timeout=None):
-            r = MagicMock()
-            t = (json or {}).get("type", "")
-            if t == "perpDexs":
-                r.json.return_value = []  # no named dexes — default dex only
-            elif t == "spotMeta":
-                r.json.return_value = {"tokens": [{"index": 0, "name": "USDC"}]}
-            elif t == "metaAndAssetCtxs":
-                r.json.return_value = [fake_meta, [{}, {}]]
-            else:
-                r.json.return_value = {}
-            return r
-
-        with patch.object(self.tracker, '_persist_hl_dynamic_registry'), \
-             patch.object(self.tracker, '_fetch_30d_avg_volume', side_effect=fake_avg_volume), \
-             patch('entity_management.hyperliquid_tracker.requests') as mock_req:
-            mock_req.post.side_effect = post_side_effect
-            self.tracker._refresh_hl_universe()
-
-        self.assertIn("PEPE", self.tracker._hl_universe)
-        self.assertNotIn("LOWVOL", self.tracker._hl_universe)
-        pepe_dtp = self.tracker._hl_universe["PEPE"]
-        self.assertIsInstance(pepe_dtp, DynamicTradePair)
-        self.assertEqual(pepe_dtp.trade_pair_id, "PEPEUSDC")
-        # max_leverage: PEPE has 40x HL max lev < HL_HIGH_TIER_THRESHOLD (50) → HS_MAX_LEVERAGE = 1.0
-        self.assertAlmostEqual(pepe_dtp.max_leverage, ValiConfig.HS_MAX_LEVERAGE)
-
     # ==================== Fill Dedup ====================
 
     def test_record_hash_basic_dedup(self):

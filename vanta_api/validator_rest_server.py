@@ -719,8 +719,6 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             for dtp in HL_DYNAMIC_REGISTRY.values():
                 if dtp.is_blocked:
                     continue
-                if dtp.hl_coin.split(":")[-1] in ValiConfig.HL_EXCLUDED_ASSETS:
-                    continue
                 allowed_trade_pairs.append({
                     'trade_pair_id': dtp.trade_pair_id,
                     'trade_pair': dtp.trade_pair,

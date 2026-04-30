@@ -349,10 +349,6 @@ class ValiConfig:
     HS_MAX_LEVERAGE = 1.0               # HS max leverage for standard-tier instruments (funded accounts)
     HS_PORTFOLIO_MAX_LEVERAGE = 4.0     # HS portfolio-level leverage cap (funded accounts)
     HS_MIN_LEVERAGE = 0.01              # HS minimum leverage for any DynamicTradePair position
-    HL_MIN_LIQUIDITY_USD = 2_000_000    # 30-day mean daily USD volume threshold
-    HL_LIQUIDITY_LOOKBACK_DAYS = 30     # days of daily candles used to compute mean(v × close)
-    HL_UNIVERSE_REFRESH_INTERVAL_S = 86_400  # refresh once daily
-    HL_EXCLUDED_ASSETS = {"EUR", "JPY"}  # forex pairs on HL excluded for now
 
     # Minimum position size limits
     FOREX_MIN_POSITION_SIZE_LOTS = 0.01        # micro lot — subaccounts > $10K
