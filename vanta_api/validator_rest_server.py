@@ -731,7 +731,6 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
             return jsonify({
                 'allowed_trade_pairs': allowed_trade_pairs,
-                'allowed_trade_pair_ids': [pair['trade_pair_id'] for pair in allowed_trade_pairs],
                 'total_trade_pairs': len(allowed_trade_pairs),
                 'timestamp': TimeUtil.now_in_millis(),
             })
