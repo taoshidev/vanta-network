@@ -573,7 +573,7 @@ class ChallengePeriodManager(CacheController):
                 continue
 
             returns_threshold = ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD
-            if subaccount_asset_class == TradePairCategory.CRYPTO:
+            if subaccount_asset_class in (TradePairCategory.CRYPTO, TradePairCategory.HL_ALL):
                 returns_threshold = ValiConfig.SUBACCOUNT_CRYPTO_CHALLENGE_RETURNS_THRESHOLD
 
             now_ms = current_time if current_time is not None else TimeUtil.now_in_millis()
@@ -1082,7 +1082,7 @@ class ChallengePeriodManager(CacheController):
             asset_class = miner_asset_selections.get(hotkey)
             returns_threshold = (
                 ValiConfig.SUBACCOUNT_CRYPTO_CHALLENGE_RETURNS_THRESHOLD
-                if asset_class == TradePairCategory.CRYPTO
+                if asset_class in (TradePairCategory.CRYPTO, TradePairCategory.HL_ALL)
                 else ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD
             )
             account = accounts.get(hotkey, None)
