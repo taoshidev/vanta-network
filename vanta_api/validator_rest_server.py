@@ -1592,10 +1592,13 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             account_size = data['account_size']
             asset_class = data['asset_class']
             admin = data.get('admin')
+            trial = data.get('trial')
 
-            # Validate admin flag type early
+            # Validate admin and trial flag types early
             if admin is not None and not isinstance(admin, bool):
                 return jsonify({'error': 'admin must be a boolean'}), 400
+            if trial is not None and not isinstance(trial, bool):
+                return jsonify({'error': 'trial must be a boolean'}), 400
 
             # Validate account_size is a positive number
             try:
@@ -1637,6 +1640,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             }
             if admin is not None:
                 sig_dict["admin"] = admin
+            if trial is not None:
+                sig_dict["trial"] = trial
             if is_hl:
                 sig_dict["hl_address"] = hl_address
                 if payout_address is not None:
@@ -1659,17 +1664,17 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             t0 = time.time()
             if is_hl:
                 success, subaccount_info, message = self._entity_client.create_hl_subaccount(
-                    entity_hotkey, account_size, hl_address, asset_class=asset_class, admin=bool(admin), payout_address=payout_address
+                    entity_hotkey, account_size, hl_address, asset_class=asset_class, admin=bool(admin), trial=bool(trial), payout_address=payout_address
                 )
             else:
                 success, subaccount_info, message = self._entity_client.create_subaccount(
-                    entity_hotkey, account_size, asset_class, admin=bool(admin)
+                    entity_hotkey, account_size, asset_class, admin=bool(admin), trial=bool(trial)
                 )
             timings['create_subaccount_rpc'] = int((time.time() - t0) * 1000)
 
             if success:
-                # Broadcast for admin subaccounts only (regular subaccounts broadcast after slashing completes)
-                if admin and subaccount_info:
+                # Broadcast for admin/trial subaccounts only (regular subaccounts broadcast after slashing completes)
+                if (admin or trial) and subaccount_info:
                     try:
                         t0 = time.time()
                         self._entity_client.broadcast_subaccount_registration(
@@ -1683,7 +1688,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                             **({"hl_address": hl_address, "payout_address": payout_address} if is_hl else {})
                         )
                         timings['broadcast_rpc'] = int((time.time() - t0) * 1000)
-                        bt.logging.info(f"[REST_API] Broadcasted admin subaccount registration for {subaccount_info['synthetic_hotkey']}")
+                        bt.logging.info(f"[REST_API] Broadcasted {subaccount_info['status']} subaccount registration for {subaccount_info['synthetic_hotkey']}")
                     except Exception as e:
                         bt.logging.warning(f"[REST_API] Failed to broadcast subaccount registration: {e}")
 

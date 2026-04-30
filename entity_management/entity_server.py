@@ -150,7 +150,8 @@ class EntityServer(RPCServerBase):
         entity_hotkey: str,
         account_size: float,
         asset_class: str,
-        admin: bool = False
+        admin: bool = False,
+        trial: bool = False
     ) -> Tuple[bool, Optional[dict], str]:
         """
         Create a new subaccount for an entity.
@@ -160,12 +161,13 @@ class EntityServer(RPCServerBase):
             account_size: Account size in USD
             asset_class: Asset class selection
             admin: If True, skip collateral slashing and exclude from payouts
+            trial: If True, skip collateral slashing; subaccount participates in payouts
 
         Returns:
             (success: bool, subaccount_info_dict: Optional[dict], message: str)
         """
         success, subaccount_info, message = self._manager.create_subaccount(
-            entity_hotkey, account_size, asset_class, admin=admin
+            entity_hotkey, account_size, asset_class, admin=admin, trial=trial
         )
 
         # Convert SubaccountInfo to dict for RPC serialization
@@ -180,6 +182,7 @@ class EntityServer(RPCServerBase):
         hl_address: str,
         asset_class: str = "hl_all",
         admin: bool = False,
+        trial: bool = False,
         payout_address: Optional[str] = None
     ) -> Tuple[bool, Optional[dict], str]:
         """
@@ -191,13 +194,14 @@ class EntityServer(RPCServerBase):
             hl_address: Hyperliquid address (0x-prefixed, 40 hex chars)
             asset_class: Asset class selection (default: "hl_all")
             admin: If True, skip collateral slashing
+            trial: If True, skip collateral slashing; subaccount participates in payouts
             payout_address: Optional EVM address (0x + 40 hex) for USDC payouts
 
         Returns:
             (success: bool, subaccount_info_dict: Optional[dict], message: str)
         """
         success, subaccount_info, message = self._manager.create_hl_subaccount(
-            entity_hotkey, account_size, hl_address, asset_class=asset_class, admin=admin, payout_address=payout_address
+            entity_hotkey, account_size, hl_address, asset_class=asset_class, admin=admin, trial=trial, payout_address=payout_address
         )
         subaccount_dict = subaccount_info.model_dump() if subaccount_info else None
         return success, subaccount_dict, message

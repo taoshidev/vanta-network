@@ -371,7 +371,8 @@ class EntityManager(ValidatorBroadcastBase):
         entity_hotkey: str,
         account_size: float,
         asset_class: str,
-        admin: bool = False
+        admin: bool = False,
+        trial: bool = False
     ) -> Tuple[bool, Optional[SubaccountInfo], str]:
         """
         Create a new subaccount for an entity.
@@ -385,6 +386,8 @@ class EntityManager(ValidatorBroadcastBase):
             asset_class: Asset class selection (immutable once set)
             admin: If True, skip collateral slashing and set status to "admin".
                    Admin subaccounts are excluded from entity aggregation and payouts.
+            trial: If True, skip collateral slashing and set status to "trial".
+                   Trial subaccounts are included in entity aggregation and payouts.
 
         Returns:
             (success: bool, subaccount_info: Optional[SubaccountInfo], message: str)
@@ -414,7 +417,7 @@ class EntityManager(ValidatorBroadcastBase):
 
             # Calculate required collateral: account_size / ENTITY_COST_PER_THETA (lower rate for <=10k accounts)
             cpt = ValiConfig.ENTITY_COST_PER_THETA_LOW if account_size <= ValiConfig.ENTITY_COST_PER_THETA_LOW_THRESHOLD else ValiConfig.ENTITY_COST_PER_THETA
-            required_theta = account_size / cpt if not admin else 0
+            required_theta = account_size / cpt if not (admin or trial) else 0
             current_balance = None  # dummy init for collateral tracking on miner
 
             # Verify collateral balance
@@ -501,7 +504,7 @@ class EntityManager(ValidatorBroadcastBase):
 
             # Create subaccount info
             now_ms = TimeUtil.now_in_millis()
-            initial_status = "admin" if admin else "pending"
+            initial_status = "admin" if admin else ("trial" if trial else "pending")
             subaccount_info = SubaccountInfo(
                 subaccount_id=subaccount_id,
                 subaccount_uuid=subaccount_uuid,
@@ -522,8 +525,8 @@ class EntityManager(ValidatorBroadcastBase):
             self._write_entities_from_memory_to_disk()
             timings['write_to_disk'] = int((time.time() - t0) * 1000)
 
-            # Start background slashing thread (not in unit tests, not for admin)
-            if not self.running_unit_tests and not admin:
+            # Start background slashing thread (not in unit tests, not for admin, not for trial)
+            if not self.running_unit_tests and not admin and not trial:
                 thread = threading.Thread(
                     target=self._complete_subaccount_slashing,
                     args=(subaccount_id, entity_hotkey, synthetic_hotkey, required_theta),
@@ -531,9 +534,9 @@ class EntityManager(ValidatorBroadcastBase):
                 )
                 thread.start()
             else:
-                # In tests or admin: mark as active immediately (skip slashing)
-                # Admin subaccounts keep "admin" status, test subaccounts become "active"
-                if not admin:
+                # In tests, admin, or trial: mark as active immediately (skip slashing)
+                # Admin subaccounts keep "admin" status, trial subaccounts keep "trial" status
+                if not admin and not trial:
                     subaccount_info.status = "active"
                 self._write_entities_from_memory_to_disk()
 
@@ -652,6 +655,7 @@ class EntityManager(ValidatorBroadcastBase):
         hl_address: str,
         asset_class: str = "hl_all",
         admin: bool = False,
+        trial: bool = False,
         payout_address: Optional[str] = None
     ) -> Tuple[bool, Optional[SubaccountInfo], str]:
         """
@@ -666,6 +670,7 @@ class EntityManager(ValidatorBroadcastBase):
             hl_address: Hyperliquid address (0x-prefixed, 40 hex chars)
             asset_class: Asset class selection (default: "hl_all")
             admin: If True, skip collateral slashing
+            trial: If True, skip collateral slashing; subaccount participates in payouts
             payout_address: Optional EVM address for payouts (0x-prefixed, 40 hex chars)
 
         Returns:
@@ -698,7 +703,7 @@ class EntityManager(ValidatorBroadcastBase):
 
         # Delegate to standard create_subaccount for all existing validation
         success, subaccount_info, message = self.create_subaccount(
-            entity_hotkey, account_size, asset_class, admin=admin
+            entity_hotkey, account_size, asset_class, admin=admin, trial=trial
         )
 
         if not success:
@@ -735,7 +740,7 @@ class EntityManager(ValidatorBroadcastBase):
         with self._entities_lock:
             for entity_data in self.entities.values():
                 for subaccount in entity_data.subaccounts.values():
-                    if subaccount.hl_address and subaccount.status in ('active', 'admin'):
+                    if subaccount.hl_address and subaccount.status in ('active', 'admin', 'trial'):
                         result.append((subaccount.hl_address, subaccount.model_dump()))
         return result
 
@@ -1169,7 +1174,7 @@ class EntityManager(ValidatorBroadcastBase):
                     'status': None
                 }
 
-            if status not in ['active', 'admin']:
+            if status not in ['active', 'admin', 'trial']:
                 return {
                     'is_valid': False,
                     'error_message': (f"Synthetic hotkey {hotkey} is not active (status: {status}). "
@@ -1382,7 +1387,7 @@ class EntityManager(ValidatorBroadcastBase):
 
         active_subaccounts = [
             (addr, sa, shk) for addr, sa, shk in all_hl_subaccounts
-            if sa.status in ('active', 'admin')
+            if sa.status in ('active', 'admin', 'trial')
         ]
         eliminated_subaccounts = [
             (addr, sa, shk) for addr, sa, shk in all_hl_subaccounts
