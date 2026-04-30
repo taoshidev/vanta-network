@@ -53,9 +53,10 @@ def _migrate(dry_run: bool = False) -> bool:
             synthetic_hotkey = (
                 subaccount.get("synthetic_hotkey") or f"{entity_hotkey}_{subaccount_id}"
             )
+            hl_address = subaccount.get("hl_address")
             hl_synthetic_hotkeys.add(synthetic_hotkey)
             if subaccount.get("asset_class") == OLD:
-                print(f"  {prefix}entities.json: {synthetic_hotkey}: {OLD} → {NEW}")
+                print(f"  {prefix}entities.json: {synthetic_hotkey} (hl_address={hl_address}): {OLD} → {NEW}")
                 if not dry_run:
                     subaccount["asset_class"] = NEW
                 entities_changed += 1
