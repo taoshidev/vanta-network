@@ -148,11 +148,7 @@ class PerfLedgerManager(CacheController):
         """Fetch HL funding rates for a position if it is an HL position, otherwise return None."""
         if not position.is_hl:
             return None
-        tp = position.trade_pair
-        if isinstance(tp, DynamicTradePair):
-            coin = tp.hl_coin
-        else:
-            coin = ValiConfig.TRADE_PAIR_ID_TO_HL_COIN.get(tp.trade_pair_id)
+        coin = position.trade_pair.hl_coin
         if not coin:
             return None
         try:

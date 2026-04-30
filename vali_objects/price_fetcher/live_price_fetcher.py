@@ -10,7 +10,7 @@ from data_generator.hyperliquid_data_service import HyperliquidDataService
 from time_util.time_util import TimeUtil
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
-from vali_objects.vali_config import TradePair, ValiConfig
+from vali_objects.vali_config import TradePair, TradePairSource, ValiConfig
 import bittensor as bt
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
@@ -177,12 +177,12 @@ class LivePriceFetcher:
         polygon_results = {}
         tiingo_results = {}
         hyperliquid_results = {}
-        crypto_pairs = [tp for tp in trade_pairs if tp.is_crypto]
+        hl_pairs = [tp for tp in trade_pairs if tp.src == TradePairSource.HYPERLIQUID]
         with ThreadPoolExecutor(max_workers=3) as executor:
             # Submit REST calls to the executor
             poly_fut = executor.submit(self.polygon_data_service.get_closes_rest, trade_pairs, time_ms, live)
             tiingo_fut = executor.submit(self.tiingo_data_service.get_closes_rest, trade_pairs, time_ms, live)
-            hl_fut = executor.submit(self.hyperliquid_data_service.get_closes_rest, crypto_pairs, time_ms, live) if crypto_pairs else None
+            hl_fut = executor.submit(self.hyperliquid_data_service.get_closes_rest, hl_pairs, time_ms, live) if hl_pairs else None
 
             try:
                 # Wait for futures to complete with a 10s timeout
@@ -207,7 +207,7 @@ class LivePriceFetcher:
         if self.databento_data_service and trade_pair.is_equities:
             db_sources = self.databento_data_service.trade_pair_to_recent_events[trade_pair.trade_pair].get_events_in_range(start_ms, end_ms)
         hl_sources = []
-        if trade_pair.is_crypto:
+        if trade_pair.src == TradePairSource.HYPERLIQUID:
             hl_sources = self.hyperliquid_data_service.trade_pair_to_recent_events[trade_pair.trade_pair].get_events_in_range(start_ms, end_ms)
         return poly_sources + t_sources + db_sources + hl_sources
 
@@ -241,11 +241,11 @@ class LivePriceFetcher:
             if equity_pairs:
                 websocket_prices_databento = self.databento_data_service.get_closes_websocket(equity_pairs, time_ms)
 
-        # Get Hyperliquid prices for crypto
+        # Get Hyperliquid prices for all HL-sourced pairs
         websocket_prices_hyperliquid = {}
-        crypto_pairs = [tp for tp in trade_pairs if tp.is_crypto]
-        if crypto_pairs:
-            websocket_prices_hyperliquid = self.hyperliquid_data_service.get_closes_websocket(crypto_pairs, time_ms)
+        hl_pairs = [tp for tp in trade_pairs if tp.src == TradePairSource.HYPERLIQUID]
+        if hl_pairs:
+            websocket_prices_hyperliquid = self.hyperliquid_data_service.get_closes_websocket(hl_pairs, time_ms)
 
         trade_pairs_needing_rest_data = []
 
@@ -306,7 +306,7 @@ class LivePriceFetcher:
         if self.databento_data_service and trade_pair.is_equities:
             t3 = self.databento_data_service.get_websocket_lag_for_trade_pair_s(tp=trade_pair.trade_pair, now_ms=now_ms)
         t4 = None
-        if trade_pair.is_crypto:
+        if trade_pair.src == TradePairSource.HYPERLIQUID:
             t4 = self.hyperliquid_data_service.get_websocket_lag_for_trade_pair_s(tp=trade_pair.trade_pair, now_ms=now_ms)
         lags = [x for x in (t1, t2, t3, t4) if x]
         return max(lags) if lags else None

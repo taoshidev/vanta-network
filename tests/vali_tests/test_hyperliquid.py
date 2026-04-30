@@ -834,19 +834,6 @@ class TestHyperliquidTracker(TestBase):
         mock_result.should_track_uuid = True
         return mock_result
 
-    # ==================== Coin Mapping ====================
-
-    def test_trade_pair_id_to_hl_coin_mapping(self):
-        """TRADE_PAIR_ID_TO_HL_COIN contains all static HL coins and their coin names."""
-        expected = {
-            "BTCUSD": "BTC", "ETHUSD": "ETH", "SOLUSD": "SOL",
-            "XRPUSD": "XRP", "DOGEUSD": "DOGE", "ADAUSD": "ADA",
-            "TAOUSD": "TAO", "HYPEUSD": "HYPE", "ZECUSD": "ZEC",
-            "BCHUSD": "BCH", "LINKUSD": "LINK", "XMRUSD": "XMR",
-            "LTCUSD": "LTC",
-        }
-        self.assertEqual(ValiConfig.TRADE_PAIR_ID_TO_HL_COIN, expected)
-
     # ==================== Fill Dedup ====================
 
     def test_record_hash_basic_dedup(self):

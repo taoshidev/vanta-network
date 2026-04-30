@@ -622,14 +622,6 @@ class ValiConfig:
     # We subscribe at coarse and full resolution on separate shards and combine them.
     HL_L2_COARSE_SIG_FIGS = 2
 
-    TRADE_PAIR_ID_TO_HL_COIN = {
-        "BTCUSD": "BTC", "ETHUSD": "ETH", "SOLUSD": "SOL",
-        "XRPUSD": "XRP", "DOGEUSD": "DOGE", "ADAUSD": "ADA",
-        "TAOUSD": "TAO", "HYPEUSD": "HYPE", "ZECUSD": "ZEC",
-        "BCHUSD": "BCH", "LINKUSD": "LINK", "XMRUSD": "XMR",
-        "LTCUSD": "LTC"
-    }
-
     # HL fee constants
     HL_TAKER_FEE = 0.00045    # 0.045%
     HL_MAKER_FEE = 0.00015    # 0.015%

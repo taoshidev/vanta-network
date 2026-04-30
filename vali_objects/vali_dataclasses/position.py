@@ -114,12 +114,10 @@ class Position(BaseModel):
     def get_spread_fee(self, timestamp_ms: int) -> float:
         """
         transaction fee
-        only applied to crypto
+        HL positions: taker/maker exchange fee per order, applies to all HL asset classes
+        Vanta native crypto: 0.1% x cumulative leverage approximation
+        All other: no fee (returns 1.0)
         """
-        if not self.trade_pair.is_crypto:
-            return 1.0
-
-        # HL positions use per-order taker/maker rates
         if self.is_hl:
             fee = 1.0
             for order in self.orders:
@@ -129,8 +127,10 @@ class Position(BaseModel):
                     fee *= (1 - ValiConfig.HL_MAKER_FEE * abs(order.leverage))
             return fee
 
-        ans = 1.0 - (self.get_cumulative_leverage() * .001)
-        return ans
+        if not self.trade_pair.is_crypto:
+            return 1.0
+
+        return 1.0 - (self.get_cumulative_leverage() * .001)
 
     # TODO update with ledger update
     def crypto_carry_fee(self, current_time_ms: int) -> (float, int):
@@ -174,7 +174,7 @@ class Position(BaseModel):
                 max_lev = self.max_leverage_seen_in_interval(start_ms, end_ms)
                 if self.trade_pair.is_forex:
                     fee *= FOREX_CARRY_FEE_PER_INTERVAL ** max_lev
-                elif self.trade_pair.is_indices or self.trade_pair.is_equities:
+                elif self.trade_pair.is_indices or self.trade_pair.is_equities or self.trade_pair.is_commodities:
                     fee *= INDICES_CARRY_FEE_PER_INTERVAL ** max_lev
                 else:
                     raise ValueError(f"Unexpected trade pair: {self.trade_pair.trade_pair_id}")
@@ -225,7 +225,7 @@ class Position(BaseModel):
             carry_fee, next_update_time_ms = self.hl_carry_fee(current_time_ms, funding_rates)
         elif self.trade_pair.is_crypto:
             carry_fee, next_update_time_ms = self.crypto_carry_fee(current_time_ms)
-        elif self.trade_pair.is_forex or self.trade_pair.is_indices or self.trade_pair.is_equities:
+        elif self.trade_pair.is_forex or self.trade_pair.is_indices or self.trade_pair.is_equities or self.trade_pair.is_commodities:
             carry_fee, next_update_time_ms = self.forex_indices_carry_fee(current_time_ms)
         else:
             raise Exception(f'Unexpected trade pair: {self.trade_pair.trade_pair_id}')

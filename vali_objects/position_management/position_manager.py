@@ -1245,11 +1245,7 @@ class PositionManager:
     def _get_hl_funding_rates(self, position, current_time_ms: int):
         if not position.is_hl:
             return None
-        tp = position.trade_pair
-        if isinstance(tp, DynamicTradePair):
-            coin = tp.hl_coin
-        else:
-            coin = ValiConfig.TRADE_PAIR_ID_TO_HL_COIN.get(tp.trade_pair_id)
+        coin = position.trade_pair.hl_coin
         if not coin:
             return None
         try:

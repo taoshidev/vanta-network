@@ -314,13 +314,13 @@ class HyperliquidDataService(BaseDataService):
             return None
 
     def get_closes_rest(self, trade_pairs: List[TradePairLike], time_ms, live=True) -> dict[TradePairLike, PriceSource]:
-        """REST fallback: fetch mid prices from Hyperliquid for the requested crypto pairs."""
+        """REST fallback: fetch mid prices from Hyperliquid for all HL-sourced pairs."""
         if self.running_unit_tests:
             from data_generator.polygon_data_service import PolygonDataService
             return {tp: PolygonDataService.DEFAULT_TESTING_FALLBACK_PRICE_SOURCE for tp in trade_pairs}
 
-        crypto_pairs = [tp for tp in trade_pairs if tp.is_crypto and tp not in self.UNSUPPORTED_TRADE_PAIRS]
-        if not crypto_pairs:
+        hl_pairs = [tp for tp in trade_pairs if tp.src == TradePairSource.HYPERLIQUID and tp not in self.UNSUPPORTED_TRADE_PAIRS]
+        if not hl_pairs:
             return {}
 
         now_ms = TimeUtil.now_in_millis()
@@ -331,7 +331,7 @@ class HyperliquidDataService(BaseDataService):
         results: dict[TradePair, PriceSource] = {}
         pairs_needing_book = []
 
-        for tp in crypto_pairs:
+        for tp in hl_pairs:
             mid = all_mids.get(tp.hl_coin)
             if mid is not None and mid > 0:
                 results[tp] = PriceSource(
