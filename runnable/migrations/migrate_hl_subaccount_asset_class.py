@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Migrate existing Hyperliquid-linked subaccounts from asset class "crypto" to "hl_all".
 
@@ -9,15 +8,10 @@ the correct challenge period returns threshold (10%, same as crypto).
 Updates two files where asset_class must be explicitly corrected:
   - asset_selections.json  (source of truth for miner account loading)
   - entities.json          (SubaccountInfo.asset_class read directly by entity_manager)
-
-Usage:
-    python runnable/migrate_hl_subaccount_asset_class.py            # Perform migration
-    python runnable/migrate_hl_subaccount_asset_class.py --dry-run  # Preview only
 """
 
 import json
 import os
-import sys
 
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 
@@ -35,7 +29,7 @@ def _load_json(path: str) -> dict:
             return {}
 
 
-def migrate_hl_subaccount_asset_class(dry_run: bool = False) -> None:
+def _migrate(dry_run: bool = False) -> bool:
     entities_path = ValiBkpUtils.get_entity_file_location()
     selections_path = ValiBkpUtils.get_asset_selections_file_location()
 
@@ -47,9 +41,8 @@ def migrate_hl_subaccount_asset_class(dry_run: bool = False) -> None:
     entities_data = _load_json(entities_path)
     if not entities_data:
         print(f"entities.json not found or empty at {entities_path} — nothing to migrate.")
-        return
+        return True
 
-    # Collect HL hotkeys and patch entities.json in one pass
     hl_synthetic_hotkeys: set[str] = set()
     entities_changed = 0
 
@@ -69,7 +62,7 @@ def migrate_hl_subaccount_asset_class(dry_run: bool = False) -> None:
 
     if not hl_synthetic_hotkeys:
         print("No HL-linked subaccounts found in entities.json — nothing to migrate.")
-        return
+        return True
 
     print(f"\nFound {len(hl_synthetic_hotkeys)} HL-linked synthetic hotkey(s).")
     print(f"  entities.json: {entities_changed} updated.\n")
@@ -101,16 +94,19 @@ def migrate_hl_subaccount_asset_class(dry_run: bool = False) -> None:
         with open(selections_path, "w") as f:
             json.dump(selections, f, indent=2)
 
-    # ------------------------------------------------------------------ #
-    # 3. Summary                                                          #
-    # ------------------------------------------------------------------ #
     total = entities_changed + selections_changed
     if dry_run:
         print(f"Dry run complete — {total} update(s) would be applied.")
     else:
         print(f"Migration complete — {total} update(s) applied.")
+    return True
+
+
+def main() -> bool:
+    return _migrate(dry_run=False)
 
 
 if __name__ == "__main__":
-    dry_run = "--dry-run" in sys.argv
-    migrate_hl_subaccount_asset_class(dry_run=dry_run)
+    import sys
+    success = _migrate(dry_run="--dry-run" in sys.argv)
+    sys.exit(0 if success else 1)
