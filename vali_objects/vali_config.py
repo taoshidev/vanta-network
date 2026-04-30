@@ -542,7 +542,7 @@ class ValiConfig:
     # XAUUSD/XAGUSD (gold/silver) use the 'COMMODITIES' key despite being in TradePairCategory.FOREX;
     # they share the FOREX portfolio cap but have their own positional column.
     TIER_POSITIONAL_LEVERAGE = {
-        1: {TradePairCategory.CRYPTO: 0.5,  TradePairCategory.FOREX: 2.5,  TradePairCategory.EQUITIES: 0.5, TradePairCategory.INDICES: 2.5,  'COMMODITIES': 0.5},
+        1: {TradePairCategory.CRYPTO: 0.5,  TradePairCategory.FOREX: 2.5,  TradePairCategory.EQUITIES: 0.5, TradePairCategory.INDICES: 2.5,  'COMMODITIES': 1.0},
         2: {TradePairCategory.CRYPTO: 1.0,  TradePairCategory.FOREX: 5.0,  TradePairCategory.EQUITIES: 1.0, TradePairCategory.INDICES: 5.0,  'COMMODITIES': 1.0},
         3: {TradePairCategory.CRYPTO: 1.5,  TradePairCategory.FOREX: 7.5,  TradePairCategory.EQUITIES: 1.5, TradePairCategory.INDICES: 7.5,  'COMMODITIES': 1.5},
         4: {TradePairCategory.CRYPTO: 2.0,  TradePairCategory.FOREX: 10.0, TradePairCategory.EQUITIES: 2.0, TradePairCategory.INDICES: 10.0, 'COMMODITIES': 2.0},
@@ -552,7 +552,7 @@ class ValiConfig:
     # XAUUSD/XAGUSD share the TradePairCategory.FOREX portfolio cap.
     # Equity portfolio is intentionally capped at 2x from Tier 3 onward (Reg T overnight limit).
     TIER_PORTFOLIO_LEVERAGE = {
-        1: {TradePairCategory.CRYPTO: 1.0,  TradePairCategory.FOREX: 5.0,  TradePairCategory.EQUITIES: 1.0, TradePairCategory.INDICES: 5.0},
+        1: {TradePairCategory.CRYPTO: 2.0,  TradePairCategory.FOREX: 5.0,  TradePairCategory.EQUITIES: 1.0, TradePairCategory.INDICES: 5.0},
         2: {TradePairCategory.CRYPTO: 2.0,  TradePairCategory.FOREX: 10.0, TradePairCategory.EQUITIES: 1.5, TradePairCategory.INDICES: 10.0},
         3: {TradePairCategory.CRYPTO: 3.0,  TradePairCategory.FOREX: 15.0, TradePairCategory.EQUITIES: 2.0, TradePairCategory.INDICES: 15.0},
         4: {TradePairCategory.CRYPTO: 4.0,  TradePairCategory.FOREX: 20.0, TradePairCategory.EQUITIES: 2.0, TradePairCategory.INDICES: 20.0},
