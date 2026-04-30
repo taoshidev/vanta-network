@@ -46,6 +46,7 @@ class TradePairCategory(str, Enum):
     INDICES = "indices"
     EQUITIES = "equities"
     COMMODITIES = "commodities"
+    HL_ALL = "hl_all"            # Asset-selection token only, enables trading all categories for hyperliquid
 
 
 class TradePairSource(str, Enum):

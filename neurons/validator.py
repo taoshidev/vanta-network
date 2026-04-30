@@ -36,7 +36,7 @@ from shared_objects.subtensor_ops.subtensor_ops import SubtensorOpsManager
 from shared_objects.error_utils import ErrorUtils
 from shared_objects.slack_notifier import SlackNotifier
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
-from vali_objects.vali_config import ValiConfig
+from vali_objects.vali_config import ValiConfig, TradePairCategory, TradePairSource
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.utils.limit_order.order_processor import OrderProcessor
@@ -531,7 +531,12 @@ class Validator(ValidatorBase):
             if now_ms >= ASSET_CLASS_SELECTION_TIME_MS:
                 # Fast local lookup from AssetSelectionClient cache
                 selected_asset = self.asset_selection_client.get_selection_local_cache(sender_hotkey)
-                is_valid_asset = selected_asset == tp.trade_pair_category if selected_asset is not None else False
+                if selected_asset is None:
+                    is_valid_asset = False
+                elif selected_asset == TradePairCategory.HL_ALL:
+                    is_valid_asset = tp.src == TradePairSource.HYPERLIQUID
+                else:
+                    is_valid_asset = tp.src == TradePairSource.VANTA and selected_asset == tp.trade_pair_category
             else:
                 is_valid_asset = True  # Pre-cutoff, all assets allowed
                 selected_asset = "unknown (pre-cutoff)"
