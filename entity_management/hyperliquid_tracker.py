@@ -52,7 +52,7 @@ from vali_objects.position_management.position_manager_client import PositionMan
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.limit_order.order_processor import OrderProcessor
 from vali_objects.utils.vali_utils import ValiUtils
-from vali_objects.vali_config import ValiConfig, RPCConnectionMode, HL_COIN_TO_DYNAMIC_TRADE_PAIR
+from vali_objects.vali_config import ValiConfig, RPCConnectionMode, HL_COIN_TO_DYNAMIC_TRADE_PAIR, HL_COIN_TO_TRADE_PAIR, DynamicTradePair
 from vanta_api.websocket_notifier import WebSocketNotifierClient
 
 
@@ -1255,15 +1255,12 @@ class HyperliquidTracker:
         if not coin:
             return
 
-        # Map coin to trade pair via dynamic registry
-        from vali_objects.vali_config import HL_COIN_TO_DYNAMIC_TRADE_PAIR
-        trade_pair = self._hl_universe.get(coin)
+        trade_pair = HL_COIN_TO_TRADE_PAIR.get(coin)
         below_threshold = False
-        if not trade_pair:
-            # Coin is below liquidity threshold or not yet refreshed — check full registry
-            # to handle close/reduce fills for previously tracked coins.
+        if trade_pair is None:
+            # Coin not in hardcoded set — check deprecated dynamic registry for close/reduce of existing positions
             trade_pair = HL_COIN_TO_DYNAMIC_TRADE_PAIR.get(coin)
-            if not trade_pair:
+            if trade_pair is None:
                 bt.logging.debug(f"[HL_TRACKER] Unknown coin: {coin}")
                 return
             below_threshold = True
@@ -1320,19 +1317,6 @@ class HyperliquidTracker:
         if trade_pair.is_blocked:
             bt.logging.info(f"[HL_TRACKER] Blocked trade pair: {trade_pair_id} ({synthetic_hotkey})")
             self._broadcast_rejection(synthetic_hotkey, f"Trade pair {trade_pair_id} is no longer supported.")
-            return
-
-        # Market hours check (only for market orders)
-        # DynamicTradePairs are HL instruments — HL trades 24/7 regardless of asset type,
-        # so skip the market-hours check entirely for them.
-        from vali_objects.vali_config import DynamicTradePair
-        if isinstance(trade_pair, DynamicTradePair):
-            is_market_open = True
-        else:
-            is_market_open = self._price_fetcher_client.is_market_open(trade_pair, now_ms)
-        if not is_market_open:
-            bt.logging.info(f"[HL_TRACKER] Market closed for {trade_pair_id} ({synthetic_hotkey})")
-            self._broadcast_rejection(synthetic_hotkey, f"Market is closed for {trade_pair_id}.")
             return
 
         # === Step 1: Fetch HL account state -> compute target weight ===
@@ -1448,7 +1432,7 @@ class HyperliquidTracker:
         signal = {
             "order_type": order_type,
             "leverage": leverage,
-            "trade_pair": {"trade_pair_id": trade_pair_id},
+            "trade_pair": trade_pair_id,
             "execution_type": "MARKET",
             "is_hl": True,
             "is_hl_taker": is_taker,

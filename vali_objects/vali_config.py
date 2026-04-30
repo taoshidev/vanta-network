@@ -1138,6 +1138,9 @@ class TradePair(Enum):
 
 TRADE_PAIR_ID_TO_TRADE_PAIR = {x.trade_pair_id: x for x in TradePair}
 TRADE_PAIR_STR_TO_TRADE_PAIR = {x.trade_pair: x for x in TradePair}
+HL_COIN_TO_TRADE_PAIR: dict[str, TradePair] = {
+    tp.base: tp for tp in TradePair if tp.src == TradePairSource.HYPERLIQUID
+}
 
 # Set UNSUPPORTED_TRADE_PAIRS now that TradePair enum is defined
 # These are trade pairs that have no price data available (not just temporarily halted)
