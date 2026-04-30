@@ -11,7 +11,7 @@ The **entity hotkey** identifies the operator on the validator. Under it, the en
 1. Entity hotkeys must be registered on the Bittensor network and have sufficient Theta collateral.
 2. An entity pays a one-time registration fee of **1,000 Theta**, which is permanently slashed on registration.
 3. Each subaccount requires collateral proportional to its account size (see [Collateral Requirements](#collateral-requirements)).
-4. Each subaccount selects an asset class (`crypto`, `forex`, or `equities`) at creation. This **cannot be changed**.
+4. Each subaccount selects an asset class (`crypto`, `forex`, `equities`, or `hl_all`) at creation. This **cannot be changed**. HyperLiquid-linked subaccounts always use `hl_all`.
 5. New subaccounts enter a **challenge period** with stricter thresholds and reduced leverage (see [Challenge Period](#challenge-period--subaccount-lifecycle)).
 6. Entity hotkeys **cannot place orders**. Orders must be submitted using the subaccount's synthetic hotkey.
 7. Subaccounts follow the same trading rules as regular miners: uni-directional positions, leverage limits, market hours, rate limits, etc.
@@ -167,10 +167,10 @@ pending → active → [SUBACCOUNT_CHALLENGE] → [SUBACCOUNT_FUNDED]
 
 **To pass the challenge period**, a subaccount must achieve:
 
-| Asset Class     | Minimum Return Required |
-|-----------------|-------------------------|
-| Forex, Equities | ≥ 8%                    |
-| Crypto          | ≥ 10%                   |
+| Asset Class            | Minimum Return Required |
+|------------------------|-------------------------|
+| Forex, Equities        | ≥ 8%                    |
+| Crypto, HL All         | ≥ 10%                   |
 
 Passing is evaluated continuously — a subaccount is promoted immediately once `min(account balance, account equity)` meets the threshold. Assessment runs automatically via the validator's EntityServer daemon every 5 minutes.
 
@@ -394,7 +394,7 @@ vanta entity create-subaccount \
   --wallet-name <wallet> \
   --wallet-hotkey <entity> \
   --account-size <usd_amount> \
-  --asset-class <crypto|forex>
+  --asset-class <crypto|forex|equities|hl_all>
 
 # Via Entity Miner Gateway (requires miner running)
 curl -X POST http://localhost:8088/api/create-subaccount \
@@ -422,10 +422,10 @@ curl -X POST http://localhost:8088/api/create-subaccount \
 
 #### Subaccount Fields
 
-| Field | Type | Required | Description                            |
-|---|---|---|----------------------------------------|
-| `asset_class` | string | Yes | `"crypto"`, `"forex"`, or `"equities"`   |
-| `account_size` | float | Yes | Account size in USD                    |
+| Field | Type | Required | Description                                                                  |
+|---|---|---|------------------------------------------------------------------------------|
+| `asset_class` | string | Yes | `"crypto"`, `"forex"`, `"equities"`, `"hl_all"` |
+| `account_size` | float | Yes | Account size in USD                                                          |
 
 ### 11. Submit Orders
 
@@ -650,7 +650,7 @@ Log in using a [polkadot.js](https://polkadot.js.org/extension/) browser wallet.
 
 ## Hyperliquid Subaccounts
 
-Hyperliquid-linked subaccounts automatically forward trades from a Hyperliquid address as Vanta signals. They always use `crypto` as their asset class. This section applies only if you intend to link Hyperliquid traders — it is not required for standard entity miners.
+Hyperliquid-linked subaccounts automatically forward trades from a Hyperliquid address as Vanta signals. They always use `hl_all` as their asset class, which grants access to all HyperLiquid-sourced trade pairs. This section applies only if you intend to link Hyperliquid traders — it is not required for standard entity miners.
 
 The information below is optional for entity miners that do not choose to host Hyperliquid subaccount miners.
 
@@ -751,7 +751,7 @@ curl -N http://localhost:8088/api/hl/<hl_address>/stream \
 |---|---|---|
 | POST | `/entity/create-hl-subaccount` | Alias for `/entity/create-subaccount` with `hl_address` |
 
-HL-linked subaccount creation (include `hl_address`; `asset_class` is always `"crypto"`):
+HL-linked subaccount creation (include `hl_address`; `asset_class` is always `"hl_all"`):
 
 ```json
 {

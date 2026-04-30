@@ -699,27 +699,33 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             return jsonify({'error': 'Error retrieving orders'}), 500
 
     def get_allowed_trade_pairs(self):
-        """Return the currently allowed trading pairs and each pair's max leverage. No API key required."""
+        """Return trade pairs grouped into three categories. No API key required.
+
+        allowed:    can open and close positions
+        deprecated: close/reduce only (legacy dynamic HL pairs)
+        disabled:   neither open nor close permitted (blocked or unsupported)
+        """
         try:
             unsupported_trade_pairs = set(ValiConfig.UNSUPPORTED_TRADE_PAIRS or ())
-            allowed_trade_pairs = []
+            allowed = []
+            deprecated = []
+            disabled = []
 
             for trade_pair in TradePair:
-                if trade_pair in unsupported_trade_pairs or trade_pair.is_blocked:
-                    continue
-
-                allowed_trade_pairs.append({
+                entry = {
                     'trade_pair_id': trade_pair.trade_pair_id,
                     'trade_pair': trade_pair.trade_pair,
                     'trade_pair_category': trade_pair.trade_pair_category.value,
                     'trade_pair_source': trade_pair.src.value,
                     'max_leverage': trade_pair.max_leverage,
-                })
+                }
+                if trade_pair.is_blocked or trade_pair in unsupported_trade_pairs:
+                    disabled.append(entry)
+                else:
+                    allowed.append(entry)
 
             for dtp in HL_DYNAMIC_REGISTRY.values():
-                if dtp.is_blocked:
-                    continue
-                allowed_trade_pairs.append({
+                deprecated.append({
                     'trade_pair_id': dtp.trade_pair_id,
                     'trade_pair': dtp.trade_pair,
                     'trade_pair_category': dtp.trade_pair_category.value,
@@ -728,8 +734,12 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 })
 
             return jsonify({
-                'allowed_trade_pairs': allowed_trade_pairs,
-                'total_trade_pairs': len(allowed_trade_pairs),
+                'allowed': allowed,
+                'deprecated': deprecated,
+                'disabled': disabled,
+                'total_allowed': len(allowed),
+                'total_deprecated': len(deprecated),
+                'total_disabled': len(disabled),
                 'timestamp': TimeUtil.now_in_millis(),
             })
         except Exception as e:

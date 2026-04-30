@@ -204,48 +204,73 @@ Returns all the hotkeys as seen in the metagraph from the validator's perspectiv
 
 `GET /trade-pairs`
 
-Returns the currently allowed trading pairs and their maximum leverage limits. This endpoint excludes blocked pairs (e.g., indices, commodities, deprecated forex pairs) and unsupported pairs (e.g., TAOUSD). Use it to discover which `trade_pair_id` values are valid when placing orders and what leverage constraints apply per pair.
+Returns all trade pairs grouped into three categories. Use this endpoint to discover which `trade_pair_id` values are valid for placing orders and what leverage constraints apply per pair.
 
 **Authentication:** None required. Public endpoint.
 
 **Response:**
 ```json
 {
-  "allowed_trade_pairs": [
+  "allowed": [
     {
       "trade_pair_id": "BTCUSD",
       "trade_pair": "BTC/USD",
-      "trade_pair_category": "CRYPTO",
+      "trade_pair_category": "crypto",
+      "trade_pair_source": "vanta",
       "max_leverage": 0.5
     },
     {
-      "trade_pair_id": "ETHUSD",
-      "trade_pair": "ETH/USD",
-      "trade_pair_category": "CRYPTO",
+      "trade_pair_id": "BTCUSDC",
+      "trade_pair": "BTC/USDC",
+      "trade_pair_category": "crypto",
+      "trade_pair_source": "hyperliquid",
       "max_leverage": 0.5
     },
     {
       "trade_pair_id": "EURUSD",
       "trade_pair": "EUR/USD",
-      "trade_pair_category": "FOREX",
+      "trade_pair_category": "forex",
+      "trade_pair_source": "vanta",
       "max_leverage": 5
     }
   ],
-  "allowed_trade_pair_ids": ["BTCUSD", "ETHUSD", "EURUSD", "..."],
-  "total_trade_pairs": 45,
+  "deprecated": [
+    {
+      "trade_pair_id": "HYPEUSDC",
+      "trade_pair": "HYPE/USDC",
+      "trade_pair_category": "crypto",
+      "trade_pair_source": "hyperliquid",
+      "max_leverage": 0.5
+    }
+  ],
+  "disabled": [
+    {
+      "trade_pair_id": "SPX",
+      "trade_pair": "SPX/USD",
+      "trade_pair_category": "indices",
+      "trade_pair_source": "vanta",
+      "max_leverage": 5
+    }
+  ],
+  "total_allowed": 98,
+  "total_deprecated": 3,
+  "total_disabled": 7,
   "timestamp": 1749234567890
 }
 ```
 
 **Response fields:**
-- `allowed_trade_pairs`: Array of objects, each with:
-  - `trade_pair_id`: Identifier to use in order requests (e.g., `"BTCUSD"`)
-  - `trade_pair`: Display format (e.g., `"BTC/USD"`)
-  - `trade_pair_category`: Asset class (`CRYPTO`, `FOREX`, `EQUITIES`, `INDICES`)
-  - `max_leverage`: Maximum allowed leverage for this pair
-- `allowed_trade_pair_ids`: Flat list of valid `trade_pair_id` values
-- `total_trade_pairs`: Count of allowed pairs
+- `allowed`: Trade pairs that can open and close positions. Includes all active Vanta pairs and hardcoded HyperLiquid pairs.
+- `deprecated`: Legacy dynamic HyperLiquid pairs — **close and reduce only**, new positions cannot be opened.
+- `disabled`: Trade pairs that are fully blocked or have no price data — neither opening nor closing is permitted.
 - `timestamp`: Response timestamp in milliseconds
+
+**Per-pair fields:**
+- `trade_pair_id`: Identifier to use in order requests (e.g., `"BTCUSD"`)
+- `trade_pair`: Display format (e.g., `"BTC/USD"`)
+- `trade_pair_category`: Asset class (`crypto`, `forex`, `equities`, `indices`, `commodities`)
+- `trade_pair_source`: Data source — `"vanta"` for standard pairs, `"hyperliquid"` for HL-sourced pairs
+- `max_leverage`: Maximum allowed leverage for this pair
 
 **Example:**
 ```bash
@@ -492,7 +517,11 @@ Retrieve a miner's current collateral balance.
 
 ## Asset Class Selection
 
-The asset class selection endpoint allows miners to permanently select their asset class (forex, crypto). This selection cannot be undone.
+The asset class selection endpoint allows miners to permanently select their asset class. This selection cannot be undone.
+
+Valid asset classes: `crypto`, `forex`, `equities`, `hl_all`.
+
+Miners selecting `hl_all` can trade any HyperLiquid-sourced pair (`trade_pair_source: "hyperliquid"`). All other selections are restricted to Vanta-sourced pairs of the matching category.
 
 ### Asset Selection
 

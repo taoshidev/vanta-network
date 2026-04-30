@@ -49,7 +49,7 @@ Returns the cached dashboard for a Hyperliquid address. The cache is populated i
   "synthetic_hotkey": "5GhDr3xy...abc_0",
   "hl_address": "0xabcd1234...",
   "subaccount_id": 0,
-  "asset_class": "crypto",
+  "asset_class": "hl_all",
   "status": "active",
   "created_at_ms": 1702345678901,
   "eliminated_at_ms": null,
@@ -198,7 +198,7 @@ Authorization: Bearer <api_key>
 ```
 
 **Parameters:**
-- `asset_class` (string, required): `"crypto"`, `"forex"`, or `"equities"`
+- `asset_class` (string, required): `"crypto"`, `"forex"`, `"equities"`, or `"hl_all"`
 - `account_size` (float, required): Account size in USD. Must be positive.
 
 **Success Response (200):**
@@ -270,7 +270,7 @@ Authorization: Bearer <api_key>
 - `account_size` (float, required): Account size in USD. Must be positive.
 - `payout_address` (string, optional): EVM address for USDC payouts (`0x` + 40 hex characters). If omitted, USDC payouts will not be sent for this subaccount.
 
-The `asset_class` is always `"crypto"` for HL-linked subaccounts and does not need to be provided.
+The `asset_class` is always `"hl_all"` for HL-linked subaccounts and does not need to be provided.
 
 **Success Response (200):**
 ```json
@@ -281,7 +281,7 @@ The `asset_class` is always `"crypto"` for HL-linked subaccounts and does not ne
     "subaccount_id": 1,
     "subaccount_uuid": "550e8400-e29b-41d4-a716-446655440001",
     "synthetic_hotkey": "5GhDr3xy...abc_1",
-    "asset_class": "crypto",
+    "asset_class": "hl_all",
     "account_size": 50000.0,
     "status": "active",
     "created_at_ms": 1702345678901,
