@@ -99,6 +99,7 @@ class WebSocketServerClient:
     tier: int = 0
     sequence_number: int = 0
     subscribe_broadcasts: bool = False
+    subscribe_all_dashboard_updates: bool = False
     dashboard_subscriptions: dict[str, DashboardSubscription] = field(default_factory=dict)
 
     async def send(self, message:dict) -> None:
@@ -435,6 +436,11 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                 synthetic_hotkey = self._dashboard_update_queue.get()
                 for client in list(self._clients.values()):
                     subscription = client.dashboard_subscriptions.get(synthetic_hotkey)
+
+                    if (subscription is None) and client.subscribe_all_dashboard_updates:
+                        subscription = DashboardSubscription()
+                        client.dashboard_subscriptions[synthetic_hotkey] = subscription
+
                     if subscription is not None:
                         self._thread_pool.submit(self._send_dashboard_update, synthetic_hotkey, client, subscription)
             except Exception as e:
@@ -585,47 +591,11 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
 
             bt.logging.info(f"WebSocketServer: Client {client_id} authenticated successfully with tier {api_key_tier}")
 
-            # For entity clients (tier >= 200), auto-subscribe to all active subaccounts
-            hl_mappings = {}
-            subscribed_subaccounts = 0
-
-            if api_key_tier >= ValiConfig.SUBACCOUNT_SUBSCRIPTION_TIER:
-                entity_hotkey = self.api_key_to_alias.get(api_key)
-                if entity_hotkey:
-                    try:
-                        loop = asyncio.get_running_loop()
-                        entity_data = await loop.run_in_executor(
-                            self._thread_pool,
-                            self._entity_client.get_entity_data,
-                            entity_hotkey
-                        )
-                        if entity_data:
-                            subaccounts = entity_data.get('subaccounts', {})
-                            for sub_id, sub_info in subaccounts.items():
-                                if sub_info.get('status') not in ('active', 'admin'):
-                                    continue
-                                synthetic_hotkey = sub_info.get('synthetic_hotkey') or f"{entity_hotkey}_{sub_id}"
-                                client.dashboard_subscriptions[synthetic_hotkey] = DashboardSubscription()
-                                subscribed_subaccounts += 1
-                                hl_addr = sub_info.get('hl_address')
-                                if hl_addr:
-                                    hl_mappings[hl_addr] = synthetic_hotkey
-                            if subscribed_subaccounts > 0:
-                                bt.logging.info(
-                                    f"WebSocketServer: Auto-subscribed client {client_id} to "
-                                    f"{subscribed_subaccounts} subaccounts for entity {entity_hotkey}"
-                                )
-                    except Exception as e:
-                        bt.logging.error(f"WebSocketServer: Error auto-subscribing entity {entity_hotkey}: {e}")
-                        bt.logging.error(traceback.format_exc())
-
             await websocket.send(json.dumps({
                 "status": "success",
                 "message": "Authentication successful.",
                 "current_sequence": 0,
                 "tier": api_key_tier,
-                "subscribed_subaccounts": subscribed_subaccounts,
-                "hl_mappings": hl_mappings
             }))
 
             # Process client messages (subscriptions, etc.)
@@ -654,7 +624,7 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                                 "type": "subscription_status",
                                 "status": "success",
                                 "all": True,
-                                "action": "subscribe",
+                                "action": message_type,
                                 "sender_timestamp": data.get("sender_timestamp", 0),
                                 "received_timestamp": TimeUtil.now_in_millis()
                             }))
@@ -668,7 +638,7 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                                 "type": "subscription_status",
                                 "status": "success",
                                 "all": True,
-                                "action": "unsubscribe"
+                                "action": message_type
                             }))
 
                     elif message_type == "subscribe_subaccount":
@@ -682,7 +652,7 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                             await websocket.send(json.dumps({
                                 "type": "subscription_status",
                                 "status": "error",
-                                "action": "subscribe_subaccount",
+                                "action": message_type,
                                 "message": "Missing synthetic_hotkey parameter"
                             }))
                         else:
@@ -705,14 +675,14 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                                 await websocket.send(json.dumps({
                                     "type": "subscription_status",
                                     "status": "success",
-                                    "action": "subscribe_subaccount",
+                                    "action": message_type,
                                     "subscribed_to": synthetic_hotkey
                                 }))
                             elif client.tier < ValiConfig.SUBACCOUNT_SUBSCRIPTION_TIER:
                                 await websocket.send(json.dumps({
                                     "type": "subscription_status",
                                     "status": "error",
-                                    "action": "subscribe_subaccount",
+                                    "action": message_type,
                                     "synthetic_hotkey": synthetic_hotkey,
                                     "message": "Subaccount subscriptions require tier 200 access.",
                                     "code": "INSUFFICIENT_TIER"
@@ -728,7 +698,7 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                                 await websocket.send(json.dumps({
                                     "type": "subscription_status",
                                     "status": "success",
-                                    "action": "subscribe_subaccount",
+                                    "action": message_type,
                                     "subscribed_to": synthetic_hotkey
                                 }))
 
@@ -739,8 +709,38 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                         await websocket.send(json.dumps({
                             "type": "subscription_status",
                             "status": "success",
-                            "action": "unsubscribe_subaccount",
+                            "action": message_type,
                             "synthetic_hotkey": synthetic_hotkey
+                        }))
+
+                    elif message_type == "subscribe_subaccounts":
+                        if client.tier < ValiConfig.SUBACCOUNT_SUBSCRIPTION_TIER:
+                            await websocket.send(json.dumps({
+                                "type": "subscription_status",
+                                "status": "error",
+                                "action": message_type,
+                                "message": "Subaccount subscriptions require tier 200 access.",
+                                "code": "INSUFFICIENT_TIER"
+                            }))
+                        else:
+                            client.subscribe_all_dashboard_updates = True
+                            bt.logging.info(
+                                f"WebSocketServer: Client {client_id} subscribed to all subaccounts")
+                            await websocket.send(json.dumps({
+                                "type": "subscription_status",
+                                "status": "success",
+                                "action": message_type,
+                            }))
+
+                    elif message_type == "unsubscribe_subaccounts":
+                        client.subscribe_all_dashboard_updates = False
+                        client.dashboard_subscriptions.clear()
+                        bt.logging.info(
+                            f"WebSocketServer: Client {client_id} unsubscribed from all subaccounts")
+                        await websocket.send(json.dumps({
+                            "type": "subscription_status",
+                            "status": "success",
+                            "action": message_type,
                         }))
 
                 except websockets.exceptions.ConnectionClosed:
