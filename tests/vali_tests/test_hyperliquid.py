@@ -18,7 +18,8 @@ from unittest.mock import MagicMock, patch
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
 from vali_objects.utils.vali_utils import ValiUtils
-from vali_objects.vali_config import ValiConfig, TradePair, DynamicTradePair
+import os
+from vali_objects.vali_config import ValiConfig, TradePair, TradePairSource, DynamicTradePair
 from time_util.time_util import TimeUtil
 from entity_management.entity_utils import is_synthetic_hotkey, parse_synthetic_hotkey
 from entity_management.hyperliquid_tracker import HyperliquidTracker
@@ -1377,6 +1378,47 @@ class TestHyperliquidTracker(TestBase):
         self.tracker._remember_hl_szi(VALID_HL_ADDRESS, account_state)
         cached = self.tracker._last_observed_szi.get(VALID_HL_ADDRESS.lower())
         self.assertEqual(cached, {"BTC": 1.25, "ETH": -2.0})
+
+
+@unittest.skipUnless(os.environ.get("RUN_NETWORK_TESTS"), "set RUN_NETWORK_TESTS=1 to run live HL API tests")
+class TestHLTickerCoverage(unittest.TestCase):
+    """
+    Live integration test: verify every HL-sourced TradePair resolves to a price on the HL API.
+    Queries allMids for each required dex (default + non-default derived from hl_coin prefixes).
+    Run with: RUN_NETWORK_TESTS=1 python -m pytest tests/vali_tests/test_hyperliquid.py::TestHLTickerCoverage -v
+    """
+
+    def _fetch_all_mids(self) -> dict:
+        import requests
+        url = ValiConfig.hl_info_url()
+        result = {}
+        resp = requests.post(url, json={"type": "allMids"}, timeout=15)
+        resp.raise_for_status()
+        result.update({coin: float(price) for coin, price in resp.json().items()})
+
+        non_default_dexes = {
+            tp.hl_coin.split(":")[0]
+            for tp in TradePair
+            if tp.src == TradePairSource.HYPERLIQUID and ":" in tp.hl_coin
+        }
+        for dex in non_default_dexes:
+            resp = requests.post(url, json={"type": "allMids", "dex": dex}, timeout=15)
+            resp.raise_for_status()
+            result.update({coin: float(price) for coin, price in resp.json().items()})
+        return result
+
+    def test_all_hl_tradepairs_have_price(self):
+        """Every HL-sourced TradePair.hl_coin must appear in allMids."""
+        mids = self._fetch_all_mids()
+        missing = [
+            (tp.trade_pair_id, tp.hl_coin)
+            for tp in TradePair
+            if tp.src == TradePairSource.HYPERLIQUID and tp.hl_coin not in mids
+        ]
+        self.assertFalse(
+            missing,
+            f"HL coins not found in allMids: {missing}"
+        )
 
 
 if __name__ == '__main__':
