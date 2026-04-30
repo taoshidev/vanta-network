@@ -714,6 +714,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             for trade_pair in TradePair:
                 entry = {
                     'trade_pair_id': trade_pair.trade_pair_id,
+                    'hl_coin': trade_pair.hl_coin,
                     'trade_pair': trade_pair.trade_pair,
                     'trade_pair_category': trade_pair.trade_pair_category.value,
                     'trade_pair_source': trade_pair.src.value,
@@ -730,6 +731,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                     continue
                 deprecated.append({
                     'trade_pair_id': dtp.trade_pair_id,
+                    'hl_coin': dtp.hl_coin,
                     'trade_pair': dtp.trade_pair,
                     'trade_pair_category': dtp.trade_pair_category.value,
                     'trade_pair_source': dtp.src.value,
