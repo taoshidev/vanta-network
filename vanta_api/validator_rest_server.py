@@ -724,7 +724,10 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 else:
                     allowed.append(entry)
 
+            allowed_ids = {entry['trade_pair_id'] for entry in allowed}
             for dtp in HL_DYNAMIC_REGISTRY.values():
+                if dtp.trade_pair_id in allowed_ids:
+                    continue
                 deprecated.append({
                     'trade_pair_id': dtp.trade_pair_id,
                     'trade_pair': dtp.trade_pair,
