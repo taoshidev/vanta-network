@@ -260,6 +260,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
         # Account management endpoints
         self.app.route("/miner-account/rebuild/<hotkey>", methods=["POST"])(self.rebuild_miner_account)
+        self.app.route("/wipe/<hotkey>", methods=["POST"])(self.wipe_hotkey)
 
         # Collateral endpoints
         self.app.route("/collateral/deposit", methods=["POST"])(self.deposit_collateral)
@@ -1352,6 +1353,43 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
         except Exception as e:
             bt.logging.error(f"Error rebuilding miner account for {hotkey}: {e}")
+            bt.logging.error(traceback.format_exc())
+            return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+
+    def wipe_hotkey(self, hotkey: str):
+        """
+        Wipe a miner's positions, challenge period status, perf/debt ledgers, and account state.
+        Requires tier 300 access.
+
+        Example:
+        curl -X POST http://localhost:48888/wipe/<hotkey> \\
+          -H "Authorization: Bearer YOUR_API_KEY" \\
+          -H "Content-Type: application/json" \\
+          -d '{
+            "position_uuids_to_delete": [],
+            "position_uuids_to_archive": [],
+            "wipe_positions": false,
+            "reopen_force_closed_orders": false
+          }'
+        """
+        api_key = self._get_api_key_safe()
+        if not self.is_valid_api_key(api_key):
+            return jsonify({'error': 'Unauthorized access'}), 401
+        if not self.can_access_tier(api_key, 300):
+            return jsonify({'error': 'Wipe endpoint requires tier 300 access'}), 403
+
+        try:
+            data = request.get_json(silent=True) or {}
+            result = self._position_client.wipe_hotkey(
+                hotkey,
+                position_uuids_to_delete=data.get('position_uuids_to_delete', []),
+                position_uuids_to_archive=data.get('position_uuids_to_archive', []),
+                wipe_positions=data.get('wipe_positions', False),
+                reopen_force_closed_orders=data.get('reopen_force_closed_orders', False),
+            )
+            return jsonify({'status': 'success', **result})
+        except Exception as e:
+            bt.logging.error(f"Error wiping hotkey {hotkey}: {e}")
             bt.logging.error(traceback.format_exc())
             return jsonify({'error': f'Internal server error: {str(e)}'}), 500
 

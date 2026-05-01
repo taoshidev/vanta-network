@@ -1687,6 +1687,96 @@ class PositionManager:
             return False
         return position.remove_unfilled_order(order_uuid)
 
+    def wipe_hotkey(
+        self,
+        hotkey: str,
+        position_uuids_to_delete: list = None,
+        position_uuids_to_archive: list = None,
+        wipe_positions: bool = False,
+        reopen_force_closed_orders: bool = False,
+    ) -> dict:
+        """
+        Wipe a miner's state: positions, challenge period bucket, perf/debt ledgers, and account.
+
+        Args:
+            hotkey: The miner hotkey to wipe.
+            position_uuids_to_delete: Specific position UUIDs to delete (used when wipe_positions=False).
+            position_uuids_to_archive: Specific position UUIDs to archive (used when wipe_positions=False).
+            wipe_positions: If True, delete all positions. Default False.
+            reopen_force_closed_orders: If True, strip forced-close orders and rebuild. Default False.
+
+        Returns:
+            dict summarising every action taken.
+        """
+        position_uuids_to_delete = set(position_uuids_to_delete or [])
+        position_uuids_to_archive = set(position_uuids_to_archive or [])
+        log = []
+
+        # Remove any active elimination for this hotkey
+        if self._elimination_client:
+            eliminations = self._elimination_client.get_eliminations_from_memory()
+            if any(e['hotkey'] == hotkey for e in eliminations):
+                self._elimination_client.delete_eliminations([hotkey])
+                self._elimination_client.save_eliminations()
+                log.append(f"Removed elimination for {hotkey}")
+
+        # Wipe positions
+        positions = self.get_positions_for_one_hotkey(hotkey, sort_positions=True)
+        self.dedupe_positions(positions, hotkey)
+        positions = self.get_positions_for_one_hotkey(hotkey, sort_positions=True)
+        n_deleted = 0
+        n_archived = 0
+        n_reopened = 0
+        for pos in positions:
+            if wipe_positions:
+                self.delete_position(pos.miner_hotkey, pos.position_uuid)
+                n_deleted += 1
+            elif pos.position_uuid in position_uuids_to_delete:
+                self.delete_position(pos.miner_hotkey, pos.position_uuid)
+                n_deleted += 1
+            elif pos.position_uuid in position_uuids_to_archive:
+                self.archive_positions_for_hotkey(pos.miner_hotkey, [pos])
+                n_archived += 1
+            elif reopen_force_closed_orders:
+                if any(o.src in (1, 3, 12) for o in pos.orders):
+                    pos.orders = [o for o in pos.orders if o.src not in (1, 3, 12)]
+                    pos.rebuild_position_with_updated_orders(self._live_price_client)
+                    self.save_miner_position(pos, validate=False)
+                    n_reopened += 1
+        log.append(f"Positions deleted={n_deleted} archived={n_archived} reopened={n_reopened}")
+
+        # Restore subaccount entity status if erroneously eliminated/failed
+        if is_synthetic_hotkey(hotkey) and self._entity_client:
+            success, msg = self._entity_client.restore_subaccount(hotkey)
+            log.append(f"restore_subaccount: {msg}")
+
+        # Remove from challenge period so next refresh re-adds to correct bucket
+        if self._challenge_period_client and self._challenge_period_client.has_miner(hotkey):
+            self._challenge_period_client.remove_miner(hotkey)
+            self._challenge_period_client._write_challengeperiod_from_memory_to_disk()
+            log.append(f"Removed challenge period entry for {hotkey}")
+
+        # Rebuild account state from remaining positions
+        remaining = self.get_positions_for_one_hotkey(hotkey)
+        original_account = self._miner_account_client.get_account(hotkey) if self._miner_account_client else {}
+        max_return = (original_account or {}).get('max_return', 1)
+        if self._miner_account_client:
+            self._miner_account_client.rebuild_account_state_from_positions(hotkey, remaining, max_return=max_return)
+            log.append("Rebuilt account state")
+
+        # Wipe perf ledger
+        if self._perf_ledger_client:
+            self._perf_ledger_client.wipe_miners_perf_ledgers([hotkey])
+            log.append("Wiped perf ledger")
+
+        # # Wipe debt ledger
+        # if self._debt_ledger_client:
+        #     self._debt_ledger_client.delete_debt_ledger(hotkey)
+        #     log.append("Deleted debt ledger")
+
+        bt.logging.info(f"wipe_hotkey({hotkey}): {'; '.join(log)}")
+        return {'hotkey': hotkey, 'actions': log}
+
     # ==================== Disk I/O Methods ====================
 
     def _write_position_to_disk(self, position: Position):
