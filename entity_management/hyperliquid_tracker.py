@@ -1225,6 +1225,11 @@ class HyperliquidTracker:
             dtp.trade_pair_id: dtp.hl_coin
             for dtp in list(HL_DYNAMIC_REGISTRY.values())
         }
+        trade_pair_to_coin.update({
+            tp.trade_pair_id: tp.hl_coin
+            for tp in TradePair
+            if tp.src == TradePairSource.HYPERLIQUID
+        })
         try:
             open_positions = self._position_client.get_positions_for_one_hotkey(
                 synthetic_hotkey, only_open_positions=True
