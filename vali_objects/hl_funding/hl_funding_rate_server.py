@@ -9,7 +9,7 @@ from typing import Dict, List, Optional
 
 from time_util.time_util import TimeUtil
 from vali_objects.hl_funding.hl_funding_rate_manager import HLFundingRateManager
-from vali_objects.vali_config import ValiConfig, RPCConnectionMode, HL_DYNAMIC_REGISTRY, load_hl_dynamic_registry
+from vali_objects.vali_config import ValiConfig, RPCConnectionMode, HL_DYNAMIC_REGISTRY, load_hl_dynamic_registry, TradePair, TradePairSource
 from shared_objects.rpc.rpc_server_base import RPCServerBase
 
 
@@ -55,13 +55,11 @@ class HLFundingRateServer(RPCServerBase):
             self._backfill()
 
     def _get_coins(self) -> list:
-        """Return all known HL coins, refreshing registry from disk first."""
+        """Return all known HL coins (static TradePairs + dynamic registry union)."""
         load_hl_dynamic_registry()
-        coins = [dtp.hl_coin for dtp in list(HL_DYNAMIC_REGISTRY.values())]
-        if not coins:
-            # Fallback: static 6 coins before any tracker run has written the registry.
-            return list(ValiConfig.TRADE_PAIR_ID_TO_HL_COIN.values())
-        return coins
+        coins = {tp.hl_coin for tp in TradePair if tp.src == TradePairSource.HYPERLIQUID}
+        coins.update(dtp.hl_coin for dtp in HL_DYNAMIC_REGISTRY.values())
+        return list(coins)
 
     def _backfill(self):
         """Backfill the last N hours of funding rates on startup."""

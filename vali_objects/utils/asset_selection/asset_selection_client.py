@@ -22,7 +22,7 @@ Usage:
 from typing import Dict, Optional
 
 from shared_objects.rpc.rpc_client_base import RPCClientBase
-from vali_objects.vali_config import TradePairCategory, ValiConfig, RPCConnectionMode
+from vali_objects.vali_config import TradePairCategory, TradePairSource, ValiConfig, RPCConnectionMode
 import template.protocol
 
 
@@ -94,21 +94,23 @@ class AssetSelectionClient(RPCClientBase):
         self,
         miner_hotkey: str,
         trade_pair_category: TradePairCategory,
-        timestamp_ms: int = None
+        trade_pair_src: TradePairSource,
+        timestamp_ms: int = None,
     ) -> bool:
         """
         Check if a miner is allowed to trade a specific asset class.
 
         Args:
             miner_hotkey: The miner's hotkey
-            trade_pair_category: The trade pair category to check
+            trade_pair_category: The trade pair's category
+            trade_pair_src: The trade pair's source (VANTA or HYPERLIQUID)
             timestamp_ms: Optional timestamp in milliseconds
 
         Returns:
             True if the miner can trade this asset class, False otherwise
         """
         return self._server.validate_order_asset_class_rpc(
-            miner_hotkey, trade_pair_category, timestamp_ms
+            miner_hotkey, trade_pair_category, trade_pair_src, timestamp_ms
         )
 
     def is_valid_asset_class(self, asset_class: str) -> bool:
@@ -269,7 +271,8 @@ class AssetSelectionClient(RPCClientBase):
         self,
         miner_hotkey: str,
         trade_pair_category: TradePairCategory,
-        timestamp_ms: int = None
+        trade_pair_src: TradePairSource,
+        timestamp_ms: int = None,
     ) -> bool:
         """
         Check if a miner is allowed to trade a specific asset class using local cache.
@@ -279,7 +282,8 @@ class AssetSelectionClient(RPCClientBase):
 
         Args:
             miner_hotkey: The miner's hotkey
-            trade_pair_category: The trade pair category to check
+            trade_pair_category: The trade pair's category
+            trade_pair_src: The trade pair's source (VANTA or HYPERLIQUID)
             timestamp_ms: Optional timestamp in milliseconds
 
         Returns:
@@ -289,4 +293,6 @@ class AssetSelectionClient(RPCClientBase):
             selected_asset_class = self._local_cache.get(miner_hotkey)
             if selected_asset_class is None:
                 return False
-            return selected_asset_class == trade_pair_category
+            if selected_asset_class == TradePairCategory.HL_ALL:
+                return trade_pair_src == TradePairSource.HYPERLIQUID
+            return trade_pair_src == TradePairSource.VANTA and selected_asset_class == trade_pair_category

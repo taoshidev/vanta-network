@@ -5,7 +5,7 @@ from tests.vali_tests.base_objects.test_base import TestBase
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from vali_objects.utils.asset_selection.asset_selection_manager import ASSET_CLASS_SELECTION_TIME_MS
 from vali_objects.utils.vali_utils import ValiUtils
-from vali_objects.vali_config import TradePairCategory, TradePair
+from vali_objects.vali_config import TradePairCategory, TradePairSource, TradePair
 from time_util.time_util import TimeUtil
 
 
@@ -89,6 +89,14 @@ class TestAssetSelectionManager(TestBase):
         self.assertTrue(self.asset_selection_client.is_valid_asset_class('Forex'))
 
         # Invalid asset classes
+        # hl_all is selectable
+        self.assertTrue(self.asset_selection_client.is_valid_asset_class('hl_all'))
+        self.assertTrue(self.asset_selection_client.is_valid_asset_class('HL_ALL'))
+
+        # commodities is selectable
+        self.assertTrue(self.asset_selection_client.is_valid_asset_class('commodities'))
+
+        # Invalid asset classes
         self.assertFalse(self.asset_selection_client.is_valid_asset_class('invalid'))
         self.assertFalse(self.asset_selection_client.is_valid_asset_class('stocks'))
         self.assertFalse(self.asset_selection_client.is_valid_asset_class(''))
@@ -111,7 +119,7 @@ class TestAssetSelectionManager(TestBase):
 
         self.assertFalse(result['successfully_processed'])
         self.assertIn('Invalid asset class', result['error_message'])
-        self.assertIn('crypto, forex, indices, equities', result['error_message'])
+        self.assertIn('hl_all', result['error_message'])
 
         # Verify no selection was stored
         selections = self.asset_selection_client.get_asset_selections()
@@ -160,13 +168,13 @@ class TestAssetSelectionManager(TestBase):
 
         # Orders before cutoff should be allowed for any asset class
         self.assertTrue(self.asset_selection_client.validate_order_asset_class(
-            self.test_miner_1, TradePairCategory.CRYPTO, self.before_cutoff_time))
+            self.test_miner_1, TradePairCategory.CRYPTO, TradePairSource.VANTA, self.before_cutoff_time))
         self.assertTrue(self.asset_selection_client.validate_order_asset_class(
-            self.test_miner_1, TradePairCategory.FOREX, self.before_cutoff_time))
+            self.test_miner_1, TradePairCategory.FOREX, TradePairSource.VANTA, self.before_cutoff_time))
         self.assertTrue(self.asset_selection_client.validate_order_asset_class(
-            self.test_miner_1, TradePairCategory.INDICES, self.before_cutoff_time))
+            self.test_miner_1, TradePairCategory.INDICES, TradePairSource.VANTA, self.before_cutoff_time))
         self.assertTrue(self.asset_selection_client.validate_order_asset_class(
-            self.test_miner_1, TradePairCategory.EQUITIES, self.before_cutoff_time))
+            self.test_miner_1, TradePairCategory.EQUITIES, TradePairSource.VANTA, self.before_cutoff_time))
 
     def test_validate_order_asset_class_after_cutoff_no_selection(self):
         """Test that orders after cutoff require asset class selection"""
@@ -174,9 +182,9 @@ class TestAssetSelectionManager(TestBase):
 
         # Orders after cutoff should be rejected if no selection made
         self.assertFalse(self.asset_selection_client.validate_order_asset_class(
-            self.test_miner_1, TradePairCategory.CRYPTO, self.after_cutoff_time))
+            self.test_miner_1, TradePairCategory.CRYPTO, TradePairSource.VANTA, self.after_cutoff_time))
         self.assertFalse(self.asset_selection_client.validate_order_asset_class(
-            self.test_miner_1, TradePairCategory.FOREX, self.after_cutoff_time))
+            self.test_miner_1, TradePairCategory.FOREX, TradePairSource.VANTA, self.after_cutoff_time))
 
     def test_validate_order_asset_class_after_cutoff_with_selection(self):
         """Test that orders after cutoff are validated against selected asset class"""
@@ -185,15 +193,19 @@ class TestAssetSelectionManager(TestBase):
 
         # Orders matching selected asset class should be allowed
         self.assertTrue(self.asset_selection_client.validate_order_asset_class(
-            self.test_miner_1, TradePairCategory.CRYPTO, self.after_cutoff_time))
+            self.test_miner_1, TradePairCategory.CRYPTO, TradePairSource.VANTA, self.after_cutoff_time))
+
+        # HL pair with crypto selection → rejected (wrong source)
+        self.assertFalse(self.asset_selection_client.validate_order_asset_class(
+            self.test_miner_1, TradePairCategory.CRYPTO, TradePairSource.HYPERLIQUID, self.after_cutoff_time))
 
         # Orders not matching selected asset class should be rejected
         self.assertFalse(self.asset_selection_client.validate_order_asset_class(
-            self.test_miner_1, TradePairCategory.FOREX, self.after_cutoff_time))
+            self.test_miner_1, TradePairCategory.FOREX, TradePairSource.VANTA, self.after_cutoff_time))
         self.assertFalse(self.asset_selection_client.validate_order_asset_class(
-            self.test_miner_1, TradePairCategory.INDICES, self.after_cutoff_time))
+            self.test_miner_1, TradePairCategory.INDICES, TradePairSource.VANTA, self.after_cutoff_time))
         self.assertFalse(self.asset_selection_client.validate_order_asset_class(
-            self.test_miner_1, TradePairCategory.EQUITIES, self.after_cutoff_time))
+            self.test_miner_1, TradePairCategory.EQUITIES, TradePairSource.VANTA, self.after_cutoff_time))
 
     def test_validate_order_asset_class_with_current_time(self):
         """Test validate_order_asset_class with current time (no timestamp provided)"""
@@ -203,30 +215,59 @@ class TestAssetSelectionManager(TestBase):
         with patch.object(TimeUtil, 'now_in_millis', return_value=self.after_cutoff_time):
             # Should validate against selected asset class
             self.assertTrue(self.asset_selection_client.validate_order_asset_class(
-                self.test_miner_1, TradePairCategory.FOREX))
+                self.test_miner_1, TradePairCategory.FOREX, TradePairSource.VANTA))
             self.assertFalse(self.asset_selection_client.validate_order_asset_class(
-                self.test_miner_1, TradePairCategory.CRYPTO))
+                self.test_miner_1, TradePairCategory.CRYPTO, TradePairSource.VANTA))
 
     def test_validate_order_different_trade_pairs_same_asset_class(self):
         """Test that different trade pairs from same asset class are allowed"""
         # Select crypto
         self.asset_selection_client.process_asset_selection_request('crypto', self.test_miner_1)
 
-        # All crypto trade pairs should be allowed
+        # All Vanta crypto trade pairs should be allowed
         self.assertTrue(self.asset_selection_client.validate_order_asset_class(
-            self.test_miner_1, TradePair.BTCUSD.trade_pair_category, self.after_cutoff_time))
+            self.test_miner_1, TradePair.BTCUSD.trade_pair_category, TradePair.BTCUSD.src, self.after_cutoff_time))
         self.assertTrue(self.asset_selection_client.validate_order_asset_class(
-            self.test_miner_1, TradePair.ETHUSD.trade_pair_category, self.after_cutoff_time))
+            self.test_miner_1, TradePair.ETHUSD.trade_pair_category, TradePair.ETHUSD.src, self.after_cutoff_time))
         self.assertTrue(self.asset_selection_client.validate_order_asset_class(
-            self.test_miner_1, TradePair.SOLUSD.trade_pair_category, self.after_cutoff_time))
+            self.test_miner_1, TradePair.SOLUSD.trade_pair_category, TradePair.SOLUSD.src, self.after_cutoff_time))
+
+        # HL crypto pairs should be rejected for a crypto-selected miner
+        self.assertFalse(self.asset_selection_client.validate_order_asset_class(
+            self.test_miner_1, TradePair.BTCUSDC.trade_pair_category, TradePair.BTCUSDC.src, self.after_cutoff_time))
 
         # Forex trade pairs should be rejected
         self.assertFalse(self.asset_selection_client.validate_order_asset_class(
-            self.test_miner_1, TradePair.EURUSD.trade_pair_category, self.after_cutoff_time))
+            self.test_miner_1, TradePair.EURUSD.trade_pair_category, TradePair.EURUSD.src, self.after_cutoff_time))
         self.assertFalse(self.asset_selection_client.validate_order_asset_class(
-            self.test_miner_1, TradePair.GBPUSD.trade_pair_category, self.after_cutoff_time))
+            self.test_miner_1, TradePair.GBPUSD.trade_pair_category, TradePair.GBPUSD.src, self.after_cutoff_time))
 
         
+    def test_hl_all_selection_allows_hl_pairs(self):
+        """hl_all selection permits HL pairs and blocks Vanta pairs"""
+        self.asset_selection_client.process_asset_selection_request('hl_all', self.test_miner_1)
+
+        # HL pairs allowed
+        self.assertTrue(self.asset_selection_client.validate_order_asset_class(
+            self.test_miner_1, TradePair.BTCUSDC.trade_pair_category, TradePairSource.HYPERLIQUID, self.after_cutoff_time))
+        self.assertTrue(self.asset_selection_client.validate_order_asset_class(
+            self.test_miner_1, TradePair.GOLDUSDC.trade_pair_category, TradePairSource.HYPERLIQUID, self.after_cutoff_time))
+        self.assertTrue(self.asset_selection_client.validate_order_asset_class(
+            self.test_miner_1, TradePair.NVDAUSDC.trade_pair_category, TradePairSource.HYPERLIQUID, self.after_cutoff_time))
+
+        # Vanta pairs blocked
+        self.assertFalse(self.asset_selection_client.validate_order_asset_class(
+            self.test_miner_1, TradePair.BTCUSD.trade_pair_category, TradePairSource.VANTA, self.after_cutoff_time))
+        self.assertFalse(self.asset_selection_client.validate_order_asset_class(
+            self.test_miner_1, TradePair.EURUSD.trade_pair_category, TradePairSource.VANTA, self.after_cutoff_time))
+
+    def test_commodities_selectable(self):
+        """commodities can be selected as a standalone asset class"""
+        result = self.asset_selection_client.process_asset_selection_request('commodities', self.test_miner_1)
+        self.assertTrue(result['successfully_processed'])
+        selections = self.asset_selection_client.get_asset_selections()
+        self.assertEqual(selections[self.test_miner_1], TradePairCategory.COMMODITIES)
+
     def test_data_format_conversion(self):
         """Test conversion between in-memory and disk formats"""
         # Add test selections

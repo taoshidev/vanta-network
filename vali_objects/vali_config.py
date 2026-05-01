@@ -45,6 +45,8 @@ class TradePairCategory(str, Enum):
     FOREX = "forex"
     INDICES = "indices"
     EQUITIES = "equities"
+    COMMODITIES = "commodities"
+    HL_ALL = "hl_all"            # Asset-selection token only, enables trading all categories for hyperliquid
 
 
 class TradePairSource(str, Enum):
@@ -347,15 +349,12 @@ class ValiConfig:
     HS_MAX_LEVERAGE = 1.0               # HS max leverage for standard-tier instruments (funded accounts)
     HS_PORTFOLIO_MAX_LEVERAGE = 4.0     # HS portfolio-level leverage cap (funded accounts)
     HS_MIN_LEVERAGE = 0.01              # HS minimum leverage for any DynamicTradePair position
-    HL_MIN_LIQUIDITY_USD = 2_000_000    # 30-day mean daily USD volume threshold
-    HL_LIQUIDITY_LOOKBACK_DAYS = 30     # days of daily candles used to compute mean(v × close)
-    HL_UNIVERSE_REFRESH_INTERVAL_S = 86_400  # refresh once daily
-    HL_EXCLUDED_ASSETS = {"EUR", "JPY"}  # forex pairs on HL excluded for now
 
     # Minimum position size limits
-    FOREX_MIN_POSITION_SIZE_LOTS = 0.01        # micro lot — subaccounts > $10K
-    FOREX_MIN_POSITION_SIZE_LOTS_NANO = 0.001  # nano lot  — subaccounts ≤ $10K
-    FOREX_SMALL_ACCOUNT_THRESHOLD = 10_000.0   # USD; subaccounts at or below this use nano lot minimum
+    FOREX_MIN_POSITION_SIZE_LOTS = 0.01            # micro lot — subaccounts above FOREX_SMALL_ACCOUNT_THRESHOLD
+    FOREX_MIN_POSITION_SIZE_LOTS_NANO = 0.001      # nano lot — deprecated; no account tier currently uses this
+    FOREX_MIN_POSITION_SIZE_LOTS_SUB_NANO = 0.0001 # sub-nano lot — subaccounts at or below FOREX_SMALL_ACCOUNT_THRESHOLD
+    FOREX_SMALL_ACCOUNT_THRESHOLD = 10_000.0       # USD; subaccounts at or below this use sub-nano lot minimum
     CRYPTO_MIN_POSITION_SIZE_USD = 10.0  # $10 USD
     EQUITIES_MIN_POSITION_SIZE_SHARES = 0.01 # 0.01 shares
 
@@ -544,7 +543,7 @@ class ValiConfig:
     # XAUUSD/XAGUSD (gold/silver) use the 'COMMODITIES' key despite being in TradePairCategory.FOREX;
     # they share the FOREX portfolio cap but have their own positional column.
     TIER_POSITIONAL_LEVERAGE = {
-        1: {TradePairCategory.CRYPTO: 0.5,  TradePairCategory.FOREX: 2.5,  TradePairCategory.EQUITIES: 0.5, TradePairCategory.INDICES: 2.5,  'COMMODITIES': 0.5},
+        1: {TradePairCategory.CRYPTO: 0.5,  TradePairCategory.FOREX: 2.5,  TradePairCategory.EQUITIES: 0.5, TradePairCategory.INDICES: 2.5,  'COMMODITIES': 1.0},
         2: {TradePairCategory.CRYPTO: 1.0,  TradePairCategory.FOREX: 5.0,  TradePairCategory.EQUITIES: 1.0, TradePairCategory.INDICES: 5.0,  'COMMODITIES': 1.0},
         3: {TradePairCategory.CRYPTO: 1.5,  TradePairCategory.FOREX: 7.5,  TradePairCategory.EQUITIES: 1.5, TradePairCategory.INDICES: 7.5,  'COMMODITIES': 1.5},
         4: {TradePairCategory.CRYPTO: 2.0,  TradePairCategory.FOREX: 10.0, TradePairCategory.EQUITIES: 2.0, TradePairCategory.INDICES: 10.0, 'COMMODITIES': 2.0},
@@ -554,7 +553,7 @@ class ValiConfig:
     # XAUUSD/XAGUSD share the TradePairCategory.FOREX portfolio cap.
     # Equity portfolio is intentionally capped at 2x from Tier 3 onward (Reg T overnight limit).
     TIER_PORTFOLIO_LEVERAGE = {
-        1: {TradePairCategory.CRYPTO: 1.0,  TradePairCategory.FOREX: 5.0,  TradePairCategory.EQUITIES: 1.0, TradePairCategory.INDICES: 5.0},
+        1: {TradePairCategory.CRYPTO: 2.0,  TradePairCategory.FOREX: 5.0,  TradePairCategory.EQUITIES: 1.0, TradePairCategory.INDICES: 5.0},
         2: {TradePairCategory.CRYPTO: 2.0,  TradePairCategory.FOREX: 10.0, TradePairCategory.EQUITIES: 1.5, TradePairCategory.INDICES: 10.0},
         3: {TradePairCategory.CRYPTO: 3.0,  TradePairCategory.FOREX: 15.0, TradePairCategory.EQUITIES: 2.0, TradePairCategory.INDICES: 15.0},
         4: {TradePairCategory.CRYPTO: 4.0,  TradePairCategory.FOREX: 20.0, TradePairCategory.EQUITIES: 2.0, TradePairCategory.INDICES: 20.0},
@@ -624,14 +623,6 @@ class ValiConfig:
     # We subscribe at coarse and full resolution on separate shards and combine them.
     HL_L2_COARSE_SIG_FIGS = 2
 
-    TRADE_PAIR_ID_TO_HL_COIN = {
-        "BTCUSD": "BTC", "ETHUSD": "ETH", "SOLUSD": "SOL",
-        "XRPUSD": "XRP", "DOGEUSD": "DOGE", "ADAUSD": "ADA",
-        "TAOUSD": "TAO", "HYPEUSD": "HYPE", "ZECUSD": "ZEC",
-        "BCHUSD": "BCH", "LINKUSD": "LINK", "XMRUSD": "XMR",
-        "LTCUSD": "LTC"
-    }
-
     # HL fee constants
     HL_TAKER_FEE = 0.00045    # 0.045%
     HL_MAKER_FEE = 0.00015    # 0.015%
@@ -695,6 +686,7 @@ class DynamicTradePair:
     is_forex: bool = False
     is_equities: bool = False
     is_indices: bool = False
+    is_commodities: bool = False
     is_blocked: bool = False
     lot_size: int = 1
     src: TradePairSource = TradePairSource.HYPERLIQUID
@@ -723,6 +715,7 @@ class DynamicTradePair:
 
 
 class TradePair(Enum):
+    # Vanta Native Trade Pairs
     # crypto
     BTCUSD = ["BTCUSD", "BTC/USD", 0.001, ValiConfig.CRYPTO_MIN_LEVERAGE, ValiConfig.CRYPTO_MAX_LEVERAGE,
               TradePairCategory.CRYPTO, CryptoSubcategory.MAJORS]
@@ -901,6 +894,75 @@ class TradePair(Enum):
     GDAXI = ["GDAXI", "GDAXI", 0.00009, ValiConfig.INDICES_MIN_LEVERAGE, ValiConfig.INDICES_MAX_LEVERAGE,
              TradePairCategory.INDICES]
 
+    # Hyperliquid Trade Pairs (USDC-quoted, src=HYPERLIQUID)
+    # Crypto perp futures
+    BTCUSDC   = ["BTCUSDC",   "BTC/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
+    ETHUSDC   = ["ETHUSDC",   "ETH/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
+    SOLUSDC   = ["SOLUSDC",   "SOL/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
+    BNBUSDC   = ["BNBUSDC",   "BNB/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
+    XRPUSDC   = ["XRPUSDC",   "XRP/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
+    DOGEUSDC  = ["DOGEUSDC",  "DOGE/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
+    ADAUSDC   = ["ADAUSDC",   "ADA/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
+    AVAXUSDC  = ["AVAXUSDC",  "AVAX/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
+    LINKUSDC  = ["LINKUSDC",  "LINK/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
+    DOTUSDC   = ["DOTUSDC",   "DOT/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
+    TONUSDC   = ["TONUSDC",   "TON/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
+    TRXUSDC   = ["TRXUSDC",   "TRX/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
+    LTCUSDC   = ["LTCUSDC",   "LTC/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
+    TAOUSDC   = ["TAOUSDC",   "TAO/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
+    SUIUSDC   = ["SUIUSDC",   "SUI/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
+    ARBUSDC   = ["ARBUSDC",   "ARB/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
+    NEARUSDC  = ["NEARUSDC",  "NEAR/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
+    ALGOUSDC  = ["ALGOUSDC",  "ALGO/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
+    ASTERUSDC = ["ASTERUSDC", "ASTER/USDC", 0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
+    UNIUSDC   = ["UNIUSDC",   "UNI/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
+    AAVEUSDC  = ["AAVEUSDC",  "AAVE/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
+    CRVUSDC   = ["CRVUSDC",   "CRV/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
+    HYPEUSDC  = ["HYPEUSDC",  "HYPE/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
+    XMRUSDC   = ["XMRUSDC",   "XMR/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
+    ZECUSDC   = ["ZECUSDC",   "ZEC/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
+    PAXGUSDC  = ["PAXGUSDC",  "PAXG/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
+    ENAUSDC   = ["ENAUSDC",   "ENA/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
+    ZROUSDC   = ["ZROUSDC",   "ZRO/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
+    WLDUSDC   = ["WLDUSDC",   "WLD/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
+    PUMPUSDC  = ["PUMPUSDC",  "PUMP/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
+    KPEPEUSDC = ["kPEPEUSDC", "kPEPE/USDC", 0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
+
+    # Commodity perp futures (synthetic, track commodity prices — not physical delivery)
+    WTIOILUSDC   = ["WTIOILUSDC",   "WTIOIL/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.COMMODITIES, None, TradePairSource.HYPERLIQUID, "xyz:CL"]
+    BRENTOILUSDC = ["BRENTOILUSDC", "BRENTOIL/USDC", 0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.COMMODITIES, None, TradePairSource.HYPERLIQUID, "xyz:BRENTOIL"]
+    GOLDUSDC     = ["GOLDUSDC",     "GOLD/USDC",     0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.COMMODITIES, None, TradePairSource.HYPERLIQUID, "xyz:GOLD"]
+    SILVERUSDC   = ["SILVERUSDC",   "SILVER/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.COMMODITIES, None, TradePairSource.HYPERLIQUID, "xyz:SILVER"]
+    COPPERUSDC   = ["COPPERUSDC",   "COPPER/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.COMMODITIES, None, TradePairSource.HYPERLIQUID, "xyz:COPPER"]
+    NATGASUSDC   = ["NATGASUSDC",   "NATGAS/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.COMMODITIES, None, TradePairSource.HYPERLIQUID, "xyz:NATGAS"]
+    PLATINUMUSDC = ["PLATINUMUSDC", "PLATINUM/USDC", 0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.COMMODITIES, None, TradePairSource.HYPERLIQUID, "xyz:PLATINUM"]
+
+    # Index perp futures (synthetic, track equity index prices — not ETFs)
+    SP500USDC  = ["SP500USDC",  "SP500/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.INDICES, None, TradePairSource.HYPERLIQUID, "xyz:SP500"]
+    XYZ100USDC = ["XYZ100USDC", "XYZ100/USDC", 0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.INDICES, None, TradePairSource.HYPERLIQUID, "xyz:XYZ100"]
+    EWYUSDC    = ["EWYUSDC",    "EWY/USDC",    0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.INDICES, None, TradePairSource.HYPERLIQUID, "xyz:EWY"]
+
+    # Equity perp futures (synthetic, track single-stock prices — not actual shares)
+    NVDAUSDC  = ["NVDAUSDC",  "NVDA/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.EQUITIES, None, TradePairSource.HYPERLIQUID, "xyz:NVDA"]
+    AAPLUSDC  = ["AAPLUSDC",  "AAPL/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.EQUITIES, None, TradePairSource.HYPERLIQUID, "xyz:AAPL"]
+    TSLAUSDC  = ["TSLAUSDC",  "TSLA/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.EQUITIES, None, TradePairSource.HYPERLIQUID, "xyz:TSLA"]
+    MSFTUSDC  = ["MSFTUSDC",  "MSFT/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.EQUITIES, None, TradePairSource.HYPERLIQUID, "xyz:MSFT"]
+    AMZNUSDC  = ["AMZNUSDC",  "AMZN/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.EQUITIES, None, TradePairSource.HYPERLIQUID, "xyz:AMZN"]
+    GOOGLUSDC = ["GOOGLUSDC", "GOOGL/USDC", 0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.EQUITIES, None, TradePairSource.HYPERLIQUID, "xyz:GOOGL"]
+    METAUSDC  = ["METAUSDC",  "META/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.EQUITIES, None, TradePairSource.HYPERLIQUID, "xyz:META"]
+    COINUSDC  = ["COINUSDC",  "COIN/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.EQUITIES, None, TradePairSource.HYPERLIQUID, "xyz:COIN"]
+    CRCLUSDC  = ["CRCLUSDC",  "CRCL/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.EQUITIES, None, TradePairSource.HYPERLIQUID, "xyz:CRCL"]
+    MSTRUSDC  = ["MSTRUSDC",  "MSTR/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.EQUITIES, None, TradePairSource.HYPERLIQUID, "xyz:MSTR"]
+    PLTRUSDC  = ["PLTRUSDC",  "PLTR/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.EQUITIES, None, TradePairSource.HYPERLIQUID, "xyz:PLTR"]
+    AMDUSDC   = ["AMDUSDC",   "AMD/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.EQUITIES, None, TradePairSource.HYPERLIQUID, "xyz:AMD"]
+    TSMUSDC   = ["TSMUSDC",   "TSM/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.EQUITIES, None, TradePairSource.HYPERLIQUID, "xyz:TSM"]
+    NFLXUSDC  = ["NFLXUSDC",  "NFLX/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.EQUITIES, None, TradePairSource.HYPERLIQUID, "xyz:NFLX"]
+    SNDKUSDC  = ["SNDKUSDC",  "SNDK/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.EQUITIES, None, TradePairSource.HYPERLIQUID, "xyz:SNDK"]
+    INTCUSDC  = ["INTCUSDC",  "INTC/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.EQUITIES, None, TradePairSource.HYPERLIQUID, "xyz:INTC"]
+    MUUSDC    = ["MUUSDC",    "MU/USDC",    0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.EQUITIES, None, TradePairSource.HYPERLIQUID, "xyz:MU"]
+    HOODUSDC  = ["HOODUSDC",  "HOOD/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.EQUITIES, None, TradePairSource.HYPERLIQUID, "xyz:HOOD"]
+    ORCLUSDC  = ["ORCLUSDC",  "ORCL/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.EQUITIES, None, TradePairSource.HYPERLIQUID, "xyz:ORCL"]
+
     @property
     def trade_pair_id(self):
         return self.value[0]
@@ -932,8 +994,12 @@ class TradePair(Enum):
         return None
 
     @property
-    def src(self):
-        return TradePairSource.VANTA
+    def src(self) -> TradePairSource:
+        return self.value[7] if len(self.value) > 7 else TradePairSource.VANTA
+
+    @property
+    def hl_coin(self) -> str:
+        return self.value[8] if len(self.value) > 8 else self.base
 
     @property
     def is_crypto(self):
@@ -952,6 +1018,10 @@ class TradePair(Enum):
         return self.trade_pair_category == TradePairCategory.INDICES
 
     @property
+    def is_commodities(self):
+        return self.trade_pair_category == TradePairCategory.COMMODITIES
+
+    @property
     def is_blocked(self) -> bool:
         """Check if this trade pair is blocked from trading"""
         return self.trade_pair_id in ValiConfig.BLOCKED_TRADE_PAIR_IDS
@@ -967,7 +1037,8 @@ class TradePair(Enum):
         trade_pair_lot_size = {TradePairCategory.CRYPTO: 1,
                                TradePairCategory.FOREX: 100_000,
                                TradePairCategory.INDICES: 1,
-                               TradePairCategory.EQUITIES: 1}
+                               TradePairCategory.EQUITIES: 1,
+                               TradePairCategory.COMMODITIES: 1}
         return trade_pair_lot_size[self.trade_pair_category]
 
     @property
@@ -976,10 +1047,8 @@ class TradePair(Enum):
 
     @property
     def quote(self):
-        if self.is_forex:
-            return self.trade_pair.split("/")[1]
-        else:
-            return "USD"
+        parts = self.trade_pair.split("/")
+        return parts[1] if len(parts) > 1 else "USD"
 
     @classmethod
     def categories(cls):
@@ -1067,6 +1136,9 @@ class TradePair(Enum):
 
 TRADE_PAIR_ID_TO_TRADE_PAIR = {x.trade_pair_id: x for x in TradePair}
 TRADE_PAIR_STR_TO_TRADE_PAIR = {x.trade_pair: x for x in TradePair}
+HL_COIN_TO_TRADE_PAIR: dict[str, TradePair] = {
+    tp.hl_coin: tp for tp in TradePair if tp.src == TradePairSource.HYPERLIQUID
+}
 
 # Set UNSUPPORTED_TRADE_PAIRS now that TradePair enum is defined
 # These are trade pairs that have no price data available (not just temporarily halted)

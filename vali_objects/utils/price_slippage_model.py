@@ -87,6 +87,10 @@ class PriceSlippageModel:
             slippage_percentage = cls.calc_slippage_forex(bid, ask, order)
         elif trade_pair.is_crypto:
             slippage_percentage = cls.calc_slippage_crypto(order, capital)
+        elif trade_pair.is_commodities or trade_pair.is_indices:
+            # HL commodity/index slippage is pre-computed from the L2 orderbook and stored on the order.
+            # This branch is a fallback (e.g. limit order fills) — a dedicated model should be added here.
+            slippage_percentage = 0.0
         else:
             raise ValueError(f"Invalid trade pair {trade_pair.trade_pair_id} to calculate slippage")
         return float(np.clip(slippage_percentage, 0.0, 0.03))

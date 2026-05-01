@@ -345,6 +345,23 @@ class PositionManagerServer(RPCServerBase):
             hotkey, positions=positions, archive_all=archive_all
         )
 
+    def wipe_hotkey_rpc(
+        self,
+        hotkey: str,
+        position_uuids_to_delete: list = None,
+        position_uuids_to_archive: list = None,
+        wipe_positions: bool = False,
+        reopen_force_closed_orders: bool = False,
+    ) -> dict:
+        """Wipe a miner's state - delegates to manager."""
+        return self._manager.wipe_hotkey(
+            hotkey,
+            position_uuids_to_delete=position_uuids_to_delete,
+            position_uuids_to_archive=position_uuids_to_archive,
+            wipe_positions=wipe_positions,
+            reopen_force_closed_orders=reopen_force_closed_orders,
+        )
+
     def remove_bracket_order_from_position_rpc(self, miner_hotkey: str, trade_pair_id: str, order_uuid: str) -> bool:
         """
         Remove a bracket order from a position - delegates to manager.

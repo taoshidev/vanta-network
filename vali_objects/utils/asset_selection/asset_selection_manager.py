@@ -17,7 +17,7 @@ import bittensor as bt
 
 import template.protocol
 from time_util.time_util import TimeUtil
-from vali_objects.vali_config import TradePairCategory, RPCConnectionMode
+from vali_objects.vali_config import TradePairCategory, TradePairSource, RPCConnectionMode
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.validator_broadcast_base import ValidatorBroadcastBase
@@ -188,21 +188,22 @@ class AssetSelectionManager(ValidatorBroadcastBase):
         Returns:
             True if valid, False otherwise
         """
-        valid_asset_classes = [category.value for category in TradePairCategory]
-        return asset_class.lower() in [cls.lower() for cls in valid_asset_classes]
+        return asset_class.lower() in {c.value for c in TradePairCategory}
 
     def validate_order_asset_class(
         self,
         miner_hotkey: str,
         trade_pair_category: TradePairCategory,
-        timestamp_ms: int = None
+        trade_pair_src: TradePairSource,
+        timestamp_ms: int = None,
     ) -> bool:
         """
         Check if a miner is allowed to trade a specific asset class.
 
         Args:
             miner_hotkey: The miner's hotkey
-            trade_pair_category: The trade pair category to check
+            trade_pair_category: The trade pair's category
+            trade_pair_src: The trade pair's source (VANTA or HYPERLIQUID)
             timestamp_ms: Optional timestamp in milliseconds
 
         Returns:
@@ -213,15 +214,13 @@ class AssetSelectionManager(ValidatorBroadcastBase):
         if timestamp_ms < ASSET_CLASS_SELECTION_TIME_MS:
             return True
 
-        # FIX: Protect read with lock to prevent TOCTOU race
-        # Without lock, could read empty dict during sync or get stale data
         with self._asset_selection_lock:
-            selected_asset_class = self.asset_selections.get(miner_hotkey, None)
-            if selected_asset_class is None:
+            selected = self.asset_selections.get(miner_hotkey)
+            if selected is None:
                 return False
-
-            # Check if the selected asset class matches the trade pair category
-            return selected_asset_class == trade_pair_category
+            if selected == TradePairCategory.HL_ALL:
+                return trade_pair_src == TradePairSource.HYPERLIQUID
+            return trade_pair_src == TradePairSource.VANTA and selected == trade_pair_category
 
     def get_asset_selections(self) -> Dict[str, TradePairCategory]:
         """
@@ -283,7 +282,7 @@ class AssetSelectionManager(ValidatorBroadcastBase):
         try:
             # Validate asset class (read-only, safe outside lock)
             if not self.is_valid_asset_class(asset_selection):
-                valid_classes = [category.value for category in TradePairCategory]
+                valid_classes = [c.value for c in TradePairCategory]
                 return {
                     'successfully_processed': False,
                     'error_message': f'Invalid asset class. Valid options are: {", ".join(valid_classes)}'

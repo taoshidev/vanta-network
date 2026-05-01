@@ -650,7 +650,7 @@ class EntityManager(ValidatorBroadcastBase):
         entity_hotkey: str,
         account_size: float,
         hl_address: str,
-        asset_class: str = "crypto",
+        asset_class: str = "hl_all",
         admin: bool = False,
         payout_address: Optional[str] = None
     ) -> Tuple[bool, Optional[SubaccountInfo], str]:
@@ -664,7 +664,7 @@ class EntityManager(ValidatorBroadcastBase):
             entity_hotkey: The VANTA_ENTITY_HOTKEY
             account_size: Account size in USD
             hl_address: Hyperliquid address (0x-prefixed, 40 hex chars)
-            asset_class: Asset class selection (default: "crypto")
+            asset_class: Asset class selection (default: "hl_all")
             admin: If True, skip collateral slashing
             payout_address: Optional EVM address for payouts (0x-prefixed, 40 hex chars)
 
@@ -1497,7 +1497,7 @@ class EntityManager(ValidatorBroadcastBase):
                 asset_class = (subaccount.asset_class or '').lower()
                 target_return = (
                     ValiConfig.SUBACCOUNT_CRYPTO_CHALLENGE_RETURNS_THRESHOLD
-                    if asset_class == TradePairCategory.CRYPTO.value
+                    if asset_class in (TradePairCategory.CRYPTO.value, TradePairCategory.HL_ALL.value)
                     else ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD
                 )
 

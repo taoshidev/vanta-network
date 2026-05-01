@@ -12,7 +12,7 @@ import websockets
 from data_generator.base_data_service import BaseDataService, HYPERLIQUID_PROVIDER_NAME
 from entity_management.hl_orderbook_utils import simulate_fill
 from time_util.time_util import TimeUtil
-from vali_objects.vali_config import TradePair, TradePairCategory, TradePairLike, ValiConfig
+from vali_objects.vali_config import TradePair, TradePairCategory, TradePairLike, TradePairSource, ValiConfig
 from vali_objects.vali_dataclasses.price_source import PriceSource
 from vali_objects.vali_dataclasses.recent_event_tracker import RecentEventTracker
 
@@ -126,8 +126,8 @@ class HyperliquidDataService(BaseDataService):
         # Build coin name -> TradePair mapping for static pairs.
         self._coin_to_trade_pair: dict[str, TradePair] = {}
         for tp in TradePair:
-            if tp.is_crypto and tp not in self.UNSUPPORTED_TRADE_PAIRS:
-                self._coin_to_trade_pair[tp.base] = tp
+            if tp.src == TradePairSource.HYPERLIQUID and tp not in self.UNSUPPORTED_TRADE_PAIRS:
+                self._coin_to_trade_pair[tp.hl_coin] = tp
 
         # Dual-resolution L2 orderbook cache per coin.
         # Full precision (no nSigFigs): native tick-size pricing for accurate mid and near-spread slippage.
@@ -314,13 +314,13 @@ class HyperliquidDataService(BaseDataService):
             return None
 
     def get_closes_rest(self, trade_pairs: List[TradePairLike], time_ms, live=True) -> dict[TradePairLike, PriceSource]:
-        """REST fallback: fetch mid prices from Hyperliquid for the requested crypto pairs."""
+        """REST fallback: fetch mid prices from Hyperliquid for all HL-sourced pairs."""
         if self.running_unit_tests:
             from data_generator.polygon_data_service import PolygonDataService
             return {tp: PolygonDataService.DEFAULT_TESTING_FALLBACK_PRICE_SOURCE for tp in trade_pairs}
 
-        crypto_pairs = [tp for tp in trade_pairs if tp.is_crypto and tp not in self.UNSUPPORTED_TRADE_PAIRS]
-        if not crypto_pairs:
+        hl_pairs = [tp for tp in trade_pairs if tp.src == TradePairSource.HYPERLIQUID and tp not in self.UNSUPPORTED_TRADE_PAIRS]
+        if not hl_pairs:
             return {}
 
         now_ms = TimeUtil.now_in_millis()
@@ -331,8 +331,8 @@ class HyperliquidDataService(BaseDataService):
         results: dict[TradePair, PriceSource] = {}
         pairs_needing_book = []
 
-        for tp in crypto_pairs:
-            mid = all_mids.get(tp.base)
+        for tp in hl_pairs:
+            mid = all_mids.get(tp.hl_coin)
             if mid is not None and mid > 0:
                 results[tp] = PriceSource(
                     source=f"{HYPERLIQUID_PROVIDER_NAME}_rest",
@@ -351,7 +351,7 @@ class HyperliquidDataService(BaseDataService):
 
         # Fall back to individual l2Book calls for any coins missing from allMids
         for tp in pairs_needing_book:
-            book = self._fetch_l2_book(tp.base)
+            book = self._fetch_l2_book(tp.hl_coin)
             if book is None:
                 continue
             best_bid, best_ask = book
@@ -391,7 +391,7 @@ class HyperliquidDataService(BaseDataService):
             Slippage as a fraction (e.g. 0.001 for 0.1%), or None if no
             orderbook data is available.
         """
-        coin = trade_pair.base
+        coin = trade_pair.hl_coin
         full_book = self._orderbooks_full.get(coin, {})
         coarse_book = self._orderbooks_coarse.get(coin, {})
 
@@ -459,7 +459,7 @@ class HyperliquidDataService(BaseDataService):
         Returns:
             Average fill price in quote currency, or None if no orderbook data is available.
         """
-        coin = trade_pair.base
+        coin = trade_pair.hl_coin
         full_book = self._orderbooks_full.get(coin, {})
         coarse_book = self._orderbooks_coarse.get(coin, {})
 
@@ -544,11 +544,13 @@ class HyperliquidDataService(BaseDataService):
             mids = resp.json()
             if isinstance(mids, dict):
                 all_supported_keys = set(mids.keys())
-                # Also fetch non-default dex allMids so prefixed coins are not filtered out
+                # Also fetch non-default dex allMids so prefixed coins are not filtered out.
+                # Derive dexes from configured_coins (static + dynamic union) so all
+                # non-default dex pairs are covered regardless of HL_DYNAMIC_REGISTRY state.
                 non_default_dexes = {
-                    dtp.hl_coin.split(":")[0]
-                    for dtp in HL_DYNAMIC_REGISTRY.values()
-                    if ":" in dtp.hl_coin
+                    coin.split(":")[0]
+                    for coin in configured_coins
+                    if ":" in coin
                 }
                 for dex in non_default_dexes:
                     try:

@@ -178,7 +178,7 @@ class EntityServer(RPCServerBase):
         entity_hotkey: str,
         account_size: float,
         hl_address: str,
-        asset_class: str = "crypto",
+        asset_class: str = "hl_all",
         admin: bool = False,
         payout_address: Optional[str] = None
     ) -> Tuple[bool, Optional[dict], str]:
@@ -189,7 +189,7 @@ class EntityServer(RPCServerBase):
             entity_hotkey: The VANTA_ENTITY_HOTKEY
             account_size: Account size in USD
             hl_address: Hyperliquid address (0x-prefixed, 40 hex chars)
-            asset_class: Asset class selection (default: "crypto")
+            asset_class: Asset class selection (default: "hl_all")
             admin: If True, skip collateral slashing
             payout_address: Optional EVM address (0x + 40 hex) for USDC payouts
 

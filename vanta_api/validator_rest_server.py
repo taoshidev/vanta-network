@@ -63,7 +63,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
     def __init__(self, api_keys_file, refresh_interval=15,
                  metrics_interval_minutes=5, running_unit_tests=False,
                  connection_mode:RPCConnectionMode = RPCConnectionMode.RPC,
-                 start_server=True, flask_host=None, flask_port=None, **kwargs):
+                 start_server=True, flask_host=None, flask_port=None,
+                 is_mainnet=True, **kwargs):
         """Initialize the REST server with API key handling and routing.
 
         Uses multiple inheritance pattern:
@@ -97,6 +98,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         """
         # Store validator-specific config before initializing base classes
         self.running_unit_tests = running_unit_tests
+        self.is_mainnet = is_mainnet
         self.nonce_manager = NonceManager()
         self.market_order_manager = MarketOrderManager(serve=False)
         self.data_path = ValiConfig.BASE_DIR
@@ -260,6 +262,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
         # Account management endpoints
         self.app.route("/miner-account/rebuild/<hotkey>", methods=["POST"])(self.rebuild_miner_account)
+        self.app.route("/wipe/<hotkey>", methods=["POST"])(self.wipe_hotkey)
 
         # Collateral endpoints
         self.app.route("/collateral/deposit", methods=["POST"])(self.deposit_collateral)
@@ -699,30 +702,39 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             return jsonify({'error': 'Error retrieving orders'}), 500
 
     def get_allowed_trade_pairs(self):
-        """Return the currently allowed trading pairs and each pair's max leverage. No API key required."""
+        """Return trade pairs grouped into three categories. No API key required.
+
+        allowed:    can open and close positions
+        deprecated: close/reduce only (legacy dynamic HL pairs)
+        disabled:   neither open nor close permitted (blocked or unsupported)
+        """
         try:
             unsupported_trade_pairs = set(ValiConfig.UNSUPPORTED_TRADE_PAIRS or ())
-            allowed_trade_pairs = []
+            allowed = []
+            deprecated = []
+            disabled = []
 
             for trade_pair in TradePair:
-                if trade_pair in unsupported_trade_pairs or trade_pair.is_blocked:
-                    continue
-
-                allowed_trade_pairs.append({
+                entry = {
                     'trade_pair_id': trade_pair.trade_pair_id,
+                    'hl_coin': trade_pair.hl_coin,
                     'trade_pair': trade_pair.trade_pair,
                     'trade_pair_category': trade_pair.trade_pair_category.value,
                     'trade_pair_source': trade_pair.src.value,
                     'max_leverage': trade_pair.max_leverage,
-                })
+                }
+                if trade_pair.is_blocked or trade_pair in unsupported_trade_pairs:
+                    disabled.append(entry)
+                else:
+                    allowed.append(entry)
 
+            allowed_ids = {entry['trade_pair_id'] for entry in allowed}
             for dtp in HL_DYNAMIC_REGISTRY.values():
-                if dtp.is_blocked:
+                if dtp.trade_pair_id in allowed_ids:
                     continue
-                if dtp.hl_coin.split(":")[-1] in ValiConfig.HL_EXCLUDED_ASSETS:
-                    continue
-                allowed_trade_pairs.append({
+                deprecated.append({
                     'trade_pair_id': dtp.trade_pair_id,
+                    'hl_coin': dtp.hl_coin,
                     'trade_pair': dtp.trade_pair,
                     'trade_pair_category': dtp.trade_pair_category.value,
                     'trade_pair_source': dtp.src.value,
@@ -730,9 +742,12 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 })
 
             return jsonify({
-                'allowed_trade_pairs': allowed_trade_pairs,
-                'allowed_trade_pair_ids': [pair['trade_pair_id'] for pair in allowed_trade_pairs],
-                'total_trade_pairs': len(allowed_trade_pairs),
+                'allowed': allowed,
+                'deprecated': deprecated,
+                'disabled': disabled,
+                'total_allowed': len(allowed),
+                'total_deprecated': len(deprecated),
+                'total_disabled': len(disabled),
                 'timestamp': TimeUtil.now_in_millis(),
             })
         except Exception as e:
@@ -1343,6 +1358,46 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             bt.logging.error(traceback.format_exc())
             return jsonify({'error': f'Internal server error: {str(e)}'}), 500
 
+    def wipe_hotkey(self, hotkey: str):
+        """
+        Wipe a miner's positions, challenge period status, perf/debt ledgers, and account state.
+        Requires tier 300 access.
+
+        Example:
+        curl -X POST http://localhost:48888/wipe/<hotkey> \\
+          -H "Authorization: Bearer YOUR_API_KEY" \\
+          -H "Content-Type: application/json" \\
+          -d '{
+            "position_uuids_to_delete": [],
+            "position_uuids_to_archive": [],
+            "wipe_positions": false,
+            "reopen_force_closed_orders": false
+          }'
+        """
+        if self.is_mainnet:
+            return jsonify({'error': 'Wipe endpoint is not available on mainnet'}), 403
+
+        api_key = self._get_api_key_safe()
+        if not self.is_valid_api_key(api_key):
+            return jsonify({'error': 'Unauthorized access'}), 401
+        if not self.can_access_tier(api_key, 300):
+            return jsonify({'error': 'Wipe endpoint requires tier 300 access'}), 403
+
+        try:
+            data = request.get_json(silent=True) or {}
+            result = self._position_client.wipe_hotkey(
+                hotkey,
+                position_uuids_to_delete=data.get('position_uuids_to_delete', []),
+                position_uuids_to_archive=data.get('position_uuids_to_archive', []),
+                wipe_positions=data.get('wipe_positions', False),
+                reopen_force_closed_orders=data.get('reopen_force_closed_orders', False),
+            )
+            return jsonify({'status': 'success', **result})
+        except Exception as e:
+            bt.logging.error(f"Error wiping hotkey {hotkey}: {e}")
+            bt.logging.error(traceback.format_exc())
+            return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+
     # ============================================================================
     # ENTITY MANAGEMENT ENDPOINTS
     # ============================================================================
@@ -1517,7 +1572,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
         When hl_address is provided, creates an HL-linked subaccount whose trades are
         automatically forwarded from the HyperliquidTracker as Vanta signals.
-        asset_class is required for standard subaccounts; HL subaccounts always use 'crypto'.
+        asset_class is required for standard subaccounts; HL subaccounts always use 'hl_all'.
 
         Example (standard):
         curl -X POST http://localhost:48888/entity/create-subaccount \\
@@ -1537,7 +1592,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             "entity_hotkey": "5GhDr...",
             "entity_coldkey": "5FxY...",
             "account_size": 25000,
-            "asset_class": "crypto",
+            "asset_class": "hl_all",
             "hl_address": "0x1234...abcd",
             "payout_address": "0xAbCd...1234",
             "signature": "0x..."
@@ -2023,10 +2078,12 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         asset_class = limits_data['asset_class']
         challenge_bucket = limits_data['challenge_bucket']
 
-        # HL subaccounts are always crypto
         try:
             category = TradePairCategory(asset_class)
         except ValueError:
+            category = TradePairCategory.CRYPTO
+        # todo: hl_all subaccounts use crypto leverage tiers for now
+        if category == TradePairCategory.HL_ALL:
             category = TradePairCategory.CRYPTO
 
         in_challenge = challenge_bucket is None or challenge_bucket == MinerBucket.SUBACCOUNT_CHALLENGE.value

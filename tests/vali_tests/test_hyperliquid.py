@@ -18,7 +18,8 @@ from unittest.mock import MagicMock, patch
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
 from vali_objects.utils.vali_utils import ValiUtils
-from vali_objects.vali_config import ValiConfig, TradePair, DynamicTradePair
+import os
+from vali_objects.vali_config import ValiConfig, TradePair, TradePairSource, DynamicTradePair
 from time_util.time_util import TimeUtil
 from entity_management.entity_utils import is_synthetic_hotkey, parse_synthetic_hotkey
 from entity_management.hyperliquid_tracker import HyperliquidTracker
@@ -834,59 +835,6 @@ class TestHyperliquidTracker(TestBase):
         mock_result.should_track_uuid = True
         return mock_result
 
-    # ==================== Coin Mapping ====================
-
-    def test_trade_pair_id_to_hl_coin_mapping(self):
-        """TRADE_PAIR_ID_TO_HL_COIN contains all static HL coins and their coin names."""
-        expected = {
-            "BTCUSD": "BTC", "ETHUSD": "ETH", "SOLUSD": "SOL",
-            "XRPUSD": "XRP", "DOGEUSD": "DOGE", "ADAUSD": "ADA",
-            "TAOUSD": "TAO", "HYPEUSD": "HYPE", "ZECUSD": "ZEC",
-            "BCHUSD": "BCH", "LINKUSD": "LINK", "XMRUSD": "XMR",
-            "LTCUSD": "LTC",
-        }
-        self.assertEqual(ValiConfig.TRADE_PAIR_ID_TO_HL_COIN, expected)
-
-    def test_dynamic_registry_populated_by_refresh(self):
-        """_refresh_hl_universe populates _hl_universe with DynamicTradePair objects for liquid coins."""
-        fake_meta = {
-            "universe": [
-                {"name": "PEPE", "maxLeverage": 40},
-                {"name": "LOWVOL", "maxLeverage": 10},
-            ]
-        }
-
-        def fake_avg_volume(coin):
-            # PEPE passes the 2M threshold; LOWVOL does not
-            return 5_000_000.0 if coin == "PEPE" else 100.0
-
-        def post_side_effect(url, json=None, timeout=None):
-            r = MagicMock()
-            t = (json or {}).get("type", "")
-            if t == "perpDexs":
-                r.json.return_value = []  # no named dexes — default dex only
-            elif t == "spotMeta":
-                r.json.return_value = {"tokens": [{"index": 0, "name": "USDC"}]}
-            elif t == "metaAndAssetCtxs":
-                r.json.return_value = [fake_meta, [{}, {}]]
-            else:
-                r.json.return_value = {}
-            return r
-
-        with patch.object(self.tracker, '_persist_hl_dynamic_registry'), \
-             patch.object(self.tracker, '_fetch_30d_avg_volume', side_effect=fake_avg_volume), \
-             patch('entity_management.hyperliquid_tracker.requests') as mock_req:
-            mock_req.post.side_effect = post_side_effect
-            self.tracker._refresh_hl_universe()
-
-        self.assertIn("PEPE", self.tracker._hl_universe)
-        self.assertNotIn("LOWVOL", self.tracker._hl_universe)
-        pepe_dtp = self.tracker._hl_universe["PEPE"]
-        self.assertIsInstance(pepe_dtp, DynamicTradePair)
-        self.assertEqual(pepe_dtp.trade_pair_id, "PEPEUSDC")
-        # max_leverage: PEPE has 40x HL max lev < HL_HIGH_TIER_THRESHOLD (50) → HS_MAX_LEVERAGE = 1.0
-        self.assertAlmostEqual(pepe_dtp.max_leverage, ValiConfig.HS_MAX_LEVERAGE)
-
     # ==================== Fill Dedup ====================
 
     def test_record_hash_basic_dedup(self):
@@ -1430,6 +1378,93 @@ class TestHyperliquidTracker(TestBase):
         self.tracker._remember_hl_szi(VALID_HL_ADDRESS, account_state)
         cached = self.tracker._last_observed_szi.get(VALID_HL_ADDRESS.lower())
         self.assertEqual(cached, {"BTC": 1.25, "ETH": -2.0})
+
+
+@unittest.skipUnless(os.environ.get("RUN_NETWORK_TESTS"), "set RUN_NETWORK_TESTS=1 to run live HL API tests")
+class TestHLTickerCoverage(unittest.TestCase):
+    """
+    Live integration test: verify every HL-sourced TradePair resolves to a price on the HL API.
+    Queries allMids for each required dex (default + non-default derived from hl_coin prefixes).
+    Run with: RUN_NETWORK_TESTS=1 python -m pytest tests/vali_tests/test_hyperliquid.py::TestHLTickerCoverage -v
+    """
+
+    def _fetch_all_mids(self) -> dict:
+        import requests
+        url = ValiConfig.hl_info_url()
+        result = {}
+        resp = requests.post(url, json={"type": "allMids"}, timeout=15)
+        resp.raise_for_status()
+        result.update({coin: float(price) for coin, price in resp.json().items()})
+
+        non_default_dexes = {
+            tp.hl_coin.split(":")[0]
+            for tp in TradePair
+            if tp.src == TradePairSource.HYPERLIQUID and ":" in tp.hl_coin
+        }
+        for dex in non_default_dexes:
+            resp = requests.post(url, json={"type": "allMids", "dex": dex}, timeout=15)
+            resp.raise_for_status()
+            result.update({coin: float(price) for coin, price in resp.json().items()})
+        return result
+
+    def test_all_hl_tradepairs_have_price(self):
+        """Every HL-sourced TradePair.hl_coin must appear in allMids."""
+        mids = self._fetch_all_mids()
+        missing = [
+            (tp.trade_pair_id, tp.hl_coin)
+            for tp in TradePair
+            if tp.src == TradePairSource.HYPERLIQUID and tp.hl_coin not in mids
+        ]
+        self.assertFalse(
+            missing,
+            f"HL coins not found in allMids: {missing}"
+        )
+
+    def test_all_hl_tradepairs_have_orderbook(self):
+        """Every HL-sourced TradePair.hl_coin must return a valid l2Book with bids and asks."""
+        import requests
+        url = ValiConfig.hl_info_url()
+        missing, empty = [], []
+        for tp in TradePair:
+            if tp.src != TradePairSource.HYPERLIQUID:
+                continue
+            try:
+                resp = requests.post(url, json={"type": "l2Book", "coin": tp.hl_coin}, timeout=15)
+                resp.raise_for_status()
+                data = resp.json()
+                levels = data.get("levels", [])
+                if len(levels) < 2 or not levels[0] or not levels[1]:
+                    empty.append((tp.trade_pair_id, tp.hl_coin))
+            except Exception as e:
+                missing.append((tp.trade_pair_id, tp.hl_coin, str(e)))
+        self.assertFalse(missing, f"l2Book request failed for coins: {missing}")
+        self.assertFalse(empty, f"l2Book returned empty levels for coins: {empty}")
+
+    def test_all_hl_tradepairs_have_funding_rate(self):
+        """Every HL-sourced TradePair.hl_coin must return at least one funding rate record in the last 48h."""
+        import requests, time
+        url = ValiConfig.hl_info_url()
+        now_ms = int(time.time() * 1000)
+        start_ms = now_ms - 48 * 3600 * 1000
+        missing, empty = [], []
+        for tp in TradePair:
+            if tp.src != TradePairSource.HYPERLIQUID:
+                continue
+            try:
+                resp = requests.post(url, json={
+                    "type": "fundingHistory",
+                    "coin": tp.hl_coin,
+                    "startTime": start_ms,
+                    "endTime": now_ms,
+                }, timeout=15)
+                resp.raise_for_status()
+                records = resp.json()
+                if not isinstance(records, list) or len(records) == 0:
+                    empty.append((tp.trade_pair_id, tp.hl_coin))
+            except Exception as e:
+                missing.append((tp.trade_pair_id, tp.hl_coin, str(e)))
+        self.assertFalse(missing, f"fundingHistory request failed for coins: {missing}")
+        self.assertFalse(empty, f"fundingHistory returned no records (last 48h) for coins: {empty}")
 
 
 if __name__ == '__main__':

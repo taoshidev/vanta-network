@@ -52,7 +52,7 @@ from vali_objects.position_management.position_manager_client import PositionMan
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.limit_order.order_processor import OrderProcessor
 from vali_objects.utils.vali_utils import ValiUtils
-from vali_objects.vali_config import ValiConfig, RPCConnectionMode, HL_COIN_TO_DYNAMIC_TRADE_PAIR
+from vali_objects.vali_config import ValiConfig, RPCConnectionMode, HL_COIN_TO_DYNAMIC_TRADE_PAIR, HL_COIN_TO_TRADE_PAIR, DynamicTradePair, TradePair, TradePairSource
 from vanta_api.websocket_notifier import WebSocketNotifierClient
 
 
@@ -377,8 +377,6 @@ class HyperliquidTracker:
         self._backup_fills_caught = 0
         self._backup_polls_total = 0
         self._proxy_index_rest = 0
-        self._hl_universe: dict = dict(HL_COIN_TO_DYNAMIC_TRADE_PAIR)  # seed from persisted registry; replaced on first refresh
-        self._last_universe_refresh: float = 0.0
         # (hl_address_lower) -> {coin: last_observed_szi_float}
         # Used by reconciliation to detect real HL position-size changes vs
         # PnL-driven weight drift. Populated from _fetch_hl_account_state results.
@@ -563,10 +561,6 @@ class HyperliquidTracker:
     async def _run_stream(self):
         """Orchestrator: loads proxy config, then loops assigning addresses and managing shards."""
         self._load_proxy_config()
-        # Kick off universe refresh in a thread so WebSocket shards can start immediately.
-        self._last_universe_refresh = time.time()
-        loop = asyncio.get_running_loop()
-        asyncio.ensure_future(loop.run_in_executor(None, self._refresh_hl_universe))
         self._backup_poll_task = asyncio.ensure_future(self._backup_poll_cycle())
 
         try:
@@ -890,19 +884,39 @@ class HyperliquidTracker:
                 f"{record.rest_consecutive_failures} REST failures"
             )
 
+    @staticmethod
+    def _hl_non_default_dexes() -> list[str]:
+        """Derive non-default HIP-3 dex names from TradePair.hl_coin prefixes (e.g. 'xyz:AAPL' -> 'xyz')."""
+        return list({
+            tp.hl_coin.split(":")[0]
+            for tp in TradePair
+            if tp.src == TradePairSource.HYPERLIQUID and ":" in tp.hl_coin
+        })
+
     def _fetch_hl_account_state(self, hl_address: str) -> Optional[dict]:
         """
         Fetch HL account state via REST and compute portfolio weight per position.
 
+        Queries clearinghouseState for the native dex and all non-default HIP-3 dexes
+        derived from TradePair.hl_coin prefixes so that non-default dex perp positions
+        (e.g. xyz:AAPL) are included in the weight calculation.
+
         Returns dict with:
-          - total_portfolio_value: perp + spot available (avoiding double-counting)
+          - total_portfolio_value: perp (all dexes) + spot available (avoiding double-counting)
           - positions: {coin: {"szi": float, "positionValue": float, "weight": float}}
         """
         api_url = ValiConfig.hl_info_url()
         session = self._make_proxied_session()
         proxy_port = getattr(session, "_hl_proxy_port", None)
         try:
-            perp = session.post(api_url, json={"type": "clearinghouseState", "user": hl_address}, timeout=10).json()
+            # Native dex
+            perp_native = session.post(api_url, json={"type": "clearinghouseState", "user": hl_address}, timeout=10).json()
+            # Non-default HIP-3 dexes (e.g. xyz)
+            perp_by_dex: dict[str, dict] = {}
+            for dex in self._hl_non_default_dexes():
+                resp = session.post(api_url, json={"type": "clearinghouseState", "user": hl_address, "dex": dex}, timeout=10).json()
+                if isinstance(resp, dict):
+                    perp_by_dex[dex] = resp
             spot = session.post(api_url, json={"type": "spotClearinghouseState", "user": hl_address}, timeout=10).json()
             all_mids = session.post(api_url, json={"type": "allMids"}, timeout=10).json()
             self._report_rest_proxy_success(proxy_port)
@@ -913,7 +927,7 @@ class HyperliquidTracker:
         finally:
             session.close()
 
-        if not isinstance(perp, dict):
+        if not isinstance(perp_native, dict):
             bt.logging.info(f"[HL_TRACKER] No perp account for {hl_address}")
             return None
         if not isinstance(spot, dict):
@@ -921,8 +935,12 @@ class HyperliquidTracker:
         if not isinstance(all_mids, dict):
             all_mids = {}
 
-        margin = perp.get("crossMarginSummary", perp.get("marginSummary", {}))
-        perp_value = float(margin.get("accountValue", 0))
+        # Sum accountValue across native + all non-default dexes
+        native_margin = perp_native.get("crossMarginSummary", perp_native.get("marginSummary", {}))
+        total_perp_value = float(native_margin.get("accountValue", 0))
+        for dex_data in perp_by_dex.values():
+            dex_margin = dex_data.get("crossMarginSummary", dex_data.get("marginSummary", {}))
+            total_perp_value += float(dex_margin.get("accountValue", 0))
 
         # Spot: sum USD value of all holdings, subtract amount locked as perp margin
         spot_value, spot_hold = 0.0, 0.0
@@ -939,11 +957,15 @@ class HyperliquidTracker:
             spot_hold += hold_val
 
         spot_available = spot_value - spot_hold
-        total_portfolio_value = perp_value + spot_available
+        total_portfolio_value = total_perp_value + spot_available
 
-        # Collect per-coin position weights
+        # Collect per-coin position weights across all dexes
         positions = {}
-        for p in perp.get("assetPositions", []):
+        all_asset_positions = list(perp_native.get("assetPositions", []))
+        for dex_data in perp_by_dex.values():
+            all_asset_positions.extend(dex_data.get("assetPositions", []))
+
+        for p in all_asset_positions:
             pos = p.get("position", {})
             coin = pos.get("coin", "")
             szi = float(pos.get("szi", 0))
@@ -1001,202 +1023,6 @@ class HyperliquidTracker:
                 )
         except Exception as e:
             bt.logging.warning(f"[HL_BACKUP] Failed to load watermarks: {e}")
-
-    def _fetch_30d_avg_volume(self, coin: str) -> float:
-        """Return 30-day mean daily USD volume for *coin* using HL candleSnapshot.
-
-        Uses complete days only (endTime = today midnight UTC).
-        Retries up to 3 times on failure.  Returns 0.0 on persistent error.
-        """
-        today_midnight_ms = (int(time.time()) // 86400) * 86400 * 1000
-        start_ms = today_midnight_ms - ValiConfig.HL_LIQUIDITY_LOOKBACK_DAYS * 86400 * 1000
-        payload = {
-            "type": "candleSnapshot",
-            "req": {
-                "coin": coin,
-                "interval": "1d",
-                "startTime": start_ms,
-                "endTime": today_midnight_ms,
-            },
-        }
-        for attempt in range(3):
-            try:
-                if attempt > 0:
-                    time.sleep(2 ** attempt)
-                resp = requests.post(ValiConfig.hl_info_url(), json=payload, timeout=15)
-                if resp.status_code == 429:
-                    bt.logging.warning(f"[HL_TRACKER] 429 on {coin}, waiting 60s...")
-                    time.sleep(60)
-                    continue
-                resp.raise_for_status()
-                candles = resp.json()
-                if not candles:
-                    return 0.0
-                daily_vols = [float(c["v"]) * float(c["c"]) for c in candles]
-                return sum(daily_vols) / len(daily_vols)
-            except Exception as e:
-                if attempt == 2:
-                    bt.logging.warning(f"[HL_TRACKER] candleSnapshot failed for {coin}: {e}")
-        return 0.0
-
-    def _fetch_dex_collateral_map(self, dex_names: List[Optional[str]]) -> Dict[str, str]:
-        """Return {dex_name: collateral_token} for all named dexes.
-
-        Empty string key represents the default crypto dex, which is always USDC.
-        Fetches spotMeta once for token index resolution, then queries each named dex.
-        """
-        result: Dict[str, str] = {"": "USDC"}  # default crypto dex is always USDC
-        token_index_map: Dict[int, str] = {}
-        for attempt in range(3):
-            try:
-                if attempt > 0:
-                    time.sleep(2 ** attempt)
-                resp = requests.post(ValiConfig.hl_info_url(), json={"type": "spotMeta"}, timeout=10)
-                if resp.status_code == 429:
-                    bt.logging.warning(f"[HL_TRACKER] 429 fetching spotMeta, waiting 60s...")
-                    time.sleep(60)
-                    continue
-                resp.raise_for_status()
-                token_index_map = {t["index"]: t["name"] for t in resp.json().get("tokens", [])}
-                break
-            except Exception as e:
-                if attempt == 2:
-                    bt.logging.warning(f"[HL_TRACKER] Failed to fetch spotMeta: {e}")
-
-        for dex in dex_names:
-            if dex is None:
-                continue
-            time.sleep(1)
-            try:
-                resp = requests.post(ValiConfig.hl_info_url(), json={"type": "meta", "dex": dex}, timeout=10)
-                resp.raise_for_status()
-                idx = resp.json().get("collateralToken", 0)
-                result[dex] = token_index_map.get(idx, "USDC")
-            except Exception as e:
-                bt.logging.warning(f"[HL_TRACKER] Failed to fetch collateral token for dex={dex}: {e}")
-                result[dex] = "USDC"
-
-        return result
-
-    def _fetch_candidates_for_dex(self, dex: Optional[str]) -> List[tuple]:
-        """Return [(coin, maxLeverage), ...] for *dex* (None = default crypto dex)."""
-        payload: dict = {"type": "metaAndAssetCtxs"}
-        if dex is not None:
-            payload["dex"] = dex
-        for attempt in range(3):
-            try:
-                if attempt > 0:
-                    time.sleep(2 ** attempt)
-                resp = requests.post(ValiConfig.hl_info_url(), json=payload, timeout=10)
-                if resp.status_code == 429:
-                    bt.logging.warning(f"[HL_TRACKER] 429 fetching candidates for dex={dex}, waiting 60s...")
-                    time.sleep(60)
-                    continue
-                resp.raise_for_status()
-                meta, _ = resp.json()
-                return [(asset["name"], asset["maxLeverage"]) for asset in meta["universe"]]
-            except Exception as e:
-                if attempt == 2:
-                    bt.logging.warning(f"[HL_TRACKER] Failed to fetch candidates for dex={dex}: {e}")
-        return []
-
-    def _refresh_hl_universe(self):
-        """Discover all dexes, apply 30-day liquidity filter, update _hl_universe + HL_DYNAMIC_REGISTRY."""
-        from vali_objects.vali_config import HL_DYNAMIC_REGISTRY, DynamicTradePair
-
-        # 1. Discover all dex names; None represents the default crypto dex.
-        # perpDexs returns a list where the first element is None (default dex) and the rest
-        # are dicts like {"name": "xyz", ...} — extract the name strings from those dicts.
-        named_dexes: List[str] = []
-        for attempt in range(3):
-            try:
-                if attempt > 0:
-                    time.sleep(2 ** attempt)
-                resp = requests.post(ValiConfig.hl_info_url(), json={"type": "perpDexs"}, timeout=10)
-                if resp.status_code == 429:
-                    bt.logging.warning(f"[HL_TRACKER] 429 fetching perpDexs, waiting 60s...")
-                    time.sleep(60)
-                    continue
-                resp.raise_for_status()
-                named_dexes = [d["name"] for d in resp.json() if isinstance(d, dict) and d.get("name")]
-                break
-            except Exception as e:
-                if attempt == 2:
-                    bt.logging.warning(f"[HL_TRACKER] Failed to fetch perpDexs: {e} — using default dex only")
-        dex_names: List[Optional[str]] = [None] + named_dexes
-
-        # 2. Fetch collateral token per dex (one spotMeta call + one meta call per named dex)
-        dex_to_collateral = self._fetch_dex_collateral_map(dex_names)
-
-        # 3. Collect (coin, maxLeverage) across all dexes (1s sleep between dexes to stay under rate limit)
-        all_candidates: List[tuple] = []
-        for dex in dex_names:
-            for coin, max_lev in self._fetch_candidates_for_dex(dex):
-                all_candidates.append((coin, max_lev))
-            time.sleep(1)
-
-        if not all_candidates:
-            bt.logging.warning("[HL_TRACKER] No candidates found — keeping existing registry")
-            return
-
-        # 4. Fetch 30-day avg USD volume sequentially (1s sleep → ≤60 req/min, under 1200 weight/min limit)
-        avg_volumes: Dict[str, float] = {}
-        for coin, _ in all_candidates:
-            avg_volumes[coin] = self._fetch_30d_avg_volume(coin)
-            time.sleep(1)
-
-        # 5. Filter and build universe
-        new_universe = {}
-        for coin, max_lev in all_candidates:
-            if coin.split(":")[-1] in ValiConfig.HL_EXCLUDED_ASSETS:
-                continue
-            if avg_volumes.get(coin, 0.0) < ValiConfig.HL_MIN_LIQUIDITY_USD:
-                continue
-            dex_name = coin.split(":")[0] if ":" in coin else ""
-            collateral = dex_to_collateral.get(dex_name, "USDC")
-            # hs_max_leverage = (ValiConfig.HS_HIGH_TIER_MAX_LEVERAGE
-            #                    if max_lev >= ValiConfig.HL_HIGH_TIER_THRESHOLD
-            #                    else ValiConfig.HS_MAX_LEVERAGE)
-            hs_max_leverage = ValiConfig.HS_MAX_LEVERAGE
-            new_universe[coin] = DynamicTradePair(
-                trade_pair_id=f"{coin}{collateral}",
-                trade_pair=f"{coin}/{collateral}",
-                hl_coin=coin,
-                max_leverage=hs_max_leverage,
-            )
-
-        self._hl_universe = new_universe
-        from vali_objects.vali_config import HL_COIN_TO_DYNAMIC_TRADE_PAIR
-        for dtp in new_universe.values():
-            HL_DYNAMIC_REGISTRY[dtp.trade_pair_id] = dtp
-            HL_COIN_TO_DYNAMIC_TRADE_PAIR[dtp.hl_coin] = dtp
-        self._persist_hl_dynamic_registry()
-        self._last_universe_refresh = time.time()
-        bt.logging.info(
-            f"[HL_TRACKER] Universe: {len(new_universe)} active across {len(named_dexes) + 1} dex(es) "
-            f"(30d avg vol ≥ ${ValiConfig.HL_MIN_LIQUIDITY_USD:,}), {len(HL_DYNAMIC_REGISTRY)} total"
-        )
-
-    def _persist_hl_dynamic_registry(self):
-        """Write HL_DYNAMIC_REGISTRY to disk so other processes can load it."""
-        from vali_objects.vali_config import HL_DYNAMIC_REGISTRY, _HL_REGISTRY_PATH
-        data = {
-            tid: {
-                "trade_pair_id":    dtp.trade_pair_id,
-                "trade_pair":       dtp.trade_pair,
-                "hl_coin":          dtp.hl_coin,
-                "max_leverage":     dtp.max_leverage,
-                "min_leverage":     dtp.min_leverage,
-                "fees":             dtp.fees,
-                "trade_pair_category": dtp.trade_pair_category.value,
-            }
-            for tid, dtp in HL_DYNAMIC_REGISTRY.items()
-        }
-        try:
-            with open(_HL_REGISTRY_PATH, "w") as f:
-                json.dump(data, f)
-        except Exception as e:
-            bt.logging.warning(f"[HL_TRACKER] Failed to persist HL_DYNAMIC_REGISTRY: {e}")
 
     def _save_backup_poll_watermarks(self):
         """Persist HL backup watermarks for restart continuity."""
@@ -1299,8 +1125,6 @@ class HyperliquidTracker:
 
         while not self._stop_event.is_set():
             try:
-                if time.time() - self._last_universe_refresh > ValiConfig.HL_UNIVERSE_REFRESH_INTERVAL_S:
-                    await asyncio.get_running_loop().run_in_executor(None, self._refresh_hl_universe)
                 tracked_addresses = list(self._address_to_shard.keys())
                 if not tracked_addresses:
                     await asyncio.sleep(ValiConfig.HL_BACKUP_POLL_INTERVAL_S)
@@ -1401,6 +1225,11 @@ class HyperliquidTracker:
             dtp.trade_pair_id: dtp.hl_coin
             for dtp in list(HL_DYNAMIC_REGISTRY.values())
         }
+        trade_pair_to_coin.update({
+            tp.trade_pair_id: tp.hl_coin
+            for tp in TradePair
+            if tp.src == TradePairSource.HYPERLIQUID
+        })
         try:
             open_positions = self._position_client.get_positions_for_one_hotkey(
                 synthetic_hotkey, only_open_positions=True
@@ -1459,15 +1288,12 @@ class HyperliquidTracker:
         if not coin:
             return
 
-        # Map coin to trade pair via dynamic registry
-        from vali_objects.vali_config import HL_COIN_TO_DYNAMIC_TRADE_PAIR
-        trade_pair = self._hl_universe.get(coin)
+        trade_pair = HL_COIN_TO_TRADE_PAIR.get(coin)
         below_threshold = False
-        if not trade_pair:
-            # Coin is below liquidity threshold or not yet refreshed — check full registry
-            # to handle close/reduce fills for previously tracked coins.
+        if trade_pair is None:
+            # Coin not in hardcoded set — check deprecated dynamic registry for close/reduce of existing positions
             trade_pair = HL_COIN_TO_DYNAMIC_TRADE_PAIR.get(coin)
-            if not trade_pair:
+            if trade_pair is None:
                 bt.logging.debug(f"[HL_TRACKER] Unknown coin: {coin}")
                 return
             below_threshold = True
@@ -1524,19 +1350,6 @@ class HyperliquidTracker:
         if trade_pair.is_blocked:
             bt.logging.info(f"[HL_TRACKER] Blocked trade pair: {trade_pair_id} ({synthetic_hotkey})")
             self._broadcast_rejection(synthetic_hotkey, f"Trade pair {trade_pair_id} is no longer supported.")
-            return
-
-        # Market hours check (only for market orders)
-        # DynamicTradePairs are HL instruments — HL trades 24/7 regardless of asset type,
-        # so skip the market-hours check entirely for them.
-        from vali_objects.vali_config import DynamicTradePair
-        if isinstance(trade_pair, DynamicTradePair):
-            is_market_open = True
-        else:
-            is_market_open = self._price_fetcher_client.is_market_open(trade_pair, now_ms)
-        if not is_market_open:
-            bt.logging.info(f"[HL_TRACKER] Market closed for {trade_pair_id} ({synthetic_hotkey})")
-            self._broadcast_rejection(synthetic_hotkey, f"Market is closed for {trade_pair_id}.")
             return
 
         # === Step 1: Fetch HL account state -> compute target weight ===
@@ -1652,7 +1465,7 @@ class HyperliquidTracker:
         signal = {
             "order_type": order_type,
             "leverage": leverage,
-            "trade_pair": {"trade_pair_id": trade_pair_id},
+            "trade_pair": trade_pair_id,
             "execution_type": "MARKET",
             "is_hl": True,
             "is_hl_taker": is_taker,
