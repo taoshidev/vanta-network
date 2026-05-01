@@ -444,6 +444,32 @@ class PositionManager:
         bt.logging.info(f"[POSITION ARCHIVE] Archive complete")
         return n_archived
 
+    def delete_archived_positions_for_hotkey(self, hotkey: str) -> int:
+        """Delete all archived positions for a hotkey from memory and disk.
+
+        Returns:
+            Number of archived positions deleted.
+        """
+        n_deleted = 0
+        self.hotkey_to_archived_positions.pop(hotkey, None)
+
+        archived_dir = ValiBkpUtils.get_miner_archived_positions_dir(
+            hotkey, running_unit_tests=self.running_unit_tests
+        )
+        if os.path.isdir(archived_dir):
+            for fname in os.listdir(archived_dir):
+                fpath = os.path.join(archived_dir, fname)
+                if os.path.isfile(fpath):
+                    try:
+                        os.remove(fpath)
+                        bt.logging.info(f"Deleted archived position from disk: {fpath}")
+                        n_deleted += 1
+                    except Exception as e:
+                        bt.logging.error(f"Failed to delete archived position file {fpath}: {e}")
+
+        bt.logging.info(f"Deleted {n_deleted} archived positions for {hotkey}")
+        return n_deleted
+
     def delete_position(self, hotkey: str, position_uuid: str):
         """
         Delete a specific position with O(1) deletion.
@@ -1744,6 +1770,10 @@ class PositionManager:
                     self.save_miner_position(pos, validate=False)
                     n_reopened += 1
         log.append(f"Positions deleted={n_deleted} archived={n_archived} reopened={n_reopened}")
+
+        if wipe_positions:
+            n_archived_deleted = self.delete_archived_positions_for_hotkey(hotkey)
+            log.append(f"Archived positions deleted={n_archived_deleted}")
 
         # Restore subaccount entity status if erroneously eliminated/failed
         if is_synthetic_hotkey(hotkey) and self._entity_client:
