@@ -245,9 +245,9 @@ class EntityCollateralManager(CacheController):
             if not synthetic_hotkey:
                 continue
 
-            # Only funded (non-challenge) subaccounts require margin
+            # Only funded subaccounts require margin; skip challenge, unknown, or other buckets
             bucket = self._challenge_period_client.get_miner_bucket(synthetic_hotkey)
-            if bucket == MinerBucket.SUBACCOUNT_CHALLENGE:
+            if bucket not in (MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA):
                 continue
 
             margin_usd = self.compute_subaccount_margin_requirement(synthetic_hotkey)
@@ -316,9 +316,9 @@ class EntityCollateralManager(CacheController):
             (allowed: bool, reason: str) - reason is empty if allowed,
             otherwise describes why the order was rejected.
         """
-        # Challenge period subaccounts are exempt from margin requirements
+        # Only funded subaccounts are subject to margin requirements
         bucket = self._challenge_period_client.get_miner_bucket(synthetic_hotkey)
-        if bucket == MinerBucket.SUBACCOUNT_CHALLENGE:
+        if bucket not in (MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA):
             return True, ""
 
         # Current required collateral across all funded subaccounts with open positions.
@@ -392,9 +392,9 @@ class EntityCollateralManager(CacheController):
         if realized_loss <= 0:
             return 0.0
 
-        # Challenge period subaccounts are exempt from slashing
+        # Only funded subaccounts are subject to slashing
         bucket = self._challenge_period_client.get_miner_bucket(synthetic_hotkey)
-        if bucket == MinerBucket.SUBACCOUNT_CHALLENGE:
+        if bucket not in (MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA):
             return 0.0
 
         max_slash = self.get_max_slash(synthetic_hotkey)
