@@ -55,12 +55,11 @@ class HLFundingRateServer(RPCServerBase):
             self._backfill()
 
     def _get_coins(self) -> list:
-        """Return all known HL coins, refreshing registry from disk first."""
+        """Return all known HL coins (static TradePairs + dynamic registry union)."""
         load_hl_dynamic_registry()
-        coins = [dtp.hl_coin for dtp in list(HL_DYNAMIC_REGISTRY.values())]
-        if not coins:
-            return [tp.hl_coin for tp in TradePair if tp.src == TradePairSource.HYPERLIQUID]
-        return coins
+        coins = {tp.hl_coin for tp in TradePair if tp.src == TradePairSource.HYPERLIQUID}
+        coins.update(dtp.hl_coin for dtp in HL_DYNAMIC_REGISTRY.values())
+        return list(coins)
 
     def _backfill(self):
         """Backfill the last N hours of funding rates on startup."""

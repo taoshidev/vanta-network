@@ -1420,6 +1420,52 @@ class TestHLTickerCoverage(unittest.TestCase):
             f"HL coins not found in allMids: {missing}"
         )
 
+    def test_all_hl_tradepairs_have_orderbook(self):
+        """Every HL-sourced TradePair.hl_coin must return a valid l2Book with bids and asks."""
+        import requests
+        url = ValiConfig.hl_info_url()
+        missing, empty = [], []
+        for tp in TradePair:
+            if tp.src != TradePairSource.HYPERLIQUID:
+                continue
+            try:
+                resp = requests.post(url, json={"type": "l2Book", "coin": tp.hl_coin}, timeout=15)
+                resp.raise_for_status()
+                data = resp.json()
+                levels = data.get("levels", [])
+                if len(levels) < 2 or not levels[0] or not levels[1]:
+                    empty.append((tp.trade_pair_id, tp.hl_coin))
+            except Exception as e:
+                missing.append((tp.trade_pair_id, tp.hl_coin, str(e)))
+        self.assertFalse(missing, f"l2Book request failed for coins: {missing}")
+        self.assertFalse(empty, f"l2Book returned empty levels for coins: {empty}")
+
+    def test_all_hl_tradepairs_have_funding_rate(self):
+        """Every HL-sourced TradePair.hl_coin must return at least one funding rate record in the last 48h."""
+        import requests, time
+        url = ValiConfig.hl_info_url()
+        now_ms = int(time.time() * 1000)
+        start_ms = now_ms - 48 * 3600 * 1000
+        missing, empty = [], []
+        for tp in TradePair:
+            if tp.src != TradePairSource.HYPERLIQUID:
+                continue
+            try:
+                resp = requests.post(url, json={
+                    "type": "fundingHistory",
+                    "coin": tp.hl_coin,
+                    "startTime": start_ms,
+                    "endTime": now_ms,
+                }, timeout=15)
+                resp.raise_for_status()
+                records = resp.json()
+                if not isinstance(records, list) or len(records) == 0:
+                    empty.append((tp.trade_pair_id, tp.hl_coin))
+            except Exception as e:
+                missing.append((tp.trade_pair_id, tp.hl_coin, str(e)))
+        self.assertFalse(missing, f"fundingHistory request failed for coins: {missing}")
+        self.assertFalse(empty, f"fundingHistory returned no records (last 48h) for coins: {empty}")
+
 
 if __name__ == '__main__':
     unittest.main()

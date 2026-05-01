@@ -52,7 +52,7 @@ from vali_objects.position_management.position_manager_client import PositionMan
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.limit_order.order_processor import OrderProcessor
 from vali_objects.utils.vali_utils import ValiUtils
-from vali_objects.vali_config import ValiConfig, RPCConnectionMode, HL_COIN_TO_DYNAMIC_TRADE_PAIR, HL_COIN_TO_TRADE_PAIR, DynamicTradePair
+from vali_objects.vali_config import ValiConfig, RPCConnectionMode, HL_COIN_TO_DYNAMIC_TRADE_PAIR, HL_COIN_TO_TRADE_PAIR, DynamicTradePair, TradePair, TradePairSource
 from vanta_api.websocket_notifier import WebSocketNotifierClient
 
 
@@ -884,19 +884,39 @@ class HyperliquidTracker:
                 f"{record.rest_consecutive_failures} REST failures"
             )
 
+    @staticmethod
+    def _hl_non_default_dexes() -> list[str]:
+        """Derive non-default HIP-3 dex names from TradePair.hl_coin prefixes (e.g. 'xyz:AAPL' -> 'xyz')."""
+        return list({
+            tp.hl_coin.split(":")[0]
+            for tp in TradePair
+            if tp.src == TradePairSource.HYPERLIQUID and ":" in tp.hl_coin
+        })
+
     def _fetch_hl_account_state(self, hl_address: str) -> Optional[dict]:
         """
         Fetch HL account state via REST and compute portfolio weight per position.
 
+        Queries clearinghouseState for the native dex and all non-default HIP-3 dexes
+        derived from TradePair.hl_coin prefixes so that non-default dex perp positions
+        (e.g. xyz:AAPL) are included in the weight calculation.
+
         Returns dict with:
-          - total_portfolio_value: perp + spot available (avoiding double-counting)
+          - total_portfolio_value: perp (all dexes) + spot available (avoiding double-counting)
           - positions: {coin: {"szi": float, "positionValue": float, "weight": float}}
         """
         api_url = ValiConfig.hl_info_url()
         session = self._make_proxied_session()
         proxy_port = getattr(session, "_hl_proxy_port", None)
         try:
-            perp = session.post(api_url, json={"type": "clearinghouseState", "user": hl_address}, timeout=10).json()
+            # Native dex
+            perp_native = session.post(api_url, json={"type": "clearinghouseState", "user": hl_address}, timeout=10).json()
+            # Non-default HIP-3 dexes (e.g. xyz)
+            perp_by_dex: dict[str, dict] = {}
+            for dex in self._hl_non_default_dexes():
+                resp = session.post(api_url, json={"type": "clearinghouseState", "user": hl_address, "dex": dex}, timeout=10).json()
+                if isinstance(resp, dict):
+                    perp_by_dex[dex] = resp
             spot = session.post(api_url, json={"type": "spotClearinghouseState", "user": hl_address}, timeout=10).json()
             all_mids = session.post(api_url, json={"type": "allMids"}, timeout=10).json()
             self._report_rest_proxy_success(proxy_port)
@@ -907,7 +927,7 @@ class HyperliquidTracker:
         finally:
             session.close()
 
-        if not isinstance(perp, dict):
+        if not isinstance(perp_native, dict):
             bt.logging.info(f"[HL_TRACKER] No perp account for {hl_address}")
             return None
         if not isinstance(spot, dict):
@@ -915,8 +935,12 @@ class HyperliquidTracker:
         if not isinstance(all_mids, dict):
             all_mids = {}
 
-        margin = perp.get("crossMarginSummary", perp.get("marginSummary", {}))
-        perp_value = float(margin.get("accountValue", 0))
+        # Sum accountValue across native + all non-default dexes
+        native_margin = perp_native.get("crossMarginSummary", perp_native.get("marginSummary", {}))
+        total_perp_value = float(native_margin.get("accountValue", 0))
+        for dex_data in perp_by_dex.values():
+            dex_margin = dex_data.get("crossMarginSummary", dex_data.get("marginSummary", {}))
+            total_perp_value += float(dex_margin.get("accountValue", 0))
 
         # Spot: sum USD value of all holdings, subtract amount locked as perp margin
         spot_value, spot_hold = 0.0, 0.0
@@ -933,11 +957,15 @@ class HyperliquidTracker:
             spot_hold += hold_val
 
         spot_available = spot_value - spot_hold
-        total_portfolio_value = perp_value + spot_available
+        total_portfolio_value = total_perp_value + spot_available
 
-        # Collect per-coin position weights
+        # Collect per-coin position weights across all dexes
         positions = {}
-        for p in perp.get("assetPositions", []):
+        all_asset_positions = list(perp_native.get("assetPositions", []))
+        for dex_data in perp_by_dex.values():
+            all_asset_positions.extend(dex_data.get("assetPositions", []))
+
+        for p in all_asset_positions:
             pos = p.get("position", {})
             coin = pos.get("coin", "")
             szi = float(pos.get("szi", 0))

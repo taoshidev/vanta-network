@@ -544,11 +544,13 @@ class HyperliquidDataService(BaseDataService):
             mids = resp.json()
             if isinstance(mids, dict):
                 all_supported_keys = set(mids.keys())
-                # Also fetch non-default dex allMids so prefixed coins are not filtered out
+                # Also fetch non-default dex allMids so prefixed coins are not filtered out.
+                # Derive dexes from configured_coins (static + dynamic union) so all
+                # non-default dex pairs are covered regardless of HL_DYNAMIC_REGISTRY state.
                 non_default_dexes = {
-                    dtp.hl_coin.split(":")[0]
-                    for dtp in HL_DYNAMIC_REGISTRY.values()
-                    if ":" in dtp.hl_coin
+                    coin.split(":")[0]
+                    for coin in configured_coins
+                    if ":" in coin
                 }
                 for dex in non_default_dexes:
                     try:
