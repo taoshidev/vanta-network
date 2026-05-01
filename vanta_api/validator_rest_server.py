@@ -63,7 +63,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
     def __init__(self, api_keys_file, refresh_interval=15,
                  metrics_interval_minutes=5, running_unit_tests=False,
                  connection_mode:RPCConnectionMode = RPCConnectionMode.RPC,
-                 start_server=True, flask_host=None, flask_port=None, **kwargs):
+                 start_server=True, flask_host=None, flask_port=None,
+                 is_mainnet=True, **kwargs):
         """Initialize the REST server with API key handling and routing.
 
         Uses multiple inheritance pattern:
@@ -97,6 +98,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         """
         # Store validator-specific config before initializing base classes
         self.running_unit_tests = running_unit_tests
+        self.is_mainnet = is_mainnet
         self.nonce_manager = NonceManager()
         self.market_order_manager = MarketOrderManager(serve=False)
         self.data_path = ValiConfig.BASE_DIR
@@ -1372,6 +1374,9 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             "reopen_force_closed_orders": false
           }'
         """
+        if self.is_mainnet:
+            return jsonify({'error': 'Wipe endpoint is not available on mainnet'}), 403
+
         api_key = self._get_api_key_safe()
         if not self.is_valid_api_key(api_key):
             return jsonify({'error': 'Unauthorized access'}), 401

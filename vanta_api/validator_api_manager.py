@@ -16,7 +16,8 @@ class ValidatorAPIManager:
                  validator_hotkey=None,
                  api_host=None,
                  api_rest_port=None,
-                 api_ws_port=None):
+                 api_ws_port=None,
+                 is_mainnet=True):
         """Initialize API management with server configurations.
 
         Uses spawn_process() for process management with:
@@ -40,6 +41,7 @@ class ValidatorAPIManager:
         from vali_objects.vali_config import ValiConfig
 
         self.refresh_interval = refresh_interval
+        self.is_mainnet = is_mainnet
 
         # Store API configuration (use ValiConfig defaults if not provided)
         self.api_host = api_host if api_host is not None else ValiConfig.REST_API_HOST
@@ -90,7 +92,8 @@ class ValidatorAPIManager:
             enable_auto_restart=True,
             # Pass host/port configuration to REST server
             flask_host=self.api_host,
-            flask_port=self.api_rest_port
+            flask_port=self.api_rest_port,
+            is_mainnet=self.is_mainnet
         )
         print(f"REST API server spawned (PID: {self.rest_handle.pid})")
 

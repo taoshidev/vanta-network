@@ -283,7 +283,8 @@ class Validator(ValidatorBase):
                 validator_hotkey=self.wallet.hotkey.ss58_address,
                 api_host=getattr(self.config, 'api_host', '0.0.0.0'),
                 api_rest_port=getattr(self.config, 'api_rest_port', 48888),
-                api_ws_port=getattr(self.config, 'api_ws_port', 8765)
+                api_ws_port=getattr(self.config, 'api_ws_port', 8765),
+                is_mainnet=self.is_mainnet
             )
 
             # Start the API Manager in a separate thread. Handle seperately from other RPCServers as Flask was giving issues.
