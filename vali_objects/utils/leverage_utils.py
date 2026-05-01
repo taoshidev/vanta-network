@@ -1,5 +1,5 @@
 from vali_objects.enums.miner_bucket_enum import MinerBucket
-from vali_objects.vali_config import TradePair, TradePairCategory, ValiConfig  # noqa: E402
+from vali_objects.vali_config import TradePair, TradePairCategory, TradePairSource, ValiConfig  # noqa: E402
 
 
 def get_order_leverage_bounds() -> tuple[float, float]:
@@ -36,7 +36,10 @@ def get_tier_positional_leverage(tier: int, trade_pair: TradePair) -> float:
 
     XAUUSD/XAGUSD (and any future commodity using COMMODITIES_MIN_LEVERAGE) share
     the FOREX portfolio cap but have their own 'COMMODITIES' positional column.
+    HL trade pairs use CRYPTO limits for now regardless of their category.
     """
+    if trade_pair.src == TradePairSource.HYPERLIQUID:
+        return ValiConfig.TIER_POSITIONAL_LEVERAGE[tier][TradePairCategory.CRYPTO]
     if trade_pair.min_leverage == ValiConfig.COMMODITIES_MIN_LEVERAGE:
         return ValiConfig.TIER_POSITIONAL_LEVERAGE[tier]['COMMODITIES']
     return ValiConfig.TIER_POSITIONAL_LEVERAGE[tier][trade_pair.trade_pair_category]
