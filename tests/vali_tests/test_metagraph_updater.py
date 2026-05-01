@@ -165,7 +165,10 @@ class TestSubtensorOpsManager(TestBase):
         mock_subtensor.metagraph = Mock(return_value=self._create_mock_metagraph(hotkeys_list))
 
         # Mock set_weights method
-        mock_subtensor.set_weights = Mock(return_value=(True, None))
+        mock_response = Mock()
+        mock_response.success = True
+        mock_response.message = None
+        mock_subtensor.set_weights = Mock(return_value=mock_response)
 
         # Mock substrate connection for cleanup
         mock_subtensor.substrate = Mock()
@@ -333,7 +336,10 @@ class TestSubtensorOpsManager(TestBase):
 
         # Mock set_weights to fail
         error_msg = "Subtensor returned: Invalid transaction"
-        updater.subtensor.set_weights = Mock(return_value=(False, error_msg))
+        mock_fail_response = Mock()
+        mock_fail_response.success = False
+        mock_fail_response.message = error_msg
+        updater.subtensor.set_weights = Mock(return_value=mock_fail_response)
 
         # Call set_weights_rpc (should fail)
         result = updater.set_weights_rpc([0, 1], [0.6, 0.4], 200)

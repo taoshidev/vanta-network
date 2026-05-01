@@ -249,7 +249,10 @@ class SubtensorOpsManager(CacheController):
         mock_subtensor.metagraph = Mock(side_effect=mock_metagraph_func)
 
         # Mock set_weights method (for validators)
-        mock_subtensor.set_weights = Mock(return_value=(True, None))
+        mock_response = Mock()
+        mock_response.success = True
+        mock_response.message = None
+        mock_subtensor.set_weights = Mock(return_value=mock_response)
 
         # Mock substrate connection for cleanup
         mock_subtensor.substrate = Mock()
@@ -629,7 +632,7 @@ class SubtensorOpsManager(CacheController):
         for attempt in range(max_retries):
             try:
                 with get_subtensor_lock():
-                    success, error_msg = self.subtensor.set_weights(
+                    response = self.subtensor.set_weights(
                         netuid=netuid,
                         wallet=wallet,
                         uids=uids,
@@ -637,6 +640,8 @@ class SubtensorOpsManager(CacheController):
                         version_key=version_key
                     )
 
+                success = response.success
+                error_msg = response.message
                 bt.logging.info(f"Weight setting attempt {attempt + 1}: success={success}, error={error_msg}")
                 return success, error_msg
 
