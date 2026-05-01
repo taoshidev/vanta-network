@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from data_generator.base_data_service import BaseDataService, POLYGON_PROVIDER_NAME
 from shared_objects.error_utils import ErrorUtils
 from time_util.time_util import TimeUtil
-from vali_objects.vali_config import TradePair, TradePairCategory
+from vali_objects.vali_config import TradePair, TradePairCategory, TradePairSource
 import time
 
 from vali_objects.utils.vali_utils import ValiUtils
@@ -961,6 +961,10 @@ class PolygonDataService(BaseDataService):
         return ret
 
     def unified_candle_fetcher(self, trade_pair: TradePair, start_timestamp_ms: int, end_timestamp_ms: int, timespan: str=None):
+        # HL-sourced pairs have no valid Polygon tickers; price data comes from the HL data service
+        if hasattr(trade_pair, 'src') and trade_pair.src == TradePairSource.HYPERLIQUID:
+            return []
+
         # In unit test mode, check for injected test candle data first
         if self.running_unit_tests:
             test_data = self._get_test_candle_data(trade_pair, start_timestamp_ms, end_timestamp_ms)
