@@ -1529,7 +1529,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
         When hl_address is provided, creates an HL-linked subaccount whose trades are
         automatically forwarded from the HyperliquidTracker as Vanta signals.
-        asset_class is required for standard subaccounts; HL subaccounts always use 'crypto'.
+        asset_class is required for standard subaccounts; HL subaccounts always use 'hl_all'.
 
         Example (standard):
         curl -X POST http://localhost:48888/entity/create-subaccount \\
@@ -1549,7 +1549,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             "entity_hotkey": "5GhDr...",
             "entity_coldkey": "5FxY...",
             "account_size": 25000,
-            "asset_class": "crypto",
+            "asset_class": "hl_all",
             "hl_address": "0x1234...abcd",
             "payout_address": "0xAbCd...1234",
             "signature": "0x..."
@@ -2035,7 +2035,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         asset_class = limits_data['asset_class']
         challenge_bucket = limits_data['challenge_bucket']
 
-        # HL subaccounts are always crypto
+        # HL subaccounts use hl_all asset class
         try:
             category = TradePairCategory(asset_class)
         except ValueError:

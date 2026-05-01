@@ -685,6 +685,7 @@ class DynamicTradePair:
     is_forex: bool = False
     is_equities: bool = False
     is_indices: bool = False
+    is_commodities: bool = False
     is_blocked: bool = False
     lot_size: int = 1
     src: TradePairSource = TradePairSource.HYPERLIQUID

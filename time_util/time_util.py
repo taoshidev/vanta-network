@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo  # Make sure to use Python 3.9 or later
 
 import pandas as pd
 
-from vali_objects.vali_config import TradePair
+from vali_objects.vali_config import TradePair, TradePairSource
 import bittensor as bt
 
 pd.set_option('future.no_silent_downcasting', True)
@@ -240,6 +240,9 @@ class UnifiedMarketCalendar:
         #t0 = time.time()
         if not trade_pair:
             raise ValueError("Trade pair is required")
+        # HL-sourced pairs trade 24/7 on HyperLiquid regardless of category
+        if trade_pair.src == TradePairSource.HYPERLIQUID:
+            return True
         if trade_pair.is_crypto:
             # Crypto markets are assumed to be always open
             return True
