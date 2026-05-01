@@ -2035,10 +2035,12 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         asset_class = limits_data['asset_class']
         challenge_bucket = limits_data['challenge_bucket']
 
-        # HL subaccounts use hl_all asset class
         try:
             category = TradePairCategory(asset_class)
         except ValueError:
+            category = TradePairCategory.CRYPTO
+        # todo: hl_all subaccounts use crypto leverage tiers for now
+        if category == TradePairCategory.HL_ALL:
             category = TradePairCategory.CRYPTO
 
         in_challenge = challenge_bucket is None or challenge_bucket == MinerBucket.SUBACCOUNT_CHALLENGE.value
