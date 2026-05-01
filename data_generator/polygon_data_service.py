@@ -1204,7 +1204,8 @@ class PolygonDataService(BaseDataService):
         """
         returns the bid and ask quote for a trade_pair at processed_ms
         """
-        # polygon_ticker = self.trade_pair_to_polygon_ticker(trade_pair)
+        if hasattr(trade_pair, 'src') and trade_pair.src == TradePairSource.HYPERLIQUID:
+            return None, None, None
 
         if self.POLYGON_CLIENT is None:
             self.instantiate_not_pickleable_objects()
