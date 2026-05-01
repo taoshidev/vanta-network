@@ -870,9 +870,11 @@ class MinerStatisticsManager:
                 "annual_downside": extra.get("annual_downside_volatility"),
             }
             # Drawdowns
+            cp_drawdown_stats = self.challengeperiod_manager.get_drawdown_stats(hotkey) or {}
             drawdowns_subdict = {
                 "instantaneous_max_drawdown": extra.get("instantaneous_max_drawdown"),
                 "daily_max_drawdown": extra.get("daily_max_drawdown"),
+                **cp_drawdown_stats,
             }
             # Engagement
             engagement_subdict = {
