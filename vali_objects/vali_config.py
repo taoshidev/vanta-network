@@ -480,8 +480,14 @@ class ValiConfig:
     SUBACCOUNT_COLLATERAL_AMOUNT = 1000.0  # Placeholder collateral amount per subaccount
 
     # Challenge Period Configuration
-    SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD = 0.08  # 8% returns required to pass evaluation
-    SUBACCOUNT_CRYPTO_CHALLENGE_RETURNS_THRESHOLD = 0.1  # 10% returns required to pass crypto evaluation
+    SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD_DEFAULT = 0.08  # Default fallback returns threshold
+    SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD = {
+        TradePairCategory.CRYPTO: 0.1,   # 10% returns required to pass crypto evaluation
+        TradePairCategory.FOREX: 0.08,   # 8% returns required to pass forex evaluation
+        TradePairCategory.INDICES: 0.08, # 8% returns required to pass indices evaluation
+        TradePairCategory.EQUITIES: 0.1, # 10% returns required to pass equities evaluation
+        TradePairCategory.HL_ALL: 0.1,   # 10% returns required to pass hl all markets evaluation
+    }
     SUBACCOUNT_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD = 0.05    # Rule 1: 5% intraday drop from day-open equity eliminates
     SUBACCOUNT_CHALLENGE_EOD_DRAWDOWN_THRESHOLD = 0.05  # Rule 2: 5% drop from highest-ever EOD equity eliminates
     SUBACCOUNT_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD = 0.08
