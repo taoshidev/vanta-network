@@ -351,9 +351,10 @@ class ValiConfig:
     HS_MIN_LEVERAGE = 0.01              # HS minimum leverage for any DynamicTradePair position
 
     # Minimum position size limits
-    FOREX_MIN_POSITION_SIZE_LOTS = 0.01        # micro lot — subaccounts > $10K
-    FOREX_MIN_POSITION_SIZE_LOTS_NANO = 0.001  # nano lot  — subaccounts ≤ $10K
-    FOREX_SMALL_ACCOUNT_THRESHOLD = 10_000.0   # USD; subaccounts at or below this use nano lot minimum
+    FOREX_MIN_POSITION_SIZE_LOTS = 0.01            # micro lot — subaccounts above FOREX_SMALL_ACCOUNT_THRESHOLD
+    FOREX_MIN_POSITION_SIZE_LOTS_NANO = 0.001      # nano lot — deprecated; no account tier currently uses this
+    FOREX_MIN_POSITION_SIZE_LOTS_SUB_NANO = 0.0001 # sub-nano lot — subaccounts at or below FOREX_SMALL_ACCOUNT_THRESHOLD
+    FOREX_SMALL_ACCOUNT_THRESHOLD = 10_000.0       # USD; subaccounts at or below this use sub-nano lot minimum
     CRYPTO_MIN_POSITION_SIZE_USD = 10.0  # $10 USD
     EQUITIES_MIN_POSITION_SIZE_SHARES = 0.01 # 0.01 shares
 

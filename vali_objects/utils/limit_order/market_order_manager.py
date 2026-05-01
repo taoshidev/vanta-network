@@ -428,7 +428,7 @@ class MarketOrderManager():
             quantity = (value * usd_base_conversion) / trade_pair.lot_size
 
         if trade_pair.is_forex:
-            lot_increment = (ValiConfig.FOREX_MIN_POSITION_SIZE_LOTS_NANO
+            lot_increment = (ValiConfig.FOREX_MIN_POSITION_SIZE_LOTS_SUB_NANO
                              if portfolio_value <= ValiConfig.FOREX_SMALL_ACCOUNT_THRESHOLD
                              else ValiConfig.FOREX_MIN_POSITION_SIZE_LOTS)
             quantity = math.trunc(quantity / lot_increment) * lot_increment if use_floor else round(quantity / lot_increment) * lot_increment
