@@ -167,10 +167,10 @@ pending → active → [SUBACCOUNT_CHALLENGE] → [SUBACCOUNT_FUNDED]
 
 **To pass the challenge period**, a subaccount must achieve:
 
-| Asset Class            | Minimum Return Required |
-|------------------------|-------------------------|
-| Forex, Equities        | ≥ 8%                    |
-| Crypto, HL All         | ≥ 10%                   |
+| Asset Class              | Minimum Return Required |
+|--------------------------|-------------------------|
+| Forex                    | ≥ 8%                    |
+| Crypto, Equities, HL All | ≥ 10%                   |
 
 Passing is evaluated continuously — a subaccount is promoted immediately once `min(account balance, account equity)` meets the threshold. Assessment runs automatically via the validator's EntityServer daemon every 5 minutes.
 
