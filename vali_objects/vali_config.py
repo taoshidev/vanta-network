@@ -480,7 +480,7 @@ class ValiConfig:
     SUBACCOUNT_COLLATERAL_AMOUNT = 1000.0  # Placeholder collateral amount per subaccount
 
     # Challenge Period Configuration
-    SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD_DEFAULT = 0.08  # Default fallback returns threshold
+    SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD_DEFAULT = 0.1  # Default fallback returns threshold
     SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD = {
         TradePairCategory.CRYPTO: 0.1,   # 10% returns required to pass crypto evaluation
         TradePairCategory.FOREX: 0.08,   # 8% returns required to pass forex evaluation
