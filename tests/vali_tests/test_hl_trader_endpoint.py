@@ -17,7 +17,7 @@ from unittest.mock import MagicMock, patch, PropertyMock
 from flask import Flask, jsonify, Response
 from time_util.time_util import TimeUtil
 from vali_objects.utils.vali_bkp_utils import CustomEncoder
-from vali_objects.vali_config import ValiConfig
+from vali_objects.vali_config import ValiConfig, TradePairCategory
 
 
 # ==================== Test constants ====================
@@ -295,7 +295,7 @@ class TestHlTraderEndpoint(unittest.TestCase):
         self.assertAlmostEqual(challenge_progress['returns_percent'], 6.0)
         self.assertAlmostEqual(
             challenge_progress['target_return_percent'],
-            ValiConfig.SUBACCOUNT_CRYPTO_CHALLENGE_RETURNS_THRESHOLD * 100.0
+            ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD[TradePairCategory.CRYPTO] * 100.0
         )
         self.assertAlmostEqual(challenge_progress['returns_progress_percent'], 60.0)
         self.assertAlmostEqual(challenge_progress['challenge_completion_percent'], 60.0)

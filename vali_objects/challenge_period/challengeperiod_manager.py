@@ -572,9 +572,9 @@ class ChallengePeriodManager(CacheController):
                 bt.logging.error(f"[SYNTH_EVAL {hotkey}] Subaccount does not have asset class - unexpected")
                 continue
 
-            returns_threshold = ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD
-            if subaccount_asset_class in (TradePairCategory.CRYPTO, TradePairCategory.HL_ALL):
-                returns_threshold = ValiConfig.SUBACCOUNT_CRYPTO_CHALLENGE_RETURNS_THRESHOLD
+            returns_threshold = ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD.get(
+                subaccount_asset_class, ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD_DEFAULT
+            )
 
             now_ms = current_time if current_time is not None else TimeUtil.now_in_millis()
             midnight_cps, last_eod, daily_open_equity, eod_hwm = self._parse_eod_checkpoints(ledger, now_ms)
@@ -1080,10 +1080,8 @@ class ChallengePeriodManager(CacheController):
         exceeds_ret_threshold = []
         for hotkey in promote_hotkeys:
             asset_class = miner_asset_selections.get(hotkey)
-            returns_threshold = (
-                ValiConfig.SUBACCOUNT_CRYPTO_CHALLENGE_RETURNS_THRESHOLD
-                if asset_class in (TradePairCategory.CRYPTO, TradePairCategory.HL_ALL)
-                else ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD
+            returns_threshold = ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD.get(
+                asset_class, ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD_DEFAULT
             )
             account = accounts.get(hotkey, None)
             result = self._compute_portfolio_return(hotkey, account)

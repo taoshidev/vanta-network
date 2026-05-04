@@ -1495,10 +1495,9 @@ class EntityManager(ValidatorBroadcastBase):
             elif bucket_str == 'testing':
                 # Calculate challenge progress
                 asset_class = (subaccount.asset_class or '').lower()
-                target_return = (
-                    ValiConfig.SUBACCOUNT_CRYPTO_CHALLENGE_RETURNS_THRESHOLD
-                    if asset_class in (TradePairCategory.CRYPTO.value, TradePairCategory.HL_ALL.value)
-                    else ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD
+                target_return = ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD.get(
+                    TradePairCategory(asset_class) if asset_class else None,
+                    ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD_DEFAULT
                 )
 
                 current_return = None
