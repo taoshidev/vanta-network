@@ -254,7 +254,7 @@ class PolygonDataService(BaseDataService):
         super().__init__(
             provider_name=POLYGON_PROVIDER_NAME,
             running_unit_tests=running_unit_tests,
-            enabled_websocket_categories={TradePairCategory.CRYPTO, TradePairCategory.FOREX}
+            enabled_websocket_categories={TradePairCategory.CRYPTO, TradePairCategory.FOREX, TradePairCategory.EQUITIES}
         )
 
         self.MARKET_STATUS = None
@@ -1176,7 +1176,6 @@ class PolygonDataService(BaseDataService):
             timespan = "hour"
         else:
             timespan = "day"
-
         if force_timespan:
             timespan = force_timespan
 
