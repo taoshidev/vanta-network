@@ -641,7 +641,7 @@ class SubtensorOpsManager(CacheController):
                     )
 
                 success = response.success
-                error_msg = response.message
+                error_msg = str(response.error) if response.error is not None else response.message
                 bt.logging.info(f"Weight setting attempt {attempt + 1}: success={success}, error={error_msg}")
                 return success, error_msg
 
