@@ -36,7 +36,7 @@ class Miner:
         if running_unit_tests:
             self.wallet = self._create_mock_wallet()
         else:
-            self.wallet = bt.wallet(config=self.config)
+            self.wallet = bt.Wallet(config=self.config)
 
         # Initialize Slack notifier
         if running_unit_tests:
@@ -290,11 +290,11 @@ class Miner:
         # Adds override arguments for network and netuid.
         parser.add_argument("--netuid", type=int, default=8, help="The chain subnet uid.")
         # Adds subtensor specific arguments i.e. --subtensor.chain_endpoint ... --subtensor.network ...
-        bt.subtensor.add_args(parser)
+        bt.Subtensor.add_args(parser)
         # Adds logging specific arguments i.e. --logging.debug ..., --logging.trace .. or --logging.logging_dir ...
         bt.logging.add_args(parser)
         # Adds wallet specific arguments i.e. --wallet.name ..., --wallet.hotkey ./. or --wallet.path ...
-        bt.wallet.add_args(parser)
+        bt.Wallet.add_args(parser)
         # Adds an argument to allow setting write_failed_signal_logs from the command line
         parser.add_argument("--write_failed_signal_logs", type=bool, default=None,
                             help="Whether to write logs for failed signals. Default is True unless --subtensor.network is 'test'.")
@@ -338,7 +338,7 @@ class Miner:
         )
 
         # Parse the config (will take command-line arguments if provided)
-        config = bt.config(parser)
+        config = bt.Config(parser)
         bt.logging.enable_info()
         if config.logging.debug:
             bt.logging.enable_debug()

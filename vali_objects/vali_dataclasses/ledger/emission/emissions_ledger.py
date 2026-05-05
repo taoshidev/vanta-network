@@ -949,8 +949,8 @@ class EmissionsLedgerManager:
             bt.logging.info(f"Initializing subtensor connection to {self.archive_endpoint}, netuid: {self.netuid}")
 
             parser = argparse.ArgumentParser()
-            bt.subtensor.add_args(parser)
-            config = bt.config(parser, args=[])
+            bt.Subtensor.add_args(parser)
+            config = bt.Config(parser, args=[])
 
             # Override the chain endpoint
             config.subtensor.chain_endpoint = self.archive_endpoint
@@ -958,7 +958,7 @@ class EmissionsLedgerManager:
             # Clear network so it uses our custom endpoint
             config.subtensor.network = None
 
-            self.subtensor = bt.subtensor(config=config)
+            self.subtensor = bt.Subtensor(config=config)
             bt.logging.info(f"Connected to: {self.subtensor.chain_endpoint}")
 
         # Initialize live price fetcher client if not already initialized

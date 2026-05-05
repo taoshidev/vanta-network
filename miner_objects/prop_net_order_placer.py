@@ -271,7 +271,7 @@ class PropNetOrderPlacer:
         if self.running_unit_tests:
             return self._send_order_test_mode(synapse)
 
-        dendrite = bt.dendrite(wallet=self.wallet)
+        dendrite = bt.Dendrite(wallet=self.wallet)
         try:
             for attempt in range(self.MAX_NETWORK_RETRIES):
                 try:
@@ -481,7 +481,7 @@ class PropNetOrderPlacer:
 
         async def _query_validators_async(axons, send_signal_request):
             """Async helper for background validator queries."""
-            dendrite = bt.dendrite(wallet=self.wallet)
+            dendrite = bt.Dendrite(wallet=self.wallet)
             try:
                 await dendrite.aquery(axons, send_signal_request)
             finally:

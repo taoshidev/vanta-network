@@ -59,7 +59,7 @@ class PositionInspector:
         remaining_validators_to_query = [v for v in validators if v.hotkey not in hotkey_to_positions]
 
         # Use async context manager for automatic cleanup
-        async with bt.dendrite(wallet=self.wallet) as dendrite:
+        async with bt.Dendrite(wallet=self.wallet) as dendrite:
             responses = await dendrite.aquery(remaining_validators_to_query, GetPositions(version=1), deserialize=True)
 
         hotkey_to_v_trust = {neuron.hotkey: neuron.validator_trust for neuron in self._metagraph_client.get_neurons()}

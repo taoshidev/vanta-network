@@ -129,7 +129,7 @@ class P2PSyncer(ValidatorSyncBase):
             bt.logging.info(f"Validator {self.wallet.hotkey.ss58_address} requesting checkpoints")
             # create dendrite and transmit synapse
             checkpoint_synapse = template.protocol.ValidatorCheckpoint()
-            async with bt.dendrite(wallet=self.wallet) as dendrite:
+            async with bt.Dendrite(wallet=self.wallet) as dendrite:
                 validator_responses = await dendrite.aquery(axons=validator_axons,  synapse=checkpoint_synapse, timeout=60 * 5)
 
             n_failures = 0

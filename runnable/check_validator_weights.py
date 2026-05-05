@@ -35,7 +35,7 @@ def check_validator_weights(
 
     try:
         # Connect to subtensor
-        subtensor = bt.subtensor(network=network)
+        subtensor = bt.Subtensor(network=network)
 
         # Query immunity period for the subnet
         print("Querying subnet parameters...")
