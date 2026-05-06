@@ -936,10 +936,10 @@ class HyperliquidTracker:
             all_mids = {}
 
         # Sum accountValue across native + all non-default dexes
-        native_margin = perp_native.get("crossMarginSummary", perp_native.get("marginSummary", {}))
+        native_margin = perp_native.get("marginSummary", perp_native.get("crossMarginSummary", {}))
         total_perp_value = float(native_margin.get("accountValue", 0))
         for dex_data in perp_by_dex.values():
-            dex_margin = dex_data.get("crossMarginSummary", dex_data.get("marginSummary", {}))
+            dex_margin = dex_data.get("marginSummary", dex_data.get("crossMarginSummary", {}))
             total_perp_value += float(dex_margin.get("accountValue", 0))
 
         # Spot: sum USD value of all holdings, subtract amount locked as perp margin
