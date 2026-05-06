@@ -476,6 +476,8 @@ class SubtensorOpsManager(CacheController):
 
                 # Track failure and send alerts
                 if self.weight_failure_tracker:
+                    if error_msg is None:
+                        error_msg = "unknown error"
                     failure_type = self.weight_failure_tracker.classify_failure(error_msg)
                     self.weight_failure_tracker.track_failure(error_msg, failure_type)
 
