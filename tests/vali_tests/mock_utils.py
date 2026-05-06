@@ -452,7 +452,10 @@ class MockSubtensorWeightSetterHelper:
     def create_mock_subtensor():
         """Create a properly configured mock subtensor"""
         mock_subtensor = MagicMock()
-        mock_subtensor.set_weights = MagicMock(return_value=(True, "Success"))
+        mock_response = MagicMock()
+        mock_response.success = True
+        mock_response.message = "Success"
+        mock_subtensor.set_weights = MagicMock(return_value=mock_response)
         mock_subtensor.get_current_block = MagicMock(return_value=10000)
         return mock_subtensor
 

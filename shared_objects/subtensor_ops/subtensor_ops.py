@@ -164,7 +164,7 @@ class SubtensorOpsManager(CacheController):
             self.subtensor = self._create_mock_subtensor()
         else:
             try:
-                self.subtensor = bt.subtensor(config=self.config)
+                self.subtensor = bt.Subtensor(config=self.config)
             except (ConnectionRefusedError, ConnectionError, OSError) as e:
                 bt.logging.error(f"Failed to create initial subtensor connection: {e}")
                 bt.logging.warning("Will retry during first metagraph update loop iteration")
@@ -249,7 +249,10 @@ class SubtensorOpsManager(CacheController):
         mock_subtensor.metagraph = Mock(side_effect=mock_metagraph_func)
 
         # Mock set_weights method (for validators)
-        mock_subtensor.set_weights = Mock(return_value=(True, None))
+        mock_response = Mock()
+        mock_response.success = True
+        mock_response.message = None
+        mock_subtensor.set_weights = Mock(return_value=mock_response)
 
         # Mock substrate connection for cleanup
         mock_subtensor.substrate = Mock()
@@ -382,13 +385,13 @@ class SubtensorOpsManager(CacheController):
             synapse_class_name = synapse.__class__.__name__
 
             # Create wallet from config
-            wallet = bt.wallet(config=self.config)
+            wallet = bt.Wallet(config=self.config)
 
             target_hotkeys = [a.hotkey for a in validator_axons_list]
             bt.logging.info(f"[BROADCAST RPC] Broadcasting {synapse_class_name} to {len(validator_axons_list)} validators: {target_hotkeys}")
 
             async def do_broadcast():
-                async with bt.dendrite(wallet=wallet) as dendrite:
+                async with bt.Dendrite(wallet=wallet) as dendrite:
                     responses = await dendrite.aquery(validator_axons_list, synapse)
 
                     success_count = 0
@@ -444,7 +447,7 @@ class SubtensorOpsManager(CacheController):
             if self.running_unit_tests:
                 wallet = self._create_mock_wallet()
             else:
-                wallet = bt.wallet(config=self.config)
+                wallet = bt.Wallet(config=self.config)
 
             bt.logging.info(f"[RPC] Processing weight setting request for {len(uids)} UIDs")
 
@@ -473,6 +476,8 @@ class SubtensorOpsManager(CacheController):
 
                 # Track failure and send alerts
                 if self.weight_failure_tracker:
+                    if error_msg is None:
+                        error_msg = "unknown error"
                     failure_type = self.weight_failure_tracker.classify_failure(error_msg)
                     self.weight_failure_tracker.track_failure(error_msg, failure_type)
 
@@ -629,7 +634,7 @@ class SubtensorOpsManager(CacheController):
         for attempt in range(max_retries):
             try:
                 with get_subtensor_lock():
-                    success, error_msg = self.subtensor.set_weights(
+                    response = self.subtensor.set_weights(
                         netuid=netuid,
                         wallet=wallet,
                         uids=uids,
@@ -637,6 +642,8 @@ class SubtensorOpsManager(CacheController):
                         version_key=version_key
                     )
 
+                success = response.success
+                error_msg = str(response.error) if response.error is not None else response.message
                 bt.logging.info(f"Weight setting attempt {attempt + 1}: success={success}, error={error_msg}")
                 return success, error_msg
 
@@ -684,7 +691,7 @@ class SubtensorOpsManager(CacheController):
             if self.running_unit_tests:
                 self.subtensor = self._create_mock_subtensor()
             else:
-                self.subtensor = bt.subtensor(config=self.config)
+                self.subtensor = bt.Subtensor(config=self.config)
     
     def _send_weight_failure_alert(self, err_msg, failure_type, wallet):
         """Send contextual Slack alert for weight setting failure"""
@@ -960,7 +967,7 @@ class SubtensorOpsManager(CacheController):
                 if self.running_unit_tests:
                     new_subtensor = self._create_mock_subtensor()
                 else:
-                    new_subtensor = bt.subtensor(config=self.config)
+                    new_subtensor = bt.Subtensor(config=self.config)
 
                 # Only cleanup old connection after new one successfully created (prevents file descriptor leak)
                 self._cleanup_subtensor_connection()

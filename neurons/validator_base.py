@@ -113,11 +113,11 @@ class ValidatorBase:
         parser.add_argument("--netuid", type=int, default=1, help="The chain subnet uid.")
 
         # Adds subtensor specific arguments i.e. --subtensor.chain_endpoint ... --subtensor.network ...
-        bt.subtensor.add_args(parser)
+        bt.Subtensor.add_args(parser)
         # Adds logging specific arguments i.e. --logging.debug ..., --logging.trace .. or --logging.logging_dir ...
         bt.logging.add_args(parser)
         # Adds wallet specific arguments i.e. --wallet.name ..., --wallet.hotkey ./. or --wallet.path ...
-        bt.wallet.add_args(parser)
+        bt.Wallet.add_args(parser)
 
         # Add Slack webhook arguments
         parser.add_argument(
@@ -133,10 +133,10 @@ class ValidatorBase:
             help="Slack webhook URL for error notifications (optional, defaults to general webhook if not provided)"
         )
         # Adds axon specific arguments i.e. --axon.port ...
-        bt.axon.add_args(parser)
+        bt.Axon.add_args(parser)
         # Activating the parser to read any command-line inputs.
         # To print help message, run python3 template/miner.py --help
-        config = bt.config(parser)
+        config = bt.Config(parser)
         if config.logging.debug:
             bt.logging.enable_debug()
         if config.logging.trace:
@@ -158,7 +158,7 @@ class ValidatorBase:
     def wire_axon(self):
         bt.logging.info(f"setting port [{self.config.axon.port}]")
         bt.logging.info(f"setting external port [{self.config.axon.external_port}]")
-        self.axon = bt.axon(
+        self.axon = bt.Axon(
             wallet=self.wallet, port=self.config.axon.port, external_port=self.config.axon.external_port
         )
         bt.logging.info(f"Axon {self.axon}")

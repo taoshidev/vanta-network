@@ -51,7 +51,7 @@ def main():
         help='Output file path (default: data/default_departed_hotkeys.json)'
     )
 
-    config = bt.config(parser)
+    config = bt.Config(parser)
     args = config
 
     print("=" * 80)
@@ -134,7 +134,7 @@ def main():
     # Step 1: Query the metagraph for current hotkeys
     print("Step 1: Querying metagraph for current hotkeys...")
     try:
-        subtensor = bt.subtensor(network=args.network)
+        subtensor = bt.Subtensor(network=args.network)
         print(f"Connected to subtensor: {subtensor.network}")
 
         metagraph = subtensor.metagraph(netuid=args.netuid)

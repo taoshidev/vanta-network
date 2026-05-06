@@ -127,7 +127,7 @@ class Validator(ValidatorBase):
         # Wallet holds cryptographic information, ensuring secure transactions and communication.
         bt.logging.info("Initializing validator wallet...")
         wallet_start_time = time.time()
-        self.wallet = bt.wallet(config=self.config)
+        self.wallet = bt.Wallet(config=self.config)
         wallet_elapsed_s = time.time() - wallet_start_time
         bt.logging.success(f"Validator wallet initialized in {wallet_elapsed_s:.2f}s")
 
