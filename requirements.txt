@@ -23,4 +23,3 @@ PySocks==1.7.1
 web3==7.12.1
 orjson==3.11.7
 git+https://github.com/taoshidev/collateral_sdk.git@1.0.8#egg=collateral_sdk
-git+https://github.com/taoshidev/vanta-cli.git@2.1.4#egg=vanta-cli
