@@ -1060,7 +1060,7 @@ class EntityMinerRestServer(MinerRestServer):
                 "account_size": account_size,
                 "asset_class": asset_class,
                 "signature": signature,
-                "version": "2.0.0"
+                "version": "2.2.1"
             }
             if admin is not None:
                 payload["admin"] = admin
