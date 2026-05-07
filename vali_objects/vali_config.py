@@ -151,7 +151,7 @@ class ValiConfig:
     VERSION = meta_version
 
     # minimum required vanta-cli version
-    VANTA_CLI_MINIMUM_VERSION = "1.0.5"
+    VANTA_CLI_MINIMUM_VERSION = "2.2.1"
 
     DAYS_IN_YEAR_CRYPTO = 365  # annualization factor
     DAYS_IN_YEAR_FOREX = 252
