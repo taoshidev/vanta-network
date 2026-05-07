@@ -710,6 +710,11 @@ class OrderProcessor:
                 miner_repo_version, market_order_manager
             )
 
+            try:
+                OrderProcessor.process_limit_cancel(None, None, "ALL", now_ms, miner_hotkey, limit_order_client)
+            except Exception as e:
+                bt.logging.warning(f"Failed to cancel bracket orders after FLAT_ALL: {e}")
+
             return OrderProcessingResult(
                 execution_type=ExecutionType.FLAT_ALL,
                 result_dict=result,
@@ -730,13 +735,7 @@ class OrderProcessor:
             # Cancel unfilled bracket orders immediately if position is now closed
             if updated_position and updated_position.is_closed_position:
                 try:
-                    limit_order_client.cancel_limit_order(
-                        miner_hotkey,
-                        updated_position.trade_pair.trade_pair_id,
-                        "ALL",
-                        now_ms,
-                        execution_type=ExecutionType.BRACKET
-                    )
+                    OrderProcessor.process_limit_cancel(None, updated_position.trade_pair, "ALL", now_ms, miner_hotkey, limit_order_client)
                 except Exception as e:
                     bt.logging.warning(f"Failed to cancel bracket orders after position close: {e}")
 
