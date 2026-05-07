@@ -48,6 +48,7 @@ from shared_objects.rate_limiter import RateLimiter
 from time_util.time_util import TimeUtil
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.exceptions.signal_exception import SignalException
+from vali_objects.miner_account.miner_account_client import MinerAccountClient
 from vali_objects.position_management.position_manager_client import PositionManagerClient
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.limit_order.order_processor import OrderProcessor
@@ -346,6 +347,12 @@ class HyperliquidTracker:
         # Position client for querying current Vanta positions (weight delta calculation)
         self._position_client = PositionManagerClient(
             port=ValiConfig.RPC_POSITIONMANAGER_PORT,
+            connect_immediately=False,
+            connection_mode=connection_mode
+        )
+
+        # Miner account client for querying current Vanta balance (weight delta calculation)
+        self._miner_account_client = MinerAccountClient(
             connect_immediately=False,
             connection_mode=connection_mode
         )
@@ -948,6 +955,8 @@ class HyperliquidTracker:
             coin = b.get("coin", "")
             total_qty = float(b.get("total", 0))
             hold_qty = float(b.get("hold", 0))
+            if total_qty == 0 and hold_qty == 0:
+                continue
             if coin == "USDC":
                 usd_val, hold_val = total_qty, hold_qty
             else:
@@ -1280,8 +1289,8 @@ class HyperliquidTracker:
 
         Uses portfolio-weight-to-delta approach:
         1. Fetch HL account state -> compute target position weight
-        2. Query current Vanta position -> compute current signed leverage
-        3. Delta = target - current -> build incremental Vanta signal
+        2. Query current Vanta position -> compute current signed weight
+        3. Delta = target - current -> convert to order quantity
         4. Calculate L2 orderbook slippage for taker fills
         """
         coin = fill.get("coin")
@@ -1376,53 +1385,79 @@ class HyperliquidTracker:
             sign = 1 if target_signed_weight > 0 else -1
             target_signed_weight = sign * max_lev
 
-        # Step 3: Get current Vanta position -> compute current signed leverage
+        # Step 3: Get current Vanta position -> compute current signed weight
         current_position = self._position_client.get_open_position_for_trade_pair(
             synthetic_hotkey, trade_pair_id
         )
+        has_open_position = current_position and not current_position.is_closed_position
 
-        if current_position and not current_position.is_closed_position:
-            if current_position.position_type == OrderType.LONG:
-                current_signed_lev = current_position.net_leverage
-            elif current_position.position_type == OrderType.SHORT:
-                current_signed_lev = -current_position.net_leverage
-            else:
-                current_signed_lev = 0.0
+        # HL flat: skip weight calculation, go straight to FLAT order
+        if target_signed_weight == 0.0:
+            if not has_open_position:
+                return
+            delta = 0.0
+            current_signed_weight = 0.0
+            order_quantity = None
         else:
-            current_signed_lev = 0.0
+            current_signed_weight = 0.0
 
-        # Step 4: Compute delta order
-        delta = target_signed_weight - current_signed_lev
+            price_result = self._price_fetcher_client.get_latest_price(
+                trade_pair, now_ms
+            )
+            current_price = price_result[0] if price_result else None
+            if not current_price or current_price <= 0:
+                bt.logging.warning(
+                    f"[HL_TRACKER] Cannot compute order: no price for "
+                    f"{trade_pair_id}, skipping fill for {synthetic_hotkey}"
+                )
+                return
+
+            vanta_balance = self._miner_account_client.get_balance(synthetic_hotkey)
+            if not vanta_balance or vanta_balance <= 0:
+                bt.logging.warning(
+                    f"[HL_TRACKER] Cannot compute order: invalid balance "
+                    f"{vanta_balance} for {synthetic_hotkey}, skipping fill"
+                )
+                return
+
+            if has_open_position:
+                current_position_value = (
+                    current_position.net_quantity
+                    * trade_pair.lot_size
+                    * current_price
+                )
+                current_signed_weight = current_position_value / vanta_balance
+
+            # Step 4: Compute delta and order quantity
+            delta = target_signed_weight - current_signed_weight
+            order_quantity = delta * vanta_balance / (trade_pair.lot_size * current_price)
 
         if abs(delta) < min_lev and target_signed_weight != 0.0:
             bt.logging.info(
                 f"[HL_TRACKER] Skipping fill: {coin} delta={delta:+.4f} below min leverage {min_lev} "
-                f"target={target_signed_weight:+.4f} current={current_signed_lev:+.4f} -> {synthetic_hotkey}"
+                f"target={target_signed_weight:+.4f} current={current_signed_weight:+.4f} -> {synthetic_hotkey}"
             )
             return
 
         # Block position increases for coins below the liquidity threshold.
         if below_threshold and delta != 0:
-            would_increase = (current_signed_lev >= 0 and delta > 0) or \
-                             (current_signed_lev <= 0 and delta < 0)
+            would_increase = (current_signed_weight >= 0 and delta > 0) or \
+                             (current_signed_weight <= 0 and delta < 0)
             if would_increase:
                 bt.logging.info(
                     f"[HL_TRACKER] Skipping fill: {coin} delta={delta:+.4f} blocked (below liquidity threshold) "
-                    f"current={current_signed_lev:+.4f} -> {synthetic_hotkey}"
+                    f"current={current_signed_weight:+.4f} -> {synthetic_hotkey}"
                 )
                 return
             # delta reduces or closes — allow through
 
-        # Step 5: Convert delta to order_type + leverage
+        # Step 5: Determine order type
         if target_signed_weight == 0.0:
             order_type = "FLAT"
-            leverage = 0.0
         elif delta > 0:
             order_type = "LONG"
-            leverage = delta
         else:
             order_type = "SHORT"
-            leverage = abs(delta)
 
         # === Step 6: Determine fill price from HL data ===
         # Taker (market order): simulate avg fill price by walking the local L2 orderbook
@@ -1445,41 +1480,43 @@ class HyperliquidTracker:
 
         if is_taker:
             if order_type == "FLAT":
-                translated_size_usd = abs(current_signed_lev) * account_size
-                is_buying = current_signed_lev < 0  # closing SHORT = buying
+                translated_size_usd = abs(current_position.net_quantity * trade_pair.lot_size * raw_fill_price) if raw_fill_price else 0
+                is_buying = current_position.net_quantity < 0
             else:
-                translated_size_usd = leverage * account_size
-                is_buying = order_type == "LONG"
+                translated_size_usd = abs(order_quantity * trade_pair.lot_size * current_price)
+                is_buying = order_quantity > 0
 
             hl_fill_price = self._price_fetcher_client.simulate_avg_fill_price(
                 trade_pair, translated_size_usd, is_buying
             )
-            # Fallback: use actual HL fill price if orderbook simulation produced no result
             if hl_fill_price is None:
                 hl_fill_price = raw_fill_price
         else:
-            # Maker (limit order): actual HL fill price is exact, no adjustment needed
             hl_fill_price = raw_fill_price
 
-        # === Build signal ===
+        # === Build signal (use quantity to bypass leverage * account_size conversion) ===
         signal = {
             "order_type": order_type,
-            "leverage": leverage,
             "trade_pair": trade_pair_id,
             "execution_type": "MARKET",
             "is_hl": True,
             "is_hl_taker": is_taker,
-            "hl_slippage": 0.0,  # price already reflects execution quality; applying slippage on top would double-count it
+            "hl_slippage": 0.0,
         }
+        if order_type == "FLAT":
+            signal["leverage"] = 0.0
+        else:
+            signal["quantity"] = order_quantity
         if hl_fill_price:
             signal["price"] = hl_fill_price
 
         miner_order_uuid = str(uuid.uuid4())
 
         bt.logging.info(
-            f"[HL_TRACKER] Attempting order: {coin} {order_type} leverage={leverage:.4f} "
-            f"target_weight={target_signed_weight:+.4f} current_lev={current_signed_lev:+.4f} "
-            f"delta={delta:+.4f} fill_px={hl_fill_price} is_taker={is_taker} -> {synthetic_hotkey}"
+            f"[HL_TRACKER] Attempting order: {coin} {order_type} "
+            f"target_weight={target_signed_weight:+.4f} current_weight={current_signed_weight:+.4f} "
+            f"delta={delta:+.4f} qty={order_quantity} fill_px={hl_fill_price} "
+            f"is_taker={is_taker} -> {synthetic_hotkey}"
         )
 
         # === Process order ===
@@ -1509,8 +1546,8 @@ class HyperliquidTracker:
 
             bt.logging.info(
                 f"[HL_TRACKER] Processed fill: {coin} target_weight={target_signed_weight:+.4f} "
-                f"current_lev={current_signed_lev:+.4f} delta={delta:+.4f} -> "
-                f"{synthetic_hotkey} {order_type} leverage={leverage:.4f} "
+                f"current_weight={current_signed_weight:+.4f} delta={delta:+.4f} -> "
+                f"{synthetic_hotkey} {order_type} qty={order_quantity} "
                 f"fill_px={hl_fill_price} is_taker={is_taker}"
             )
 
