@@ -813,7 +813,7 @@ class EmissionsLedgerManager:
             )
 
         try:
-            free_balance_rao = account_info.get('data', {}).get('free', 0)
+            free_balance_rao = account_info.value['data']['free']
             tao_balance = float(free_balance_rao) / 1e9
         except Exception as e:
             raise ValueError(
