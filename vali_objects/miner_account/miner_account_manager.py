@@ -907,7 +907,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
             self._save_accounts_to_disk()
 
             bt.logging.info(
-                f"[REBUILD {hotkey[:8]}] capital_used=${account.capital_used:.2f}, "
+                f"[REBUILD {hotkey}] capital_used=${account.capital_used:.2f}, "
                 f"realized_pnl=${account.total_realized_pnl:.2f}, "
                 f"fees_paid=${account.total_fees_paid:.2f}, "
                 f"balance=${account.balance:.2f}"

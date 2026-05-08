@@ -803,6 +803,13 @@ class LimitOrderManager(CacheController):
                             bt.logging.info(f"[BRACKET CANCELLED] No position found for bracket order {order.order_uuid}, cancelling")
                             self._close_limit_order(miner_hotkey, order, OrderSource.BRACKET_CANCELLED, now_ms)
                             continue
+                        if order.processed_ms < position.open_ms:
+                            bt.logging.info(
+                                f"[BRACKET CANCELLED] Bracket {order.order_uuid} (processed_ms={order.processed_ms}) "
+                                f"predates current position (open_ms={position.open_ms}), cancelling as orphan"
+                            )
+                            self._close_limit_order(miner_hotkey, order, OrderSource.BRACKET_CANCELLED, now_ms)
+                            continue
 
                     # Capture best_price before attempt so we can detect trailing stop updates
                     prev_best_price = order.price if order.trailing_stop is not None else None
@@ -1388,6 +1395,13 @@ class LimitOrderManager(CacheController):
         - SHORT order: SL triggers when price > SL, TP triggers when price < TP
         """
         if not position:
+            return None
+
+        if order.processed_ms < position.open_ms:
+            bt.logging.info(
+                f"[BRACKET CANCELLED] Bracket {order.order_uuid} (processed_ms={order.processed_ms}) "
+                f"predates current position (open_ms={position.open_ms}), skipping trigger as orphan"
+            )
             return None
 
         bid_price = ps.bid if ps.bid > 0 else ps.open
