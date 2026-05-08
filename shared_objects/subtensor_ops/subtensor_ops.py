@@ -59,7 +59,8 @@ class WeightFailureTracker:
         if any(phrase in error_lower for phrase in [
             "no attempt made. perhaps it is too soon to commit weights",
             "too soon to commit weights",
-            "too soon to commit"
+            "too soon to commit",
+            "empty response from set_weights",
         ]):
             return "benign"
         
@@ -476,8 +477,6 @@ class SubtensorOpsManager(CacheController):
 
                 # Track failure and send alerts
                 if self.weight_failure_tracker:
-                    if error_msg is None:
-                        error_msg = "unknown error"
                     failure_type = self.weight_failure_tracker.classify_failure(error_msg)
                     self.weight_failure_tracker.track_failure(error_msg, failure_type)
 
@@ -643,7 +642,16 @@ class SubtensorOpsManager(CacheController):
                     )
 
                 success = response.success
-                error_msg = str(response.error) if response.error is not None else response.message
+                if response.error is not None:
+                    error_msg = str(response.error)
+                elif response.message:
+                    error_msg = response.message
+                else:
+                    try:
+                        response_details = vars(response)
+                    except TypeError:
+                        response_details = repr(response)
+                    error_msg = f"empty response from set_weights: {response_details}"
                 bt.logging.info(f"Weight setting attempt {attempt + 1}: success={success}, error={error_msg}")
                 return success, error_msg
 
