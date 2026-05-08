@@ -311,7 +311,7 @@ class MarketOrderManager():
             order.quantity, order.leverage, order.value = order_sizes
             bt.logging.info(f"[ADD_ORDER_DETAIL] order resized to ${order.value} (max position: {max_position_value}, max_cash: {buying_power}")
 
-        if order.value == 0 or order.quantity == 0:
+        if abs(order.value) < 1e-9 or abs(order.quantity) < 1e-9:
             raise SignalException(
                 f"Order rejected: 0 order size due to max position value ${max_position_value} or max buying power ${buying_power}"
             )
@@ -654,7 +654,7 @@ class MarketOrderManager():
                 usd_base_price = self.live_price_fetcher.get_usd_base_conversion(trade_pair, now_ms, price, signal_order_type, existing_position)
 
 
-                if signal_order_type == OrderType.FLAT or signal["quantity"] == -existing_position.net_quantity:
+                if signal_order_type == OrderType.FLAT or abs(existing_position.net_quantity + signal["quantity"]) < 1e-9:
                     signal["leverage"] = None
                     signal["value"] = None
                     signal["quantity"] = -existing_position.net_quantity

@@ -903,9 +903,9 @@ class Position(BaseModel):
         # Flatten order
         flatten = False
         if self.position_type == OrderType.LONG:
-            flatten = proposed_quantity <= 0 or proposed_value <= 0
+            flatten = proposed_quantity <= 1e-9 or proposed_value <= 1e-9
         elif self.position_type == OrderType.SHORT:
-            flatten = proposed_quantity >= 0 or proposed_value >= 0
+            flatten = proposed_quantity >= -1e-9 or proposed_value >= -1e-9
 
         if flatten:
             order.order_type = OrderType.FLAT
