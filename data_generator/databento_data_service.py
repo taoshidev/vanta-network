@@ -8,7 +8,7 @@ import databento as db
 
 from data_generator.base_data_service import BaseDataService
 from time_util.time_util import TimeUtil
-from vali_objects.vali_config import TradePair, TradePairCategory
+from vali_objects.vali_config import TradePair, TradePairCategory, TradePairSource
 from vali_objects.vali_dataclasses.corporate_actions import CorporateActions, DividendEvent
 from vali_objects.vali_dataclasses.price_source import PriceSource
 
@@ -125,7 +125,7 @@ class DatabentoDataService(BaseDataService):
         """Get all equity symbols from TradePair config."""
         symbols = []
         for tp in TradePair:
-            if tp.is_equities and tp not in self.UNSUPPORTED_TRADE_PAIRS:
+            if tp.is_equities and tp.src == TradePairSource.VANTA and not tp.is_blocked:
                 symbols.append(tp.trade_pair)
         return symbols
 
