@@ -752,7 +752,7 @@ class LimitOrderManager(CacheController):
             self._needs_initial_bracket_sync = False
 
         if now_ms - self._last_print_time_ms > 4 * 60 * 1000:
-            total_orders = sum(len(orders) for hotkey_dict in self._limit_orders.values() for orders in hotkey_dict.values())
+            total_orders = sum(len(orders) for hotkey_dict in list(self._limit_orders.values()) for orders in list(hotkey_dict.values()))
             bt.logging.info(f"Checking {total_orders} limit orders across {len(self._limit_orders)} trade pairs")
             for trade_pair, stats in self._price_stats.items():
                 bt.logging.info(
