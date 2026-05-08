@@ -350,13 +350,20 @@ class ValiConfig:
     HS_PORTFOLIO_MAX_LEVERAGE = 4.0     # HS portfolio-level leverage cap (funded accounts)
     HS_MIN_LEVERAGE = 0.01              # HS minimum leverage for any DynamicTradePair position
 
-    # Minimum position size limits
+    # Minimum position size
     FOREX_MIN_POSITION_SIZE_LOTS = 0.01            # micro lot — subaccounts above FOREX_SMALL_ACCOUNT_THRESHOLD
     FOREX_MIN_POSITION_SIZE_LOTS_NANO = 0.001      # nano lot — deprecated; no account tier currently uses this
     FOREX_MIN_POSITION_SIZE_LOTS_SUB_NANO = 0.0001 # sub-nano lot — subaccounts at or below FOREX_SMALL_ACCOUNT_THRESHOLD
     FOREX_SMALL_ACCOUNT_THRESHOLD = 10_000.0       # USD; subaccounts at or below this use sub-nano lot minimum
     CRYPTO_MIN_POSITION_SIZE_USD = 10.0  # $10 USD
     EQUITIES_MIN_POSITION_SIZE_SHARES = 0.01 # 0.01 shares
+
+    # Minimum order size in quantity (different from minimum position size ex. crypto)
+    CRYPTO_MIN_ORDER_SIZE = 0.00001
+    COMMODITIES_MIN_ORDER_SIZE = 0.00001
+    EQUITIES_MIN_ORDER_SIZE = 0.00001
+    FOREX_MIN_ORDER_SIZE = 0.01
+    FOREX_MIN_ORDER_SIZE_SUB_NANO = 0.0001
 
     MAX_DAILY_DRAWDOWN = 0.95  # Portfolio should never fall below .95 x of initial value when measured day to day
     MAX_TOTAL_DRAWDOWN = 0.9  # Portfolio should never fall below .90 x of initial value when measured at any instant
