@@ -813,7 +813,8 @@ class EmissionsLedgerManager:
             )
 
         try:
-            free_balance_rao = account_info.value['data']['free']
+            account_data = account_info.value if hasattr(account_info, 'value') else account_info
+            free_balance_rao = account_data.get('data', {}).get('free', 0)
             tao_balance = float(free_balance_rao) / 1e9
         except Exception as e:
             raise ValueError(
@@ -866,7 +867,7 @@ class EmissionsLedgerManager:
             if not coldkey:
                 raise ValueError(f"No coldkey found for hotkey {hotkey_ss58}")
 
-            coldkey_str = str(coldkey)
+            coldkey_str = str(coldkey.value if hasattr(coldkey, 'value') else coldkey)
 
             # Update ledger with coldkey if ledger exists
             if hotkey_ss58 in self.emissions_ledgers:
