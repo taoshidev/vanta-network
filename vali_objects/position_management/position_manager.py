@@ -111,7 +111,7 @@ class PositionManager:
             connection_mode=RPCConnectionMode.RPC,
             running_unit_tests=self.running_unit_tests
         )
-        self._hl_funding_client = HLFundingRateClient(connection_mode=RPCConnectionMode.RPC)
+        self._hl_funding_client = HLFundingRateClient(connection_mode=RPCConnectionMode.RPC, connect_immediately=False)
 
         # Load positions from disk on startup
         self._load_positions_from_disk()
