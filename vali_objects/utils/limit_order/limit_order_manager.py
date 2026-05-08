@@ -763,7 +763,7 @@ class LimitOrderManager(CacheController):
                 )
             self._last_print_time_ms = now_ms
 
-        for trade_pair, hotkey_dict in self._limit_orders.items():
+        for trade_pair, hotkey_dict in list(self._limit_orders.items()):
             # Check if market is open
             if not self.live_price_fetcher.is_market_open(trade_pair, now_ms):
                 if self.running_unit_tests:
@@ -781,7 +781,7 @@ class LimitOrderManager(CacheController):
                 continue
 
             # Iterate through all hotkeys for this trade pair
-            for miner_hotkey, orders in hotkey_dict.items():
+            for miner_hotkey, orders in list(hotkey_dict.items()):
                 last_fill_time = self._last_fill_time.get(trade_pair, {}).get(miner_hotkey, 0)
                 time_since_last_fill = now_ms - last_fill_time
 
@@ -789,7 +789,7 @@ class LimitOrderManager(CacheController):
                     bt.logging.info(f"Skipping {trade_pair.trade_pair_id} for {miner_hotkey}: {time_since_last_fill}ms since last fill")
                     continue
 
-                for order in orders:
+                for order in list(orders):
                     # Check regular limit orders, SL/TP Bracket orders, and stop-limit orders
                     if order.src not in [OrderSource.LIMIT_UNFILLED, OrderSource.BRACKET_UNFILLED, OrderSource.STOP_LIMIT_UNFILLED]:
                         continue
