@@ -653,8 +653,7 @@ class MarketOrderManager():
                 price = fill_price if fill_price else best_price_source.parse_appropriate_price(now_ms, trade_pair.is_forex, signal_order_type, existing_position)
                 usd_base_price = self.live_price_fetcher.get_usd_base_conversion(trade_pair, now_ms, price, signal_order_type, existing_position)
 
-
-                if signal_order_type == OrderType.FLAT or abs(existing_position.net_quantity + signal["quantity"]) < 1e-9:
+                if signal_order_type == OrderType.FLAT or (signal.get("quantity") and abs(existing_position.net_quantity + signal["quantity"]) < 1e-9):
                     signal["leverage"] = None
                     signal["value"] = None
                     signal["quantity"] = -existing_position.net_quantity
