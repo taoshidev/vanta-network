@@ -577,6 +577,12 @@ class EntityCollateralManager(CacheController):
                         f"({pending_reg_fees:.4f} theta, subaccounts: {pending_subaccount_ids})"
                     )
 
+                # Refresh collateral cache is called before slash pending
+                # need to offset cache until on-chain value is read in next daemon cycle
+                # Doesn't matter if slashing succeeded or failed
+                if pending_reg_fees > 0:
+                    self.decrement_collateral_cache(entity_hotkey, pending_reg_fees)
+
             except Exception as e:
                 bt.logging.warning(f"[ENTITY_COLLATERAL] slash_pending_fees: failed to process entity {entity_hotkey}: {e}")
 
