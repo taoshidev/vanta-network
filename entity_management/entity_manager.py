@@ -531,6 +531,10 @@ class EntityManager(ValidatorBroadcastBase):
 
             self._write_entities_from_memory_to_disk()
 
+            # Decrement collateral cache immediately to prevent double-spend before daemon slashes on-chain
+            if required_theta > 0:
+                self._entity_collateral_client.decrement_collateral_cache(entity_hotkey, required_theta)
+
             if not self.running_unit_tests:
                 try:
                     self._websocket_client.notify_new_subaccount(entity_hotkey, synthetic_hotkey)

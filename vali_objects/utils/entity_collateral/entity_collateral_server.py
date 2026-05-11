@@ -89,6 +89,10 @@ class EntityCollateralServer(RPCServerBase):
         """Get cached collateral balance for an entity (RPC method)."""
         return self._manager.get_cached_collateral(entity_hotkey)
 
+    def decrement_collateral_cache_rpc(self, entity_hotkey: str, theta: float) -> None:
+        """Decrement cached collateral balance for an entity (RPC method)."""
+        return self._manager.decrement_collateral_cache(entity_hotkey, theta)
+
     def compute_entity_required_collateral_rpc(self, entity_hotkey: str) -> float:
         """Compute required collateral for an entity (RPC method)."""
         return self._manager.compute_entity_required_collateral(entity_hotkey)

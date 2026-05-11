@@ -144,6 +144,21 @@ class EntityCollateralManager(CacheController):
         with self._cache_lock:
             return self._collateral_cache.get(entity_hotkey)
 
+    def decrement_collateral_cache(self, entity_hotkey: str, theta: float) -> None:
+        """
+        Decrement the cached collateral balance for an entity.
+
+        Called immediately on subaccount creation to reserve the registration fee
+        in the cache before the daemon slashes it on-chain, preventing double-spend.
+
+        Args:
+            entity_hotkey: The entity's hotkey.
+            theta: Amount to decrement in theta.
+        """
+        with self._cache_lock:
+            if entity_hotkey in self._collateral_cache:
+                self._collateral_cache[entity_hotkey] = max(0.0, self._collateral_cache[entity_hotkey] - theta)
+
     def _load_cache_from_disk(self) -> Dict[str, float]:
         """
         Load the entity collateral cache from disk.
