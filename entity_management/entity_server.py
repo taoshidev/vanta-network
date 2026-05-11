@@ -359,6 +359,9 @@ class EntityServer(RPCServerBase):
     def broadcast_subaccount_dashboard_rpc(self, synthetic_hotkey: str) -> None:
         self._manager.broadcast_subaccount_dashboard(synthetic_hotkey)
 
+    def mark_subaccount_reg_fee_slashed_rpc(self, entity_hotkey: str, subaccount_id: int) -> bool:
+        return self._manager.mark_subaccount_reg_fee_slashed(entity_hotkey, subaccount_id)
+
     def calculate_subaccount_payout_rpc(
         self,
         subaccount_uuid: str,

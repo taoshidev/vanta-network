@@ -301,6 +301,19 @@ class EntityClient(RPCClientBase):
     def broadcast_subaccount_dashboard(self, synthetic_hotkey: str) -> None:
         return self._server.broadcast_subaccount_dashboard_rpc(synthetic_hotkey)
 
+    def mark_subaccount_reg_fee_slashed(self, entity_hotkey: str, subaccount_id: int) -> bool:
+        """
+        Set reg_fee_slashed_ms to the current time for a subaccount.
+
+        Args:
+            entity_hotkey: The VANTA_ENTITY_HOTKEY
+            subaccount_id: The subaccount ID
+
+        Returns:
+            True if updated successfully, False if not found.
+        """
+        return self._server.mark_subaccount_reg_fee_slashed_rpc(entity_hotkey, subaccount_id)
+
     def calculate_subaccount_payout(
         self,
         subaccount_uuid: str,

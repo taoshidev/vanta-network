@@ -520,6 +520,58 @@ class EntityCollateralManager(CacheController):
                 return 0.0
             return tracking.get("cumulative_slashed", 0.0)
 
+    def slash_pending_fees(self):
+        all_entities = self._entity_client.get_all_entities()
+        if not all_entities:
+            return 0
+
+        refreshed = 0
+        total_theta_slashed = 0.0
+
+        for entity_hotkey, entity_data in all_entities.items():
+            try:
+                subaccounts = entity_data.get("subaccounts", {}) if isinstance(entity_data, dict) else {}
+                pending_subaccount_ids = []
+                pending_reg_fees = 0.0
+
+                for subaccount_id, subaccount_info in subaccounts.items():
+                    if not isinstance(subaccount_info, dict):
+                        continue
+                    reg_fee_theta = subaccount_info.get("reg_fee_theta") or 0.0
+                    reg_fee_slashed_ms = subaccount_info.get("reg_fee_slashed_ms")
+                    if reg_fee_theta > 0 and reg_fee_slashed_ms is None:
+                        pending_reg_fees += reg_fee_theta
+                        pending_subaccount_ids.append(int(subaccount_id))
+
+                if not pending_subaccount_ids:
+                    continue
+
+                success = self._contract_client.slash_miner_collateral(entity_hotkey, pending_reg_fees)
+                if success:
+                    for subaccount_id in pending_subaccount_ids:
+                        self._entity_client.mark_subaccount_reg_fee_slashed(entity_hotkey, subaccount_id)
+                    refreshed += 1
+                    total_theta_slashed += pending_reg_fees
+                    bt.logging.info(
+                        f"[ENTITY_COLLATERAL] slash_pending_fees: slashed {pending_reg_fees:.4f} theta "
+                        f"from entity {entity_hotkey} for subaccounts {pending_subaccount_ids}"
+                    )
+                else:
+                    bt.logging.error(
+                        f"[ENTITY_COLLATERAL] slash_pending_fees: on-chain slash failed for entity {entity_hotkey} "
+                        f"({pending_reg_fees:.4f} theta, subaccounts: {pending_subaccount_ids})"
+                    )
+
+            except Exception as e:
+                bt.logging.warning(f"[ENTITY_COLLATERAL] slash_pending_fees: failed to process entity {entity_hotkey}: {e}")
+
+        bt.logging.info(
+            f"[ENTITY_COLLATERAL] slash_pending_fees: {refreshed}/{len(all_entities)} entities slashed, "
+            f"{total_theta_slashed:.4f} theta total"
+        )
+        return refreshed
+
+
     # ==================== Test Helpers ====================
 
     def set_test_collateral_cache(self, entity_hotkey: str, collateral_theta: float) -> None:

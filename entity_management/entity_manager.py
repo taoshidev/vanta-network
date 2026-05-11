@@ -32,6 +32,7 @@ from entity_management.entity_utils import is_synthetic_hotkey, parse_synthetic_
 from vali_objects.miner_account import MinerAccountClient
 from vali_objects.position_management.position_utils.position_utils import PositionUtils
 from vali_objects.scoring.debt_based_scoring import DebtBasedScoring
+from vali_objects.utils.entity_collateral.entity_collateral_client import EntityCollateralClient
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
 from datetime import datetime, timezone
@@ -60,6 +61,8 @@ class SubaccountInfo(BaseModel):
     created_at_ms: int = Field(description="Timestamp when subaccount was created")
     eliminated_at_ms: Optional[int] = Field(default=None, description="Timestamp when subaccount was eliminated")
     account_size: float = Field(description="Account size in USD (immutable once set)")
+    reg_fee_theta: float = Field(default=0.0, description="Cost of registration fee in theta")
+    reg_fee_slashed_ms: Optional[float] = Field(default=None, description="Timestamp when registration fee was paid")
     asset_class: str = Field(description="Asset class selection (immutable once set)")
     hl_address: Optional[str] = Field(default=None, description="Hyperliquid address for HL tracking subaccounts")
     payout_address: Optional[str] = Field(default=None, description="EVM address (0x + 40 hex) for USDC payouts")
@@ -199,6 +202,12 @@ class EntityManager(ValidatorBroadcastBase):
 
         # Create ContractClient for collateral verification and slashing
         self._contract_client = ContractClient(
+            connection_mode=connection_mode,
+            connect_immediately=False,
+            running_unit_tests=running_unit_tests
+        )
+
+        self._entity_collateral_client = EntityCollateralClient(
             connection_mode=connection_mode,
             connect_immediately=False,
             running_unit_tests=running_unit_tests
@@ -391,7 +400,6 @@ class EntityManager(ValidatorBroadcastBase):
         """
         import time
         t_start = time.time()
-        timings = {}
 
         # Validate account size (must be <= MAX_SUBACCOUNT_ACCOUNT_SIZE)
         if account_size > ValiConfig.MAX_SUBACCOUNT_ACCOUNT_SIZE:
@@ -421,8 +429,7 @@ class EntityManager(ValidatorBroadcastBase):
             try:
                 if not self.running_unit_tests:
                     t0 = time.time()
-                    current_balance = self._contract_client.get_miner_collateral_balance(entity_hotkey)
-                    timings['get_collateral_balance'] = int((time.time() - t0) * 1000)
+                    current_balance = self._entity_collateral_client.get_cached_collateral(entity_hotkey)
 
                     if current_balance is None:
                         bt.logging.warning(f"[ENTITY_MANAGER] Unable to verify collateral for {entity_hotkey} - balance check returned None")
@@ -453,7 +460,6 @@ class EntityManager(ValidatorBroadcastBase):
                     asset_selection=asset_class,
                     miner=synthetic_hotkey
                 )
-                timings['asset_selection_rpc'] = int((time.time() - t0) * 1000)
 
                 if not asset_selection_result.get('successfully_processed', False):
                     bt.logging.warning(
@@ -477,7 +483,6 @@ class EntityManager(ValidatorBroadcastBase):
                     account_size=account_size,
                     bucket=MinerBucket.SUBACCOUNT_CHALLENGE
                 )
-                timings['set_account_size'] = int((time.time() - t0) * 1000)
 
                 if not set_size_success:
                     bt.logging.warning(
@@ -501,7 +506,7 @@ class EntityManager(ValidatorBroadcastBase):
 
             # Create subaccount info
             now_ms = TimeUtil.now_in_millis()
-            initial_status = "admin" if admin else "pending"
+            initial_status = "admin" if admin else "active"
             subaccount_info = SubaccountInfo(
                 subaccount_id=subaccount_id,
                 subaccount_uuid=subaccount_uuid,
@@ -509,7 +514,9 @@ class EntityManager(ValidatorBroadcastBase):
                 status=initial_status,
                 created_at_ms=now_ms,
                 account_size=account_size,
-                asset_class=asset_class
+                reg_fee_theta=required_theta,
+                reg_fee_slashed_ms=None,
+                asset_class=asset_class,
             )
 
             entity_data.subaccounts[subaccount_id] = subaccount_info
@@ -518,33 +525,17 @@ class EntityManager(ValidatorBroadcastBase):
             with self._entities_lock:
                 self._uuid_to_hotkey[subaccount_uuid] = synthetic_hotkey
 
-            t0 = time.time()
             self._write_entities_from_memory_to_disk()
-            timings['write_to_disk'] = int((time.time() - t0) * 1000)
 
-            # Start background slashing thread (not in unit tests, not for admin)
-            if not self.running_unit_tests and not admin:
-                thread = threading.Thread(
-                    target=self._complete_subaccount_slashing,
-                    args=(subaccount_id, entity_hotkey, synthetic_hotkey, required_theta),
-                    daemon=True
-                )
-                thread.start()
-            else:
-                # In tests or admin: mark as active immediately (skip slashing)
-                # Admin subaccounts keep "admin" status, test subaccounts become "active"
-                if not admin:
-                    subaccount_info.status = "active"
-                self._write_entities_from_memory_to_disk()
-
-                # Notify WebSocket server so connected entity clients auto-subscribe
+            if not self.running_unit_tests:
                 try:
                     self._websocket_client.notify_new_subaccount(entity_hotkey, synthetic_hotkey)
                 except Exception as notify_err:
                     bt.logging.debug(f"[ENTITY_MANAGER] New subaccount WS notification failed: {notify_err}")
 
-            total_ms = int((time.time() - t_start) * 1000)
+            # TODO broadcast subaccount registration
 
+            total_ms = int((time.time() - t_start) * 1000)
             bt.logging.info(
                 f"[ENTITY_MANAGER] Created subaccount {subaccount_id} for entity {entity_hotkey}: "
                 f"{synthetic_hotkey}, account_size=${account_size}, asset_class={asset_class}, "
@@ -553,6 +544,7 @@ class EntityManager(ValidatorBroadcastBase):
             remaining_theta = (current_balance - required_theta) if current_balance else 0.0
             return True, subaccount_info, f"[{initial_status}] Subaccount creation - slashing {required_theta} theta, {remaining_theta:.2f} theta remaining"
 
+    # TODO remove: registration slashing moved to entity collateral daemon
     def _complete_subaccount_slashing(
         self,
         subaccount_id: int,
@@ -2120,6 +2112,34 @@ class EntityManager(ValidatorBroadcastBase):
             import traceback
             bt.logging.error(traceback.format_exc())
             return False
+
+    def mark_subaccount_reg_fee_slashed(self, entity_hotkey: str, subaccount_id: int) -> bool:
+        """
+        Set reg_fee_slashed_ms to the current time for a subaccount.
+
+        Called by EntityCollateralManager after successfully slashing the registration fee.
+
+        Args:
+            entity_hotkey: The VANTA_ENTITY_HOTKEY
+            subaccount_id: The subaccount ID
+
+        Returns:
+            True if updated successfully, False if not found.
+        """
+        entity_lock = self._get_entity_lock(entity_hotkey)
+        with entity_lock:
+            entity_data = self.entities.get(entity_hotkey)
+            if not entity_data:
+                return False
+            subaccount = entity_data.subaccounts.get(subaccount_id)
+            if not subaccount:
+                return False
+            subaccount.reg_fee_slashed_ms = TimeUtil.now_in_millis()
+            self._write_entities_from_memory_to_disk()
+            bt.logging.info(
+                f"[ENTITY_MANAGER] Marked reg fee slashed for subaccount {subaccount.synthetic_hotkey}"
+            )
+            return True
 
     # ==================== Testing/Admin Methods ====================
 
