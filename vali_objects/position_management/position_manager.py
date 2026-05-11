@@ -111,7 +111,7 @@ class PositionManager:
             connection_mode=RPCConnectionMode.RPC,
             running_unit_tests=self.running_unit_tests
         )
-        self._hl_funding_client = HLFundingRateClient(connection_mode=RPCConnectionMode.RPC)
+        self._hl_funding_client = HLFundingRateClient(connection_mode=RPCConnectionMode.RPC, connect_immediately=False)
 
         # Load positions from disk on startup
         self._load_positions_from_disk()
@@ -1008,8 +1008,8 @@ class PositionManager:
             # bt.logging.info(f"Applied {n_slippage_corrections} forex slippage corrections")
 
             # All miners that wanted their challenge period restarted
-            miners_to_wipe = ["5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_147"]
-            position_uuids_to_delete = ["90c4544d-13f6-4834-a8e5-bb731cc72d9e"]
+            miners_to_wipe = []
+            position_uuids_to_delete = []
             position_uuids_to_archive = []
             miners_to_promote = []
 

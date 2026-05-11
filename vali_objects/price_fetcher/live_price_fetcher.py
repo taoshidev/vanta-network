@@ -200,16 +200,17 @@ class LivePriceFetcher:
         return polygon_results, tiingo_results, hyperliquid_results
 
     def get_ws_price_sources_in_window(self, trade_pair: TradePair, start_ms: int, end_ms: int) -> List[PriceSource]:
-        # Utilize get_events_in_range
+        hl_sources = self.hyperliquid_data_service.trade_pair_to_recent_events[trade_pair.trade_pair].get_events_in_range(start_ms, end_ms)
+        if trade_pair.src == TradePairSource.HYPERLIQUID:
+            return hl_sources
+
+        # Use databento for equities data
+        if self.databento_data_service and trade_pair.is_equities:
+            return self.databento_data_service.trade_pair_to_recent_events[trade_pair.trade_pair].get_events_in_range(start_ms, end_ms)
+
         poly_sources = self.polygon_data_service.trade_pair_to_recent_events[trade_pair.trade_pair].get_events_in_range(start_ms, end_ms)
         t_sources = self.tiingo_data_service.trade_pair_to_recent_events[trade_pair.trade_pair].get_events_in_range(start_ms, end_ms)
-        db_sources = []
-        if self.databento_data_service and trade_pair.is_equities:
-            db_sources = self.databento_data_service.trade_pair_to_recent_events[trade_pair.trade_pair].get_events_in_range(start_ms, end_ms)
-        hl_sources = []
-        if trade_pair.src == TradePairSource.HYPERLIQUID:
-            hl_sources = self.hyperliquid_data_service.trade_pair_to_recent_events[trade_pair.trade_pair].get_events_in_range(start_ms, end_ms)
-        return poly_sources + t_sources + db_sources + hl_sources
+        return poly_sources + t_sources + hl_sources
 
     def get_latest_price(self, trade_pair: TradePair, time_ms=None) -> Tuple[float, List[PriceSource]] | Tuple[None, None]:
         """
