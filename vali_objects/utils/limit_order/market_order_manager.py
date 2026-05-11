@@ -311,7 +311,7 @@ class MarketOrderManager():
             order.quantity, order.leverage, order.value = order_sizes
             bt.logging.info(f"[ADD_ORDER_DETAIL] order resized to ${order.value} (max position: {max_position_value}, max_cash: {buying_power}")
 
-        if order.value == 0 or order.quantity == 0:
+        if abs(order.value) < 1e-9 or abs(order.quantity) < 1e-9:
             raise SignalException(
                 f"Order rejected: 0 order size due to max position value ${max_position_value} or max buying power ${buying_power}"
             )
@@ -410,7 +410,7 @@ class MarketOrderManager():
         return msg
 
     @staticmethod
-    def parse_order_size(signal, usd_base_conversion, trade_pair, portfolio_value, use_floor=False):
+    def parse_order_size(signal, usd_base_conversion, trade_pair, portfolio_value, round_qty=True, use_floor=False):
         """
         parses an order signal and calculates leverage, value, and quantity
         """
@@ -427,11 +427,20 @@ class MarketOrderManager():
         elif value is not None:
             quantity = (value * usd_base_conversion) / trade_pair.lot_size
 
-        if trade_pair.is_forex:
-            lot_increment = (ValiConfig.FOREX_MIN_POSITION_SIZE_LOTS_SUB_NANO
+        if round_qty:
+            if trade_pair.is_forex:
+                increment = (ValiConfig.FOREX_MIN_ORDER_SIZE_SUB_NANO
                              if portfolio_value <= ValiConfig.FOREX_SMALL_ACCOUNT_THRESHOLD
-                             else ValiConfig.FOREX_MIN_POSITION_SIZE_LOTS)
-            quantity = math.trunc(quantity / lot_increment) * lot_increment if use_floor else round(quantity / lot_increment) * lot_increment
+                             else ValiConfig.FOREX_MIN_ORDER_SIZE)
+            elif trade_pair.is_crypto:
+                increment = ValiConfig.CRYPTO_MIN_ORDER_SIZE
+            elif trade_pair.is_equities:
+                increment = ValiConfig.EQUITIES_MIN_ORDER_SIZE
+            elif trade_pair.is_commodities:
+                increment = ValiConfig.COMMODITIES_MIN_ORDER_SIZE
+            else:
+                increment = ValiConfig.CRYPTO_MIN_ORDER_SIZE # Default to low qty
+            quantity = math.trunc(quantity / increment) * increment if use_floor else round(quantity / increment) * increment
 
         value = quantity * trade_pair.lot_size / usd_base_conversion
         leverage = value / portfolio_value
@@ -644,13 +653,17 @@ class MarketOrderManager():
                 price = fill_price if fill_price else best_price_source.parse_appropriate_price(now_ms, trade_pair.is_forex, signal_order_type, existing_position)
                 usd_base_price = self.live_price_fetcher.get_usd_base_conversion(trade_pair, now_ms, price, signal_order_type, existing_position)
 
-                if signal_order_type == OrderType.FLAT:
+                if signal_order_type == OrderType.FLAT or (signal.get("quantity") and abs(existing_position.net_quantity + signal["quantity"]) < 1e-9):
                     signal["leverage"] = None
                     signal["value"] = None
                     signal["quantity"] = -existing_position.net_quantity
+                    signal_order_type = OrderType.FLAT
 
                 # Parse order size (supports leverage, value, or quantity)
-                quantity, leverage, value = self.parse_order_size(signal, usd_base_price, trade_pair, existing_position.account_size)
+                quantity, leverage, value = self.parse_order_size(
+                    signal, usd_base_price, trade_pair, existing_position.account_size,
+                    round_qty=signal_order_type != OrderType.FLAT # if the position is closing, don't round - use exact position qty
+                )
 
                 created_order = self._add_order_to_existing_position(existing_position, trade_pair, signal_order_type,
                                                      quantity, leverage, value, now_ms, miner_hotkey,
