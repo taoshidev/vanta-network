@@ -10,7 +10,7 @@ from data_generator.hyperliquid_data_service import HyperliquidDataService
 from time_util.time_util import TimeUtil
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
-from vali_objects.vali_config import TradePair, TradePairSource, ValiConfig
+from vali_objects.vali_config import NATIVE_CRYPTO_TO_HL_TRADE_PAIR, TradePair, TradePairSource, ValiConfig
 import bittensor as bt
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
@@ -200,6 +200,8 @@ class LivePriceFetcher:
         return polygon_results, tiingo_results, hyperliquid_results
 
     def get_ws_price_sources_in_window(self, trade_pair: TradePair, start_ms: int, end_ms: int) -> List[PriceSource]:
+        trade_pair = NATIVE_CRYPTO_TO_HL_TRADE_PAIR.get(trade_pair, trade_pair) # default to trade pair
+
         hl_sources = self.hyperliquid_data_service.trade_pair_to_recent_events[trade_pair.trade_pair].get_events_in_range(start_ms, end_ms)
         if trade_pair.src == TradePairSource.HYPERLIQUID:
             return hl_sources

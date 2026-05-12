@@ -1153,6 +1153,23 @@ HL_COIN_TO_TRADE_PAIR: dict[str, TradePair] = {
     tp.hl_coin: tp for tp in TradePair if tp.src == TradePairSource.HYPERLIQUID
 }
 
+# Maps native Vanta crypto TradePairs to their Hyperliquid (USDC-quoted) equivalents.
+# BCHUSD has no corresponding HL pair and is omitted.
+NATIVE_CRYPTO_TO_HL_TRADE_PAIR: dict[TradePair, TradePair] = {
+    TradePair.BTCUSD:  TradePair.BTCUSDC,
+    TradePair.ETHUSD:  TradePair.ETHUSDC,
+    TradePair.SOLUSD:  TradePair.SOLUSDC,
+    TradePair.XRPUSD:  TradePair.XRPUSDC,
+    TradePair.DOGEUSD: TradePair.DOGEUSDC,
+    TradePair.ADAUSD:  TradePair.ADAUSDC,
+    TradePair.TAOUSD:  TradePair.TAOUSDC,
+    TradePair.HYPEUSD: TradePair.HYPEUSDC,
+    TradePair.ZECUSD:  TradePair.ZECUSDC,
+    TradePair.LINKUSD: TradePair.LINKUSDC,
+    TradePair.XMRUSD:  TradePair.XMRUSDC,
+    TradePair.LTCUSD:  TradePair.LTCUSDC,
+}
+
 # Set UNSUPPORTED_TRADE_PAIRS now that TradePair enum is defined
 # These are trade pairs that have no price data available (not just temporarily halted)
 ValiConfig.UNSUPPORTED_TRADE_PAIRS = (TradePair.SPX, TradePair.DJI, TradePair.NDX, TradePair.VIX,
