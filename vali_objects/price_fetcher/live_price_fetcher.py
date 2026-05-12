@@ -10,7 +10,7 @@ from data_generator.hyperliquid_data_service import HyperliquidDataService
 from time_util.time_util import TimeUtil
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
-from vali_objects.vali_config import TradePair, TradePairSource, ValiConfig
+from vali_objects.vali_config import NATIVE_CRYPTO_TO_HL_TRADE_PAIR, TradePair, TradePairSource, ValiConfig
 import bittensor as bt
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
@@ -200,6 +200,8 @@ class LivePriceFetcher:
         return polygon_results, tiingo_results, hyperliquid_results
 
     def get_ws_price_sources_in_window(self, trade_pair: TradePair, start_ms: int, end_ms: int) -> List[PriceSource]:
+        trade_pair = NATIVE_CRYPTO_TO_HL_TRADE_PAIR.get(trade_pair, trade_pair) # default to trade pair
+
         hl_sources = self.hyperliquid_data_service.trade_pair_to_recent_events[trade_pair.trade_pair].get_events_in_range(start_ms, end_ms)
         if trade_pair.src == TradePairSource.HYPERLIQUID:
             return hl_sources
@@ -232,68 +234,72 @@ class LivePriceFetcher:
         if not time_ms:
             time_ms = TimeUtil.now_in_millis()
 
-        websocket_prices_polygon = self.polygon_data_service.get_closes_websocket(trade_pairs, time_ms)
-        websocket_prices_tiingo_data = self.tiingo_data_service.get_closes_websocket(trade_pairs, time_ms)
-
-        # Get Databento prices for equities
-        websocket_prices_databento = {}
-        if self.databento_data_service:
-            equity_pairs = [tp for tp in trade_pairs if tp.is_equities]
-            if equity_pairs:
-                websocket_prices_databento = self.databento_data_service.get_closes_websocket(equity_pairs, time_ms)
+        # Map trade pairs to corresponding HL pair
+        mapped_trade_pairs = [NATIVE_CRYPTO_TO_HL_TRADE_PAIR.get(tp, tp) for tp in trade_pairs]
 
         # Get Hyperliquid prices for all HL-sourced pairs
         websocket_prices_hyperliquid = {}
-        hl_pairs = [tp for tp in trade_pairs if tp.src == TradePairSource.HYPERLIQUID]
+        hl_pairs = [tp for tp in mapped_trade_pairs if tp.src == TradePairSource.HYPERLIQUID]
         if hl_pairs:
             websocket_prices_hyperliquid = self.hyperliquid_data_service.get_closes_websocket(hl_pairs, time_ms)
 
-        trade_pairs_needing_rest_data = []
+        # Pass vanta native trade pairs to non-hyperliquid data services
+        # Get Databento prices for equities
+        websocket_prices_databento = {}
+        equity_pairs = [tp for tp in mapped_trade_pairs if tp.is_equities and tp.src == TradePairSource.VANTA]
+        if self.databento_data_service:
+            if equity_pairs:
+                websocket_prices_databento = self.databento_data_service.get_closes_websocket(equity_pairs, time_ms)
 
+        websocket_prices_polygon = self.polygon_data_service.get_closes_websocket(trade_pairs, time_ms)
+        websocket_prices_tiingo_data = self.tiingo_data_service.get_closes_websocket(trade_pairs, time_ms)
+
+        trade_pairs_needing_rest_data: list[TradePair] = []
         results = {}
+        for tp in trade_pairs:
+            mapped_tp = NATIVE_CRYPTO_TO_HL_TRADE_PAIR.get(tp, tp)
+            if mapped_tp.src == TradePairSource.HYPERLIQUID:
+                events = [websocket_prices_hyperliquid.get(mapped_tp)]
+            elif mapped_tp.is_equities:
+                events = [websocket_prices_databento.get(tp)]
+            else:
+                events = [
+                    websocket_prices_polygon.get(tp),
+                    websocket_prices_tiingo_data.get(tp),
+                ]
 
-        # Initial check using WebSocket data
-        for trade_pair in trade_pairs:
-            # For equities, prioritize Databento - use it exclusively if available
-            if trade_pair.is_equities:
-                databento_price = websocket_prices_databento.get(trade_pair)
-                if databento_price:
-                    sources = self.sorted_valid_price_sources([databento_price], time_ms, filter_recent_only=False)
-                    if sources:
-                        results[trade_pair] = sources
-                        continue
-                # No valid Databento price, fall back to REST
-                trade_pairs_needing_rest_data.append(trade_pair)
-                continue
-
-            events = [
-                websocket_prices_polygon.get(trade_pair),
-                websocket_prices_tiingo_data.get(trade_pair),
-                websocket_prices_hyperliquid.get(trade_pair),
-            ]
             sources = self.sorted_valid_price_sources(events, time_ms, filter_recent_only=True)
             if sources:
-                results[trade_pair] = sources
+                results[tp] = sources
             else:
-                trade_pairs_needing_rest_data.append(trade_pair)
+                trade_pairs_needing_rest_data.append(tp)
 
         # Fetch from REST APIs if needed
         if not trade_pairs_needing_rest_data:
             return results
 
-        rest_prices_polygon, rest_prices_tiingo_data, rest_prices_hyperliquid = self.dual_rest_get(trade_pairs_needing_rest_data, time_ms, live)
+        rest_prices_polygon, rest_prices_tiingo, rest_prices_hyperliquid = self.dual_rest_get(trade_pairs_needing_rest_data, time_ms, live)
 
-        for trade_pair in trade_pairs_needing_rest_data:
-            sources = self.sorted_valid_price_sources([
-                websocket_prices_polygon.get(trade_pair),
-                websocket_prices_tiingo_data.get(trade_pair),
-                websocket_prices_hyperliquid.get(trade_pair),
-                rest_prices_polygon.get(trade_pair),
-                rest_prices_tiingo_data.get(trade_pair),
-                rest_prices_hyperliquid.get(trade_pair),
-            ], time_ms, filter_recent_only=False)
+        for tp in trade_pairs_needing_rest_data:
+            mapped_tp = NATIVE_CRYPTO_TO_HL_TRADE_PAIR.get(tp, tp)
+            if mapped_tp.src == TradePairSource.HYPERLIQUID:
+                events = [
+                    websocket_prices_hyperliquid.get(mapped_tp),
+                    rest_prices_hyperliquid.get(mapped_tp),
+                ]
+            elif mapped_tp.is_equities:
+                events = [websocket_prices_databento.get(tp)]
+            else:
+                events = [
+                    websocket_prices_polygon.get(tp),
+                    websocket_prices_tiingo_data.get(tp),
+                    rest_prices_polygon.get(tp),
+                    rest_prices_tiingo.get(tp),
+                ]
+
+            sources = self.sorted_valid_price_sources(events, time_ms, filter_recent_only=False)
             if sources:
-                results[trade_pair] = sources
+                results[tp] = sources
 
         return results
 
