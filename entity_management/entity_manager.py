@@ -2052,15 +2052,17 @@ class EntityManager(ValidatorBroadcastBase):
             bt.logging.error(traceback.format_exc())
             return False
 
-    def mark_subaccount_reg_fee_slashed(self, entity_hotkey: str, subaccount_id: int) -> bool:
+    def set_reg_fee_time(self, entity_hotkey: str, subaccount_id: int, time: int | None) -> bool:
         """
-        Set reg_fee_slashed_ms to the current time for a subaccount.
+        Set reg_fee_slashed_ms to the given timestamp for a subaccount.
 
-        Called by EntityCollateralManager after successfully slashing the registration fee.
+        Pass a millisecond timestamp to mark the fee as slashed, or None to clear the
+        mark (e.g. to revert an optimistic mark when an on-chain slash fails).
 
         Args:
             entity_hotkey: The VANTA_ENTITY_HOTKEY
             subaccount_id: The subaccount ID
+            time: Millisecond timestamp to record, or None to clear.
 
         Returns:
             True if updated successfully, False if not found.
@@ -2073,10 +2075,10 @@ class EntityManager(ValidatorBroadcastBase):
             subaccount = entity_data.subaccounts.get(subaccount_id)
             if not subaccount:
                 return False
-            subaccount.reg_fee_slashed_ms = TimeUtil.now_in_millis()
+            subaccount.reg_fee_slashed_ms = time
             self._write_entities_from_memory_to_disk()
             bt.logging.info(
-                f"[ENTITY_MANAGER] Marked reg fee slashed for subaccount {subaccount.synthetic_hotkey}"
+                f"[ENTITY_MANAGER] Set reg_fee_slashed_ms={time} for subaccount {subaccount.synthetic_hotkey}"
             )
             return True
 

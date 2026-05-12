@@ -18,6 +18,8 @@ import threading
 import bittensor as bt
 from typing import Dict, Optional, Tuple
 
+from time_util.time_util import TimeUtil
+
 from shared_objects.cache_controller import CacheController
 from entity_management.entity_utils import is_synthetic_hotkey, parse_synthetic_hotkey
 from vali_objects.enums.miner_bucket_enum import MinerBucket
@@ -430,19 +432,22 @@ class EntityCollateralManager(CacheController):
             tracking["cumulative_realized_loss"] = cumulative_realized_loss
             self._slash_tracking[synthetic_hotkey] = tracking
 
-            slash_theta = self._get_loss_slash_theta(cumulative_realized_loss, cumulative_slashed, self.get_max_slash(synthetic_hotkey))
+            # Compute the pending slash amount for cache reservation, but do NOT mark
+            # cumulative_slashed yet — process_pending_slashes will mark-then-slash atomically.
+            slash_usd = self._get_loss_slash_usd(cumulative_realized_loss, cumulative_slashed, self.get_max_slash(synthetic_hotkey))
 
             bt.logging.info(
-                f"[ENTITY_COLLATERAL] Queued ({slash_theta:.4f} theta) "
+                f"[ENTITY_COLLATERAL] Queued ({slash_usd / ValiConfig.ENTITY_COLLATERAL_CPT_RISK:.4f} theta) "
                 f"loss slash for entity {entity_hotkey} subaccount {synthetic_hotkey}. "
-                f"cumulative_loss=${cumulative_realized_loss:.2f}, cumulative_slashed=${cumulative_slashed:.2f} theta"
+                f"cumulative_loss=${cumulative_realized_loss:.2f}, cumulative_slashed=${cumulative_slashed:.2f}"
             )
 
-        # Decrement outside slash lock
-        self.decrement_collateral_cache(entity_hotkey, slash_theta)
+        # Decrement cache outside slash lock as an optimistic reservation until
+        # refresh_collateral_cache resets it from the on-chain value.
+        self.decrement_collateral_cache(entity_hotkey, realized_loss / ValiConfig.ENTITY_COLLATERAL_CPT_RISK)
 
         self._save_slash_tracking_to_disk()
-        return slash_theta * ValiConfig.ENTITY_COLLATERAL_CPT_RISK
+        return slash_usd
 
     def try_slash_on_elimination(self, hotkey: str) -> float:
         """
@@ -506,17 +511,18 @@ class EntityCollateralManager(CacheController):
         for entity_hotkey, entity_data in all_entities.items():
             try:
                 subaccounts = entity_data.get("subaccounts", {}) if isinstance(entity_data, dict) else {}
+                synthetic_hotkeys = {s.get("synthetic_hotkey") for s in subaccounts.values() if isinstance(s, dict)}
 
-                pending_loss_theta: Dict[str, float] = {} # synthetic hotkey -> theta
+                pending_loss_usd: Dict[str, float] = {} # synthetic hotkey -> USD
                 with self._slash_lock:
                     for synthetic_hotkey, tracking in self._slash_tracking.items():
-                        if synthetic_hotkey not in subaccounts:
+                        if synthetic_hotkey not in synthetic_hotkeys:
                             continue
                         cumulative_realized_loss = tracking["cumulative_realized_loss"]
                         cumulative_slashed = tracking["cumulative_slashed"]
                         max_slash = self.get_max_slash(synthetic_hotkey)
-                        pending_loss_theta[synthetic_hotkey] = self._get_loss_slash_theta(cumulative_realized_loss, cumulative_slashed, max_slash)
-                total_pending_loss_theta = sum(pending_loss_theta.values())
+                        pending_loss_usd[synthetic_hotkey] = self._get_loss_slash_usd(cumulative_realized_loss, cumulative_slashed, max_slash)
+                total_pending_loss_theta = sum(pending_loss_usd.values()) / ValiConfig.ENTITY_COLLATERAL_CPT_RISK
 
                 pending_reg_theta: Dict[int, float] = {} # subaccount id -> theta
                 for subaccount_id, subaccount_info in subaccounts.items():
@@ -532,24 +538,37 @@ class EntityCollateralManager(CacheController):
                 if theta_slash <= 0:
                     continue
 
+                # Mark before slash so that if the process crashes after the on-chain
+                # call succeeds but before tracking is written, we don't double-slash.
+                # On failure we revert both marks so the slash is retried next iteration.
+                now_ms = TimeUtil.now_in_millis()
+                for subaccount_id in pending_reg_theta:
+                    self._entity_client.set_reg_fee_time(entity_hotkey, subaccount_id, now_ms)
+                with self._slash_lock:
+                    for synthetic_hotkey, usd in pending_loss_usd.items():
+                        self._slash_tracking[synthetic_hotkey]["cumulative_slashed"] += usd
+                self._save_slash_tracking_to_disk()
+
                 success = self._contract_client.slash_miner_collateral(entity_hotkey, theta_slash)
                 if success:
-                    for subaccount_id in pending_reg_theta:
-                        self._entity_client.mark_subaccount_reg_fee_slashed(entity_hotkey, subaccount_id)
                     refreshed += 1
                     total_theta_slashed += theta_slash
-                    with self._slash_lock:
-                        for synthetic_hotkey, theta in pending_loss_theta.items():
-                            self._slash_tracking[synthetic_hotkey]["cumulative_slashed"] += theta
                     bt.logging.info(
                         f"[ENTITY_COLLATERAL] slash_pending_fees: slashed {theta_slash:.4f} theta "
-                        f"({total_pending_reg_theta:.4f} reg fees + {total_pending_loss_theta:.4f} losses) "
+                        f"({total_pending_reg_theta:.4f} reg fees + {total_pending_loss_theta:.4f} loss theta) "
                         f"from entity {entity_hotkey} for subaccounts {list(pending_reg_theta.keys())}"
                     )
                 else:
+                    # Revert both marks so the slash is retried on the next iteration.
+                    for subaccount_id in pending_reg_theta:
+                        self._entity_client.set_reg_fee_time(entity_hotkey, subaccount_id, None)
+                    with self._slash_lock:
+                        for synthetic_hotkey, usd in pending_loss_usd.items():
+                            self._slash_tracking[synthetic_hotkey]["cumulative_slashed"] -= usd
+                    self._save_slash_tracking_to_disk()
                     bt.logging.error(
                         f"[ENTITY_COLLATERAL] slash_pending_fees: on-chain slash failed for entity {entity_hotkey} "
-                        f"({theta_slash:.4f} theta, subaccounts: {list(pending_reg_theta.keys())})"
+                        f"({theta_slash:.4f} theta, subaccounts: {list(pending_reg_theta.keys())}); marks reverted"
                     )
 
                 # Refresh collateral cache is called before slash pending
@@ -567,10 +586,10 @@ class EntityCollateralManager(CacheController):
         )
         return refreshed
 
-    def _get_loss_slash_theta(self, cumulative_realized_loss, cumulative_slashed, max_slash):
+    def _get_loss_slash_usd(self, cumulative_realized_loss, cumulative_slashed, max_slash):
         target_slash = min(cumulative_realized_loss, max_slash)
         slash_delta = max(0, target_slash - cumulative_slashed)
-        return slash_delta / ValiConfig.ENTITY_COLLATERAL_CPT_RISK
+        return slash_delta
 
 
     # ==================== Test Helpers ====================
