@@ -569,9 +569,9 @@ class EntityCollateralManager(CacheController):
         )
         return refreshed
 
-    def _get_slash_theta(self, cumulative_realized_loss, cumulative_slashed, max_slash):
+    def _get_loss_slash_theta(self, cumulative_realized_loss, cumulative_slashed, max_slash):
         target_slash = min(cumulative_realized_loss, max_slash)
-        slash_delta = min(0, target_slash - cumulative_slashed)
+        slash_delta = max(0, target_slash - cumulative_slashed)
         return slash_delta / ValiConfig.ENTITY_COLLATERAL_CPT_RISK
 
 
