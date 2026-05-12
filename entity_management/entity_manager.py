@@ -448,6 +448,10 @@ class EntityManager(ValidatorBroadcastBase):
                             f"to create new subaccount with ${account_size} account size"
                         )
 
+                # Decrement collateral cache immediately to prevent double-spend before daemon slashes on-chain
+                if required_theta > 0:
+                    self._entity_collateral_client.decrement_collateral_cache(entity_hotkey, required_theta)
+
                 # Generate monotonic ID
                 subaccount_id = entity_data.next_subaccount_id
                 entity_data.next_subaccount_id += 1
@@ -530,10 +534,6 @@ class EntityManager(ValidatorBroadcastBase):
                 self._uuid_to_hotkey[subaccount_uuid] = synthetic_hotkey
 
             self._write_entities_from_memory_to_disk()
-
-            # Decrement collateral cache immediately to prevent double-spend before daemon slashes on-chain
-            if required_theta > 0:
-                self._entity_collateral_client.decrement_collateral_cache(entity_hotkey, required_theta)
 
             if not self.running_unit_tests:
                 try:

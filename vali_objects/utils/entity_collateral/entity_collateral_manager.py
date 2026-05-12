@@ -425,19 +425,17 @@ class EntityCollateralManager(CacheController):
                 "cumulative_slashed": 0.0,
             })
 
-            # Update cumulative_realized_loss regardless (always track losses)
             cumulative_realized_loss = tracking["cumulative_realized_loss"] + realized_loss
             cumulative_slashed = tracking["cumulative_slashed"]
             tracking["cumulative_realized_loss"] = cumulative_realized_loss
-
             self._slash_tracking[synthetic_hotkey] = tracking
 
-            slash_theta = self._get_slash_theta(cumulative_realized_loss, cumulative_slashed, self.get_max_slash(synthetic_hotkey))
+            slash_theta = self._get_loss_slash_theta(cumulative_realized_loss, cumulative_slashed, self.get_max_slash(synthetic_hotkey))
 
             bt.logging.info(
                 f"[ENTITY_COLLATERAL] Queued ({slash_theta:.4f} theta) "
                 f"loss slash for entity {entity_hotkey} subaccount {synthetic_hotkey}. "
-                f"cumulative_loss=${cumulative_realized_loss:.2f}, cumulative_slashed=${cumulative_slashed:.2f}"
+                f"cumulative_loss=${cumulative_realized_loss:.2f}, cumulative_slashed=${cumulative_slashed:.2f} theta"
             )
 
         # Decrement outside slash lock
@@ -517,7 +515,7 @@ class EntityCollateralManager(CacheController):
                         cumulative_realized_loss = tracking["cumulative_realized_loss"]
                         cumulative_slashed = tracking["cumulative_slashed"]
                         max_slash = self.get_max_slash(synthetic_hotkey)
-                        pending_loss_theta[synthetic_hotkey] = self._get_slash_theta(cumulative_realized_loss, cumulative_slashed, max_slash)
+                        pending_loss_theta[synthetic_hotkey] = self._get_loss_slash_theta(cumulative_realized_loss, cumulative_slashed, max_slash)
                 total_pending_loss_theta = sum(pending_loss_theta.values())
 
                 pending_reg_theta: Dict[int, float] = {} # subaccount id -> theta
