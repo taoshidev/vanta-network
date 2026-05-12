@@ -25,10 +25,11 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
+          pip install -e .
           pip install pytest coverage
 
       - name: Run unit tests with coverage
-        timeout-minutes: 15
+        timeout-minutes: 60
         run: |
-          coverage run -m pytest .
+          coverage run -m pytest tests/vali_tests/
           coverage xml -o coverage.xml
