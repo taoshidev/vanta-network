@@ -256,8 +256,9 @@ class EntityManager(ValidatorBroadcastBase):
                             self._hl_address_to_synthetic[normalized_hl] = subaccount.synthetic_hotkey
 
                     cpt = ValiConfig.ENTITY_COST_PER_THETA_LOW if subaccount.account_size <= ValiConfig.ENTITY_COST_PER_THETA_LOW_THRESHOLD else ValiConfig.ENTITY_COST_PER_THETA
-                    subaccount.reg_fee_theta = subaccount.account_size / cpt
-                    subaccount.reg_fee_slashed_ms = subaccount.created_at_ms
+                    if not subaccount.reg_fee_theta:
+                        subaccount.reg_fee_theta = subaccount.account_size / cpt
+                        subaccount.reg_fee_slashed_ms = subaccount.created_at_ms
 
             # Recreate locks for all loaded entities
             for entity_hotkey in self.entities.keys():
