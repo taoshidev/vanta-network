@@ -255,10 +255,16 @@ class EntityManager(ValidatorBroadcastBase):
                         if normalized_hl:
                             self._hl_address_to_synthetic[normalized_hl] = subaccount.synthetic_hotkey
 
+                    cpt = ValiConfig.ENTITY_COST_PER_THETA_LOW if subaccount.account_size <= ValiConfig.ENTITY_COST_PER_THETA_LOW_THRESHOLD else ValiConfig.ENTITY_COST_PER_THETA
+                    subaccount.reg_fee_theta = subaccount.account_size / cpt
+                    subaccount.reg_fee_slashed_ms = subaccount.created_at_ms
+
             # Recreate locks for all loaded entities
             for entity_hotkey in self.entities.keys():
                 self._entity_locks[entity_hotkey] = threading.RLock()
             bt.logging.info(f"[ENTITY_MANAGER] Loaded {len(self.entities)} entities from disk with per-entity locks")
+
+        self._write_entities_from_memory_to_disk()
 
         bt.logging.info("[ENTITY_MANAGER] EntityManager initialized")
 
