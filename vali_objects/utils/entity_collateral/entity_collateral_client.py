@@ -176,6 +176,19 @@ class EntityCollateralClient(RPCClientBase):
         """
         return self._server.get_cached_collateral_rpc(entity_hotkey)
 
+    def decrement_collateral_cache(self, entity_hotkey: str, theta: float) -> None:
+        """
+        Decrement the cached collateral balance for an entity.
+
+        Call immediately on subaccount creation to reserve the registration fee
+        before the daemon slashes it on-chain.
+
+        Args:
+            entity_hotkey: The entity's hotkey.
+            theta: Amount to decrement in theta.
+        """
+        return self._server.decrement_collateral_cache_rpc(entity_hotkey, theta)
+
     def compute_entity_required_collateral(self, entity_hotkey: str) -> float:
         """
         Compute the total required collateral for an entity.

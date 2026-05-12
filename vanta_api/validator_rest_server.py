@@ -1716,28 +1716,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             timings['create_subaccount_rpc'] = int((time.time() - t0) * 1000)
 
             if success:
-                # Broadcast for admin subaccounts only (regular subaccounts broadcast after slashing completes)
-                if admin and subaccount_info:
-                    try:
-                        t0 = time.time()
-                        self._entity_client.broadcast_subaccount_registration(
-                            entity_hotkey=entity_hotkey,
-                            subaccount_id=subaccount_info['subaccount_id'],
-                            subaccount_uuid=subaccount_info['subaccount_uuid'],
-                            synthetic_hotkey=subaccount_info['synthetic_hotkey'],
-                            account_size=subaccount_info['account_size'],
-                            asset_class=subaccount_info['asset_class'],
-                            status=subaccount_info['status'],
-                            **({"hl_address": hl_address, "payout_address": payout_address} if is_hl else {})
-                        )
-                        timings['broadcast_rpc'] = int((time.time() - t0) * 1000)
-                        bt.logging.info(f"[REST_API] Broadcasted admin subaccount registration for {subaccount_info['synthetic_hotkey']}")
-                    except Exception as e:
-                        bt.logging.warning(f"[REST_API] Failed to broadcast subaccount registration: {e}")
-
                 total_ms = int((time.time() - t_start) * 1000)
                 bt.logging.info(f"[REST_API] create_subaccount completed ({total_ms} ms) | timings: {timings}")
-
                 return jsonify({
                     'status': 'success',
                     'message': message,

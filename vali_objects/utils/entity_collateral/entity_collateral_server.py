@@ -61,7 +61,7 @@ class EntityCollateralServer(RPCServerBase):
             start_server=start_server,
             start_daemon=start_daemon,
             daemon_interval_s=float(ValiConfig.ENTITY_COLLATERAL_CACHE_REFRESH_S),
-            hang_timeout_s=120.0,
+            hang_timeout_s=2*ValiConfig.ENTITY_COLLATERAL_CACHE_REFRESH_S,
             connection_mode=connection_mode,
         )
 
@@ -73,6 +73,7 @@ class EntityCollateralServer(RPCServerBase):
         """
         Single daemon iteration: refresh the collateral cache from on-chain contracts.
         """
+        self._manager.process_pending_slashes()
         self._manager.refresh_collateral_cache()
 
     def get_health_check_details(self) -> dict:
@@ -87,6 +88,10 @@ class EntityCollateralServer(RPCServerBase):
     def get_cached_collateral_rpc(self, entity_hotkey: str) -> Optional[float]:
         """Get cached collateral balance for an entity (RPC method)."""
         return self._manager.get_cached_collateral(entity_hotkey)
+
+    def decrement_collateral_cache_rpc(self, entity_hotkey: str, theta: float) -> None:
+        """Decrement cached collateral balance for an entity (RPC method)."""
+        return self._manager.decrement_collateral_cache(entity_hotkey, theta)
 
     def compute_entity_required_collateral_rpc(self, entity_hotkey: str) -> float:
         """Compute required collateral for an entity (RPC method)."""
