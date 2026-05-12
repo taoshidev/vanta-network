@@ -258,13 +258,13 @@ class LivePriceFetcher:
         for tp in trade_pairs:
             mapped_tp = NATIVE_CRYPTO_TO_HL_TRADE_PAIR.get(tp, tp)
             if mapped_tp.src == TradePairSource.HYPERLIQUID:
-                events = [websocket_prices_hyperliquid.get(mapped_tp.trade_pair)]
+                events = [websocket_prices_hyperliquid.get(mapped_tp)]
             elif mapped_tp.is_equities:
-                events = [websocket_prices_databento.get(mapped_tp.trade_pair)]
+                events = [websocket_prices_databento.get(mapped_tp)]
             else:
                 events = [
-                    websocket_prices_polygon.get(mapped_tp.trade_pair),
-                    websocket_prices_tiingo_data.get(mapped_tp.trade_pair),
+                    websocket_prices_polygon.get(mapped_tp),
+                    websocket_prices_tiingo_data.get(mapped_tp),
                 ]
 
             sources = self.sorted_valid_price_sources(events, time_ms, filter_recent_only=True)
@@ -283,15 +283,15 @@ class LivePriceFetcher:
             mapped_tp = NATIVE_CRYPTO_TO_HL_TRADE_PAIR.get(tp, tp)
             if mapped_tp.src == TradePairSource.HYPERLIQUID:
                 events = [
-                    websocket_prices_hyperliquid.get(mapped_tp.trade_pair),
+                    websocket_prices_hyperliquid.get(mapped_tp),
                     rest_prices_hyperliquid.get(tp),
                 ]
             elif mapped_tp.is_equities:
-                events = [websocket_prices_databento.get(mapped_tp.trade_pair)]
+                events = [websocket_prices_databento.get(mapped_tp)]
             else:
                 events = [
-                    websocket_prices_polygon.get(mapped_tp.trade_pair),
-                    websocket_prices_tiingo_data.get(mapped_tp.trade_pair),
+                    websocket_prices_polygon.get(mapped_tp),
+                    websocket_prices_tiingo_data.get(mapped_tp),
                     rest_prices_polygon.get(tp),
                     rest_prices_tiingo.get(tp),
                 ]
