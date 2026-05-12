@@ -248,7 +248,7 @@ class ValiConfig:
     RPC_ENTITY_COLLATERAL_SERVICE_NAME = "EntityCollateralServer"
 
     # Entity collateral cache refresh interval (seconds)
-    ENTITY_COLLATERAL_CACHE_REFRESH_S = 60
+    ENTITY_COLLATERAL_CACHE_REFRESH_S = 30 * 60
 
     # Public API Configuration (well-known network endpoints)
     REST_API_HOST = "127.0.0.1"

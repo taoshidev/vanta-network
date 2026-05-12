@@ -61,7 +61,7 @@ class EntityCollateralServer(RPCServerBase):
             start_server=start_server,
             start_daemon=start_daemon,
             daemon_interval_s=float(ValiConfig.ENTITY_COLLATERAL_CACHE_REFRESH_S),
-            hang_timeout_s=120.0,
+            hang_timeout_s=2*ValiConfig.ENTITY_COLLATERAL_CACHE_REFRESH_S,
             connection_mode=connection_mode,
         )
 
