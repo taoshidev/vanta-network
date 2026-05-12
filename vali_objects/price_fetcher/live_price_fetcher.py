@@ -243,6 +243,7 @@ class LivePriceFetcher:
         if hl_pairs:
             websocket_prices_hyperliquid = self.hyperliquid_data_service.get_closes_websocket(hl_pairs, time_ms)
 
+        # Pass vanta native trade pairs to non-hyperliquid data services
         # Get Databento prices for equities
         websocket_prices_databento = {}
         equity_pairs = [tp for tp in mapped_trade_pairs if tp.is_equities and tp.src == TradePairSource.VANTA]
@@ -250,8 +251,8 @@ class LivePriceFetcher:
             if equity_pairs:
                 websocket_prices_databento = self.databento_data_service.get_closes_websocket(equity_pairs, time_ms)
 
-        websocket_prices_polygon = self.polygon_data_service.get_closes_websocket(mapped_trade_pairs, time_ms)
-        websocket_prices_tiingo_data = self.tiingo_data_service.get_closes_websocket(mapped_trade_pairs, time_ms)
+        websocket_prices_polygon = self.polygon_data_service.get_closes_websocket(trade_pairs, time_ms)
+        websocket_prices_tiingo_data = self.tiingo_data_service.get_closes_websocket(trade_pairs, time_ms)
 
         trade_pairs_needing_rest_data: list[TradePair] = []
         results = {}
@@ -260,11 +261,11 @@ class LivePriceFetcher:
             if mapped_tp.src == TradePairSource.HYPERLIQUID:
                 events = [websocket_prices_hyperliquid.get(mapped_tp)]
             elif mapped_tp.is_equities:
-                events = [websocket_prices_databento.get(mapped_tp)]
+                events = [websocket_prices_databento.get(tp)]
             else:
                 events = [
-                    websocket_prices_polygon.get(mapped_tp),
-                    websocket_prices_tiingo_data.get(mapped_tp),
+                    websocket_prices_polygon.get(tp),
+                    websocket_prices_tiingo_data.get(tp),
                 ]
 
             sources = self.sorted_valid_price_sources(events, time_ms, filter_recent_only=True)
@@ -287,7 +288,7 @@ class LivePriceFetcher:
                     rest_prices_hyperliquid.get(mapped_tp),
                 ]
             elif mapped_tp.is_equities:
-                events = [websocket_prices_databento.get(mapped_tp)]
+                events = [websocket_prices_databento.get(tp)]
             else:
                 events = [
                     websocket_prices_polygon.get(tp),
