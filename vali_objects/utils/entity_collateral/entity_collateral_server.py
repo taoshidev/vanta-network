@@ -73,7 +73,7 @@ class EntityCollateralServer(RPCServerBase):
         """
         Single daemon iteration: refresh the collateral cache from on-chain contracts.
         """
-        self._manager.slash_pending_fees()
+        self._manager.process_pending_slashes()
         self._manager.refresh_collateral_cache()
 
     def get_health_check_details(self) -> dict:
