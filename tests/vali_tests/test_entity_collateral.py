@@ -16,6 +16,7 @@ import unittest
 
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import ValiConfig, TradePair
 from time_util.time_util import TimeUtil
@@ -116,6 +117,14 @@ class TestEntityCollateral(TestBase):
         self.assertTrue(success, f"Subaccount creation failed: {msg}")
 
         synthetic_hotkey = subaccount_info['synthetic_hotkey']
+
+        # Set the subaccount bucket to SUBACCOUNT_FUNDED so that slash/gating checks proceed
+        self.challenge_period_client.set_miner_bucket(
+            synthetic_hotkey,
+            MinerBucket.SUBACCOUNT_FUNDED,
+            TimeUtil.now_in_millis()
+        )
+
         return entity_hotkey, synthetic_hotkey, subaccount_info
 
     def _set_collateral_cache(self, entity_hotkey, collateral_theta):
@@ -273,11 +282,12 @@ class TestEntityCollateral(TestBase):
         # Should slash exactly $5,000 (loss < max_slash)
         self.assertAlmostEqual(slashed, 5_000.0)
 
-        # Verify tracking
+        # Verify tracking: cumulative_realized_loss is updated immediately;
+        # cumulative_slashed stays 0 until process_pending_slashes runs on-chain.
         tracking = self._get_slash_tracking(synthetic_hotkey)
         self.assertIsNotNone(tracking)
         self.assertAlmostEqual(tracking["cumulative_realized_loss"], 5_000.0)
-        self.assertAlmostEqual(tracking["cumulative_slashed"], 5_000.0)
+        self.assertAlmostEqual(tracking["cumulative_slashed"], 0.0)
 
     def test_slash_zero_loss_no_slash(self):
         """Test that zero loss produces no slash."""
@@ -320,16 +330,18 @@ class TestEntityCollateral(TestBase):
         )
         self.assertAlmostEqual(slashed_1, 3_000.0)
 
-        # Trade 2: Lose $4K (cumulative_loss = $7K, still under max $10K)
+        # Trade 2: Lose $4K (cumulative_loss = $7K, still under max $8K).
+        # Returns total pending slash (7K = min(7K, 8K) - 0), not incremental (4K),
+        # because cumulative_slashed stays 0 until process_pending_slashes runs.
         slashed_2 = self.entity_collateral_client.slash_on_realized_loss(
             entity_hotkey, synthetic_hotkey, 4_000.0
         )
-        self.assertAlmostEqual(slashed_2, 4_000.0)
+        self.assertAlmostEqual(slashed_2, 7_000.0)
 
         # Verify cumulative tracking
         tracking = self._get_slash_tracking(synthetic_hotkey)
         self.assertAlmostEqual(tracking["cumulative_realized_loss"], 7_000.0)
-        self.assertAlmostEqual(tracking["cumulative_slashed"], 7_000.0)
+        self.assertAlmostEqual(tracking["cumulative_slashed"], 0.0)
 
     def test_slash_capped_at_max_slash(self):
         """Test that slashing is capped at account_size * MDD%."""
@@ -346,15 +358,18 @@ class TestEntityCollateral(TestBase):
         )
         self.assertAlmostEqual(slashed_1, 8_000.0)
 
-        # Trade 2: Lose $5K → already at cap, slash $0
+        # Trade 2: Lose $5K → still returns 8K (total pending, capped at max_slash).
+        # cumulative_slashed stays 0 until process_pending_slashes runs, so the
+        # pending remains at the cap (8K) rather than going to 0.
         slashed_2 = self.entity_collateral_client.slash_on_realized_loss(
             entity_hotkey, synthetic_hotkey, 5_000.0
         )
-        self.assertAlmostEqual(slashed_2, 0.0)
+        self.assertAlmostEqual(slashed_2, 8_000.0)
 
-        # Total slashed should be capped at $8K
+        # cumulative_realized_loss tracks all losses; cumulative_slashed stays 0
+        # until process_pending_slashes commits the on-chain slash.
         tracking = self._get_slash_tracking(synthetic_hotkey)
-        self.assertAlmostEqual(tracking["cumulative_slashed"], 8_000.0)
+        self.assertAlmostEqual(tracking["cumulative_slashed"], 0.0)
         self.assertAlmostEqual(tracking["cumulative_realized_loss"], 13_000.0)
 
     def test_slash_completely_at_cap_returns_zero(self):
@@ -400,13 +415,15 @@ class TestEntityCollateral(TestBase):
         )
         self._set_collateral_cache(entity_hotkey, 5000.0)  # 5000 theta
 
-        # Slash $5,000 → 5000 / CPT_RISK(10) = 500 theta decrement
+        # Slash $5,000 → decrement by 5000 / CPT_RISK(35) ≈ 142.857 theta
         self.entity_collateral_client.slash_on_realized_loss(
             entity_hotkey, synthetic_hotkey, 5_000.0
         )
 
+        from vali_objects.vali_config import ValiConfig
+        expected_cache = 5000.0 - (5_000.0 / ValiConfig.ENTITY_COLLATERAL_CPT_RISK)
         cached = self.entity_collateral_client.get_cached_collateral(entity_hotkey)
-        self.assertAlmostEqual(cached, 4500.0)  # 5000 - 500 theta
+        self.assertAlmostEqual(cached, expected_cache)
 
     def test_slash_independent_per_subaccount(self):
         """Test that slash tracking is independent per subaccount."""
@@ -420,6 +437,11 @@ class TestEntityCollateral(TestBase):
         )
         synthetic_1 = sa_info_1['synthetic_hotkey']
         synthetic_2 = sa_info_2['synthetic_hotkey']
+
+        # Set funded bucket so slash checks proceed
+        now_ms = TimeUtil.now_in_millis()
+        self.challenge_period_client.set_miner_bucket(synthetic_1, MinerBucket.SUBACCOUNT_FUNDED, now_ms)
+        self.challenge_period_client.set_miner_bucket(synthetic_2, MinerBucket.SUBACCOUNT_FUNDED, now_ms)
 
         self._set_collateral_cache(self.ENTITY_HOTKEY, 200.0)  # 200 theta
 
@@ -506,11 +528,12 @@ class TestEntityCollateral(TestBase):
             entity_hotkey, synthetic_hotkey, 5_000.0
         )
 
-        # Verify tracking persisted (via RPC query — data was saved to disk by slash)
+        # Verify tracking persisted (via RPC query — data was saved to disk by slash).
+        # cumulative_slashed stays 0 until process_pending_slashes commits on-chain.
         tracking = self._get_slash_tracking(synthetic_hotkey)
         self.assertIsNotNone(tracking)
         self.assertAlmostEqual(tracking["cumulative_realized_loss"], 5_000.0)
-        self.assertAlmostEqual(tracking["cumulative_slashed"], 5_000.0)
+        self.assertAlmostEqual(tracking["cumulative_slashed"], 0.0)
 
     def test_slash_tracking_legacy_format_migration(self):
         """Test that legacy format (hotkey -> float) is migrated correctly on load."""
@@ -591,13 +614,15 @@ class TestEntityCollateral(TestBase):
         )
         self.assertTrue(allowed)
 
-        # Slash $5K → cache decremented by 5000/10 = 500 theta → 4500 theta remaining
+        # Slash $5K → cache decremented by 5000 / CPT_RISK(35) ≈ 142.857 theta
         self.entity_collateral_client.slash_on_realized_loss(
             entity_hotkey, synthetic_hotkey, 5_000.0
         )
 
+        from vali_objects.vali_config import ValiConfig
+        expected_cache = 5000.0 - (5_000.0 / ValiConfig.ENTITY_COLLATERAL_CPT_RISK)
         cached = self.entity_collateral_client.get_cached_collateral(entity_hotkey)
-        self.assertAlmostEqual(cached, 4500.0)
+        self.assertAlmostEqual(cached, expected_cache)
 
     # ==================== Edge Cases ====================
 
@@ -626,9 +651,10 @@ class TestEntityCollateral(TestBase):
         )
         self.assertAlmostEqual(slashed, 8_000.0)
 
-        # Verify at cap
+        # cumulative_realized_loss = 8K; cumulative_slashed stays 0 until process_pending_slashes
         tracking = self._get_slash_tracking(synthetic_hotkey)
-        self.assertAlmostEqual(tracking["cumulative_slashed"], 8_000.0)
+        self.assertAlmostEqual(tracking["cumulative_realized_loss"], 8_000.0)
+        self.assertAlmostEqual(tracking["cumulative_slashed"], 0.0)
 
     def test_slash_loss_exceeds_max_slash_single_trade(self):
         """Test that a single trade loss exceeding max_slash is capped."""
@@ -645,7 +671,7 @@ class TestEntityCollateral(TestBase):
 
         tracking = self._get_slash_tracking(synthetic_hotkey)
         self.assertAlmostEqual(tracking["cumulative_realized_loss"], 50_000.0)
-        self.assertAlmostEqual(tracking["cumulative_slashed"], 8_000.0)
+        self.assertAlmostEqual(tracking["cumulative_slashed"], 0.0)
 
     def test_sequential_slashes_track_cumulative_loss_correctly(self):
         """Test a sequence of losses accumulates correctly in tracking."""
@@ -655,22 +681,23 @@ class TestEntityCollateral(TestBase):
         self._set_collateral_cache(entity_hotkey, 100.0)
 
         # max_slash = $8K
-        # losses: $1K, $2K, $3K, $4K (capped at $8K so only $2K), $5K ($0)
+        # Each call returns total pending slash (min(cumulative_loss, max_slash) - cumulative_slashed).
+        # Since cumulative_slashed stays 0 until process_pending_slashes, each return is
+        # the running cumulative loss capped at max_slash.
         losses = [1_000, 2_000, 3_000, 4_000, 5_000]
-        total_slashed = 0
+        last_slash = 0.0
         for loss in losses:
-            slashed = self.entity_collateral_client.slash_on_realized_loss(
+            last_slash = self.entity_collateral_client.slash_on_realized_loss(
                 entity_hotkey, synthetic_hotkey, float(loss)
             )
-            total_slashed += slashed
 
-        # Total losses = $15K, max slash = $8K
-        # Should have slashed exactly $8K total
-        self.assertAlmostEqual(total_slashed, 8_000.0)
+        # Total losses = $15K > max_slash = $8K → last call returns 8K (at cap)
+        self.assertAlmostEqual(last_slash, 8_000.0)
 
+        # All losses are tracked; cumulative_slashed stays 0 until process_pending_slashes
         tracking = self._get_slash_tracking(synthetic_hotkey)
         self.assertAlmostEqual(tracking["cumulative_realized_loss"], 15_000.0)
-        self.assertAlmostEqual(tracking["cumulative_slashed"], 8_000.0)
+        self.assertAlmostEqual(tracking["cumulative_slashed"], 0.0)
 
     # ==================== MarketOrderManager Wiring Tests ====================
 
@@ -717,7 +744,7 @@ class TestEntityCollateral(TestBase):
         import inspect
         source = inspect.getsource(ValidatorContractManager.process_withdrawal_request)
         self.assertIn("entity_data", source)
-        self.assertIn("open_positions", source)
+        self.assertIn("required_theta", source)
         self.assertIn("subaccount", source.lower())
 
     # ==================== Validator.py Wiring Tests ====================
