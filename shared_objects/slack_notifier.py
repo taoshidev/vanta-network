@@ -68,7 +68,8 @@ class SlackNotifier:
         min_interval_seconds: int = 300,
         is_miner: bool = False,
         enable_metrics: bool = False,
-        enable_daily_summary: bool = False
+        enable_daily_summary: bool = False,
+        miner_name: Optional[str] = None
     ):
         """
         Initialize SlackNotifier with flexible configuration.
@@ -89,6 +90,7 @@ class SlackNotifier:
         self.enabled = bool(self.webhook_url)
         self.is_miner = is_miner
         self.node_type = "Miner" if is_miner else "Validator"
+        self.miner_name = miner_name
 
         # Rate limiting
         self.min_interval = min_interval_seconds
@@ -121,6 +123,11 @@ class SlackNotifier:
 
     # ========== Core Messaging Methods ==========
 
+    def _prefix(self, message: str) -> str:
+        if self.miner_name:
+            return f":{self.miner_name}: {message}"
+        return message
+
     def send_alert(self, message: str, alert_key: Optional[str] = None, force: bool = False) -> bool:
         """
         Send alert with rate limiting (simple interface from vanta_api version).
@@ -150,7 +157,7 @@ class SlackNotifier:
                     return False
                 self.last_alert_time[alert_key] = now
 
-        return self._send_simple_message(message, self.webhook_url)
+        return self._send_simple_message(self._prefix(message), self.webhook_url)
 
     def send_message(
         self,
@@ -196,9 +203,9 @@ class SlackNotifier:
 
         # Send with or without rich formatting
         if use_attachments:
-            return self._send_rich_message(message, level, webhook_url)
+            return self._send_rich_message(self._prefix(message), level, webhook_url)
         else:
-            return self._send_simple_message(message, webhook_url)
+            return self._send_simple_message(self._prefix(message), webhook_url)
 
     # ========== Server Monitoring Alerts (from vanta_api) ==========
 

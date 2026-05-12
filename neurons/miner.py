@@ -52,7 +52,8 @@ class Miner:
                 error_webhook_url=self.config.slack_error_webhook_url,
                 is_miner=True,
                 enable_metrics=True,
-                enable_daily_summary=True
+                enable_daily_summary=True,
+                miner_name=self.config.miner_name
             )
 
         # Start required servers using ServerOrchestrator (fixes connection errors)
@@ -335,6 +336,12 @@ class Miner:
             '--entity-miner',
             action='store_true',
             help='Enable Entity Miner Gateway for HL rejection notifications and dashboard proxy'
+        )
+        parser.add_argument(
+            '--miner-name',
+            type=str,
+            default="miner",
+            help='Name of this miner instance.'
         )
 
         # Parse the config (will take command-line arguments if provided)
