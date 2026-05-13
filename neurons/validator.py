@@ -9,6 +9,7 @@ import threading
 import signal
 
 from vali_objects.enums.misc import SynapseMethod
+from vali_objects.enums.order_type_enum import OrderType
 from vanta_api.validator_api_manager import ValidatorAPIManager
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, NeuronContext
 from entity_management.entity_utils import is_synthetic_hotkey
@@ -555,8 +556,12 @@ class Validator(ValidatorBase):
             else:
                 is_market_open = self.price_fetcher_client.is_market_open(tp, now_ms)
                 execution_type = ExecutionType.from_string(signal.get("execution_type", "MARKET").upper())
+                order_type = OrderType.from_string(signal["order_type"])
                 if execution_type in [ExecutionType.MARKET, ExecutionType.FLAT_ALL] and not is_market_open:
                     synapse.error_message = f"Market for trade pair [{tp.trade_pair_id}] is closed. Please try again later."
+                    synapse.should_retry = False
+                elif tp.trade_pair_id in ValiConfig.FLAT_ONLY_TRADE_PAIR_IDS and order_type != OrderType.FLAT:
+                    synapse.error_message = (f"Trade pair [{tp.trade_pair_id}] is being discontinued. Please close your position.")
                     synapse.should_retry = False
                 else:
                     unsupported_check_start = time.perf_counter()
