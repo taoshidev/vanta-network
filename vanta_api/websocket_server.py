@@ -96,11 +96,15 @@ class WebSocketServerClient:
     client_id: int
     websocket: WebSocketServerProtocol
     api_key: str
+    entity_hotkey: str
     tier: int = 0
     sequence_number: int = 0
     subscribe_broadcasts: bool = False
     subscribe_all_dashboard_updates: bool = False
     dashboard_subscriptions: dict[str, DashboardSubscription] = field(default_factory=dict)
+
+    def hotkey_matches(self, hotkey: str) -> bool:
+        return self.entity_hotkey and hotkey.startswith(self.entity_hotkey)
 
     async def send(self, message:dict) -> None:
         serialized_message = json.dumps(
@@ -437,7 +441,9 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                 for client in list(self._clients.values()):
                     subscription = client.dashboard_subscriptions.get(synthetic_hotkey)
 
-                    if (subscription is None) and client.subscribe_all_dashboard_updates:
+                    if ((subscription is None) and
+                            client.subscribe_all_dashboard_updates and
+                            client.hotkey_matches(synthetic_hotkey)):
                         subscription = DashboardSubscription()
                         client.dashboard_subscriptions[synthetic_hotkey] = subscription
 
@@ -585,7 +591,14 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                           f"{api_key_alias} to make room for new client {client_id}")
 
             # Register client
-            client = WebSocketServerClient(client_id=client_id, websocket=websocket, api_key=api_key, tier=api_key_tier)
+            entity_hotkey = self.api_key_to_alias.get(api_key)
+            client = WebSocketServerClient(
+                client_id=client_id,
+                websocket=websocket,
+                api_key=api_key,
+                tier=api_key_tier,
+                entity_hotkey=entity_hotkey
+            )
             self._clients[client_id] = client
             self._api_key_client_ids[api_key].append(client_id)
 
@@ -687,7 +700,7 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                                     "message": "Subaccount subscriptions require tier 200 access.",
                                     "code": "INSUFFICIENT_TIER"
                                 }))
-                            else:
+                            elif client.hotkey_matches(synthetic_hotkey):
                                 client.dashboard_subscriptions[synthetic_hotkey] = DashboardSubscription(
                                     positions_time_ms=positions_time_ms,
                                     limit_orders_time_ms=limit_orders_time_ms,
@@ -700,6 +713,14 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                                     "status": "success",
                                     "action": message_type,
                                     "subscribed_to": synthetic_hotkey
+                                }))
+                            else:
+                                await websocket.send(json.dumps({
+                                    "type": "subscription_status",
+                                    "status": "error",
+                                    "action": message_type,
+                                    "synthetic_hotkey": synthetic_hotkey,
+                                    "message": "Subaccount not authorized for this API key.",
                                 }))
 
                     elif message_type == "unsubscribe_subaccount":
