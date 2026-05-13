@@ -497,10 +497,11 @@ class ValiConfig:
     }
     SUBACCOUNT_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD = 0.05    # Rule 1: 5% intraday drop from day-open equity eliminates
     SUBACCOUNT_CHALLENGE_EOD_DRAWDOWN_THRESHOLD = 0.05  # Rule 2: 5% drop from highest-ever EOD equity eliminates
-    SUBACCOUNT_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD = 0.08
-    SUBACCOUNT_FUNDED_EOD_DRAWDOWN_THRESHOLD = 0.08
     SUBACCOUNT_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD_V0 = 0.10 # V0 applies to subaccounts registered before Sat Mar 14, 2026
+    SUBACCOUNT_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD_V1 = 0.08 # V1 applies to subaccounts registered before Wed May 13, 2026
+    SUBACCOUNT_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD = 0.05
     SUBACCOUNT_FUNDED_EOD_DRAWDOWN_THRESHOLD_V0 = 0.10  # V0 applies to subaccounts registered before Sat Mar 14, 2026
+    SUBACCOUNT_FUNDED_EOD_DRAWDOWN_THRESHOLD = 0.08
 
     # Subaccount promotion requirements
     SUBACCOUNT_FUNDED_MINIMUM_DAYS = 90  # Minimum days in FUNDED before promoting to ALPHA
