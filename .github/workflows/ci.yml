@@ -26,10 +26,9 @@ jobs:
         run: |
           pip install -r requirements.txt
           pip install -e .
-          pip install pytest coverage
+          pip install pytest
 
-      - name: Run unit tests with coverage
+      - name: Run unit tests
         timeout-minutes: 60
         run: |
-          coverage run -m pytest tests/vali_tests/
-          coverage xml -o coverage.xml
+          pytest tests/vali_tests/
