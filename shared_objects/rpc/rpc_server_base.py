@@ -196,7 +196,7 @@ class ServerProcessHandle:
         if self.process.is_alive():
             bt.logging.warning(f"{self.service_name} force killing process")
             self.process.kill()
-            self.process.join()
+            self.process.join(timeout=2.0)  # Don't block forever
 
         bt.logging.info(f"{self.service_name} process stopped")
 
