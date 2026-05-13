@@ -390,7 +390,8 @@ class LimitOrderManager(CacheController):
             if order.execution_type != ExecutionType.STOP_LIMIT:
                 price_sources = self.live_price_fetcher.get_sorted_price_sources_for_trade_pair(trade_pair, order.processed_ms)
                 if price_sources and self.live_price_fetcher.is_market_open(trade_pair, order.processed_ms):
-                    trigger_price = self._evaluate_trigger_price(order, open_position, price_sources[0])
+                    _ps = price_sources[0]
+                    trigger_price = self._evaluate_trigger_price(order, open_position, _ps, _ps)
 
                     if trigger_price:
                         should_fill_immediately = True
@@ -943,15 +944,15 @@ class LimitOrderManager(CacheController):
 
     def _get_best_price_source(self, trade_pair, now_ms):
         """
-        Get the best price source for a trade pair at a given time.
-        Uses the median price source to avoid outliers.
+        Get the best price sources for a trade pair at a given time.
+        Returns min(ask) price source for LONG orders and max(bid) price source for SHORT orders.
 
         Args:
             trade_pair: TradePair to get price for
             now_ms: Current timestamp in milliseconds
 
         Returns:
-            The median price source, or None if no price sources available
+            Tuple of (min_ask_price_source, max_bid_price_source), or None if no price sources available
         """
         if trade_pair not in self._price_stats:
             self._price_stats[trade_pair] = {
@@ -985,10 +986,15 @@ class LimitOrderManager(CacheController):
         else:
             stats["full_window_used"] += 1
 
-        # Sort price sources by close price and return median
-        sorted_sources = sorted(price_sources, key=lambda ps: ps.close)
-        median_index = len(sorted_sources) // 2
-        return [sorted_sources[median_index]]
+        # Find min(ask) and max(bid) price sources
+        min_ask_ps = min(price_sources, key=lambda ps: ps.ask if ps.ask > 0 else ps.open)
+        max_bid_ps = max(price_sources, key=lambda ps: ps.bid if ps.bid > 0 else ps.open)
+        bt.logging.debug(
+            f"[PRICE_SOURCE][{trade_pair.trade_pair_id}] "
+            f"min_ask: bid={min_ask_ps.bid} ask={min_ask_ps.ask} source={min_ask_ps.source} | "
+            f"max_bid: bid={max_bid_ps.bid} ask={max_bid_ps.ask} source={max_bid_ps.source}"
+        )
+        return (min_ask_ps, max_bid_ps)
 
 
     def _attempt_fill_limit_order(self, miner_hotkey, order, price_sources, now_ms):
@@ -1012,9 +1018,9 @@ class LimitOrderManager(CacheController):
                     return False
 
                 # Check if limit price triggered
-                best_price_source = price_sources[0]
+                min_ask_ps, max_bid_ps = price_sources
                 position = self._get_open_position(miner_hotkey, order)
-                trigger_price = self._evaluate_trigger_price(order, position, best_price_source)
+                trigger_price = self._evaluate_trigger_price(order, position, min_ask_ps, max_bid_ps)
 
                 if trigger_price is not None:
                     should_fill = True
@@ -1334,23 +1340,35 @@ class LimitOrderManager(CacheController):
         trade_pair_id = order.trade_pair.trade_pair_id
         return self.position_manager.get_open_position_for_trade_pair(hotkey, trade_pair_id)
 
-    def _evaluate_trigger_price(self, order, position, ps):
+    def _evaluate_trigger_price(self, order, position, min_ask_ps, max_bid_ps):
         if order.execution_type == ExecutionType.LIMIT:
-            return self._evaluate_limit_trigger_price(order.order_type, position, ps, order.limit_price)
+            # LONG buys at ask, SHORT sells at bid
+            ps = min_ask_ps if order.order_type == OrderType.LONG else max_bid_ps
+            return self._evaluate_limit_trigger_price(order, ps)
 
         elif order.execution_type == ExecutionType.BRACKET:
+            if not position:
+                return None
+            # Closing LONG sells at bid, closing SHORT buys at ask
+            ps = max_bid_ps if position.position_type == OrderType.LONG else min_ask_ps
             return self._evaluate_bracket_trigger_price(order, position, ps)
 
         elif order.execution_type == ExecutionType.STOP_LIMIT:
+            # GTE triggers on upside breakout: use ask (higher, more favorable)
+            # LTE triggers on downside breakout: use bid (lower, more favorable)
+            ps = max_bid_ps if order.stop_condition == StopCondition.GTE else min_ask_ps
             return self._evaluate_stop_limit_trigger_price(order, ps)
 
         return None
 
 
-    def _evaluate_limit_trigger_price(self, order_type, position, ps, limit_price):
+    def _evaluate_limit_trigger_price(self, order, ps):
         """Check if limit price is triggered. Returns the limit_price if triggered, None otherwise."""
         bid_price = ps.bid if ps.bid > 0 else ps.open
         ask_price = ps.ask if ps.ask > 0 else ps.open
+
+        order_type = order.order_type
+        limit_price = order.limit_price
 
         if order_type == OrderType.LONG:
             return limit_price if ask_price <= limit_price else None
