@@ -1094,7 +1094,9 @@ class ServerOrchestrator:
             safe_clear('miner_account', clear_miner_account)
 
         # Clear entity data (entities and subaccounts)
-        self.get_client('entity').clear_all_entities()
+        entity_client = get_client_safe('entity')
+        if entity_client:
+            safe_clear('entity', lambda: entity_client.clear_all_entities())
 
         bt.logging.debug("All test data cleared")
 
