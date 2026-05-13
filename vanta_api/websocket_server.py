@@ -320,7 +320,7 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                      'order_uuid': 'd6e1e768-9024-4cc5-84d7-d66691d82061', 'price_sources': [], 'src': 0}],
          'current_return': 0.9980034808990859, 'close_ms': 1742362860000, 'net_leverage': 0.0,
          'return_at_close': 0.9980034808990859, 'average_entry_price': 82871.92127250001,
-         'position_type': OrderType.FLAT,
+         'position_type': OrderType.SHORT,
          'is_closed_position': True})
         return p.to_websocket_dict()
 
