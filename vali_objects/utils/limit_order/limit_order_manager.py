@@ -956,9 +956,7 @@ class LimitOrderManager(CacheController):
         min_ask_ps = min(price_sources, key=lambda ps: ps.ask if ps.ask > 0 else ps.open)
         max_bid_ps = max(price_sources, key=lambda ps: ps.bid if ps.bid > 0 else ps.open)
         bt.logging.info(
-            f"[PRICE_SOURCE][{trade_pair.trade_pair_id}] "
-            f"min_ask: bid={min_ask_ps.bid} ask={min_ask_ps.ask} source={min_ask_ps.source} | "
-            f"max_bid: bid={max_bid_ps.bid} ask={max_bid_ps.ask} source={max_bid_ps.source}"
+            f"[PRICE_SOURCE][{trade_pair.trade_pair_id}] max_bid/min_ask ({max_bid_ps.bid:.4f}/{min_ask_ps.ask:.4f}) {max_bid_ps.source} {min_ask_ps.source}"
         )
         return (min_ask_ps, max_bid_ps)
 
