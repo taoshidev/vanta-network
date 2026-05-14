@@ -480,7 +480,7 @@ class ChallengePeriodManager(CacheController):
 
     # Miners registered in SUBACCOUNT_CHALLENGE before this timestamp use V0 funded thresholds
     _SUBACCOUNT_FUNDED_V0_CUTOFF_MS = 1773532799000  # Mar 14, 2026 23:59:59 UTC
-    _SUBACCOUNT_FUNDED_V1_CUTOFF_MS = 1778698800000  # May 13, 2026 19:00:00 UTC
+    _SUBACCOUNT_FUNDED_V1_CUTOFF_MS = 1778828399000  # May 15, 2026 06:59:59 UTC
 
     def _parse_eod_checkpoints(
         self,
