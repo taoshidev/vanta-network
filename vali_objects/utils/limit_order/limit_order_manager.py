@@ -949,11 +949,15 @@ class LimitOrderManager(CacheController):
         price_sources = self.live_price_fetcher.get_ws_price_sources_in_window(trade_pair, start_ms, end_ms)
         if not price_sources or len(price_sources) < 2:
             return None
+        bt.logging.info(f"[LIMIT_PS] {trade_pair.trade_pair_id} {' | '.join(f'{ps.source} {ps.bid}/{ps.ask}' for ps in price_sources)}")
 
         if trade_pair.trade_pair_category == TradePairCategory.FOREX:
             data_sources = {}
             for ps in price_sources:
                 data_sources.setdefault(ps.source, []).append(ps)
+
+            if len(data_sources.keys()) < 2:
+                return None
 
             bid_ps_agg, ask_ps_agg = [], []
             for _, ps in data_sources.items():
