@@ -540,8 +540,6 @@ class MinerStatisticsManager:
             account_size = self._miner_account_client.get_miner_account_size(hotkey, now_ms, most_recent=True)
             if account_size is None:
                 account_size = ValiConfig.MIN_CAPITAL
-            else:
-                account_size = max(account_size, ValiConfig.MIN_CAPITAL)
             account_sizes.append((hotkey, account_size))
 
         account_size_ranks = self.rank_dictionary(account_sizes)

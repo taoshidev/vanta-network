@@ -206,6 +206,9 @@ class Order(Signal):
         if self.price:
             results["pr"] = self.price
 
+        if self.slippage:
+            results["s"] = self.slippage
+
         if include_trade_pair and self.trade_pair is not None:
             results["tp"] = self.trade_pair.trade_pair
 
