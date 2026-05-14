@@ -947,37 +947,27 @@ class LimitOrderManager(CacheController):
         end_ms = now_ms
         start_ms = now_ms - ValiConfig.LIMIT_ORDER_PRICE_BUFFER_MS
         price_sources = self.live_price_fetcher.get_ws_price_sources_in_window(trade_pair, start_ms, end_ms)
-        if not price_sources or len(price_sources) < 2:
+        if not price_sources or len(price_sources) < 3:
+            bt.logging.warning(f"[LIMIT_PS] {trade_pair.trade_pair_id} no ws price sources")
             return None
-        bt.logging.info(f"[LIMIT_PS] {trade_pair.trade_pair_id} {' | '.join(f'{ps.source} {ps.bid}/{ps.ask}' for ps in price_sources)}")
 
+        bid_ps_sorted = sorted(price_sources, key=lambda ps: ps.bid if ps.bid > 0 else ps.open, reverse=True)
+        ask_ps_sorted = sorted(price_sources, key=lambda ps: ps.ask if ps.ask > 0 else ps.open)
+        max_bid_ps, min_ask_ps = bid_ps_sorted[0], ask_ps_sorted[0]
         if trade_pair.trade_pair_category == TradePairCategory.FOREX:
-            data_sources = {}
-            for ps in price_sources:
-                data_sources.setdefault(ps.source, []).append(ps)
-
-            if len(data_sources.keys()) < 2:
-                return None
-
-            bid_ps_agg, ask_ps_agg = [], []
-            for _, ps in data_sources.items():
-                bid_ps_agg.append(sorted(ps, key=lambda ps: ps.bid if ps.bid > 0 else ps.open, reverse=True)[-1])
-                ask_ps_agg.append(sorted(ps, key=lambda ps: ps.ask if ps.ask > 0 else ps.open)[0])
-
-            bid_ps = min(bid_ps_agg, key=lambda ps: ps.bid if ps.bid > 0 else ps.open) if abs(bid_ps_agg[0].start_ms - bid_ps_agg[1].start_ms) > 1000 else None
-            ask_ps = max(ask_ps_agg, key=lambda ps: ps.ask if ps.ask > 0 else ps.open) if abs(ask_ps_agg[0].start_ms - ask_ps_agg[1].start_ms) > 1000 else None
-
+            bid_ps = next((ps for ps in bid_ps_sorted[1:] if ps.source != max_bid_ps.source and abs(ps.start_ms - max_bid_ps.start_ms) > 1000), None)
+            ask_ps = next((ps for ps in ask_ps_sorted[1:] if ps.source != min_ask_ps.source and abs(ps.start_ms - min_ask_ps.start_ms) > 1000), None)
         else:
-            bid_ps_sorted = sorted(price_sources, key=lambda ps: ps.bid if ps.bid > 0 else ps.open, reverse=True)
-            ask_ps_sorted = sorted(price_sources, key=lambda ps: ps.ask if ps.ask > 0 else ps.open)
-            bid_ps = bid_ps_sorted[1] if abs(bid_ps_sorted[1].start_ms - bid_ps_sorted[0].start_ms) > 1000 else None
-            ask_ps = ask_ps_sorted[1] if abs(ask_ps_sorted[1].start_ms - ask_ps_sorted[0].start_ms) > 1000 else None
+            # require 3 data points, start walk at index 2
+            bid_ps = next((ps for ps in bid_ps_sorted[2:] if abs(ps.start_ms - max_bid_ps.start_ms) > 2000), None)
+            ask_ps = next((ps for ps in ask_ps_sorted[2:] if abs(ps.start_ms - min_ask_ps.start_ms) > 2000), None)
 
         if not bid_ps or not ask_ps or ask_ps.ask == 0 or bid_ps.bid == 0:
+            bt.logging.warning(f"[LIMIT_PS] {trade_pair.trade_pair_id} no bid/ask price")
             return None
 
         bt.logging.info(
-            f"[PRICE_SOURCE][{trade_pair.trade_pair_id}] bid/ask ({bid_ps.bid:.4f}/{ask_ps.ask:.4f}) {bid_ps.source} {ask_ps.source}"
+            f"[LIMIT_PS][{trade_pair.trade_pair_id}] {len(price_sources)} bid/ask ({max_bid_ps.bid:.4f}->{bid_ps.bid:.4f}/{min_ask_ps.ask:.4f}->{ask_ps.ask:.4f}) {bid_ps.source} {ask_ps.source} "
         )
         return (bid_ps, ask_ps)
 
