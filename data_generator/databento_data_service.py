@@ -25,7 +25,7 @@ class DatabentoWebSocketClient:
     """
 
     DATASET = "EQUS.MINI"
-    SCHEMA = "bbo-1s"
+    SCHEMA = "tbbo"
 
     def __init__(self, api_key: str):
         self._api_key = api_key
@@ -98,7 +98,7 @@ class DatabentoWebSocketClient:
 
 
 class DatabentoDataService(BaseDataService):
-    """Equities-only live WebSocket feed from Databento using bbo-1s schema."""
+    """Equities-only live WebSocket feed from Databento using tbbo schema."""
 
     def __init__(self, api_key: str, disable_ws=False, running_unit_tests=False):
         super().__init__(
@@ -167,9 +167,9 @@ class DatabentoDataService(BaseDataService):
         bt.logging.info(f"{self.provider_name} queued {len(symbols)} symbols for subscription")
 
     async def handle_msg(self, msg):
-        """Convert Databento BBO message to PriceSource and update state."""
+        """Convert Databento TBBO message to PriceSource and update state."""
         # Skip non-BBO messages
-        if not isinstance(msg, db.BBOMsg):
+        if not isinstance(msg, db.TBBOMsg):
             return
 
         # Get resolved symbol from wrapper (attached during iteration)
