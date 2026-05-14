@@ -411,6 +411,12 @@ class LivePriceFetcher:
         if self.is_backtesting:
             assert order, 'Must provide order for validation during backtesting'
 
+        if trade_pair.src == TradePairSource.HYPERLIQUID:
+            price_source = self.hyperliquid_data_service.get_close_rest(trade_pair, timestamp_ms, live=False)
+            if not price_source:
+                bt.logging.warning(f"Hyperliquid REST returned no price source for {trade_pair.trade_pair} at {timestamp_ms} ms")
+            return price_source
+
         price_source = None
         if not self.polygon_data_service.is_market_open(trade_pair, time_ms=timestamp_ms):
             if self.is_backtesting and order and order.src == 0:
