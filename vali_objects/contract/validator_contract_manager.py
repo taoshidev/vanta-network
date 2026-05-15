@@ -611,31 +611,44 @@ class ValidatorContractManager(ValidatorBroadcastBase):
             return True
 
         # Call collateral SDK slash method
+        bt.logging.info(f"Processing slash of {slash_amount} Theta from {miner_hotkey}")
+        slash_amount_rao = int(slash_amount * 10 ** 9)
+        owner_address = ValiUtils.get_secret("collateral_owner_address")
+        owner_private_key = ValiUtils.get_secret("collateral_owner_private_key")
+        vault_password = ValiUtils.get_secret("gcp_vali_pw_name")
         try:
-            bt.logging.info(f"Processing slash of {slash_amount} Theta from {miner_hotkey}")
-            owner_address = ValiUtils.get_secret("collateral_owner_address")
-            owner_private_key = ValiUtils.get_secret("collateral_owner_private_key")
-            # vault_password = ValiUtils.get_secret("gcp_vali_pw_name")
             try:
                 self.collateral_manager.slash(
                     address=miner_hotkey,
-                    amount=int(slash_amount * 10 ** 9),
+                    amount=slash_amount_rao,
                     owner_address=owner_address,
                     owner_private_key=owner_private_key,
-                    # vault_stake=self.wallet.hotkey.ss58_address,
-                    # vault_wallet=self.wallet,
-                    # wallet_password=vault_password
                 )
-            finally:
-                del owner_address
-                del owner_private_key
-                # del vault_password
-            bt.logging.info(f"Successfully slashed {slash_amount} Theta from {miner_hotkey}")
-            return True
+            except Exception as e:
+                bt.logging.error(f"Failed to execute slashing for {miner_hotkey}: {e}")
+                return False
 
-        except Exception as e:
-            bt.logging.error(f"Failed to execute slashing for {miner_hotkey}: {e}")
-            return False
+            bt.logging.info(f"Successfully slashed {slash_amount} Theta from {miner_hotkey}")
+
+            try:
+                self.collateral_manager.burn(
+                    amount=slash_amount_rao,
+                    vault_stake=self.wallet.hotkey.ss58_address,
+                    vault_wallet=self.wallet,
+                    wallet_password=vault_password,
+                )
+                bt.logging.info(f"Successfully burned {slash_amount} Theta for {miner_hotkey} slash")
+            except Exception as e:
+                bt.logging.error(
+                    f"Slash succeeded but burn failed for {miner_hotkey} - "
+                    f"{slash_amount} Theta funds remain in slashedCollateral pool: {e}"
+                )
+
+            return True
+        finally:
+            del owner_address
+            del owner_private_key
+            del vault_password
 
     def get_miner_collateral_balance(self, miner_address: str, max_retries: int = 4) -> Optional[float]:
         """
