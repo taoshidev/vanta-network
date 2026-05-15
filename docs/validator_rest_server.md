@@ -1629,7 +1629,8 @@ curl -H "Authorization: Bearer YOUR_TIER_200_API_KEY" \
               "tk": 88.42, // take_profit (if not null)
               "tsl": {"pct": 0.02}, // trailing_stop (if not null) — {"pct": <trailing_percent>} or {"val": <trailing_value>}
               "sp": 80.00, // stop_price (if STOP_LIMIT)
-              "cond": "GTE" // stop_condition (if STOP_LIMIT) — "GTE" or "LTE"
+              "cond": "GTE", // stop_condition (if STOP_LIMIT) — "GTE" or "LTE"
+              "s": 0.0001 // slippage (if not null)
             }
           },
           "uo": { // unfilled_orders (if unfilled orders)
@@ -1777,6 +1778,7 @@ This section is only included if the subaccount is eliminated.
     - `trailing_stop`: Trailing stop (if applicable) — `{"pct": <trailing_percent>}` or `{"val": <trailing_value>}`
     - `stop_price`: Trigger price for STOP_LIMIT orders (if applicable)
     - `stop_condition`: Trigger direction for STOP_LIMIT orders — `"GTE"` (trigger when price >= stop_price) or `"LTE"` (trigger when price <= stop_price)
+    - `slippage`: Slippage cost applied to this order (if applicable)
   - `unfilled_orders`: Dictionary of unfilled orders within this position
   - `fee_history`: Dictionary of fee events within this position
     - `time_ms`: Timestamp of fee
