@@ -126,7 +126,7 @@ class HyperliquidDataService(BaseDataService):
         # Build coin name -> TradePair mapping for static pairs.
         self._coin_to_trade_pair: dict[str, TradePair] = {}
         for tp in TradePair:
-            if tp.src == TradePairSource.HYPERLIQUID and tp not in self.UNSUPPORTED_TRADE_PAIRS:
+            if tp.src == TradePairSource.HYPERLIQUID and not tp.is_blocked:
                 self._coin_to_trade_pair[tp.hl_coin] = tp
 
         # Dual-resolution L2 orderbook cache per coin.
@@ -313,19 +313,81 @@ class HyperliquidDataService(BaseDataService):
             bt.logging.error(f"Hyperliquid REST l2Book({coin}) failed: {type(e).__name__}: {e}")
             return None
 
-    def get_closes_rest(self, trade_pairs: List[TradePairLike], time_ms, live=True) -> dict[TradePairLike, PriceSource]:
-        """REST fallback: fetch mid prices from Hyperliquid for all HL-sourced pairs."""
+    def _get_candles(self, hl_coin: str, target_ms: int) -> PriceSource | None:
+        """Fetch the 15-minute candle closest to target_ms using the candleSnapshot endpoint.
+
+        For HIP-3 dex coins (hl_coin contains ':'), pass the full prefixed name as the coin
+        field (e.g. hl_coin="xyz:XYZ100" → coin="xyz:XYZ100").
+        """
+        candle_span_ms = 15 * 60 * 1000  # 15-minute candles (~52 days of history at 5000-candle limit)
+        start_ms = target_ms - 5 * candle_span_ms
+        end_ms = target_ms + candle_span_ms
+
+        req: dict = {"coin": hl_coin, "interval": "15m", "startTime": start_ms, "endTime": end_ms}
+
+        try:
+            resp = requests.post(
+                ValiConfig.hl_info_url(),
+                json={"type": "candleSnapshot", "req": req},
+                timeout=REST_TIMEOUT_S,
+            )
+            resp.raise_for_status()
+            candles = resp.json()
+        except Exception as e:
+            bt.logging.error(f"Hyperliquid candleSnapshot({hl_coin}) failed: {type(e).__name__}: {e}")
+            return None
+
+        if not candles:
+            return None
+
+        # Pick the candle whose open time is closest to (and not after) target_ms.
+        best = min(candles, key=lambda c: abs(target_ms - int(c["t"])))
+        candle_start_ms = int(best["t"])
+
+        return PriceSource(
+            source=f"{HYPERLIQUID_PROVIDER_NAME}_candle",
+            timespan_ms=candle_span_ms,
+            open=float(best["o"]),
+            close=float(best["c"]),
+            high=float(best["h"]),
+            low=float(best["l"]),
+            vwap=float(best["c"]),  # HL candles have no vwap; use close as best proxy
+            start_ms=candle_start_ms,
+            websocket=False,
+            lag_ms=target_ms - candle_start_ms,
+        )
+
+    # How recent time_ms must be (relative to now) to use live allMids instead of candleSnapshot.
+    _LIVE_THRESHOLD_MS = 5 * 60 * 1000  # 5 minutes
+
+    def get_closes_rest(self, trade_pairs: List[TradePair], time_ms, live=True) -> dict[TradePair, PriceSource]:
+        """REST fallback: fetch prices from Hyperliquid for all HL-sourced pairs.
+
+        When time_ms is recent (within _LIVE_THRESHOLD_MS of now) or live=True, uses the
+        allMids/l2Book endpoints for the current mid price.  For historical timestamps it
+        uses candleSnapshot to return the 1-minute candle closest to time_ms.
+        """
         if self.running_unit_tests:
             from data_generator.polygon_data_service import PolygonDataService
             return {tp: PolygonDataService.DEFAULT_TESTING_FALLBACK_PRICE_SOURCE for tp in trade_pairs}
 
-        hl_pairs = [tp for tp in trade_pairs if tp.src == TradePairSource.HYPERLIQUID and tp not in self.UNSUPPORTED_TRADE_PAIRS]
+        hl_pairs = [tp for tp in trade_pairs if tp.src == TradePairSource.HYPERLIQUID and not tp.is_blocked]
         if not hl_pairs:
             return {}
 
         now_ms = TimeUtil.now_in_millis()
+        use_live = live or (now_ms - time_ms) < self._LIVE_THRESHOLD_MS
 
-        # Use the bulk allMids endpoint first
+        if not use_live:
+            # Historical lookup — use candleSnapshot for each pair.
+            results: dict[TradePair, PriceSource] = {}
+            for tp in hl_pairs:
+                price_source = self._get_candles(tp.hl_coin, time_ms)
+                if price_source is not None:
+                    results[tp] = price_source
+            return results
+
+        # Live lookup — use the bulk allMids endpoint first.
         all_mids = self._fetch_all_mids()
 
         results: dict[TradePair, PriceSource] = {}
@@ -349,7 +411,7 @@ class HyperliquidDataService(BaseDataService):
             else:
                 pairs_needing_book.append(tp)
 
-        # Fall back to individual l2Book calls for any coins missing from allMids
+        # Fall back to individual l2Book calls for any coins missing from allMids.
         for tp in pairs_needing_book:
             book = self._fetch_l2_book(tp.hl_coin)
             if book is None:
@@ -509,9 +571,9 @@ class HyperliquidDataService(BaseDataService):
 
         return total_usd / total_coins
 
-    def get_close_rest(self, trade_pair: TradePairLike, timestamp_ms: int) -> PriceSource | None:
-        """Single-pair REST fallback."""
-        results = self.get_closes_rest([trade_pair], timestamp_ms)
+    def get_close_rest(self, trade_pair: TradePairLike, timestamp_ms: int, live: bool = True) -> PriceSource | None:
+        """Single-pair REST fallback. Pass live=False to use historical candleSnapshot lookup."""
+        results = self.get_closes_rest([trade_pair], timestamp_ms, live=live)
         return results.get(trade_pair)
 
     def _get_subscription_coins(self) -> set[str]:
