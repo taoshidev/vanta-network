@@ -641,7 +641,7 @@ class ValidatorContractManager(ValidatorBroadcastBase):
             except Exception as e:
                 bt.logging.error(
                     f"Slash succeeded but burn failed for {miner_hotkey} - "
-                    f"funds remain in slashedCollateral pool: {e}"
+                    f"{slash_amount} Theta funds remain in slashedCollateral pool: {e}"
                 )
 
             return True
