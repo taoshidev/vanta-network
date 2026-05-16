@@ -654,12 +654,31 @@ class PolygonDataService(BaseDataService):
             raise ValueError(f"Unknown symbol: {symbol}")
         return tp
 
-    def get_closes_rest(self, trade_pairs: List[TradePair], time_ms, live=True) -> dict:
+    def get_price_rest(
+        self,
+        trade_pairs: List[TradePair],
+        timestamp_ms: int,
+        live: bool
+    ) -> dict[TradePair, PriceSource]:
+        """
+        Fetch prices via REST.
+
+        Args:
+            trade_pairs: Pairs to fetch
+            timestamp_ms: Target timestamp (used when live=False, ignored when live=True)
+            live: True = current prices (market fills), False = historical (perf ledger)
+
+        Returns:
+            Map of trade pair to price source. Missing pairs excluded.
+        """
+        if live:
+            timestamp_ms = TimeUtil.now_in_millis()
+
         # In unit test mode, return test price sources instead of making network calls
         if self.running_unit_tests:
             result = {}
             for trade_pair in trade_pairs:
-                test_price = self._get_test_price_source(trade_pair, time_ms)
+                test_price = self._get_test_price_source(trade_pair, timestamp_ms)
                 if test_price:
                     result[trade_pair] = test_price
             return result
@@ -667,82 +686,34 @@ class PolygonDataService(BaseDataService):
         trade_pairs = [tp for tp in trade_pairs if tp.trade_pair_category in self.enabled_websocket_categories]
 
         all_trade_pair_closes = {}
-        # Multi-threaded fetching of REST data over all requested trade pairs. Max parallelism is 5.
         with ThreadPoolExecutor(max_workers=5) as executor:
-            # Dictionary to keep track of futures
-            future_to_trade_pair = {executor.submit(self.get_close_rest, p, time_ms): p for p in trade_pairs}
+            future_to_trade_pair = {
+                executor.submit(self._get_single_price_rest, p, timestamp_ms): p
+                for p in trade_pairs
+            }
 
             for future in as_completed(future_to_trade_pair):
                 tp = future_to_trade_pair[future]
                 try:
                     result = future.result()
-                    if result is None:
-                        result = {}
-                    all_trade_pair_closes[tp] = result
+                    if result is not None:
+                        all_trade_pair_closes[tp] = result
                 except Exception as exc:
                     bt.logging.error(f"{tp} generated an exception: {exc}. Continuing...")
                     bt.logging.error(traceback.format_exc())
 
         return all_trade_pair_closes
 
-    def agg_to_price_source(self, a, now_ms:int, timespan:str, attempting_prev_close:bool=False):
-        p_name = f'{POLYGON_PROVIDER_NAME}_rest'
-        if attempting_prev_close:
-            p_name += '_prev_close'
-
-        return \
-            PriceSource(
-                source=p_name,
-                timespan_ms=self.timespan_to_ms[timespan],
-                open=a.open,
-                close=a.close,
-                vwap=a.vwap,
-                high=a.high,
-                low=a.low,
-                start_ms=a.timestamp,
-                websocket=False,
-                lag_ms=now_ms - a.timestamp,
-                bid=a.bid if hasattr(a, 'bid') else 0,
-                ask=a.ask if hasattr(a, 'ask') else 0
-            )
-
-    def _create_websocket_client(self, tpc: TradePairCategory):
-        feed = Feed.RealTime
-        # instantiate new client
-        if tpc == TradePairCategory.CRYPTO:
-            market = Market.Crypto
-        elif tpc == TradePairCategory.FOREX:
-            market = Market.Forex
-        elif tpc == TradePairCategory.EQUITIES:
-            market = Market.Stocks
-        else:
-            raise Exception(f'Unexpected tpc {tpc}')
-
-        # Use Business feed for equities to get FMV data
-        if tpc == TradePairCategory.EQUITIES:
-            feed = self.stocks_feed
-        client = WebSocketClient(market=market, api_key=self._api_key, feed=feed)
-        bt.logging.info(f"Created {self.provider_name} websocket for {tpc}. feed {feed.name}")
-        self.WEBSOCKET_OBJECTS[tpc] = client
-
-    def get_close_rest(
+    def _get_single_price_rest(
         self,
         trade_pair: TradePair,
-        timestamp_ms: int = None,
-        order: Order = None
+        timestamp_ms: int
     ) -> PriceSource | None:
-        if not timestamp_ms:
-            timestamp_ms = TimeUtil.now_in_millis()
-
+        """Internal helper: fetch REST price for a single trade pair at a given timestamp."""
         # Return test data in unit test mode
         test_price = self._get_test_price_source(trade_pair, timestamp_ms)
         if test_price:
             return test_price
-
-        if self.is_backtesting:
-            # Check that we are within market hours for genuine ptn orders
-            if order is not None and order.src == 0:
-                assert self.is_market_open(trade_pair, time_ms=timestamp_ms)
 
         if not self.is_market_open(trade_pair, time_ms=timestamp_ms):
             return self.get_event_before_market_close(trade_pair, timestamp_ms)
@@ -752,24 +723,55 @@ class PolygonDataService(BaseDataService):
         timespan = "second"
         raw = self.unified_candle_fetcher(trade_pair, timestamp_ms - 10000, timestamp_ms + 2000, timespan)
         for a in raw:
-            #print('agg:', a)
-            """
-                    agg Agg(open=111.91, high=111.91, low=111.902, close=111.909, volume=3, vwap=111.907,
-                    timestamp=1713273876000, transactions=3, otc=None)
-            """
             epoch_miliseconds = a.timestamp
             price_source = self.agg_to_price_source(a, timestamp_ms, timespan)
             assert prev_timestamp is None or prev_timestamp < epoch_miliseconds
-            #formatted_date = TimeUtil.millis_to_formatted_date_str(epoch_miliseconds // 1000)
             final_agg = price_source
             prev_timestamp = epoch_miliseconds
+
         if not final_agg:
             bt.logging.warning(f"Polygon failed to fetch REST data for {trade_pair.trade_pair} at time "
                                f"{TimeUtil.millis_to_formatted_date_str(timestamp_ms)}. "
                                f"If you keep seeing this warning, report it to the team ASAP")
-            final_agg = None
 
         return final_agg
+
+    def agg_to_price_source(self, a, now_ms: int, timespan: str, attempting_prev_close: bool = False):
+        p_name = f'{POLYGON_PROVIDER_NAME}_rest'
+        if attempting_prev_close:
+            p_name += '_prev_close'
+
+        return PriceSource(
+            source=p_name,
+            timespan_ms=self.timespan_to_ms[timespan],
+            open=a.open,
+            close=a.close,
+            vwap=a.vwap,
+            high=a.high,
+            low=a.low,
+            start_ms=a.timestamp,
+            websocket=False,
+            lag_ms=now_ms - a.timestamp,
+            bid=a.bid if hasattr(a, 'bid') else 0,
+            ask=a.ask if hasattr(a, 'ask') else 0
+        )
+
+    def _create_websocket_client(self, tpc: TradePairCategory):
+        feed = Feed.RealTime
+        if tpc == TradePairCategory.CRYPTO:
+            market = Market.Crypto
+        elif tpc == TradePairCategory.FOREX:
+            market = Market.Forex
+        elif tpc == TradePairCategory.EQUITIES:
+            market = Market.Stocks
+        else:
+            raise Exception(f'Unexpected tpc {tpc}')
+
+        if tpc == TradePairCategory.EQUITIES:
+            feed = self.stocks_feed
+        client = WebSocketClient(market=market, api_key=self._api_key, feed=feed)
+        bt.logging.info(f"Created {self.provider_name} websocket for {tpc}. feed {feed.name}")
+        self.WEBSOCKET_OBJECTS[tpc] = client
 
 
     def trade_pair_to_polygon_ticker(self, trade_pair: TradePair):
@@ -1305,17 +1307,14 @@ if __name__ == "__main__":
     secrets = ValiUtils.get_secrets()
 
     polygon_data_provider = PolygonDataService(api_key=secrets['polygon_apikey'], disable_ws=True)
-    ans = polygon_data_provider.get_close_rest(TradePair.TAOUSD, 1760753263000)
-    print('@@', ans)
-    time.sleep(10000)
-    assert 0, ans
+    results = polygon_data_provider.get_price_rest([TradePair.TAOUSD], 1760753263000, live=False)
+    print('@@', results)
+    now_ms = TimeUtil.now_in_millis()
     for tp in TradePair:
         if tp.is_indices:
             continue
-        #if tp != TradePair.GBPUSD:
-        #    continue
-
-        print('getting close for', tp.trade_pair_id, ':', polygon_data_provider.get_close_rest(tp, TimeUtil.now_in_millis()))
+        result = polygon_data_provider.get_price_rest([tp], now_ms, live=True)
+        print('getting close for', tp.trade_pair_id, ':', result.get(tp))
 
     time.sleep(100000)
 

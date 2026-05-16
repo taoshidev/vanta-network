@@ -12,7 +12,7 @@ import websockets
 from data_generator.base_data_service import BaseDataService, HYPERLIQUID_PROVIDER_NAME
 from entity_management.hl_orderbook_utils import simulate_fill
 from time_util.time_util import TimeUtil
-from vali_objects.vali_config import TradePair, TradePairCategory, TradePairLike, TradePairSource, ValiConfig
+from vali_objects.vali_config import TradePair, TradePairCategory, TradePairSource, ValiConfig
 from vali_objects.vali_dataclasses.price_source import PriceSource
 from vali_objects.vali_dataclasses.recent_event_tracker import RecentEventTracker
 
@@ -364,15 +364,22 @@ class HyperliquidDataService(BaseDataService):
             lag_ms=target_ms - candle_start_ms,
         )
 
-    # How recent time_ms must be (relative to now) to use live allMids instead of candleSnapshot.
-    _LIVE_THRESHOLD_MS = 5 * 60 * 1000  # 5 minutes
+    def get_price_rest(
+        self,
+        trade_pairs: List[TradePair],
+        timestamp_ms: int,
+        live: bool
+    ) -> dict[TradePair, PriceSource]:
+        """
+        Fetch prices via REST.
 
-    def get_closes_rest(self, trade_pairs: List[TradePairLike], time_ms, live=True) -> dict[TradePairLike, PriceSource]:
-        """REST fallback: fetch prices from Hyperliquid for all HL-sourced pairs.
+        Args:
+            trade_pairs: Pairs to fetch
+            timestamp_ms: Target timestamp (used when live=False, ignored when live=True)
+            live: True = current prices (market fills), False = historical (perf ledger)
 
-        When time_ms is recent (within _LIVE_THRESHOLD_MS of now) or live=True, uses the
-        allMids/l2Book endpoints for the current mid price.  For historical timestamps it
-        uses candleSnapshot to return the 1-minute candle closest to time_ms.
+        Returns:
+            Map of trade pair to price source. Missing pairs excluded.
         """
         if self.running_unit_tests:
             from data_generator.polygon_data_service import PolygonDataService
@@ -383,13 +390,12 @@ class HyperliquidDataService(BaseDataService):
             return {}
 
         now_ms = TimeUtil.now_in_millis()
-        use_live = live or (now_ms - time_ms) < self._LIVE_THRESHOLD_MS
 
-        if not use_live:
+        if not live:
             # Historical lookup — use candleSnapshot for each pair.
             results: dict[TradePair, PriceSource] = {}
             for tp in hl_pairs:
-                price_source = self._fetch_candle_snapshot(tp.hl_coin, time_ms)
+                price_source = self._fetch_candle_snapshot(tp.hl_coin, timestamp_ms)
                 if price_source is not None:
                     results[tp] = price_source
             return results
@@ -442,7 +448,7 @@ class HyperliquidDataService(BaseDataService):
 
         return results
 
-    def simulate_slippage(self, trade_pair: TradePairLike, size_usd: float, is_buy: bool) -> float | None:
+    def simulate_slippage(self, trade_pair: TradePair, size_usd: float, is_buy: bool) -> float | None:
         """Simulate slippage using a dual-resolution two-phase orderbook walk.
 
         Phase 1 walks the full-precision book (nSigFigs=None) for accurate near-spread
@@ -512,7 +518,7 @@ class HyperliquidDataService(BaseDataService):
         slippage_pct = (avg_price - mid) / mid if is_buy else (mid - avg_price) / mid
         return max(0.0, slippage_pct)
 
-    def simulate_avg_fill_price(self, trade_pair: TradePairLike, size_usd: float, is_buy: bool) -> float | None:
+    def simulate_avg_fill_price(self, trade_pair: TradePair, size_usd: float, is_buy: bool) -> float | None:
         """Simulate the average fill price for a market order using the L2 orderbook.
 
         Uses the same dual-resolution two-phase orderbook walk as simulate_slippage,
@@ -577,11 +583,6 @@ class HyperliquidDataService(BaseDataService):
             return None
 
         return total_usd / total_coins
-
-    def get_close_rest(self, trade_pair: TradePairLike, timestamp_ms: int, live: bool = True) -> PriceSource | None:
-        """Single-pair REST fallback. Pass live=False to use historical candleSnapshot lookup."""
-        results = self.get_closes_rest([trade_pair], timestamp_ms, live=live)
-        return results.get(trade_pair)
 
     def _get_subscription_coins(self) -> set[str]:
         """Return the filtered set of HL coins to subscribe to for l2Book streams.

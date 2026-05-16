@@ -234,16 +234,16 @@ class TestHyperliquidDataService(unittest.TestCase):
 
     # -- REST fallback tests --
 
-    def test_get_closes_rest_unit_test_mode(self):
-        """In unit test mode, get_closes_rest returns default fallback price sources."""
-        results = self.service.get_closes_rest([TradePair.BTCUSD, TradePair.ETHUSD], TimeUtil.now_in_millis())
+    def test_get_price_rest_unit_test_mode(self):
+        """In unit test mode, get_price_rest returns default fallback price sources."""
+        results = self.service.get_price_rest([TradePair.BTCUSD, TradePair.ETHUSD], TimeUtil.now_in_millis())
         self.assertEqual(len(results), 2)
         self.assertIn(TradePair.BTCUSD, results)
         self.assertIn(TradePair.ETHUSD, results)
 
-    def test_get_closes_rest_ignores_non_crypto(self):
+    def test_get_price_rest_ignores_non_crypto(self):
         """Non-crypto pairs should be ignored."""
-        results = self.service.get_closes_rest([TradePair.EURUSD], TimeUtil.now_in_millis())
+        results = self.service.get_price_rest([TradePair.EURUSD], TimeUtil.now_in_millis())
         # EURUSD is forex, not crypto — should not be in results (unit test mode returns for all passed pairs,
         # but the method filters to crypto only before the unit test shortcut)
         # Since running_unit_tests returns early for all trade_pairs before filtering, let's
@@ -252,16 +252,16 @@ class TestHyperliquidDataService(unittest.TestCase):
         with patch("data_generator.hyperliquid_data_service.requests.post") as mock_post:
             mock_post.return_value = MagicMock(status_code=200, json=lambda: {})
             mock_post.return_value.raise_for_status = MagicMock()
-            results = svc.get_closes_rest([TradePair.EURUSD], TimeUtil.now_in_millis())
+            results = svc.get_price_rest([TradePair.EURUSD], TimeUtil.now_in_millis())
         self.assertEqual(len(results), 0)
 
-    def test_get_close_rest_single_pair(self):
-        """get_close_rest should return a PriceSource for a single pair."""
-        result = self.service.get_close_rest(TradePair.BTCUSD, TimeUtil.now_in_millis())
+    def test_get_price_rest_single_pair(self):
+        """get_price_rest should return a PriceSource for a single pair."""
+        result = self.service.get_price_rest(TradePair.BTCUSD, TimeUtil.now_in_millis())
         self.assertIsNotNone(result)
 
     @patch("data_generator.hyperliquid_data_service.requests.post")
-    def test_get_closes_rest_uses_all_mids(self, mock_post):
+    def test_get_price_rest_uses_all_mids(self, mock_post):
         """REST fallback should use allMids endpoint and produce correct PriceSources."""
         svc = HyperliquidDataService(disable_ws=True, running_unit_tests=False)
 
@@ -270,7 +270,7 @@ class TestHyperliquidDataService(unittest.TestCase):
         mock_response.json.return_value = {"BTC": "67500.5", "ETH": "3400.25", "SOL": "145.0"}
         mock_post.return_value = mock_response
 
-        results = svc.get_closes_rest(
+        results = svc.get_price_rest(
             [TradePair.BTCUSD, TradePair.ETHUSD], TimeUtil.now_in_millis()
         )
 
@@ -281,7 +281,7 @@ class TestHyperliquidDataService(unittest.TestCase):
         self.assertFalse(results[TradePair.BTCUSD].websocket)
 
     @patch("data_generator.hyperliquid_data_service.requests.post")
-    def test_get_closes_rest_falls_back_to_l2book(self, mock_post):
+    def test_get_price_rest_falls_back_to_l2book(self, mock_post):
         """If allMids is missing a coin, should fall back to l2Book for that coin."""
         svc = HyperliquidDataService(disable_ws=True, running_unit_tests=False)
 
@@ -302,7 +302,7 @@ class TestHyperliquidDataService(unittest.TestCase):
 
         mock_post.side_effect = side_effect
 
-        results = svc.get_closes_rest(
+        results = svc.get_price_rest(
             [TradePair.BTCUSD, TradePair.ETHUSD], TimeUtil.now_in_millis()
         )
 
@@ -315,12 +315,12 @@ class TestHyperliquidDataService(unittest.TestCase):
         self.assertAlmostEqual(results[TradePair.ETHUSD].close, 3400.0)
 
     @patch("data_generator.hyperliquid_data_service.requests.post")
-    def test_get_closes_rest_handles_api_failure(self, mock_post):
+    def test_get_price_rest_handles_api_failure(self, mock_post):
         """If the REST API fails entirely, should return empty dict."""
         svc = HyperliquidDataService(disable_ws=True, running_unit_tests=False)
         mock_post.side_effect = Exception("Connection refused")
 
-        results = svc.get_closes_rest([TradePair.BTCUSD], TimeUtil.now_in_millis())
+        results = svc.get_price_rest([TradePair.BTCUSD], TimeUtil.now_in_millis())
         self.assertEqual(len(results), 0)
 
 
