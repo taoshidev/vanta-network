@@ -61,11 +61,9 @@ class TestPolygonDataService(unittest.TestCase):
 
         self.polygon_service.set_test_price_source(TradePair.BTCUSD, price_source)
 
-        # Retrieve via get_close_rest
-        result = self.polygon_service.get_close_rest(
-            trade_pair=TradePair.BTCUSD,
-            timestamp_ms=order_time_ms
-        )
+        # Retrieve via get_price_rest
+        results = self.polygon_service.get_price_rest([TradePair.BTCUSD], order_time_ms, live=True)
+        result = results.get(TradePair.BTCUSD)
 
         self.assertIsNotNone(result)
         self.assertEqual(result.close, test_price)
@@ -97,18 +95,16 @@ class TestPolygonDataService(unittest.TestCase):
         self.polygon_service.clear_test_price_sources()
 
         # Should now return default fallback
-        result = self.polygon_service.get_close_rest(
-            trade_pair=TradePair.BTCUSD,
-            timestamp_ms=order_time_ms
-        )
+        results = self.polygon_service.get_price_rest([TradePair.BTCUSD], order_time_ms, live=True)
+        result = results.get(TradePair.BTCUSD)
 
         self.assertIsNotNone(result)
         # Should be default fallback price (50000)
         self.assertEqual(result.close, 50000)
 
-    def test_polygon_multi_category_get_closes_rest(self):
+    def test_polygon_multi_category_get_price_rest(self):
         """
-        Test PolygonDataService.get_closes_rest() with multiple categories.
+        Test PolygonDataService.get_price_rest() with multiple categories.
 
         Ensures ThreadPoolExecutor handles multiple trade pair categories correctly.
         """
@@ -121,11 +117,7 @@ class TestPolygonDataService(unittest.TestCase):
             TradePair.EURUSD    # Forex
         ]
 
-        result = self.polygon_service.get_closes_rest(
-            trade_pairs=trade_pairs,
-            time_ms=order_time_ms,
-            live=True
-        )
+        result = self.polygon_service.get_price_rest(trade_pairs, order_time_ms, live=True)
 
         # Verify results
         self.assertIsInstance(result, dict)
@@ -143,11 +135,7 @@ class TestPolygonDataService(unittest.TestCase):
         order_time_ms = TimeUtil.now_in_millis()
         trade_pairs = [TradePair.BTCUSD, TradePair.ETHUSD]
 
-        result = self.polygon_service.get_closes_rest(
-            trade_pairs=trade_pairs,
-            time_ms=order_time_ms,
-            live=True
-        )
+        result = self.polygon_service.get_price_rest(trade_pairs, order_time_ms, live=True)
 
         self.assertEqual(len(result), 2)
         for tp in trade_pairs:
@@ -159,11 +147,7 @@ class TestPolygonDataService(unittest.TestCase):
         order_time_ms = TimeUtil.now_in_millis()
         trade_pairs = [TradePair.NVDA, TradePair.MSFT]
 
-        result = self.polygon_service.get_closes_rest(
-            trade_pairs=trade_pairs,
-            time_ms=order_time_ms,
-            live=True
-        )
+        result = self.polygon_service.get_price_rest(trade_pairs, order_time_ms, live=True)
 
         self.assertEqual(len(result), 2)
         for tp in trade_pairs:
@@ -175,25 +159,19 @@ class TestPolygonDataService(unittest.TestCase):
         order_time_ms = TimeUtil.now_in_millis()
         trade_pairs = [TradePair.EURUSD, TradePair.GBPUSD]
 
-        result = self.polygon_service.get_closes_rest(
-            trade_pairs=trade_pairs,
-            time_ms=order_time_ms,
-            live=True
-        )
+        result = self.polygon_service.get_price_rest(trade_pairs, order_time_ms, live=True)
 
         self.assertEqual(len(result), 2)
         for tp in trade_pairs:
             self.assertIn(tp, result)
             self.assertIsInstance(result[tp], PriceSource)
 
-    def test_polygon_get_close_rest_single_pair(self):
-        """Test get_close_rest for single trade pair."""
+    def test_polygon_get_price_rest_single_pair(self):
+        """Test get_price_rest for single trade pair."""
         order_time_ms = TimeUtil.now_in_millis()
 
-        result = self.polygon_service.get_close_rest(
-            trade_pair=TradePair.BTCUSD,
-            timestamp_ms=order_time_ms
-        )
+        results = self.polygon_service.get_price_rest([TradePair.BTCUSD], order_time_ms, live=True)
+        result = results.get(TradePair.BTCUSD)
 
         self.assertIsNotNone(result)
         self.assertIsInstance(result, PriceSource)
@@ -201,11 +179,7 @@ class TestPolygonDataService(unittest.TestCase):
 
     def test_polygon_empty_trade_pairs(self):
         """Test with empty trade pairs list."""
-        result = self.polygon_service.get_closes_rest(
-            trade_pairs=[],
-            time_ms=TimeUtil.now_in_millis(),
-            live=True
-        )
+        result = self.polygon_service.get_price_rest([], TimeUtil.now_in_millis(), live=True)
 
         self.assertIsInstance(result, dict)
         self.assertEqual(len(result), 0)
@@ -294,10 +268,8 @@ class TestPolygonDataService(unittest.TestCase):
         order_time_ms = TimeUtil.now_in_millis()
 
         # Don't set any specific price - should use default fallback
-        result = self.polygon_service.get_close_rest(
-            trade_pair=TradePair.BTCUSD,
-            timestamp_ms=order_time_ms
-        )
+        results = self.polygon_service.get_price_rest([TradePair.BTCUSD], order_time_ms, live=True)
+        result = results.get(TradePair.BTCUSD)
 
         self.assertIsNotNone(result)
         self.assertIsInstance(result, PriceSource)
@@ -311,10 +283,8 @@ class TestPolygonDataService(unittest.TestCase):
         # Explicitly set None (no price source for this pair)
         self.polygon_service.set_test_price_source(TradePair.BTCUSD, None)
 
-        result = self.polygon_service.get_close_rest(
-            trade_pair=TradePair.BTCUSD,
-            timestamp_ms=order_time_ms
-        )
+        results = self.polygon_service.get_price_rest([TradePair.BTCUSD], order_time_ms, live=True)
+        result = results.get(TradePair.BTCUSD)
 
         # Should return None (explicitly no price)
         self.assertIsNone(result)
@@ -339,8 +309,9 @@ class TestPolygonDataService(unittest.TestCase):
         self.polygon_service.set_test_price_source(TradePair.ETHUSD, eth_price)
 
         # Retrieve both
-        btc_result = self.polygon_service.get_close_rest(TradePair.BTCUSD, order_time_ms)
-        eth_result = self.polygon_service.get_close_rest(TradePair.ETHUSD, order_time_ms)
+        results = self.polygon_service.get_price_rest([TradePair.BTCUSD, TradePair.ETHUSD], order_time_ms, live=True)
+        btc_result = results.get(TradePair.BTCUSD)
+        eth_result = results.get(TradePair.ETHUSD)
 
         self.assertEqual(btc_result.close, 65000.0)
         self.assertEqual(eth_result.close, 3200.0)

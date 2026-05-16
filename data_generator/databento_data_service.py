@@ -255,8 +255,24 @@ class DatabentoDataService(BaseDataService):
         # Already a string — take first 10 chars to strip any time component
         return str(value)[:10]
 
-    def get_closes_rest(self, trade_pairs: List[TradePair], time_ms: int, live: bool = False) -> dict[TradePair, PriceSource]:
-        """Historical daily closes from Databento (equities only). Returns empty if live=True."""
+    def get_price_rest(
+        self,
+        trade_pairs: List[TradePair],
+        timestamp_ms: int,
+        live: bool
+    ) -> dict[TradePair, PriceSource]:
+        """
+        Fetch prices via REST.
+
+        Args:
+            trade_pairs: Pairs to fetch
+            timestamp_ms: Target timestamp (used when live=False, ignored when live=True)
+            live: True = current prices (market fills), False = historical (perf ledger)
+
+        Returns:
+            Map of trade pair to price source. Missing pairs excluded.
+            Note: Databento only supports historical data; returns empty if live=True.
+        """
         if live:
             return {}
 
@@ -268,7 +284,7 @@ class DatabentoDataService(BaseDataService):
         if not equity_pairs:
             return {}
 
-        target_dt = datetime.fromtimestamp(time_ms / 1000, tz=ZoneInfo("UTC"))
+        target_dt = datetime.fromtimestamp(timestamp_ms / 1000, tz=ZoneInfo("UTC"))
         start_dt = target_dt.replace(hour=0, minute=0, second=0, microsecond=0)
         end_dt = start_dt + timedelta(days=1)
 
@@ -295,7 +311,6 @@ class DatabentoDataService(BaseDataService):
                 high = float(row["high"])
                 low = float(row["low"])
 
-                # ts_event is the index as a pandas Timestamp (nanoseconds -> Timestamp by pandas)
                 ts_event = df.index[-1]
                 bar_start_ms = int(ts_event.timestamp() * 1000)
 
