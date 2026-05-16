@@ -409,6 +409,7 @@ class LivePriceFetcher:
         if self.is_backtesting:
             assert order, 'Must provide order for validation during backtesting'
 
+        trade_pair = NATIVE_CRYPTO_TO_HL_TRADE_PAIR.get(trade_pair, trade_pair)
         if trade_pair.src == TradePairSource.HYPERLIQUID:
             results = self.hyperliquid_data_service.get_price_rest([trade_pair], timestamp_ms, live=False)
             price_source = results.get(trade_pair)

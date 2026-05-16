@@ -20,6 +20,16 @@ REST_TIMEOUT_S = 10
 RECV_TIMEOUT_S = 30
 _L2_COIN_CACHE_TTL_S = 300.0
 
+# (interval, candle_span_ms) - sorted by span ascending, threshold is span * 5000 candles
+HL_CANDLE_INTERVALS = [
+    ("1m", 60 * 1000),
+    ("5m", 5 * 60 * 1000),
+    ("15m", 15 * 60 * 1000),
+    ("1h", 60 * 60 * 1000),
+    ("12h", 12 * 60 * 60 * 1000),
+    ("1d", 24 * 60 * 60 * 1000),
+]
+
 
 class _HyperliquidWebsocketClient:
     """Websocket client for Hyperliquid L2 orderbook data at a given resolution."""
@@ -314,23 +324,23 @@ class HyperliquidDataService(BaseDataService):
             return None
 
     def _fetch_candle_snapshot(self, hl_coin: str, target_ms: int) -> PriceSource | None:
-        """Fetch the 15-minute candle closest to target_ms using the candleSnapshot endpoint.
-
-        For non-default dex coins (hl_coin contains ':'), the dex prefix is extracted and
-        passed as the 'dex' field (e.g. hl_coin="xyz:GOLD" → coin="GOLD", dex="xyz").
         """
-        if ":" in hl_coin:
-            dex, coin = hl_coin.split(":", 1)
-        else:
-            dex, coin = None, hl_coin
+        Fetch the candle closest to target_ms using the candleSnapshot endpoint.
+        The candle interval is dynamically selected based on how far back target_ms is from now:
+        """
+        now_ms = TimeUtil.now_in_millis()
+        age_ms = now_ms - target_ms
 
-        candle_span_ms = 15 * 60 * 1000  # 15-minute candles (~52 days of history at 5000-candle limit)
-        start_ms = target_ms - 5 * candle_span_ms
+        # Select interval based on age (5000-candle limit per request)
+        interval, candle_span_ms = HL_CANDLE_INTERVALS[-1]
+        for _interval, span_ms in HL_CANDLE_INTERVALS:
+            if age_ms < span_ms * 5000:
+                interval, candle_span_ms = _interval, span_ms
+                break
+        start_ms = target_ms - 3 * candle_span_ms
         end_ms = target_ms + candle_span_ms
 
-        req: dict = {"coin": coin, "interval": "15m", "startTime": start_ms, "endTime": end_ms}
-        if dex:
-            req["dex"] = dex
+        req: dict = {"coin": hl_coin, "interval": interval, "startTime": start_ms, "endTime": end_ms}
 
         try:
             resp = requests.post(
