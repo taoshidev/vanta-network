@@ -810,7 +810,9 @@ class EliminationManager(CacheController):
         )
 
         idle_threshold_ms = ValiConfig.IDLE_MINER_MAXIMUM_MS
+        near_idle_threshold_ms = idle_threshold_ms * 0.9
         idle_hotkeys = {}
+        near_idle_hotkeys = {}
 
         for hotkey, positions in hotkey_to_positions.items():
             if hotkey in self.eliminations:
@@ -821,11 +823,14 @@ class EliminationManager(CacheController):
 
             if last_order_ms is not None and (now_ms - last_order_ms) > idle_threshold_ms:
                 idle_hotkeys[hotkey] = last_order_ms
-
-        for hotkey, last_order_ms in idle_hotkeys.items():
-            bt.logging.info(
-                f"Idle miner detected: {hotkey}. Last order: {last_order_ms} ({TimeUtil.millis_to_formatted_date_str(last_order_ms)})"
-            )
+                bt.logging.info(
+                    f"Idle miner detected: {hotkey}. Last order: {last_order_ms} ({TimeUtil.millis_to_formatted_date_str(last_order_ms)})"
+                )
+            elif last_order_ms is not None and (now_ms - last_order_ms) > near_idle_threshold_ms:
+                near_idle_hotkeys[hotkey] = last_order_ms
+                bt.logging.info(
+                    f"Miner approaching idle threshold: {hotkey}. Last order: {last_order_ms} ({TimeUtil.millis_to_formatted_date_str(last_order_ms)})"
+                )
 
         if now_ms < IDLE_ELIMINATION_ACTIVATION_MS:
             return
