@@ -163,6 +163,14 @@ class CoreOutputsServer(RPCServerBase):
         """Get contract client (via manager - forward compatibility)."""
         return self._manager.contract_manager
 
+    # ==================== Health Check ====================
+
+    def get_health_check_details(self) -> dict:
+        """Return CoreOutputs-specific health check fields."""
+        return {
+            "cache_status": "active" if self._daemon_started else "empty"
+        }
+
     # ==================== RPC Methods (exposed to clients) ====================
 
     def generate_request_core_rpc(
