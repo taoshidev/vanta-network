@@ -12,13 +12,23 @@ import websockets
 from data_generator.base_data_service import BaseDataService, HYPERLIQUID_PROVIDER_NAME
 from entity_management.hl_orderbook_utils import simulate_fill
 from time_util.time_util import TimeUtil
-from vali_objects.vali_config import TradePair, TradePairCategory, TradePairLike, TradePairSource, ValiConfig
+from vali_objects.vali_config import TradePair, TradePairCategory, TradePairSource, ValiConfig
 from vali_objects.vali_dataclasses.price_source import PriceSource
 from vali_objects.vali_dataclasses.recent_event_tracker import RecentEventTracker
 
 REST_TIMEOUT_S = 10
 RECV_TIMEOUT_S = 30
 _L2_COIN_CACHE_TTL_S = 300.0
+
+# (interval, candle_span_ms) - sorted by span ascending, threshold is span * 5000 candles
+HL_CANDLE_INTERVALS = [
+    ("1m", 60 * 1000),
+    ("5m", 5 * 60 * 1000),
+    ("15m", 15 * 60 * 1000),
+    ("1h", 60 * 60 * 1000),
+    ("12h", 12 * 60 * 60 * 1000),
+    ("1d", 24 * 60 * 60 * 1000),
+]
 
 
 class _HyperliquidWebsocketClient:
@@ -313,8 +323,74 @@ class HyperliquidDataService(BaseDataService):
             bt.logging.error(f"Hyperliquid REST l2Book({coin}) failed: {type(e).__name__}: {e}")
             return None
 
-    def get_closes_rest(self, trade_pairs: List[TradePairLike], time_ms, live=True) -> dict[TradePairLike, PriceSource]:
-        """REST fallback: fetch mid prices from Hyperliquid for all HL-sourced pairs."""
+    def _fetch_candle_snapshot(self, hl_coin: str, target_ms: int) -> PriceSource | None:
+        """
+        Fetch the candle closest to target_ms using the candleSnapshot endpoint.
+        The candle interval is dynamically selected based on how far back target_ms is from now:
+        """
+        now_ms = TimeUtil.now_in_millis()
+        age_ms = now_ms - target_ms
+
+        # Select interval based on age (5000-candle limit per request)
+        interval, candle_span_ms = HL_CANDLE_INTERVALS[-1]
+        for _interval, span_ms in HL_CANDLE_INTERVALS:
+            if age_ms < span_ms * 5000:
+                interval, candle_span_ms = _interval, span_ms
+                break
+        start_ms = target_ms - 3 * candle_span_ms
+        end_ms = target_ms + candle_span_ms
+
+        req: dict = {"coin": hl_coin, "interval": interval, "startTime": start_ms, "endTime": end_ms}
+
+        try:
+            resp = requests.post(
+                ValiConfig.hl_info_url(),
+                json={"type": "candleSnapshot", "req": req},
+                timeout=REST_TIMEOUT_S,
+            )
+            resp.raise_for_status()
+            candles = resp.json()
+        except Exception as e:
+            bt.logging.error(f"Hyperliquid candleSnapshot({hl_coin}) failed: {type(e).__name__}: {e}")
+            return None
+
+        if not candles:
+            return None
+
+        # Pick the candle whose open time is closest to (and not after) target_ms.
+        best = min(candles, key=lambda c: abs(target_ms - int(c["t"])))
+        candle_start_ms = int(best["t"])
+
+        return PriceSource(
+            source=f"{HYPERLIQUID_PROVIDER_NAME}_candle",
+            timespan_ms=candle_span_ms,
+            open=float(best["o"]),
+            close=float(best["c"]),
+            high=float(best["h"]),
+            low=float(best["l"]),
+            vwap=float(best["c"]),  # HL candles have no vwap; use close as best proxy
+            start_ms=candle_start_ms,
+            websocket=False,
+            lag_ms=target_ms - candle_start_ms,
+        )
+
+    def get_price_rest(
+        self,
+        trade_pairs: List[TradePair],
+        timestamp_ms: int,
+        live: bool
+    ) -> dict[TradePair, PriceSource]:
+        """
+        Fetch prices via REST.
+
+        Args:
+            trade_pairs: Pairs to fetch
+            timestamp_ms: Target timestamp (used when live=False, ignored when live=True)
+            live: True = current prices (market fills), False = historical (perf ledger)
+
+        Returns:
+            Map of trade pair to price source. Missing pairs excluded.
+        """
         if self.running_unit_tests:
             from data_generator.polygon_data_service import PolygonDataService
             return {tp: PolygonDataService.DEFAULT_TESTING_FALLBACK_PRICE_SOURCE for tp in trade_pairs}
@@ -325,7 +401,16 @@ class HyperliquidDataService(BaseDataService):
 
         now_ms = TimeUtil.now_in_millis()
 
-        # Use the bulk allMids endpoint first
+        if not live:
+            # Historical lookup — use candleSnapshot for each pair.
+            results: dict[TradePair, PriceSource] = {}
+            for tp in hl_pairs:
+                price_source = self._fetch_candle_snapshot(tp.hl_coin, timestamp_ms)
+                if price_source is not None:
+                    results[tp] = price_source
+            return results
+
+        # Live lookup — use the bulk allMids endpoint first.
         all_mids = self._fetch_all_mids()
 
         results: dict[TradePair, PriceSource] = {}
@@ -349,7 +434,7 @@ class HyperliquidDataService(BaseDataService):
             else:
                 pairs_needing_book.append(tp)
 
-        # Fall back to individual l2Book calls for any coins missing from allMids
+        # Fall back to individual l2Book calls for any coins missing from allMids.
         for tp in pairs_needing_book:
             book = self._fetch_l2_book(tp.hl_coin)
             if book is None:
@@ -373,7 +458,7 @@ class HyperliquidDataService(BaseDataService):
 
         return results
 
-    def simulate_slippage(self, trade_pair: TradePairLike, size_usd: float, is_buy: bool) -> float | None:
+    def simulate_slippage(self, trade_pair: TradePair, size_usd: float, is_buy: bool) -> float | None:
         """Simulate slippage using a dual-resolution two-phase orderbook walk.
 
         Phase 1 walks the full-precision book (nSigFigs=None) for accurate near-spread
@@ -443,7 +528,7 @@ class HyperliquidDataService(BaseDataService):
         slippage_pct = (avg_price - mid) / mid if is_buy else (mid - avg_price) / mid
         return max(0.0, slippage_pct)
 
-    def simulate_avg_fill_price(self, trade_pair: TradePairLike, size_usd: float, is_buy: bool) -> float | None:
+    def simulate_avg_fill_price(self, trade_pair: TradePair, size_usd: float, is_buy: bool) -> float | None:
         """Simulate the average fill price for a market order using the L2 orderbook.
 
         Uses the same dual-resolution two-phase orderbook walk as simulate_slippage,
@@ -508,11 +593,6 @@ class HyperliquidDataService(BaseDataService):
             return None
 
         return total_usd / total_coins
-
-    def get_close_rest(self, trade_pair: TradePairLike, timestamp_ms: int) -> PriceSource | None:
-        """Single-pair REST fallback."""
-        results = self.get_closes_rest([trade_pair], timestamp_ms)
-        return results.get(trade_pair)
 
     def _get_subscription_coins(self) -> set[str]:
         """Return the filtered set of HL coins to subscribe to for l2Book streams.

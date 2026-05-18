@@ -34,11 +34,11 @@ class TestTiingoDataService(unittest.TestCase):
             running_unit_tests=True
         )
 
-    def test_tiingo_multi_category_get_closes_rest(self):
+    def test_tiingo_multi_category_get_price_rest(self):
         """
-        Regression test for TiingoDataService.get_closes_rest() multi-category handling.
+        Regression test for TiingoDataService.get_price_rest() multi-category handling.
 
-        Tests that get_closes_rest can handle trade pairs from multiple categories
+        Tests that get_price_rest can handle trade pairs from multiple categories
         (crypto, forex, equities) in a single call without tuple unpacking errors.
 
         Bug: ThreadPoolExecutor comprehension expected 3 values but received 5 when
@@ -58,22 +58,8 @@ class TestTiingoDataService(unittest.TestCase):
             TradePair.EURUSD    # Forex
         ]
 
-        # This should not raise "too many values to unpack (expected 3)" error
-        try:
-            result = self.tiingo_service.get_closes_rest(
-                trade_pairs=trade_pairs,
-                time_ms=order_time_ms,
-                live=True,
-                verbose=False
-            )
-        except ValueError as e:
-            if "too many values to unpack" in str(e):
-                self.fail(
-                    f"Tuple unpacking error in get_closes_rest: {e}\n"
-                    "This indicates the ThreadPoolExecutor comprehension is not properly "
-                    "unpacking the 5-element job tuples (func, tp_list, time_ms, live, verbose)"
-                )
-            raise
+        # This should not raise any unpacking errors
+        result = self.tiingo_service.get_price_rest(trade_pairs, order_time_ms, live=True)
 
         # Verify we got results for all three trade pairs
         self.assertIsInstance(result, dict, "Result should be a dictionary")
@@ -103,9 +89,9 @@ class TestTiingoDataService(unittest.TestCase):
                 f"Price for {trade_pair.trade_pair} should be > 0"
             )
 
-    def test_tiingo_single_category_get_closes_rest(self):
+    def test_tiingo_single_category_get_price_rest(self):
         """
-        Test TiingoDataService.get_closes_rest() with single category.
+        Test TiingoDataService.get_price_rest() with single category.
 
         Tests the fast path (no ThreadPoolExecutor) when only one category is requested.
         """
@@ -114,12 +100,7 @@ class TestTiingoDataService(unittest.TestCase):
         # Request prices for single category only (crypto)
         trade_pairs = [TradePair.BTCUSD, TradePair.ETHUSD]
 
-        result = self.tiingo_service.get_closes_rest(
-            trade_pairs=trade_pairs,
-            time_ms=order_time_ms,
-            live=True,
-            verbose=False
-        )
+        result = self.tiingo_service.get_price_rest(trade_pairs, order_time_ms, live=True)
 
         # Verify results
         self.assertIsInstance(result, dict)
@@ -129,13 +110,8 @@ class TestTiingoDataService(unittest.TestCase):
             self.assertIsInstance(result[tp], PriceSource)
 
     def test_tiingo_empty_trade_pairs(self):
-        """Test TiingoDataService.get_closes_rest() with empty trade pairs list."""
-        result = self.tiingo_service.get_closes_rest(
-            trade_pairs=[],
-            time_ms=TimeUtil.now_in_millis(),
-            live=True,
-            verbose=False
-        )
+        """Test TiingoDataService.get_price_rest() with empty trade pairs list."""
+        result = self.tiingo_service.get_price_rest([], TimeUtil.now_in_millis(), live=True)
 
         self.assertIsInstance(result, dict)
         self.assertEqual(len(result), 0)
@@ -145,7 +121,7 @@ class TestTiingoDataService(unittest.TestCase):
         order_time_ms = TimeUtil.now_in_millis()
         trade_pairs = [TradePair.BTCUSD, TradePair.ETHUSD]
 
-        result = self.tiingo_service.get_closes_rest(
+        result = self.tiingo_service.get_price_rest(
             trade_pairs=trade_pairs,
             time_ms=order_time_ms,
             live=True,
@@ -164,7 +140,7 @@ class TestTiingoDataService(unittest.TestCase):
         order_time_ms = TimeUtil.now_in_millis()
         trade_pairs = [TradePair.NVDA, TradePair.MSFT, TradePair.GOOGL]
 
-        result = self.tiingo_service.get_closes_rest(
+        result = self.tiingo_service.get_price_rest(
             trade_pairs=trade_pairs,
             time_ms=order_time_ms,
             live=True,
@@ -182,7 +158,7 @@ class TestTiingoDataService(unittest.TestCase):
         order_time_ms = TimeUtil.now_in_millis()
         trade_pairs = [TradePair.EURUSD, TradePair.GBPUSD, TradePair.USDJPY]
 
-        result = self.tiingo_service.get_closes_rest(
+        result = self.tiingo_service.get_price_rest(
             trade_pairs=trade_pairs,
             time_ms=order_time_ms,
             live=True,
@@ -195,12 +171,12 @@ class TestTiingoDataService(unittest.TestCase):
             self.assertIn(tp, result)
             self.assertIsInstance(result[tp], PriceSource)
 
-    def test_tiingo_get_close_rest_single_crypto(self):
-        """Test TiingoDataService.get_close_rest() for single crypto pair."""
+    def test_tiingo_get_price_rest_single_crypto(self):
+        """Test TiingoDataService.get_price_rest() for single crypto pair."""
         order_time_ms = TimeUtil.now_in_millis()
 
-        # In test mode, get_close_rest returns test data via get_closes_* methods
-        result = self.tiingo_service.get_close_rest(
+        # In test mode, get_price_rest returns test data via get_closes_* methods
+        result = self.tiingo_service.get_price_rest(
             trade_pair=TradePair.BTCUSD,
             timestamp_ms=order_time_ms,
             live=True
@@ -212,11 +188,11 @@ class TestTiingoDataService(unittest.TestCase):
             self.assertIsInstance(result, PriceSource)
             self.assertEqual(result.close, 50000)  # Default test price
 
-    def test_tiingo_get_close_rest_single_equity(self):
-        """Test TiingoDataService.get_close_rest() for single equity pair."""
+    def test_tiingo_get_price_rest_single_equity(self):
+        """Test TiingoDataService.get_price_rest() for single equity pair."""
         order_time_ms = TimeUtil.now_in_millis()
 
-        result = self.tiingo_service.get_close_rest(
+        result = self.tiingo_service.get_price_rest(
             trade_pair=TradePair.NVDA,
             timestamp_ms=order_time_ms,
             live=True
@@ -226,11 +202,11 @@ class TestTiingoDataService(unittest.TestCase):
         if result is not None:
             self.assertIsInstance(result, PriceSource)
 
-    def test_tiingo_get_close_rest_single_forex(self):
-        """Test TiingoDataService.get_close_rest() for single forex pair."""
+    def test_tiingo_get_price_rest_single_forex(self):
+        """Test TiingoDataService.get_price_rest() for single forex pair."""
         order_time_ms = TimeUtil.now_in_millis()
 
-        result = self.tiingo_service.get_close_rest(
+        result = self.tiingo_service.get_price_rest(
             trade_pair=TradePair.EURUSD,
             timestamp_ms=order_time_ms,
             live=True
@@ -271,7 +247,7 @@ class TestTiingoDataService(unittest.TestCase):
             TradePair.EURUSD, TradePair.GBPUSD  # Forex
         ]
 
-        result = self.tiingo_service.get_closes_rest(
+        result = self.tiingo_service.get_price_rest(
             trade_pairs=trade_pairs,
             time_ms=order_time_ms,
             live=True,
@@ -293,13 +269,13 @@ class TestTiingoDataService(unittest.TestCase):
 
         # Both should work in test mode - just verify no exceptions
         try:
-            result_recent = self.tiingo_service.get_close_rest(
+            result_recent = self.tiingo_service.get_price_rest(
                 trade_pair=TradePair.BTCUSD,
                 timestamp_ms=recent_time,
                 live=True
             )
 
-            result_past = self.tiingo_service.get_close_rest(
+            result_past = self.tiingo_service.get_price_rest(
                 trade_pair=TradePair.BTCUSD,
                 timestamp_ms=past_time,
                 live=False  # Historical
@@ -373,7 +349,7 @@ class TestTiingoDataService(unittest.TestCase):
             TradePair.XRPUSD, TradePair.ADAUSD, TradePair.DOGEUSD
         ]
 
-        result = self.tiingo_service.get_closes_rest(
+        result = self.tiingo_service.get_price_rest(
             trade_pairs=crypto_pairs,
             time_ms=order_time_ms,
             live=True,
@@ -408,7 +384,7 @@ class TestTiingoDataService(unittest.TestCase):
             TradePair.META
         ]
 
-        result = self.tiingo_service.get_closes_rest(
+        result = self.tiingo_service.get_price_rest(
             trade_pairs=equity_pairs,
             time_ms=order_time_ms,
             live=True,
@@ -440,7 +416,7 @@ class TestTiingoDataService(unittest.TestCase):
             TradePair.AUDUSD, TradePair.USDCAD, TradePair.NZDUSD
         ]
 
-        result = self.tiingo_service.get_closes_rest(
+        result = self.tiingo_service.get_price_rest(
             trade_pairs=forex_pairs,
             time_ms=order_time_ms,
             live=True,
@@ -480,7 +456,7 @@ class TestTiingoDataService(unittest.TestCase):
             TradePair.AUDUSD, TradePair.USDCAD, TradePair.NZDUSD
         ]
 
-        result = self.tiingo_service.get_closes_rest(
+        result = self.tiingo_service.get_price_rest(
             trade_pairs=trade_pairs,
             time_ms=order_time_ms,
             live=True,

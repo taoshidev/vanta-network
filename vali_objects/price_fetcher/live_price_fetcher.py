@@ -171,7 +171,7 @@ class LivePriceFetcher:
 
     def dual_rest_get(self, trade_pairs: List[TradePair], time_ms, live) -> Tuple[Dict[TradePair, PriceSource], Dict[TradePair, PriceSource], Dict[TradePair, PriceSource]]:
         """
-        Fetch REST closes from Polygon, Tiingo, and Hyperliquid (crypto only) in parallel,
+        Fetch REST prices from Polygon, Tiingo, and Hyperliquid (crypto only) in parallel,
         using ThreadPoolExecutor to run calls concurrently.
         """
         polygon_results = {}
@@ -179,13 +179,11 @@ class LivePriceFetcher:
         hyperliquid_results = {}
         hl_pairs = [tp for tp in trade_pairs if tp.src == TradePairSource.HYPERLIQUID]
         with ThreadPoolExecutor(max_workers=3) as executor:
-            # Submit REST calls to the executor
-            poly_fut = executor.submit(self.polygon_data_service.get_closes_rest, trade_pairs, time_ms, live)
-            tiingo_fut = executor.submit(self.tiingo_data_service.get_closes_rest, trade_pairs, time_ms, live)
-            hl_fut = executor.submit(self.hyperliquid_data_service.get_closes_rest, hl_pairs, time_ms, live) if hl_pairs else None
+            poly_fut = executor.submit(self.polygon_data_service.get_price_rest, trade_pairs, time_ms, live)
+            tiingo_fut = executor.submit(self.tiingo_data_service.get_price_rest, trade_pairs, time_ms, live)
+            hl_fut = executor.submit(self.hyperliquid_data_service.get_price_rest, hl_pairs, time_ms, live) if hl_pairs else None
 
             try:
-                # Wait for futures to complete with a 10s timeout
                 polygon_results = poly_fut.result(timeout=10)
                 tiingo_results = tiingo_fut.result(timeout=10)
                 if hl_fut:
@@ -411,6 +409,14 @@ class LivePriceFetcher:
         if self.is_backtesting:
             assert order, 'Must provide order for validation during backtesting'
 
+        trade_pair = NATIVE_CRYPTO_TO_HL_TRADE_PAIR.get(trade_pair, trade_pair)
+        if trade_pair.src == TradePairSource.HYPERLIQUID:
+            results = self.hyperliquid_data_service.get_price_rest([trade_pair], timestamp_ms, live=False)
+            price_source = results.get(trade_pair)
+            if not price_source:
+                bt.logging.warning(f"Hyperliquid REST returned no price source for {trade_pair.trade_pair} at {timestamp_ms} ms")
+            return price_source
+
         price_source = None
         if not self.polygon_data_service.is_market_open(trade_pair, time_ms=timestamp_ms):
             if self.is_backtesting and order and order.src == 0:
@@ -428,7 +434,8 @@ class LivePriceFetcher:
                     f"Fell back to Polygon get_date_minute_fallback for price of {trade_pair.trade_pair} at {TimeUtil.timestamp_ms_to_eastern_time_str(timestamp_ms)}, price_source: {price_source}")
 
         if price_source is None:
-            price_source = self.tiingo_data_service.get_close_rest(trade_pair=trade_pair, timestamp_ms=timestamp_ms, live=False)
+            tiingo_results = self.tiingo_data_service.get_price_rest([trade_pair], timestamp_ms, live=False)
+            price_source = tiingo_results.get(trade_pair)
             if verbose and price_source is not None:
                 bt.logging.warning(
                     f"Fell back to Tiingo get_date for price of {trade_pair.trade_pair} at {TimeUtil.timestamp_ms_to_eastern_time_str(timestamp_ms)}, ms: {timestamp_ms}")

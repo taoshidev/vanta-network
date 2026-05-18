@@ -3,6 +3,7 @@ import json
 import threading
 import time
 import traceback
+from abc import ABC, abstractmethod
 from collections import defaultdict
 from copy import deepcopy
 from typing import List
@@ -43,7 +44,7 @@ def exception_handler_decorator():
 
     return decorator
 
-class BaseDataService():
+class BaseDataService(ABC):
     def __init__(self, provider_name, running_unit_tests=False, enabled_websocket_categories=None):
         self.DEBUG_LOG_INTERVAL_S = 180
         self.MAX_TIME_NO_EVENTS_S = 120
@@ -98,12 +99,25 @@ class BaseDataService():
 
 
 
-    def get_close_rest(
+    @abstractmethod
+    def get_price_rest(
             self,
-            trade_pair: TradePair,
-            timestamp_ms: int
-    ) -> PriceSource | None:
-        pass
+            trade_pairs: List[TradePair],
+            timestamp_ms: int,
+            live: bool
+    ) -> dict[TradePair, PriceSource]:
+        """
+        Fetch prices via REST.
+
+        Args:
+            trade_pairs: Pairs to fetch
+            timestamp_ms: Target timestamp (used when live=False, ignored when live=True)
+            live: True = current prices (market fills), False = historical (perf ledger)
+
+        Returns:
+            Map of trade pair to price source. Missing pairs excluded.
+        """
+        ...
 
     def is_market_open(self, trade_pair: TradePair, time_ms=None) -> bool:
         # Check test override first
@@ -129,20 +143,6 @@ class BaseDataService():
         Only works when running_unit_tests=True for safety.
         """
         self._test_market_open_override = None
-
-    def get_close(self, trade_pair: TradePair) -> PriceSource | None:
-        event = self.get_websocket_event(trade_pair)
-        if not event:
-            bt.logging.info(
-                f"Fetching REST close for trade pair {trade_pair.trade_pair} using {self.provider_name} REST: {trade_pair.trade_pair}")
-            event = self.get_close_rest(trade_pair)
-            bt.logging.info(f"Received {self.provider_name} REST data for {trade_pair.trade_pair}: {event}")
-        else:
-            bt.logging.info(f"Using {self.provider_name} websocket data for {trade_pair.trade_pair}")
-        if not event:
-            bt.logging.warning(
-                f"Failed to get close for {trade_pair.trade_pair} using {self.provider_name} websocket or REST.")
-        return event
 
     def get_first_trade_pair_in_category(self, tpc: TradePairCategory) -> TradePair:
         # Use generator expression for efficiency
@@ -447,9 +447,6 @@ class BaseDataService():
             events[trade_pair] = latest_event
 
         return events
-
-    def get_closes_rest(self, trade_pairs: List[TradePair], time_ms) -> dict[str: float]:
-        pass
 
     def get_websocket_lag_for_trade_pair_s(self, tp: str, now_ms: int) -> float | None:
         cur_event = self.latest_websocket_events.get(tp)
