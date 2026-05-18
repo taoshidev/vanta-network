@@ -14,6 +14,7 @@ from vali_objects.vali_config import NATIVE_CRYPTO_TO_HL_TRADE_PAIR, TradePair, 
 import bittensor as bt
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
+from vali_objects.vali_dataclasses.corporate_actions import CorporateActions
 from vali_objects.vali_dataclasses.price_source import PriceSource
 
 
@@ -535,10 +536,41 @@ class LivePriceFetcher:
         bt.logging.error(f"Unable to fetch USD to base currency {trade_pair.base} conversion at time {time_ms}. No price sources available (websocket or REST).")
         return 1.0
 
-    def get_corporate_actions(self, start_date_str: str, end_date_str: str | None = None) -> dict:
-        if not self.databento_data_service:
-            return {}
-        return self.databento_data_service.get_corporate_actions(start_date_str, end_date_str)
+    def get_corporate_actions(self, start_date_str: str, end_date_str: str | None = None) -> dict[str, CorporateActions]:
+        databento_actions: dict[str, CorporateActions] = {}
+        if self.databento_data_service:
+            databento_actions = self.databento_data_service.get_corporate_actions(start_date_str, end_date_str)
+
+        polygon_actions = self.polygon_data_service.get_corporate_actions(start_date_str, end_date_str)
+
+        # Merge: union of all dates; Databento is primary, Polygon fills gaps
+        merged: dict[str, CorporateActions] = {}
+        for date_str in set(databento_actions) | set(polygon_actions):
+            db_ca = databento_actions.get(date_str, CorporateActions(splits={}, dividends={}))
+            poly_ca = polygon_actions.get(date_str, CorporateActions(splits={}, dividends={}))
+
+            # Start with Polygon, then let Databento overwrite (Databento wins on conflict)
+            merged_splits = dict(poly_ca.splits)
+            for ticker, ratio in db_ca.splits.items():
+                if ticker in merged_splits and merged_splits[ticker] != ratio:
+                    bt.logging.warning(
+                        f"[CORPORATE ACTIONS] Split ratio mismatch for {ticker} on {date_str}: "
+                        f"Databento={ratio:.4f}, Polygon={merged_splits[ticker]:.4f}. Using Databento."
+                    )
+                merged_splits[ticker] = ratio
+
+            merged_dividends = dict(poly_ca.dividends)
+            for ticker, div in db_ca.dividends.items():
+                if ticker in merged_dividends and merged_dividends[ticker].gross_dividend != div.gross_dividend:
+                    bt.logging.warning(
+                        f"[CORPORATE ACTIONS] Dividend mismatch for {ticker} on {date_str}: "
+                        f"Databento=${div.gross_dividend:.4f}, Polygon=${merged_dividends[ticker].gross_dividend:.4f}. Using Databento."
+                    )
+                merged_dividends[ticker] = div
+
+            merged[date_str] = CorporateActions(splits=merged_splits, dividends=merged_dividends)
+
+        return merged
 
 
 if __name__ == "__main__":

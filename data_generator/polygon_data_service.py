@@ -1,12 +1,14 @@
 import threading
 import traceback
+from datetime import datetime, timedelta
 
+from massive.rest.models import StockSplit, StockDividend
 import requests
 
 from typing import List, Optional
 
 from vali_objects.vali_dataclasses.order import Order
-from polygon.websocket import Market, EquityAgg, EquityTrade, CryptoTrade, ForexQuote, FairMarketValue, WebSocketClient, Feed
+from massive.websocket import Market, EquityAgg, EquityTrade, CryptoTrade, ForexQuote, FairMarketValue, WebSocketClient, Feed
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from data_generator.base_data_service import BaseDataService, POLYGON_PROVIDER_NAME
@@ -17,8 +19,9 @@ import time
 
 from vali_objects.utils.vali_utils import ValiUtils
 import bittensor as bt
-from polygon import RESTClient
+from massive import RESTClient
 
+from vali_objects.vali_dataclasses.corporate_actions import CorporateActions, DividendEvent
 from vali_objects.vali_dataclasses.price_source import PriceSource
 from vali_objects.vali_dataclasses.recent_event_tracker import RecentEventTracker
 
@@ -260,6 +263,7 @@ class PolygonDataService(BaseDataService):
         self.MARKET_STATUS = None
 
         self.POLYGON_CLIENT = None  # Instantiate later to allow process to start (non picklable)
+        self._corporate_actions_cache: dict[str, CorporateActions] = {}
 
         # Start thread to refresh market status
         if disable_ws:
@@ -1253,54 +1257,123 @@ class PolygonDataService(BaseDataService):
 
         return rate.converted
 
-    def get_stock_splits(self, time_ms: int) -> dict[str, float]:
+    @staticmethod
+    def _add_days(date_str: str, days: int) -> str:
+        d = datetime.strptime(date_str, "%Y-%m-%d")
+        return (d + timedelta(days=days)).strftime("%Y-%m-%d")
+
+    def get_corporate_actions(
+        self,
+        start_date_str: str,
+        end_date_str: str | None = None,
+    ) -> dict[str, CorporateActions]:
         """
-        Get stock splits for all equity symbols on a given date.
+        Fetch stock splits and dividends for all equity symbols over a date range.
+
+        Args:
+            start_date_str: Start date (inclusive) in YYYY-MM-DD format.
+            end_date_str: End date (exclusive) in YYYY-MM-DD format.
+                          Defaults to 3 days after start_date_str.
 
         Returns:
-            dict mapping trade_pair_id to split ratio (split_to / split_from)
+            dict mapping ex_date/execution_date string to CorporateActions for that date.
         """
-        execution_date_str = TimeUtil.timestamp_ms_to_eastern_time_str(time_ms, short=True)
+        if end_date_str is None:
+            end_date_str = self._add_days(start_date_str, 3)
 
-        # Get all equity symbols we care about
-        equity_symbols = {tp.trade_pair for tp in TradePair if tp.is_equities}
+        # Determine which dates in the range are not yet cached
+        dates_in_range = []
+        d = start_date_str
+        while d < end_date_str:
+            if d not in self._corporate_actions_cache:
+                dates_in_range.append(d)
+            d = self._add_days(d, 1)
 
-        endpoint = "https://api.massive.com/stocks/v1/splits"
-        params = {
-            "execution_date": execution_date_str,
-            "limit": 1000,
-            "sort": "execution_date.desc",
-            "apiKey": self._api_key
-        }
+        if not dates_in_range:
+            return {d: self._corporate_actions_cache[d] for d in self._corporate_actions_cache
+                    if start_date_str <= d < end_date_str}
 
+        equity_symbols = {tp.trade_pair for tp in TradePair if tp.is_equities and tp.src == TradePairSource.VANTA}
+        print(equity_symbols)
+
+        if not equity_symbols:
+            for d in dates_in_range:
+                self._corporate_actions_cache[d] = CorporateActions(splits={}, dividends={})
+            return {d: self._corporate_actions_cache[d] for d in self._corporate_actions_cache
+                    if start_date_str <= d < end_date_str}
+
+        if self.POLYGON_CLIENT is None:
+            self.instantiate_not_pickleable_objects()
+
+        result: dict[str, CorporateActions] = {}
+
+        # Fetch splits
         try:
-            response = requests.get(endpoint, params=params)
-            response.raise_for_status()
-            data = response.json()
-
-            result = {}
-            if 'results' in data and isinstance(data['results'], list):
-                for split in data['results']:
-                    ticker = split.get('ticker')
-                    # Only include splits for our supported equity symbols
-                    if ticker not in equity_symbols:
-                        continue
-                    if split.get('execution_date') != execution_date_str:
-                        continue
-
-                    split_from = split.get('split_from')
-                    split_to = split.get('split_to')
-
-                    if split_from and split_to and split_from != 0:
-                        result[ticker] = split_to / split_from
-                    else:
-                        bt.logging.warning(f"Found stock split for {ticker} on {execution_date_str}, but could not resolve stock split ratio")
-
-            return result
-
+            all_splits = self.POLYGON_CLIENT.list_stocks_splits(
+                ticker_any_of=sorted(equity_symbols),
+                execution_date_gte=start_date_str,
+                execution_date_lt=end_date_str,
+                limit=1000,
+            )
+            for split in all_splits:
+                if not isinstance(split, StockSplit):
+                    continue
+                ticker = split.ticker
+                if ticker not in equity_symbols:
+                    continue
+                execution_date = split.execution_date
+                if not execution_date:
+                    continue
+                split_from = split.split_from
+                split_to = split.split_to
+                if split_from and split_to and split_from != 0:
+                    if execution_date not in result:
+                        result[execution_date] = CorporateActions(splits={}, dividends={})
+                    result[execution_date].splits[ticker] = split_to / split_from
+                else:
+                    bt.logging.warning(f"Found stock split for {ticker} on {execution_date}, but could not resolve stock split ratio")
         except Exception as e:
-            bt.logging.error(f"Failed to fetch stock split data from massive.com: {e}")
-            return {}
+            bt.logging.error(f"Failed to fetch stock splits from Polygon: {e}")
+
+        # Fetch dividends
+        try:
+            all_dividends = self.POLYGON_CLIENT.list_stocks_dividends(
+                ticker_any_of=sorted(equity_symbols),
+                ex_dividend_date_gte=start_date_str,
+                ex_dividend_date_lt=end_date_str,
+                limit=1000,
+            )
+            for div in all_dividends:
+                if not isinstance(div, StockDividend):
+                    continue
+                ticker = div.ticker
+                if ticker not in equity_symbols:
+                    continue
+                ex_date = div.ex_dividend_date
+                cash_amount = div.cash_amount
+                if not ex_date or cash_amount is None or cash_amount <= 0:
+                    continue
+                if ex_date not in result:
+                    result[ex_date] = CorporateActions(splits={}, dividends={})
+                result[ex_date].dividends[ticker] = DividendEvent(
+                    gross_dividend=float(cash_amount),
+                    ex_date=ex_date,
+                    payment_date=div.pay_date or "",
+                )
+        except Exception as e:
+            bt.logging.error(f"Failed to fetch dividend events from Polygon: {e}")
+
+        # Cache each date individually (including empty dates so we don't re-fetch)
+        for d in dates_in_range:
+            self._corporate_actions_cache[d] = result.get(d, CorporateActions(splits={}, dividends={}))
+
+        actions_in_range = {d: self._corporate_actions_cache[d] for d in self._corporate_actions_cache
+                            if start_date_str <= d < end_date_str}
+
+        bt.logging.info(f"Polygon corporate actions in range ({start_date_str} - {end_date_str}) {actions_in_range}")
+
+        return actions_in_range
+
 
 if __name__ == "__main__":
 
