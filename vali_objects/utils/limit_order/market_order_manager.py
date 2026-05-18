@@ -259,7 +259,7 @@ class MarketOrderManager():
         else:
             # PriceSlippageModel handles HL orderbook simulation for crypto internally,
             # falling back to the existing model when orderbook data is unavailable
-            order.slippage = PriceSlippageModel.calculate_slippage(order.bid, order.ask, order, existing_position.account_size)
+            order.slippage = PriceSlippageModel.calculate_slippage(order.bid, order.ask, order)
         if is_hl_taker is not None:
             order.is_hl_taker = is_hl_taker
         slippage_calc_ms = TimeUtil.now_in_millis() - step_start
@@ -307,7 +307,7 @@ class MarketOrderManager():
                 order_resized = True
 
         if order_resized:
-            order_sizes = self.parse_order_size({"value": order.value}, usd_base_price, trade_pair, existing_position.account_size, use_floor=True)
+            order_sizes = self.parse_order_size({"value": order.value}, usd_base_price, trade_pair, balance, use_floor=True)
             order.quantity, order.leverage, order.value = order_sizes
             bt.logging.info(f"[ADD_ORDER_DETAIL] order resized to ${order.value} (max position: {max_position_value}, max_cash: {buying_power}")
 
@@ -661,7 +661,7 @@ class MarketOrderManager():
 
                 # Parse order size (supports leverage, value, or quantity)
                 quantity, leverage, value = self.parse_order_size(
-                    signal, usd_base_price, trade_pair, existing_position.account_size,
+                    signal, usd_base_price, trade_pair, account_balance,
                     round_qty=signal_order_type != OrderType.FLAT # if the position is closing, don't round - use exact position qty
                 )
 
