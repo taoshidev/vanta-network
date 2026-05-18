@@ -38,10 +38,8 @@ class PositionFilter:
             Tuple of (filtered_position, skip_reason). Position is None if skipped.
             skip_reason can be: "equities", "indices", "date_filtered", or "kept"
         """
-        # Skip positions for equities and indices assets
-        if position.trade_pair.is_equities:
-            return None, "equities"
-        elif position.trade_pair.is_indices:
+        # Skip positions for indices assets
+        if position.trade_pair.is_indices:
             return None, "indices"
 
         # Filter orders to only include those before cutoff
@@ -85,8 +83,8 @@ class PositionFilter:
         Returns:
             Filtered position or None if skipped
         """
-        # Skip positions for equities and indices assets
-        if position.trade_pair.is_equities or position.trade_pair.is_indices:
+        # Skip positions for indices assets
+        if position.trade_pair.is_indices:
             return None
 
         # Filter orders to only include those before cutoff

@@ -57,7 +57,7 @@ class PriceSlippageModel:
         PriceSlippageModel.capital = capital
 
     @classmethod
-    def calculate_slippage(cls, bid:float, ask:float, order:Order, capital:float=None):
+    def calculate_slippage(cls, bid:float, ask:float, order:Order):
         """
         returns the percentage slippage of the current order.
         each asset class uses a unique model
@@ -73,8 +73,6 @@ class PriceSlippageModel:
             if not trade_pair.is_crypto:  # For now, crypto does not have slippage
                 bt.logging.warning(f'Tried to calculate slippage with bid: {bid} and ask: {ask}. order: {order}. Returning 0')
                 return 0  # Need valid bid and ask.
-        if capital is None:
-            capital = ValiConfig.MIN_CAPITAL
         size = abs(order.value)
         if size <= 1000:
             return 0  # assume 0 slippage when order size is under 1k
@@ -86,7 +84,7 @@ class PriceSlippageModel:
         elif trade_pair.is_forex:
             slippage_percentage = cls.calc_slippage_forex(bid, ask, order)
         elif trade_pair.is_crypto:
-            slippage_percentage = cls.calc_slippage_crypto(order, capital)
+            slippage_percentage = cls.calc_slippage_crypto(order)
         elif trade_pair.is_commodities or trade_pair.is_indices:
             # HL commodity/index slippage is pre-computed from the L2 orderbook and stored on the order.
             # This branch is a fallback (e.g. limit order fills) — a dedicated model should be added here.
@@ -212,7 +210,7 @@ class PriceSlippageModel:
         return slippage_pct
 
     @classmethod
-    def calc_slippage_crypto(cls, order:Order, capital:float) -> float:
+    def calc_slippage_crypto(cls, order:Order) -> float:
         """
         slippage values for crypto
         """
@@ -564,7 +562,7 @@ class PriceSlippageModel:
                         bid = best_price_source.bid
                         ask = best_price_source.ask
 
-                    slippage = self.calculate_slippage(bid, ask, o, capital=self.capital)
+                    slippage = self.calculate_slippage(bid, ask, o)
                     o.bid = bid
                     o.ask = ask
                     o.slippage = slippage

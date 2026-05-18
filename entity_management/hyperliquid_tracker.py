@@ -1524,7 +1524,7 @@ class HyperliquidTracker:
             "hl_slippage": 0.0,
         }
         if order_type == "FLAT":
-            signal["leverage"] = 0.0
+            signal["quantity"] = -current_position.net_quantity
         else:
             signal["quantity"] = order_quantity
         if hl_fill_price:

@@ -154,15 +154,13 @@ class TestPriceSlippageModel(TestBase):
                                         order_uuid=self.DEFAULT_ORDER_UUID,
                                         trade_pair=TradePair.USDCAD,
                                         order_type=OrderType.LONG, leverage=1, value=1*self.DEFAULT_ACCOUNT_SIZE)
-        slippage_buy = PriceSlippageModel.calculate_slippage(self.default_bid, self.default_ask,
-                                                             self.forex_order_buy)
+        slippage_buy = PriceSlippageModel.calculate_slippage(self.default_bid, self.default_ask, self.forex_order_buy)
 
         self.forex_order_sell = Order(price=100, processed_ms=self.DEFAULT_OPEN_MS,
                                          order_uuid=self.DEFAULT_ORDER_UUID,
                                          trade_pair=TradePair.USDCAD,
                                          order_type=OrderType.SHORT, leverage=-3, value=-3*self.DEFAULT_ACCOUNT_SIZE)
-        slippage_sell = PriceSlippageModel.calculate_slippage(self.default_bid, self.default_ask,
-                                                              self.forex_order_sell)
+        slippage_sell = PriceSlippageModel.calculate_slippage(self.default_bid, self.default_ask, self.forex_order_sell)
 
         ## assert slippage is proportional to order size
         self.forex_order_buy_large = Order(price=100, processed_ms=self.DEFAULT_OPEN_MS,
@@ -190,8 +188,7 @@ class TestPriceSlippageModel(TestBase):
                                      order_uuid=self.DEFAULT_ORDER_UUID,
                                      trade_pair=TradePair.BTCUSD,
                                      order_type=OrderType.LONG, leverage=0.25, value=0.25*self.DEFAULT_ACCOUNT_SIZE)
-        slippage_buy = PriceSlippageModel.calculate_slippage(self.default_bid, self.default_ask,
-                                                             self.crypto_order_buy)
+        slippage_buy = PriceSlippageModel.calculate_slippage(self.default_bid, self.default_ask, self.crypto_order_buy)
 
         self.crypto_order_sell = Order(price=100, processed_ms=self.DEFAULT_OPEN_MS,
                                       order_uuid=self.DEFAULT_ORDER_UUID,
@@ -269,7 +266,7 @@ class TestPriceSlippageModelCriticalBugs(TestBase):
         PriceSlippageModel.features.clear()
 
         # Should return fallback value (0.0001) instead of crashing
-        slippage = PriceSlippageModel.calculate_slippage(bid=99, ask=100, order=order, capital=100_000)
+        slippage = PriceSlippageModel.calculate_slippage(bid=99, ask=100, order=order)
         self.assertEqual(slippage, 0.0001)  # Minimal slippage as fallback
 
     def test_forex_slippage_missing_features_returns_fallback(self):
@@ -293,7 +290,7 @@ class TestPriceSlippageModelCriticalBugs(TestBase):
         PriceSlippageModel.features.clear()
 
         # Should return fallback value (0.0002 = 2 bps) instead of crashing
-        slippage = PriceSlippageModel.calculate_slippage(bid=1.349, ask=1.351, order=order, capital=100_000)
+        slippage = PriceSlippageModel.calculate_slippage(bid=1.349, ask=1.351, order=order)
         self.assertEqual(slippage, 0.0002)  # 2 bps slippage as fallback
 
     def test_equities_slippage_missing_trade_pair_in_features_returns_fallback(self):
@@ -319,7 +316,7 @@ class TestPriceSlippageModelCriticalBugs(TestBase):
         }
 
         # Should return fallback value instead of crashing
-        slippage = PriceSlippageModel.calculate_slippage(bid=99, ask=100, order=order, capital=100_000)
+        slippage = PriceSlippageModel.calculate_slippage(bid=99, ask=100, order=order)
         self.assertEqual(slippage, 0.0001)  # Minimal slippage as fallback
 
     # =========================================================================
@@ -442,12 +439,7 @@ class TestPriceSlippageModelCriticalBugs(TestBase):
         # Mock get_currency_conversion to return None (API failure)
         with patch.object(self.live_price_fetcher, 'get_currency_conversion', return_value=None):
             # Should return fallback value (0.0002 = 2 bps) instead of crashing
-            slippage = PriceSlippageModel.calculate_slippage(
-                bid=1.349,
-                ask=1.351,
-                order=order,
-                capital=100_000
-            )
+            slippage = PriceSlippageModel.calculate_slippage(bid=1.349, ask=1.351, order=order)
             self.assertEqual(slippage, 0.0002)  # 2 bps slippage as fallback
 
     def test_forex_slippage_currency_conversion_returns_zero(self):
@@ -474,12 +466,7 @@ class TestPriceSlippageModelCriticalBugs(TestBase):
         # Mock get_currency_conversion to return 0 (bad data)
         with patch.object(self.live_price_fetcher, 'get_currency_conversion', return_value=0):
             # Should return fallback value instead of crashing
-            slippage = PriceSlippageModel.calculate_slippage(
-                bid=1.349,
-                ask=1.351,
-                order=order,
-                capital=100_000
-            )
+            slippage = PriceSlippageModel.calculate_slippage(bid=1.349, ask=1.351, order=order)
             self.assertEqual(slippage, 0.0002)  # 2 bps slippage as fallback
 
     # =========================================================================
@@ -513,7 +500,7 @@ class TestPriceSlippageModelCriticalBugs(TestBase):
 
         # Call calc_slippage_crypto directly to bypass line 64-65 check
         # Should return fallback value instead of crashing
-        slippage = PriceSlippageModel.calc_slippage_crypto(order, capital=100_000)
+        slippage = PriceSlippageModel.calc_slippage_crypto(order)
         self.assertEqual(slippage, 0.0001)  # Minimal slippage as fallback
 
     def test_crypto_slippage_trade_pair_missing_in_estimates(self):
@@ -539,12 +526,7 @@ class TestPriceSlippageModelCriticalBugs(TestBase):
         }
 
         # Should return fallback value instead of crashing
-        slippage = PriceSlippageModel.calculate_slippage(
-            bid=99900,
-            ask=100100,
-            order=order,
-            capital=100_000
-        )
+        slippage = PriceSlippageModel.calculate_slippage(bid=99900, ask=100100, order=order)
         self.assertEqual(slippage, 0.0001)  # Minimal slippage as fallback
 
 
