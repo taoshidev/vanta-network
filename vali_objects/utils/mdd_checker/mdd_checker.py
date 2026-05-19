@@ -208,7 +208,14 @@ class MDDChecker(CacheController):
                 bt.logging.error(f"[CORPORATE ACTIONS] Failed to fetch or apply: {e}")
 
         for hotkey, sorted_positions in hotkey_to_positions.items():
-            self.perform_price_corrections(hotkey, sorted_positions, tp_to_price_sources, iteration_epoch)
+            corrected = self.perform_price_corrections(hotkey, sorted_positions, tp_to_price_sources, iteration_epoch)
+            if corrected:
+                try:
+                    current_positions = self._position_client.get_positions_for_one_hotkey(hotkey)
+                    self._miner_account_client.rebuild_account_state_from_positions(hotkey, current_positions)
+                    bt.logging.info(f"Rebuilt account state for {hotkey[:8]}... after price correction")
+                except Exception as e:
+                    bt.logging.error(f"Failed to rebuild account state for {hotkey[:8]}...: {e}")
 
         # Update max_return (HWM) on MinerAccount for all miners
         accounts = self._miner_account_client.get_accounts(list(hotkey_to_positions.keys()))
@@ -315,9 +322,10 @@ class MDDChecker(CacheController):
         position: Position,
         tp_to_price_sources_for_realtime_price: Dict[TradePair, List[PriceSource]],
         iteration_epoch: int = None
-    ):
+    ) -> bool:
         """
         Set latest returns and persist to disk for accurate MDD calculation.
+        Returns True if any order prices were corrected and saved.
 
         Args:
             hotkey: Miner hotkey
@@ -365,7 +373,7 @@ class MDDChecker(CacheController):
                     f"mdd_checker: Position not found (uuid {position.position_uuid[:8]}... "
                     f"for {hotkey[:8]}.../{trade_pair_id}). Skipping."
                 )
-                return
+                return False
 
             # Track timing for aggregate logging
             self.lock_acquisition_sum_ms += lock_acquired_ms
@@ -433,12 +441,15 @@ class MDDChecker(CacheController):
                             f"(epoch {iteration_epoch} -> {current_epoch}). "
                             f"Skipping save to avoid data corruption"
                         )
-                        return
+                        return False
 
                 is_liquidated = position.current_return == 0
                 self._position_client.save_miner_position(position, delete_open_position_if_exists=is_liquidated)
                 self.n_orders_corrected += n_orders_updated
                 self.miners_corrected.add(hotkey)
+                return n_orders_updated > 0
+
+            return False
 
     def perform_price_corrections(
         self,
@@ -447,16 +458,17 @@ class MDDChecker(CacheController):
         tp_to_price_sources: Dict[TradePair, List[PriceSource]],
         iteration_epoch: int = None
     ) -> bool:
-        """Perform price corrections for a miner's positions."""
+        """Perform price corrections for a miner's positions. Returns True if any orders were corrected."""
         if len(sorted_positions) == 0:
             return False
 
+        any_corrected = False
         now_ms = TimeUtil.now_in_millis()
         for position in sorted_positions:
-            is_candidate = self._position_is_candidate_for_price_correction(position, now_ms)
-            if is_candidate:
-                self._update_position_returns_and_persist_to_disk(
+            if self._position_is_candidate_for_price_correction(position, now_ms):
+                corrected = self._update_position_returns_and_persist_to_disk(
                     hotkey, position, tp_to_price_sources, iteration_epoch
                 )
+                any_corrected = any_corrected or corrected
 
-        return False
+        return any_corrected

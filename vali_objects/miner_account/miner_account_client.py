@@ -311,7 +311,7 @@ class MinerAccountClient(RPCClientBase):
         hotkey: str,
         positions: list,
         miner_bucket: Optional[MinerBucket] = None,
-        max_return: float = 1.0,
+        max_return: Optional[float] = None,
     ) -> None:
         """
         Rebuild a miner's account state from a list of positions.
@@ -323,7 +323,7 @@ class MinerAccountClient(RPCClientBase):
             hotkey: Miner's hotkey
             positions: List of Position objects or dicts for this miner
             miner_bucket: Miner bucket to restore after reset
-            max_return: Max return (high water mark) to restore after reset
+            max_return: Max return (high water mark) to restore after reset. If None, preserves existing value.
         """
         bucket_value = miner_bucket.value if miner_bucket else None
         self._server.rebuild_account_state_from_positions(hotkey, positions, bucket_value, max_return)

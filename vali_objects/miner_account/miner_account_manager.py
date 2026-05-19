@@ -25,6 +25,7 @@ from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.exceptions.signal_exception import SignalException
 from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
 from vali_objects.enums.miner_bucket_enum import MinerBucket
+from vali_objects.vali_dataclasses.position import Position
 from vali_objects.validator_broadcast_base import ValidatorBroadcastBase
 
 
@@ -828,9 +829,8 @@ class MinerAccountManager(ValidatorBroadcastBase):
             True if withdrawal is allowed, False otherwise
         """
         # No asset selection = no positions possible = no restrictions
-        # TODO update for crypto and forex, ignore initially for equities
         asset_selection = self._asset_selection_client.get_asset_selection(hotkey)
-        if asset_selection is None or asset_selection != TradePairCategory.EQUITIES:
+        if asset_selection is None:
             return True
 
         with self._accounts_lock:
@@ -879,7 +879,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
         hotkey: str,
         positions: List['Position'],
         miner_bucket: Optional[MinerBucket] = None,
-        max_return: float = 1.0,
+        max_return: Optional[float] = None,
     ) -> None:
         """
         Rebuild a miner's account state (capital_used, total_realized_pnl, total_fees_paid)
@@ -889,14 +889,20 @@ class MinerAccountManager(ValidatorBroadcastBase):
             hotkey: Miner's hotkey
             positions: All positions (open and closed) for this miner
             miner_bucket: Miner bucket to restore after reset
-            max_return: Max return (high water mark) to restore after reset
+            max_return: Max return (high water mark) to restore after reset. If None, preserves existing value.
         """
         computed = self.compute_account_state_from_positions(positions)
 
         with self._accounts_lock:
             account = self.get_or_create(hotkey)
-            account.reset_account_fields()
 
+            if miner_bucket is None:
+                miner_bucket = account.miner_bucket
+
+            if max_return is None:
+                max_return = account.max_return
+
+            account.reset_account_fields()
             account.miner_bucket = miner_bucket
             account.max_return = max_return
             account.total_realized_pnl = computed['total_realized_pnl']
