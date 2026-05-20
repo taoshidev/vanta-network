@@ -226,6 +226,8 @@ class ChallengePeriodManager(CacheController):
         eliminations = {}
         promotions, demotions = [], []
         for hotkey, state in self.miner_states.items():
+            if hotkey not in evaluation_hotkeys: continue
+
             # Check time-based eliminations first for regular challenge, probation miners
             if self._time_limit_expired(state.current_bucket_entry, current_time_ms):
                 eliminations[hotkey] = EliminationReason.FAILED_CHALLENGE_PERIOD_TIME
@@ -305,11 +307,15 @@ class ChallengePeriodManager(CacheController):
             if current_time_ms - state.current_bucket_start_ms < ValiConfig.CHALLENGE_PERIOD_MINIMUM_MS:
                 return False
 
+        if state.current_bucket.next_bucket is None:
+            return False
+
         if state.drawdown.current_return > returns_threshold:
             if state.current_bucket.is_rank_based:
                 return state.rank <= ValiConfig.PROMOTION_THRESHOLD_RANK if state.rank else False
             else:
                 return True
+
         return False
 
     def eliminate_hotkeys(self, eliminations: dict[str, EliminationReason], current_time_ms: int):
@@ -343,7 +349,6 @@ class ChallengePeriodManager(CacheController):
         state_changed = False
         with self._buckets_lock:
             for hotkey in hotkeys:
-                bt.logging.info(f"[CHALLENGE] Demoting {hotkey} to PROBATION")
                 state_changed |= self.miner_states[hotkey].add_bucket_entry(MinerBucket.PROBATION, current_time_ms)
         return state_changed
 
@@ -360,7 +365,6 @@ class ChallengePeriodManager(CacheController):
                 bt.logging.warning(f"[CHALLENGE] Attempted to promote {hotkey} in {current_bucket.value}")
                 continue
 
-            bt.logging.info(f"[CHALLENGE] Promoting {hotkey} from {current_bucket.value} to {target_bucket.value}")
             if target_bucket == MinerBucket.SUBACCOUNT_FUNDED:
                 # Close all existing positions
                 self._position_client.close_all_positions(
