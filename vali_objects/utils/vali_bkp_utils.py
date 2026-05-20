@@ -242,7 +242,18 @@ class ValiBkpUtils:
                 # The .pkl file contains gzip-compressed JSON (created by write_compressed_json)
                 # despite having the wrong extension, so read it as compressed JSON
                 data = ValiBkpUtils.read_compressed_json(pkl_path)
+            except Exception:
+                # Actual pickle file — read with pickle
+                try:
+                    import pickle
+                    with open(pkl_path, 'rb') as f:
+                        data = pickle.load(f)
+                    bt.logging.info(f"Read perf_ledgers from actual pickle file {pkl_path}")
+                except Exception as e:
+                    bt.logging.error(f"Failed to migrate perf_ledgers from .pkl: {e}")
+                    return False
 
+            try:
                 # Write to correct .json.gz path
                 ValiBkpUtils.write_compressed_json(new_path, data)
 

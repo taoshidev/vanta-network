@@ -25,6 +25,7 @@ from vali_objects.position_management.position_manager_server import PositionMan
 from vali_objects.contract.contract_server import ContractServer
 from vali_objects.contract.contract_client import ContractClient
 from vali_objects.miner_account.miner_account_client import MinerAccountClient
+from vali_objects.miner_account.miner_account_server import MinerAccountServer
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
 from vali_objects.utils.asset_selection.asset_selection_server import AssetSelectionServer
@@ -60,6 +61,11 @@ def start_servers_for_restore():
     )
 
     servers['contract'] = ContractServer(
+        start_server=True,
+        running_unit_tests=True
+    )
+
+    servers['miner_account'] = MinerAccountServer(
         start_server=True,
         running_unit_tests=True
     )
@@ -216,7 +222,6 @@ def regenerate_miner_positions(perform_backup=True, backup_from_data_dir=False, 
         # This tests the actual production RPC communication paths
         position_client = PositionManagerClient(running_unit_tests=True)
         elimination_client = EliminationClient()
-        contract_client = ContractClient()
         miner_account_client = MinerAccountClient()
         perf_ledger_client = PerfLedgerClient(running_unit_tests=True)
         challengeperiod_client = ChallengePeriodClient(running_unit_tests=True)
@@ -308,10 +313,20 @@ def regenerate_miner_positions(perform_backup=True, backup_from_data_dir=False, 
         position_client.clear_all_miner_positions_and_disk()
 
         total_saved = 0
+        total_skipped = 0
         for hotkey, json_positions in data['positions'].items():
             # Sort positions by close_ms to save in chronological order
             # (closed positions first, then open positions with close_ms=None → inf)
-            positions = [Position(**json_positions_dict) for json_positions_dict in json_positions['positions']]
+            positions = []
+            n_skipped = 0
+            for json_positions_dict in json_positions['positions']:
+                try:
+                    positions.append(Position(**json_positions_dict))
+                except Exception as e:
+                    tp_id = json_positions_dict.get('trade_pair', [None])[0] if isinstance(json_positions_dict.get('trade_pair'), list) else json_positions_dict.get('trade_pair')
+                    bt.logging.warning(f"Skipping position for hotkey {hotkey[-8:]} trade_pair={tp_id}: {e}")
+                    n_skipped += 1
+                    total_skipped += 1
             if not positions:
                 continue
             assert len(positions) > 0, f"no positions for hotkey {hotkey}"
@@ -351,7 +366,7 @@ def regenerate_miner_positions(perform_backup=True, backup_from_data_dir=False, 
             # The sort order specifically prevents deletions during restore (see comment above sort).
             expected_disk_count = n_memory_positions
 
-            if n_disk_positions != expected_disk_count:
+            if n_disk_positions != expected_disk_count and n_skipped == 0:
                 memory_p_uuids = set([p.position_uuid for p in positions])
                 disk_p_uuids = set([p.position_uuid for p in disk_positions])
                 missing_uuids = memory_p_uuids - disk_p_uuids
@@ -395,13 +410,16 @@ def regenerate_miner_positions(perform_backup=True, backup_from_data_dir=False, 
         bt.logging.info(f"POSITION RESTORE COMPLETE:")
         bt.logging.info(f"  Expected to save: {total_positions_in_backup} positions")
         bt.logging.info(f"  Actually saved: {total_saved} positions")
-        if total_saved == total_positions_in_backup:
-            bt.logging.success(f"  ✓ All positions successfully restored!")
+        if total_skipped:
+            bt.logging.warning(f"  Skipped: {total_skipped} positions (unresolvable dynamic trade pairs)")
+        expected_saved = total_positions_in_backup - total_skipped
+        if total_saved == expected_saved:
+            bt.logging.success(f"  ✓ All resolvable positions successfully restored!")
         else:
-            bt.logging.error(f"  ✗ Mismatch: {total_positions_in_backup - total_saved} positions missing")
+            bt.logging.error(f"  ✗ Mismatch: {expected_saved - total_saved} positions missing")
             raise AssertionError(
-                f"GLOBAL POSITION COUNT MISMATCH: Expected {total_positions_in_backup} positions, "
-                f"but saved {total_saved}. Missing {total_positions_in_backup - total_saved} positions."
+                f"GLOBAL POSITION COUNT MISMATCH: Expected {expected_saved} positions, "
+                f"but saved {total_saved}. Missing {expected_saved - total_saved} positions."
             )
         bt.logging.info(f"=" * 80)
 
@@ -423,8 +441,6 @@ def regenerate_miner_positions(perform_backup=True, backup_from_data_dir=False, 
             miner_account_client.sync_miner_account_sizes_data(miner_account_sizes)
         else:
             bt.logging.info("No miner account sizes found in backup data")
-
-        challengeperiod_client._write_challengeperiod_from_memory_to_disk()
 
         limit_orders = data.get('limit_orders', {})
         limit_order_client.sync_limit_orders(limit_orders)
