@@ -565,14 +565,62 @@ class ValiConfig:
     LEVERAGE_TIER3_MIN_ACCOUNT_SIZE = 200_000    # $200K: Tier 2 → Tier 3
     LEVERAGE_TIER4_MIN_ACCOUNT_SIZE = 1_000_000  # $1M:   Tier 3 → Tier 4
 
-    # Per-tier positional leverage limits for entity subaccounts.
-    # The COMMODITIES column applies to HL-sourced commodity pairs (GOLDUSDC, SILVERUSDC, etc.).
-    # XAUUSD/XAGUSD have their own legacy positional caps in leverage_utils._LEGACY_XAU_XAG_TIER_POSITIONAL.
+    # Per-tier positional leverage, keyed on (asset class, instrument type).
+    # - (INDICES, SPOT) is dead config: SPX/DJI/NDX/VIX/FTSE/GDAXI are in BLOCKED_TRADE_PAIR_IDS;
+    #   pure index reference values aren't tradeable on Vanta (would amount to CFDs).
+    # - (COMMODITIES, SPOT) is placeholder: XAU/XAG draw from leverage_utils._LEGACY_XAU_XAG_TIER_POSITIONAL.
+    # - (FOREX, PERP) is placeholder: HL has no forex listings today.
+    # - (EQUITIES/INDICES/COMMODITIES, PERP) mirror the CRYPTO row to preserve current HL behavior
+    #   previously routed through the HL → CRYPTO redirect in leverage_utils.
     TIER_POSITIONAL_LEVERAGE = {
-        1: {TradePairCategory.HL_ALL: 0.5, TradePairCategory.CRYPTO: 0.5,  TradePairCategory.FOREX: 2.5,  TradePairCategory.EQUITIES: 0.5, TradePairCategory.INDICES: 2.5,  TradePairCategory.COMMODITIES: 0.5},
-        2: {TradePairCategory.HL_ALL: 1.0, TradePairCategory.CRYPTO: 1.0,  TradePairCategory.FOREX: 5.0,  TradePairCategory.EQUITIES: 1.0, TradePairCategory.INDICES: 5.0,  TradePairCategory.COMMODITIES: 1.0},
-        3: {TradePairCategory.HL_ALL: 1.5, TradePairCategory.CRYPTO: 1.5,  TradePairCategory.FOREX: 7.5,  TradePairCategory.EQUITIES: 1.5, TradePairCategory.INDICES: 7.5,  TradePairCategory.COMMODITIES: 1.5},
-        4: {TradePairCategory.HL_ALL: 2.0, TradePairCategory.CRYPTO: 2.0,  TradePairCategory.FOREX: 10.0, TradePairCategory.EQUITIES: 2.0, TradePairCategory.INDICES: 10.0, TradePairCategory.COMMODITIES: 2.0},
+        1: {
+            (TradePairCategory.CRYPTO,      InstrumentType.SPOT): 0.5,
+            (TradePairCategory.CRYPTO,      InstrumentType.PERP): 0.5,
+            (TradePairCategory.FOREX,       InstrumentType.SPOT): 2.5,
+            (TradePairCategory.FOREX,       InstrumentType.PERP): 2.5,
+            (TradePairCategory.EQUITIES,    InstrumentType.SPOT): 0.5,
+            (TradePairCategory.EQUITIES,    InstrumentType.PERP): 0.5,
+            (TradePairCategory.INDICES,     InstrumentType.SPOT): 2.5,
+            (TradePairCategory.INDICES,     InstrumentType.PERP): 0.5,
+            (TradePairCategory.COMMODITIES, InstrumentType.SPOT): 0.5,
+            (TradePairCategory.COMMODITIES, InstrumentType.PERP): 0.5,
+        },
+        2: {
+            (TradePairCategory.CRYPTO,      InstrumentType.SPOT): 1.0,
+            (TradePairCategory.CRYPTO,      InstrumentType.PERP): 1.0,
+            (TradePairCategory.FOREX,       InstrumentType.SPOT): 5.0,
+            (TradePairCategory.FOREX,       InstrumentType.PERP): 5.0,
+            (TradePairCategory.EQUITIES,    InstrumentType.SPOT): 1.0,
+            (TradePairCategory.EQUITIES,    InstrumentType.PERP): 1.0,
+            (TradePairCategory.INDICES,     InstrumentType.SPOT): 5.0,
+            (TradePairCategory.INDICES,     InstrumentType.PERP): 1.0,
+            (TradePairCategory.COMMODITIES, InstrumentType.SPOT): 1.0,
+            (TradePairCategory.COMMODITIES, InstrumentType.PERP): 1.0,
+        },
+        3: {
+            (TradePairCategory.CRYPTO,      InstrumentType.SPOT): 1.5,
+            (TradePairCategory.CRYPTO,      InstrumentType.PERP): 1.5,
+            (TradePairCategory.FOREX,       InstrumentType.SPOT): 7.5,
+            (TradePairCategory.FOREX,       InstrumentType.PERP): 7.5,
+            (TradePairCategory.EQUITIES,    InstrumentType.SPOT): 1.5,
+            (TradePairCategory.EQUITIES,    InstrumentType.PERP): 1.5,
+            (TradePairCategory.INDICES,     InstrumentType.SPOT): 7.5,
+            (TradePairCategory.INDICES,     InstrumentType.PERP): 1.5,
+            (TradePairCategory.COMMODITIES, InstrumentType.SPOT): 1.5,
+            (TradePairCategory.COMMODITIES, InstrumentType.PERP): 1.5,
+        },
+        4: {
+            (TradePairCategory.CRYPTO,      InstrumentType.SPOT): 2.0,
+            (TradePairCategory.CRYPTO,      InstrumentType.PERP): 2.0,
+            (TradePairCategory.FOREX,       InstrumentType.SPOT): 10.0,
+            (TradePairCategory.FOREX,       InstrumentType.PERP): 10.0,
+            (TradePairCategory.EQUITIES,    InstrumentType.SPOT): 2.0,
+            (TradePairCategory.EQUITIES,    InstrumentType.PERP): 2.0,
+            (TradePairCategory.INDICES,     InstrumentType.SPOT): 10.0,
+            (TradePairCategory.INDICES,     InstrumentType.PERP): 2.0,
+            (TradePairCategory.COMMODITIES, InstrumentType.SPOT): 2.0,
+            (TradePairCategory.COMMODITIES, InstrumentType.PERP): 2.0,
+        },
     }
 
     # Per-tier portfolio leverage caps for entity subaccounts.
@@ -715,6 +763,7 @@ class DynamicTradePair:
     is_blocked: bool = False
     lot_size: int = 1
     src: TradePairSource = TradePairSource.HYPERLIQUID
+    instrument_type: InstrumentType = InstrumentType.PERP
 
     def __hash__(self):
         return hash(self.trade_pair_id)

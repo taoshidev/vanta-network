@@ -1,5 +1,5 @@
 from vali_objects.enums.miner_bucket_enum import MinerBucket
-from vali_objects.vali_config import TradePair, TradePairCategory, TradePairSource, ValiConfig  # noqa: E402
+from vali_objects.vali_config import TradePair, TradePairCategory, ValiConfig  # noqa: E402
 
 
 # Legacy positional caps for XAUUSD/XAGUSD (FOREX-tagged commodity pairs). These pairs will
@@ -40,13 +40,11 @@ def get_leverage_tier(miner_bucket, account_size: float) -> int:
 def get_tier_positional_leverage(tier: int, trade_pair: TradePair) -> float:
     """Return the positional leverage limit for a given tier and trade pair.
 
-    XAUUSD/XAGUSD are FOREX-categorized but draw from a dedicated legacy column
-    (_LEGACY_XAU_XAG_TIER_POSITIONAL); they will be deprecated. HL trade pairs use
-    CRYPTO limits for now regardless of their category (redirect to be removed in a
-    follow-up commit).
+    Looked up by (trade_pair_category, instrument_type). XAUUSD/XAGUSD are FOREX-categorized
+    but draw from a dedicated legacy column (_LEGACY_XAU_XAG_TIER_POSITIONAL); they will be
+    deprecated.
     """
-    if trade_pair.src == TradePairSource.HYPERLIQUID:
-        return ValiConfig.TIER_POSITIONAL_LEVERAGE[tier][TradePairCategory.CRYPTO]
     if trade_pair.trade_pair_id in ("XAUUSD", "XAGUSD"):
         return _LEGACY_XAU_XAG_TIER_POSITIONAL[tier]
-    return ValiConfig.TIER_POSITIONAL_LEVERAGE[tier][trade_pair.trade_pair_category]
+    key = (trade_pair.trade_pair_category, trade_pair.instrument_type)
+    return ValiConfig.TIER_POSITIONAL_LEVERAGE[tier][key]
