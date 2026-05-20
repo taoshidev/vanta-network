@@ -239,9 +239,6 @@ class WeightCalculatorManager(CacheController):
 
         bt.logging.info(
             f"Computing weights for {len(all_hotkeys)} miners: "
-            f"{len(success_hotkeys)} MAINCOMP, {len(probation_hotkeys)} PROBATION, "
-            f"{len(challenge_hotkeys)} CHALLENGE, {len(plagiarism_hotkeys)} PLAGIARISM, "
-            f"{len(entity_hotkeys)} ENTITY "
             f"({zombies_filtered} zombies filtered)"
         )
 

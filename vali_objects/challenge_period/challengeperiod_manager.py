@@ -92,6 +92,17 @@ class MinerBucketState:
         """Only sync or save bucket entries - drawdown/rank should not be synced."""
         return [entry.to_dict() for entry in self.entries]
 
+    def __str__(self) -> str:
+        from datetime import datetime
+        start = datetime.fromtimestamp(self.current_bucket_start_ms / 1000).strftime("%Y-%m-%d %H:%M")
+        dd = self.drawdown
+        return (
+            f"{self.current_bucket.value} {start} rank={self.rank} "
+            f"equity={dd.current_equity:.4f} balance={dd.current_balance:.4f} | "
+            f"intraday_dd={dd.intraday_drawdown_pct:.2f}% eod_dd={dd.eod_drawdown_pct:.2f}% "
+            f"eod_hwm={dd.eod_hwm:.4f}"
+        )
+
     @property
     def current_bucket(self):
         return self.bucket()
@@ -220,16 +231,27 @@ class ChallengePeriodManager(CacheController):
                 eliminations[hotkey] = EliminationReason.FAILED_CHALLENGE_PERIOD_TIME
                 continue
 
+            # TODO remove
+            bt.logging.info(f"[CHALLENGE] {hotkey} {state}")
+
             # Rule 1: Intraday drawdown — current equity cannot drop below  from today's opening equity
             # intraday_drawdown_pct = (1.0 - current_equity / daily_open_equity) * 100.0
             if state.drawdown.intraday_drawdown_pct > state.intraday_drawdown_threshold_pct:
                 eliminations[hotkey] = EliminationReason.FAILED_CHALLENGE_PERIOD_INTRADAY_DRAWDOWN
+                bt.logging.info(f"[CHALLENGE] {hotkey} Intraday DD elimination triggered {state}")
+                continue
+            elif state.drawdown.intraday_drawdown_pct > state.intraday_drawdown_threshold_pct * 0.75:
+                bt.logging.info(f"[CHALLENGE] {hotkey} Near Intraday DD elimination {state}")
                 continue
 
             # Rule 2: EOD trailing drawdown — last EOD equity cannot drop below threshold(0.0n) from highest-ever EOD equity
             # eod_drawdown_pct = (1.0 - last_eod / eod_hwm) * 100.0
             if state.drawdown.eod_drawdown_pct > state.eod_drawdown_threshold_pct:
                 eliminations[hotkey] = EliminationReason.FAILED_CHALLENGE_PERIOD_EOD_DRAWDOWN
+                bt.logging.info(f"[CHALLENGE] {hotkey} EOD DD elimination triggered {state}")
+                continue
+            elif state.drawdown.eod_drawdown_pct > state.eod_drawdown_threshold_pct * 0.75:
+                bt.logging.info(f"[CHALLENGE] {hotkey} Near EOD DD elimination {state}")
                 continue
 
             _asset = asset_selections.get(hotkey)
@@ -238,12 +260,17 @@ class ChallengePeriodManager(CacheController):
 
             # Check demotions for regular maincomp before promotion
             returns_threshold = ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD[asset_class]
-            if self._should_demote(state, returns_threshold=returns_threshold):
+            if self._should_demote(state, returns_threshold):
                 demotions.append(hotkey)
+                bt.logging.info(f"[CHALLENGE] {hotkey} Demotion triggered {state}")
                 continue
 
             if self._should_promote(state, returns_threshold, current_time_ms):
                 promotions.append(hotkey)
+                bt.logging.info(f"[CHALLENGE] {hotkey} Promotion triggered {state}")
+                continue
+            elif self._should_promote(state, returns_threshold * 0.75, current_time_ms):
+                bt.logging.info(f"[CHALLENGE] {hotkey} Near promotion {state}")
                 continue
 
         state_changed |= self.eliminate_hotkeys(eliminations, current_time_ms)
@@ -287,7 +314,7 @@ class ChallengePeriodManager(CacheController):
 
     def eliminate_hotkeys(self, eliminations: dict[str, EliminationReason], current_time_ms: int):
         if eliminations:
-            bt.logging.info(f"Elimination {len(eliminations)} miners from challenge period")
+            bt.logging.info(f"Elimination {len(eliminations)} miners from challenge period: {list(eliminations.keys())}")
 
         elimination_data = {}
         with self._buckets_lock:
@@ -311,7 +338,7 @@ class ChallengePeriodManager(CacheController):
     def demote_hotkeys(self, hotkeys: list[str], current_time_ms) -> bool:
         """Demote miners to probation."""
         if hotkeys:
-            bt.logging.info(f"[CHALLENGE] Demoting {len(hotkeys)} miners to probation")
+            bt.logging.info(f"[CHALLENGE] Demoting {len(hotkeys)} miners to probation: {hotkeys}")
 
         state_changed = False
         with self._buckets_lock:
@@ -323,7 +350,7 @@ class ChallengePeriodManager(CacheController):
     def promote_hotkeys(self, hotkeys: list[str], current_time_ms: int) -> bool:
         """Promote miners to next tier."""
         if len(hotkeys) > 0:
-            bt.logging.info(f"[CHALLENGE] Promoting {len(hotkeys)} miners.")
+            bt.logging.info(f"[CHALLENGE] Promoting {len(hotkeys)} miners: {hotkeys}")
 
         state_changed = False
         for hotkey in hotkeys:

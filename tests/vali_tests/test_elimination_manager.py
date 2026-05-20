@@ -117,11 +117,8 @@ class TestEliminationManager(TestBase):
         self.perf_ledger_client.save_perf_ledgers(ledgers)
 
         # Set up challenge period status
-        miners = {}
-        miners[self.MDD_MINER] = (MinerBucket.MAINCOMP, 0, None, None)
-        miners[self.REGULAR_MINER] = (MinerBucket.MAINCOMP, 0, None, None)
-        self.challenge_period_client.update_miners(miners)
-        self.challenge_period_client._write_challengeperiod_from_memory_to_disk()
+        self.challenge_period_client.set_miner_bucket(self.MDD_MINER, MinerBucket.MAINCOMP, 0)
+        self.challenge_period_client.set_miner_bucket(self.REGULAR_MINER, MinerBucket.MAINCOMP, 0)
 
     def test_elimination_for_mdd(self):
         """Test MDD elimination and zombie detection"""
