@@ -345,5 +345,17 @@ class PositionUtils:
         for position_return in closed_position_returns:
             cumulative_return *= position_return
             cumulative_returns.append(cumulative_return)
-            
+
         return cumulative_returns
+
+    @staticmethod
+    def strip_old_price_sources(position: Position, time_now_ms: int) -> int:
+        """Strip price_sources from orders older than 1 week to save disk space."""
+        n_removed = 0
+        one_week_ago_ms = time_now_ms - 1000 * 60 * 60 * 24 * 7
+        for o in position.orders:
+            if o.processed_ms < one_week_ago_ms:
+                if o.price_sources:
+                    o.price_sources = []
+                    n_removed += 1
+        return n_removed

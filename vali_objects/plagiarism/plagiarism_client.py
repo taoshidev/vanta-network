@@ -1,5 +1,3 @@
-from typing import Optional
-
 from shared_objects.rpc.rpc_client_base import RPCClientBase
 from vali_objects.vali_config import RPCConnectionMode, ValiConfig
 
@@ -45,7 +43,7 @@ class PlagiarismClient(RPCClientBase):
         """Get current plagiarism miners as a list of hotkeys."""
         return self._server.get_plagiarism_miners_rpc()
 
-    def plagiarism_miners_to_eliminate(self, current_time: int) -> Dict[str, int]:
+    def plagiarism_miners_to_eliminate(self, current_time: int) -> dict[str, int]:
         """
         Returns a dict of miners that should be eliminated.
 
@@ -70,7 +68,7 @@ class PlagiarismClient(RPCClientBase):
         """
         return self._server.update_plagiarism_miners_rpc(current_time, plagiarism_miners)
 
-    def get_plagiarism_elimination_scores(self, current_time: int, api_base_url: str = None) -> Optional[dict]:
+    def get_plagiarism_elimination_scores(self, current_time: int, api_base_url: str = None) -> dict | None:
         """
         Get elimination scores from the plagiarism API.
 

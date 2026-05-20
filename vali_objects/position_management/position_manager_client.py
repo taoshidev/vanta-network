@@ -28,7 +28,6 @@ from typing import Dict, List, Optional
 from shared_objects.rpc.rpc_client_base import RPCClientBase
 from time_util.time_util import TimeUtil
 from vali_objects.enums.order_source_enum import OrderSource
-from vali_objects.position_management.position_manager import PositionManager
 from vali_objects.position_management.position_utils import PositionUtils
 from vali_objects.position_management.position_utils.position_filtering import PositionFiltering
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
@@ -107,7 +106,7 @@ class PositionManagerClient(RPCClientBase):
         for p in original_positions:
             # Don't modify the position object in-place
             # Instead, create the dict representation and modify only the dict
-            PositionManager.strip_old_price_sources(p, time_now_ms)
+            PositionUtils.strip_old_price_sources(p, time_now_ms)
 
             position_dict = p.to_dict()
             # Convert None to 0 for JSON serialization (avoids null in JSON)

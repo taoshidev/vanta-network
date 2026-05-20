@@ -74,11 +74,13 @@ class MinerBucket(Enum):
         return None
 
     @property
-    def time_limit_ms(self) -> int | None:
+    def max_time_ms(self) -> int | None:
         if self == MinerBucket.CHALLENGE:
             return ValiConfig.CHALLENGE_PERIOD_MAXIMUM_MS
         elif self == MinerBucket.PROBATION:
             return ValiConfig.PROBATION_MAXIMUM_MS
+        elif self == MinerBucket.PLAGIARISM:
+            return   ValiConfig.PLAGIARISM_REVIEW_PERIOD_MS
         else:
             return None
 
@@ -129,10 +131,10 @@ class BucketEntry:
     @classmethod
     def from_dict(cls, d: dict) -> 'BucketEntry':
         """Create from dict for deserialization."""
-        bucket = d.get('bucket')
+        bucket = d.get('bucket', MinerBucket.UNKNOWN)
         if isinstance(bucket, str):
             bucket = MinerBucket(bucket)
         return cls(
             bucket=bucket,
-            start_time_ms=d.get('start_time_ms', 0)
+            start_time_ms=d.get('start_time_ms') or d.get('bucket_start_time', 0)
         )

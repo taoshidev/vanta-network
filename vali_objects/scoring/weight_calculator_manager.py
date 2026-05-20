@@ -225,13 +225,9 @@ class WeightCalculatorManager(CacheController):
         hotkey_to_idx = {hotkey: idx for idx, hotkey in enumerate(metagraph_hotkeys)}
 
         # Get all miners from all buckets
-        challenge_hotkeys = list(self._challengeperiod_client.get_hotkeys_by_bucket(MinerBucket.CHALLENGE))
-        probation_hotkeys = list(self._challengeperiod_client.get_hotkeys_by_bucket(MinerBucket.PROBATION))
-        plagiarism_hotkeys = list(self._challengeperiod_client.get_hotkeys_by_bucket(MinerBucket.PLAGIARISM))
-        success_hotkeys = list(self._challengeperiod_client.get_hotkeys_by_bucket(MinerBucket.MAINCOMP))
-        entity_hotkeys = list(self._challengeperiod_client.get_hotkeys_by_bucket(MinerBucket.ENTITY))
-
-        all_hotkeys = challenge_hotkeys + probation_hotkeys + plagiarism_hotkeys + success_hotkeys + entity_hotkeys
+        # TODO discuss whether to include plagiarism miners in dust emissions
+        buckets = [MinerBucket.CHALLENGE, MinerBucket.PROBATION, MinerBucket.MAINCOMP, MinerBucket.ENTITY]
+        all_hotkeys = self._challengeperiod_client.get_hotkeys_by_bucket(buckets)
 
         # Filter out zombie miners (miners in buckets but not in metagraph)
         all_hotkeys_before_filter = len(all_hotkeys)

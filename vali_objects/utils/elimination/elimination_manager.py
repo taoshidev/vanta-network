@@ -513,83 +513,83 @@ class EliminationManager(CacheController):
                 self.add_manual_flat_order(hotkey, p, corresponding_elimination,
                                           source_for_elimination, iteration_epoch)
 
-    def handle_challenge_period_eliminations(self, iteration_epoch=None):
-        """
-        Process challenge period eliminations (thread-safe).
+    # def handle_challenge_period_eliminations(self, iteration_epoch=None):
+    #     """
+    #     Process challenge period eliminations (thread-safe).
 
-        Atomically checks and adds eliminations to prevent redundant processing.
-        Lock scope is minimized - only held during dict operations, not I/O.
-        """
-        # Check if there are any eliminations to process
-        if not self.cp_client.has_elimination_reasons():
-                return
-        eliminations_snapshot = self.cp_client.get_all_elimination_reasons()
+    #     Atomically checks and adds eliminations to prevent redundant processing.
+    #     Lock scope is minimized - only held during dict operations, not I/O.
+    #     """
+    #     # Check if there are any eliminations to process
+    #     if not self.cp_client.has_elimination_reasons():
+    #             return
+    #     eliminations_snapshot = self.cp_client.get_all_elimination_reasons()
 
-        hotkeys = list(eliminations_snapshot.keys())
+    #     hotkeys = list(eliminations_snapshot.keys())
 
-        if not hotkeys:
-            return
+    #     if not hotkeys:
+    #         return
 
-        bt.logging.info(f"[ELIM_DEBUG] Processing {len(hotkeys)} challenge period eliminations: {hotkeys}")
-        bt.logging.info(f"[ELIM_DEBUG] Current eliminations dict has {len(self.eliminations)} entries")
+    #     bt.logging.info(f"[ELIM_DEBUG] Processing {len(hotkeys)} challenge period eliminations: {hotkeys}")
+    #     bt.logging.info(f"[ELIM_DEBUG] Current eliminations dict has {len(self.eliminations)} entries")
 
-        # Collect eliminations that were successfully added
-        newly_added_eliminations = []  # [(hotkey, elim_reason, elim_mdd), ...]
+    #     # Collect eliminations that were successfully added
+    #     newly_added_eliminations = []  # [(hotkey, elim_reason, elim_mdd), ...]
 
-        # Process each hotkey individually, popping atomically to avoid race conditions
-        for hotkey in hotkeys:
-            # Atomically pop the elimination reason (get + remove in one operation)
-            elim_data = self.cp_client.pop_elimination_reason(hotkey)
-            # Skip if already removed (another thread might have processed it)
-            if elim_data is None:
-                bt.logging.debug(f"[ELIM_DEBUG] Hotkey {hotkey} already processed/removed")
-                continue
+    #     # Process each hotkey individually, popping atomically to avoid race conditions
+    #     for hotkey in hotkeys:
+    #         # Atomically pop the elimination reason (get + remove in one operation)
+    #         elim_data = self.cp_client.pop_elimination_reason(hotkey)
+    #         # Skip if already removed (another thread might have processed it)
+    #         if elim_data is None:
+    #             bt.logging.debug(f"[ELIM_DEBUG] Hotkey {hotkey} already processed/removed")
+    #             continue
 
-            elim_reason = elim_data[0]
-            elim_mdd = elim_data[1]
-            # Use the detection time recorded by the CP manager so the flat order timestamp
-            # reflects when the violation was detected, not when this loop runs.
-            detection_time_ms = elim_data[2] if len(elim_data) > 2 else None
+    #         elim_reason = elim_data[0]
+    #         elim_mdd = elim_data[1]
+    #         # Use the detection time recorded by the CP manager so the flat order timestamp
+    #         # reflects when the violation was detected, not when this loop runs.
+    #         detection_time_ms = elim_data[2] if len(elim_data) > 2 else None
 
-            # Atomic check-then-add: Lock prevents another thread from adding
-            # the same elimination between check and add
-            with self.eliminations_lock:
-                already_eliminated = hotkey in self.eliminations
-                if already_eliminated:
-                    bt.logging.warning(
-                        f"[ELIM_DEBUG] Hotkey {hotkey} is ALREADY in eliminations list. Skipping. "
-                        f"Elimination: {self.eliminations[hotkey]}"
-                    )
-                    continue
+    #         # Atomic check-then-add: Lock prevents another thread from adding
+    #         # the same elimination between check and add
+    #         with self.eliminations_lock:
+    #             already_eliminated = hotkey in self.eliminations
+    #             if already_eliminated:
+    #                 bt.logging.warning(
+    #                     f"[ELIM_DEBUG] Hotkey {hotkey} is ALREADY in eliminations list. Skipping. "
+    #                     f"Elimination: {self.eliminations[hotkey]}"
+    #                 )
+    #                 continue
 
-                # Add elimination directly (we're already holding the lock)
-                bt.logging.info(f"[ELIM_DEBUG] Adding new elimination for {hotkey}")
-                elimination_row = self.generate_elimination_row(hotkey, elim_mdd, elim_reason, t_ms=detection_time_ms)
-                self.eliminations[hotkey] = elimination_row
-                # Save while holding lock
-                self._save_eliminations_locked()
+    #             # Add elimination directly (we're already holding the lock)
+    #             bt.logging.info(f"[ELIM_DEBUG] Adding new elimination for {hotkey}")
+    #             elimination_row = self.generate_elimination_row(hotkey, elim_mdd, elim_reason, t_ms=detection_time_ms)
+    #             self.eliminations[hotkey] = elimination_row
+    #             # Save while holding lock
+    #             self._save_eliminations_locked()
 
-                # Track that we successfully added this elimination
-                newly_added_eliminations.append((hotkey, elim_reason, elim_mdd))
+    #             # Track that we successfully added this elimination
+    #             newly_added_eliminations.append((hotkey, elim_reason, elim_mdd))
 
-                bt.logging.info(f"[ELIM_DEBUG] Verified {hotkey} was added to eliminations list")
+    #             bt.logging.info(f"[ELIM_DEBUG] Verified {hotkey} was added to eliminations list")
 
-        bt.logging.info(f"[ELIM_DEBUG] After processing, eliminations dict has {len(self.eliminations)} entries")
+    #     bt.logging.info(f"[ELIM_DEBUG] After processing, eliminations dict has {len(self.eliminations)} entries")
 
-        # Handle cleanup outside lock (I/O operations - only for newly added eliminations)
-        _funded_elim_reasons = {
-            EliminationReason.FAILED_FUNDED_PERIOD_INTRADAY_DRAWDOWN.value,
-            EliminationReason.FAILED_FUNDED_PERIOD_EOD_DRAWDOWN.value,
-        }
-        for hotkey, elim_reason, elim_mdd in newly_added_eliminations:
-            self.handle_eliminated_miner(hotkey, {}, iteration_epoch)
-            # Skip slashing in test mode (no contract manager)
-            if self._contract_client:
-                self._contract_client.slash_miner_collateral_proportion(hotkey)
+    #     # Handle cleanup outside lock (I/O operations - only for newly added eliminations)
+    #     _funded_elim_reasons = {
+    #         EliminationReason.FAILED_FUNDED_PERIOD_INTRADAY_DRAWDOWN.value,
+    #         EliminationReason.FAILED_FUNDED_PERIOD_EOD_DRAWDOWN.value,
+    #     }
+    #     for hotkey, elim_reason, elim_mdd in newly_added_eliminations:
+    #         self.handle_eliminated_miner(hotkey, {}, iteration_epoch)
+    #         # Skip slashing in test mode (no contract manager)
+    #         if self._contract_client:
+    #             self._contract_client.slash_miner_collateral_proportion(hotkey)
 
-            # slash entity collateral only for funded subaccount eliminations
-            if elim_reason in _funded_elim_reasons:
-                self._entity_collateral_client.try_slash_on_elimination(hotkey)
+    #         # slash entity collateral only for funded subaccount eliminations
+    #         if elim_reason in _funded_elim_reasons:
+    #             self._entity_collateral_client.try_slash_on_elimination(hotkey)
 
     def handle_first_refresh(self, iteration_epoch=None):
         """
@@ -627,9 +627,9 @@ class EliminationManager(CacheController):
             refresh_due = self.refresh_allowed(ValiConfig.ELIMINATION_CHECK_INTERVAL_MS)
 
             # Check for urgent eliminations using cp_client
-            has_urgent_eliminations = self.cp_client.has_elimination_reasons()
+            # has_urgent_eliminations = self.cp_client.has_elimination_reasons()
 
-            if not refresh_due and not has_urgent_eliminations:
+            if not refresh_due:
                 return
 
             bt.logging.info(
@@ -646,8 +646,8 @@ class EliminationManager(CacheController):
             bt.logging.debug("[ELIM_PROCESS] Starting handle_perf_ledger_eliminations")
             self.handle_perf_ledger_eliminations(iteration_epoch)
 
-            bt.logging.debug("[ELIM_PROCESS] Starting handle_challenge_period_eliminations")
-            self.handle_challenge_period_eliminations(iteration_epoch)
+            # bt.logging.debug("[ELIM_PROCESS] Starting handle_challenge_period_eliminations")
+            # self.handle_challenge_period_eliminations(iteration_epoch)
 
             bt.logging.debug("[ELIM_PROCESS] Starting handle_mdd_eliminations")
             self.handle_mdd_eliminations(iteration_epoch)
@@ -798,8 +798,7 @@ class EliminationManager(CacheController):
                           MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA]
 
         candidate_hotkeys = set()
-        for bucket in active_buckets:
-            candidate_hotkeys.update(self.cp_client.get_hotkeys_by_bucket(bucket))
+        candidate_hotkeys.update(self.cp_client.get_hotkeys_by_bucket(active_buckets))
 
         if not candidate_hotkeys:
             return
