@@ -46,6 +46,10 @@ class DrawdownStats:
     intraday_drawdown_pct: float = 0.0
     eod_drawdown_pct: float = 0.0
 
+    @property
+    def current_return(self):
+        return min(self.current_equity, self.current_balance) - 1.0
+
     def to_dict(self) -> dict:
         return asdict(self)
 
@@ -217,7 +221,7 @@ class ChallengePeriodManager(CacheController):
                 continue
 
             # Rule 1: Intraday drawdown — current equity cannot drop below  from today's opening equity
-            # intraday_drawdown_pct = (1.0 - current_return / daily_open_equity) * 100.0
+            # intraday_drawdown_pct = (1.0 - current_equity / daily_open_equity) * 100.0
             if state.drawdown.intraday_drawdown_pct > state.intraday_drawdown_threshold_pct:
                 eliminations[hotkey] = EliminationReason.FAILED_CHALLENGE_PERIOD_INTRADAY_DRAWDOWN
                 continue
@@ -263,7 +267,7 @@ class ChallengePeriodManager(CacheController):
     def _should_demote(state: MinerBucketState, returns_threshold: float = ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD_DEFAULT):
         if state.current_bucket == MinerBucket.MAINCOMP:
             return (state.rank > ValiConfig.PROMOTION_THRESHOLD_RANK
-                    or state.drawdown.current_equity < returns_threshold
+                    or state.drawdown.current_return < returns_threshold
                     if state.rank is not None
                     else False)
         return False
@@ -274,7 +278,7 @@ class ChallengePeriodManager(CacheController):
             if current_time_ms - state.current_bucket_start_ms < ValiConfig.CHALLENGE_PERIOD_MINIMUM_MS:
                 return False
 
-        if min(state.drawdown.current_equity, state.drawdown.current_balance) > returns_threshold:
+        if state.drawdown.current_return > returns_threshold:
             if state.current_bucket.is_rank_based:
                 return state.rank <= ValiConfig.PROMOTION_THRESHOLD_RANK if state.rank else False
             else:
@@ -527,6 +531,7 @@ class ChallengePeriodManager(CacheController):
                 if bucket in [MinerBucket.ENTITY, MinerBucket.SUBACCOUNT_FUNDED]:
                     continue
                 state_changed = True
+                hotkeys_prune.append(hotkey)
 
         self.remove_miners(hotkeys_prune)
         return state_changed

@@ -1,1107 +1,463 @@
-# developer: trdougherty, jbonilla
-# Copyright (c) 2024 Taoshi Inc
 """
-ChallengePeriod unit tests using the new client/server architecture.
-
-This test file has been refactored to use real server/client infrastructure
-instead of mock classes, following the pattern from test_elimination_core.py.
+Focused unit tests for ChallengePeriodManager and related dataclasses.
+No RPC connections, no disk I/O, no daemon simulation.
+Each test uses a manager fixture with all RPC clients mocked and
+is_backtesting=True to skip all file system access.
 """
-import unittest
-from copy import deepcopy
+import contextlib
+from unittest.mock import patch
 
-from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
-from tests.shared_objects.test_utilities import generate_ledger
-from tests.vali_tests.base_objects.test_base import TestBase
-from vali_objects.enums.order_type_enum import OrderType
-from vali_objects.vali_dataclasses.position import Position
-from vali_objects.challenge_period import ChallengePeriodManager
-from vali_objects.vali_dataclasses.ledger.ledger_utils import LedgerUtils
+import pytest
+
+from vali_objects.challenge_period.challengeperiod_manager import (
+    ChallengePeriodManager,
+    DrawdownStats,
+    MinerBucketState,
+)
 from vali_objects.enums.miner_bucket_enum import BucketEntry, MinerBucket
-from vali_objects.utils.vali_utils import ValiUtils
-from vali_objects.vali_config import TradePair, ValiConfig
-from vali_objects.vali_dataclasses.order import Order
-import vali_objects.vali_config as vali_file
-
-
-class TestChallengePeriodUnit(TestBase):
-    """
-    ChallengePeriod unit tests using ServerOrchestrator.
-
-    Servers start once (via singleton orchestrator) and are shared across:
-    - All test methods in this class
-    - All test classes that use ServerOrchestrator
-
-    This eliminates redundant server spawning and dramatically reduces test startup time.
-    Per-test isolation is achieved by clearing data state (not restarting servers).
-    """
-
-    # Class-level references (set in setUpClass via ServerOrchestrator)
-    orchestrator = None
-    live_price_fetcher_client = None
-    metagraph_client = None
-    position_client = None
-    perf_ledger_client = None
-    elimination_client = None
-    challenge_period_client = None
-    plagiarism_client = None
-    asset_selection_client = None
-    miner_account_client = None
-
-    @classmethod
-    def setUpClass(cls):
-        """One-time setup: Start all servers using ServerOrchestrator (shared across all test classes)."""
-        # Get the singleton orchestrator and start all required servers
-        cls.orchestrator = ServerOrchestrator.get_instance()
-
-        # Start all servers in TESTING mode (idempotent - safe if already started by another test class)
-        secrets = ValiUtils.get_secrets(running_unit_tests=True)
-        cls.orchestrator.start_all_servers(
-            mode=ServerMode.TESTING,
-            secrets=secrets
-        )
-
-        # Get clients from orchestrator (servers guaranteed ready, no connection delays)
-        cls.live_price_fetcher_client = cls.orchestrator.get_client('live_price_fetcher')
-        cls.metagraph_client = cls.orchestrator.get_client('metagraph')
-        cls.perf_ledger_client = cls.orchestrator.get_client('perf_ledger')
-        cls.challenge_period_client = cls.orchestrator.get_client('challenge_period')
-        cls.elimination_client = cls.orchestrator.get_client('elimination')
-        cls.position_client = cls.orchestrator.get_client('position_manager')
-        cls.plagiarism_client = cls.orchestrator.get_client('plagiarism')
-        cls.asset_selection_client = cls.orchestrator.get_client('asset_selection')
-        cls.miner_account_client = cls.orchestrator.get_client('miner_account')
-
-    @classmethod
-    def tearDownClass(cls):
-        """
-        One-time teardown: No action needed.
-
-        Note: Servers and clients are managed by ServerOrchestrator singleton and shared
-        across all test classes. They will be shut down automatically at process exit.
-        """
-        pass
-
-    def setUp(self):
-        """Per-test setup: Reset data state (fast - no server restarts)."""
-        # NOTE: Skip super().setUp() to avoid killing ports (servers already running)
-
-        # For the positions and ledger creation
-        self.START_TIME = 1000
-        self.END_TIME = self.START_TIME + ValiConfig.CHALLENGE_PERIOD_MAXIMUM_MS - 1
-
-        # For time management
-        self.CURRENTLY_IN_CHALLENGE = self.START_TIME + ValiConfig.CHALLENGE_PERIOD_MAXIMUM_MS - 1  # Evaluation time when inside the challenge period
-        self.OUTSIDE_OF_CHALLENGE = self.START_TIME + ValiConfig.CHALLENGE_PERIOD_MAXIMUM_MS + 1  # Evaluation time when the challenge period is over
-
-        DAILY_MS = ValiConfig.DAILY_MS
-        # Challenge miners must have a minimum amount of trading days before promotion
-        self.MIN_PROMOTION_TIME = self.START_TIME + (ValiConfig.CHALLENGE_PERIOD_MINIMUM_DAYS + 1) * DAILY_MS  # time when miner can now be promoted
-        self.BEFORE_PROMOTION_TIME = self.START_TIME + (ValiConfig.CHALLENGE_PERIOD_MINIMUM_DAYS - 1) * DAILY_MS  # time before miner has enough trading days
-
-        # Number of positions
-        self.N_POSITIONS_BOUNDS = 20 + 1
-        self.N_POSITIONS = self.N_POSITIONS_BOUNDS - 1
-
-        self.EVEN_TIME_DISTRIBUTION = [self.START_TIME + (self.END_TIME - self.START_TIME) * i / self.N_POSITIONS_BOUNDS
-                                       for i
-                                       in range(self.N_POSITIONS_BOUNDS)]
-
-        self.MINER_NAMES = [f"miner{i}" for i in range(self.N_POSITIONS)] + ["miner"]
-        self.SUCCESS_MINER_NAMES = [f"miner{i}" for i in range(1, 26)]
-        self.DEFAULT_POSITION = Position(
-            miner_hotkey="miner",
-            position_uuid="miner",
-            orders=[Order(price=60000, processed_ms=self.START_TIME, order_uuid="initial_order", trade_pair=TradePair.BTCUSD, order_type=OrderType.LONG, leverage=0.1)],
-            net_leverage=0.0,
-            open_ms=self.START_TIME,
-            close_ms=self.END_TIME,
-            trade_pair=TradePair.BTCUSD,
-            is_closed_position=True,
-            return_at_close=1.0,
-        )
-
-        # Generate a positions list with N_POSITIONS positions
-        self.DEFAULT_POSITIONS = []
-        for i in range(self.N_POSITIONS):
-            position = deepcopy(self.DEFAULT_POSITION)
-            position.open_ms = int(self.EVEN_TIME_DISTRIBUTION[i])
-            position.close_ms = int(self.EVEN_TIME_DISTRIBUTION[i + 1])
-            position.is_closed_position = True
-            position.position_uuid += str(i)
-            position.return_at_close = 1.0
-            position.orders[0] = Order(price=60000, processed_ms=int(position.open_ms), order_uuid="order" + str(i), trade_pair=TradePair.BTCUSD, order_type=OrderType.LONG, leverage=0.1)
-            self.DEFAULT_POSITIONS.append(position)
-
-        self.DEFAULT_LEDGER = generate_ledger(
-            start_time=self.START_TIME,
-            end_time=self.END_TIME,
-            gain=0.1,
-            loss=-0.08,
-            mdd=0.99,
-        )
-
-        # Clear all data for test isolation (both memory and disk)
-        self.orchestrator.clear_all_test_data()
-
-        # Initialize metagraph with test miners
-        self.metagraph_client.set_hotkeys(self.MINER_NAMES)
-
-        # Set up asset selection for all miners (required for promotion)
-        from vali_objects.vali_config import TradePairCategory
-        asset_class_str = TradePairCategory.CRYPTO.value
-        asset_selection_data = {}
-        for hotkey in self.MINER_NAMES + self.SUCCESS_MINER_NAMES:
-            asset_selection_data[hotkey] = asset_class_str
-
-        try:
-            self.asset_selection_client.sync_miner_asset_selection_data(asset_selection_data)
-        except (BrokenPipeError, ConnectionRefusedError, ConnectionError, EOFError) as e:
-            import bittensor as bt
-            bt.logging.warning(
-                f"Failed to sync asset selection in setUp (server may have crashed): {e}. "
-                f"Tests requiring asset selection will fail."
-            )
-
-        # Note: Individual tests populate active_miners as needed via _populate_active_miners()
-
-    def tearDown(self):
-        """Per-test teardown: Clear data for next test."""
-        self.orchestrator.clear_all_test_data()
-
-    def save_and_get_positions(self, base_positions, hotkeys):
-        """Helper to save positions and get filtered positions for scoring with error handling."""
-        import bittensor as bt
-
-        try:
-            for p in base_positions:
-                self.position_client.save_miner_position(p)
-
-            positions, hk_to_first_order_time = self.position_client.filtered_positions_for_scoring(
-                hotkeys=hotkeys)
-            assert positions, positions
-
-            return positions, hk_to_first_order_time
-
-        except (BrokenPipeError, ConnectionRefusedError, ConnectionError, EOFError) as e:
-            bt.logging.warning(
-                f"save_and_get_positions failed (server may have crashed): {type(e).__name__}: {e}. "
-                f"Returning empty results - test will likely fail."
-            )
-            # Return empty results to allow test to continue (will fail on assertions)
-            return {}, {}
-        except AssertionError:
-            bt.logging.warning(
-                f"save_and_get_positions: No positions returned for hotkeys {hotkeys}. "
-                f"This may indicate position_client RPC failure."
-            )
-            # Re-raise to preserve original test failure behavior
-            raise
-
-    def get_asset_softmaxed_scores(self, miner_scores: dict[str, float], asset_class=None):
-        """
-        Create asset_softmaxed_scores dict for testing.
-
-        Args:
-            miner_scores: dict mapping hotkey to score (0.0 to 1.0)
-            asset_class: TradePairCategory, defaults to CRYPTO
-
-        Returns:
-            asset_softmaxed_scores in the format expected by inspect()
-            Format: {TradePairCategory: {hotkey: score, ...}}
-        """
-        if asset_class is None:
-            asset_class = vali_file.TradePairCategory.CRYPTO
-
-        # asset_softmaxed_scores format: {asset_class: {hotkey: score}}
-        return {asset_class: miner_scores}
-
-    def _populate_active_miners(self, *, maincomp=[], challenge=[], probation=[]):
-        """Populate active miners using RPC client methods with error handling."""
-        import bittensor as bt
-
-        try:
-            for hotkey in maincomp:
-                self.challenge_period_client.set_miner_bucket(hotkey, MinerBucket.MAINCOMP, self.START_TIME)
-            for hotkey in challenge:
-                self.challenge_period_client.set_miner_bucket(hotkey, MinerBucket.CHALLENGE, self.START_TIME)
-            for hotkey in probation:
-                self.challenge_period_client.set_miner_bucket(hotkey, MinerBucket.PROBATION, self.START_TIME)
-
-            # Verify miners were actually registered by checking a sample
-            sample_hotkeys = (challenge + maincomp + probation)[:3]  # Check first 3
-            for hotkey in sample_hotkeys:
-                try:
-                    bucket = self.challenge_period_client.get_miner_bucket(hotkey)
-                    if bucket is None:
-                        bt.logging.warning(
-                            f"_populate_active_miners: Verification failed - {hotkey} not found after registration. "
-                            f"Server may have crashed."
-                        )
-                        break
-                except Exception as e:
-                    bt.logging.warning(
-                        f"_populate_active_miners: Verification failed for {hotkey}: {e}. "
-                        f"Server may have crashed."
-                    )
-                    break
-
-        except (BrokenPipeError, ConnectionRefusedError, ConnectionError, EOFError) as e:
-            bt.logging.warning(
-                f"_populate_active_miners failed (server may have crashed): {type(e).__name__}: {e}. "
-                f"Tests relying on this data will likely fail."
-            )
-
-    def test_screen_drawdown(self):
-        """Test that a high drawdown miner is screened"""
-        # Populate active miners for test
-        self._populate_active_miners(maincomp=self.SUCCESS_MINER_NAMES, challenge=["miner"])
-
-        base_positions = deepcopy(self.DEFAULT_POSITIONS)
-        base_ledger = deepcopy(self.DEFAULT_LEDGER)
-
-        # Returns are strong and consistent
-        for i in range(self.N_POSITIONS):
-            base_positions[i].return_at_close = 1.1
-
-        # Drawdown is high - 50% drawdown on the first period
-        base_ledger.cps[0].mdd = 0.5
-
-        # Drawdown criteria
-        max_drawdown = LedgerUtils.instantaneous_max_drawdown(base_ledger)
-        max_drawdown_percentage = LedgerUtils.drawdown_percentage(max_drawdown)
-        self.assertGreater(max_drawdown_percentage, ValiConfig.DRAWDOWN_MAXVALUE_PERCENTAGE)
-
-        # Check that the miner is successfully screened as failing
-        screening_logic, _ = LedgerUtils.is_beyond_max_drawdown(ledger_element=base_ledger)
-        self.assertTrue(screening_logic)
-
-    # ------ Time Constrained Tests (Inspect) ------
-    def test_failing_remaining_time(self):
-        """Miner is not passing, but there is time remaining"""
-        # Populate success miners for ranking comparison
-        self._populate_active_miners(maincomp=self.SUCCESS_MINER_NAMES, challenge=["miner"])
-
-        current_time = self.CURRENTLY_IN_CHALLENGE
-
-        base_positions = deepcopy(self.DEFAULT_POSITIONS)
-        base_ledger = deepcopy(self.DEFAULT_LEDGER)
-
-        inspection_ledger = {"miner": base_ledger}
-        inspection_positions, hk_to_first_order_time = self.save_and_get_positions(base_positions, ["miner"])
-
-        # Create combined scores dict where miner ranks below PROMOTION_THRESHOLD_RANK (25)
-        # Miner gets low score (0.1), success miners fill top 25 ranks with higher scores
-        miner_scores = {"miner": 0.1}
-        for i in range(ValiConfig.PROMOTION_THRESHOLD_RANK):
-            if i < len(self.SUCCESS_MINER_NAMES):
-                # Top 25 success miners get scores from 1.0 down to 0.76 (25 miners)
-                miner_scores[self.SUCCESS_MINER_NAMES[i]] = 1.0 - (i * 0.01)
-
-        asset_softmaxed_scores = self.get_asset_softmaxed_scores(miner_scores)
-
-        # Check that the miner continues in challenge (time remaining, so not eliminated)
-        passing, demoted, failing = self.challenge_period_client.inspect(
-            positions=inspection_positions,
-            ledger=inspection_ledger,
-            success_hotkeys=self.SUCCESS_MINER_NAMES[:ValiConfig.PROMOTION_THRESHOLD_RANK],
-            probation_hotkeys=[],
-            inspection_hotkeys={"miner": current_time},
-            current_time=current_time,
-            hk_to_first_order_time=hk_to_first_order_time,
-            asset_softmaxed_scores=asset_softmaxed_scores,
-        )
-        self.assertNotIn("miner", passing)
-        self.assertNotIn("miner", list(failing.keys()))
-
-    def test_failing_no_remaining_time(self):
-        """Miner is not passing, and there is no time remaining"""
-        # Populate active miners for test
-        self._populate_active_miners(maincomp=self.SUCCESS_MINER_NAMES, challenge=["miner"])
-
-        base_positions = deepcopy(self.DEFAULT_POSITIONS)
-        base_ledger = deepcopy(self.DEFAULT_LEDGER)
-
-        inspection_positions, hk_to_first_order_time = self.save_and_get_positions(base_positions, ["miner"])
-        inspection_ledger = {"miner": base_ledger}
-
-        inspection_hotkeys = {"miner": self.START_TIME}
-        current_time = self.OUTSIDE_OF_CHALLENGE
-
-        # Check that the miner is screened as failing
-        passing, demoted, failing = self.challenge_period_client.inspect(
-            positions=inspection_positions,
-            ledger=inspection_ledger,
-            success_hotkeys=[],
-            probation_hotkeys=[],
-            inspection_hotkeys=inspection_hotkeys,
-            current_time=current_time,
-            hk_to_first_order_time=hk_to_first_order_time,
-        )
-
-        self.assertNotIn("miner", passing)
-        self.assertIn("miner", list(failing.keys()))
-
-    def test_passing_remaining_time(self):
-        """Miner is passing and there is remaining time - they should be promoted"""
-        # Populate active miners for test
-        self._populate_active_miners(maincomp=self.SUCCESS_MINER_NAMES, challenge=["miner"])
-
-        base_positions = deepcopy(self.DEFAULT_POSITIONS)
-        base_ledger = deepcopy(self.DEFAULT_LEDGER)
-
-        inspection_positions, hk_to_first_order_time = self.save_and_get_positions(base_positions, ["miner"])
-        inspection_ledger = {"miner": base_ledger}
-
-        inspection_hotkeys = {"miner": self.START_TIME}
-        current_time = self.CURRENTLY_IN_CHALLENGE
-
-        # Create scores where miner is in top 25 (passing)
-        miner_scores = {"miner": 1.0}
-        asset_softmaxed_scores = self.get_asset_softmaxed_scores(miner_scores)
-
-        # Check that the miner is screened as passing
-        passing, demoted, failing = self.challenge_period_client.inspect(
-            positions=inspection_positions,
-            ledger=inspection_ledger,
-            success_hotkeys=[],
-            probation_hotkeys=[],
-            inspection_hotkeys=inspection_hotkeys,
-            current_time=current_time,
-            hk_to_first_order_time=hk_to_first_order_time,
-            asset_softmaxed_scores=asset_softmaxed_scores,
-        )
-
-        self.assertIn("miner", passing)
-        self.assertNotIn("miner", list(failing.keys()))
-
-    def test_passing_no_remaining_time(self):
-        """Redemption, if they pass right before the challenge period ends and before the next evaluation cycle"""
-        # Populate active miners for test
-        self._populate_active_miners(maincomp=self.SUCCESS_MINER_NAMES, challenge=["miner"])
-
-        base_positions = deepcopy(self.DEFAULT_POSITIONS)
-        base_ledger = deepcopy(self.DEFAULT_LEDGER)
-
-        inspection_positions, hk_to_first_order_time = self.save_and_get_positions(base_positions, ["miner"])
-        inspection_ledger = {"miner": base_ledger}
-
-        inspection_hotkeys = {"miner": self.START_TIME}
-        current_time = self.CURRENTLY_IN_CHALLENGE
-
-        # Create scores where miner is in top 25 (passing)
-        miner_scores = {"miner": 1.0}
-        asset_softmaxed_scores = self.get_asset_softmaxed_scores(miner_scores)
-
-        # Check that the miner is screened as passing
-        passing, demoted, failing = self.challenge_period_client.inspect(
-            positions=inspection_positions,
-            ledger=inspection_ledger,
-            success_hotkeys=[],
-            probation_hotkeys=[],
-            inspection_hotkeys=inspection_hotkeys,
-            current_time=current_time,
-            hk_to_first_order_time=hk_to_first_order_time,
-            asset_softmaxed_scores=asset_softmaxed_scores,
-        )
-
-        self.assertIn("miner", passing)
-        self.assertNotIn("miner", list(failing.keys()))
-
-    def test_lingering_no_positions(self):
-        """Test the scenario where the miner has no positions and has been in the system for a while"""
-        # Populate active miners for test
-        self._populate_active_miners(maincomp=self.SUCCESS_MINER_NAMES, challenge=["miner"])
-
-        base_positions = []
-
-        inspection_positions = {"miner": base_positions}
-
-        _, hk_to_first_order_time = self.position_client.filtered_positions_for_scoring(
-            hotkeys=["miner"])
-
-        inspection_ledger = {}
-        inspection_hotkeys = {"miner": self.START_TIME}
-        current_time = self.OUTSIDE_OF_CHALLENGE
-
-        # Check that the miner is screened as failing
-        passing, demoted, failing = self.challenge_period_client.inspect(
-            positions=inspection_positions,
-            ledger=inspection_ledger,
-            success_hotkeys=[],
-            probation_hotkeys=[],
-            inspection_hotkeys=inspection_hotkeys,
-            current_time=current_time,
-            hk_to_first_order_time=hk_to_first_order_time,
-        )
-
-        self.assertNotIn("miner", passing)
-        self.assertIn("miner", list(failing.keys()))
-
-    @unittest.skip('Departed hotkeys flow prevents re-registration.')
-    def test_recently_re_registered_miner(self):
-        """
-        Test the scenario where the miner is eliminated and registers again. Simulate this with a stale perf ledger
-        The positions begin after the perf ledger start therefore the ledger is stale.
-        """
-        # Populate success miners for test context
-        self._populate_active_miners(maincomp=self.SUCCESS_MINER_NAMES, challenge=["miner"])
-
-        base_ledger = deepcopy(self.DEFAULT_LEDGER)
-
-        base_position = deepcopy(self.DEFAULT_POSITION)
-        base_position.orders[0].processed_ms = base_ledger.start_time_ms + 1
-
-        inspection_positions, hk_to_first_order_time = self.save_and_get_positions([base_position], ["miner"])
-        inspection_ledger = {"miner": base_ledger}
-
-        inspection_hotkeys = {"miner": self.START_TIME}
-        current_time = self.OUTSIDE_OF_CHALLENGE
-
-        # Check that the miner is screened as testing still
-        passing, demoted, failing = self.challenge_period_client.inspect(
-            positions=inspection_positions,
-            ledger=inspection_ledger,
-            success_hotkeys=self.SUCCESS_MINER_NAMES,
-            probation_hotkeys=[],
-            inspection_hotkeys=inspection_hotkeys,
-            current_time=current_time,
-            hk_to_first_order_time=hk_to_first_order_time,
-        )
-
-        self.assertNotIn("miner", passing)
-        self.assertNotIn("miner", list(failing.keys()))
-
-    def test_just_above_threshold(self):
-        """Miner ranking just inside PROMOTION_THRESHOLD_RANK should pass"""
-        # Populate success miners for ranking comparison
-        self._populate_active_miners(maincomp=self.SUCCESS_MINER_NAMES, challenge=["miner"])
-
-        current_time = self.CURRENTLY_IN_CHALLENGE
-
-        base_positions = deepcopy(self.DEFAULT_POSITIONS)
-        base_ledger = deepcopy(self.DEFAULT_LEDGER)
-
-        inspection_positions, hk_to_first_order_time = self.save_and_get_positions(base_positions, ["miner"])
-        inspection_ledger = {"miner": base_ledger}
-
-        # Create scores where miner ranks at position 24 (within top 25)
-        # 23 success miners score higher, miner at 0.77, and 2 success miners score lower
-        miner_scores = {}
-        for i in range(23):
-            if i < len(self.SUCCESS_MINER_NAMES):
-                miner_scores[self.SUCCESS_MINER_NAMES[i]] = 1.0 - (i * 0.01)
-
-        miner_scores["miner"] = 0.77  # Rank 24
-
-        # Add 2 more success miners with lower scores who will be demoted
-        miner_scores[self.SUCCESS_MINER_NAMES[23]] = 0.76
-        miner_scores[self.SUCCESS_MINER_NAMES[24]] = 0.75
-
-        asset_softmaxed_scores = self.get_asset_softmaxed_scores(miner_scores)
-
-        # Check that the miner is promoted (in top 25)
-        passing, demoted, failing = self.challenge_period_client.inspect(
-            positions=inspection_positions,
-            ledger=inspection_ledger,
-            success_hotkeys=self.SUCCESS_MINER_NAMES[:25],
-            probation_hotkeys=[],
-            inspection_hotkeys={"miner": current_time},
-            current_time=current_time,
-            hk_to_first_order_time=hk_to_first_order_time,
-            asset_softmaxed_scores=asset_softmaxed_scores,
-        )
-        self.assertIn("miner", passing)
-        self.assertNotIn("miner", list(failing.keys()))
-        # miner25 (index 24) should be demoted as they're now rank 26
-        self.assertIn(self.SUCCESS_MINER_NAMES[24], demoted)
-
-    def test_just_below_threshold(self):
-        """Miner ranking just outside PROMOTION_THRESHOLD_RANK should not be promoted"""
-        # Populate success miners for ranking comparison
-        self._populate_active_miners(maincomp=self.SUCCESS_MINER_NAMES, challenge=["miner"])
-
-        current_time = self.CURRENTLY_IN_CHALLENGE
-
-        base_positions = deepcopy(self.DEFAULT_POSITIONS)
-        base_ledger = deepcopy(self.DEFAULT_LEDGER)
-
-        inspection_positions, hk_to_first_order_time = self.save_and_get_positions(base_positions, ["miner"])
-        inspection_ledger = {"miner": base_ledger}
-
-        # Create scores where miner ranks at position 26 (just outside top 25)
-        # 25 success miners score higher than the test miner
-        miner_scores = {}
-        for i in range(ValiConfig.PROMOTION_THRESHOLD_RANK):
-            if i < len(self.SUCCESS_MINER_NAMES):
-                miner_scores[self.SUCCESS_MINER_NAMES[i]] = 1.0 - (i * 0.01)
-
-        miner_scores["miner"] = 0.74  # Rank 26 (just below rank 25's score of 0.76)
-
-        asset_softmaxed_scores = self.get_asset_softmaxed_scores(miner_scores)
-
-        # Check that the miner continues in challenge (not promoted, not eliminated)
-        passing, demoted, failing = self.challenge_period_client.inspect(
-            positions=inspection_positions,
-            ledger=inspection_ledger,
-            success_hotkeys=self.SUCCESS_MINER_NAMES[:ValiConfig.PROMOTION_THRESHOLD_RANK],
-            probation_hotkeys=[],
-            inspection_hotkeys={"miner": current_time},
-            current_time=current_time,
-            hk_to_first_order_time=hk_to_first_order_time,
-            asset_softmaxed_scores=asset_softmaxed_scores,
-        )
-        self.assertNotIn("miner", passing)
-        self.assertNotIn("miner", list(failing.keys()))
-
-    def test_at_threshold(self):
-        """Miner ranking exactly at PROMOTION_THRESHOLD_RANK (rank 25) should pass"""
-        # Populate success miners for ranking comparison
-        self._populate_active_miners(maincomp=self.SUCCESS_MINER_NAMES, challenge=["miner"])
-
-        current_time = self.CURRENTLY_IN_CHALLENGE
-
-        base_positions = deepcopy(self.DEFAULT_POSITIONS)
-        base_ledger = deepcopy(self.DEFAULT_LEDGER)
-
-        inspection_positions, hk_to_first_order_time = self.save_and_get_positions(base_positions, ["miner"])
-        inspection_ledger = {"miner": base_ledger}
-
-        # Create scores where miner ranks exactly at position 25 (the threshold)
-        # 24 success miners score higher, miner ties with rank 25 at 0.76, 1 miner scores lower
-        miner_scores = {}
-        for i in range(24):
-            if i < len(self.SUCCESS_MINER_NAMES):
-                miner_scores[self.SUCCESS_MINER_NAMES[i]] = 1.0 - (i * 0.01)
-
-        miner_scores["miner"] = 0.76  # Ties for rank 25
-        miner_scores[self.SUCCESS_MINER_NAMES[24]] = 0.75  # Rank 26, will be demoted
-
-        asset_softmaxed_scores = self.get_asset_softmaxed_scores(miner_scores)
-
-        # Check that the miner is promoted (at threshold rank 25)
-        passing, demoted, failing = self.challenge_period_client.inspect(
-            positions=inspection_positions,
-            ledger=inspection_ledger,
-            success_hotkeys=self.SUCCESS_MINER_NAMES[:25],
-            probation_hotkeys=[],
-            inspection_hotkeys={"miner": current_time},
-            current_time=current_time,
-            hk_to_first_order_time=hk_to_first_order_time,
-            asset_softmaxed_scores=asset_softmaxed_scores,
-        )
-
-        self.assertIn("miner", passing)
-        self.assertNotIn("miner", list(failing.keys()))
-        # Verify the 26th ranked miner gets demoted
-        self.assertIn(self.SUCCESS_MINER_NAMES[24], demoted)
-
-    def test_screen_minimum_interaction(self):
-        """
-        Miner with passing score and enough trading days should be promoted
-        Also includes tests for base cases
-        """
-        # Populate active miners for test
-        self._populate_active_miners(maincomp=self.SUCCESS_MINER_NAMES, challenge=["miner"])
-
-        base_ledger = deepcopy(self.DEFAULT_LEDGER)
-
-        base_ledger_portfolio = base_ledger
-        base_positions = deepcopy(self.DEFAULT_POSITIONS)
-
-        # Return True if there are enough trading days
-        self.assertEqual(ChallengePeriodManager.screen_minimum_interaction(base_ledger_portfolio, ValiConfig.CHALLENGE_PERIOD_MINIMUM_DAYS), True)
-
-        inspection_positions, hk_to_first_order_time = self.save_and_get_positions(base_positions, ["miner"])
-        inspection_ledger = {"miner": base_ledger}
-
-        current_time = self.MIN_PROMOTION_TIME
-
-        portfolio_cps = [cp for cp in base_ledger_portfolio.cps if cp.last_update_ms < current_time]
-        base_ledger_portfolio.cps = portfolio_cps
-
-        # Create scores where miner is in top 25 (passing)
-        miner_scores = {"miner": 1.0}
-        asset_softmaxed_scores = self.get_asset_softmaxed_scores(miner_scores)
-
-        # Check that miner with a passing score passes when they have enough trading days
-        passing, demoted, failing = self.challenge_period_client.inspect(
-            positions=inspection_positions,
-            ledger=inspection_ledger,
-            success_hotkeys=[],
-            probation_hotkeys=[],
-            inspection_hotkeys={"miner": current_time},
-            current_time=current_time,
-            hk_to_first_order_time=hk_to_first_order_time,
-            asset_softmaxed_scores=asset_softmaxed_scores,
-        )
-
-        self.assertIn("miner", passing)
-        self.assertNotIn("miner", list(failing.keys()))
-
-        # Check two base cases
-
-        base_ledger_portfolio.cps = []
-        # Return False if there are no checkpoints
-        self.assertEqual(ChallengePeriodManager.screen_minimum_interaction(base_ledger_portfolio, ValiConfig.CHALLENGE_PERIOD_MINIMUM_DAYS), False)
-
-        # Return False if ledger is none
-        self.assertEqual(ChallengePeriodManager.screen_minimum_interaction(None, ValiConfig.CHALLENGE_PERIOD_MINIMUM_DAYS), False)
-
-    def test_not_enough_days(self):
-        """A miner with a passing score but not enough trading days shouldn't be promoted"""
-        # Populate active miners for test
-        self._populate_active_miners(maincomp=self.SUCCESS_MINER_NAMES, challenge=["miner"])
-
-        base_ledger = deepcopy(self.DEFAULT_LEDGER)
-        base_ledger_portfolio = base_ledger
-
-        base_positions = deepcopy(self.DEFAULT_POSITIONS)
-
-        inspection_positions, hk_to_first_order_time = self.save_and_get_positions(base_positions, ["miner"])
-        inspection_ledger = {"miner": base_ledger}
-
-        current_time = self.BEFORE_PROMOTION_TIME
-
-        portfolio_cps = [cp for cp in base_ledger_portfolio.cps if cp.last_update_ms < current_time]
-        base_ledger_portfolio.cps = portfolio_cps
-
-        passing, demoted, failing = self.challenge_period_client.inspect(
-            positions=inspection_positions,
-            ledger=inspection_ledger,
-            success_hotkeys=[],
-            probation_hotkeys=[],
-            inspection_hotkeys={"miner": current_time},
-            current_time=current_time,
-            hk_to_first_order_time=hk_to_first_order_time,
-        )
-
-        self.assertNotIn("miner", passing)
-        self.assertNotIn("miner", list(failing.keys()))
-
-    # ==================== Miner Bucket Storage Tests ====================
-
-    def test_miner_bucket_pushed_on_set(self):
-        """Test that set_miner_bucket pushes the bucket to MinerAccount."""
-        self._populate_active_miners(challenge=["miner"])
-
-        account = self.miner_account_client.get_account("miner")
-        self.assertIsNotNone(account)
-        self.assertEqual(account['miner_bucket'], MinerBucket.CHALLENGE.value)
-
-    def test_miner_bucket_cleared_on_remove(self):
-        """Test that remove_miner clears the bucket on MinerAccount."""
-        self._populate_active_miners(challenge=["miner"])
-
-        # Verify bucket is set
-        account = self.miner_account_client.get_account("miner")
-        self.assertEqual(account['miner_bucket'], MinerBucket.CHALLENGE.value)
-
-        # Remove miner from challenge period
-        self.challenge_period_client.remove_miner("miner")
-
-        # Verify bucket is cleared
-        account = self.miner_account_client.get_account("miner")
-        self.assertIsNone(account['miner_bucket'])
-
-    def test_miner_bucket_updated_on_promotion(self):
-        """Test that bucket updates correctly when a miner is promoted between buckets."""
-        # Start as SUBACCOUNT_CHALLENGE
-        self.challenge_period_client.set_miner_bucket("miner", MinerBucket.SUBACCOUNT_CHALLENGE, self.START_TIME)
-
-        account = self.miner_account_client.get_account("miner")
-        self.assertEqual(account['miner_bucket'], MinerBucket.SUBACCOUNT_CHALLENGE.value)
-
-        # Promote to SUBACCOUNT_FUNDED
-        self.challenge_period_client.set_miner_bucket("miner", MinerBucket.SUBACCOUNT_FUNDED, self.START_TIME)
-
-        account = self.miner_account_client.get_account("miner")
-        self.assertEqual(account['miner_bucket'], MinerBucket.SUBACCOUNT_FUNDED.value)
-
-    def test_miner_bucket_persisted_to_disk(self):
-        """Test that miner_bucket survives a reload from disk."""
-        self._populate_active_miners(challenge=["miner"])
-
-        # Verify bucket is set
-        account = self.miner_account_client.get_account("miner")
-        self.assertEqual(account['miner_bucket'], MinerBucket.CHALLENGE.value)
-
-        # Reload accounts from disk
-        self.miner_account_client.re_init_account_sizes()
-
-        # Verify bucket persisted
-        account = self.miner_account_client.get_account("miner")
-        self.assertIsNotNone(account)
-        self.assertEqual(account['miner_bucket'], MinerBucket.CHALLENGE.value)
-
-    # ==================== Race Condition Tests ====================
-    # These tests demonstrate race conditions in the ChallengePeriod architecture.
-    # They are EXPECTED to fail (crash or produce incorrect results) since proper
-    # locking is not implemented. Once locks are added, these tests should pass.
-
-    def test_race_iteration_during_modification(self):
-        """
-        RC-1: Dictionary iteration crash when dict modified during iteration.
-
-        Real pattern: Client calls get_hotkeys_by_bucket() (iterates active_miners)
-        while daemon or another client calls set_miner_bucket() (modifies active_miners).
-
-        Expected failure: RuntimeError: dictionary changed size during iteration
-        """
-        import threading
-        import time
-
-        # Setup: Add 100 miners to challenge bucket
-        hotkeys = [f"race_miner_{i}" for i in range(100)]
-        for hotkey in hotkeys:
-            self.challenge_period_client.set_miner_bucket(hotkey, MinerBucket.CHALLENGE, self.START_TIME)
-
-        errors = []
-        iterations_completed = [0]
-
-        def iterator_thread():
-            """Simulates client calling get_hotkeys_by_bucket repeatedly"""
-            try:
-                for _ in range(50):
-                    # This iterates over active_miners dict
-                    challenge_hotkeys = self.challenge_period_client.get_hotkeys_by_bucket(MinerBucket.CHALLENGE)
-                    iterations_completed[0] += 1
-                    time.sleep(0.001)  # Small delay to increase race window
-            except RuntimeError as e:
-                errors.append(("iterator", str(e)))
-
-        def modifier_thread():
-            """Simulates daemon/client modifying active_miners concurrently"""
-            try:
-                for i in range(50):
-                    # Add new miners (modifies active_miners dict)
-                    new_hotkey = f"concurrent_miner_{i}"
-                    self.challenge_period_client.set_miner_bucket(new_hotkey, MinerBucket.CHALLENGE, self.START_TIME)
-                    time.sleep(0.001)
-            except Exception as e:
-                errors.append(("modifier", str(e)))
-
-        # Run both threads concurrently (simulates real RPC scenario)
-        t1 = threading.Thread(target=iterator_thread)
-        t2 = threading.Thread(target=modifier_thread)
-
-        t1.start()
-        t2.start()
-        t1.join(timeout=10)
-        t2.join(timeout=10)
-
-        # Expected: RuntimeError during iteration
-        # Note: This test may not always fail due to timing, but demonstrates the issue
-        if errors:
-            # If we caught a RuntimeError, the race condition manifested
-            runtime_errors = [e for source, e in errors if "dictionary changed size" in e]
-            if runtime_errors:
-                self.fail(f"Race condition detected: {runtime_errors[0]}")
-
-        # Even if no crash, verify data consistency
-        # All 150 miners should be present (100 initial + 50 added by modifier)
-        final_challenge_miners = self.challenge_period_client.get_hotkeys_by_bucket(MinerBucket.CHALLENGE)
-        # NOTE: This assertion may fail if concurrent modifications caused data loss
-        expected_count = 100 + 50
-        actual_count = len(final_challenge_miners)
-        self.assertEqual(
-            actual_count,
-            expected_count,
-            f"Data loss detected: expected {expected_count} miners, got {actual_count}"
-        )
-
-    def test_race_concurrent_set_miner_bucket(self):
-        """
-        RC-4: Read-modify-write race in set_miner_bucket().
-
-        Real pattern: Two clients call set_miner_bucket() for same hotkey concurrently.
-
-        Expected failure: Incorrect is_new return value, or last-writer-wins data loss.
-        """
-        import threading
-
-        hotkey = "race_hotkey"
-        results = []
-
-        def client1_set():
-            """Simulates client 1 setting miner bucket"""
-            is_new = self.challenge_period_client.set_miner_bucket(
-                hotkey, MinerBucket.CHALLENGE, 1000
-            )
-            results.append(("client1", is_new, MinerBucket.CHALLENGE, 1000))
-
-        def client2_set():
-            """Simulates client 2 setting same miner to different bucket"""
-            is_new = self.challenge_period_client.set_miner_bucket(
-                hotkey, MinerBucket.PROBATION, 2000
-            )
-            results.append(("client2", is_new, MinerBucket.PROBATION, 2000))
-
-        # Run both threads concurrently
-        t1 = threading.Thread(target=client1_set)
-        t2 = threading.Thread(target=client2_set)
-
-        t1.start()
-        t2.start()
-        t1.join(timeout=5)
-        t2.join(timeout=5)
-
-        # Verify results
-        self.assertEqual(len(results), 2, "Both threads should complete")
-
-        # Expected: Exactly ONE should return is_new=True, other should return False
-        # Actual (without lock): BOTH may return True (race condition)
-        is_new_count = sum(1 for _, is_new, _, _ in results if is_new)
-        if is_new_count != 1:
-            self.fail(
-                f"Race condition in set_miner_bucket: {is_new_count} threads returned is_new=True, "
-                f"expected exactly 1. Results: {results}"
-            )
-
-        # Verify final state (last writer wins, but we don't know which)
-        final_bucket = self.challenge_period_client.get_miner_bucket(hotkey)
-        final_time = self.challenge_period_client.get_miner_start_time(hotkey)
-
-        # Should match ONE of the writers
-        client1_won = (final_bucket == MinerBucket.CHALLENGE and final_time == 1000)
-        client2_won = (final_bucket == MinerBucket.PROBATION and final_time == 2000)
-
-        self.assertTrue(
-            client1_won or client2_won,
-            f"Final state inconsistent: bucket={final_bucket}, time={final_time}"
-        )
-
-    def test_race_concurrent_file_writes(self):
-        """
-        RC-3: Concurrent file writes causing corruption.
-
-        Real pattern: Multiple operations trigger _write_challengeperiod_from_memory_to_disk()
-        concurrently (e.g., update_miners, remove_eliminated, refresh).
-
-        Expected failure: File corruption, lost updates, or partial writes.
-        """
-        import threading
-        import time
-
-        # Setup: Add some miners
-        for i in range(10):
-            self.challenge_period_client.set_miner_bucket(
-                f"file_race_miner_{i}", MinerBucket.CHALLENGE, self.START_TIME
-            )
-
-        errors = []
-
-        def writer_thread_1():
-            """Simulates client 1 bulk updating miners (triggers file write)"""
-            try:
-                miners_dict = {}
-                for i in range(10, 20):
-                    miners_dict[f"writer1_miner_{i}"] = [BucketEntry(MinerBucket.CHALLENGE, self.START_TIME)]
-                self.challenge_period_client.update_miners(miners_dict)
-                # Explicit file write to increase contention
-                self.challenge_period_client._write_challengeperiod_from_memory_to_disk()
-            except Exception as e:
-                errors.append(("writer1", str(e)))
-
-        def writer_thread_2():
-            """Simulates client 2 removing eliminated (triggers file write)"""
-            try:
-                # Add and remove miners (triggers disk writes)
-                for i in range(20, 30):
-                    self.challenge_period_client.set_miner_bucket(
-                        f"writer2_miner_{i}", MinerBucket.CHALLENGE, self.START_TIME
-                    )
-                self.challenge_period_client._write_challengeperiod_from_memory_to_disk()
-            except Exception as e:
-                errors.append(("writer2", str(e)))
-
-        def writer_thread_3():
-            """Simulates daemon refresh (triggers file write)"""
-            try:
-                # Simulate refresh operations
-                time.sleep(0.01)  # Stagger slightly
-                self.challenge_period_client._write_challengeperiod_from_memory_to_disk()
-            except Exception as e:
-                errors.append(("writer3", str(e)))
-
-        # Run all threads concurrently
-        threads = [
-            threading.Thread(target=writer_thread_1),
-            threading.Thread(target=writer_thread_2),
-            threading.Thread(target=writer_thread_3)
-        ]
-
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=5)
-
-        # Check for errors
-        if errors:
-            self.fail(f"File write errors occurred: {errors}")
-
-        # Verify data integrity: All miners should be present
-        # Note: Without file lock, last writer may overwrite others' changes
-        all_hotkeys = self.challenge_period_client.get_all_miner_hotkeys()
-
-        # We expect at least the miners from all three writers
-        # writer1: 10 miners (10-19)
-        # writer2: 10 miners (20-29)
-        # initial: 10 miners (0-9)
-        # Total: 30 miners
-        expected_min_count = 30
-        actual_count = len(all_hotkeys)
-
-        if actual_count < expected_min_count:
-            self.fail(
-                f"File write race caused data loss: expected at least {expected_min_count} miners, "
-                f"got {actual_count}. Missing miners indicate lost file writes."
-            )
-
-    def test_race_daemon_refresh_simulation(self):
-        """
-        RC-2: Daemon refresh() concurrent with RPC modifications.
-
-        Real pattern: Daemon runs refresh() which does multiple iterations over active_miners
-        (get_hotkeys_by_bucket for CHALLENGE/MAINCOMP/PROBATION) plus modifications
-        (_promote_challengeperiod_in_memory, _eliminate_challengeperiod_in_memory),
-        while clients concurrently call set_miner_bucket().
-
-        Expected failure: RuntimeError during daemon's iterations, or data corruption.
-        """
-        import threading
-        import time
-
-        # Setup: Add miners to different buckets
-        for i in range(30):
-            self.challenge_period_client.set_miner_bucket(
-                f"daemon_test_challenge_{i}", MinerBucket.CHALLENGE, self.START_TIME
-            )
-        for i in range(20):
-            self.challenge_period_client.set_miner_bucket(
-                f"daemon_test_maincomp_{i}", MinerBucket.MAINCOMP, self.START_TIME
-            )
-        for i in range(10):
-            self.challenge_period_client.set_miner_bucket(
-                f"daemon_test_probation_{i}", MinerBucket.PROBATION, self.START_TIME
-            )
-
-        errors = []
-        daemon_iterations = [0]
-
-        def daemon_refresh_simulation():
-            """Simulates daemon's refresh() method access pattern"""
-            try:
-                for iteration in range(10):
-                    # Daemon refresh pattern: multiple get_hotkeys_by_bucket calls
-                    challenge_hks = self.challenge_period_client.get_hotkeys_by_bucket(MinerBucket.CHALLENGE)
-                    maincomp_hks = self.challenge_period_client.get_hotkeys_by_bucket(MinerBucket.MAINCOMP)
-                    probation_hks = self.challenge_period_client.get_hotkeys_by_bucket(MinerBucket.PROBATION)
-
-                    # Simulate promotions/demotions (modifies active_miners)
-                    if challenge_hks:
-                        # Promote first challenge miner
-                        self.challenge_period_client.set_miner_bucket(
-                            challenge_hks[0], MinerBucket.MAINCOMP, self.START_TIME + iteration
-                        )
-
-                    daemon_iterations[0] += 1
-                    time.sleep(0.01)  # Simulate refresh interval
-            except RuntimeError as e:
-                errors.append(("daemon", str(e)))
-            except Exception as e:
-                errors.append(("daemon_other", str(e)))
-
-        def concurrent_client_modifications():
-            """Simulates clients making concurrent modifications"""
-            try:
-                for i in range(50):
-                    # Clients add new miners
-                    self.challenge_period_client.set_miner_bucket(
-                        f"concurrent_client_miner_{i}", MinerBucket.CHALLENGE, self.START_TIME + i
-                    )
-                    time.sleep(0.005)  # Faster than daemon to increase race probability
-            except Exception as e:
-                errors.append(("client", str(e)))
-
-        # Run daemon and client threads concurrently (real scenario)
-        daemon_thread = threading.Thread(target=daemon_refresh_simulation)
-        client_thread = threading.Thread(target=concurrent_client_modifications)
-
-        daemon_thread.start()
-        client_thread.start()
-        daemon_thread.join(timeout=10)
-        client_thread.join(timeout=10)
-
-        # Check for RuntimeError (dictionary changed size during iteration)
-        runtime_errors = [e for source, e in errors if "dictionary changed size" in str(e)]
-        if runtime_errors:
-            self.fail(
-                f"Race condition during daemon refresh: {runtime_errors[0]}. "
-                f"Daemon completed {daemon_iterations[0]} iterations before crash."
-            )
-
-        # Check for other errors
-        if errors:
-            self.fail(f"Errors during concurrent daemon/client operations: {errors}")
-
-        # Verify data consistency
-        all_hotkeys = self.challenge_period_client.get_all_miner_hotkeys()
-        # Should have initial miners (60) + client additions (50) - promotions
-        # Exact count is hard to predict due to promotions, but should be > 60
-        self.assertGreater(
-            len(all_hotkeys), 60,
-            f"Data loss detected: expected > 60 miners, got {len(all_hotkeys)}"
-        )
-
-    def test_race_bulk_update_visibility(self):
-        """
-        RC-5: Partial visibility during bulk update_miners().
-
-        Real pattern: Client calls update_miners() with 100 miners while another
-        client calls get_hotkeys_by_bucket().
-
-        Expected failure: Reader sees partial state (some miners updated, others not).
-        """
-        import threading
-
-        partial_reads = []
-
-        def bulk_updater():
-            """Simulates sync_challenge_period_data with 100 miners"""
-            miners_dict = {}
-            for i in range(100):
-                miners_dict[f"bulk_miner_{i}"] = [BucketEntry(MinerBucket.CHALLENGE, self.START_TIME)]
-            # This updates dict one-by-one internally (dict.update is not atomic)
-            self.challenge_period_client.update_miners(miners_dict)
-
-        def concurrent_reader():
-            """Simulates client reading during bulk update"""
-            import time
-            for _ in range(20):
-                count = len(self.challenge_period_client.get_hotkeys_by_bucket(MinerBucket.CHALLENGE))
-                partial_reads.append(count)
-                time.sleep(0.001)  # Sample frequently to catch partial states
-
-        # Run concurrently
-        updater = threading.Thread(target=bulk_updater)
-        reader = threading.Thread(target=concurrent_reader)
-
-        updater.start()
-        reader.start()
-        updater.join(timeout=5)
-        reader.join(timeout=5)
-
-        # Analysis: If locking works, we should see 0 or 100 miners, never partial
-        # Without locking: We may see partial states (e.g., 0, 23, 67, 100)
-        partial_states = [count for count in partial_reads if 0 < count < 100]
-
-        if partial_states:
-            self.fail(
-                f"Partial visibility during bulk update detected: saw {len(partial_states)} "
-                f"intermediate states. Sample values: {partial_states[:5]}. "
-                f"All reads: {sorted(set(partial_reads))}"
-            )
-
-        # Verify final state
-        final_count = len(self.challenge_period_client.get_hotkeys_by_bucket(MinerBucket.CHALLENGE))
-        self.assertEqual(final_count, 100, "Not all miners were added")
+from vali_objects.vali_config import TradePairCategory, ValiConfig
+
+# ── Constants ─────────────────────────────────────────────────────────────────
+
+DAILY_MS = ValiConfig.DAILY_MS
+MIN_CHALLENGE_MS = ValiConfig.CHALLENGE_PERIOD_MINIMUM_MS    # 61 days
+MAX_CHALLENGE_MS = ValiConfig.CHALLENGE_PERIOD_MAXIMUM_MS    # 90 days
+THRESHOLD = ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD_DEFAULT  # 0.1
+RANK_LIMIT = ValiConfig.PROMOTION_THRESHOLD_RANK             # 25
+INTRADAY_THRESHOLD_PCT = ValiConfig.CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD * 100  # 5.0
+
+NOW_MS = 1_748_000_000_000  # fixed reference timestamp (ms)
+
+_CLIENT_PATHS = [
+    "vali_objects.challenge_period.challengeperiod_manager.PerfLedgerClient",
+    "vali_objects.challenge_period.challengeperiod_manager.PositionManagerClient",
+    "vali_objects.challenge_period.challengeperiod_manager.EliminationClient",
+    "vali_objects.challenge_period.challengeperiod_manager.PlagiarismClient",
+    "vali_objects.challenge_period.challengeperiod_manager.MinerAccountClient",
+    "vali_objects.challenge_period.challengeperiod_manager.CommonDataClient",
+    "vali_objects.challenge_period.challengeperiod_manager.AssetSelectionClient",
+    "vali_objects.challenge_period.challengeperiod_manager.DebtLedgerClient",
+]
+
+
+# ── Fixtures & helpers ────────────────────────────────────────────────────────
+
+@pytest.fixture
+def manager():
+    with contextlib.ExitStack() as stack:
+        for path in _CLIENT_PATHS:
+            stack.enter_context(patch(path))
+        mgr = ChallengePeriodManager(is_backtesting=True)
+        yield mgr
+
+
+def _state(bucket: MinerBucket, start_ms: int = NOW_MS) -> MinerBucketState:
+    return MinerBucketState([BucketEntry(bucket, start_ms)])
+
+
+def _setup_refresh_clients(manager, hk: str):
+    """Minimal client stubs so refresh() doesn't crash."""
+    manager._position_client.get_all_hotkeys.return_value = [hk]
+    manager._position_client.filtered_positions_for_scoring.return_value = ({hk: []}, {})
+    manager._elimination_client.get_eliminated_hotkeys.return_value = []
+    manager._plagiarism_client.get_plagiarism_miners.return_value = []
+    manager._miner_account_client.get_accounts.return_value = {}
+    manager._perf_ledger_client.filtered_ledger_for_scoring.return_value = {}
+    manager._asset_selection_client.get_asset_selections.return_value = {
+        hk: TradePairCategory.CRYPTO
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Section 1 — MinerBucketState
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_bucket_state_sorted_on_init():
+    later = BucketEntry(MinerBucket.MAINCOMP, NOW_MS + 1000)
+    earlier = BucketEntry(MinerBucket.CHALLENGE, NOW_MS)
+    state = MinerBucketState([later, earlier])
+    assert state.entries[0].start_time_ms == NOW_MS
+    assert state.entries[1].start_time_ms == NOW_MS + 1000
+
+
+def test_bucket_state_empty_raises():
+    with pytest.raises(ValueError):
+        MinerBucketState([])
+
+
+def test_add_bucket_entry_same_bucket_noop():
+    state = _state(MinerBucket.CHALLENGE)
+    result = state.add_bucket_entry(MinerBucket.CHALLENGE, NOW_MS + 1)
+    assert result is False
+    assert len(state.entries) == 1
+
+
+def test_add_bucket_entry_different_bucket():
+    state = _state(MinerBucket.CHALLENGE)
+    result = state.add_bucket_entry(MinerBucket.MAINCOMP, NOW_MS + 1)
+    assert result is True
+    assert len(state.entries) == 2
+    assert state.current_bucket == MinerBucket.MAINCOMP
+
+
+def test_add_bucket_entry_replace_top():
+    state = _state(MinerBucket.CHALLENGE, NOW_MS)
+    result = state.add_bucket_entry(MinerBucket.CHALLENGE, NOW_MS + 5000, replace_top=True)
+    assert result is True
+    assert len(state.entries) == 1
+    assert state.entries[-1].start_time_ms == NOW_MS + 5000
+
+
+def test_pop_bucket_entry_matching():
+    state = _state(MinerBucket.PLAGIARISM)
+    popped = state.pop_bucket_entry(MinerBucket.PLAGIARISM)
+    assert isinstance(popped, BucketEntry)
+    assert popped.bucket == MinerBucket.PLAGIARISM
+
+
+def test_pop_bucket_entry_no_match():
+    state = _state(MinerBucket.CHALLENGE)
+    result = state.pop_bucket_entry(MinerBucket.PLAGIARISM)
+    assert result is None
+    assert len(state.entries) == 1
+
+
+def test_to_json_excludes_drawdown():
+    state = _state(MinerBucket.CHALLENGE)
+    state.drawdown = DrawdownStats(current_equity=1.5)
+    state.rank = 3
+    json_list = state.to_json()
+    assert isinstance(json_list, list)
+    assert len(json_list) == 1
+    assert "bucket" in json_list[0]
+    assert "current_equity" not in json_list[0]
+    assert "rank" not in json_list[0]
+
+
+def test_current_bucket_start_ms():
+    state = _state(MinerBucket.CHALLENGE, NOW_MS)
+    state.add_bucket_entry(MinerBucket.MAINCOMP, NOW_MS + 100)
+    assert state.current_bucket_start_ms == NOW_MS + 100
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Section 2 — parse_checkpoint_dict
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_parse_legacy_format():
+    data = {"testing": {"hk_a": NOW_MS}, "success": {"hk_b": NOW_MS + 1}}
+    result = ChallengePeriodManager.parse_checkpoint_dict(data)
+    assert result["hk_a"].current_bucket == MinerBucket.CHALLENGE
+    assert result["hk_b"].current_bucket == MinerBucket.MAINCOMP
+
+
+def test_parse_dict_format():
+    data = {"hk_x": {"bucket": "CHALLENGE", "bucket_start_time": NOW_MS}}
+    result = ChallengePeriodManager.parse_checkpoint_dict(data)
+    assert result["hk_x"].current_bucket == MinerBucket.CHALLENGE
+    assert result["hk_x"].current_bucket_start_ms == NOW_MS
+
+
+def test_parse_dict_format_with_previous_bucket():
+    data = {
+        "hk_x": {
+            "bucket": "MAINCOMP",
+            "bucket_start_time": NOW_MS + 1000,
+            "previous_bucket": "CHALLENGE",
+            "previous_bucket_start_time": NOW_MS,
+        }
+    }
+    result = ChallengePeriodManager.parse_checkpoint_dict(data)
+    state = result["hk_x"]
+    assert len(state.entries) == 2
+    assert state.entries[0].bucket == MinerBucket.CHALLENGE
+    assert state.entries[1].bucket == MinerBucket.MAINCOMP
+
+
+def test_parse_list_format():
+    entries = [
+        {"bucket": "CHALLENGE", "start_time_ms": NOW_MS},
+        {"bucket": "MAINCOMP", "start_time_ms": NOW_MS + 1000},
+    ]
+    result = ChallengePeriodManager.parse_checkpoint_dict({"hk_z": entries})
+    assert result["hk_z"].current_bucket == MinerBucket.MAINCOMP
+    assert len(result["hk_z"].entries) == 2
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Section 3 — _should_promote / _should_demote
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_should_promote_challenge_too_early():
+    start_ms = NOW_MS - MIN_CHALLENGE_MS + DAILY_MS  # one day short
+    state = _state(MinerBucket.CHALLENGE, start_ms)
+    state.drawdown = DrawdownStats(current_equity=1.5, current_balance=1.5)
+    state.rank = 1
+    assert ChallengePeriodManager._should_promote(state, THRESHOLD, NOW_MS) is False
+
+
+def test_should_promote_challenge_met_threshold():
+    start_ms = NOW_MS - MIN_CHALLENGE_MS - DAILY_MS  # past minimum
+    state = _state(MinerBucket.CHALLENGE, start_ms)
+    # current_returns = equity - 1.0 = THRESHOLD + 0.01 > THRESHOLD → promote
+    state.drawdown = DrawdownStats(current_equity=1.0 + THRESHOLD + 0.01, current_balance=1.0 + THRESHOLD + 0.01)
+    state.rank = 1
+    assert ChallengePeriodManager._should_promote(state, THRESHOLD, NOW_MS) is True
+
+
+def test_should_promote_challenge_below_equity_threshold():
+    start_ms = NOW_MS - MIN_CHALLENGE_MS - DAILY_MS
+    state = _state(MinerBucket.CHALLENGE, start_ms)
+    # current_returns = THRESHOLD - 0.01 < THRESHOLD → no promote
+    state.drawdown = DrawdownStats(current_equity=1.0 + THRESHOLD - 0.01, current_balance=1.0 + THRESHOLD - 0.01)
+    state.rank = 1
+    assert ChallengePeriodManager._should_promote(state, THRESHOLD, NOW_MS) is False
+
+
+def test_should_promote_rank_based_good_rank():
+    state = _state(MinerBucket.MAINCOMP)  # rank-based, no time gate
+    # current_returns = 0.5 > THRESHOLD → equity condition met
+    state.drawdown = DrawdownStats(current_equity=1.5, current_balance=1.5)
+    state.rank = RANK_LIMIT  # at the boundary (≤ 25 passes)
+    assert ChallengePeriodManager._should_promote(state, THRESHOLD, NOW_MS) is True
+
+
+def test_should_promote_rank_based_bad_rank():
+    state = _state(MinerBucket.MAINCOMP)
+    state.drawdown = DrawdownStats(current_equity=1.5, current_balance=1.5)
+    state.rank = RANK_LIMIT + 1
+    assert ChallengePeriodManager._should_promote(state, THRESHOLD, NOW_MS) is False
+
+
+def test_should_promote_rank_based_no_rank():
+    state = _state(MinerBucket.MAINCOMP)
+    state.drawdown = DrawdownStats(current_equity=1.5, current_balance=1.5)
+    state.rank = None
+    assert ChallengePeriodManager._should_promote(state, THRESHOLD, NOW_MS) is False
+
+
+def test_should_demote_maincomp_bad_rank():
+    state = _state(MinerBucket.MAINCOMP)
+    state.rank = RANK_LIMIT + 1
+    state.drawdown = DrawdownStats(current_equity=1.5, current_balance=1.5)
+    assert ChallengePeriodManager._should_demote(state, THRESHOLD) is True
+
+
+def test_should_demote_maincomp_good_rank_good_equity():
+    state = _state(MinerBucket.MAINCOMP)
+    state.rank = RANK_LIMIT
+    # current_returns = min(1.5, 1.5) - 1.0 = 0.5 > THRESHOLD → equity condition not triggered
+    state.drawdown = DrawdownStats(current_equity=1.5, current_balance=1.5)
+    assert ChallengePeriodManager._should_demote(state, THRESHOLD) is False
+
+
+def test_should_demote_maincomp_low_equity():
+    state = _state(MinerBucket.MAINCOMP)
+    state.rank = 1  # good rank
+    # current_returns = THRESHOLD - 0.01 < THRESHOLD → demote
+    state.drawdown = DrawdownStats(current_equity=1.0 + THRESHOLD - 0.01)
+    assert ChallengePeriodManager._should_demote(state, THRESHOLD) is True
+
+
+def test_should_demote_maincomp_no_rank():
+    state = _state(MinerBucket.MAINCOMP)
+    state.rank = None
+    assert ChallengePeriodManager._should_demote(state, THRESHOLD) is False
+
+
+def test_should_demote_non_maincomp():
+    for bucket in (MinerBucket.CHALLENGE, MinerBucket.PROBATION):
+        state = _state(bucket)
+        state.rank = RANK_LIMIT + 10
+        assert ChallengePeriodManager._should_demote(state, THRESHOLD) is False
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Section 4 — set_miner_bucket / remove_miners
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_set_miner_bucket_new(manager):
+    result = manager.set_miner_bucket("hk1", MinerBucket.CHALLENGE, NOW_MS)
+    assert result is True
+    assert "hk1" in manager.miner_states
+    assert manager.miner_states["hk1"].current_bucket == MinerBucket.CHALLENGE
+
+
+def test_set_miner_bucket_existing(manager):
+    manager.set_miner_bucket("hk1", MinerBucket.CHALLENGE, NOW_MS)
+    result = manager.set_miner_bucket("hk1", MinerBucket.MAINCOMP, NOW_MS + 1)
+    assert result is False
+    assert manager.miner_states["hk1"].current_bucket == MinerBucket.MAINCOMP
+    assert len(manager.miner_states["hk1"].entries) == 2
+
+
+def test_set_miner_bucket_replace_top(manager):
+    manager.set_miner_bucket("hk1", MinerBucket.CHALLENGE, NOW_MS)
+    manager.set_miner_bucket("hk1", MinerBucket.CHALLENGE, NOW_MS + 5000, replace_top=True)
+    assert len(manager.miner_states["hk1"].entries) == 1
+    assert manager.miner_states["hk1"].current_bucket_start_ms == NOW_MS + 5000
+
+
+def test_remove_miners_single_string(manager):
+    manager.miner_states["hk1"] = _state(MinerBucket.CHALLENGE)
+    result = manager.remove_miners("hk1")
+    assert result is True
+    assert "hk1" not in manager.miner_states
+
+
+def test_remove_miners_list(manager):
+    manager.miner_states["hk1"] = _state(MinerBucket.CHALLENGE)
+    manager.miner_states["hk2"] = _state(MinerBucket.MAINCOMP)
+    result = manager.remove_miners(["hk1", "hk2"])
+    assert result is True
+    assert "hk1" not in manager.miner_states
+    assert "hk2" not in manager.miner_states
+
+
+def test_remove_miners_idempotent(manager):
+    result = manager.remove_miners(["nonexistent"])
+    assert result is False
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Section 5 — refresh (mocked clients)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_refresh_promotes_eligible_challenge_miner(manager):
+    hk = "hk_promote"
+    manager.miner_states[hk] = _state(MinerBucket.CHALLENGE, NOW_MS - MIN_CHALLENGE_MS - DAILY_MS)
+    manager.miner_states[hk].drawdown = DrawdownStats(
+        current_equity=1.5, current_balance=1.5  # current_returns = 0.5 > THRESHOLD
+    )
+    manager.miner_states[hk].rank = 1
+    _setup_refresh_clients(manager, hk)
+
+    with (
+        patch.object(manager, '_refresh_drawdown_cache'),
+        patch.object(manager, '_refresh_rank_cache'),
+        patch.object(manager, '_save_to_disk'),
+        patch.object(manager, '_sync_buckets_to_accounts'),
+    ):
+        manager.refresh(current_time_ms=NOW_MS)
+
+    assert manager.miner_states[hk].current_bucket == MinerBucket.MAINCOMP
+
+
+def test_refresh_demotes_maincomp_miner(manager):
+    hk = "hk_demote"
+    manager.miner_states[hk] = _state(MinerBucket.MAINCOMP, NOW_MS - DAILY_MS)
+    manager.miner_states[hk].drawdown = DrawdownStats(current_equity=1.5, current_balance=1.5)
+    manager.miner_states[hk].rank = RANK_LIMIT + 1
+    _setup_refresh_clients(manager, hk)
+
+    with (
+        patch.object(manager, '_refresh_drawdown_cache'),
+        patch.object(manager, '_refresh_rank_cache'),
+        patch.object(manager, '_save_to_disk'),
+        patch.object(manager, '_sync_buckets_to_accounts'),
+    ):
+        manager.refresh(current_time_ms=NOW_MS)
+
+    assert manager.miner_states[hk].current_bucket == MinerBucket.PROBATION
+
+
+def test_refresh_eliminates_time_expired(manager):
+    hk = "hk_expired"
+    manager.miner_states[hk] = _state(MinerBucket.CHALLENGE, NOW_MS - MAX_CHALLENGE_MS - DAILY_MS)
+    _setup_refresh_clients(manager, hk)
+
+    with (
+        patch.object(manager, '_refresh_drawdown_cache'),
+        patch.object(manager, '_refresh_rank_cache'),
+        patch.object(manager, '_save_to_disk'),
+        patch.object(manager, '_sync_buckets_to_accounts'),
+    ):
+        manager.refresh(current_time_ms=NOW_MS)
+
+    assert hk not in manager.miner_states
+
+
+def test_refresh_eliminates_intraday_drawdown(manager):
+    hk = "hk_drawdown"
+    manager.miner_states[hk] = _state(MinerBucket.CHALLENGE, NOW_MS - DAILY_MS)
+    manager.miner_states[hk].drawdown = DrawdownStats(
+        intraday_drawdown_pct=INTRADAY_THRESHOLD_PCT + 1.0
+    )
+    _setup_refresh_clients(manager, hk)
+
+    with (
+        patch.object(manager, '_refresh_drawdown_cache'),
+        patch.object(manager, '_refresh_rank_cache'),
+        patch.object(manager, '_save_to_disk'),
+        patch.object(manager, '_sync_buckets_to_accounts'),
+    ):
+        manager.refresh(current_time_ms=NOW_MS)
+
+    assert hk not in manager.miner_states
+
+
+def test_refresh_no_changes_skips_save(manager):
+    # CHALLENGE miner only 1 day old — too early for promotion, no drawdown issues
+    hk = "hk_stable"
+    manager.miner_states[hk] = _state(MinerBucket.CHALLENGE, NOW_MS - DAILY_MS)
+    manager.miner_states[hk].drawdown = DrawdownStats()
+    manager.miner_states[hk].rank = 1
+    _setup_refresh_clients(manager, hk)
+
+    with (
+        patch.object(manager, '_refresh_drawdown_cache'),
+        patch.object(manager, '_refresh_rank_cache'),
+        patch.object(manager, '_save_to_disk') as mock_save,
+        patch.object(manager, '_sync_buckets_to_accounts') as mock_sync,
+    ):
+        manager.refresh(current_time_ms=NOW_MS)
+
+    mock_save.assert_not_called()
+    mock_sync.assert_not_called()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Section 6 — sync_elimination_miners / _prune_deregistered_metagraph
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_sync_elimination_miners_removes(manager):
+    manager.miner_states["hk1"] = _state(MinerBucket.CHALLENGE)
+    manager.miner_states["hk2"] = _state(MinerBucket.MAINCOMP)
+    result = manager.sync_elimination_miners(["hk1"])
+    assert result is True
+    assert "hk1" not in manager.miner_states
+    assert "hk2" in manager.miner_states
+
+
+def test_sync_elimination_miners_empty(manager):
+    manager.miner_states["hk1"] = _state(MinerBucket.CHALLENGE)
+    result = manager.sync_elimination_miners([])
+    assert result is False
+    assert "hk1" in manager.miner_states
+
+
+def test_prune_skips_entity_bucket(manager):
+    hk = "entity_hk"
+    manager.miner_states[hk] = _state(MinerBucket.ENTITY)
+    manager._position_client.get_all_hotkeys.return_value = []
+    state_changed = manager._prune_deregistered_metagraph()
+    assert hk in manager.miner_states
+    assert state_changed is False
+
+
+def test_prune_skips_subaccount_funded(manager):
+    hk = "funded_hk"
+    manager.miner_states[hk] = _state(MinerBucket.SUBACCOUNT_FUNDED)
+    manager._position_client.get_all_hotkeys.return_value = []
+    state_changed = manager._prune_deregistered_metagraph()
+    assert hk in manager.miner_states
+    assert state_changed is False
+
+
+def test_prune_removes_missing_regular(manager):
+    """CHALLENGE miners absent from position hotkeys should be removed."""
+    hk = "regular_hk"
+    manager.miner_states[hk] = _state(MinerBucket.CHALLENGE)
+    manager._position_client.get_all_hotkeys.return_value = []
+    manager._prune_deregistered_metagraph()
+    assert hk not in manager.miner_states
