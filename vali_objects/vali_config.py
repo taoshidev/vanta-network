@@ -54,6 +54,11 @@ class TradePairSource(str, Enum):
     HYPERLIQUID = "hyperliquid"
 
 
+class InstrumentType(str, Enum):
+    SPOT = "spot"
+    PERP = "perp"
+
+
 class TradePairSubcategory(str, Enum):
     """
     All concrete sub‑category enums must set `ASSET_CLASS`
@@ -490,11 +495,12 @@ class ValiConfig:
     # Challenge Period Configuration
     SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD_DEFAULT = 0.1  # Default fallback returns threshold
     SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD = {
-        TradePairCategory.CRYPTO: 0.1,   # 10% returns required to pass crypto evaluation
-        TradePairCategory.FOREX: 0.08,   # 8% returns required to pass forex evaluation
-        TradePairCategory.INDICES: 0.08, # 8% returns required to pass indices evaluation
-        TradePairCategory.EQUITIES: 0.1, # 10% returns required to pass equities evaluation
-        TradePairCategory.HL_ALL: 0.1,   # 10% returns required to pass hl all markets evaluation
+        TradePairCategory.CRYPTO: 0.1,      # 10% returns required to pass crypto evaluation
+        TradePairCategory.FOREX: 0.08,      # 8% returns required to pass forex evaluation
+        TradePairCategory.INDICES: 0.08,    # 8% returns required to pass indices evaluation
+        TradePairCategory.EQUITIES: 0.1,    # 10% returns required to pass equities evaluation
+        TradePairCategory.HL_ALL: 0.1,      # 10% returns required to pass hl all markets evaluation
+        TradePairCategory.COMMODITIES: 0.1, # 10% returns required to pass commodities evaluation
     }
     CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD = 0.05    # Rule 1: 5% intraday drop from day-open equity eliminates
     CHALLENGE_EOD_DRAWDOWN_THRESHOLD = 0.05  # Rule 2: 5% drop from highest-ever EOD equity eliminates
@@ -540,6 +546,7 @@ class ValiConfig:
         TradePairCategory.FOREX: 20,
         TradePairCategory.INDICES: 10,
         TradePairCategory.EQUITIES: 2,
+        TradePairCategory.COMMODITIES: 5,   # mirrors CRYPTO — preserves current HL commodities behavior
     }
     TRANSACTION_FEE_RATE = {
         TradePairCategory.CRYPTO: 0.0005,    # 0.5%
@@ -571,11 +578,12 @@ class ValiConfig:
     # Per-tier portfolio leverage caps for entity subaccounts.
     # XAUUSD/XAGUSD share the TradePairCategory.FOREX portfolio cap.
     # Equity portfolio is intentionally capped at 2x from Tier 3 onward (Reg T overnight limit).
+    # COMMODITIES values mirror the CRYPTO row — preserves current HL commodities behavior.
     TIER_PORTFOLIO_LEVERAGE = {
-        1: {TradePairCategory.HL_ALL: 2.0, TradePairCategory.CRYPTO: 2.0,  TradePairCategory.FOREX: 5.0,  TradePairCategory.EQUITIES: 1.0, TradePairCategory.INDICES: 5.0},
-        2: {TradePairCategory.HL_ALL: 2.0, TradePairCategory.CRYPTO: 2.0,  TradePairCategory.FOREX: 10.0, TradePairCategory.EQUITIES: 1.5, TradePairCategory.INDICES: 10.0},
-        3: {TradePairCategory.HL_ALL: 3.0, TradePairCategory.CRYPTO: 3.0,  TradePairCategory.FOREX: 15.0, TradePairCategory.EQUITIES: 2.0, TradePairCategory.INDICES: 15.0},
-        4: {TradePairCategory.HL_ALL: 4.0, TradePairCategory.CRYPTO: 4.0,  TradePairCategory.FOREX: 20.0, TradePairCategory.EQUITIES: 2.0, TradePairCategory.INDICES: 20.0},
+        1: {TradePairCategory.HL_ALL: 2.0, TradePairCategory.CRYPTO: 2.0,  TradePairCategory.FOREX: 5.0,  TradePairCategory.EQUITIES: 1.0, TradePairCategory.INDICES: 5.0,  TradePairCategory.COMMODITIES: 2.0},
+        2: {TradePairCategory.HL_ALL: 2.0, TradePairCategory.CRYPTO: 2.0,  TradePairCategory.FOREX: 10.0, TradePairCategory.EQUITIES: 1.5, TradePairCategory.INDICES: 10.0, TradePairCategory.COMMODITIES: 2.0},
+        3: {TradePairCategory.HL_ALL: 3.0, TradePairCategory.CRYPTO: 3.0,  TradePairCategory.FOREX: 15.0, TradePairCategory.EQUITIES: 2.0, TradePairCategory.INDICES: 15.0, TradePairCategory.COMMODITIES: 3.0},
+        4: {TradePairCategory.HL_ALL: 4.0, TradePairCategory.CRYPTO: 4.0,  TradePairCategory.FOREX: 20.0, TradePairCategory.EQUITIES: 2.0, TradePairCategory.INDICES: 20.0, TradePairCategory.COMMODITIES: 4.0},
     }
 
     # Collateral limits
@@ -735,250 +743,250 @@ class TradePair(Enum):
     # Vanta Native Trade Pairs
     # crypto
     BTCUSD = ["BTCUSD", "BTC/USD", 0.001, ValiConfig.CRYPTO_MIN_LEVERAGE, ValiConfig.CRYPTO_MAX_LEVERAGE,
-              TradePairCategory.CRYPTO, CryptoSubcategory.MAJORS]
+              TradePairCategory.CRYPTO, CryptoSubcategory.MAJORS, InstrumentType.SPOT]
     ETHUSD = ["ETHUSD", "ETH/USD", 0.001, ValiConfig.CRYPTO_MIN_LEVERAGE, ValiConfig.CRYPTO_MAX_LEVERAGE,
-              TradePairCategory.CRYPTO, CryptoSubcategory.MAJORS]
+              TradePairCategory.CRYPTO, CryptoSubcategory.MAJORS, InstrumentType.SPOT]
     SOLUSD = ["SOLUSD", "SOL/USD", 0.001, ValiConfig.CRYPTO_MIN_LEVERAGE, ValiConfig.CRYPTO_MAX_LEVERAGE,
-              TradePairCategory.CRYPTO, CryptoSubcategory.ALTS]
+              TradePairCategory.CRYPTO, CryptoSubcategory.ALTS, InstrumentType.SPOT]
     XRPUSD = ["XRPUSD", "XRP/USD", 0.001, ValiConfig.CRYPTO_MIN_LEVERAGE, ValiConfig.CRYPTO_MAX_LEVERAGE,
-                TradePairCategory.CRYPTO, CryptoSubcategory.ALTS]
+                TradePairCategory.CRYPTO, CryptoSubcategory.ALTS, InstrumentType.SPOT]
     DOGEUSD = ["DOGEUSD", "DOGE/USD", 0.001, ValiConfig.CRYPTO_MIN_LEVERAGE, ValiConfig.CRYPTO_MAX_LEVERAGE,
-                TradePairCategory.CRYPTO, CryptoSubcategory.ALTS]
+                TradePairCategory.CRYPTO, CryptoSubcategory.ALTS, InstrumentType.SPOT]
     ADAUSD = ["ADAUSD", "ADA/USD", 0.001, ValiConfig.CRYPTO_MIN_LEVERAGE, ValiConfig.CRYPTO_MAX_LEVERAGE,
-               TradePairCategory.CRYPTO, CryptoSubcategory.ALTS]
+               TradePairCategory.CRYPTO, CryptoSubcategory.ALTS, InstrumentType.SPOT]
     TAOUSD = ["TAOUSD", "TAO/USD", 0.001, ValiConfig.CRYPTO_MIN_LEVERAGE, ValiConfig.CRYPTO_MAX_LEVERAGE,
-              TradePairCategory.CRYPTO, CryptoSubcategory.ALTS]
+              TradePairCategory.CRYPTO, CryptoSubcategory.ALTS, InstrumentType.SPOT]
     HYPEUSD = ["HYPEUSD", "HYPE/USD", 0.001, ValiConfig.CRYPTO_MIN_LEVERAGE, ValiConfig.CRYPTO_MAX_LEVERAGE,
-               TradePairCategory.CRYPTO, CryptoSubcategory.ALTS]
+               TradePairCategory.CRYPTO, CryptoSubcategory.ALTS, InstrumentType.SPOT]
     ZECUSD = ["ZECUSD", "ZEC/USD", 0.001, ValiConfig.CRYPTO_MIN_LEVERAGE, ValiConfig.CRYPTO_MAX_LEVERAGE,
-              TradePairCategory.CRYPTO, CryptoSubcategory.ALTS]
+              TradePairCategory.CRYPTO, CryptoSubcategory.ALTS, InstrumentType.SPOT]
     BCHUSD = ["BCHUSD", "BCH/USD", 0.001, ValiConfig.CRYPTO_MIN_LEVERAGE, ValiConfig.CRYPTO_MAX_LEVERAGE,
-              TradePairCategory.CRYPTO, CryptoSubcategory.ALTS]
+              TradePairCategory.CRYPTO, CryptoSubcategory.ALTS, InstrumentType.SPOT]
     LINKUSD = ["LINKUSD", "LINK/USD", 0.001, ValiConfig.CRYPTO_MIN_LEVERAGE, ValiConfig.CRYPTO_MAX_LEVERAGE,
-               TradePairCategory.CRYPTO, CryptoSubcategory.ALTS]
+               TradePairCategory.CRYPTO, CryptoSubcategory.ALTS, InstrumentType.SPOT]
     XMRUSD = ["XMRUSD", "XMR/USD", 0.001, ValiConfig.CRYPTO_MIN_LEVERAGE, ValiConfig.CRYPTO_MAX_LEVERAGE,
-              TradePairCategory.CRYPTO, CryptoSubcategory.ALTS]
+              TradePairCategory.CRYPTO, CryptoSubcategory.ALTS, InstrumentType.SPOT]
     LTCUSD = ["LTCUSD", "LTC/USD", 0.001, ValiConfig.CRYPTO_MIN_LEVERAGE, ValiConfig.CRYPTO_MAX_LEVERAGE,
-              TradePairCategory.CRYPTO, CryptoSubcategory.ALTS]
+              TradePairCategory.CRYPTO, CryptoSubcategory.ALTS, InstrumentType.SPOT]
 
     # forex
     AUDCAD = ["AUDCAD", "AUD/CAD", 0.00007, ValiConfig.FOREX_MIN_LEVERAGE, ValiConfig.FOREX_MAX_LEVERAGE,
-              TradePairCategory.FOREX, ForexSubcategory.G5]
+              TradePairCategory.FOREX, ForexSubcategory.G5, InstrumentType.SPOT]
     AUDCHF = ["AUDCHF", "AUD/CHF", 0.00007, ValiConfig.FOREX_MIN_LEVERAGE, ValiConfig.FOREX_MAX_LEVERAGE,
-              TradePairCategory.FOREX, ForexSubcategory.G5]
+              TradePairCategory.FOREX, ForexSubcategory.G5, InstrumentType.SPOT]
     AUDUSD = ["AUDUSD", "AUD/USD", 0.00007, ValiConfig.FOREX_MIN_LEVERAGE, ValiConfig.FOREX_MAX_LEVERAGE,
-              TradePairCategory.FOREX, ForexSubcategory.G1]
+              TradePairCategory.FOREX, ForexSubcategory.G1, InstrumentType.SPOT]
     AUDJPY = ["AUDJPY", "AUD/JPY", 0.00007, ValiConfig.FOREX_MIN_LEVERAGE, ValiConfig.FOREX_MAX_LEVERAGE,
-              TradePairCategory.FOREX, ForexSubcategory.G2]
+              TradePairCategory.FOREX, ForexSubcategory.G2, InstrumentType.SPOT]
     AUDNZD = ["AUDNZD", "AUD/NZD", 0.00007, ValiConfig.FOREX_MIN_LEVERAGE, ValiConfig.FOREX_MAX_LEVERAGE,
-              TradePairCategory.FOREX, ForexSubcategory.G5]
+              TradePairCategory.FOREX, ForexSubcategory.G5, InstrumentType.SPOT]
     CADCHF = ["CADCHF", "CAD/CHF", 0.00007, ValiConfig.FOREX_MIN_LEVERAGE, ValiConfig.FOREX_MAX_LEVERAGE,
-              TradePairCategory.FOREX, ForexSubcategory.G5]
+              TradePairCategory.FOREX, ForexSubcategory.G5, InstrumentType.SPOT]
     CADJPY = ["CADJPY", "CAD/JPY", 0.00007, ValiConfig.FOREX_MIN_LEVERAGE, ValiConfig.FOREX_MAX_LEVERAGE,
-              TradePairCategory.FOREX, ForexSubcategory.G2]
+              TradePairCategory.FOREX, ForexSubcategory.G2, InstrumentType.SPOT]
     CHFJPY = ["CHFJPY", "CHF/JPY", 0.00007, ValiConfig.FOREX_MIN_LEVERAGE, ValiConfig.FOREX_MAX_LEVERAGE,
-              TradePairCategory.FOREX, ForexSubcategory.G2]
+              TradePairCategory.FOREX, ForexSubcategory.G2, InstrumentType.SPOT]
     EURAUD = ["EURAUD", "EUR/AUD", 0.00007, ValiConfig.FOREX_MIN_LEVERAGE, ValiConfig.FOREX_MAX_LEVERAGE,
-              TradePairCategory.FOREX, ForexSubcategory.G3]
+              TradePairCategory.FOREX, ForexSubcategory.G3, InstrumentType.SPOT]
     EURCAD = ["EURCAD", "EUR/CAD", 0.00007, ValiConfig.FOREX_MIN_LEVERAGE, ValiConfig.FOREX_MAX_LEVERAGE,
-              TradePairCategory.FOREX, ForexSubcategory.G3]
+              TradePairCategory.FOREX, ForexSubcategory.G3, InstrumentType.SPOT]
     EURUSD = ["EURUSD", "EUR/USD", 0.00007, ValiConfig.FOREX_MIN_LEVERAGE, ValiConfig.FOREX_MAX_LEVERAGE,
-              TradePairCategory.FOREX, ForexSubcategory.G1]
+              TradePairCategory.FOREX, ForexSubcategory.G1, InstrumentType.SPOT]
     EURCHF = ["EURCHF", "EUR/CHF", 0.00007, ValiConfig.FOREX_MIN_LEVERAGE, ValiConfig.FOREX_MAX_LEVERAGE,
-              TradePairCategory.FOREX, ForexSubcategory.G3]
+              TradePairCategory.FOREX, ForexSubcategory.G3, InstrumentType.SPOT]
     EURGBP = ["EURGBP", "EUR/GBP", 0.00007, ValiConfig.FOREX_MIN_LEVERAGE, ValiConfig.FOREX_MAX_LEVERAGE,
-              TradePairCategory.FOREX, ForexSubcategory.G3]
+              TradePairCategory.FOREX, ForexSubcategory.G3, InstrumentType.SPOT]
     EURJPY = ["EURJPY", "EUR/JPY", 0.00007, ValiConfig.FOREX_MIN_LEVERAGE, ValiConfig.FOREX_MAX_LEVERAGE,
-              TradePairCategory.FOREX, ForexSubcategory.G2]
+              TradePairCategory.FOREX, ForexSubcategory.G2, InstrumentType.SPOT]
     EURNZD = ["EURNZD", "EUR/NZD", 0.00007, ValiConfig.FOREX_MIN_LEVERAGE, ValiConfig.FOREX_MAX_LEVERAGE,
-              TradePairCategory.FOREX, ForexSubcategory.G3]
+              TradePairCategory.FOREX, ForexSubcategory.G3, InstrumentType.SPOT]
     NZDCAD = ["NZDCAD", "NZD/CAD", 0.00007, ValiConfig.FOREX_MIN_LEVERAGE, ValiConfig.FOREX_MAX_LEVERAGE,
-              TradePairCategory.FOREX, ForexSubcategory.G5]
+              TradePairCategory.FOREX, ForexSubcategory.G5, InstrumentType.SPOT]
     NZDCHF = ["NZDCHF", "NZD/CHF", 0.00007, ValiConfig.FOREX_MIN_LEVERAGE, ValiConfig.FOREX_MAX_LEVERAGE,
-              TradePairCategory.FOREX, ForexSubcategory.G5]
+              TradePairCategory.FOREX, ForexSubcategory.G5, InstrumentType.SPOT]
     NZDJPY = ["NZDJPY", "NZD/JPY", 0.00007, ValiConfig.FOREX_MIN_LEVERAGE, ValiConfig.FOREX_MAX_LEVERAGE,
-              TradePairCategory.FOREX, ForexSubcategory.G2]
+              TradePairCategory.FOREX, ForexSubcategory.G2, InstrumentType.SPOT]
     NZDUSD = ["NZDUSD", "NZD/USD", 0.00007, ValiConfig.FOREX_MIN_LEVERAGE, ValiConfig.FOREX_MAX_LEVERAGE,
-              TradePairCategory.FOREX, ForexSubcategory.G1]
+              TradePairCategory.FOREX, ForexSubcategory.G1, InstrumentType.SPOT]
     GBPAUD = ["GBPAUD", "GBP/AUD", 0.00007, ValiConfig.FOREX_MIN_LEVERAGE, ValiConfig.FOREX_MAX_LEVERAGE,
-                TradePairCategory.FOREX, ForexSubcategory.G4]
+                TradePairCategory.FOREX, ForexSubcategory.G4, InstrumentType.SPOT]
     GBPCAD = ["GBPCAD", "GBP/CAD", 0.00007, ValiConfig.FOREX_MIN_LEVERAGE, ValiConfig.FOREX_MAX_LEVERAGE,
-                TradePairCategory.FOREX, ForexSubcategory.G4]
+                TradePairCategory.FOREX, ForexSubcategory.G4, InstrumentType.SPOT]
     GBPCHF = ["GBPCHF", "GBP/CHF", 0.00007, ValiConfig.FOREX_MIN_LEVERAGE, ValiConfig.FOREX_MAX_LEVERAGE,
-              TradePairCategory.FOREX, ForexSubcategory.G4]
+              TradePairCategory.FOREX, ForexSubcategory.G4, InstrumentType.SPOT]
     GBPJPY = ["GBPJPY", "GBP/JPY", 0.00007, ValiConfig.FOREX_MIN_LEVERAGE, ValiConfig.FOREX_MAX_LEVERAGE,
-              TradePairCategory.FOREX, ForexSubcategory.G2]
+              TradePairCategory.FOREX, ForexSubcategory.G2, InstrumentType.SPOT]
     GBPNZD = ["GBPNZD", "GBP/NZD", 0.00007, ValiConfig.FOREX_MIN_LEVERAGE, ValiConfig.FOREX_MAX_LEVERAGE,
-              TradePairCategory.FOREX, ForexSubcategory.G4]
+              TradePairCategory.FOREX, ForexSubcategory.G4, InstrumentType.SPOT]
     GBPUSD = ["GBPUSD", "GBP/USD", 0.00007, ValiConfig.FOREX_MIN_LEVERAGE, ValiConfig.FOREX_MAX_LEVERAGE,
-              TradePairCategory.FOREX, ForexSubcategory.G1]
+              TradePairCategory.FOREX, ForexSubcategory.G1, InstrumentType.SPOT]
     USDCAD = ["USDCAD", "USD/CAD", 0.00007, ValiConfig.FOREX_MIN_LEVERAGE, ValiConfig.FOREX_MAX_LEVERAGE,
-              TradePairCategory.FOREX, ForexSubcategory.G1]
+              TradePairCategory.FOREX, ForexSubcategory.G1, InstrumentType.SPOT]
     USDCHF = ["USDCHF", "USD/CHF", 0.00007, ValiConfig.FOREX_MIN_LEVERAGE, ValiConfig.FOREX_MAX_LEVERAGE,
-              TradePairCategory.FOREX, ForexSubcategory.G1]
+              TradePairCategory.FOREX, ForexSubcategory.G1, InstrumentType.SPOT]
     USDJPY = ["USDJPY", "USD/JPY", 0.00007, ValiConfig.FOREX_MIN_LEVERAGE, ValiConfig.FOREX_MAX_LEVERAGE,
-              TradePairCategory.FOREX, ForexSubcategory.G2]
+              TradePairCategory.FOREX, ForexSubcategory.G2, InstrumentType.SPOT]
     USDMXN = ["USDMXN", "USD/MXN", 0.00007, ValiConfig.FOREX_MIN_LEVERAGE, ValiConfig.FOREX_MAX_LEVERAGE,
-              TradePairCategory.FOREX, ForexSubcategory.G5]
+              TradePairCategory.FOREX, ForexSubcategory.G5, InstrumentType.SPOT]
 
 
     # "Commodities" (Bundle with Forex for now)
-    XAUUSD = ["XAUUSD", "XAU/USD", 0.00007, ValiConfig.COMMODITIES_MIN_LEVERAGE, ValiConfig.COMMODITIES_MAX_LEVERAGE, TradePairCategory.FOREX]
-    XAGUSD = ["XAGUSD", "XAG/USD", 0.00007, ValiConfig.COMMODITIES_MIN_LEVERAGE, ValiConfig.COMMODITIES_MAX_LEVERAGE, TradePairCategory.FOREX]
+    XAUUSD = ["XAUUSD", "XAU/USD", 0.00007, ValiConfig.COMMODITIES_MIN_LEVERAGE, ValiConfig.COMMODITIES_MAX_LEVERAGE, TradePairCategory.FOREX, InstrumentType.SPOT]
+    XAGUSD = ["XAGUSD", "XAG/USD", 0.00007, ValiConfig.COMMODITIES_MIN_LEVERAGE, ValiConfig.COMMODITIES_MAX_LEVERAGE, TradePairCategory.FOREX, InstrumentType.SPOT]
 
     # Equities - Stocks
     # Technology (10)
-    NVDA = ["NVDA", "NVDA", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
-    MSFT = ["MSFT", "MSFT", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
-    AAPL = ["AAPL", "AAPL", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
-    AVGO = ["AVGO", "AVGO", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
-    TSM = ["TSM", "TSM", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
-    ORCL = ["ORCL", "ORCL", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
-    AMD = ["AMD", "AMD", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
-    MU = ["MU", "MU", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
-    CRM = ["CRM", "CRM", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
-    UBER = ["UBER", "UBER", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
+    NVDA = ["NVDA", "NVDA", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
+    MSFT = ["MSFT", "MSFT", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
+    AAPL = ["AAPL", "AAPL", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
+    AVGO = ["AVGO", "AVGO", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
+    TSM = ["TSM", "TSM", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
+    ORCL = ["ORCL", "ORCL", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
+    AMD = ["AMD", "AMD", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
+    MU = ["MU", "MU", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
+    CRM = ["CRM", "CRM", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
+    UBER = ["UBER", "UBER", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
     # Financial Services (5)
-    BRK_B = ["BRK_B", "BRK.B", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
-    JPM = ["JPM", "JPM", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
-    V = ["V", "V", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
-    MA = ["MA", "MA", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
-    BAC = ["BAC", "BAC", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
+    BRK_B = ["BRK_B", "BRK.B", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
+    JPM = ["JPM", "JPM", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
+    V = ["V", "V", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
+    MA = ["MA", "MA", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
+    BAC = ["BAC", "BAC", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
     # Consumer Discretionary (5)
-    AMZN = ["AMZN", "AMZN", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
-    TSLA = ["TSLA", "TSLA", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
-    HD = ["HD", "HD", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
-    BABA = ["BABA", "BABA", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
-    SBUX = ["SBUX", "SBUX", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
+    AMZN = ["AMZN", "AMZN", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
+    TSLA = ["TSLA", "TSLA", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
+    HD = ["HD", "HD", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
+    BABA = ["BABA", "BABA", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
+    SBUX = ["SBUX", "SBUX", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
     # Communication Services (5)
-    GOOGL = ["GOOGL", "GOOGL", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
-    META = ["META", "META", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
-    NFLX = ["NFLX", "NFLX", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
-    APP = ["APP", "APP", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
-    T = ["T", "T", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
+    GOOGL = ["GOOGL", "GOOGL", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
+    META = ["META", "META", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
+    NFLX = ["NFLX", "NFLX", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
+    APP = ["APP", "APP", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
+    T = ["T", "T", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
 
     # Equities - Sector ETFs (22)
-    XLK = ["XLK", "XLK", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
-    VGT = ["VGT", "VGT", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
-    XLF = ["XLF", "XLF", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
-    VFH = ["VFH", "VFH", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
-    XLY = ["XLY", "XLY", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
-    VCR = ["VCR", "VCR", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
-    XLC = ["XLC", "XLC", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
-    VOX = ["VOX", "VOX", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
-    XLV = ["XLV", "XLV", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
-    VHT = ["VHT", "VHT", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
-    XLI = ["XLI", "XLI", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
-    VIS = ["VIS", "VIS", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
-    XLP = ["XLP", "XLP", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
-    VDC = ["VDC", "VDC", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
-    XLE = ["XLE", "XLE", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
-    VDE = ["VDE", "VDE", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
-    XLB = ["XLB", "XLB", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
-    VAW = ["VAW", "VAW", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
-    XLU = ["XLU", "XLU", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
-    VPU = ["VPU", "VPU", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
-    XLRE = ["XLRE", "XLRE", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
-    VNQ = ["VNQ", "VNQ", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
+    XLK = ["XLK", "XLK", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
+    VGT = ["VGT", "VGT", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
+    XLF = ["XLF", "XLF", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
+    VFH = ["VFH", "VFH", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
+    XLY = ["XLY", "XLY", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
+    VCR = ["VCR", "VCR", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
+    XLC = ["XLC", "XLC", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
+    VOX = ["VOX", "VOX", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
+    XLV = ["XLV", "XLV", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
+    VHT = ["VHT", "VHT", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
+    XLI = ["XLI", "XLI", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
+    VIS = ["VIS", "VIS", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
+    XLP = ["XLP", "XLP", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
+    VDC = ["VDC", "VDC", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
+    XLE = ["XLE", "XLE", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
+    VDE = ["VDE", "VDE", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
+    XLB = ["XLB", "XLB", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
+    VAW = ["VAW", "VAW", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
+    XLU = ["XLU", "XLU", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
+    VPU = ["VPU", "VPU", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
+    XLRE = ["XLRE", "XLRE", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
+    VNQ = ["VNQ", "VNQ", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
 
     # Index ETFs (broad market & international)
-    SPY  = ["SPY",  "SPY",  0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
-    QQQ  = ["QQQ",  "QQQ",  0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
-    DIA  = ["DIA",  "DIA",  0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
-    IWM  = ["IWM",  "IWM",  0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
-    EWU  = ["EWU",  "EWU",  0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
-    EWG  = ["EWG",  "EWG",  0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
-    EWJ  = ["EWJ",  "EWJ",  0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
-    EWH  = ["EWH",  "EWH",  0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
-    EWA  = ["EWA",  "EWA",  0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
-    EWQ  = ["EWQ",  "EWQ",  0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
-    EFA  = ["EFA",  "EFA",  0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
-    IEMG = ["IEMG", "IEMG", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
-    INDA = ["INDA", "INDA", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
-    VT   = ["VT",   "VT",   0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES]
+    SPY  = ["SPY",  "SPY",  0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
+    QQQ  = ["QQQ",  "QQQ",  0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
+    DIA  = ["DIA",  "DIA",  0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
+    IWM  = ["IWM",  "IWM",  0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
+    EWU  = ["EWU",  "EWU",  0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
+    EWG  = ["EWG",  "EWG",  0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
+    EWJ  = ["EWJ",  "EWJ",  0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
+    EWH  = ["EWH",  "EWH",  0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
+    EWA  = ["EWA",  "EWA",  0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
+    EWQ  = ["EWQ",  "EWQ",  0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
+    EFA  = ["EFA",  "EFA",  0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
+    IEMG = ["IEMG", "IEMG", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
+    INDA = ["INDA", "INDA", 0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
+    VT   = ["VT",   "VT",   0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT]
 
     # indices (no longer allowed for trading as we moved to equities tickers instead)
     SPX = ["SPX", "SPX", 0.00009, ValiConfig.INDICES_MIN_LEVERAGE, ValiConfig.INDICES_MAX_LEVERAGE,
-           TradePairCategory.INDICES]
+           TradePairCategory.INDICES, InstrumentType.SPOT]
     DJI = ["DJI", "DJI", 0.00009, ValiConfig.INDICES_MIN_LEVERAGE, ValiConfig.INDICES_MAX_LEVERAGE,
-           TradePairCategory.INDICES]
+           TradePairCategory.INDICES, InstrumentType.SPOT]
     NDX = ["NDX", "NDX", 0.00009, ValiConfig.INDICES_MIN_LEVERAGE, ValiConfig.INDICES_MAX_LEVERAGE,
-           TradePairCategory.INDICES]
+           TradePairCategory.INDICES, InstrumentType.SPOT]
     VIX = ["VIX", "VIX", 0.00009, ValiConfig.INDICES_MIN_LEVERAGE, ValiConfig.INDICES_MAX_LEVERAGE,
-           TradePairCategory.INDICES]
+           TradePairCategory.INDICES, InstrumentType.SPOT]
     FTSE = ["FTSE", "FTSE", 0.00009, ValiConfig.INDICES_MIN_LEVERAGE, ValiConfig.INDICES_MAX_LEVERAGE,
-            TradePairCategory.INDICES]
+            TradePairCategory.INDICES, InstrumentType.SPOT]
     GDAXI = ["GDAXI", "GDAXI", 0.00009, ValiConfig.INDICES_MIN_LEVERAGE, ValiConfig.INDICES_MAX_LEVERAGE,
-             TradePairCategory.INDICES]
+             TradePairCategory.INDICES, InstrumentType.SPOT]
 
     # Hyperliquid Trade Pairs (USDC-quoted, src=HYPERLIQUID)
     # Crypto perp futures
-    BTCUSDC   = ["BTCUSDC",   "BTC/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
-    ETHUSDC   = ["ETHUSDC",   "ETH/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
-    SOLUSDC   = ["SOLUSDC",   "SOL/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
-    BNBUSDC   = ["BNBUSDC",   "BNB/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
-    XRPUSDC   = ["XRPUSDC",   "XRP/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
-    DOGEUSDC  = ["DOGEUSDC",  "DOGE/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
-    ADAUSDC   = ["ADAUSDC",   "ADA/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
-    AVAXUSDC  = ["AVAXUSDC",  "AVAX/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
-    LINKUSDC  = ["LINKUSDC",  "LINK/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
-    DOTUSDC   = ["DOTUSDC",   "DOT/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
-    TONUSDC   = ["TONUSDC",   "TON/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
-    TRXUSDC   = ["TRXUSDC",   "TRX/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
-    LTCUSDC   = ["LTCUSDC",   "LTC/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
-    TAOUSDC   = ["TAOUSDC",   "TAO/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
-    SUIUSDC   = ["SUIUSDC",   "SUI/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
-    ARBUSDC   = ["ARBUSDC",   "ARB/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
-    NEARUSDC  = ["NEARUSDC",  "NEAR/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
-    ALGOUSDC  = ["ALGOUSDC",  "ALGO/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
-    ASTERUSDC = ["ASTERUSDC", "ASTER/USDC", 0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
-    UNIUSDC   = ["UNIUSDC",   "UNI/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
-    AAVEUSDC  = ["AAVEUSDC",  "AAVE/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
-    CRVUSDC   = ["CRVUSDC",   "CRV/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
-    HYPEUSDC  = ["HYPEUSDC",  "HYPE/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
-    XMRUSDC   = ["XMRUSDC",   "XMR/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
-    ZECUSDC   = ["ZECUSDC",   "ZEC/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
-    PAXGUSDC  = ["PAXGUSDC",  "PAXG/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
-    ENAUSDC   = ["ENAUSDC",   "ENA/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
-    ZROUSDC   = ["ZROUSDC",   "ZRO/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
-    WLDUSDC   = ["WLDUSDC",   "WLD/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
-    PUMPUSDC  = ["PUMPUSDC",  "PUMP/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
-    KPEPEUSDC = ["kPEPEUSDC", "kPEPE/USDC", 0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID]
+    BTCUSDC   = ["BTCUSDC",   "BTC/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID, InstrumentType.PERP]
+    ETHUSDC   = ["ETHUSDC",   "ETH/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID, InstrumentType.PERP]
+    SOLUSDC   = ["SOLUSDC",   "SOL/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID, InstrumentType.PERP]
+    BNBUSDC   = ["BNBUSDC",   "BNB/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID, InstrumentType.PERP]
+    XRPUSDC   = ["XRPUSDC",   "XRP/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID, InstrumentType.PERP]
+    DOGEUSDC  = ["DOGEUSDC",  "DOGE/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID, InstrumentType.PERP]
+    ADAUSDC   = ["ADAUSDC",   "ADA/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID, InstrumentType.PERP]
+    AVAXUSDC  = ["AVAXUSDC",  "AVAX/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID, InstrumentType.PERP]
+    LINKUSDC  = ["LINKUSDC",  "LINK/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID, InstrumentType.PERP]
+    DOTUSDC   = ["DOTUSDC",   "DOT/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID, InstrumentType.PERP]
+    TONUSDC   = ["TONUSDC",   "TON/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID, InstrumentType.PERP]
+    TRXUSDC   = ["TRXUSDC",   "TRX/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID, InstrumentType.PERP]
+    LTCUSDC   = ["LTCUSDC",   "LTC/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID, InstrumentType.PERP]
+    TAOUSDC   = ["TAOUSDC",   "TAO/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID, InstrumentType.PERP]
+    SUIUSDC   = ["SUIUSDC",   "SUI/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID, InstrumentType.PERP]
+    ARBUSDC   = ["ARBUSDC",   "ARB/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID, InstrumentType.PERP]
+    NEARUSDC  = ["NEARUSDC",  "NEAR/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID, InstrumentType.PERP]
+    ALGOUSDC  = ["ALGOUSDC",  "ALGO/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID, InstrumentType.PERP]
+    ASTERUSDC = ["ASTERUSDC", "ASTER/USDC", 0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID, InstrumentType.PERP]
+    UNIUSDC   = ["UNIUSDC",   "UNI/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID, InstrumentType.PERP]
+    AAVEUSDC  = ["AAVEUSDC",  "AAVE/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID, InstrumentType.PERP]
+    CRVUSDC   = ["CRVUSDC",   "CRV/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID, InstrumentType.PERP]
+    HYPEUSDC  = ["HYPEUSDC",  "HYPE/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID, InstrumentType.PERP]
+    XMRUSDC   = ["XMRUSDC",   "XMR/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID, InstrumentType.PERP]
+    ZECUSDC   = ["ZECUSDC",   "ZEC/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID, InstrumentType.PERP]
+    PAXGUSDC  = ["PAXGUSDC",  "PAXG/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID, InstrumentType.PERP]
+    ENAUSDC   = ["ENAUSDC",   "ENA/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID, InstrumentType.PERP]
+    ZROUSDC   = ["ZROUSDC",   "ZRO/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID, InstrumentType.PERP]
+    WLDUSDC   = ["WLDUSDC",   "WLD/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID, InstrumentType.PERP]
+    PUMPUSDC  = ["PUMPUSDC",  "PUMP/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID, InstrumentType.PERP]
+    KPEPEUSDC = ["kPEPEUSDC", "kPEPE/USDC", 0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.CRYPTO,      None, TradePairSource.HYPERLIQUID, InstrumentType.PERP]
 
     # Commodity perp futures (synthetic, track commodity prices — not physical delivery)
-    WTIOILUSDC   = ["WTIOILUSDC",   "WTIOIL/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.COMMODITIES, None, TradePairSource.HYPERLIQUID, "xyz:CL"]
-    BRENTOILUSDC = ["BRENTOILUSDC", "BRENTOIL/USDC", 0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.COMMODITIES, None, TradePairSource.HYPERLIQUID, "xyz:BRENTOIL"]
-    GOLDUSDC     = ["GOLDUSDC",     "GOLD/USDC",     0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.COMMODITIES, None, TradePairSource.HYPERLIQUID, "xyz:GOLD"]
-    SILVERUSDC   = ["SILVERUSDC",   "SILVER/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.COMMODITIES, None, TradePairSource.HYPERLIQUID, "xyz:SILVER"]
-    COPPERUSDC   = ["COPPERUSDC",   "COPPER/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.COMMODITIES, None, TradePairSource.HYPERLIQUID, "xyz:COPPER"]
-    NATGASUSDC   = ["NATGASUSDC",   "NATGAS/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.COMMODITIES, None, TradePairSource.HYPERLIQUID, "xyz:NATGAS"]
-    PLATINUMUSDC = ["PLATINUMUSDC", "PLATINUM/USDC", 0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.COMMODITIES, None, TradePairSource.HYPERLIQUID, "xyz:PLATINUM"]
+    WTIOILUSDC   = ["WTIOILUSDC",   "WTIOIL/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.COMMODITIES, None, TradePairSource.HYPERLIQUID, "xyz:CL",       InstrumentType.PERP]
+    BRENTOILUSDC = ["BRENTOILUSDC", "BRENTOIL/USDC", 0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.COMMODITIES, None, TradePairSource.HYPERLIQUID, "xyz:BRENTOIL", InstrumentType.PERP]
+    GOLDUSDC     = ["GOLDUSDC",     "GOLD/USDC",     0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.COMMODITIES, None, TradePairSource.HYPERLIQUID, "xyz:GOLD",     InstrumentType.PERP]
+    SILVERUSDC   = ["SILVERUSDC",   "SILVER/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.COMMODITIES, None, TradePairSource.HYPERLIQUID, "xyz:SILVER",   InstrumentType.PERP]
+    COPPERUSDC   = ["COPPERUSDC",   "COPPER/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.COMMODITIES, None, TradePairSource.HYPERLIQUID, "xyz:COPPER",   InstrumentType.PERP]
+    NATGASUSDC   = ["NATGASUSDC",   "NATGAS/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.COMMODITIES, None, TradePairSource.HYPERLIQUID, "xyz:NATGAS",   InstrumentType.PERP]
+    PLATINUMUSDC = ["PLATINUMUSDC", "PLATINUM/USDC", 0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.COMMODITIES, None, TradePairSource.HYPERLIQUID, "xyz:PLATINUM", InstrumentType.PERP]
 
     # Index perp futures (synthetic, track equity index prices — not ETFs)
-    SP500USDC  = ["SP500USDC",  "SP500/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.INDICES, None, TradePairSource.HYPERLIQUID, "xyz:SP500"]
-    XYZ100USDC = ["XYZ100USDC", "XYZ100/USDC", 0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.INDICES, None, TradePairSource.HYPERLIQUID, "xyz:XYZ100"]
-    EWYUSDC    = ["EWYUSDC",    "EWY/USDC",    0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.INDICES, None, TradePairSource.HYPERLIQUID, "xyz:EWY"]
+    SP500USDC  = ["SP500USDC",  "SP500/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.INDICES, None, TradePairSource.HYPERLIQUID, "xyz:SP500",  InstrumentType.PERP]
+    XYZ100USDC = ["XYZ100USDC", "XYZ100/USDC", 0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.INDICES, None, TradePairSource.HYPERLIQUID, "xyz:XYZ100", InstrumentType.PERP]
+    EWYUSDC    = ["EWYUSDC",    "EWY/USDC",    0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.INDICES, None, TradePairSource.HYPERLIQUID, "xyz:EWY",    InstrumentType.PERP]
 
     # Equity perp futures (synthetic, track single-stock prices — not actual shares)
-    NVDAUSDC  = ["NVDAUSDC",  "NVDA/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.EQUITIES, None, TradePairSource.HYPERLIQUID, "xyz:NVDA"]
-    AAPLUSDC  = ["AAPLUSDC",  "AAPL/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.EQUITIES, None, TradePairSource.HYPERLIQUID, "xyz:AAPL"]
-    TSLAUSDC  = ["TSLAUSDC",  "TSLA/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.EQUITIES, None, TradePairSource.HYPERLIQUID, "xyz:TSLA"]
-    MSFTUSDC  = ["MSFTUSDC",  "MSFT/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.EQUITIES, None, TradePairSource.HYPERLIQUID, "xyz:MSFT"]
-    AMZNUSDC  = ["AMZNUSDC",  "AMZN/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.EQUITIES, None, TradePairSource.HYPERLIQUID, "xyz:AMZN"]
-    GOOGLUSDC = ["GOOGLUSDC", "GOOGL/USDC", 0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.EQUITIES, None, TradePairSource.HYPERLIQUID, "xyz:GOOGL"]
-    METAUSDC  = ["METAUSDC",  "META/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.EQUITIES, None, TradePairSource.HYPERLIQUID, "xyz:META"]
-    COINUSDC  = ["COINUSDC",  "COIN/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.EQUITIES, None, TradePairSource.HYPERLIQUID, "xyz:COIN"]
-    CRCLUSDC  = ["CRCLUSDC",  "CRCL/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.EQUITIES, None, TradePairSource.HYPERLIQUID, "xyz:CRCL"]
-    MSTRUSDC  = ["MSTRUSDC",  "MSTR/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.EQUITIES, None, TradePairSource.HYPERLIQUID, "xyz:MSTR"]
-    PLTRUSDC  = ["PLTRUSDC",  "PLTR/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.EQUITIES, None, TradePairSource.HYPERLIQUID, "xyz:PLTR"]
-    AMDUSDC   = ["AMDUSDC",   "AMD/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.EQUITIES, None, TradePairSource.HYPERLIQUID, "xyz:AMD"]
-    TSMUSDC   = ["TSMUSDC",   "TSM/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.EQUITIES, None, TradePairSource.HYPERLIQUID, "xyz:TSM"]
-    NFLXUSDC  = ["NFLXUSDC",  "NFLX/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.EQUITIES, None, TradePairSource.HYPERLIQUID, "xyz:NFLX"]
-    SNDKUSDC  = ["SNDKUSDC",  "SNDK/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.EQUITIES, None, TradePairSource.HYPERLIQUID, "xyz:SNDK"]
-    INTCUSDC  = ["INTCUSDC",  "INTC/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.EQUITIES, None, TradePairSource.HYPERLIQUID, "xyz:INTC"]
-    MUUSDC    = ["MUUSDC",    "MU/USDC",    0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.EQUITIES, None, TradePairSource.HYPERLIQUID, "xyz:MU"]
-    HOODUSDC  = ["HOODUSDC",  "HOOD/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.EQUITIES, None, TradePairSource.HYPERLIQUID, "xyz:HOOD"]
-    ORCLUSDC  = ["ORCLUSDC",  "ORCL/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.EQUITIES, None, TradePairSource.HYPERLIQUID, "xyz:ORCL"]
+    NVDAUSDC  = ["NVDAUSDC",  "NVDA/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.EQUITIES, None, TradePairSource.HYPERLIQUID, "xyz:NVDA",  InstrumentType.PERP]
+    AAPLUSDC  = ["AAPLUSDC",  "AAPL/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.EQUITIES, None, TradePairSource.HYPERLIQUID, "xyz:AAPL",  InstrumentType.PERP]
+    TSLAUSDC  = ["TSLAUSDC",  "TSLA/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.EQUITIES, None, TradePairSource.HYPERLIQUID, "xyz:TSLA",  InstrumentType.PERP]
+    MSFTUSDC  = ["MSFTUSDC",  "MSFT/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.EQUITIES, None, TradePairSource.HYPERLIQUID, "xyz:MSFT",  InstrumentType.PERP]
+    AMZNUSDC  = ["AMZNUSDC",  "AMZN/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.EQUITIES, None, TradePairSource.HYPERLIQUID, "xyz:AMZN",  InstrumentType.PERP]
+    GOOGLUSDC = ["GOOGLUSDC", "GOOGL/USDC", 0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.EQUITIES, None, TradePairSource.HYPERLIQUID, "xyz:GOOGL", InstrumentType.PERP]
+    METAUSDC  = ["METAUSDC",  "META/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.EQUITIES, None, TradePairSource.HYPERLIQUID, "xyz:META",  InstrumentType.PERP]
+    COINUSDC  = ["COINUSDC",  "COIN/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.EQUITIES, None, TradePairSource.HYPERLIQUID, "xyz:COIN",  InstrumentType.PERP]
+    CRCLUSDC  = ["CRCLUSDC",  "CRCL/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.EQUITIES, None, TradePairSource.HYPERLIQUID, "xyz:CRCL",  InstrumentType.PERP]
+    MSTRUSDC  = ["MSTRUSDC",  "MSTR/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.EQUITIES, None, TradePairSource.HYPERLIQUID, "xyz:MSTR",  InstrumentType.PERP]
+    PLTRUSDC  = ["PLTRUSDC",  "PLTR/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.EQUITIES, None, TradePairSource.HYPERLIQUID, "xyz:PLTR",  InstrumentType.PERP]
+    AMDUSDC   = ["AMDUSDC",   "AMD/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.EQUITIES, None, TradePairSource.HYPERLIQUID, "xyz:AMD",   InstrumentType.PERP]
+    TSMUSDC   = ["TSMUSDC",   "TSM/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.EQUITIES, None, TradePairSource.HYPERLIQUID, "xyz:TSM",   InstrumentType.PERP]
+    NFLXUSDC  = ["NFLXUSDC",  "NFLX/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.EQUITIES, None, TradePairSource.HYPERLIQUID, "xyz:NFLX",  InstrumentType.PERP]
+    SNDKUSDC  = ["SNDKUSDC",  "SNDK/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.EQUITIES, None, TradePairSource.HYPERLIQUID, "xyz:SNDK",  InstrumentType.PERP]
+    INTCUSDC  = ["INTCUSDC",  "INTC/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.EQUITIES, None, TradePairSource.HYPERLIQUID, "xyz:INTC",  InstrumentType.PERP]
+    MUUSDC    = ["MUUSDC",    "MU/USDC",    0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.EQUITIES, None, TradePairSource.HYPERLIQUID, "xyz:MU",    InstrumentType.PERP]
+    HOODUSDC  = ["HOODUSDC",  "HOOD/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.EQUITIES, None, TradePairSource.HYPERLIQUID, "xyz:HOOD",  InstrumentType.PERP]
+    ORCLUSDC  = ["ORCLUSDC",  "ORCL/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.EQUITIES, None, TradePairSource.HYPERLIQUID, "xyz:ORCL",  InstrumentType.PERP]
 
     @property
     def trade_pair_id(self):
@@ -1006,17 +1014,30 @@ class TradePair(Enum):
 
     @property
     def subcategory(self):
-        if len(self.value) > 6:
+        if len(self.value) > 6 and isinstance(self.value[6], TradePairSubcategory):
             return self.value[6]
         return None
 
     @property
     def src(self) -> TradePairSource:
-        return self.value[7] if len(self.value) > 7 else TradePairSource.VANTA
+        if len(self.value) > 7 and isinstance(self.value[7], TradePairSource):
+            return self.value[7]
+        return TradePairSource.VANTA
 
     @property
     def hl_coin(self) -> str:
-        return self.value[8] if len(self.value) > 8 else self.base
+        # type() is str (not isinstance) to exclude InstrumentType, which is a str subclass via str-Enum.
+        if len(self.value) > 8 and type(self.value[8]) is str:
+            return self.value[8]
+        return self.base
+
+    @property
+    def instrument_type(self) -> InstrumentType:
+        """SPOT or PERP. Located by type scan — robust to future fields added anywhere in the value list."""
+        for v in self.value:
+            if isinstance(v, InstrumentType):
+                return v
+        raise ValueError(f"TradePair {self.trade_pair_id} is missing instrument_type")
 
     @property
     def is_crypto(self):
