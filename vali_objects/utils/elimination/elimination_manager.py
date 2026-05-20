@@ -350,7 +350,7 @@ class EliminationManager(CacheController):
         """Get the local eliminations lock (manager-side only)"""
         return self.eliminations_lock
 
-    def generate_elimination_row(self, hotkey, current_dd, reason, t_ms=None, price_info=None, return_info=None):
+    def generate_elimination_row(self, hotkey, current_dd, reason, t_ms=None):
         """Generate elimination row dict."""
         if t_ms is None:
             t_ms = TimeUtil.now_in_millis()
@@ -715,15 +715,14 @@ class EliminationManager(CacheController):
             bt.logging.warning(f"Could not load eliminations from disk: {e}. Starting with empty list.")
             return []
 
-    def append_elimination_row(self, hotkey, current_dd, reason, t_ms=None, price_info=None, return_info=None):
+    def append_elimination_row(self, hotkey, current_dd, reason, t_ms=None):
         """
         Add elimination row (thread-safe).
 
         Acquires eliminations_lock to ensure atomic check-update-save operation.
         """
         bt.logging.info(f"[ELIM_DEBUG] append_elimination_row called for {hotkey}, reason={reason}")
-        elimination_row = self.generate_elimination_row(hotkey, current_dd, reason, t_ms=t_ms,
-                                                        price_info=price_info, return_info=return_info)
+        elimination_row = self.generate_elimination_row(hotkey, current_dd, reason, t_ms=t_ms)
 
         with self.eliminations_lock:
             dict_len_before = len(self.eliminations)
@@ -1024,7 +1023,8 @@ class EliminationManager(CacheController):
             raise ValueError(f"Hotkey mismatch: {hotkey} != {elimination_data['hotkey']}")
 
         already_exists = hotkey in self.eliminations
-        self.eliminations[hotkey] = elimination_data
+        with self.eliminations_lock:
+            self.eliminations[hotkey] = elimination_data
         return not already_exists
 
     def remove_elimination(self, hotkey: str) -> bool:

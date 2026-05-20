@@ -91,7 +91,7 @@ class EntityCollateralManager(CacheController):
         # Intraday drawdown threshold for funded subaccounts (8%).
         # This is the actual elimination threshold applied to funded subaccounts,
         # so it is also the maximum loss that can ever be slashed from a subaccount.
-        self.mdd_percent = ValiConfig.SUBACCOUNT_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD  # 0.08
+        self.mdd_percent = ValiConfig.FUNDED_INTRADAY_DRAWDOWN_THRESHOLD  # 0.08
 
         # Load persisted state from disk
         self._collateral_cache = self._load_cache_from_disk()

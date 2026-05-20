@@ -114,7 +114,7 @@ class ChallengePeriodServer(RPCServerBase):
         iteration_epoch = self.sync_epoch
 
         # Run the challenge period refresh with captured epoch
-        self._manager.refresh(current_time=None, iteration_epoch=iteration_epoch)
+        self._manager.refresh(iteration_epoch=iteration_epoch)
 
     @property
     def sync_in_progress(self):
@@ -131,8 +131,7 @@ class ChallengePeriodServer(RPCServerBase):
     def get_health_check_details(self) -> dict:
         """Add service-specific health check details."""
         return {
-            "active_miners_count": len(self._manager.active_miners),
-            "elimination_reasons_count": len(self._manager.eliminations_with_reasons)
+            "active_miners_count": len(self._manager.qwer_buckets)
         }
 
     # Note: Daemon control methods (start_daemon_rpc, stop_daemon_rpc, is_daemon_running_rpc, get_daemon_info_rpc)
@@ -166,47 +165,9 @@ class ChallengePeriodServer(RPCServerBase):
         """Get list of all active miner hotkeys."""
         return self._manager.get_all_miner_hotkeys()
 
-    def get_testing_miners_rpc(self) -> dict:
-        """Get all CHALLENGE bucket miners as dict {hotkey: start_time}."""
-        return self._manager.get_testing_miners()
-
-    def get_success_miners_rpc(self) -> dict:
-        """Get all MAINCOMP bucket miners as dict {hotkey: start_time}."""
-        return self._manager.get_success_miners()
-
-    def get_probation_miners_rpc(self) -> dict:
-        """Get all PROBATION bucket miners as dict {hotkey: start_time}."""
-        return self._manager.get_probation_miners()
-
-    def get_plagiarism_miners_rpc(self) -> dict:
-        """Get all PLAGIARISM bucket miners as dict {hotkey: start_time}."""
-        return self._manager.get_plagiarism_miners()
-
     def get_miner_scores_rpc(self) -> tuple:
         """Get cached miner scores for MinerStatisticsManager."""
         return self._manager.get_miner_scores()
-
-    # ==================== Elimination Reasons RPC Methods ====================
-
-    def get_all_elimination_reasons_rpc(self) -> dict:
-        """Get all elimination reasons as a dict."""
-        return self._manager.get_all_elimination_reasons()
-
-    def has_elimination_reasons_rpc(self) -> bool:
-        """Check if there are any elimination reasons."""
-        return self._manager.has_elimination_reasons()
-
-    def clear_elimination_reasons_rpc(self) -> None:
-        """Clear all elimination reasons."""
-        self._manager.clear_elimination_reasons()
-
-    def pop_elimination_reason_rpc(self, hotkey: str) -> Optional[Tuple[str, float, int]]:
-        """Atomically get and remove an elimination reason for a single hotkey."""
-        return self._manager.pop_elimination_reason(hotkey)
-
-    def update_elimination_reasons_rpc(self, reasons_dict: dict) -> int:
-        """Accumulate elimination reasons from a dict."""
-        return self._manager.update_elimination_reasons(reasons_dict)
 
     # ==================== Mutation RPC Methods ====================
 
@@ -222,24 +183,11 @@ class ChallengePeriodServer(RPCServerBase):
 
     def remove_miner_rpc(self, hotkey: str) -> bool:
         """Remove a miner from active_miners."""
-        return self._manager.remove_miner(hotkey)
+        return self._manager.remove_hotkeys([hotkey])
 
     def clear_all_miners_rpc(self) -> None:
         """Clear all miners from active_miners."""
         self._manager.clear_active_miners()
-
-    def update_miners_rpc(self, miners_dict: dict) -> int:
-        """
-        Bulk update active_miners from a dict.
-
-        Args:
-            miners_dict: Dict mapping hotkey to list of dicts
-                [{"bucket": str, "bucket_start_time": int}, ...]
-
-        Returns:
-            Number of miners updated
-        """
-        return self._manager.update_active_miners(miners_dict)
 
     # ==================== Management RPC Methods ====================
 
@@ -252,24 +200,12 @@ class ChallengePeriodServer(RPCServerBase):
         self._manager._clear_challengeperiod_in_memory_and_disk()
 
     def clear_test_state_rpc(self) -> None:
-        """
-        Clear ALL test-sensitive state (for test isolation).
-
-        This includes:
-        - Challenge period data (active_miners, elimination_reasons)
-        - refreshed_challengeperiod_start_time flag (prevents test contamination)
-        - Any other stateful flags that affect test behavior
-
-        Should be called by ServerOrchestrator.clear_all_test_data() to ensure
-        complete test isolation when servers are shared across tests.
-        """
+        """Clear ALL test-sensitive state (for test isolation)."""
         self._manager._clear_challengeperiod_in_memory_and_disk()
-        self._manager.refreshed_challengeperiod_start_time = False  # Reset flag to allow refresh in each test
-        # Future: Add any other stateful flags here
 
     def write_challengeperiod_from_memory_to_disk_rpc(self) -> None:
         """Write challenge period data from memory to disk."""
-        self._manager._write_challengeperiod_from_memory_to_disk()
+        self._manager._save_to_disk()
 
     def sync_challenge_period_data_rpc(self, active_miners_sync: dict) -> None:
         """Sync challenge period data from another validator."""
@@ -283,11 +219,11 @@ class ChallengePeriodServer(RPCServerBase):
 
     def remove_eliminated_rpc(self, eliminations: list = None) -> None:
         """Remove eliminated miners from active_miners."""
-        self._manager.remove_eliminated(eliminations=eliminations)
+        self._manager._sync_eliminations(eliminated_hotkeys=eliminations)
 
-    def update_plagiarism_miners_rpc(self, current_time: int, plagiarism_miners: dict) -> None:
+    def update_plagiarism_miners_rpc(self, current_time: int, plagiarism_miners: list[str]) -> None:
         """Update plagiarism miners via RPC."""
-        self._manager.update_plagiarism_miners(current_time, plagiarism_miners)
+        self._manager.sync_plagiarism_miners(current_time, plagiarism_miners)
 
     def prepare_plagiarism_elimination_miners_rpc(self, current_time: int) -> dict:
         """Prepare plagiarism miners for elimination."""
@@ -319,7 +255,7 @@ class ChallengePeriodServer(RPCServerBase):
 
     def promote_challengeperiod_in_memory_rpc(self, hotkeys: list, current_time: int) -> None:
         """Promote miners to main competition (exposed for testing)."""
-        self._manager._promote_challengeperiod_in_memory(hotkeys, current_time)
+        self._manager.promote_hotkeys(hotkeys, current_time)
 
     def inspect_rpc(
         self,
