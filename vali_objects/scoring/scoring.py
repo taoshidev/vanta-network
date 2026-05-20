@@ -80,7 +80,7 @@ class Scoring:
     def compute_results_checkpoint(
             ledger_dict: dict[str, PerfLedger],
             full_positions: dict[str, list[Position]],
-            asset_class_min_days: dict[str, int],
+            asset_class_min_days: dict[TradePairCategory, int],
             evaluation_time_ms: int = None,
             verbose=True,
             weighting=False,
@@ -146,10 +146,10 @@ class Scoring:
             ledger_dict: dict[str, PerfLedger],
             positions: dict[str, list[Position]],
             asset_class_min_days: dict[TradePairCategory, int],
-            evaluation_time_ms: int = None,
+            evaluation_time_ms: int | None = None,
             weighting=False,
-            all_miner_account_sizes: dict[str, float]=None
-    ) -> tuple[dict[str, float], dict[str, dict[str, float]]]:
+            all_miner_account_sizes: dict[str, float] | None =None
+    ) -> tuple[dict[TradePairCategory, float], dict[TradePairCategory, dict[str, float]]]:
         """
         returns:
         asset_competitiveness: dictionary with asset classes as keys and their competitiveness as values.
@@ -278,7 +278,7 @@ class Scoring:
         return miner_asset_benefit
 
     @staticmethod
-    def combine_scores(scoring_dict: dict[str, dict[str, dict]]) -> dict[str, dict[str, float]]:
+    def combine_scores(scoring_dict: dict[TradePairCategory, dict[str, dict]]) -> dict[TradePairCategory, dict[str, float]]:
         """
         Combines scores and penalties for each of the asset classes into a single score for each asset class.
         Args:
@@ -395,7 +395,7 @@ class Scoring:
         return aggregate_return
 
     @staticmethod
-    def class_aggregation(asset_miner_scores: dict[str, dict[str, float]]) -> dict[str, float]:
+    def class_aggregation(asset_miner_scores: dict[TradePairCategory, dict[str, float]]) -> dict[str, float]:
         """
         Aggregates the scores of miners across different asset classes.
 
@@ -416,8 +416,8 @@ class Scoring:
 
     @staticmethod
     def softmax_by_asset(
-            asset_miner_scores: dict[str, dict[str, float]]
-    ) -> dict[str, dict[str, float]]:
+            asset_miner_scores: dict[TradePairCategory, dict[str, float]]
+    ) -> dict[TradePairCategory, dict[str, float]]:
         """
         Applies softmax to the scores of miners within each asset class.
 

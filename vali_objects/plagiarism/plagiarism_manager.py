@@ -1,9 +1,6 @@
-from typing import Dict
-
 import requests
 
 from shared_objects.slack_notifier import SlackNotifier
-from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.vali_config import ValiConfig
 import bittensor as bt
 
@@ -40,7 +37,7 @@ class PlagiarismManager:
                 miners_to_eliminate[hotkey] = current_time
         return miners_to_eliminate
 
-    def update_plagiarism_miners(self, current_time: int, plagiarism_miners: Dict[str, MinerBucket]):
+    def update_plagiarism_miners(self, current_time: int, plagiarism_miners: list[str]) -> tuple[list[str], list[str]]:
 
         # Get updated elimination miners from microservice
         current_plagiarism_miners = self.get_plagiarism_elimination_scores(current_time)

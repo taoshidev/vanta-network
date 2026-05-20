@@ -707,7 +707,8 @@ class LimitOrderManager(CacheController):
                             if trade_pair in self._last_fill_time:
                                 del self._last_fill_time[trade_pair]
 
-            bt.logging.info(f"Deleted {deleted_count} limit orders for eliminated miner [{miner_hotkey}]")
+            if deleted_count > 0:
+                bt.logging.info(f"Deleted {deleted_count} limit orders for eliminated miner [{miner_hotkey}]")
 
             return {
                 "status": "deleted",
