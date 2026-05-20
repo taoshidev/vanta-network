@@ -53,7 +53,7 @@ class MinerBucket(Enum):
         if self == MinerBucket.SUBACCOUNT_FUNDED:
             if time_ms is not None and time_ms < _FUNDED_V0_CUTOFF_MS:
                 return ValiConfig.FUNDED_EOD_DRAWDOWN_THRESHOLD_V0
-            return ValiConfig.FUNDED_INTRADAY_DRAWDOWN_THRESHOLD
+            return ValiConfig.FUNDED_EOD_DRAWDOWN_THRESHOLD
 
         if self in (MinerBucket.MAINCOMP, MinerBucket.PROBATION, MinerBucket.SUBACCOUNT_ALPHA):
             return ValiConfig.FUNDED_EOD_DRAWDOWN_THRESHOLD

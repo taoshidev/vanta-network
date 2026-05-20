@@ -98,7 +98,7 @@ class MinerBucketState:
         dd = self.drawdown
         return (
             f"{self.current_bucket.value} {start} rank={self.rank} "
-            f"equity={dd.current_equity:.4f} balance={dd.current_balance:.4f} | "
+            f"equity={dd.current_equity:.4f} balance={dd.current_balance:.4f} daily_open={dd.daily_open_equity:.4f} | "
             f"intraday_dd={dd.intraday_drawdown_pct:.2f}% eod_dd={dd.eod_drawdown_pct:.2f}% "
             f"eod_hwm={dd.eod_hwm:.4f}"
         )
@@ -116,20 +116,30 @@ class MinerBucketState:
         return self.entries[-1]
 
     @property
+    def _threshold_time_ms(self) -> int | None:
+        """For SUBACCOUNT_FUNDED, returns the SUBACCOUNT_CHALLENGE entry's start time
+        so versioned thresholds (V0/V1) are selected based on when the miner registered,
+        not when they were promoted. For all other buckets, returns current bucket start."""
+        if self.current_bucket == MinerBucket.SUBACCOUNT_FUNDED:
+            challenge_entry = next(e for e in self.entries if e.bucket == MinerBucket.SUBACCOUNT_CHALLENGE)
+            return challenge_entry.start_time_ms if challenge_entry else None
+        return self.current_bucket_start_ms
+
+    @property
     def intraday_drawdown_threshold(self):
-        return self.current_bucket.intraday_drawdown_threshold(self.current_bucket_start_ms)
+        return self.current_bucket.intraday_drawdown_threshold(self._threshold_time_ms)
 
     @property
     def intraday_drawdown_threshold_pct(self):
-        return self.current_bucket.intraday_drawdown_threshold(self.current_bucket_start_ms) * 100
+        return self.intraday_drawdown_threshold * 100
 
     @property
     def eod_drawdown_threshold(self):
-        return self.current_bucket.eod_drawdown_threshold(self.current_bucket_start_ms)
+        return self.current_bucket.eod_drawdown_threshold(self._threshold_time_ms)
 
     @property
     def eod_drawdown_threshold_pct(self):
-        return self.current_bucket.eod_drawdown_threshold(self.current_bucket_start_ms) * 100
+        return self.eod_drawdown_threshold * 100
 
 
 class ChallengePeriodManager(CacheController):
@@ -511,6 +521,7 @@ class ChallengePeriodManager(CacheController):
         if not miner_states_data:
             bt.logging.error(f'challenge_period_data appears invalid')
 
+        bt.logging.info("syncing challenge period data")
         with self._buckets_lock:
             self.miner_states.clear()
             self.miner_states.update(self.parse_checkpoint_dict(miner_states_data))

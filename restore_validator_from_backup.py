@@ -15,7 +15,7 @@ from shared_objects.rpc.rpc_server_base import RPCServerBase
 from time_util.time_util import TimeUtil
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
-from vali_objects.challenge_period import ChallengePeriodServer
+from vali_objects.challenge_period.challengeperiod_server import ChallengePeriodServer
 from vali_objects.utils.elimination.elimination_client import EliminationClient
 from vali_objects.utils.elimination.elimination_server import EliminationServer
 from vali_objects.utils.limit_order.limit_order_server import LimitOrderServer
