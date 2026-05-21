@@ -1,5 +1,5 @@
 from vali_objects.enums.miner_bucket_enum import MinerBucket
-from vali_objects.vali_config import TradePair, TradePairCategory, ValiConfig  # noqa: E402
+from vali_objects.vali_config import TradePair, ValiConfig  # noqa: E402
 
 
 # Legacy positional caps for XAUUSD/XAGUSD (FOREX-tagged commodity pairs). These pairs will
@@ -14,10 +14,6 @@ def get_order_leverage_bounds() -> tuple[float, float]:
 
 def get_position_leverage_bounds(trade_pair: TradePair) -> tuple[float, float]:
     return trade_pair.min_leverage, trade_pair.max_leverage
-
-
-def get_portfolio_leverage_cap(trade_pair_category: TradePairCategory) -> float:
-    return ValiConfig.PORTFOLIO_LEVERAGE_CAP[trade_pair_category]
 
 
 def get_leverage_tier(miner_bucket, account_size: float) -> int:

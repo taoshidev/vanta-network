@@ -1327,9 +1327,10 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                         asset_class = TradePairCategory(asset_class_str)
                         if bucket in _subaccount_buckets:
                             tier = get_leverage_tier(bucket, account_size)
-                            multiplier = ValiConfig.TIER_PORTFOLIO_LEVERAGE[tier].get(asset_class, 1.0)
+                            multiplier = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier].get(asset_class, 1.0)
                         else:
-                            multiplier = ValiConfig.PORTFOLIO_LEVERAGE_CAP.get(asset_class, 1.0)
+                            # Non-subaccount rebuild path: assume SPOT (regular Vanta miners).
+                            multiplier = ValiConfig.PORTFOLIO_LEVERAGE_CAP.get((asset_class, InstrumentType.SPOT), 1.0)
                     except ValueError:
                         multiplier = 1.0
                 else:
@@ -2065,7 +2066,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         _bucket = MinerBucket.SUBACCOUNT_CHALLENGE if in_challenge else MinerBucket.SUBACCOUNT_FUNDED
         tier = get_leverage_tier(_bucket, account_size)
         max_position_per_pair_usd = account_size * ValiConfig.TIER_POSITIONAL_LEVERAGE[tier][(category, InstrumentType.PERP)]
-        max_portfolio_usd = account_size * ValiConfig.TIER_PORTFOLIO_LEVERAGE[tier][category]
+        max_portfolio_usd = account_size * ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier][category]
 
         response_body = json.dumps(
             {
