@@ -203,7 +203,7 @@ class ChallengePeriodManager(CacheController):
             current_time_ms = TimeUtil.now_in_millis()
 
         asset_selections = self._asset_selection_client.get_asset_selections()
-        hk_to_positions, hk_to_first_order_time = self._position_client.filtered_positions_for_scoring(
+        filtered_positions, hk_to_first_order_time = self._position_client.filtered_positions_for_scoring(
             hotkeys=self._position_client.get_all_hotkeys()
         )
 
@@ -212,7 +212,7 @@ class ChallengePeriodManager(CacheController):
 
         state_changed = False
         state_changed |= self._sync_positions(
-            hotkeys=list(hk_to_positions.keys()),
+            hotkeys=list(filtered_positions.keys()),
             eliminated_hotkeys=hotkeys_elimination_sync,
             hk_to_first_order_time_ms=hk_to_first_order_time,
             default_time=current_time_ms
@@ -229,9 +229,9 @@ class ChallengePeriodManager(CacheController):
 
         accounts = self._miner_account_client.get_accounts(evaluation_hotkeys)
         ledgers = self._perf_ledger_client.filtered_ledger_for_scoring(evaluation_hotkeys)
-
-        self._refresh_drawdown_cache(evaluation_hotkeys, accounts, ledgers, hk_to_positions, current_time_ms)
-        self._refresh_rank_cache(rank_hotkeys, ledgers, hk_to_positions, accounts, asset_selections, current_time_ms)
+        positions = self._position_client.get_positions_for_hotkeys(evaluation_hotkeys)
+        self._refresh_drawdown_cache(evaluation_hotkeys, accounts, ledgers, positions, current_time_ms)
+        self._refresh_rank_cache(rank_hotkeys, ledgers, filtered_positions, accounts, asset_selections, current_time_ms)
 
         eliminations = {}
         promotions, demotions = [], []
@@ -796,6 +796,7 @@ class ChallengePeriodManager(CacheController):
     def _save_to_disk(self):
         """Write challenge period data from memory to disk."""
         if self.is_backtesting:
+            bt.logging.info("don't save challengeperiod disk")
             return
 
         # Epoch-based validation: check if sync occurred during our iteration
