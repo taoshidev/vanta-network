@@ -236,54 +236,52 @@ class ChallengePeriodManager(CacheController):
         eliminations = {}
         promotions, demotions = [], []
         for hotkey, state in self.miner_states.items():
-            if hotkey not in evaluation_hotkeys: continue
-
-            # Check time-based eliminations first for regular challenge, probation miners
-            if self._time_limit_expired(state.current_bucket_entry, current_time_ms):
-                eliminations[hotkey] = EliminationReason.FAILED_CHALLENGE_PERIOD_TIME
+            if hotkey not in evaluation_hotkeys:
+                if state.current_bucket == MinerBucket.UNKNOWN:
+                    bt.logging.warning(f"[CHALLENGE] {hotkey} bucket unknown")
                 continue
 
             # TODO remove
             bt.logging.info(f"[CHALLENGE] {hotkey} {state}")
 
+            if reason := self._check_time(state.current_bucket_entry, current_time_ms):
+                eliminations[hotkey] = reason
+                continue
+
             # Rule 1: Intraday drawdown — current equity cannot drop below  from today's opening equity
             # intraday_drawdown_pct = (1.0 - current_equity / daily_open_equity) * 100.0
-            if state.drawdown.intraday_drawdown_pct > state.intraday_drawdown_threshold_pct:
-                eliminations[hotkey] = EliminationReason.FAILED_CHALLENGE_PERIOD_INTRADAY_DRAWDOWN
-                bt.logging.info(f"[CHALLENGE] {hotkey} Intraday DD elimination triggered {state}")
+            if reason := self._check_intraday_drawdown(state):
+                eliminations[hotkey] = reason
+                bt.logging.info(f"[CHALLENGE] {hotkey} intraday drawdown elimination {state}")
                 continue
             elif state.drawdown.intraday_drawdown_pct > state.intraday_drawdown_threshold_pct * 0.75:
-                bt.logging.info(f"[CHALLENGE] {hotkey} Near Intraday DD elimination {state}")
-                continue
+                bt.logging.info(f"[CHALLENGE] {hotkey} near intraday drawdown elimination {state}")
 
             # Rule 2: EOD trailing drawdown — last EOD equity cannot drop below threshold(0.0n) from highest-ever EOD equity
             # eod_drawdown_pct = (1.0 - last_eod / eod_hwm) * 100.0
-            if state.drawdown.eod_drawdown_pct > state.eod_drawdown_threshold_pct:
-                eliminations[hotkey] = EliminationReason.FAILED_CHALLENGE_PERIOD_EOD_DRAWDOWN
-                bt.logging.info(f"[CHALLENGE] {hotkey} EOD DD elimination triggered {state}")
+            if reason := self._check_eod_drawdown(state):
+                eliminations[hotkey] = reason
+                bt.logging.info(f"[CHALLENGE] {hotkey} EOD drawdown elimination {state}")
                 continue
             elif state.drawdown.eod_drawdown_pct > state.eod_drawdown_threshold_pct * 0.75:
-                bt.logging.info(f"[CHALLENGE] {hotkey} Near EOD DD elimination {state}")
-                continue
+                bt.logging.info(f"[CHALLENGE] {hotkey} near EOD drawdown elimination {state}")
 
             _asset = asset_selections.get(hotkey)
             if _asset is None: continue
             asset_class = TradePairCategory(_asset)
 
-            # Check demotions for regular maincomp before promotion
-            returns_threshold = ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD[asset_class]
-            if self._should_demote(state, returns_threshold):
+            if self._check_demotion(state):
                 demotions.append(hotkey)
-                bt.logging.info(f"[CHALLENGE] {hotkey} Demotion triggered {state}")
+                bt.logging.info(f"[CHALLENGE] {hotkey} demotion {state}")
                 continue
 
-            if self._should_promote(state, returns_threshold, current_time_ms):
+            returns_threshold = ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD[asset_class]
+            if self._check_promotion(state, returns_threshold, current_time_ms):
                 promotions.append(hotkey)
-                bt.logging.info(f"[CHALLENGE] {hotkey} Promotion triggered {state}")
+                bt.logging.info(f"[CHALLENGE] {hotkey} promotion {state}")
                 continue
-            elif self._should_promote(state, returns_threshold * 0.75, current_time_ms):
-                bt.logging.info(f"[CHALLENGE] {hotkey} Near promotion {state}")
-                continue
+            elif self._check_promotion(state, returns_threshold * 0.75, current_time_ms):
+                bt.logging.info(f"[CHALLENGE] {hotkey} near promotion {state}")
 
         state_changed |= self.eliminate_hotkeys(eliminations, current_time_ms)
         state_changed |= self.demote_hotkeys(demotions, current_time_ms)
@@ -296,23 +294,47 @@ class ChallengePeriodManager(CacheController):
     # ==================== Evaluation Methods ====================
 
     @staticmethod
-    def _time_limit_expired(current_bucket_entry: BucketEntry, current_time_ms: int) -> bool:
+    def _check_time(current_bucket_entry: BucketEntry, current_time_ms: int) -> EliminationReason | None:
         bucket = current_bucket_entry.bucket
         if bucket.max_time_ms is None:
-            return False
-        return current_time_ms - current_bucket_entry.start_time_ms > bucket.max_time_ms
+            return None
+        if current_time_ms - current_bucket_entry.start_time_ms > bucket.max_time_ms:
+            if bucket == MinerBucket.CHALLENGE:
+                return EliminationReason.FAILED_CHALLENGE_PERIOD_TIME
+            elif bucket == MinerBucket.PROBATION:
+                return EliminationReason.FAILED_PROBATION_TIME
+            elif bucket == MinerBucket.PLAGIARISM:
+                return EliminationReason.PLAGIARISM
+        return None
 
     @staticmethod
-    def _should_demote(state: MinerBucketState, returns_threshold: float = ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD_DEFAULT):
+    def _check_intraday_drawdown(state: MinerBucketState) -> EliminationReason | None:
+        if state.drawdown.intraday_drawdown_pct > state.intraday_drawdown_threshold_pct:
+            if state.current_bucket in (MinerBucket.CHALLENGE, MinerBucket.SUBACCOUNT_CHALLENGE):
+                return EliminationReason.FAILED_CHALLENGE_PERIOD_INTRADAY_DRAWDOWN
+            elif state.current_bucket.is_elimination_eligible:
+                return EliminationReason.FAILED_FUNDED_PERIOD_INTRADAY_DRAWDOWN
+        return None
+
+    @staticmethod
+    def _check_eod_drawdown(state: MinerBucketState) -> EliminationReason | None:
+        if state.drawdown.eod_drawdown_pct > state.eod_drawdown_threshold_pct:
+            if state.current_bucket in (MinerBucket.CHALLENGE, MinerBucket.SUBACCOUNT_CHALLENGE):
+                return EliminationReason.FAILED_CHALLENGE_PERIOD_EOD_DRAWDOWN
+            elif state.current_bucket.is_elimination_eligible:
+                return EliminationReason.FAILED_FUNDED_PERIOD_EOD_DRAWDOWN
+        return None
+
+    @staticmethod
+    def _check_demotion(state: MinerBucketState) -> bool:
         if state.current_bucket == MinerBucket.MAINCOMP:
             return (state.rank > ValiConfig.PROMOTION_THRESHOLD_RANK
-                    or state.drawdown.current_return < returns_threshold
                     if state.rank is not None
                     else False)
         return False
 
     @staticmethod
-    def _should_promote(state: MinerBucketState, returns_threshold: float, current_time_ms: int):
+    def _check_promotion(state: MinerBucketState, returns_threshold: float, current_time_ms: int) -> bool:
         if state.current_bucket == MinerBucket.CHALLENGE:
             if current_time_ms - state.current_bucket_start_ms < ValiConfig.CHALLENGE_PERIOD_MINIMUM_MS:
                 return False
