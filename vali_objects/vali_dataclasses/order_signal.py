@@ -1,5 +1,6 @@
 # developer: Taoshidev
 # Copyright (c) 2024 Taoshi Inc
+import uuid
 from typing import Optional, Union
 
 from vali_objects.enums.execution_type_enum import ExecutionType
@@ -52,7 +53,7 @@ class Signal(BaseModel):
             return values
 
         if (has_sl_tp or has_trailing) and not bracket_orders:
-            bracket_entry = {'stop_loss': stop_loss, 'take_profit': take_profit}
+            bracket_entry = {'stop_loss': stop_loss, 'take_profit': take_profit, 'order_uuid': str(uuid.uuid4())}
             if has_trailing:
                 if 'trailing_percent' in trailing_stop:
                     bracket_entry['trailing_percent'] = trailing_stop['trailing_percent']
@@ -72,6 +73,8 @@ class Signal(BaseModel):
             trailing_present = [f for f in trailing_fields if bracket.get(f) is not None]
             if len(price_present) < 1 and len(trailing_present) < 1:
                 raise ValueError(f"bracket_orders[{i}]: at least one of stop_loss/take_profit/trailing_percent/trailing_value required")
+            if not bracket.get('order_uuid'):
+                bracket['order_uuid'] = str(uuid.uuid4())
 
         return values
 

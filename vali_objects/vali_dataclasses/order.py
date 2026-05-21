@@ -2,6 +2,7 @@
 # Copyright (c) 2024 Taoshi Inc
 
 from typing import Optional as OptionalType
+import uuid
 
 from time_util.time_util import TimeUtil
 from pydantic import field_validator, model_validator
@@ -228,6 +229,30 @@ class Order(Signal):
 
         if self.take_profit is not None:
             results["tk"] = self.take_profit
+
+        if self.bracket_orders is not None:
+            bo = {}
+            for order in self.bracket_orders:
+                bracket_orders = {}
+                if sl := order.get("stop_loss"):
+                    bracket_orders["sl"] = sl
+                if tp := order.get("take_profit"):
+                    bracket_orders["tp"] = tp
+                if val := order.get("value"):
+                    bracket_orders["v"] = val
+                if qty := order.get("quantity"):
+                    bracket_orders["q"] = qty
+                if tsl := order.get("trailing_stop"):
+                    tsl_compact = {}
+                    if 'trailing_percent' in tsl:
+                        tsl_compact["pct"] = tsl["trailing_percent"]
+                    if 'trailing_value' in tsl:
+                        tsl_compact["val"] = tsl["trailing_value"]
+                    bracket_orders["tsl"] = tsl_compact
+                if "order_uuid" not in order:
+                    order["order_uuid"] = str(uuid.uuid4())
+                bo[order["order_uuid"]] = bracket_orders
+            results["uo"] = bo  # index as uo to match positions
 
         if self.execution_type == ExecutionType.STOP_LIMIT:
             results["sp"] = self.stop_price

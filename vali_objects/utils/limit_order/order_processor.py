@@ -511,12 +511,10 @@ class OrderProcessor:
                 bracket_uuid = bracket.get("order_uuid")
 
                 # Check if this bracket order exists (for update)
-                if bracket_uuid:
-                    existing_bracket = limit_order_client.get_limit_order_by_uuid(miner_hotkey, bracket_uuid)
-                    if not existing_bracket:
-                        bt.logging.warning(f"Cannot edit order {bracket_uuid}: order not found, skipping")
-                        continue
+                existing_bracket = limit_order_client.get_limit_order_by_uuid(miner_hotkey, bracket_uuid) if bracket_uuid else None
 
+                if existing_bracket:
+                    is_edit = True
                     # If bracket_uuid exists but no SL, TP, or trailing fields, cancel the order
                     has_trailing = bracket.get("trailing_percent") is not None or bracket.get("trailing_value") is not None
                     if bracket.get("stop_loss") is None and bracket.get("take_profit") is None and not has_trailing:
@@ -530,12 +528,11 @@ class OrderProcessor:
                         except SignalException as e:
                             bt.logging.warning(f"Failed to cancel bracket order {bracket_uuid}: {e}, skipping")
                         continue
-
-                    is_edit = True
                 else:
-                    # No UUID provided - generate new one
                     is_edit = False
-                    bracket_uuid = str(uuid.uuid4())
+                    # UUID not found or not provided - create new order using provided uuid (or generate one)
+                    if not bracket_uuid:
+                        bracket_uuid = str(uuid.uuid4())
 
                 # Build bracket signal
                 # Build trailing_stop dict if trailing fields present in bracket entry
