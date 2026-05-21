@@ -211,7 +211,7 @@ class LimitOrderServer(RPCServerBase):
         Returns:
             dict with deletion details
         """
-        return self._manager.delete_all_limit_orders_for_hotkey_rpc(miner_hotkey)
+        return self._manager.delete_all_limit_orders_for_hotkey(miner_hotkey)
 
     def sync_limit_orders_rpc(self, sync_data):
         """
@@ -442,7 +442,7 @@ class LimitOrderServer(RPCServerBase):
 
     def delete_all_limit_orders_for_hotkey(self, miner_hotkey):
         """Delete all limit orders for a hotkey (direct call for tests)."""
-        return self._manager.delete_all_limit_orders_for_hotkey_rpc(miner_hotkey)
+        return self._manager.delete_all_limit_orders_for_hotkey(miner_hotkey)
 
     def to_dashboard_dict(self, miner_hotkey, status_filter=None):
         """Get dashboard representation (direct call for tests)."""

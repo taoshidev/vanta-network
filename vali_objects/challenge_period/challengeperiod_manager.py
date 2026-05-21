@@ -363,22 +363,19 @@ class ChallengePeriodManager(CacheController):
         if eliminations:
             bt.logging.info(f"[CHALLENGE] eliminating {len(eliminations)} miners")
 
-        elimination_data = {}
-        with self._buckets_lock:
-            for hotkey, elimination_reason in eliminations.items():
-                state = self.miner_states[hotkey]
-                if not state.current_bucket.is_elimination_eligible:
-                    bt.logging.warning(f"[CHALLENGE] attempted elimination in non-eligible bucket: {state}")
+        for hotkey, elimination_reason in eliminations.items():
+            state = self.miner_states[hotkey]
+            if not state.current_bucket.is_elimination_eligible:
+                bt.logging.warning(f"[CHALLENGE] attempted elimination in non-eligible bucket: {state}")
 
-                bt.logging.info(f"[CHALLENGE] eliminating reason={elimination_reason.value}: {state}")
-                elimination_data[hotkey] = {
-                        "hotkey": hotkey,
-                        "reason": elimination_reason.value,
-                        "elimination_initiated_time_ms": current_time_ms
-                        }
-
-        for hotkey, data in elimination_data.items():
-            self._elimination_client.add_elimination(hotkey, data)
+            bt.logging.info(f"[CHALLENGE] eliminating reason={elimination_reason.value}: {state}")
+            self._elimination_client.append_elimination_row(
+                hotkey,
+                elimination_reason.value,
+                intraday_dd=state.drawdown.intraday_drawdown_pct,
+                eod_dd=state.drawdown.eod_drawdown_pct,
+                t_ms=current_time_ms,
+            )
 
         return self.remove_miners(list(eliminations.keys()))
 

@@ -127,40 +127,28 @@ class EliminationClient(RPCClientBase):
     def append_elimination_row(
         self,
         hotkey: str,
-        current_dd: float,
         reason: str,
+        elimination_dd: float | None = None,
+        intraday_dd: float | None = None,
+        eod_dd: float | None = None,
         t_ms: int = None,
-        price_info: dict = None,
-        return_info: dict = None
     ) -> None:
         """
         Add elimination row.
 
         Args:
             hotkey: The hotkey to eliminate
-            current_dd: Current drawdown
             reason: Elimination reason
+            elimination_dd: Overall drawdown at elimination
+            intraday_dd: Intraday drawdown at elimination
+            eod_dd: End-of-day drawdown at elimination
             t_ms: Optional timestamp in milliseconds
-            price_info: Optional price information
-            return_info: Optional return information
         """
         self._server.append_elimination_row_rpc(
-            hotkey, current_dd, reason,
-            t_ms=t_ms, price_info=price_info, return_info=return_info
+            hotkey, reason,
+            elimination_dd=elimination_dd,
+            intraday_dd=intraday_dd, eod_dd=eod_dd, t_ms=t_ms
         )
-
-    def add_elimination(self, hotkey: str, elimination_data: dict) -> bool:
-        """
-        Add or update an elimination record.
-
-        Args:
-            hotkey: The hotkey to eliminate
-            elimination_data: Elimination dict with required fields
-
-        Returns:
-            True if added (new), False if already exists (updated)
-        """
-        return self._server.add_elimination_rpc(hotkey, elimination_data)
 
     def remove_elimination(self, hotkey: str) -> bool:
         """

@@ -234,15 +234,12 @@ class EliminationServer(RPCServerBase):
         """Load eliminations from disk"""
         return self._manager.get_eliminations_from_disk()
 
-    def append_elimination_row_rpc(self, hotkey: str, current_dd: float, reason: str,
-                                    t_ms: int = None, price_info: dict = None, return_info: dict = None) -> None:
+    def append_elimination_row_rpc(self, hotkey: str, reason: str, elimination_dd: float | None = None,
+                                    intraday_dd: float | None = None, eod_dd: float | None = None,
+                                    close_positions: bool = True, t_ms: int = None) -> None:
         """Add elimination row."""
-        self._manager.append_elimination_row(hotkey, current_dd, reason, t_ms=t_ms,
-                                            price_info=price_info, return_info=return_info)
-
-    def add_elimination_rpc(self, hotkey: str, elimination_data: dict) -> bool:
-        """Add or update an elimination record. Returns True if new, False if updated."""
-        return self._manager.add_elimination(hotkey, elimination_data)
+        self._manager.append_elimination_row(hotkey, reason, elimination_dd=elimination_dd,
+                                             intraday_dd=intraday_dd, eod_dd=eod_dd, t_ms=t_ms)
 
     def remove_elimination_rpc(self, hotkey: str) -> bool:
         """Remove elimination. Returns True if removed, False if not found."""
@@ -421,10 +418,13 @@ class EliminationServer(RPCServerBase):
         return self._manager.generate_elimination_row(hotkey, current_dd, reason, t_ms=t_ms,
                                                       price_info=price_info, return_info=return_info)
 
-    def append_elimination_row(self, hotkey, current_dd, reason, t_ms=None, price_info=None, return_info=None):
+    def append_elimination_row(self, hotkey: str, reason: str, elimination_dd: float | None = None,
+                               intraday_dd: float | None = None, eod_dd: float | None = None,
+                               close_positions: bool = True, t_ms: int = None):
         """Add elimination row"""
-        self._manager.append_elimination_row(hotkey, current_dd, reason, t_ms=t_ms,
-                                             price_info=price_info, return_info=return_info)
+        self._manager.append_elimination_row(hotkey, reason, elimination_dd=elimination_dd,
+                                             intraday_dd=intraday_dd, eod_dd=eod_dd,
+                                             close_positions=close_positions, t_ms=t_ms)
 
     def delete_eliminations(self, deleted_hotkeys):
         """Delete multiple eliminations"""
