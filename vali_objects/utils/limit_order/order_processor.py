@@ -304,7 +304,7 @@ class OrderProcessor:
 
     @staticmethod
     def process_limit_cancel(signal: dict, trade_pair, order_uuid: str, now_ms: int,
-                            miner_hotkey: str, limit_order_client) -> dict:
+                            miner_hotkey: str, limit_order_client, execution_type=None) -> dict:
         """
         Process a LIMIT_CANCEL operation by calling limit_order_client.
 
@@ -315,6 +315,7 @@ class OrderProcessor:
             now_ms: Current timestamp in milliseconds
             miner_hotkey: Miner's hotkey
             limit_order_client: Client to process the cancellation
+            execution_type: Optional ExecutionType filter — when set with cancel_all, only cancels orders of this type
 
         Returns:
             Result dictionary from limit_order_client
@@ -328,7 +329,8 @@ class OrderProcessor:
             miner_hotkey,
             trade_pair.trade_pair_id if trade_pair else None,
             order_uuid,
-            now_ms
+            now_ms,
+            execution_type
         )
 
         bt.logging.debug(f"Cancelled LIMIT order(s) for {miner_hotkey}: {order_uuid or 'all'}")
@@ -711,7 +713,7 @@ class OrderProcessor:
             )
 
             try:
-                OrderProcessor.process_limit_cancel(None, None, "ALL", now_ms, miner_hotkey, limit_order_client)
+                OrderProcessor.process_limit_cancel(None, None, "ALL", now_ms, miner_hotkey, limit_order_client, ExecutionType.BRACKET)
             except Exception as e:
                 bt.logging.warning(f"Failed to cancel bracket orders after FLAT_ALL: {e}")
 
@@ -735,7 +737,7 @@ class OrderProcessor:
             # Cancel unfilled bracket orders immediately if position is now closed
             if updated_position and updated_position.is_closed_position:
                 try:
-                    OrderProcessor.process_limit_cancel(None, updated_position.trade_pair, "ALL", now_ms, miner_hotkey, limit_order_client)
+                    OrderProcessor.process_limit_cancel(None, updated_position.trade_pair, "ALL", now_ms, miner_hotkey, limit_order_client, ExecutionType.BRACKET)
                 except Exception as e:
                     bt.logging.warning(f"Failed to cancel bracket orders after position close: {e}")
 
