@@ -249,8 +249,6 @@ class Order(Signal):
                     if 'trailing_value' in tsl:
                         tsl_compact["val"] = tsl["trailing_value"]
                     bracket_orders["tsl"] = tsl_compact
-                if "order_uuid" not in order:
-                    order["order_uuid"] = str(uuid.uuid4())
                 bo[order["order_uuid"]] = bracket_orders
             results["uo"] = bo  # index as uo to match positions
 
