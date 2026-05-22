@@ -779,7 +779,9 @@ class ValiConfig:
     FLAT_ONLY_TRADE_PAIR_IDS = {'BCHUSD'}
     BLOCKED_TRADE_PAIR_IDS = {
         'SPX', 'DJI', 'NDX', 'VIX', 'FTSE', 'GDAXI',  # Indices
-        'USDMXN'
+        'USDMXN',
+        'PAXGUSDC',                                    # Gold; kept GOLDUSDC
+        'BRENTOILUSDC',                                # Oil; kept WTIOILUSDC
     }
 
     # Trade pairs that are permanently unsupported (no price data available)
